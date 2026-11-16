@@ -1,9 +1,13 @@
 //! Hunks of a pull request from `git diff -U0 -M` between base and head.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::thread;
+use std::time::Duration;
 
 use contracts::common::LineSide;
 use contracts::ids::{CommitSha, HunkId};
@@ -77,6 +81,12 @@ pub enum DiffError {
     DuplicateHunk {
         /// The id.
         id: HunkId,
+    },
+    /// `git diff` ran longer than allowed and was killed.
+    #[error("git diff did not finish within {seconds} seconds")]
+    Timeout {
+        /// The limit in seconds.
+        seconds: u64,
     },
     /// Declared but not implemented yet.
     #[error("the analysis operation {operation} is not implemented yet")]
@@ -168,12 +178,26 @@ impl<'a> DiffIndex<'a> {
 
 /// Most `git diff` output read (a pull request's diff is attacker-sized input).
 pub const MAX_DIFF_BYTES: u64 = 64 * 1024 * 1024;
+/// Longest `git diff` may run before it is killed.
+pub const DIFF_TIMEOUT: Duration = Duration::from_secs(120);
+/// Most `git` error output kept.
+const MAX_STDERR_BYTES: u64 = 64 * 1024;
 
 /// The changed files between `base` and `head` in the repository at `repo` (read-only); fails when the diff
-/// output exceeds [`MAX_DIFF_BYTES`].
+/// output exceeds [`MAX_DIFF_BYTES`] or git runs longer than [`DIFF_TIMEOUT`].
 pub fn diff(repo: &Path, base: &CommitSha, head: &CommitSha) -> Result<Vec<FileDiff>, DiffError> {
+    diff_with(OsStr::new("git"), repo, base, head, DIFF_TIMEOUT)
+}
+
+fn diff_with(
+    git: &OsStr,
+    repo: &Path,
+    base: &CommitSha,
+    head: &CommitSha,
+    timeout: Duration,
+) -> Result<Vec<FileDiff>, DiffError> {
     // Fixed options and no user or system config: hunks (and their ids) depend only on the two commits.
-    let mut child = Command::new("git")
+    let mut child = Command::new(git)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .arg("-C")
@@ -199,22 +223,66 @@ pub fn diff(repo: &Path, base: &CommitSha, head: &CommitSha) -> Result<Vec<FileD
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let child = Arc::new(Mutex::new(child));
+    // The watchdog kills git at the deadline; the reads below then end at EOF.
+    let (finished, deadline) = mpsc::channel::<()>();
+    let watchdog = {
+        let child = Arc::clone(&child);
+        thread::spawn(move || {
+            let expired = matches!(
+                deadline.recv_timeout(timeout),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            );
+            if expired {
+                let _ = child.lock().unwrap_or_else(PoisonError::into_inner).kill();
+            }
+            expired
+        })
+    };
+    let stderr_reader = thread::spawn(move || {
+        let mut stderr = Vec::new();
+        if let Some(pipe) = stderr_pipe {
+            let _ = pipe.take(MAX_STDERR_BYTES).read_to_end(&mut stderr);
+        }
+        stderr
+    });
     let mut stdout = Vec::new();
-    if let Some(out) = child.stdout.take() {
-        out.take(MAX_DIFF_BYTES + 1).read_to_end(&mut stdout)?;
+    let read = match stdout_pipe {
+        Some(pipe) => pipe
+            .take(MAX_DIFF_BYTES + 1)
+            .read_to_end(&mut stdout)
+            .map(|_| ()),
+        None => Ok(()),
+    };
+    let too_large = stdout.len() > usize::try_from(MAX_DIFF_BYTES).unwrap_or(usize::MAX);
+    let status = {
+        let mut child = child.lock().unwrap_or_else(PoisonError::into_inner);
+        if too_large || read.is_err() {
+            // git may block on a full pipe; it is no longer needed.
+            let _ = child.kill();
+        }
+        child.wait()
+    };
+    let _ = finished.send(());
+    let timed_out = watchdog.join().unwrap_or(false);
+    let stderr = stderr_reader.join().unwrap_or_default();
+    if timed_out {
+        return Err(DiffError::Timeout {
+            seconds: timeout.as_secs(),
+        });
     }
-    if stdout.len() > usize::try_from(MAX_DIFF_BYTES).unwrap_or(usize::MAX) {
-        // The child may block on a full pipe; it is no longer needed.
-        let _ = child.kill();
-        let _ = child.wait();
+    read?;
+    let status = status?;
+    if too_large {
         return Err(DiffError::Git {
             message: format!("the diff is larger than {MAX_DIFF_BYTES} bytes"),
         });
     }
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
+    if !status.success() {
         return Err(DiffError::Git {
-            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            message: String::from_utf8_lossy(&stderr).trim().to_owned(),
         });
     }
     parse(&String::from_utf8_lossy(&stdout))
@@ -300,11 +368,11 @@ fn header_path(rest: &str) -> Option<String> {
     (old == new).then(|| old.to_owned())
 }
 
-/// The name of a `---`/`+++` line: git ends an unquoted name containing a space with a tab separator (a tab
-/// inside a name is always quoted).
+/// The name of a `---`/`+++` line: git ends a name containing a space with a tab separator, after the closing
+/// quote of a quoted name (a tab inside a name is always quoted).
 fn file_header_name(text: &str) -> &str {
     if text.starts_with('"') {
-        text
+        closing_quote(text).map_or(text, |end| &text[..=end])
     } else {
         text.strip_suffix('\t').unwrap_or(text)
     }
@@ -678,12 +746,15 @@ mod tests {
         write("mod file.txt", "a\nb\nc\nd\ne\nf\n");
         write("del file.txt", "x\n");
         write("old name.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+        // A space and a double quote: git quotes the name and still appends the tab separator.
+        write("say \"hi\".txt", "a\n");
         git(repo, &["add", "-A"]);
         git(repo, &["commit", "-q", "-m", "base"]);
         let base = CommitSha(git(repo, &["rev-parse", "HEAD"]));
         write("mod file.txt", "a\nB\nc\nd\ne\nf\n");
         std::fs::remove_file(repo.join("del file.txt")).expect("remove");
         write("new file.txt", "n\n");
+        write("say \"hi\".txt", "b\n");
         git(repo, &["mv", "old name.txt", "new name.txt"]);
         write("new name.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\nten\n");
         git(repo, &["add", "-A"]);
@@ -709,8 +780,36 @@ mod tests {
                 ("mod file.txt", None, FileStatus::Modified, 1),
                 ("new file.txt", None, FileStatus::Added, 1),
                 ("new name.txt", Some("old name.txt"), FileStatus::Renamed, 1),
+                ("say \"hi\".txt", None, FileStatus::Modified, 1),
             ]
         );
+    }
+
+    #[test]
+    fn hanging_git_is_killed_at_the_deadline() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let stub = dir.path().join("git");
+        std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").expect("stub");
+        let made_executable = Command::new("chmod")
+            .arg("+x")
+            .arg(&stub)
+            .status()
+            .expect("chmod");
+        assert!(made_executable.success());
+        let sha = CommitSha("0".repeat(40));
+        let started = std::time::Instant::now();
+        let result = diff_with(
+            stub.as_os_str(),
+            dir.path(),
+            &sha,
+            &sha,
+            Duration::from_millis(300),
+        );
+        assert!(
+            matches!(result, Err(DiffError::Timeout { .. })),
+            "{result:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
