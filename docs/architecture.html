@@ -95,7 +95,7 @@ svg.ov rect.lb{fill:var(--surface);stroke:var(--border);stroke-width:1;rx:4}
 .key{display:inline-block;font-size:.66rem;font-weight:700;border:1px solid var(--ok-bd);background:var(--ok-bg);color:var(--ok);border-radius:3px;padding:0 .3rem;margin:.1rem .15rem 0 0}
 .key.none{border-color:var(--trust-bd);background:var(--trust-bg);color:var(--trust)}
 /* system grid */
-.sys{display:grid;grid-template-columns:1fr 11rem 1.5fr 17rem 1.4fr 7rem .9fr 8rem 1fr;grid-template-rows:auto auto auto;row-gap:4.6rem}
+.sys{display:grid;grid-template-columns:1fr 11rem 1.5fr 17rem 1.4fr 9rem .9fr 8rem 1fr;grid-template-rows:auto auto auto;row-gap:4.6rem}
 .sys>*{align-self:stretch}
 #s-gh{grid-column:1/-1;grid-row:1;display:flex;gap:1.4rem;flex-wrap:wrap;align-items:center}
 #s-gh h3{font-size:.95rem}
@@ -195,14 +195,14 @@ body.narrow .conn{display:block}
  <div class="dg" id="dg-sys">
   <svg class="ov"></svg>
   <div class="sys">
-   <div class="box ext" id="s-gh" tabindex="0" data-detail="Public repositories only in v1. GitHub App user tokens; the runner never sees a GitHub token.">
+   <div class="box ext" id="s-gh" tabindex="0" data-detail="Public repositories only in v1. GitHub App installed on dashpay/dash-evo-tool and dashpay/platform. User tokens stay on the server; the agent gets only a 1 h read-only installation token.">
     <h3>GitHub <span class="tag">EXTERNAL</span></h3>
     <p><b>REST + GraphQL</b> (PR data, threads, checks, pending review)</p>
-    <p><b>OAuth</b> via GitHub App user tokens</p>
+    <p><b>OAuth</b> via GitHub App user tokens; installation tokens for the agent</p>
     <p><b>git clone/fetch</b> (server bare mirror; runner mirror cache)</p>
    </div>
 
-   <div class="box" id="s-br" tabindex="0" data-detail="Talks only to the server. Never receives secrets: no tokens in responses, only a cookie session + CSRF header.">
+   <div class="box" id="s-br" tabindex="0" data-detail="Talks only to the server, over HTTPS terminated at the owner's reverse proxy (review.klimek.ws = SR_PUBLIC_URL). Never receives secrets: only a Secure cookie session + CSRF header.">
     <h3>Browser <span class="tag">v1</span></h3>
     <p><b>React SPA</b> (Vite, TanStack Query)</p>
     <p>Home, Progress, Tour, Settings</p>
@@ -211,39 +211,40 @@ body.narrow .conn{display:block}
     <ul class="conn"></ul>
    </div>
 
-   <div class="zone" id="s-srv" data-detail="Trusted. Executes all GitHub calls (also those the agent asks for through the MCP lookup tool) with the requesting user's token.">
+   <div class="zone" id="s-srv" data-detail="Trusted. HTTP behind the owner's TLS reverse proxy (trusted-proxy setting, Secure cookies). Executes the user's GitHub calls with the user's token; mints a read-only installation token per job from the App private key.">
     <div class="zh">Server (axum) - trusted</div>
-    <div class="zs">One binary, SPA embedded (feature <code>embed-ui</code>). <span class="key">GitHub user tokens (AES-GCM)</span><span class="key">sessions</span><span class="key">job + MCP tokens</span></div>
+    <div class="zs">One binary, SPA embedded (feature <code>embed-ui</code>). <span class="key">GitHub user tokens (AES-GCM)</span><span class="key">App private key</span><span class="key">sessions</span><span class="key">job tokens</span><span class="key">MemCan token</span></div>
     <div class="stk grow">
-     <div class="box" id="sv-rapi" tabindex="0" data-detail="claim (runner secret) -> JobSpec + job token + MCP token; events and result (job token, idempotent per attempt)."><h3>runner API</h3><p>claim, events, result</p></div>
-     <div class="box" id="sv-mcp" tabindex="0" data-detail="Read-only: PRs, issues, search. Scope = PR repo + related repos. Bearer is the MCP token, expiring at job end; the job token never reaches the agent."><h3>MCP lookup tool <code>/mcp</code></h3><p>read-only GitHub, scoped by MCP token</p></div>
+     <div class="box" id="sv-rapi" tabindex="0" data-detail="claim (runner secret) -> JobSpec (with installation token and MemCan credentials) + job token; events and result (job token, idempotent per attempt)."><h3>runner API</h3><p>claim, events, result</p></div>
+     <div class="box" id="sv-tok" tabindex="0" data-detail="App JWT from the private key -> installation access token per job: permissions pull requests, issues, contents, metadata (read); repositories = PR repo + related repos; fixed 1 h lifetime. Put into JobSpec."><h3>installation-token minting</h3><p>read-only, PR repo + related repos, 1 h</p></div>
      <div class="box" id="sv-api" tabindex="0" data-detail="/api/v1 JSON, /auth/github/*, SSE progress. Mutating routes need the CSRF header."><h3>API + SSE + auth</h3><p>cookie session, CSRF, JSON routes</p></div>
      <div class="box seam" id="sv-pipe" tabindex="0" data-detail="Pipeline and Ask talk only to JobExecutor; QueueExecutor is the only v1 implementation. A ContainerExecutor (per-job containers) comes later."><h3>pipeline + <code>JobExecutor</code><span class="tag">SEAM</span></h3><p>QueueExecutor -> DB queue; ContainerExecutor later</p></div>
      <div class="box" id="sv-db" tabindex="0" data-detail="All database code lives in crates/db behind the repository API. Every table carries tenant_id."><h3>SQLite via <code>db</code></h3><p>queue, analyses, review state, encrypted tokens</p></div>
      <div class="box" id="sv-gh" tabindex="0" data-detail="Only server::github talks to GitHub. Pending review via GraphQL addPullRequestReview."><h3>github client + mirror</h3><p>REST/GraphQL, bare mirror, pending review</p></div>
-     <div class="box" id="sv-mem" tabindex="0" data-detail="Server writes feedback and overrated/underrated calibration examples to MemCan itself."><h3>MemCan client</h3><p>feedback + calibration examples</p></div>
+     <div class="box" id="sv-mem" tabindex="0" data-detail="Server writes feedback and overrated/underrated calibration examples to MemCan itself (project = analysed repo short name). SR_MEMCAN_URL / SR_MEMCAN_TOKEN are pure configuration."><h3>MemCan client</h3><p>feedback + calibration examples</p></div>
     </div>
     <ul class="conn"></ul>
    </div>
 
-   <div class="zone" id="s-run" data-detail="Long-lived compose service. No DB access, no GitHub token, no Docker socket. Non-root, cap_drop ALL, read-only root fs.">
+   <div class="zone" id="s-run" data-detail="Long-lived compose service. No DB access, no GitHub client code, no user tokens, no Docker socket. Non-root, cap_drop ALL, read-only root fs. Internal network; the egress proxy is its only way out.">
     <div class="zh">Runner container</div>
-    <div class="zs">No DB, no GitHub token, no Docker socket. <span class="key">LLM credential</span><span class="key">runner secret</span><span class="key">job token</span></div>
+    <div class="zs">No DB, no user tokens, no Docker socket. <span class="key">LLM credential</span><span class="key">runner secret</span><span class="key">job token</span></div>
     <div class="stk runner grow">
      <div class="box" id="rn-loop" tabindex="0" data-detail="Thin wrapper around execute(). A one-shot entry point for per-job containers is later work."><h3>polling loop <span class="tag">runner uid</span></h3><p>claim job, post events + result</p></div>
      <div class="box" id="rn-exec" tabindex="0" data-detail="Fetch via mirror cache, fresh work dir, provider run, events, cleanup. A job succeeds with an empty cache."><h3><code>execute(JobSpec, EventSink) -> JobResult</code></h3><p>mirror fetch, checkout, run agent, clean up</p></div>
      <div class="box seam" id="rn-sess" tabindex="0" data-detail="One Codex session per PR analysis, resumed by each job (plan, pr_context, analyse_flow, ask) and compacted at the end of each job."><h3>session store <span class="tag">per analysis</span></h3><p>LlmProvider: run, resume, cancel</p></div>
-     <div class="zone" id="rn-agent" data-detail="Codex and every agent command run as uid agent with a per-job CODEX_HOME. Holds only the MCP bearer; PR content is untrusted (prompt injection). Repo-provided agent config is never loaded.">
+     <div class="zone" id="rn-agent" data-detail="Codex, github-mcp-server and every agent command run as uid agent with a per-job CODEX_HOME. Holds only the 1 h read-only installation token and the MemCan token; PR content is untrusted (prompt injection). Repo-provided agent config is never loaded.">
       <div class="zh">uid <code>agent</code> - untrusted</div>
-      <div class="box llm" id="rn-codex"><h3>Codex CLI <span class="tag">LLM</span></h3><p>exec --json --output-schema; read-only</p><span class="key">MCP token only</span><span class="key none">no LLM credential</span></div>
+      <div class="box llm" id="rn-codex"><h3>Codex CLI <span class="tag">LLM</span></h3><p>exec --json --output-schema; read-only</p><span class="key">MemCan token</span><span class="key none">no LLM credential</span></div>
+      <div class="box" id="rn-ghmcp"><h3><code>github-mcp-server</code> <span class="tag">stdio MCP</span></h3><p>official, read-only mode; started from the per-job config</p><span class="key">installation token (1 h, read-only)</span></div>
      </div>
     </div>
     <ul class="conn"></ul>
    </div>
 
-   <div class="zone" id="s-px" style="justify-content:center" data-detail="Runner on an internal network; this proxy is its only egress. Allowlist = LLM hosts, github.com, MemCan, server.">
-    <div class="zh">Egress allowlist proxy</div>
-    <div class="zs">Only way out of the runner network. Denied hosts are blocked and logged.</div>
+   <div class="zone" id="s-px" style="justify-content:center" data-detail="Squid as explicit proxy (env variables). v1: allow-all, private LAN denied except MemCan, log of host names (CONNECT host:port, bytes); no TLS interception, no CA, no cache. Later, by configuration: TLS interception with full-URL logs (chatgpt.com / openai.com passed through), cache, host allowlist.">
+    <div class="zh">Egress proxy (Squid)</div>
+    <div class="zs">Only way out of the runner network. v1: allow all, log host names; no TLS interception.</div>
     <ul class="conn"></ul>
    </div>
 
@@ -251,22 +252,24 @@ body.narrow .conn{display:block}
     <h3>Who holds what</h3>
     <p><span class="key">GitHub user tokens</span> server only</p>
     <p><span class="key">LLM credential</span> runner uid only</p>
-    <p><span class="key">MCP token</span> agent uid (read-only tool)</p>
+    <p><span class="key">App private key</span> server only</p>
+    <p><span class="key">installation token</span> agent uid: read-only, 1 h, PR repo + related</p>
+    <p><span class="key">MemCan token</span> server and agent uid</p>
     <p><span class="key">job token</span> runner uid, never the agent</p>
-    <p><span class="key none">agent</span> has no GitHub token, no DB, no job token</p>
-    <p class="muted">Accepted risk: agent has full MemCan MCP (read + write).</p>
+    <p><span class="key none">agent</span> has no user token, no DB, no job token</p>
+    <p class="muted">Accepted risks: agent has full MemCan MCP (read + write); open egress (allow-all) could exfiltrate MemCan content or the per-job Codex credential.</p>
    </div>
 
-   <div class="box ext" id="s-mc" tabindex="0" data-detail="Project profile and calibration examples. The agent reads and writes via MCP (accepted risk: an injected PR may write misleading memories).">
-    <h3>MemCan <span class="tag">EXTERNAL</span></h3><p>memories: profile, feedback, calibration</p>
+   <div class="box ext" id="s-mc" tabindex="0" data-detail="Project profile and calibration examples. Traefik entrypoint (port 8190): IP allowlist (must include the egress proxy's source address; edited by the owner) + bearer token. The agent reads and writes via MCP (accepted risk: an injected PR may write misleading memories). Moves to another host before deployment; only configuration changes.">
+    <h3>MemCan <span class="tag">EXTERNAL</span></h3><p>memories: profile, feedback, calibration</p><p>Traefik: IP allowlist + bearer token</p>
     <ul class="conn"></ul>
    </div>
    <div class="box ext" id="s-llm" tabindex="0" data-detail="ChatGPT subscription auth in v1 (owner's tenant); API-key credential types come with more providers.">
-    <h3>ChatGPT / Codex backend <span class="tag">EXTERNAL</span></h3><p>LLM, model from <code>select_model</code> (v1: Sol, high effort)</p>
+    <h3>ChatGPT / Codex backend <span class="tag">EXTERNAL</span></h3><p>LLM; model from <code>select_model</code>, a plain function in the server (v1: Sol, high effort)</p>
    </div>
    <div class="box later" id="s-note" tabindex="0" data-detail="Private repositories, per-job containers and extra LLM providers arrive together; today one shared runner has one cache and one credential store.">
     <h3>Later <span class="tag">LATER</span></h3>
-    <p>per-job containers (ContainerExecutor), private repos, more LLM providers (API key)</p>
+    <p>per-job containers (ContainerExecutor), private repos, more LLM providers (API key), proxy TLS interception + host allowlist</p>
    </div>
   </div>
  </div>
@@ -317,8 +320,8 @@ body.narrow .conn{display:block}
     </div>
     <div class="chips"><span class="chip">users</span><span class="chip">sessions</span><span class="chip">tokens</span><span class="chip">repos</span><span class="chip">pull_requests</span><span class="chip">analyses</span><span class="chip">documents</span><span class="chip">jobs</span><span class="chip">questions</span><span class="chip">feedback</span><span class="chip">comments</span><span class="chip">threads</span><span class="chip">review_state</span><span class="chip">settings</span></div>
    </div>
-   <div class="crate" id="c-runner" tabindex="0" data-detail="No db, analysis or GitHub crates. Talks to the server only over the runner HTTP protocol defined in contracts.">
-    <h3>crates/runner</h3><p class="sub">no DB, no GitHub; HTTP protocol only</p>
+   <div class="crate" id="c-runner" tabindex="0" data-detail="No db, analysis or GitHub crates. Talks to the server only over the runner HTTP protocol defined in contracts. Launches the external github-mcp-server binary for the agent.">
+    <h3>crates/runner</h3><p class="sub">no DB, no GitHub client; HTTP protocol only</p>
     <div class="mods">
      <div class="mod"><b>loop</b><span>poll, claim, thin wrapper</span></div>
      <div class="mod"><b>execute</b><span>JobSpec in, JobResult out</span></div>
@@ -329,6 +332,7 @@ body.narrow .conn{display:block}
      <div class="mod"><b>sessions</b><span>one Codex session per analysis</span></div>
      <div class="mod"><b>mirror cache</b><span>git fetch, cache is optional</span></div>
      <div class="mod"><b>claudius checkout</b><span>skills pulled at interval</span></div>
+     <div class="mod"><b>codex config</b><span>per job: github-mcp-server (read-only), MemCan</span></div>
     </div>
    </div>
    <div class="crate dev" id="c-fake" tabindex="0" data-detail="Serves recorded fixtures for OAuth, /user, PR REST. Never in images.">
@@ -336,20 +340,19 @@ body.narrow .conn{display:block}
     <div class="mods"><div class="mod"><b>fake GitHub</b><span>REST, GraphQL, OAuth from fixtures</span></div></div>
    </div>
 
-   <div class="crate" id="c-server" tabindex="0" data-detail="axum app. Depends on contracts, analysis and db. Only crate with rmcp server features and GitHub client code.">
+   <div class="crate" id="c-server" tabindex="0" data-detail="axum app. Depends on contracts, analysis and db. Only crate with GitHub client code and the App private key; rmcp client only (MemCan).">
     <h3>crates/server</h3><p class="sub">axum app: depends on contracts, analysis, db</p>
     <div class="mods wide">
      <div class="mod"><b>auth</b><span>GitHub App login, sessions, CSRF</span></div>
      <div class="mod"><b>secrets</b><span>AES-GCM token storage</span></div>
-     <div class="mod"><b>github</b><span>REST/GraphQL, mirror, pending review</span></div>
+     <div class="mod"><b>github</b><span>REST/GraphQL, mirror, pending review, installation tokens</span></div>
      <div class="mod"><b>pipeline</b><span>pre-pass, jobs, verify, repair</span></div>
      <div class="mod seam"><b>jobs</b><span>JobExecutor + QueueExecutor, claim lease</span></div>
      <div class="mod later"><b>ContainerExecutor</b><span>one container per job</span></div>
      <div class="mod"><b>ask</b><span>on-demand question jobs, context pack</span></div>
-     <div class="mod"><b>mcp</b><span>read-only GitHub lookup tool</span></div>
      <div class="mod"><b>memcan</b><span>feedback, calibration examples</span></div>
      <div class="mod"><b>prompts</b><span>prompt per job kind</span></div>
-     <div class="mod"><b>model</b><span>select_model: Sol, high (placeholder)</span></div>
+     <div class="mod"><b>model</b><span>select_model: plain function, Sol, high</span></div>
      <div class="mod"><b>frontend</b><span>embedded SPA (embed-ui)</span></div>
      <div class="mod"><b>api/</b><span>routes: pr, analyses, tour, lines, diff, comments, questions, feedback, settings, runner, events</span></div>
      <div class="mod"><b>state, config</b><span>AppState, env settings</span></div>
@@ -450,19 +453,19 @@ body.narrow .conn{display:block}
    <div class="box det" id="pp-pre" tabindex="0" style="grid-row:1;grid-column:3" data-detail="analysis crate: hunks, TechPlugin classification, moved blocks, whitespace-only, counters, related repos."><h3>Pre-pass <span class="tag">DET</span></h3><p>hunks, classify, moves, counters, related repos</p></div>
    <div class="stk" style="grid-row:1;grid-column:4">
     <div class="box llm" id="pp-plan" tabindex="0" data-detail="Agent partitions hunks into flows. Huge PRs: per-directory summaries first, then grouping."><h3>plan <span class="tag">LLM</span></h3><p>group hunks into flows</p></div>
-    <div class="box llm" id="pp-ctx" tabindex="0" data-detail="Independent of plan, queued like any job: problem and why, related work via the lookup tool, project profile."><h3>pr_context <span class="tag">LLM</span></h3><p>problem, related work, fit questions</p></div>
+    <div class="box llm" id="pp-ctx" tabindex="0" data-detail="Independent of plan, queued like any job: problem and why, related work via github-mcp-server, project profile."><h3>pr_context <span class="tag">LLM</span></h3><p>problem, related work, fit questions</p></div>
    </div>
    <div class="box llm" id="pp-flow" tabindex="0" style="grid-row:1;grid-column:5" data-detail="One agent run per flow: flow graph, introduction, steps (called by, decides, next, why), annotations, impact outside the diff. Progress bar counts flows."><h3>analyse_flow x N <span class="tag">LLM</span></h3><p>graph, steps, annotations, one run per flow</p></div>
    <div class="box det" id="pp-ver" tabindex="0" style="grid-row:1;grid-column:6" data-detail="Schema, ranges, coverage, move claims, graph consistency, facts need evidence, banned wording. Failures go back to the agent as repair feedback, up to 2 runs."><h3>Verify <span class="tag">DET</span></h3><p>schema, ranges, evidence, wording</p></div>
    <div class="box det" id="pp-left" tabindex="0" style="grid-row:1;grid-column:7" data-detail="Changed lines no flow covers are shown as 'Unexplained - read these yourself', never hidden."><h3>Leftovers <span class="tag">DET</span></h3><p>uncovered lines -> "Unexplained"; tour order</p></div>
    <div class="box" id="pp-tour" tabindex="0" style="grid-row:1;grid-column:8" data-detail="Final code with flows walked step by step; LLM content visibly separated from deterministic facts."><h3>Tour</h3><p>PR context (from pr_context), flows, steps, quiet rows</p></div>
 
-   <div class="box llm" id="pp-ask" tabindex="0" style="grid-row:2;grid-column:4/7;margin-top:2.4rem" data-detail="Question about a step becomes an ask job on the same JobExecutor; context pack = question, step data, flow analysis, earlier Q and A. Available after the analysis finished; claimed before the next batch job, never pre-empting a running one."><h3>ask (on demand, from the Tour) <span class="tag">LLM</span></h3><p>resumes the analysis session; answer streams via SSE</p></div>
+   <div class="box llm" id="pp-ask" tabindex="0" style="grid-row:2;grid-column:4/7;margin-top:2.4rem;margin-bottom:1.6rem" data-detail="Question about a step becomes an ask job on the same JobExecutor; context pack = question, step data, flow analysis, earlier Q and A. Available after the analysis finished; claimed before the next batch job, never pre-empting a running one."><h3>ask (on demand, from the Tour) <span class="tag">LLM</span></h3><p>resumes the analysis session; answer streams via SSE</p></div>
    <div class="sess" id="pp-sess">One Codex session per PR analysis. <b>plan, pr_context, analyse_flow, repairs and ask</b> all resume it; the session is compacted at the end of each job.</div>
   </div>
  </div>
  <div class="notes">
-  <span><b>Model</b>: from server <code>select_model(job kind, context)</code>, v1 placeholder Sol at high effort.</span>
+  <span><b>Model</b>: <code>select_model(job kind, context)</code>, a plain Rust function in the server (no table, no setting); v1 returns Sol at high effort.</span>
   <span><b>No</b> PR-level summary or overall risk step exists.</span>
   <span><b>Cancel</b> discards partial results; <b>pause</b> on usage limit resumes at <code>resumes_at</code>.</span>
  </div>
@@ -475,14 +478,14 @@ const EDGES = {
  sys:[
   {f:'s-br',t:'s-gh',l:'OAuth sign-in redirect',at:.5,hd:'both'},
   {f:'s-srv',t:'s-gh',l:'REST + GraphQL, OAuth token exchange\ngit fetch (user token)\npending review (GraphQL)',at:.5,hd:'both',ldx:0},
-  {f:'s-px',t:'s-gh',l:'git fetch (public repos)',at:.5,c:'trustp'},
-  {f:'s-br',t:'sv-api',l:'JSON API (cookie + CSRF)',at:.28,hd:'both'},
+  {f:'s-px',t:'s-gh',l:'git fetch (public repos)\nGitHub API (installation token)',at:.5,c:'trustp'},
+  {f:'s-br',t:'sv-api',l:'HTTPS via reverse proxy\nJSON API (cookie + CSRF)',at:.28,hd:'both'},
   {f:'sv-api',t:'s-br',l:'SSE progress',at:.78,c:'dash'},
-  {f:'rn-loop',t:'sv-rapi',l:'claim <- JobSpec, job token,\nMCP token\nevents / result ->',ldy:0,mx:.3,hd:'both',c:'detp'},
-  {f:'rn-codex',t:'sv-mcp',l:'MCP lookup tool (read-only\nGitHub), MCP token',mx:.45,ldy:40,hd:'both',c:'llmp dash'},
+  {f:'rn-loop',t:'sv-rapi',l:'claim <- JobSpec (installation\ntoken), job token\nevents / result ->',ldy:0,mx:.3,hd:'both',c:'detp'},
   {f:'s-srv',t:'s-mc',l:'feedback + calibration\n(rmcp client)',at:.5},
   {f:'rn-exec',t:'s-px',l:'git fetch',mx:.5,c:'trustp'},
-  {f:'rn-codex',t:'s-px',l:'LLM, MemCan MCP,\nserver MCP',mx:.5,c:'trustp llmp'},
+  {f:'rn-codex',t:'s-px',l:'LLM, MemCan',mx:.5,c:'trustp llmp'},
+  {f:'rn-ghmcp',t:'s-px',l:'GitHub API',mx:.5,c:'trustp llmp'},
   {f:'s-px',t:'s-llm',l:'LLM calls',at:.5,c:'trustp llmp'},
   {f:'s-px',t:'s-mc',l:'MemCan MCP (read + write)',at:.5,c:'trustp llmp',ldy:0}
  ],
@@ -512,6 +515,7 @@ const EDGES = {
   {f:'pp-flow',t:'pp-ver',l:'output'},
   {f:'pp-ver',t:'pp-left',l:''},
   {f:'pp-left',t:'pp-tour',l:''},
+  {f:'pp-ask',t:'pp-sess',l:'',dir:'v',at:.5,hd:'none'},
   {f:'pp-ver',t:'pp-flow',l:'repair, max 2 runs (LLM)',route:'arcdown',h:22,c:'llmp dash'}
  ]
 };
