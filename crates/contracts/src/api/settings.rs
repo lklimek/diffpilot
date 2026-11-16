@@ -17,6 +17,8 @@ pub struct Settings {
     pub language: LlmLanguage,
     /// GitHub App installations.
     pub app_installations: Vec<AppInstallation>,
+    /// The tenant's known repositories (any pull request opened); each one's settings can be opened.
+    pub repos: Vec<RepoRef>,
 }
 
 /// A GitHub App installation.

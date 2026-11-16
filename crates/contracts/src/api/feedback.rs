@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::common::LineSide;
 use crate::ids::{AnnotationId, FeedbackId, StepId};
 
 /// Body of `POST /api/v1/analyses/{id}/feedback`; one entry per user and target (later posts replace it).
@@ -34,9 +35,11 @@ pub enum FeedbackTarget {
     },
     /// A plain changed line (used by `missed_by_llm`).
     Line {
-        /// Repository-relative path.
+        /// Repository-relative path on that side.
         path: String,
-        /// Head line.
+        /// `base` for a removed line.
+        side: LineSide,
+        /// Line on that side.
         line: u32,
     },
 }

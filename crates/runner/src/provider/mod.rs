@@ -14,13 +14,14 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-/// Runs agent calls. `run` starts a new session, `resume` continues one; both compact at the end.
+/// Runs agent calls. `run` starts a new session, `resume` continues one; both compact at the end and send
+/// [`ProviderEvent::OutputReady`] before compacting.
 pub trait LlmProvider: Send + Sync {
     /// Starts a new session for `call` (first job, or a lost session seeded with the context pack in the prompt).
     fn run<'a>(
         &'a self,
         call: &'a ProviderCall,
-        events: mpsc::Sender<JobEvent>,
+        events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>>;
 
     /// Resumes the session `session_id` for `call`; [`ProviderError::SessionUnavailable`] if it cannot.
@@ -28,12 +29,21 @@ pub trait LlmProvider: Send + Sync {
         &'a self,
         session_id: &'a str,
         call: &'a ProviderCall,
-        events: mpsc::Sender<JobEvent>,
+        events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>>;
 
     /// Stops the running call of `job` (SIGTERM to the agent process); the call then ends with
     /// [`ProviderError::Cancelled`].
     fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>>;
+}
+
+/// What a provider reports while a call runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProviderEvent {
+    /// Normalised agent activity.
+    Activity(JobEvent),
+    /// The model turn ended with this final output (parsed JSON); compaction follows. Sent at most once per call.
+    OutputReady(Value),
 }
 
 /// One agent call, prepared by `execute`.
@@ -59,13 +69,14 @@ pub struct ProviderCall {
     pub skills: Vec<String>,
 }
 
-/// A finished agent call.
+/// A finished agent call. A failed compaction after the output does not fail the call: the outcome then has
+/// `session_id: None` and the next job starts with a context pack.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderOutcome {
-    /// The final structured output.
+    /// The final structured output (identical to the one sent as [`ProviderEvent::OutputReady`]).
     pub output: Value,
-    /// Provider session (Codex thread) id after the call.
-    pub session_id: String,
+    /// Provider session (Codex thread) id after the call; none when compaction failed.
+    pub session_id: Option<String>,
     /// Usage of this call alone.
     pub usage: Usage,
     /// Commit of the claudius checkout whose skills were exposed.

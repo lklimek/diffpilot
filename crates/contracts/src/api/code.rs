@@ -4,13 +4,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::common::LineRange;
+use crate::common::{LineRange, LineSide};
 
-/// Query of the `lines` and `diff` endpoints: `path`, lines `from..=to` at the head commit.
+/// Query of the `lines` and `diff` endpoints: `path`, lines `from..=to` on `side`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct RangeQuery {
-    /// Repository-relative path at the head commit.
+    /// Repository-relative path on that side.
     pub path: String,
+    /// `head` for final code; `base` for removed code of a deleted or emptied file.
+    pub side: LineSide,
     /// First line, 1-based.
     pub from: u32,
     /// Last line, inclusive.
@@ -22,25 +24,45 @@ impl RangeQuery {
     pub const MAX_LINES: u32 = 2000;
 }
 
-/// Head lines of a file with the deterministic gutter facts for them.
+/// Lines of a file with the deterministic gutter facts for them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct LinesResponse {
     /// Repository-relative path.
     pub path: String,
+    /// Side of the returned lines.
+    pub side: LineSide,
     /// First returned line.
     pub from: u32,
     /// Last returned line (clamped to the file).
     pub to: u32,
-    /// Lines in the file.
+    /// Lines in the file on that side (0 for an emptied file).
     pub total_lines: u32,
     /// Text of lines `from..=to`.
     pub lines: Vec<String>,
-    /// Changed lines in the range (neutral gutter mark).
+    /// Changed lines in the range (neutral gutter mark): added lines on the head side, removed lines on the
+    /// base side.
     pub changed: Vec<u32>,
-    /// Code removed by the pull request at markers in the range.
+    /// Code removed by the pull request at markers in the range (head side only).
     pub deleted: Vec<DeletedBlock>,
-    /// Moved blocks in the range.
+    /// Moved blocks in the range (head side only).
     pub moved: Vec<MovedLines>,
+    /// Whether and how these lines can be commented on (deterministic, ADR-006).
+    pub comments: CommentScope,
+}
+
+/// Commenting on displayed lines, decided by the server from the pull request diff (ADR-006).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "scope", rename_all = "snake_case")]
+pub enum CommentScope {
+    /// The file is in the pull request diff. Lines inside `line_thread_ranges` (and removed lines at markers)
+    /// get a line thread; other lines get a file-level thread whose body ends with the permalink.
+    InDiff {
+        /// Ranges, on the response's side, whose lines get a line thread.
+        line_thread_ranges: Vec<LineRange>,
+    },
+    /// The file is not in the pull request diff: commenting is not available in v1; the UI offers the
+    /// permalink to copy.
+    NotInDiff,
 }
 
 /// Removed code shown at its deletion marker.
@@ -68,6 +90,8 @@ pub struct MovedLines {
 pub struct DiffResponse {
     /// Repository-relative path.
     pub path: String,
+    /// Side the requested range refers to.
+    pub side: LineSide,
     /// Hunks overlapping the range.
     pub hunks: Vec<DiffHunk>,
 }

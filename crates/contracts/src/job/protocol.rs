@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::ids::AnalysisId;
 use crate::job::access::Secret;
@@ -65,4 +66,14 @@ pub struct EventsAck {
     pub cancel_requested: bool,
     /// The renewed lease.
     pub lease_expires_at: DateTime<Utc>,
+}
+
+/// Body of `POST /runner/v1/jobs/{id}/output`: the final output as soon as the model turn ends, before the
+/// session is compacted. Sent at most once per attempt, scrubbed like a result; the result stays authoritative.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OutputReady {
+    /// The attempt the output belongs to; a stale attempt is rejected.
+    pub attempt: u32,
+    /// The agent's final structured output (parsed JSON; the server validates it as it would a result).
+    pub output: Value,
 }

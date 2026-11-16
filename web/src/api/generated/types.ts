@@ -77,7 +77,7 @@ created_at: string,
 finished_at: string | null, };
 
 /**
- * An annotation anchored to lines of a step.
+ * An annotation anchored to lines of a step (same side as the step); its range is a highlight.
  */
 export type Annotation = {
 /**
@@ -97,9 +97,17 @@ basis: Basis,
  */
 range: LineRange,
 /**
- * Text.
+ * Behaviour before the pull request; the hover tooltip shows only was → is.
  */
-text: string,
+was: string,
+/**
+ * Behaviour after the pull request.
+ */
+is: string,
+/**
+ * The consequence, question or note; null for a behaviour annotation.
+ */
+text: string | null,
 /**
  * Evidence lines.
  */
@@ -354,6 +362,15 @@ export type Classification = "behavioural" | "api_contract" | "new_code" | "refa
 export type CommentKind = "line" | "file";
 
 /**
+ * Commenting on displayed lines, decided by the server from the pull request diff (ADR-006).
+ */
+export type CommentScope = { "scope": "in_diff",
+/**
+ * Ranges, on the response's side, whose lines get a line thread.
+ */
+line_thread_ranges: Array<LineRange>, } | { "scope": "not_in_diff" };
+
+/**
  * The displayed line(s) a comment is written on.
  */
 export type CommentTarget = {
@@ -362,9 +379,9 @@ export type CommentTarget = {
  */
 path: string,
 /**
- * `right` for head lines, `left` for removed lines at a deletion marker.
+ * `head` for head lines, `base` for removed lines.
  */
-side: DiffSide,
+side: LineSide,
 /**
  * First line of a multi-line target.
  */
@@ -500,25 +517,28 @@ export type DiffResponse = {
  */
 path: string,
 /**
+ * Side the requested range refers to.
+ */
+side: LineSide,
+/**
  * Hunks overlapping the range.
  */
 hunks: Array<DiffHunk>, };
-
-/**
- * Side of a diff.
- */
-export type DiffSide = "left" | "right";
 
 /**
  * A line the agent actually read and cites as evidence.
  */
 export type Evidence = {
 /**
- * Repository-relative path at the head commit.
+ * Repository-relative path on that side.
  */
 file: string,
 /**
- * 1-based line number at the head commit.
+ * head for the checked-out code; base only for removed code read from the base commit.
+ */
+side: LineSide,
+/**
+ * 1-based line number on that side.
  */
 line: number, };
 
@@ -582,11 +602,15 @@ step_id: StepId, } | { "target": "annotation",
  */
 annotation_id: AnnotationId, } | { "target": "line",
 /**
- * Repository-relative path.
+ * Repository-relative path on that side.
  */
 path: string,
 /**
- * Head line.
+ * `base` for a removed line.
+ */
+side: LineSide,
+/**
+ * Line on that side.
  */
 line: number, };
 
@@ -600,22 +624,30 @@ export type FeedbackValue = "correct" | "wrong" | "irrelevant" | "overrated" | "
  */
 export type FileRange = {
 /**
- * Repository-relative path.
+ * Repository-relative path on that side.
  */
 file: string,
+/**
+ * Commit the lines refer to.
+ */
+side: LineSide,
 /**
  * The lines.
  */
 range: LineRange, };
 
 /**
- * Several line ranges of one file.
+ * Several line ranges of one file on one side.
  */
 export type FileRanges = {
 /**
- * Repository-relative path.
+ * Repository-relative path on that side.
  */
 file: string,
+/**
+ * Commit the lines refer to.
+ */
+side: LineSide,
 /**
  * The lines, ascending and disjoint.
  */
@@ -684,10 +716,6 @@ export type FlowFacts = {
  * Files touched by the flow's steps.
  */
 files: Array<string>,
-/**
- * Changed lines covered by the flow.
- */
-changed_lines: number,
 /**
  * Number of steps.
  */
@@ -801,9 +829,9 @@ line: number | null,
  */
 start_line: number | null,
 /**
- * Diff side; null for file-level threads.
+ * Diff side (GitHub LEFT = base, RIGHT = head); null for file-level threads.
  */
-side: DiffSide | null,
+side: LineSide | null,
 /**
  * Author login of the first comment.
  */
@@ -880,7 +908,9 @@ kind: NodeKind,
 label: string, };
 
 /**
- * A moved block whose text is identical after whitespace normalisation.
+ * A moved block whose text is identical after whitespace normalisation. The UI says "Body text identical"
+ * and nothing more: identical text does not mean unchanged behaviour, and no call-site flow is linked in v1
+ * (ADR-008).
  */
 export type IdenticalMove = {
 /**
@@ -926,7 +956,7 @@ basis: Basis,
 github_url: string, };
 
 /**
- * Lines `start_line..=end_line`, 1-based, at the head commit unless stated otherwise.
+ * Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.
  */
 export type LineRange = {
 /**
@@ -939,13 +969,23 @@ start_line: number,
 end_line: number, };
 
 /**
- * Head lines of a file with the deterministic gutter facts for them.
+ * Commit a line number refers to. Head is the common case (final code); base only for code that no longer
+ * exists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).
+ */
+export type LineSide = "head" | "base";
+
+/**
+ * Lines of a file with the deterministic gutter facts for them.
  */
 export type LinesResponse = {
 /**
  * Repository-relative path.
  */
 path: string,
+/**
+ * Side of the returned lines.
+ */
+side: LineSide,
 /**
  * First returned line.
  */
@@ -955,7 +995,7 @@ from: number,
  */
 to: number,
 /**
- * Lines in the file.
+ * Lines in the file on that side (0 for an emptied file).
  */
 total_lines: number,
 /**
@@ -963,17 +1003,22 @@ total_lines: number,
  */
 lines: Array<string>,
 /**
- * Changed lines in the range (neutral gutter mark).
+ * Changed lines in the range (neutral gutter mark): added lines on the head side, removed lines on the
+ * base side.
  */
 changed: Array<number>,
 /**
- * Code removed by the pull request at markers in the range.
+ * Code removed by the pull request at markers in the range (head side only).
  */
 deleted: Array<DeletedBlock>,
 /**
- * Moved blocks in the range.
+ * Moved blocks in the range (head side only).
  */
-moved: Array<MovedLines>, };
+moved: Array<MovedLines>,
+/**
+ * Whether and how these lines can be commented on (deterministic, ADR-006).
+ */
+comments: CommentScope, };
 
 /**
  * Outcome and time of an LLM call.
@@ -1108,15 +1153,19 @@ export type NodeKind = "added" | "changed" | "unchanged";
 export type NotAnalysedCategory = "tests" | "docs_comments" | "generated_mechanical";
 
 /**
- * One file (or line ranges of it) recognised by a rule.
+ * One file (or line ranges of it) recognised by a rule; one item per file and side.
  */
 export type NotAnalysedItem = {
 /**
- * Repository-relative path.
+ * Repository-relative path on that side.
  */
 file: string,
 /**
- * Matched changed lines; null for the whole file.
+ * `base` for a deleted file or removed lines, else `head`.
+ */
+side: LineSide,
+/**
+ * Matched changed lines on that side; null for the whole file.
  */
 ranges: Array<LineRange> | null,
 /**
@@ -1189,9 +1238,13 @@ sites: Array<PatternSite>, };
  */
 export type PatternSite = {
 /**
- * Repository-relative path at the head commit.
+ * Repository-relative path on that side.
  */
 file: string,
+/**
+ * Commit the lines refer to.
+ */
+side: LineSide,
 /**
  * Lines.
  */
@@ -1226,9 +1279,9 @@ path: string,
  */
 kind: CommentKind,
 /**
- * Diff side of a line comment.
+ * Diff side of a line comment (GitHub LEFT = base, RIGHT = head).
  */
-side: DiffSide | null,
+side: LineSide | null,
 /**
  * First line of a multi-line comment; for a file-level comment, of the linked range.
  */
@@ -1412,7 +1465,8 @@ category: NotAnalysedCategory, };
  */
 export type QuietRows = {
 /**
- * Changed lines no flow explains ("Unexplained — read these yourself"); listed first.
+ * Changed lines no flow explains ("Unexplained — read these yourself"); listed first. Removed lines
+ * without a head location are base-side entries.
  */
 unexplained: Array<FileRanges>,
 /**
@@ -1425,13 +1479,17 @@ moves: Array<IdenticalMove>,
 not_analysed: Array<NotAnalysedSection>, };
 
 /**
- * Query of the `lines` and `diff` endpoints: `path`, lines `from..=to` at the head commit.
+ * Query of the `lines` and `diff` endpoints: `path`, lines `from..=to` on `side`.
  */
 export type RangeQuery = {
 /**
- * Repository-relative path at the head commit.
+ * Repository-relative path on that side.
  */
 path: string,
+/**
+ * `head` for final code; `base` for removed code of a deleted or emptied file.
+ */
+side: LineSide,
 /**
  * First line, 1-based.
  */
@@ -1574,7 +1632,11 @@ language: LlmLanguage,
 /**
  * GitHub App installations.
  */
-app_installations: Array<AppInstallation>, };
+app_installations: Array<AppInstallation>,
+/**
+ * The tenant's known repositories (any pull request opened); each one's settings can be opened.
+ */
+repos: Array<RepoRef>, };
 
 /**
  * One step of a flow.
@@ -1602,19 +1664,23 @@ llm: StepLlm, };
  */
 export type StepFacts = {
 /**
- * Repository-relative path at the head commit.
+ * Repository-relative path on the step's side.
  */
 file: string,
 /**
- * Step lines at the head commit.
+ * `head` normally; `base` for removed code without a head location (deleted or emptied file).
+ */
+side: LineSide,
+/**
+ * Step lines on that side.
  */
 range: LineRange,
 /**
- * GitHub link to the lines at the head commit.
+ * GitHub link to the lines at the head commit (base commit for a base-side step).
  */
 github_url: string,
 /**
- * Changed lines inside the step.
+ * Changed lines inside the step: added lines of a head step, removed lines of a base step.
  */
 changed_lines: Array<LineRange>,
 /**

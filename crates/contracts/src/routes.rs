@@ -238,6 +238,9 @@ pub const RUNNER_CLAIM: Route = runner_route("runnerClaim", "/runner/v1/claim", 
 /// Runner: post events (heartbeat).
 pub const RUNNER_EVENTS: Route =
     runner_route("runnerEvents", "/runner/v1/jobs/{id}/events", JobToken);
+/// Runner: post the final output before compaction (ARCH-005).
+pub const RUNNER_OUTPUT: Route =
+    runner_route("runnerOutput", "/runner/v1/jobs/{id}/output", JobToken);
 /// Runner: post the result.
 pub const RUNNER_RESULT: Route =
     runner_route("runnerResult", "/runner/v1/jobs/{id}/result", JobToken);
@@ -273,5 +276,6 @@ pub const ROUTES: &[Route] = &[
     GET_REPO_SETTINGS,
     RUNNER_CLAIM,
     RUNNER_EVENTS,
+    RUNNER_OUTPUT,
     RUNNER_RESULT,
 ];

@@ -26,6 +26,7 @@ ipnet.workspace = true
 mime_guess = { workspace = true, optional = true }
 rust-embed = { workspace = true, optional = true }
 secrecy.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal"] }
 tracing.workspace = true
@@ -34,7 +35,6 @@ url.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
-serde_json.workspace = true
 tower.workspace = true
 
 [lints]

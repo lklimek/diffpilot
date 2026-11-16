@@ -24,7 +24,33 @@ pub struct PrRef {
     pub number: u32,
 }
 
-/// Lines `start_line..=end_line`, 1-based, at the head commit unless stated otherwise.
+/// Commit a line number refers to. Head is the common case (final code); base only for code that no longer
+/// exists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    JsonSchema,
+    TS,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum LineSide {
+    /// Lines of the head commit.
+    #[default]
+    Head,
+    /// Lines of the base commit (removed code).
+    Base,
+}
+
+/// Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, TS,
 )]
@@ -38,17 +64,21 @@ pub struct LineRange {
 /// A line range of one file.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FileRange {
-    /// Repository-relative path.
+    /// Repository-relative path on that side.
     pub file: String,
+    /// Commit the lines refer to.
+    pub side: LineSide,
     /// The lines.
     pub range: LineRange,
 }
 
-/// Several line ranges of one file.
+/// Several line ranges of one file on one side.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FileRanges {
-    /// Repository-relative path.
+    /// Repository-relative path on that side.
     pub file: String,
+    /// Commit the lines refer to.
+    pub side: LineSide,
     /// The lines, ascending and disjoint.
     pub ranges: Vec<LineRange>,
 }
@@ -56,9 +86,11 @@ pub struct FileRanges {
 /// A line the agent actually read and cites as evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Evidence {
-    /// Repository-relative path at the head commit.
+    /// Repository-relative path on that side.
     pub file: String,
-    /// 1-based line number at the head commit.
+    /// head for the checked-out code; base only for removed code read from the base commit.
+    pub side: LineSide,
+    /// 1-based line number on that side.
     pub line: u32,
 }
 
@@ -259,16 +291,6 @@ pub enum NotAnalysedCategory {
     DocsComments,
     /// Mechanical and generated material, lockfiles included.
     GeneratedMechanical,
-}
-
-/// Side of a diff.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum DiffSide {
-    /// Base (old) side, e.g. a deleted line.
-    Left,
-    /// Head (new) side.
-    Right,
 }
 
 /// Language of LLM-written texts.

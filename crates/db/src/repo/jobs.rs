@@ -8,6 +8,7 @@ use contracts::job::event::JobEvent;
 use contracts::job::result::JobResult;
 use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::JobState;
+use serde_json::Value;
 use sqlx::SqlitePool;
 
 use crate::error::DbError;
@@ -57,6 +58,8 @@ pub struct JobRecord {
     pub lease_expires_at: Option<DateTime<Utc>>,
     /// When a paused job is queued again.
     pub resumes_at: Option<DateTime<Utc>>,
+    /// The output posted before compaction for the current attempt (provisional; the result is authoritative).
+    pub ready_output: Option<Value>,
     /// The final result.
     pub result: Option<JobResult>,
     /// Flow of an `analyse_flow` job.
@@ -87,6 +90,18 @@ pub struct ClaimParams<'p> {
 pub struct EventsRecorded {
     /// The job should be cancelled.
     pub cancel_requested: bool,
+}
+
+/// Outcome of recording the output posted before compaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputRecorded {
+    /// Stored for the attempt; the server may publish it unless `cancel_requested`.
+    Stored {
+        /// The job should be cancelled; the output is not published.
+        cancel_requested: bool,
+    },
+    /// The same output was already stored for this attempt (a retried request); nothing changed.
+    AlreadyStored,
 }
 
 /// Whether a result changed the job.
@@ -132,6 +147,20 @@ impl Jobs<'_> {
     ) -> Result<EventsRecorded, DbError> {
         Err(DbError::NotImplemented {
             operation: "jobs::record_events",
+        })
+    }
+
+    /// Stores the output of `attempt` posted before compaction and renews the lease. A different output for the
+    /// same attempt, a stale attempt or a job that is not running is a `Conflict`.
+    pub async fn record_output(
+        &self,
+        job: JobId,
+        attempt: u32,
+        output: &Value,
+        lease_until: DateTime<Utc>,
+    ) -> Result<OutputRecorded, DbError> {
+        Err(DbError::NotImplemented {
+            operation: "jobs::record_output",
         })
     }
 

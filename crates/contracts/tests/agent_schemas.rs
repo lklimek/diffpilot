@@ -240,7 +240,7 @@ fn fit_questions_have_no_basis() {
 }
 
 fn samples() -> Vec<(JobKind, Value)> {
-    let evidence = json!([{"file": "src/rpc/client.rs", "line": 99}]);
+    let evidence = json!([{"file": "src/rpc/client.rs", "side": "head", "line": 99}]);
     vec![
         (
             JobKind::Plan,
@@ -271,27 +271,38 @@ fn samples() -> Vec<(JobKind, Value)> {
                 "introduction": {"problem_before": "A timeout ended the call.", "change": "Retry up to 3 times.",
                                  "example_before_after": "Before: Timeout. After: Ok on attempt 2."},
                 "steps": [
-                    {"id": "s1", "title": "Retry allowed?", "file": "src/rpc/client.rs", "start_line": 99, "end_line": 99,
+                    {"id": "s1", "title": "Retry allowed?", "file": "src/rpc/client.rs", "side": "head", "start_line": 99, "end_line": 99,
                      "symbol": "RpcClient::send", "kind": "added", "moved_from": null,
                      "called_by": "step s2", "decides": "Retry or give up.", "next": "s2", "why": "Stops the loop.",
                      "annotations": [{"type": "question", "basis": "inference", "start_line": 99, "end_line": 99,
+                                      "was": "A timeout was returned.", "is": "A timeout is retried.",
                                       "text": "Can broadcast_tx be sent twice?", "evidence": []},
                                      {"type": "behaviour", "basis": "fact", "start_line": 99, "end_line": 99,
-                                      "text": "Was: returned Timeout. Is: retries.", "evidence": evidence}],
+                                      "was": "A timeout was returned.", "is": "A timeout is retried.",
+                                      "text": null, "evidence": evidence}],
                      "assessment": {"headline": "A payment may be broadcast twice.", "risk": "high", "reason": "Value-moving.",
                                     "basis_note": "read 2 files; nothing executed", "not_checked": "node deduplication",
                                     "origin": "introduced", "blocking": "blocks_this_pr", "smallest_correction": null}},
-                    {"id": "s2", "title": "Wait", "file": "src/rpc/client.rs", "start_line": 100, "end_line": 103,
+                    {"id": "s2", "title": "Wait", "file": "src/rpc/client.rs", "side": "head", "start_line": 100, "end_line": 103,
                      "symbol": null, "kind": "moved", "moved_from": {"file": "src/rpc/old.rs", "base_start": 1, "base_end": 4},
                      "called_by": "s1", "decides": "Sleeps.", "next": "s1", "why": "Backoff.",
-                     "annotations": [], "assessment": null}
+                     "annotations": [], "assessment": null},
+                    {"id": "s3", "title": "Single-attempt API removed", "file": "src/rpc/old.rs", "side": "base",
+                     "start_line": 1, "end_line": 40, "symbol": "send_once", "kind": "deleted_site", "moved_from": null,
+                     "called_by": "mempool before this PR", "decides": "Nothing; removed.", "next": "none",
+                     "why": "Callers move to the retrying send.",
+                     "annotations": [{"type": "consequence", "basis": "fact", "start_line": 1, "end_line": 3,
+                                      "was": "send_once sent exactly one request.", "is": "No single-attempt call exists.",
+                                      "text": "Callers that cannot tolerate a repeat lose their opt-out.",
+                                      "evidence": [{"file": "src/rpc/old.rs", "side": "base", "line": 2}]}],
+                     "assessment": null}
                 ],
                 "edges": [{"from_step_id": "s1", "to_step_id": "s2", "label": "yes"},
                           {"from_step_id": "s2", "to_step_id": "s1", "label": null}],
                 "impact_refs": [{"step_id": "s1", "file": "src/mempool/mod.rs", "start_line": 126, "end_line": 132,
                                  "symbol": null, "reason": "Calls send.", "basis": "fact"}],
                 "pattern_repetitions": [{"description": "Timeout mapping", "explained_in_step_id": "s1",
-                                         "sites": [{"file": "src/rpc/client.rs", "start_line": 120, "end_line": 121}]}],
+                                         "sites": [{"file": "src/rpc/client.rs", "side": "head", "start_line": 120, "end_line": 121}]}],
                 "thread_statuses": [{"thread_alias": "t1", "status": "still_valid", "reason": "Still retries."}]
             }),
         ),
@@ -339,7 +350,20 @@ fn mutated_outputs_are_rejected() {
     let (_, flow) = samples().swap_remove(2);
     let validator = validator(JobKind::AnalyseFlow);
     type Mutation = (&'static str, fn(&mut Value));
-    let mutations: [Mutation; 6] = [
+    let mutations: [Mutation; 9] = [
+        ("unknown side", |v| v["steps"][0]["side"] = json!("left")),
+        ("annotation without was", |v| {
+            v["steps"][0]["annotations"][0]
+                .as_object_mut()
+                .expect("annotation")
+                .remove("was");
+        }),
+        ("evidence without side", |v| {
+            v["steps"][0]["annotations"][1]["evidence"][0]
+                .as_object_mut()
+                .expect("evidence")
+                .remove("side");
+        }),
         ("extra property", |v| {
             v["steps"][0]["confidence"] = json!("high")
         }),

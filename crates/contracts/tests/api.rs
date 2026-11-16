@@ -3,12 +3,13 @@
 use std::collections::HashSet;
 
 use chrono::Utc;
+use contracts::agent::analyse_flow::AgentAnnotation;
 use contracts::agent::analyse_flow::{Assessment, FlowIntroduction};
 use contracts::agent::ask::AskOutput;
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary, CreateAnalysisRequest, FlowRef};
 use contracts::api::auth::MeResponse;
-use contracts::api::code::{DiffResponse, LinesResponse, RangeQuery};
+use contracts::api::code::{CommentScope, DeletedBlock, DiffResponse, LinesResponse, RangeQuery};
 use contracts::api::comments::{
     CreateCommentRequest, CreateCommentResponse, PendingReview, UpdateCommentRequest,
 };
@@ -20,15 +21,15 @@ use contracts::api::feedback::{
 use contracts::api::pr::{PrSummary, ResolvePrResponse};
 use contracts::api::questions::{AskQuestion, AskState};
 use contracts::api::review::{BlockRef, QuietRowRef, ReviewState};
-use contracts::api::settings::{RepoSettings, Settings};
+use contracts::api::settings::{AppInstallation, RepoSettings, Settings};
 use contracts::api::tour::{
     Annotation, CiState, CiStatus, Counters, Flow, FlowFacts, FlowGraph, FlowGroup, FlowLlm,
     GraphEdge, GraphNode, PrContextBlock, PrContextFacts, ProjectProfileStatus, QuietRows, Step,
     StepFacts, StepLlm, Tour,
 };
 use contracts::common::{
-    AnnotationType, Basis, Blocking, Classification, FragmentKind, LineRange, LlmLanguage,
-    NodeKind, NotAnalysedCategory, Origin, RepoRef, RiskBand,
+    AnnotationType, Basis, Blocking, Classification, Evidence, FileRanges, FragmentKind, LineRange,
+    LineSide, LlmLanguage, NodeKind, NotAnalysedCategory, Origin, RepoRef, RiskBand,
 };
 use contracts::ids::{AnalysisId, AnnotationId, CommitSha, FlowId, QuestionId, StepId};
 use contracts::routes::{HttpMethod, Listener, ROUTES, RouteAuth};
@@ -92,7 +93,6 @@ fn tour() -> Tour {
             group: FlowGroup::Behaviour,
             facts: FlowFacts {
                 files: vec!["src/rpc/client.rs".to_owned()],
-                changed_lines: 1,
                 step_count: 1,
             },
             llm: FlowLlm {
@@ -125,6 +125,7 @@ fn tour() -> Tour {
                 number: 1,
                 facts: StepFacts {
                     file: "src/rpc/client.rs".to_owned(),
+                    side: LineSide::Head,
                     range: LineRange {
                         start_line: 99,
                         end_line: 99,
@@ -155,7 +156,9 @@ fn tour() -> Tour {
                             start_line: 99,
                             end_line: 99,
                         },
-                        text: "Can broadcast_tx be sent twice?".to_owned(),
+                        was: "A timeout was returned to the caller.".to_owned(),
+                        is: "A timeout is retried while attempt < 3.".to_owned(),
+                        text: Some("Can broadcast_tx be sent twice?".to_owned()),
                         evidence: vec![],
                     }],
                     assessment: Some(Assessment {
@@ -345,9 +348,23 @@ fn tagged_wire_formats() {
         (
             serde_json::to_value(FeedbackTarget::Line {
                 path: "a.rs".to_owned(),
+                side: LineSide::Base,
                 line: 3,
             }),
-            json!({"target": "line", "path": "a.rs", "line": 3}),
+            json!({"target": "line", "path": "a.rs", "side": "base", "line": 3}),
+        ),
+        (
+            serde_json::to_value(CommentScope::InDiff {
+                line_thread_ranges: vec![LineRange {
+                    start_line: 95,
+                    end_line: 104,
+                }],
+            }),
+            json!({"scope": "in_diff", "line_thread_ranges": [{"start_line": 95, "end_line": 104}]}),
+        ),
+        (
+            serde_json::to_value(CommentScope::NotInDiff),
+            json!({"scope": "not_in_diff"}),
         ),
     ];
     for (actual, expected) in cases {
@@ -449,4 +466,151 @@ fn no_floats_in_api_types() {
     for (name, schema) in schemas {
         assert!(!contains_float(&schema), "{name}");
     }
+}
+
+fn lines(side: LineSide, total_lines: u32, deleted: Vec<DeletedBlock>) -> LinesResponse {
+    LinesResponse {
+        path: "src/rpc/old.rs".to_owned(),
+        side,
+        from: 1,
+        to: total_lines,
+        total_lines,
+        lines: vec!["x".to_owned(); usize::try_from(total_lines).expect("small")],
+        changed: vec![],
+        deleted,
+        moved: vec![],
+        comments: CommentScope::InDiff {
+            line_thread_ranges: vec![],
+        },
+    }
+}
+
+fn removed(after_line: u32, base_start: u32) -> DeletedBlock {
+    DeletedBlock {
+        after_line,
+        base_start,
+        lines: vec!["fn send_once() {}".to_owned()],
+    }
+}
+
+/// ARCH-001: every deletion has a valid location: base-side lines where no head line exists, deletion
+/// markers inside head lines otherwise.
+#[test]
+fn deletions_have_valid_locations() {
+    let base_range = LineRange {
+        start_line: 1,
+        end_line: 40,
+    };
+    // Whole file deleted: base-side step, unexplained base lines, base-side lines endpoint.
+    let step = StepFacts {
+        file: "src/rpc/old.rs".to_owned(),
+        side: LineSide::Base,
+        range: base_range,
+        github_url: "https://github.com/acme/node-client/blob/1/src/rpc/old.rs#L1-L40".to_owned(),
+        changed_lines: vec![base_range],
+        moved: None,
+        call_hierarchy: None,
+        thread_ids: vec![],
+    };
+    let json = serde_json::to_value(&step).expect("serialises");
+    assert_eq!(json["side"], json!("base"));
+    assert_eq!(
+        serde_json::from_value::<StepFacts>(json).expect("deserialises"),
+        step
+    );
+    let unexplained = FileRanges {
+        file: "src/rpc/old.rs".to_owned(),
+        side: LineSide::Base,
+        ranges: vec![base_range],
+    };
+    assert_eq!(
+        serde_json::to_value(&unexplained).expect("serialises")["side"],
+        json!("base")
+    );
+    let query: RangeQuery = serde_json::from_value(
+        json!({"path": "src/rpc/old.rs", "side": "base", "from": 1, "to": 40}),
+    )
+    .expect("base-side range query");
+    assert_eq!(query.side, LineSide::Base);
+    let deleted_file = lines(LineSide::Base, 40, vec![]);
+    assert_eq!(deleted_file.side, LineSide::Base);
+    // File emptied: the head file exists with no lines; its removed lines sit at the marker before line 1.
+    let emptied = lines(LineSide::Head, 0, vec![removed(0, 1)]);
+    assert_eq!(
+        serde_json::to_value(&emptied).expect("serialises")["deleted"][0]["after_line"],
+        json!(0)
+    );
+    // Deletions at the start and at the end of a file: markers after line 0 and after the last line.
+    let ends = lines(LineSide::Head, 10, vec![removed(0, 1), removed(10, 15)]);
+    let back: LinesResponse =
+        serde_json::from_value(serde_json::to_value(&ends).expect("serialises"))
+            .expect("round trip");
+    assert_eq!(back, ends);
+    // Feedback and evidence carry the side.
+    let evidence = Evidence {
+        file: "src/rpc/old.rs".to_owned(),
+        side: LineSide::Base,
+        line: 12,
+    };
+    assert_eq!(
+        serde_json::to_value(&evidence).expect("serialises"),
+        json!({"file": "src/rpc/old.rs", "side": "base", "line": 12})
+    );
+}
+
+/// ARCH-002: a highlighted question keeps its own was → is for the tooltip, separate from the question.
+#[test]
+fn annotation_projection_keeps_was_is_and_remark() {
+    let agent: AgentAnnotation = serde_json::from_value(json!({
+        "type": "question", "basis": "inference", "start_line": 99, "end_line": 99,
+        "was": "A timeout was returned to the caller.", "is": "A timeout is retried while attempt < 3.",
+        "text": "Can broadcast_tx be sent twice?", "evidence": []
+    }))
+    .expect("agent annotation");
+    let annotation = Annotation::from_agent(AnnotationId("f1.1.a1".to_owned()), agent);
+    assert_eq!(annotation.kind, AnnotationType::Question);
+    assert_eq!(annotation.was, "A timeout was returned to the caller.");
+    assert_eq!(annotation.is, "A timeout is retried while attempt < 3.");
+    assert_eq!(
+        annotation.text.as_deref(),
+        Some("Can broadcast_tx be sent twice?")
+    );
+    assert_eq!(
+        annotation.range,
+        LineRange {
+            start_line: 99,
+            end_line: 99
+        }
+    );
+    let json = serde_json::to_value(&annotation).expect("serialises");
+    assert_eq!(json["was"], json!("A timeout was returned to the caller."));
+    assert_eq!(json["is"], json!("A timeout is retried while attempt < 3."));
+}
+
+/// ARCH-006: Settings lists the tenant's known repositories, so per-repository settings can be opened.
+#[test]
+fn settings_lists_known_repositories() {
+    let settings = Settings {
+        llm_status: None,
+        language: LlmLanguage::En,
+        app_installations: vec![AppInstallation {
+            account: "acme".to_owned(),
+            all_repositories: true,
+        }],
+        repos: vec![RepoRef {
+            owner: "acme".to_owned(),
+            name: "node-client".to_owned(),
+        }],
+    };
+    let json = serde_json::to_value(&settings).expect("serialises");
+    assert_eq!(
+        json["repos"],
+        json!([{"owner": "acme", "name": "node-client"}])
+    );
+}
+
+#[test]
+fn flow_facts_have_no_changed_line_counter() {
+    let json = serde_json::to_value(&tour()).expect("serialises");
+    assert!(json["flows"][0]["facts"].get("changed_lines").is_none());
 }

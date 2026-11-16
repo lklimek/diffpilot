@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::common::{
-    AnnotationType, Basis, Blocking, Evidence, FragmentKind, Origin, RiskBand, ThreadLlmStatus,
+    AnnotationType, Basis, Blocking, Evidence, FragmentKind, LineSide, Origin, RiskBand,
+    ThreadLlmStatus,
 };
 use crate::ids::FlowId;
 
@@ -39,18 +40,21 @@ pub struct FlowIntroduction {
     pub example_before_after: String,
 }
 
-/// One step: a line range of one file at the head commit.
+/// One step: a line range of one file, normally at the head commit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentStep {
     /// Step id, unique within this output; used by edges and references.
     pub id: String,
     /// Short title, also the diagram label.
     pub title: String,
-    /// Repository-relative path.
+    /// Repository-relative path on the step's side.
     pub file: String,
-    /// First head line of the step.
+    /// head normally; base only for removed code with no head line to anchor to (deleted or emptied file,
+    /// removed block); kind is then deleted_site and the lines are base lines.
+    pub side: LineSide,
+    /// First line of the step on its side.
     pub start_line: u32,
-    /// Last head line of the step.
+    /// Last line of the step on its side.
     pub end_line: u32,
     /// Enclosing symbol, or null.
     pub symbol: Option<String>,
@@ -83,20 +87,24 @@ pub struct MovedFrom {
     pub base_end: u32,
 }
 
-/// An annotation anchored to lines inside a step.
+/// An annotation anchored to lines inside a step (same side as the step); the annotated range is highlighted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentAnnotation {
-    /// Annotation type; behaviour is written as was → is.
+    /// Annotation type.
     #[serde(rename = "type")]
     pub kind: AnnotationType,
     /// fact needs evidence lines you read; anything else is inference.
     pub basis: Basis,
-    /// First annotated head line.
+    /// First annotated line.
     pub start_line: u32,
-    /// Last annotated head line.
+    /// Last annotated line.
     pub end_line: u32,
-    /// The annotation text.
-    pub text: String,
+    /// Behaviour of these lines before this pull request (hover tooltip; facts only, no risk or verdict).
+    pub was: String,
+    /// Behaviour of these lines after this pull request (hover tooltip; facts only, no risk or verdict).
+    pub is: String,
+    /// The consequence, question or note; null for a behaviour annotation (its content is was and is).
+    pub text: Option<String>,
     /// Lines read that support the annotation.
     pub evidence: Vec<Evidence>,
 }
@@ -133,7 +141,7 @@ pub struct AgentEdge {
     pub label: Option<String>,
 }
 
-/// Code outside the diff that the change may affect; its location is its evidence.
+/// Code outside the diff that the change may affect; its location (head lines) is its evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentImpactRef {
     /// Id of the step whose change reaches this code.
@@ -166,11 +174,13 @@ pub struct AgentPatternRepetition {
 /// One place where a repeated pattern is applied.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentPatternSite {
-    /// Repository-relative path at the head commit.
+    /// Repository-relative path on that side.
     pub file: String,
-    /// First head line.
+    /// head normally; base for a removed site.
+    pub side: LineSide,
+    /// First line.
     pub start_line: u32,
-    /// Last head line.
+    /// Last line.
     pub end_line: u32,
 }
 

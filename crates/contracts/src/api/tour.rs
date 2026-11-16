@@ -4,12 +4,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::agent::analyse_flow::{Assessment, FlowIntroduction, MovedFrom};
+use crate::agent::analyse_flow::{AgentAnnotation, Assessment, FlowIntroduction, MovedFrom};
 use crate::agent::pr_context::PrContextOutput;
 use crate::api::analyses::AnalysisSummary;
 use crate::common::{
-    AnnotationType, Basis, Classification, DiffSide, Evidence, FileRange, FileRanges, FragmentKind,
-    LineRange, NodeKind, NotAnalysedCategory, ProvenanceBadge, RiskBand, ThreadLlmStatus,
+    AnnotationType, Basis, Classification, Evidence, FileRange, FileRanges, FragmentKind,
+    LineRange, LineSide, NodeKind, NotAnalysedCategory, ProvenanceBadge, RiskBand, ThreadLlmStatus,
 };
 use crate::ids::{AnnotationId, FlowId, StepId};
 
@@ -168,8 +168,6 @@ impl From<Classification> for FlowGroup {
 pub struct FlowFacts {
     /// Files touched by the flow's steps.
     pub files: Vec<String>,
-    /// Changed lines covered by the flow.
-    pub changed_lines: u32,
     /// Number of steps.
     pub step_count: u32,
 }
@@ -240,13 +238,15 @@ pub struct Step {
 /// Deterministic facts of a step.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct StepFacts {
-    /// Repository-relative path at the head commit.
+    /// Repository-relative path on the step's side.
     pub file: String,
-    /// Step lines at the head commit.
+    /// `head` normally; `base` for removed code without a head location (deleted or emptied file).
+    pub side: LineSide,
+    /// Step lines on that side.
     pub range: LineRange,
-    /// GitHub link to the lines at the head commit.
+    /// GitHub link to the lines at the head commit (base commit for a base-side step).
     pub github_url: String,
-    /// Changed lines inside the step.
+    /// Changed lines inside the step: added lines of a head step, removed lines of a base step.
     pub changed_lines: Vec<LineRange>,
     /// Move check result, for steps whose code was moved.
     pub moved: Option<MoveFact>,
@@ -316,7 +316,7 @@ pub struct StepLlm {
     pub impact: Vec<ImpactRef>,
 }
 
-/// An annotation anchored to lines of a step.
+/// An annotation anchored to lines of a step (same side as the step); its range is a highlight.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Annotation {
     /// Annotation id.
@@ -328,10 +328,33 @@ pub struct Annotation {
     pub basis: Basis,
     /// Annotated lines.
     pub range: LineRange,
-    /// Text.
-    pub text: String,
+    /// Behaviour before the pull request; the hover tooltip shows only was → is.
+    pub was: String,
+    /// Behaviour after the pull request.
+    pub is: String,
+    /// The consequence, question or note; null for a behaviour annotation.
+    pub text: Option<String>,
     /// Evidence lines.
     pub evidence: Vec<Evidence>,
+}
+
+impl Annotation {
+    /// Projects a verified agent annotation; `id` is the server id `<step>.a<n>`.
+    pub fn from_agent(id: AnnotationId, agent: AgentAnnotation) -> Self {
+        Self {
+            id,
+            kind: agent.kind,
+            basis: agent.basis,
+            range: LineRange {
+                start_line: agent.start_line,
+                end_line: agent.end_line,
+            },
+            was: agent.was,
+            is: agent.is,
+            text: agent.text,
+            evidence: agent.evidence,
+        }
+    }
 }
 
 /// Code outside the diff that a step may affect.
@@ -365,8 +388,10 @@ pub struct PatternRepetition {
 /// One place where a repeated pattern is applied.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct PatternSite {
-    /// Repository-relative path at the head commit.
+    /// Repository-relative path on that side.
     pub file: String,
+    /// Commit the lines refer to.
+    pub side: LineSide,
     /// Lines.
     pub range: LineRange,
     /// The step containing these lines, if any.
@@ -378,7 +403,8 @@ pub struct PatternSite {
 /// Quiet rows: never ranked above a flow.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct QuietRows {
-    /// Changed lines no flow explains ("Unexplained — read these yourself"); listed first.
+    /// Changed lines no flow explains ("Unexplained — read these yourself"); listed first. Removed lines
+    /// without a head location are base-side entries.
     pub unexplained: Vec<FileRanges>,
     /// Moves whose text is deterministically identical.
     pub moves: Vec<IdenticalMove>,
@@ -386,7 +412,9 @@ pub struct QuietRows {
     pub not_analysed: Vec<NotAnalysedSection>,
 }
 
-/// A moved block whose text is identical after whitespace normalisation.
+/// A moved block whose text is identical after whitespace normalisation. The UI says "Body text identical"
+/// and nothing more: identical text does not mean unchanged behaviour, and no call-site flow is linked in v1
+/// (ADR-008).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct IdenticalMove {
     /// Original block at the base commit.
@@ -408,12 +436,14 @@ pub struct NotAnalysedSection {
     pub items: Vec<NotAnalysedItem>,
 }
 
-/// One file (or line ranges of it) recognised by a rule.
+/// One file (or line ranges of it) recognised by a rule; one item per file and side.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct NotAnalysedItem {
-    /// Repository-relative path.
+    /// Repository-relative path on that side.
     pub file: String,
-    /// Matched changed lines; null for the whole file.
+    /// `base` for a deleted file or removed lines, else `head`.
+    pub side: LineSide,
+    /// Matched changed lines on that side; null for the whole file.
     pub ranges: Option<Vec<LineRange>>,
     /// How it was recognised.
     pub badge: ProvenanceBadge,
@@ -432,8 +462,8 @@ pub struct GithubThread {
     pub line: Option<u32>,
     /// First line of a multi-line thread.
     pub start_line: Option<u32>,
-    /// Diff side; null for file-level threads.
-    pub side: Option<DiffSide>,
+    /// Diff side (GitHub LEFT = base, RIGHT = head); null for file-level threads.
+    pub side: Option<LineSide>,
     /// Author login of the first comment.
     pub author: String,
     /// Start of the first comment.

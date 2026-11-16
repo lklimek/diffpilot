@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::common::DiffSide;
+use crate::common::LineSide;
 
 /// The user's pending review on GitHub, merged over every pending review of the user.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -27,8 +27,8 @@ pub struct PendingComment {
     pub path: String,
     /// Line or file-level comment.
     pub kind: CommentKind,
-    /// Diff side of a line comment.
-    pub side: Option<DiffSide>,
+    /// Diff side of a line comment (GitHub LEFT = base, RIGHT = head).
+    pub side: Option<LineSide>,
     /// First line of a multi-line comment; for a file-level comment, of the linked range.
     pub start_line: Option<u32>,
     /// Last line; for a file-level comment, of the linked range.
@@ -43,7 +43,7 @@ pub struct PendingComment {
 pub enum CommentKind {
     /// A line thread inside the diff.
     Line,
-    /// A file-level thread whose body links to lines outside the diff.
+    /// A file-level thread of a file in the PR diff whose body links to lines outside the diff hunks.
     File,
 }
 
@@ -52,8 +52,8 @@ pub enum CommentKind {
 pub struct CommentTarget {
     /// Repository-relative path.
     pub path: String,
-    /// `right` for head lines, `left` for removed lines at a deletion marker.
-    pub side: DiffSide,
+    /// `head` for head lines, `base` for removed lines.
+    pub side: LineSide,
     /// First line of a multi-line target.
     pub start_line: Option<u32>,
     /// Last line.

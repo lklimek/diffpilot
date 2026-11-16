@@ -73,6 +73,12 @@ pub enum VerifyIssueKind {
     DanglingEdge,
     /// A `fact` without evidence.
     FactWithoutEvidence,
+    /// An annotation with an empty `was` or `is` (the highlight tooltip needs both).
+    BehaviourMissing,
+    /// `text` null on a consequence, question or note, or set on a behaviour annotation.
+    RemarkMismatch,
+    /// A base-side step that is not `deleted_site`, or base lines outside the file's hunks.
+    BaseSideMisused,
     /// A thread alias that was not listed.
     UnknownThread,
 }

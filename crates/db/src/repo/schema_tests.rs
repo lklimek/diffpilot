@@ -287,6 +287,26 @@ async fn one_live_analysis_per_head_and_language() {
 }
 
 #[tokio::test]
+async fn ready_output_is_json_with_its_attempt() {
+    let db = db().await;
+    seed(&db).await;
+    insert_job(&db, "j1", "a1", "c1", "running")
+        .await
+        .expect("job");
+    let set = |output: &'static str, attempt: Option<i64>| {
+        sqlx::query("UPDATE jobs SET ready_output = ?, ready_output_attempt = ? WHERE id = 'j1'")
+            .bind(output)
+            .bind(attempt)
+            .execute(&db.pool)
+    };
+    assert!(set("not json", Some(1)).await.is_err(), "invalid JSON");
+    assert!(set("{}", None).await.is_err(), "output without attempt");
+    set("{\"answer\": \"x\"}", Some(1))
+        .await
+        .expect("output with attempt");
+}
+
+#[tokio::test]
 async fn foreign_keys_are_enforced() {
     let db = db().await;
     let orphan = insert_job(&db, "j1", "missing", "c1", "queued").await;

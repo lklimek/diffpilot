@@ -8,7 +8,7 @@ use contracts::ids::{AnalysisId, CommitSha, JobId};
 use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::protocol::{
-    Claim, ClaimRequest, ClaimResponse, CredentialStatus, EventBatch, EventsAck,
+    Claim, ClaimRequest, ClaimResponse, CredentialStatus, EventBatch, EventsAck, OutputReady,
 };
 use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
@@ -301,4 +301,24 @@ fn no_floats_in_job_types() {
     ] {
         assert!(!contains_float(&schema), "{name}");
     }
+}
+
+/// ARCH-005: the validated final output travels before compaction, scrubbed and per attempt.
+#[test]
+fn output_ready_is_sent_per_attempt() {
+    let ready = OutputReady {
+        attempt: 2,
+        output: json!({"answer": "x", "evidence": []}),
+    };
+    round_trip(&ready);
+    assert_eq!(
+        serde_json::to_value(&ready).expect("serialises"),
+        json!({"attempt": 2, "output": {"answer": "x", "evidence": []}})
+    );
+    let route = contracts::routes::ROUTES
+        .iter()
+        .find(|route| route.path == "/runner/v1/jobs/{id}/output")
+        .expect("output route");
+    assert_eq!(route.auth, contracts::routes::RouteAuth::JobToken);
+    assert_eq!(route.listener, contracts::routes::Listener::Runner);
 }

@@ -33,7 +33,7 @@
     "steps": {
       "type": "array",
       "items": {
-        "description": "One step: a line range of one file at the head commit.",
+        "description": "One step: a line range of one file, normally at the head commit.",
         "type": "object",
         "properties": {
           "id": {
@@ -45,16 +45,24 @@
             "type": "string"
           },
           "file": {
-            "description": "Repository-relative path.",
+            "description": "Repository-relative path on the step's side.",
             "type": "string"
           },
+          "side": {
+            "description": "head normally; base only for removed code with no head line to anchor to (deleted or emptied file,\nremoved block); kind is then deleted_site and the lines are base lines. `head`: Lines of the head commit. `base`: Lines of the base commit (removed code).",
+            "type": "string",
+            "enum": [
+              "head",
+              "base"
+            ]
+          },
           "start_line": {
-            "description": "First head line of the step.",
+            "description": "First line of the step on its side.",
             "type": "integer",
             "minimum": 0
           },
           "end_line": {
-            "description": "Last head line of the step.",
+            "description": "Last line of the step on its side.",
             "type": "integer",
             "minimum": 0
           },
@@ -126,11 +134,11 @@
             "description": "Annotations anchored to lines inside the step.",
             "type": "array",
             "items": {
-              "description": "An annotation anchored to lines inside a step.",
+              "description": "An annotation anchored to lines inside a step (same side as the step); the annotated range is highlighted.",
               "type": "object",
               "properties": {
                 "type": {
-                  "description": "Annotation type; behaviour is written as was → is. `behaviour`: Behaviour change, was → is. `consequence`: A consequence of the change. `question`: A question for the reviewer to check (also LLM suspicions). `note`: Any other remark.",
+                  "description": "Annotation type. `behaviour`: Behaviour change, was → is. `consequence`: A consequence of the change. `question`: A question for the reviewer to check (also LLM suspicions). `note`: Any other remark.",
                   "type": "string",
                   "enum": [
                     "behaviour",
@@ -148,18 +156,29 @@
                   ]
                 },
                 "start_line": {
-                  "description": "First annotated head line.",
+                  "description": "First annotated line.",
                   "type": "integer",
                   "minimum": 0
                 },
                 "end_line": {
-                  "description": "Last annotated head line.",
+                  "description": "Last annotated line.",
                   "type": "integer",
                   "minimum": 0
                 },
-                "text": {
-                  "description": "The annotation text.",
+                "was": {
+                  "description": "Behaviour of these lines before this pull request (hover tooltip; facts only, no risk or verdict).",
                   "type": "string"
+                },
+                "is": {
+                  "description": "Behaviour of these lines after this pull request (hover tooltip; facts only, no risk or verdict).",
+                  "type": "string"
+                },
+                "text": {
+                  "description": "The consequence, question or note; null for a behaviour annotation (its content is was and is).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "evidence": {
                   "description": "Lines read that support the annotation.",
@@ -169,17 +188,26 @@
                     "type": "object",
                     "properties": {
                       "file": {
-                        "description": "Repository-relative path at the head commit.",
+                        "description": "Repository-relative path on that side.",
                         "type": "string"
                       },
+                      "side": {
+                        "description": "head for the checked-out code; base only for removed code read from the base commit. `head`: Lines of the head commit. `base`: Lines of the base commit (removed code).",
+                        "type": "string",
+                        "enum": [
+                          "head",
+                          "base"
+                        ]
+                      },
                       "line": {
-                        "description": "1-based line number at the head commit.",
+                        "description": "1-based line number on that side.",
                         "type": "integer",
                         "minimum": 0
                       }
                     },
                     "required": [
                       "file",
+                      "side",
                       "line"
                     ],
                     "additionalProperties": false
@@ -191,6 +219,8 @@
                 "basis",
                 "start_line",
                 "end_line",
+                "was",
+                "is",
                 "text",
                 "evidence"
               ],
@@ -271,6 +301,7 @@
           "id",
           "title",
           "file",
+          "side",
           "start_line",
           "end_line",
           "symbol",
@@ -321,7 +352,7 @@
     "impact_refs": {
       "type": "array",
       "items": {
-        "description": "Code outside the diff that the change may affect; its location is its evidence.",
+        "description": "Code outside the diff that the change may affect; its location (head lines) is its evidence.",
         "type": "object",
         "properties": {
           "step_id": {
@@ -397,22 +428,31 @@
               "type": "object",
               "properties": {
                 "file": {
-                  "description": "Repository-relative path at the head commit.",
+                  "description": "Repository-relative path on that side.",
                   "type": "string"
                 },
+                "side": {
+                  "description": "head normally; base for a removed site. `head`: Lines of the head commit. `base`: Lines of the base commit (removed code).",
+                  "type": "string",
+                  "enum": [
+                    "head",
+                    "base"
+                  ]
+                },
                 "start_line": {
-                  "description": "First head line.",
+                  "description": "First line.",
                   "type": "integer",
                   "minimum": 0
                 },
                 "end_line": {
-                  "description": "Last head line.",
+                  "description": "Last line.",
                   "type": "integer",
                   "minimum": 0
                 }
               },
               "required": [
                 "file",
+                "side",
                 "start_line",
                 "end_line"
               ],

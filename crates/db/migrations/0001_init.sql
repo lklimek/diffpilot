@@ -169,6 +169,8 @@ CREATE TABLE jobs (
     resumes_at              TEXT,
     github_token_ct         BLOB,
     github_token_expires_at TEXT,
+    ready_output            TEXT CHECK (ready_output IS NULL OR json_valid(ready_output)), -- posted before compaction
+    ready_output_attempt    INTEGER CHECK ((ready_output IS NULL) = (ready_output_attempt IS NULL)),
     result                  TEXT CHECK (result IS NULL OR json_valid(result)),
     flow_id                 TEXT,
     question_id             TEXT,
