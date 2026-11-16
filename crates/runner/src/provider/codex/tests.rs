@@ -40,8 +40,10 @@ fn fake_codex() -> &'static Path {
 env > "$PWD/child-env.txt"
 for arg in "$@"; do printf '%s\n' "$arg"; done > "$PWD/child-args.txt"
 cat > "$PWD/child-stdin.txt"
-if [ -f "$PWD/rotate" ]; then printf '{"tokens":{"refresh_token":"rotated"}}' > "$CODEX_HOME/auth.json"; fi
+if [ -f "$PWD/rotate" ]; then cat "$PWD/rotate" > "$CODEX_HOME/auth.json"; fi
+if [ -f "$PWD/background" ]; then sleep 300 </dev/null >/dev/null 2>&1 & echo $! > "$PWD/background.pid"; fi
 cat "$PWD/scenario.jsonl"
+if [ -f "$PWD/hang" ]; then sleep 300; fi
 exit "$(cat "$PWD/scenario-exit")"
 "#,
         )
@@ -81,7 +83,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
     fs::create_dir(master_auth.parent().unwrap()).unwrap();
     fs::write(
         &master_auth,
-        json!({"auth_mode": "chatgpt", "tokens": {"access_token": ACCESS_CANARY, "refresh_token": REFRESH_CANARY}})
+        json!({"auth_mode": "chatgpt", "tokens": {"access_token": ACCESS_CANARY, "refresh_token": REFRESH_CANARY, "account_id": "acct-1"}})
             .to_string(),
     )
     .unwrap();
@@ -390,18 +392,191 @@ async fn credential_tokens_are_scrubbed_from_events_and_output() {
     assert_eq!(outcome.output, json!({"leak": "[redacted]"}));
 }
 
+const NEW_ACCESS_CANARY: &str = "codex-access-ROTATED-CANARY-0007";
+const NEW_REFRESH_CANARY: &str = "codex-refresh-ROTATED-CANARY-0008";
+
+fn rotated_auth() -> String {
+    json!({"auth_mode": "chatgpt", "tokens": {"access_token": NEW_ACCESS_CANARY, "refresh_token": NEW_REFRESH_CANARY, "account_id": "acct-1"}})
+        .to_string()
+}
+
+fn kept_copy(h: &Harness) -> PathBuf {
+    h.master_auth
+        .with_file_name(format!("auth.json.rotated-{}", h.call.job_id))
+}
+
 #[tokio::test]
-async fn rotated_credential_is_kept_next_to_the_master() {
+async fn rotated_credential_is_kept_and_the_credential_blocked() {
     let h = harness("plan.jsonl", 0);
-    fs::write(h.call.job_dir.join("rotate"), "").unwrap();
+    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
     run(&h).await.0.expect("success");
-    let kept = h
-        .master_auth
-        .with_file_name(format!("auth.json.rotated-{}", h.call.job_id));
-    assert_eq!(
-        fs::read_to_string(kept).unwrap(),
-        r#"{"tokens":{"refresh_token":"rotated"}}"#
+    assert_eq!(fs::read_to_string(kept_copy(&h)).unwrap(), rotated_auth());
+    assert!(
+        !credential_usable(&h.master_auth),
+        "a rotation blocks the credential"
     );
+}
+
+#[tokio::test]
+async fn rotated_tokens_are_scrubbed_from_events_and_output() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
+    let leaky = [
+        json!({"type": "thread.started", "thread_id": "t-1"}),
+        json!({"type": "item.completed", "item": {"id": "i1", "type": "command_execution",
+            "command": format!("cat auth.json # {NEW_ACCESS_CANARY}"), "aggregated_output": "", "exit_code": 0}}),
+        json!({"type": "item.completed", "item": {"id": "i2", "type": "agent_message",
+            "text": json!({"leak": NEW_REFRESH_CANARY}).to_string()}}),
+        json!({"type": "turn.completed", "usage": {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1}}),
+    ]
+    .map(|line| line.to_string())
+    .join("\n");
+    fs::write(h.call.job_dir.join("scenario.jsonl"), leaky).unwrap();
+    let (result, events) = run(&h).await;
+    let outcome = result.expect("success");
+    let all = format!("{events:?} {:?}", outcome.output);
+    assert!(!all.contains(NEW_ACCESS_CANARY), "{all}");
+    assert!(!all.contains(NEW_REFRESH_CANARY), "{all}");
+}
+
+#[tokio::test]
+async fn secret_straddling_the_summary_limit_is_scrubbed_whole() {
+    let h = harness("plan.jsonl", 0);
+    let command = format!("echo {}{GITHUB_CANARY}", "x".repeat(185));
+    let lines = [
+        json!({"type": "item.completed", "item": {"id": "i1", "type": "command_execution", "command": command, "exit_code": 0}}),
+        json!({"type": "item.completed", "item": {"id": "i2", "type": "agent_message", "text": "{}"}}),
+        json!({"type": "turn.completed", "usage": {"input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1}}),
+    ]
+    .map(|line| line.to_string())
+    .join("\n");
+    fs::write(h.call.job_dir.join("scenario.jsonl"), lines).unwrap();
+    let (_, events) = run(&h).await;
+    let summary = match &events[0] {
+        ProviderEvent::Activity(event) => event.summary.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(summary.ends_with("[redacted] (exit 0)"), "{summary}");
+    assert!(!summary.contains(&GITHUB_CANARY[..8]), "{summary}");
+}
+
+#[tokio::test]
+async fn rotated_credential_survives_a_dropped_call() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
+    fs::write(h.call.job_dir.join("hang"), "").unwrap();
+    let (tx, _rx) = mpsc::channel(1024);
+    let dropped =
+        tokio::time::timeout(Duration::from_millis(500), h.provider.run(&h.call, tx)).await;
+    assert!(
+        dropped.is_err(),
+        "the hanging call is dropped like at the runtime cap"
+    );
+    assert_eq!(fs::read_to_string(kept_copy(&h)).unwrap(), rotated_auth());
+    assert!(!credential_usable(&h.master_auth));
+}
+
+#[tokio::test]
+async fn blocked_credential_refuses_the_next_call_without_starting_codex() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
+    run(&h).await.0.expect("success");
+    fs::remove_file(h.call.job_dir.join("child-args.txt")).unwrap();
+    fs::remove_file(h.call.codex_home.join("auth.json")).unwrap();
+    let (result, _) = run(&h).await;
+    assert!(
+        matches!(result, Err(ProviderError::CredentialUnusable)),
+        "{result:?}"
+    );
+    assert!(
+        !h.call.job_dir.join("child-args.txt").exists(),
+        "Codex must not start"
+    );
+}
+
+#[tokio::test]
+async fn refresh_failure_blocks_the_credential() {
+    let h = harness("plan.jsonl", 1);
+    fs::write(
+        h.call.job_dir.join("scenario.jsonl"),
+        json!({"type": "turn.failed", "error": {"message": "refresh failed: refresh_token_reused"}}).to_string(),
+    )
+    .unwrap();
+    let (result, _) = run(&h).await;
+    assert!(
+        matches!(result, Err(ProviderError::CredentialUnusable)),
+        "{result:?}"
+    );
+    assert!(!credential_usable(&h.master_auth));
+}
+
+/// Whether `pid` still runs (a zombie counts as gone).
+fn alive(pid: u32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rsplit(") ")
+            .next()
+            .is_some_and(|rest| !rest.starts_with('Z'))
+    })
+}
+
+async fn assert_gone(pid: u32) {
+    for _ in 0..100 {
+        if !alive(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("background process {pid} outlived the call");
+}
+
+fn background_pid(h: &Harness) -> u32 {
+    child_file(h, "background.pid").trim().parse().expect("pid")
+}
+
+#[tokio::test]
+async fn background_child_is_killed_at_the_end_of_the_call() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(h.call.job_dir.join("background"), "").unwrap();
+    run(&h).await.0.expect("success");
+    assert_gone(background_pid(&h)).await;
+}
+
+#[tokio::test]
+async fn background_child_is_killed_when_the_call_is_dropped() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(h.call.job_dir.join("background"), "").unwrap();
+    fs::write(h.call.job_dir.join("hang"), "").unwrap();
+    let (tx, _rx) = mpsc::channel(1024);
+    let dropped =
+        tokio::time::timeout(Duration::from_millis(500), h.provider.run(&h.call, tx)).await;
+    assert!(dropped.is_err());
+    assert_gone(background_pid(&h)).await;
+}
+
+#[tokio::test]
+async fn cancel_terminates_the_process_group() {
+    let h = harness("cancelled.jsonl", 0);
+    fs::write(h.call.job_dir.join("background"), "").unwrap();
+    fs::write(h.call.job_dir.join("hang"), "").unwrap();
+    let (tx, _rx) = mpsc::channel(1024);
+    let run = h.provider.run(&h.call, tx);
+    let cancel = async {
+        while !h.call.job_dir.join("background.pid").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        h.provider.cancel(h.call.job_id).await
+    };
+    let (result, cancelled) =
+        tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(run, cancel) })
+            .await
+            .expect("cancel ends the call");
+    cancelled.expect("cancel");
+    assert!(
+        matches!(result, Err(ProviderError::Cancelled)),
+        "{result:?}"
+    );
+    assert_gone(background_pid(&h)).await;
 }
 
 #[tokio::test]

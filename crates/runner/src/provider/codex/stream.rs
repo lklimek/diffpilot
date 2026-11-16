@@ -7,14 +7,11 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::provider::ProviderError;
-use crate::scrub::clip;
 
 /// Exit code of a process ended by SIGTERM (128 + 15).
 const EXIT_SIGTERM: i32 = 143;
 /// Signal number of SIGTERM.
 const SIGTERM: i32 = 15;
-/// Longest provider message kept in an error.
-const MESSAGE_MAX_CHARS: usize = 300;
 /// `turn.failed` texts of a reached usage limit (S1b finding 10, ADR-003); Codex uses a typographic apostrophe.
 const USAGE_LIMIT_PREFIXES: [&str; 3] = [
     "You’ve hit your usage limit",
@@ -250,6 +247,7 @@ fn describe(exit: Exit) -> String {
     }
 }
 
+/// Messages stay whole: clipping happens only after every known secret is scrubbed (in `execute`).
 fn classify_failure(message: &str) -> ProviderError {
     if USAGE_LIMIT_PREFIXES
         .iter()
@@ -263,13 +261,9 @@ fn classify_failure(message: &str) -> ProviderError {
     }
     let inner = api_error_message(message);
     if message.contains("invalid_json_schema") {
-        return ProviderError::SchemaRejected {
-            message: clip(&inner, MESSAGE_MAX_CHARS),
-        };
+        return ProviderError::SchemaRejected { message: inner };
     }
-    ProviderError::Failed {
-        message: clip(&inner, MESSAGE_MAX_CHARS),
-    }
+    ProviderError::Failed { message: inner }
 }
 
 /// `error.message` of an API error body embedded as JSON text, else the text itself.
@@ -400,6 +394,20 @@ mod tests {
             stream.finish(Exit::Signal(SIGTERM)),
             Err(ProviderError::Cancelled)
         ));
+    }
+
+    #[test]
+    fn failure_message_is_not_clipped_before_scrubbing() {
+        let message = format!(
+            "{}SECRET-STRADDLING-THE-300-CHARACTER-LIMIT",
+            "x".repeat(290)
+        );
+        let mut stream = CodexStream::default();
+        stream.line(&json!({"type": "turn.failed", "error": {"message": message}}).to_string());
+        match stream.finish(Exit::Code(1)) {
+            Err(ProviderError::Failed { message: kept }) => assert_eq!(kept, message),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

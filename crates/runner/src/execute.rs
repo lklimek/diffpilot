@@ -20,11 +20,24 @@ use crate::git;
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
 
-/// Where `execute` sends a job's normalised events and its ready output, in order.
-pub type EventSink = mpsc::Sender<ProviderEvent>;
+/// Where `execute` sends a job's normalised events and its ready output, in order, together with the secrets
+/// the receiver holds (job token, runner secret): `execute` scrubs every known secret before it clips text,
+/// so no fragment of a secret survives a cut.
+#[derive(Clone, Debug)]
+pub struct EventSink {
+    events: mpsc::Sender<ProviderEvent>,
+    secrets: Scrubber,
+}
 
-/// Events buffered between the provider and the sink.
-const EVENT_BUFFER: usize = 256;
+impl EventSink {
+    /// A sink sending to `events`; `secrets` are scrubbed from everything sent and from the result.
+    pub fn new(events: mpsc::Sender<ProviderEvent>, secrets: Scrubber) -> Self {
+        Self { events, secrets }
+    }
+}
+
+/// Events buffered between the provider and `execute`; small, as summaries are not clipped yet.
+const EVENT_BUFFER: usize = 16;
 /// Longest failure message in a result.
 const MESSAGE_MAX_CHARS: usize = 300;
 
@@ -134,7 +147,7 @@ impl Executor {
             );
         }
 
-        let scrubber = Scrubber::new(
+        let scrubber = sink.secrets.with(&Scrubber::new(
             spec.access
                 .github
                 .iter()
@@ -145,16 +158,16 @@ impl Executor {
                         .iter()
                         .map(|memcan| memcan.token.expose()),
                 ),
-        );
-        // Stage 2 starts a session for every job: a requested session counts as lost and the context pack
-        // seeds the new one (ADR-004). Resume arrives with WP3-RUN.
-        let (prompt, session_outcome) = match (&spec.session, &spec.context_pack) {
-            (Some(_), Some(pack)) => (
-                format!("{pack}\n\n{}", spec.prompt),
-                SessionOutcome::StartedAfterLoss,
-            ),
-            (Some(_), None) => (spec.prompt.clone(), SessionOutcome::StartedAfterLoss),
-            (None, _) => (spec.prompt.clone(), SessionOutcome::Started),
+        ));
+        // Stage 2 starts a session for every job, seeded with the context pack (ADR-004); a requested
+        // session counts as lost. Resume arrives with WP3-RUN.
+        let prompt = match &spec.context_pack {
+            Some(pack) => format!("{pack}\n\n{}", spec.prompt),
+            None => spec.prompt.clone(),
+        };
+        let session_outcome = match spec.session {
+            Some(_) => SessionOutcome::StartedAfterLoss,
+            None => SessionOutcome::Started,
         };
         let call = ProviderCall {
             job_id: spec.job_id,
@@ -180,7 +193,8 @@ impl Executor {
     }
 }
 
-/// Numbers activities from 1, scrubs and clips them, forwards at most one ready output.
+/// Numbers activities from 1, scrubs every known secret and then clips them, forwards at most one ready
+/// output.
 async fn pump(mut events: mpsc::Receiver<ProviderEvent>, sink: &EventSink, scrubber: &Scrubber) {
     let mut seq = 0_u32;
     let mut output_sent = false;
@@ -199,7 +213,7 @@ async fn pump(mut events: mpsc::Receiver<ProviderEvent>, sink: &EventSink, scrub
             }
         };
         // The job loop may be gone (fenced or stale); the job still runs to its end and cleans up.
-        let _ = sink.send(event).await;
+        let _ = sink.events.send(event).await;
     }
 }
 

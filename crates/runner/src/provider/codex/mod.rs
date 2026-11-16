@@ -1,16 +1,22 @@
 //! The Codex CLI provider: `codex exec --json --output-schema` in the job directory with a per-job
 //! `CODEX_HOME` and a constructed environment (S1a, S1b, S6 env contract, threat model T2/T5).
 //!
-//! Stage 2 implements `run` only. Deferred to WP3-RUN: `resume` and end-of-job compaction (ADR-004), SIGTERM
-//! cancel with grace, usage-limit `resets_at` from the rollout, MCP servers in the per-job config (T3c, T6),
-//! skills, credential compare-and-swap write-back and its recovery (T13), the two-uid supervisor (T1).
+//! Codex runs as the leader of its own process group; the group is killed when the call ends, is cancelled
+//! (SIGTERM) or dropped, so agent commands left in the background do not outlive the attempt (a process that
+//! starts its own session escapes this; the uid-wide sweep is WP3-RUN, T1d). Stage 2 implements `run` only.
+//! Deferred to WP3-RUN: `resume` and end-of-job compaction (ADR-004), usage-limit `resets_at` from the rollout,
+//! MCP servers in the per-job config (T3c, T6), skills, credential compare-and-swap write-back (T13; until
+//! then [`credential`] keeps a rotated copy and blocks the credential), the two-uid supervisor (T1).
 
+mod credential;
 mod stream;
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::Utc;
 use contracts::ids::JobId;
@@ -18,30 +24,31 @@ use contracts::job::event::JobEvent;
 use contracts::job::result::Usage;
 use contracts::job::spec::{ModelChoice, ReasoningEffort};
 use futures::future::BoxFuture;
-use serde_json::Value;
+use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
+use credential::JobCredential;
+pub use credential::credential_usable;
 pub(crate) use stream::{CodexStream, Exit, usage_delta};
 
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
-use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
+use crate::scrub::Scrubber;
 
 /// `PATH` of the agent environment; never the runner's own.
 pub const AGENT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /// `NO_PROXY` of the agent environment: loopback only, never the MemCan host (T2).
 pub const AGENT_NO_PROXY: &str = "localhost,127.0.0.1";
 /// File names inside the per-job `CODEX_HOME`.
-const AUTH_FILE: &str = "auth.json";
 const CONFIG_FILE: &str = "config.toml";
 const SCHEMA_FILE: &str = "output-schema.json";
 /// Longest JSONL line kept; a longer one is skipped (an oversized final answer then fails as not JSON).
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 /// Bytes of Codex's stderr kept for the debug log.
 const STDERR_TAIL_BYTES: usize = 4096;
-/// How long stdout may stay open after Codex exited (a leftover child holding the pipe).
+/// How long stdout may stay open after Codex exited and its group was killed.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 
 /// Where the Codex provider finds its binary, credential and egress proxy.
@@ -55,16 +62,23 @@ pub struct CodexSettings {
     pub egress_proxy: Option<String>,
 }
 
+/// Process groups of running calls, by job.
+type Running = Arc<Mutex<HashMap<JobId, Pid>>>;
+
 /// Runs agent calls with the Codex CLI.
 #[derive(Debug)]
 pub struct CodexProvider {
     settings: CodexSettings,
+    running: Running,
 }
 
 impl CodexProvider {
     /// A provider with `settings`.
     pub fn new(settings: CodexSettings) -> Self {
-        Self { settings }
+        Self {
+            settings,
+            running: Running::default(),
+        }
     }
 
     async fn run_call(
@@ -72,12 +86,30 @@ impl CodexProvider {
         call: &ProviderCall,
         events: &mpsc::Sender<ProviderEvent>,
     ) -> Result<ProviderOutcome, ProviderError> {
-        let credential = self.prepare(call).await?;
-        let scrubber = Scrubber::new(credential.tokens.iter().map(String::as_str));
-        let result = self.exec(call, &scrubber, events).await;
-        self.keep_rotated_credential(call, &credential.original)
-            .await;
-        let finished = result.map_err(|error| scrub_error(error, &scrubber))?;
+        let known = Scrubber::new(
+            call.access
+                .github
+                .iter()
+                .map(|token| token.token.expose())
+                .chain(
+                    call.access
+                        .memcan
+                        .iter()
+                        .map(|memcan| memcan.token.expose()),
+                ),
+        );
+        // Dropped after the call (also when the call is dropped): keeps a rotated credential.
+        let mut credential = JobCredential::install(
+            &self.settings.master_auth,
+            &call.codex_home,
+            call.job_id,
+            known,
+        )?;
+        self.prepare(call).await?;
+        let result = self.exec(call, &mut credential, events).await;
+        credential.settle(matches!(result, Err(ProviderError::CredentialUnusable)));
+        let scrubber = credential.scrubber();
+        let finished = result.map_err(|error| scrub_error(error, scrubber))?;
         let output = scrubber.value(finished.output);
         // Execute may have stopped listening (job fenced); the outcome still carries the output.
         let _ = events
@@ -92,21 +124,9 @@ impl CodexProvider {
         })
     }
 
-    /// Writes the per-job `CODEX_HOME` (credential copy, lean config, output schema) and the agent's home and
+    /// Writes the lean config and output schema into the per-job `CODEX_HOME` and creates the agent's home and
     /// temp directories inside the job directory.
-    async fn prepare(&self, call: &ProviderCall) -> Result<CredentialCopy, ProviderError> {
-        let original = tokio::fs::read(&self.settings.master_auth)
-            .await
-            .map_err(|error| {
-                tracing::error!(
-                    path = %self.settings.master_auth.display(),
-                    %error,
-                    "cannot read the master Codex credential; sign in with `codex login --device-auth` in the runner container"
-                );
-                ProviderError::CredentialUnusable
-            })?;
-        let tokens = credential_tokens(&original);
-        write_private(&call.codex_home.join(AUTH_FILE), &original).await?;
+    async fn prepare(&self, call: &ProviderCall) -> Result<(), ProviderError> {
         write_private(
             &call.codex_home.join(CONFIG_FILE),
             config_toml(&call.model).as_bytes(),
@@ -117,11 +137,11 @@ impl CodexProvider {
         for dir in [agent_home(&call.job_dir), agent_tmp(&call.job_dir)] {
             create_private_dir(&dir).await?;
         }
-        Ok(CredentialCopy { original, tokens })
+        Ok(())
     }
 
     /// The `codex exec` command: fixed flags and paths only (no secret, no prompt in argv), cwd = job dir
-    /// above the checkout (T5), environment built from scratch (T2).
+    /// above the checkout (T5), environment built from scratch (T2), its own process group.
     fn command(&self, call: &ProviderCall) -> Command {
         let mut command = Command::new(&self.settings.binary);
         command
@@ -140,6 +160,7 @@ impl CodexProvider {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true);
         command
     }
@@ -147,13 +168,14 @@ impl CodexProvider {
     async fn exec(
         &self,
         call: &ProviderCall,
-        scrubber: &Scrubber,
+        credential: &mut JobCredential,
         events: &mpsc::Sender<ProviderEvent>,
     ) -> Result<stream::Finished, ProviderError> {
         let mut child = self.command(call).spawn().map_err(|error| {
             tracing::error!(binary = %self.settings.binary.display(), %error, "cannot start Codex; check SR_RUNNER_CODEX_BIN");
             ProviderError::Io(error)
         })?;
+        let group = ProcessGroup::register(&self.running, call.job_id, child.id());
         let stdin = child.stdin.take().map(|mut stdin| {
             let prompt = call.prompt.clone();
             tokio::spawn(async move {
@@ -171,7 +193,16 @@ impl CodexProvider {
             .ok_or_else(|| io::Error::other("Codex stdout was not captured"))?;
         let mut lines = Lines::new(BufReader::new(stdout));
         let mut parsed = CodexStream::default();
-        let status = read_until_exit(&mut child, &mut lines, &mut parsed, scrubber, events).await?;
+        let status = read_until_exit(
+            &mut child,
+            &group,
+            &mut lines,
+            &mut parsed,
+            credential,
+            events,
+        )
+        .await?;
+        drop(group);
         if let Some(stdin) = stdin {
             let _ = stdin.await;
         }
@@ -179,7 +210,8 @@ impl CodexProvider {
             && let Ok(tail) = stderr.await
             && !tail.is_empty()
         {
-            tracing::debug!(job = %call.job_id, stderr = %scrubber.text(&tail), "Codex stderr tail");
+            credential.watch();
+            tracing::debug!(job = %call.job_id, stderr = %credential.scrubber().text(&tail), "Codex stderr tail");
         }
         if parsed.unparsed_lines() > 0 || lines.skipped > 0 {
             tracing::warn!(
@@ -190,34 +222,6 @@ impl CodexProvider {
             );
         }
         parsed.finish(exit_of(status))
-    }
-
-    /// Copy-back is WP3-RUN (T13). Until then a credential rotated during the job is kept next to the master
-    /// instead of being deleted with the job, so the owner can restore it.
-    async fn keep_rotated_credential(&self, call: &ProviderCall, original: &[u8]) {
-        let copy = call.codex_home.join(AUTH_FILE);
-        let Ok(current) = tokio::fs::read(&copy).await else {
-            return;
-        };
-        if current == original {
-            return;
-        }
-        let kept = self
-            .settings
-            .master_auth
-            .with_file_name(format!("{AUTH_FILE}.rotated-{}", call.job_id));
-        match write_private(&kept, &current).await {
-            Ok(()) => tracing::error!(
-                job = %call.job_id,
-                kept = %kept.display(),
-                "Codex refreshed its credential during the job and copy-back is not implemented yet; replace the master auth.json with the kept copy"
-            ),
-            Err(error) => tracing::error!(
-                job = %call.job_id,
-                %error,
-                "Codex refreshed its credential during the job and the rotated copy could not be kept; sign in again"
-            ),
-        }
     }
 }
 
@@ -240,35 +244,74 @@ impl LlmProvider for CodexProvider {
         Box::pin(async { Err(ProviderError::SessionUnavailable) })
     }
 
-    fn cancel(&self, _job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
-        // SIGTERM with grace arrives with WP3-RUN; until then the job loop stops the call by dropping it
-        // (`kill_on_drop` sends SIGKILL).
-        Box::pin(async {
-            Err(ProviderError::Failed {
-                message: "cancelling a running Codex call is not supported yet".to_owned(),
-            })
-        })
+    /// SIGTERM to the call's process group; Codex then exits with 143 and the call ends as cancelled.
+    fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        let group = self
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&job)
+            .copied();
+        let result = match group {
+            Some(pid) => kill_process_group(pid, Signal::TERM)
+                .or_else(|error| {
+                    if error == rustix::io::Errno::SRCH {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    }
+                })
+                .map_err(|error| ProviderError::Io(error.into())),
+            None => Ok(()),
+        };
+        Box::pin(async move { result })
     }
 }
 
-struct CredentialCopy {
-    original: Vec<u8>,
-    tokens: Vec<String>,
+/// The process group of a running call: registered for `cancel`, SIGKILLed when dropped.
+struct ProcessGroup {
+    running: Running,
+    job: JobId,
+    pid: Option<Pid>,
 }
 
-/// Token values of an `auth.json` (`tokens.*`, `OPENAI_API_KEY`), for scrubbing.
-fn credential_tokens(auth: &[u8]) -> Vec<String> {
-    let Ok(json) = serde_json::from_slice::<Value>(auth) else {
-        return Vec::new();
-    };
-    let mut tokens = Vec::new();
-    if let Some(Value::Object(map)) = json.get("tokens") {
-        tokens.extend(map.values().filter_map(Value::as_str).map(str::to_owned));
+impl ProcessGroup {
+    fn register(running: &Running, job: JobId, pid: Option<u32>) -> Self {
+        let pid = pid
+            .and_then(|pid| i32::try_from(pid).ok())
+            .and_then(Pid::from_raw);
+        if let Some(pid) = pid {
+            running
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(job, pid);
+        }
+        Self {
+            running: Arc::clone(running),
+            job,
+            pid,
+        }
     }
-    if let Some(key) = json.get("OPENAI_API_KEY").and_then(Value::as_str) {
-        tokens.push(key.to_owned());
+
+    /// SIGKILL to every process left in the group.
+    fn kill(&self) {
+        if let Some(pid) = self.pid
+            && let Err(error) = kill_process_group(pid, Signal::KILL)
+            && error != rustix::io::Errno::SRCH
+        {
+            tracing::warn!(job = %self.job, %error, "cannot kill the agent's process group");
+        }
     }
-    tokens
+}
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        self.kill();
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.job);
+    }
 }
 
 fn scrub_error(error: ProviderError, scrubber: &Scrubber) -> ProviderError {
@@ -386,50 +429,57 @@ async fn create_private_dir(path: &Path) -> io::Result<()> {
     tokio::fs::DirBuilder::new().mode(0o700).create(path).await
 }
 
-/// Reads events until Codex exits, then drains what is left on stdout for a short while.
+/// Reads events until Codex exits, kills what is left of its process group, then drains stdout briefly.
 async fn read_until_exit<R: AsyncBufRead + Unpin>(
     child: &mut Child,
+    group: &ProcessGroup,
     lines: &mut Lines<R>,
     parsed: &mut CodexStream,
-    scrubber: &Scrubber,
+    credential: &mut JobCredential,
     events: &mpsc::Sender<ProviderEvent>,
 ) -> Result<ExitStatus, ProviderError> {
     let status = loop {
         tokio::select! {
             line = lines.next() => match line? {
-                Some(line) => forward(parsed, &line, scrubber, events).await,
+                Some(line) => forward(parsed, &line, credential, events).await,
                 None => break child.wait().await?,
             },
             status = child.wait() => break status?,
         }
     };
+    group.kill();
     let drain = async {
         while let Some(line) = lines.next().await? {
-            forward(parsed, &line, scrubber, events).await;
+            forward(parsed, &line, credential, events).await;
         }
         Ok::<(), io::Error>(())
     };
     match timeout(DRAIN_AFTER_EXIT, drain).await {
         Ok(result) => result?,
         Err(_) => {
-            tracing::warn!("Codex exited but its output stayed open; a leftover process holds it")
+            tracing::warn!(
+                "Codex exited but its output stayed open; a process outside its group holds it"
+            )
         }
     }
     Ok(status)
 }
 
+/// Forwards the activity of `line` with every secret the provider knows scrubbed, the tokens of a credential
+/// rotated meanwhile included. Not clipped: `execute` clips after scrubbing the secrets only it knows.
 async fn forward(
     parsed: &mut CodexStream,
     line: &str,
-    scrubber: &Scrubber,
+    credential: &mut JobCredential,
     events: &mpsc::Sender<ProviderEvent>,
 ) {
     if let Some((activity, summary)) = parsed.line(line) {
+        credential.watch();
         let event = JobEvent {
             seq: 0,
             at: Utc::now(),
             activity,
-            summary: clip(&scrubber.text(&summary), SUMMARY_MAX_CHARS),
+            summary: credential.scrubber().text(&summary),
         };
         // A closed receiver means execute stopped listening; Codex keeps running until it is stopped.
         let _ = events.send(ProviderEvent::Activity(event)).await;

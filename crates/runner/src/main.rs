@@ -11,8 +11,8 @@ use runner::client::{ClientError, ServerClient};
 use runner::config::{Config, ConfigError, ProviderKind};
 use runner::execute::Executor;
 use runner::provider::LlmProvider;
-use runner::provider::codex::{CodexProvider, CodexSettings};
-use runner::worker::{Timing, Worker};
+use runner::provider::codex::{CodexProvider, CodexSettings, credential_usable};
+use runner::worker::{CredentialCheck, Timing, Worker};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
 
@@ -64,18 +64,29 @@ async fn run() -> Result<(), StartError> {
         private_dir(dir).await?;
     }
     remove_leftover_work_dirs(&dirs.work).await?;
-    let provider: Arc<dyn LlmProvider> = match config.provider {
-        ProviderKind::Codex => Arc::new(CodexProvider::new(CodexSettings {
-            binary: config.codex_bin.clone(),
-            master_auth: config.master_auth(),
-            egress_proxy: config.egress_proxy.clone(),
-        })),
-        #[cfg(feature = "fake-provider")]
-        ProviderKind::Fake => {
-            tracing::warn!("using the fake provider: agent output is replayed from fixtures");
-            Arc::new(runner::provider::fake::FakeProvider::new(Duration::ZERO))
-        }
-    };
+    let (provider, credential_check): (Arc<dyn LlmProvider>, CredentialCheck) =
+        match config.provider {
+            ProviderKind::Codex => {
+                let master_auth = config.master_auth();
+                let provider = CodexProvider::new(CodexSettings {
+                    binary: config.codex_bin.clone(),
+                    master_auth: master_auth.clone(),
+                    egress_proxy: config.egress_proxy.clone(),
+                });
+                (
+                    Arc::new(provider),
+                    Arc::new(move || credential_usable(&master_auth)),
+                )
+            }
+            #[cfg(feature = "fake-provider")]
+            ProviderKind::Fake => {
+                tracing::warn!("using the fake provider: agent output is replayed from fixtures");
+                (
+                    Arc::new(runner::provider::fake::FakeProvider::new(Duration::ZERO)),
+                    Arc::new(|| true),
+                )
+            }
+        };
     let executor = Arc::new(Executor::new(provider, dirs, config.credential.clone()));
     let client = ServerClient::new(
         &config.server_url,
@@ -89,6 +100,7 @@ async fn run() -> Result<(), StartError> {
         config.runner_id,
         config.runner_secret,
         Timing::v1(),
+        credential_check,
     )
     .run(shutdown_signal())
     .await;

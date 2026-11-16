@@ -1,9 +1,9 @@
-//! The job loop against a wiremock server with a scripted provider. Time runs at 20 ms per `LeaseTiming`
-//! second: lease 1200 ms, heartbeat 300 ms, fence 700 ms, grace 200 ms, cleanup 100 ms.
+//! The job loop against a wiremock server with a scripted provider. Time runs at 40 ms per `LeaseTiming`
+//! second: lease 2400 ms, heartbeat 600 ms, fence 1400 ms, grace 400 ms, cleanup 200 ms.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use chrono::Utc;
 use contracts::agent::JobKind;
@@ -15,7 +15,7 @@ use futures::future::BoxFuture;
 use serde_json::json;
 use tempfile::TempDir;
 use tokio::sync::Notify;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use super::*;
@@ -23,7 +23,7 @@ use crate::execute::Executor;
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderOutcome};
 use crate::test_support::{credential, dirs, shared_repo, spec};
 
-const UNIT: Duration = Duration::from_millis(20);
+const UNIT: Duration = Duration::from_millis(40);
 const RUNNER_SECRET: &str = "runner-secret-WORKER-CANARY";
 const JOB_TOKEN: &str = "job-token-WORKER-CANARY";
 
@@ -42,6 +42,7 @@ struct Scripted {
     cancelled: Notify,
     finished: AtomicBool,
     job_dir: Mutex<Option<PathBuf>>,
+    sent: AtomicUsize,
 }
 
 impl Scripted {
@@ -56,6 +57,7 @@ impl Scripted {
             cancelled: Notify::new(),
             finished: AtomicBool::new(false),
             job_dir: Mutex::new(None),
+            sent: AtomicUsize::new(0),
         }
     }
 
@@ -86,7 +88,9 @@ impl LlmProvider for Scripted {
             let _finished = SetOnDrop(&self.finished);
             *self.job_dir.lock().unwrap() = Some(call.job_dir.clone());
             for _ in 0..self.events {
-                if self.honour_cancel {
+                if self.step.is_zero() {
+                    // A flood: no timer between events.
+                } else if self.honour_cancel {
                     tokio::select! {
                         () = sleep(self.step) => {}
                         () = self.cancelled.notified() => return Err(ProviderError::Cancelled),
@@ -101,6 +105,7 @@ impl LlmProvider for Scripted {
                     summary: self.summary.clone(),
                 };
                 let _ = events.send(ProviderEvent::Activity(event)).await;
+                self.sent.fetch_add(1, Ordering::SeqCst);
             }
             let _ = events
                 .send(ProviderEvent::OutputReady(self.output.clone()))
@@ -191,6 +196,7 @@ async fn setup(provider: Scripted, claim_delay: Duration) -> Setup {
         "runner-test".to_owned(),
         Secret::new(RUNNER_SECRET),
         timing(),
+        Arc::new(|| true),
     );
     Setup {
         server,
@@ -394,9 +400,9 @@ async fn provider_ignoring_cancel_is_killed_after_the_grace() {
     assert!(!setup.provider.job_dir().exists(), "work dir removed");
 }
 
-/// The claim reply is delayed by 300 ms and no later request is ever acked: the deadline runs from the claim's
-/// SEND time (700 ms), so the agent is stopped and cleaned up well before the lease (1200 ms from receipt) and
-/// before a deadline wrongly measured from the delayed ack (1000 ms).
+/// The claim reply is delayed by 600 ms and no later request is ever acked: the deadline runs from the claim's
+/// SEND time (1400 ms), so the agent is stopped and cleaned up well before the lease (2400 ms from receipt) and
+/// before a deadline wrongly measured from the delayed ack (2000 ms).
 #[tokio::test]
 async fn self_fence_completes_before_lease() {
     let claim_delay = UNIT * 15;
@@ -533,6 +539,7 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
         "r".to_owned(),
         Secret::new(RUNNER_SECRET),
         timing(),
+        Arc::new(|| true),
     );
     assert_eq!(worker.poll_once().await.unwrap(), None);
     assert_eq!(worker.poll_once().await.unwrap(), None);
@@ -566,6 +573,7 @@ async fn wrong_runner_secret_is_a_rejected_claim() {
         "r".to_owned(),
         Secret::new("wrong"),
         timing(),
+        Arc::new(|| true),
     );
     assert!(matches!(
         worker.poll_once().await,
@@ -604,4 +612,144 @@ fn v1_stop_fits_inside_the_lease() {
         "two lost heartbeats stay inside the deadline"
     );
     assert_eq!(t.idle_poll, Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn pending_events_are_bounded_while_posts_fail() {
+    let mut setup = setup(Scripted::new(5000, Duration::ZERO), Duration::ZERO).await;
+    mount(&setup, "events", ResponseTemplate::new(503)).await;
+    mount(&setup, "result", ResponseTemplate::new(204)).await;
+    let end = setup.worker.poll_once().await.unwrap();
+    assert_eq!(
+        end,
+        Some(JobEnd::Fenced),
+        "the fence still works under backpressure"
+    );
+    let sent = setup.provider.sent.load(Ordering::SeqCst);
+    // Pending limit plus the two channel buffers and the events in hand.
+    assert!(
+        sent <= MAX_PENDING_EVENTS + 16 + EVENT_BUFFER + 4,
+        "the agent was not held back: {sent}"
+    );
+    assert!(!setup.provider.job_dir().exists(), "work dir removed");
+}
+
+/// Event batches carrying events (heartbeats carry none).
+async fn mount_event_failures(setup: &Setup, status: u16, times: u64) {
+    Mock::given(method("POST"))
+        .and(path(job_path(&setup.spec, "events")))
+        .and(body_string_contains("\"seq\":"))
+        .respond_with(ResponseTemplate::new(status))
+        .up_to_n_times(times)
+        .mount(&setup.server)
+        .await;
+}
+
+#[tokio::test]
+async fn output_is_skipped_when_earlier_events_are_not_acked() {
+    let mut setup = setup(Scripted::new(1, UNIT), Duration::ZERO).await;
+    mount_event_failures(&setup, 503, 2).await;
+    mount(&setup, "events", ack(false)).await;
+    mount(&setup, "output", ack(false)).await;
+    mount(&setup, "result", ResponseTemplate::new(204)).await;
+    let end = setup.worker.poll_once().await.unwrap();
+    assert!(
+        matches!(
+            end,
+            Some(JobEnd::ResultPosted(JobOutcome::Succeeded { .. }))
+        ),
+        "{end:?}"
+    );
+    assert!(
+        requests(&setup, "output").await.is_empty(),
+        "the output must not overtake the events"
+    );
+    let all = setup.server.received_requests().await.unwrap();
+    let events_path = job_path(&setup.spec, "events");
+    let last_events = all
+        .iter()
+        .rposition(|r| r.url.path() == events_path && !body::<EventBatch>(r).events.is_empty())
+        .unwrap();
+    let result = all
+        .iter()
+        .position(|r| r.url.path() == job_path(&setup.spec, "result"))
+        .unwrap();
+    assert!(last_events < result, "events are acked before the result");
+}
+
+#[tokio::test]
+async fn stale_attempt_on_the_final_flush_suppresses_the_result() {
+    let mut setup = setup(Scripted::new(1, UNIT), Duration::ZERO).await;
+    mount_event_failures(&setup, 503, 2).await;
+    mount_event_failures(&setup, 409, 100).await;
+    mount(&setup, "events", ack(false)).await;
+    mount(&setup, "output", ack(false)).await;
+    mount(&setup, "result", ResponseTemplate::new(204)).await;
+    let end = setup.worker.poll_once().await.unwrap();
+    assert_eq!(end, Some(JobEnd::Stale(StatusCode::CONFLICT)));
+    assert!(requests(&setup, "output").await.is_empty());
+    assert!(
+        requests(&setup, "result").await.is_empty(),
+        "no result after a 409"
+    );
+}
+
+#[tokio::test]
+async fn claim_reports_a_blocked_credential_as_unusable() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/runner/v1/claim"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            claim: None,
+            drop_sessions: Vec::new(),
+        }))
+        .mount(&server)
+        .await;
+    let root = TempDir::new().unwrap();
+    let executor = Arc::new(Executor::new(
+        Arc::new(Scripted::new(0, UNIT)),
+        dirs(root.path()),
+        credential(),
+    ));
+    let client = ServerClient::new(
+        &server.uri(),
+        Secret::new(RUNNER_SECRET),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let usable = Arc::new(AtomicBool::new(true));
+    let check = Arc::clone(&usable);
+    let mut worker = Worker::new(
+        client,
+        executor,
+        "r".to_owned(),
+        Secret::new(RUNNER_SECRET),
+        timing(),
+        Arc::new(move || check.load(Ordering::SeqCst)),
+    );
+    worker.poll_once().await.unwrap();
+    usable.store(false, Ordering::SeqCst);
+    worker.poll_once().await.unwrap();
+    let claims = server.received_requests().await.unwrap();
+    assert!(body::<ClaimRequest>(&claims[0]).credentials[0].usable);
+    assert!(!body::<ClaimRequest>(&claims[1]).credentials[0].usable);
+}
+
+#[tokio::test]
+async fn job_token_straddling_the_summary_limit_never_leaves_in_part() {
+    let mut provider = Scripted::new(1, UNIT);
+    provider.summary = format!("{}{JOB_TOKEN}", "x".repeat(190));
+    let mut setup = setup(provider, Duration::ZERO).await;
+    mount(&setup, "events", ack(false)).await;
+    mount(&setup, "output", ack(false)).await;
+    mount(&setup, "result", ResponseTemplate::new(204)).await;
+    setup.worker.poll_once().await.unwrap();
+    for request in setup.server.received_requests().await.unwrap() {
+        let text = String::from_utf8_lossy(&request.body);
+        assert!(
+            !text.contains(&JOB_TOKEN[..8]),
+            "{} leaks part of the job token",
+            request.url.path()
+        );
+    }
 }

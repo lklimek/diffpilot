@@ -18,7 +18,6 @@ use tokio::sync::{Notify, mpsc};
 
 use crate::provider::codex::{CodexStream, Exit, usage_delta};
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
-use crate::scrub::{SUMMARY_MAX_CHARS, clip};
 
 /// Every recording of the fixture session, for the cumulative usage before a job.
 const SESSION: [(&str, &str); 9] = [
@@ -100,7 +99,7 @@ impl FakeProvider {
                     seq: 0,
                     at: Utc::now(),
                     activity,
-                    summary: clip(&summary, SUMMARY_MAX_CHARS),
+                    summary,
                 };
                 let _ = events.send(ProviderEvent::Activity(event)).await;
             }

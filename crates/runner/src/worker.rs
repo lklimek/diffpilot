@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, sleep_until, timeout_at};
 
 use crate::client::{ClientError, ServerClient};
-use crate::execute::Executor;
+use crate::execute::{EventSink, Executor};
 use crate::provider::ProviderEvent;
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
 
@@ -28,6 +28,10 @@ use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
 const EVENT_BUFFER: usize = 256;
 /// Most events in one request.
 const MAX_BATCH: usize = 100;
+/// Most events held while requests fail; beyond it the loop stops receiving (backpressure to the agent).
+const MAX_PENDING_EVENTS: usize = 1000;
+/// Most summary bytes held while requests fail.
+const MAX_PENDING_BYTES: usize = 256 * 1024;
 /// Idle claim interval in [`LeaseTiming`] seconds.
 const IDLE_POLL_SECS: u32 = 5;
 /// Longest pause between two result attempts, in [`LeaseTiming`] seconds.
@@ -143,16 +147,29 @@ impl From<Result<(), Stop>> for Step {
     }
 }
 
+/// Whether the runner's LLM credential may be used (false after a rotation or refresh failure until the
+/// operator recovers it); reported with every claim.
+pub type CredentialCheck = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Claims and runs jobs, one at a time.
-#[derive(Debug)]
 pub struct Worker {
     client: ServerClient,
     executor: Arc<Executor>,
     runner_id: String,
     runner_secret: Secret,
     timing: Timing,
+    credential_usable: CredentialCheck,
     /// Sessions the server asked to drop, acknowledged with the next claim.
     dropped_sessions: Vec<AnalysisId>,
+}
+
+impl std::fmt::Debug for Worker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Worker")
+            .field("runner_id", &self.runner_id)
+            .field("timing", &self.timing)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Worker {
@@ -163,6 +180,7 @@ impl Worker {
         runner_id: String,
         runner_secret: Secret,
         timing: Timing,
+        credential_usable: CredentialCheck,
     ) -> Self {
         Self {
             client,
@@ -170,6 +188,7 @@ impl Worker {
             runner_id,
             runner_secret,
             timing,
+            credential_usable,
             dropped_sessions: Vec::new(),
         }
     }
@@ -208,7 +227,7 @@ impl Worker {
             runner_id: self.runner_id.clone(),
             credentials: vec![CredentialStatus {
                 credential: self.executor.credential().clone(),
-                usable: true,
+                usable: (self.credential_usable)(),
             }],
             dropped_sessions: self.dropped_sessions.clone(),
         };
@@ -226,6 +245,7 @@ impl Worker {
         let Claim {
             job_token, spec, ..
         } = claim;
+        let scrubber = Scrubber::new([self.runner_secret.expose(), job_token.expose()]);
         let job = spec.job_id;
         let attempt = spec.attempt;
         tracing::info!(%job, attempt, kind = spec.kind.as_str(), "job claimed");
@@ -234,16 +254,18 @@ impl Worker {
             job,
             attempt,
             token: job_token.clone(),
-            scrubber: Scrubber::new([self.runner_secret.expose(), job_token.expose()]),
+            scrubber: scrubber.clone(),
             fence: Fence::new(claim_sent, self.timing.fence_after_send),
             timing: self.timing,
             last_sent: claim_sent,
             retry_at: claim_sent,
             pending: Vec::new(),
+            pending_bytes: 0,
             cancel_requested: false,
         };
         let (sink, mut events) = mpsc::channel(EVENT_BUFFER);
         let executor = Arc::clone(&self.executor);
+        let sink = EventSink::new(sink, scrubber);
         let mut task = AbortOnDrop(tokio::spawn(
             async move { executor.execute(spec, sink).await },
         ));
@@ -259,9 +281,9 @@ impl Worker {
                 biased;
                 () = sleep_until(run.fence.deadline()) => Step::Stop(Stop::Fenced),
                 () = sleep_until(abort_at.unwrap_or_else(Instant::now)), if abort_at.is_some() => Step::KillAfterCancel,
-                event = events.recv() => match event {
+                event = events.recv(), if !run.pending_full() => match event {
                     Some(ProviderEvent::Activity(event)) => {
-                        run.pending.push(event);
+                        run.push(event);
                         // A steady stream keeps this branch ready; post here so heartbeats are never starved.
                         let overdue = Instant::now() >= run.last_sent + self.timing.heartbeat;
                         if (run.pending.len() >= MAX_BATCH || overdue) && Instant::now() >= run.retry_at {
@@ -296,16 +318,7 @@ impl Worker {
 
         if let Some(stop) = stopped {
             self.stop_agent(job, &mut task).await;
-            return match stop {
-                Stop::Fenced => {
-                    tracing::warn!(%job, attempt, "no request acked within the fence; agent stopped, no result posted");
-                    JobEnd::Fenced
-                }
-                Stop::Stale(status) => {
-                    tracing::warn!(%job, attempt, %status, "the server rejected the attempt; agent stopped, no result posted");
-                    JobEnd::Stale(status)
-                }
-            };
+            return stopped_end(stop, job, attempt);
         }
 
         let result = match (&mut task.0).await {
@@ -316,7 +329,10 @@ impl Worker {
                 internal_result(job, attempt)
             }
         };
-        run.flush_events().await;
+        // Every event before the result; a stale attempt or the fence here still suppresses the result.
+        if let Err(stop) = run.flush_events().await {
+            return stopped_end(stop, job, attempt);
+        }
         run.post_result(result).await
     }
 
@@ -350,10 +366,22 @@ struct JobRun<'a> {
     /// No request before this (after a failed one).
     retry_at: Instant,
     pending: Vec<JobEvent>,
+    /// Summary bytes in `pending`.
+    pending_bytes: usize,
     cancel_requested: bool,
 }
 
 impl JobRun<'_> {
+    fn push(&mut self, event: JobEvent) {
+        self.pending_bytes += event.summary.len();
+        self.pending.push(event);
+    }
+
+    /// Whether the loop must stop receiving until events are acked.
+    fn pending_full(&self) -> bool {
+        self.pending.len() >= MAX_PENDING_EVENTS || self.pending_bytes >= MAX_PENDING_BYTES
+    }
+
     /// Posts up to [`MAX_BATCH`] pending events (none: heartbeat) within the fence.
     async fn post_events(&mut self) -> Result<(), Stop> {
         let count = self.pending.len().min(MAX_BATCH);
@@ -374,7 +402,9 @@ impl JobRun<'_> {
         match reply {
             Err(_) => Err(Stop::Fenced),
             Ok(Ok(ack)) => {
+                let bytes: usize = self.pending[..count].iter().map(|e| e.summary.len()).sum();
                 self.pending.drain(..count);
+                self.pending_bytes -= bytes;
                 self.acked(sent, &ack);
                 Ok(())
             }
@@ -388,13 +418,14 @@ impl JobRun<'_> {
     }
 
     /// Posts every pending event, then the ready output, with the `output` retry schedule within the fence.
+    /// If earlier events are not acked the output is skipped (it must not overtake them; the result carries it).
     async fn post_output(&mut self, output: Value) -> Result<(), Stop> {
         while !self.pending.is_empty() {
             let before = self.pending.len();
             self.post_events().await?;
             if self.pending.len() == before {
-                // Not acked: the result carries the output anyway; events are retried later.
-                break;
+                tracing::debug!(job = %self.job, "earlier events not acked; ready output skipped, the result carries it");
+                return Ok(());
             }
         }
         let body = OutputReady {
@@ -444,15 +475,18 @@ impl JobRun<'_> {
         }
     }
 
-    /// Best effort after the agent finished: one attempt per remaining batch.
-    async fn flush_events(&mut self) {
+    /// Posts the remaining events before the result, retrying within the fence.
+    async fn flush_events(&mut self) -> Result<(), Stop> {
         while !self.pending.is_empty() {
-            let before = self.pending.len();
-            if self.post_events().await.is_err() || self.pending.len() == before {
-                tracing::debug!(job = %self.job, left = self.pending.len(), "events not delivered before the result");
-                return;
+            if timeout_at(self.fence.deadline(), sleep_until(self.retry_at))
+                .await
+                .is_err()
+            {
+                return Err(Stop::Fenced);
             }
+            self.post_events().await?;
         }
+        Ok(())
     }
 
     /// Posts the result until a 2xx or 4xx reply, while the server lease can still be alive.
@@ -487,6 +521,20 @@ impl JobRun<'_> {
         JobEvent {
             summary: clip(&self.scrubber.text(&event.summary), SUMMARY_MAX_CHARS),
             ..event.clone()
+        }
+    }
+}
+
+/// The end of an attempt stopped before its result.
+fn stopped_end(stop: Stop, job: JobId, attempt: u32) -> JobEnd {
+    match stop {
+        Stop::Fenced => {
+            tracing::warn!(%job, attempt, "no request acked within the fence; agent stopped, no result posted");
+            JobEnd::Fenced
+        }
+        Stop::Stale(status) => {
+            tracing::warn!(%job, attempt, %status, "the server rejected the attempt; agent stopped, no result posted");
+            JobEnd::Stale(status)
         }
     }
 }

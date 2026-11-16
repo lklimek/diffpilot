@@ -20,6 +20,8 @@ use super::*;
 use crate::test_support::{build_repo, commits, credential, dirs, shared_repo, spec};
 
 const TOKEN_CANARY: &str = "ghs_EXECUTE_CANARY_000000000000001";
+/// A secret only the receiver of the sink knows (job token, runner secret).
+const SINK_SECRET: &str = "sink-SECRET-job-token-000000000002";
 
 /// What the stub saw while it ran.
 #[derive(Debug, Default, Clone)]
@@ -36,6 +38,7 @@ enum Behaviour {
     Fail(fn() -> ProviderError),
     Hang,
     Leak,
+    Straddle,
 }
 
 struct Stub {
@@ -100,6 +103,17 @@ impl LlmProvider for Stub {
                 }
                 Behaviour::Fail(error) => Err(error()),
                 Behaviour::Hang => std::future::pending().await,
+                Behaviour::Straddle => {
+                    for secret in [TOKEN_CANARY, SINK_SECRET] {
+                        events
+                            .send(activity(format!("{}{secret}", "x".repeat(185))))
+                            .await
+                            .unwrap();
+                    }
+                    Err(ProviderError::Failed {
+                        message: format!("{}{TOKEN_CANARY} {SINK_SECRET}", "x".repeat(270)),
+                    })
+                }
                 Behaviour::Leak => {
                     events
                         .send(activity(format!("$ echo {TOKEN_CANARY}")))
@@ -150,7 +164,9 @@ fn outcome(output: Value) -> ProviderOutcome {
 
 async fn execute_collect(executor: &Executor, spec: JobSpec) -> (JobResult, Vec<ProviderEvent>) {
     let (tx, mut rx) = mpsc::channel(1024);
-    let result = executor.execute(spec, tx).await;
+    let result = executor
+        .execute(spec, EventSink::new(tx, Scrubber::new([SINK_SECRET])))
+        .await;
     let mut events = Vec::new();
     while let Some(event) = rx.recv().await {
         events.push(event);
@@ -221,7 +237,10 @@ async fn work_dir_removed_when_the_job_is_dropped() {
     let stub = Stub::new(Behaviour::Hang);
     let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
     let (tx, _rx) = mpsc::channel(16);
-    let running = executor.execute(spec(JobKind::Plan, shared_repo()), tx);
+    let running = executor.execute(
+        spec(JobKind::Plan, shared_repo()),
+        EventSink::new(tx, Scrubber::default()),
+    );
     let dropped = tokio::time::timeout(Duration::from_secs(5), async {
         tokio::pin!(running);
         loop {
@@ -574,4 +593,51 @@ mod fake {
             "{result:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn secrets_straddling_the_clip_limits_are_scrubbed_whole() {
+    let root = TempDir::new().unwrap();
+    let executor = Executor::new(
+        Stub::new(Behaviour::Straddle),
+        dirs(root.path()),
+        credential(),
+    );
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.access.github = Some(InstallationToken {
+        token: Secret::new(TOKEN_CANARY),
+        expires_at: Utc::now(),
+        repository: RepoRef {
+            owner: "acme".to_owned(),
+            name: "node-client".to_owned(),
+        },
+    });
+    let (result, events) = execute_collect(&executor, spec).await;
+    let all = format!("{events:?} {result:?}");
+    for secret in [TOKEN_CANARY, SINK_SECRET] {
+        assert!(
+            !all.contains(&secret[..8]),
+            "a fragment of {secret} survived: {all}"
+        );
+    }
+    assert!(all.contains("[redacted]"), "{all}");
+}
+
+#[tokio::test]
+async fn context_pack_seeds_a_new_session_without_a_requested_session() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Succeed);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.context_pack = Some("CONTEXT PACK".to_owned());
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(
+        stub.seen().prompt.starts_with("CONTEXT PACK\n\n"),
+        "{}",
+        stub.seen().prompt
+    );
+    assert_eq!(
+        result.session.map(|s| s.outcome),
+        Some(SessionOutcome::Started)
+    );
 }

@@ -33,9 +33,28 @@ impl Scrubber {
             .filter(|secret| !secret.is_empty())
             .map(str::to_owned)
             .collect();
-        secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+        secrets.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         secrets.dedup();
         Self { secrets }
+    }
+
+    /// Adds `secrets` (e.g. a credential rotated during the job); empty values are ignored.
+    pub fn extend<'a>(&mut self, secrets: impl IntoIterator<Item = &'a str>) {
+        let mut all = std::mem::take(&mut self.secrets);
+        all.extend(
+            secrets
+                .into_iter()
+                .filter(|secret| !secret.is_empty())
+                .map(str::to_owned),
+        );
+        *self = Self::new(all.iter().map(String::as_str));
+    }
+
+    /// The union of two scrubbers.
+    pub fn with(&self, other: &Scrubber) -> Scrubber {
+        let mut both = self.clone();
+        both.extend(other.secrets.iter().map(String::as_str));
+        both
     }
 
     /// `text` with every known secret replaced.
@@ -124,6 +143,17 @@ mod tests {
         assert_eq!(
             scrubber.value(value),
             json!({"a": ["x [redacted]", {"[redacted]": 1}], "n": 2})
+        );
+    }
+
+    #[test]
+    fn extended_and_combined_scrubbers_know_every_secret() {
+        let mut scrubber = Scrubber::new(["first-secret"]);
+        scrubber.extend(["second-secret-longer", "first-secret"]);
+        let both = scrubber.with(&Scrubber::new(["third"]));
+        assert_eq!(
+            both.text("first-secret second-secret-longer third"),
+            "[redacted] [redacted] [redacted]"
         );
     }
 
