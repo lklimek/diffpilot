@@ -24,23 +24,11 @@ const FIT_TOPIC: Record<FitTopic, string> = {
   other: "Fit",
 };
 
-function referenceUrl(reference: string): string | null {
-  if (/^https:\/\//.test(reference)) return reference;
-  const match = /^([\w.-]+)\/([\w.-]+)#(\d+)$/.exec(reference);
-  return match ? `https://github.com/${match[1]}/${match[2]}/issues/${match[3]}` : null;
-}
-
 function Related({ item }: { item: RelatedWork }) {
-  const url = referenceUrl(item.reference);
   return (
     <li className="mb-1.5 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12.5px]">
-      {url ? (
-        <a href={url} target="_blank" rel="noopener noreferrer">
-          {item.reference}
-        </a>
-      ) : (
-        <code>{item.reference}</code>
-      )}
+      {/* LLM text: never a link (threat model T12); only server-built GitHub links are links. */}
+      <code className="break-all">{item.reference}</code>
       <span className="block text-[11px] text-muted">{item.kind.replaceAll("_", " ")}</span>
       {item.overlap}
     </li>

@@ -19,7 +19,7 @@ describe("PrContextBlock", () => {
     expect(llm).toHaveTextContent(tour.pr_context.llm.problem);
     expect(llm).toHaveTextContent(tour.pr_context.llm.what_it_gives);
     expect(llm).toHaveTextContent(tour.pr_context.llm.why_needed);
-    expect(within(llm).getByRole("link", { name: "acme/node-client#479" })).toBeInTheDocument();
+    expect(within(llm).getByText("acme/node-client#479")).toBeInTheDocument();
     expect(within(llm).getAllByRole("listitem").length).toBeGreaterThanOrEqual(6);
     expect(llm).toHaveTextContent("src/config.rs:23");
     // Facts
@@ -44,6 +44,23 @@ describe("PrContextBlock", () => {
     renderBlock(t);
     expect(screen.getByText("Related work: not checked")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "acme/node-client#479" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    "https://evil.example/login",
+    "https://github.com.evil.example/acme/node-client/pull/479",
+    "https://user:pass@github.com/acme/node-client/pull/479",
+    "https://github.com/acme/node-client/pull/479",
+    "javascript:alert(1)",
+    "acme/node-client#479",
+  ])("renders the LLM-supplied related-work reference %s as text, never as a link (T12)", (reference) => {
+    const t = structuredClone(tour);
+    t.pr_context.llm.related_work = [{ reference, kind: "competing_solution", overlap: "Overlaps." }];
+    renderBlock(t);
+    const llm = screen.getByRole("region", { name: "LLM analysis" });
+    expect(within(llm).getByText(reference)).toBeInTheDocument();
+    expect(within(llm).queryAllByRole("link")).toEqual([]);
+    expect(llm.querySelectorAll("[href]")).toHaveLength(0);
   });
 
   it("lists agent instruction files in the diff as a notice", () => {
