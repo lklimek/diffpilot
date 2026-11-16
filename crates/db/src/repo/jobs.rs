@@ -6,7 +6,7 @@ use contracts::agent::JobKind;
 use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId};
 use contracts::job::access::AgentAccess;
 use contracts::job::event::JobEvent;
-use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
+use contracts::job::result::{JobFailureKind, JobOutcome, JobResult, LlmCallStatus};
 use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::{JobState, JobTransition};
 use serde::Serialize;
@@ -199,6 +199,21 @@ pub enum Completion {
     AlreadyRecorded,
 }
 
+/// The job-token hash with the claim it was issued for, read in one statement so they belong together.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobAuthorization {
+    /// Hash of the current claim's job token; none before a claim and after a lease expiry.
+    pub token_hash: Option<Vec<u8>>,
+    /// The attempt the token was issued for.
+    pub attempt: u32,
+    /// State.
+    pub state: JobState,
+    /// End of the current lease.
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    /// Cancellation was requested.
+    pub cancel_requested: bool,
+}
+
 /// Events kept per job: `job_events` is a bounded activity log.
 const EVENTS_KEPT: i64 = 500;
 
@@ -321,6 +336,54 @@ fn job_from_row(row: &SqliteRow) -> Result<JobRecord, DbError> {
     })
 }
 
+/// Credential effects of a runner result; they follow the runner's outcome even when cancel wins, since a usage
+/// limit or a failed refresh is a fact about the credential, not the job.
+async fn apply_credential_effects(
+    tx: &mut SqliteConnection,
+    credential: &str,
+    result: &JobResult,
+    now: DateTime<Utc>,
+) -> Result<(), DbError> {
+    if let Some(call) = &result.llm_call {
+        let message = match &call.status {
+            LlmCallStatus::Working => None,
+            LlmCallStatus::NotWorking { message } => Some(message.as_str()),
+        };
+        sqlx::query(
+            "UPDATE llm_credentials SET last_call_at = ?, last_call_ok = ?, last_call_message = ? WHERE id = ?",
+        )
+        .bind(ts(call.at))
+        .bind(message.is_none())
+        .bind(message)
+        .bind(credential)
+        .execute(&mut *tx)
+        .await?;
+    }
+    match &result.outcome {
+        JobOutcome::UsageLimited { resets_at } => {
+            sqlx::query("UPDATE llm_credentials SET paused_until = ? WHERE id = ?")
+                .bind(ts(resets_at.unwrap_or(now + PAUSE_WITHOUT_RESET)))
+                .bind(credential)
+                .execute(&mut *tx)
+                .await?;
+        }
+        JobOutcome::Failed {
+            kind: JobFailureKind::CredentialUnusable,
+            ..
+        } => {
+            sqlx::query(
+                "UPDATE llm_credentials SET unusable_since = COALESCE(unusable_since, ?) WHERE id = ?",
+            )
+            .bind(ts(now))
+            .bind(credential)
+            .execute(&mut *tx)
+            .await?;
+        }
+        JobOutcome::Succeeded { .. } | JobOutcome::Failed { .. } | JobOutcome::Cancelled => {}
+    }
+    Ok(())
+}
+
 /// The part of a job row the write paths check.
 struct Current {
     state: JobState,
@@ -330,7 +393,7 @@ struct Current {
 
 async fn current(tx: &mut SqliteConnection, job: JobId) -> Result<(Current, SqliteRow), DbError> {
     let row = sqlx::query(
-        "SELECT state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt,
+        "SELECT state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, credential_id,
              json_extract(result, '$.attempt') AS result_attempt
          FROM jobs WHERE id = ?",
     )
@@ -496,8 +559,9 @@ impl Jobs<'_> {
         })
     }
 
-    /// Stores the output of `attempt` posted before compaction and renews the lease. A different output for the
-    /// same attempt, a stale attempt or a job that is not running is a `Conflict`.
+    /// Stores the output of `attempt` posted before compaction, moves `claimed` to `running` and renews the lease.
+    /// A different output for the same attempt, a stale attempt or a job that is not claimed or running is a
+    /// `Conflict`.
     pub async fn record_output(
         &self,
         job: JobId,
@@ -535,7 +599,9 @@ impl Jobs<'_> {
         Ok(recorded)
     }
 
-    /// Stores the result of `result.attempt` and applies the matching transition; idempotent per attempt.
+    /// Stores the result of `result.attempt` and applies the matching transition; idempotent per attempt. In the
+    /// same transaction it records the LLM call outcome on the job's credential, pauses the credential after a
+    /// usage limit and marks it unusable after a credential failure, so a crash never keeps one without the other.
     pub async fn complete(
         &self,
         result: &JobResult,
@@ -548,6 +614,7 @@ impl Jobs<'_> {
             return Ok(Completion::AlreadyRecorded);
         }
         current.accepts(result.attempt)?;
+        let credential: String = row.try_get("credential_id")?;
         let mut stored = result.clone();
         let mut resumes_at = None;
         // Cancel wins: once requested, any result ends the job cancelled and its output is discarded.
@@ -582,6 +649,7 @@ impl Jobs<'_> {
         .bind(result.job_id.to_string())
         .execute(&mut *tx)
         .await?;
+        apply_credential_effects(&mut tx, &credential, result, now).await?;
         tx.commit().await?;
         Ok(Completion::Applied { state })
     }
@@ -744,6 +812,24 @@ impl Jobs<'_> {
         )
     }
 
+    /// The token hash together with the attempt, state and lease it belongs to (one consistent read).
+    pub async fn authorization(&self, job: JobId) -> Result<JobAuthorization, DbError> {
+        let row = sqlx::query(
+            "SELECT job_token_hash, attempt, state, lease_expires_at, cancel_requested FROM jobs WHERE id = ?",
+        )
+        .bind(job.to_string())
+        .fetch_one(self.pool)
+        .await?;
+        let state: String = row.try_get("state")?;
+        Ok(JobAuthorization {
+            token_hash: row.try_get("job_token_hash")?,
+            attempt: row.try_get("attempt")?,
+            state: parse_wire(&state, "jobs.state")?,
+            lease_expires_at: optional_ts(&row, "lease_expires_at")?,
+            cancel_requested: row.try_get("cancel_requested")?,
+        })
+    }
+
     /// Events of a job after `after_seq` of the current attempt, in order.
     pub async fn events(&self, job: JobId, after_seq: u32) -> Result<Vec<JobEvent>, DbError> {
         let bodies: Vec<String> = sqlx::query_scalar(
@@ -850,6 +936,8 @@ mod tests {
     use chrono::TimeZone;
     use contracts::job::access::{McpHttpEndpoint, Secret};
     use contracts::job::event::ActivityKind;
+    use contracts::job::result::LlmCallOutcome;
+    use contracts::job::spec::{CredentialKind, LlmCredentialRef};
     use serde_json::json;
 
     use super::*;
@@ -1357,6 +1445,107 @@ mod tests {
         assert_eq!(record.result, Some(result));
         assert_eq!(record.finished_at, Some(at(5)));
         assert_eq!(record.lease_expires_at, None);
+    }
+
+    async fn register_credential(db: &Db) {
+        db.llm_credentials()
+            .register(
+                "default",
+                &LlmCredentialRef {
+                    id: CREDENTIAL.to_owned(),
+                    kind: CredentialKind::CodexChatgpt,
+                },
+                true,
+                at(0),
+            )
+            .await
+            .expect("register");
+    }
+
+    #[tokio::test]
+    async fn complete_applies_credential_effects_in_the_same_transaction() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        register_credential(&db).await;
+        claim(&db, 0).await.expect("claim");
+        let mut limited = result(
+            job,
+            1,
+            JobOutcome::UsageLimited {
+                resets_at: Some(at(900)),
+            },
+        );
+        limited.llm_call = Some(LlmCallOutcome {
+            at: at(9),
+            status: LlmCallStatus::NotWorking {
+                message: "Usage limit reached.".to_owned(),
+            },
+        });
+        // A failure of the credential write (a crash between the two writes) leaves no result behind.
+        sqlx::raw_sql(
+            "CREATE TRIGGER fail_credential_write BEFORE UPDATE ON llm_credentials
+             BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("trigger");
+        assert!(db.jobs().complete(&limited, at(10)).await.is_err());
+        let record = db.jobs().get(job).await.expect("get");
+        assert_eq!((record.state, record.result), (JobState::Claimed, None));
+        sqlx::raw_sql("DROP TRIGGER fail_credential_write")
+            .execute(&db.pool)
+            .await
+            .expect("drop trigger");
+        // The runner's retry applies result and credential effects together.
+        assert_eq!(
+            db.jobs().complete(&limited, at(11)).await.expect("retry"),
+            Completion::Applied {
+                state: JobState::Paused
+            }
+        );
+        let credential = db
+            .llm_credentials()
+            .get(CREDENTIAL)
+            .await
+            .expect("credential");
+        assert_eq!(credential.paused_until, Some(at(900)));
+        assert_eq!(credential.last_call, limited.llm_call);
+        assert_eq!(
+            db.jobs().complete(&limited, at(12)).await.expect("repeat"),
+            Completion::AlreadyRecorded
+        );
+    }
+
+    #[tokio::test]
+    async fn unusable_credential_is_marked_even_when_cancel_wins() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        register_credential(&db).await;
+        claim(&db, 0).await.expect("claim");
+        db.jobs().request_cancel(job, at(1)).await.expect("cancel");
+        let failed = result(
+            job,
+            1,
+            JobOutcome::Failed {
+                kind: JobFailureKind::CredentialUnusable,
+                message: "Sign in again.".to_owned(),
+            },
+        );
+        assert_eq!(
+            db.jobs().complete(&failed, at(5)).await.expect("complete"),
+            Completion::Applied {
+                state: JobState::Cancelled
+            }
+        );
+        let credential = db
+            .llm_credentials()
+            .get(CREDENTIAL)
+            .await
+            .expect("credential");
+        assert_eq!(credential.unusable_since, Some(at(5)));
+        assert_eq!(credential.paused_until, None);
     }
 
     #[tokio::test]
