@@ -13,6 +13,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Host-side reads of agent-writable job directories go only through this helper (no symlink following).
+report="${repo_root}/scripts/schema-smoke-report.py"
 image="${SMOKE_IMAGE:-smart-review-spike-codex:0.167.0}"
 volume="${SMOKE_VOLUME:-sr-spike-codex-home}"
 model="${SMOKE_MODEL:-gpt-6.1-sol}"
@@ -151,47 +153,15 @@ for kind in "${kinds[@]}"; do
   rc=0
   docker run "${args[@]}" "${image}" bash /in/job.sh >"${out}/stdout.jsonl" 2>"${out}/stderr.txt" </dev/null || rc=$?
   seconds=$(($(date +%s) - started))
-  verdict="$(python3 -I - "${work}/in/${kind}.schema.json" "${out}/output.json" <<'PY'
-import json, sys
-from jsonschema import Draft202012Validator
-schema = json.load(open(sys.argv[1]))
-try:
-    output = json.load(open(sys.argv[2]))
-except (OSError, ValueError) as error:
-    print(f"no JSON output ({type(error).__name__})")
-    sys.exit(0)
-errors = [e.message for e in Draft202012Validator(schema).iter_errors(output)]
-print("valid" if not errors else "invalid: " + "; ".join(errors[:3]))
-PY
-)"
-  if grep -q invalid_json_schema "${out}/stdout.jsonl" "${out}/stderr.txt" 2>/dev/null; then
-    verdict="schema rejected by the provider"
-  fi
-  printf '%-13s rc=%s secs=%s output=%s %s\n' "${kind}" "${rc}" "${seconds}" "${verdict}" \
-    "($(cat "${out}/credential.txt" 2>/dev/null || echo 'credential state unknown'))" | tee -a "${work}/summary.txt"
+  verdict="$(python3 -I "${report}" verdict "${work}/in/${kind}.schema.json" "${out}")"
+  printf '%-13s rc=%s secs=%s output=%s (%s)\n' "${kind}" "${rc}" "${seconds}" "${verdict}" \
+    "$(python3 -I "${report}" credential "${out}")" | tee -a "${work}/summary.txt"
   if [[ "${rc}" != 0 || "${verdict}" != valid ]]; then failures=$((failures + 1)); fi
 done
 
-# --- sanitised archive (never auth.json; JWTs, account ids and e-mail addresses redacted) ----------------
+# --- sanitised archive: expected regular files only, no symlinks; JWTs, account ids, e-mails redacted ----
 mkdir -p "${archive}"
-python3 -I - "${work}" "${archive}" <<'PY'
-import re, shutil, sys
-from pathlib import Path
-patterns = [(re.compile(r"eyJ[A-Za-z0-9_-]{10,}(\.[A-Za-z0-9_-]+)*"), "<jwt-redacted>"),
-            (re.compile(r"user-[A-Za-z0-9]{10,}"), "user-<redacted>"),
-            (re.compile(r'"(account_id|user_id|email|credits|balance)"\s*:\s*"[^"]*"'), r'"\1": "<redacted>"'),
-            (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "<email-redacted>")]
-src, dst = Path(sys.argv[1]), Path(sys.argv[2])
-for path in list(src.glob("jobs/*/*")) + list(src.glob("in/*")) + [src / "summary.txt"]:
-    if not path.is_file() or path.name == "auth.json":
-        continue
-    target = dst / path.relative_to(src)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    text = path.read_text(errors="replace")
-    for rx, rep in patterns:
-        text = rx.sub(rep, text)
-    target.write_text(text)
-PY
+python3 -I "${report}" archive "${work}" "${archive}"
 echo "schema-smoke: archived to ${archive}"
 if [[ "${failures}" -gt 0 ]]; then
   echo "schema-smoke: ${failures} job kind(s) failed" >&2
