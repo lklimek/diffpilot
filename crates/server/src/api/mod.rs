@@ -16,6 +16,7 @@ pub mod diff;
 pub mod error;
 pub mod events;
 pub mod feedback;
+pub mod health;
 pub mod lines;
 pub mod pr;
 pub mod questions;
@@ -43,6 +44,7 @@ pub fn router(state: AppState) -> Router {
         .merge(diff::routes())
         .merge(events::routes())
         .merge(feedback::routes())
+        .merge(health::routes())
         .merge(lines::routes())
         .merge(pr::routes())
         .merge(questions::routes())
@@ -76,10 +78,11 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use axum::response::Response;
     use contracts::ids::AnalysisId;
-    use contracts::routes::{ANALYSIS_EVENTS, GET_ANALYSIS};
+    use contracts::routes::{ANALYSIS_EVENTS, GET_ANALYSIS, HEALTHZ};
     use db::repo::DEFAULT_TENANT;
     use db::repo::analyses::testing::seed_analysis;
     use futures::StreamExt;
+    use http_body_util::BodyExt;
     use tower::ServiceExt;
 
     use super::*;
@@ -213,6 +216,26 @@ mod tests {
         .expect("stream open")
         .expect("frame");
         assert!(first.starts_with(b"event: analysis"), "{first:?}");
+    }
+
+    #[tokio::test]
+    async fn healthz_answers_204_without_session() {
+        let request = Request::get(HEALTHZ.path)
+            .body(Body::empty())
+            .expect("request");
+        let response = router(test_state().await)
+            .oneshot(request)
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_api_headers(&response, "healthz");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        assert!(body.is_empty(), "{body:?}");
     }
 
     #[tokio::test]
