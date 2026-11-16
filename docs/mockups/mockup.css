@@ -426,3 +426,19 @@ body[data-state=noq] .ghead{border-left-color:var(--low-bd)}
 dialog{max-width:640px}
 
 .gut.off{display:block;visibility:hidden;pointer-events:none}
+
+/* 02: single progress bar */
+.pcenter{display:flex;align-items:center;justify-content:center;padding:24px 32px}
+.pwrap{width:60%;max-width:1400px;min-width:min(100%,480px)}
+.plabel{font-size:15px;margin:0 0 8px;font-weight:600}
+.prow{display:flex;align-items:center;gap:16px}
+.pgrow{flex:1;min-width:0}
+.pgrow>span{display:block}
+.pbar{height:12px;border-radius:6px;border:1px solid var(--border);background:var(--surface-2);overflow:hidden}
+.pbar>i{display:block;height:100%;background:var(--accent)}
+.pbar.paused>i{background:repeating-linear-gradient(135deg,var(--med-bd) 0 6px,var(--med-bg) 6px 12px)}
+.pbar.paused{border-color:var(--med-bd);border-style:dashed}
+.pbar.failed>i{background:var(--high-bd)}
+.pbar.failed{border-color:var(--high-bd);border-style:dotted}
+.pbar.done>i{background:var(--accent)}
+.pbtns{display:flex;gap:8px;flex:none}
