@@ -14,6 +14,8 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - All database code (sqlx, migrations, row types) lives in `crates/db` behind its repository API; nothing else uses sqlx.
 - Pipeline and Ask use only the `JobExecutor` trait; `JobSpec` is self-contained; runner core is
   `execute(JobSpec, EventSink) -> JobResult`.
+- `LlmProvider` is `run` + `cancel` (Ask = fresh run with a context pack, no session resume); model and effort
+  come from the server's `select_model` (v1 placeholder: Sol, high).
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,

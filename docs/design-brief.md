@@ -59,13 +59,13 @@ can judge the PR at project scale, not only line by line.
 |---|---|
 | Screens | Four: Home, Analysis progress, Tour, Settings. The Tour is the whole review screen. |
 | Input | One field: GitHub PR URL. Public repositories only. No dashboard, no recent-reviews list. |
-| Users | GitHub login (GitHub App, user access tokens). Single tenant `default`, hardcoded. |
+| Users | GitHub login (GitHub App, user access tokens). Sign-in limited to an allowlist of GitHub logins in the configuration (default: the owner). Single tenant `default`, hardcoded. |
 | Analysis | The review opens only when the analysis has finished. No partial review. |
 | PR context | Problem and why, related work, fit questions, CI, deterministic counters, project profile status. |
 | GitHub context | Existing review threads at their steps, with an LLM status; CI status. |
-| Ask | Free-text question about the current step, answered by an on-demand agent run with repo access, pinned and labelled as an LLM answer. In the MVP. No one-click deepen actions. |
+| Ask | Free-text question about the current step, answered by a fresh on-demand agent run with repo access and a context pack, pinned and labelled as an LLM answer. In the MVP. No one-click deepen actions. |
 | Progress | Tick off steps; a flow is reviewed when all its steps are ticked; top-bar counter "flows reviewed k / n"; persisted per analysis, together with the last viewed block. |
-| Comments | On any displayed line; written straight into the user's GitHub pending review. No local drafts. |
+| Comments | On any displayed line; written straight into the user's GitHub pending review (a line outside the PR diff becomes a file-level comment that links to the line). No local drafts. |
 | Feedback | correct / wrong / irrelevant / overrated / underrated + note; "missed by the LLM" recorded automatically. Stored locally and written to MemCan. |
 | Resume | Opening a PR with an existing analysis resumes it (ticks, answers, last viewed block kept). If the head moved: banner and "Re-analyze" (fresh analysis, ticks not carried over). |
 | Project profile | Union of `.claudius/project-profile.md` on the base ref and MemCan `type: project-profile`; the repository file wins on conflict. Neither: analysis runs without it. |
@@ -73,8 +73,8 @@ can judge the PR at project scale, not only line by line.
 | Language | UI English. LLM texts in the user's configured language (default English). |
 | Languages of code | Any, LLM-only. Built-in `generic` tech plugin (path globs and line regexes). |
 | PR size | No limit. Huge PRs (10k+ lines) are split into many agent runs; long runtime is acceptable. |
-| LLM | Codex CLI on a ChatGPT Pro subscription (no 5-hour window). Provider trait designed for a second provider. Usage-limit pause and resume must work but are not a first-stage priority. |
-| Agent access | Read-only checkout, no code execution. MemCan MCP, the `claudius` plugin, a server-side read-only GitHub lookup tool, related repos as extra context. |
+| LLM | Codex CLI on a ChatGPT Pro subscription (no 5-hour window). Model Sol at reasoning effort high for every job kind (§5 Model selection). Provider trait designed for a second provider. Usage-limit pause and resume must work but are not a first-stage priority. |
+| Agent access | Read-only checkout, no code execution. MemCan MCP (read and write), the `claudius` plugin, a server-side read-only GitHub lookup tool, related repos as extra context. |
 | Deployment | docker compose, LAN. Portainer-compatible. Designed to be exposed publicly later. |
 
 ### Later
@@ -132,8 +132,11 @@ The label "Was wrong" is not used.
 
 Classification (closed list): `behavioural`, `api_contract`, `new_code`, `refactor_pure`, `move`, `rename`,
 `test`, `docs_comments`, `generated_mechanical`, `config_build`, `dependency`, `other`.
-`test`, `docs_comments` and `generated_mechanical` material forms the Not analysed sections. `refactor_pure`
-and `rename` are LLM claims: a flow so classified is an ordinary flow labelled "LLM-classified refactor".
+`test`, `docs_comments` and `generated_mechanical` material recognised deterministically (path or line rule)
+forms the Not analysed sections. Test code that only the LLM recognises (for example a `#[cfg(test)]` module
+inside a production file) is shown as its own flow at the end, labelled "LLM-classified tests"; it is never
+hidden, because only deterministic checks may hide material. `refactor_pure` and `rename` are LLM claims: a
+flow so classified is an ordinary flow labelled "LLM-classified refactor".
 The only quiet rows for moves are those whose text is deterministically identical.
 
 **FlowGraph** — structured data, not diagram syntax; the UI renders it. Nodes: id, step number, kind
@@ -200,31 +203,33 @@ Rules for every screen:
 States every screen needs: loading, empty, error.
 
 ### 4.1 Home
-One field (PR URL) and "Analyze"; signed-out state "Sign in with GitHub"; error state for a URL that is not
-a PR or a repository without the GitHub App installed. A PR with an existing analysis is resumed ("Resume
-review": ticks, answers and last viewed block kept, nothing re-analysed). If the head moved: banner "This
+One field (PR URL) and "Analyze"; signed-out state "Sign in with GitHub"; error states for a URL that is not
+a PR, a repository without the GitHub App installed, and a GitHub login that is not on the allowlist. After a
+cancelled analysis Home shows "Analysis cancelled — analyze again". A PR with an existing analysis is
+resumed ("Resume review": ticks, answers and last viewed block kept, nothing re-analysed). If the head moved: banner "This
 analysis is for `abc123`; the PR is now at `def456`" with "Re-analyze" (fresh analysis, ticks not carried
 over) and a link to open the old analysis.
 
 ### 4.2 Analysis progress
 A single centred progress bar: "k of n flows analysed" and "Cancel analysis". No stages, activity feed or
-flows are shown. Four states:
+flows are shown. States:
 
 | State | Shows |
 |---|---|
+| Planning | indeterminate bar, "Planning flows…", Cancel analysis (the number of flows is not known yet) |
 | Running | bar, "k of n flows analysed", Cancel analysis |
 | Paused | "Codex usage limit reached, resumes at HH:MM" |
-| Failed | which flow failed, Retry |
+| Failed | which flow failed, or a plain description of what failed before any flow existed; Retry |
 | Finished | "n of n flows analysed", Open review |
 
-The review opens only when the analysis has finished.
+The review opens only when the analysis has finished. Cancel discards partial results and returns to Home.
 
 ### 4.3 Tour (the review screen)
 
 **Sequence.** PR context → for each flow in order: flow introduction → its steps, one at a time → next flow.
 Previous / Next walk this sequence; after the last step of a flow comes the next flow's introduction. The
 first visit starts at PR context; reopening a PR returns to the last viewed block. Flow order: flows that
-change behaviour by importance first; then LLM-classified refactors; then quiet rows.
+change behaviour by importance first; then LLM-classified refactors; then LLM-classified tests; then quiet rows.
 
 **Layout.** Three columns — left menu | centre | inspector. Column widths are resizable by dragging and
 remembered. Each column has "hide" and "full screen". A hidden column leaves a strip with its name;
@@ -286,14 +291,16 @@ Legend (shown in `?`):
   6. Questions to check — LLM suspicions phrased as questions ("Can `broadcast_tx` be sent twice when the
      reply arrives late?"). If none: "The LLM raised no questions. That is not evidence of no defects."
   7. Assessment (collapsed by default): fields as in §3.
-  8. GitHub threads at this location, each with an LLM status: still valid / stale / already addressed.
+  8. GitHub threads at this location. Threads located in the flow's steps carry an LLM status from the flow
+     analysis: still valid / stale / already addressed; other threads have no status.
 - **Dock** (below the sections, works at step level without selecting a highlight):
   - Ask — one-line text field that grows while typing; answers stay pinned to the step, labelled as LLM
     answers.
   - Feedback — correct / wrong / irrelevant / overrated / underrated, optional note.
   - Comment — on ANY displayed line, annotated or not. While it is being written the line is highlighted;
     after posting the line keeps a comment marker. "Add to GitHub pending review" writes straight into the
-    user's pending review on GitHub.
+    user's pending review on GitHub. GitHub accepts line threads only inside the diff, so a comment on a line
+    outside the PR diff is added as a file-level comment whose body links to the line.
 
 **Progress.** Tick per step; a flow is reviewed when all its steps are ticked; top bar "flows reviewed k / n".
 
@@ -307,7 +314,9 @@ overrated; (2) a defect in a plain changed line without annotation, commented by
 returning to an interrupted review.
 
 ### 4.4 Settings
-- LLM credentials: "working" / "not working" only, with "Check again". Credentials never reach the browser.
+- LLM credentials: "working" / "not working" only, with "Check again" (the runner runs a cheap check on
+  demand). Credentials never reach the browser. The first Codex login is a one-time manual command in the
+  runner container (runbook); there is no login UI.
 - Language of LLM texts.
 - GitHub App installation status.
 - Per repository, read-only: built-in "not analysed" rules (path globs and line regexes), related
@@ -373,9 +382,9 @@ tenant's tokens, the container checks out the repository (or unpacks its cache),
 v1 must reach that model by adding one new implementation, without changing the pipeline or the runner logic:
 
 1. `JobSpec` is self-contained: job id, kind, repo clone URL, base and head SHA, prompt, output JSON schema,
-   limits, LLM provider and model, MCP endpoints, optional credentials (repo token, LLM credential reference),
-   optional session reference (resume an earlier agent session). Nothing is passed through shared volumes or
-   ambient container state. In v1 the repo token is absent.
+   limits, LLM provider, model and reasoning effort, MCP endpoints, optional credentials (repo token, LLM
+   credential reference). Nothing is passed through shared volumes or ambient container state. In v1 the repo
+   token is absent.
 2. `JobExecutor` (server-side trait): `submit(JobSpec) → JobHandle`, `events(JobHandle) → stream`,
    `cancel(JobHandle)`. The pipeline and Ask only talk to this trait. v1 has one implementation,
    `QueueExecutor` (puts the job on the DB queue for the long-lived runner). A later `ContainerExecutor`
@@ -394,11 +403,12 @@ v1 must reach that model by adding one new implementation, without changing the 
 interactive.
 
 **Ask requires on-demand interactive jobs.** Ask is not part of the batch pipeline. A question about a step
-becomes an `ask` job on the same `JobSpec` / `JobExecutor` interface: it carries the question, the step and
-its flow, and a session reference so the agent resumes the context of the analysis run (provider `resume`).
-The job streams the answer through the same events channel; the answer is stored as a `Question` of the
-step. Ask is available only after the analysis has finished, so it does not compete with batch jobs for the
-runner except during a re-analysis.
+becomes an `ask` job on the same `JobSpec` / `JobExecutor` interface. Every question is a fresh agent run
+(no session resume) with a context pack: the question, the step's data, the flow's analysis and the earlier
+questions and answers of that step. The job streams the answer through the same events channel; the answer is
+stored as a `Question` of the step. Ask is available only after the analysis has finished, so it competes
+with batch jobs only during a re-analysis; then an `ask` job is claimed before the next batch job (a running
+job is not pre-empted).
 The job interface must not assume that all jobs are long-running batches.
 
 **Pipeline** (each step is a resumable job; partial results are persisted but not shown until the analysis
@@ -412,8 +422,9 @@ finishes)
 4. PR context (own job): problem and why, related work through the GitHub lookup tool, fit questions with
    evidence, project profile lookup. Independent of step 5; queued like any job.
 5. Analyse: one agent run per flow — flow graph (structured), flow introduction, steps with called by /
-   decides / next / why, annotations, assessment, out-of-diff impact, pattern repetitions.
-   Flows classified as pure refactor or rename are analysed like any other flow.
+   decides / next / why, annotations, assessment, out-of-diff impact, pattern repetitions, LLM status of the
+   GitHub threads located in its steps. Flows classified as pure refactor or rename are analysed like any
+   other flow.
 6. Verify: schema, ranges within files, coverage of every changed line (uncovered lines become
    "Unexplained"), move claims, flow-graph consistency (edges reference existing nodes, every node maps to a
    step); up to 2 repair runs.
@@ -427,24 +438,33 @@ There is no summarise step: no PR-level summary or overall risk. The progress ba
 RAM). v1 ships `generic`, with built-in "not analysed" rules of two kinds:
 - path globs: `tests/`, `*_test.go`, `*.md`, lockfiles, `// Code generated` headers;
 - line regexes: for example lines matching `^\s*//` (comment-only lines).
-Custom rules come later. Rust and Go plugins come in v2.
+Custom rules come later. Rust and Go plugins come in v2; until then test code inside production files is
+LLM-classified (§3).
 
-**LLM provider** (trait): `run(prompt, cwd, json_schema, limits) → event stream → {structured, session_id,
-usage}`, `resume`, `cancel`. Credential types: `codex_chatgpt` (subscription; owner's tenant only) and
+**LLM provider** (trait): `run(prompt, cwd, json_schema, model, limits) → event stream → {structured,
+usage}`, `cancel`. Credential types: `codex_chatgpt` (subscription; owner's tenant only) and
 `api_key` (required for other tenants: Anthropic forbids subscription tokens in multi-user services, OpenAI
 is unclear). See `llm-runtime.md` (Background material).
+
+**Model selection** — one server-side function: job kind and context in, model and reasoning effort out. In v1
+it is a placeholder that returns Sol at high effort for every job kind; it can become a real decision function
+later without changing its callers. The exact Codex model id is verified at implementation.
 
 **Comments** — the server writes to the user's GitHub pending review with the user's token: the first
 comment creates the pending review, later ones are added, an existing pending review is reused; edit and
 delete act on GitHub; the user submits on GitHub. Expected API: GraphQL `addPullRequestReview` (pending) and
-`addPullRequestReviewThread`. A comment on a line without annotation is also saved as feedback
+`addPullRequestReviewThread`. A comment on a line outside the PR diff is added as a file-level comment whose
+body links to the line. A comment on a changed line without annotation is also saved as feedback
 `missed by the LLM`. The pending-review count in the top bar and the list in the centre are read from GitHub.
 
 **Multi-tenancy** — every table carries `tenant_id`; `tenants`, `users`, `memberships` exist from v1 with
 one seeded tenant `default`. No tenant UI.
 
 **Security** — PR content is untrusted (prompt injection): read-only agent, no repo-provided agent config,
-egress allowlist, only the LLM credential in the runner. The GitHub lookup tool is read-only and limited to
+egress allowlist, only the LLM credential in the runner. Sign-in is limited to the configured allowlist.
+The agent has full MemCan MCP access (read and write); an injected PR could write misleading memories. This
+is an accepted risk until MemCan can distinguish agent-written memories; feedback and calibration examples
+are written by the server. The GitHub lookup tool is read-only and limited to
 the repository and its related repositories. Secrets encrypted at rest. Cookie sessions, CSRF, secure-cookie
 and trusted-proxy settings so the app can sit behind a TLS reverse proxy.
 
@@ -471,7 +491,7 @@ Chosen to match the owner's active projects (penny, gamiscreen, memcan). sqlx (p
 | API types | serde; `schemars` (JSON schema for agent output), `jsonschema` (validation), `ts-rs` (TypeScript types) |
 | GitHub | GitHub App with user access tokens; `octocrab` or `reqwest`; GraphQL for the pending review |
 | Secrets | `aes-gcm` |
-| MemCan | `rmcp` client (feedback writes); the agent uses MemCan MCP directly |
+| MemCan | `rmcp` client (feedback writes); the agent uses MemCan MCP directly (read and write) |
 | Agent tools | `rmcp` server side for the read-only GitHub lookup tool |
 | Diff / moves | `git` subprocess, `similar` |
 | Frontend | React 19, TypeScript, Vite, TanStack Query, react-router, Tailwind 4; code shown by an own line renderer (plain HTML rows) with Shiki for syntax colouring, no editor component; flow diagram rendered by the UI from the graph data; vitest, Playwright; embedded with `rust-embed` |
@@ -503,7 +523,8 @@ Only what is not decided:
 - Exact Claude and Codex flags and settings that neutralise repository-provided agent configuration
   (instruction files, hooks, MCP and plugin config in the checkout).
 - Portainer handling of containers created outside the stack (the later per-job model).
-- Timing of the Rust and Go plugins: v1 or v2 (test regions inside production files need parsing).
+- Pending comments that are file-level (lines outside the diff): verify the mechanism.
+- Whether the runner needs a MemCan token, and the MemCan scope for calibration examples.
 
 ## Background material
 
