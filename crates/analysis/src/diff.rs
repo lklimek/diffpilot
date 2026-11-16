@@ -1,8 +1,9 @@
 //! Hunks of a pull request from `git diff -U0 -M` between base and head.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use contracts::common::LineSide;
 use contracts::ids::{CommitSha, HunkId};
@@ -165,10 +166,14 @@ impl<'a> DiffIndex<'a> {
     }
 }
 
-/// The changed files between `base` and `head` in the repository at `repo` (read-only).
+/// Most `git diff` output read (a pull request's diff is attacker-sized input).
+pub const MAX_DIFF_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The changed files between `base` and `head` in the repository at `repo` (read-only); fails when the diff
+/// output exceeds [`MAX_DIFF_BYTES`].
 pub fn diff(repo: &Path, base: &CommitSha, head: &CommitSha) -> Result<Vec<FileDiff>, DiffError> {
     // Fixed options and no user or system config: hunks (and their ids) depend only on the two commits.
-    let output = Command::new("git")
+    let mut child = Command::new("git")
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .arg("-C")
@@ -190,13 +195,29 @@ pub fn diff(repo: &Path, base: &CommitSha, head: &CommitSha) -> Result<Vec<FileD
         .arg(&base.0)
         .arg(&head.0)
         .arg("--")
-        .output()?;
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdout = Vec::new();
+    if let Some(out) = child.stdout.take() {
+        out.take(MAX_DIFF_BYTES + 1).read_to_end(&mut stdout)?;
+    }
+    if stdout.len() > usize::try_from(MAX_DIFF_BYTES).unwrap_or(usize::MAX) {
+        // The child may block on a full pipe; it is no longer needed.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(DiffError::Git {
+            message: format!("the diff is larger than {MAX_DIFF_BYTES} bytes"),
+        });
+    }
+    let output = child.wait_with_output()?;
     if !output.status.success() {
         return Err(DiffError::Git {
             message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         });
     }
-    parse(&String::from_utf8_lossy(&output.stdout))
+    parse(&String::from_utf8_lossy(&stdout))
 }
 
 /// Parses `git diff -U0` output and assigns hunk ids in path order, then file order.
@@ -228,11 +249,11 @@ fn parse(text: &str) -> Result<Vec<FileDiff>, DiffError> {
             file.path = unquote(to);
         } else if let Some(old) = line.strip_prefix("--- ") {
             if file.status == FileStatus::Deleted {
-                file.path = strip_side_prefix(&unquote(old), "a/");
+                file.path = strip_side_prefix(&unquote(file_header_name(old)), "a/");
             }
         } else if let Some(new) = line.strip_prefix("+++ ") {
             if file.status != FileStatus::Deleted {
-                file.path = strip_side_prefix(&unquote(new), "b/");
+                file.path = strip_side_prefix(&unquote(file_header_name(new)), "b/");
             }
         } else if line.starts_with("Binary files ") {
             file.binary = true;
@@ -277,6 +298,16 @@ fn header_path(rest: &str) -> Option<String> {
     let old = rest.strip_prefix("a/")?.get(..len)?;
     let new = rest.get(2 + len..)?.strip_prefix(" b/")?;
     (old == new).then(|| old.to_owned())
+}
+
+/// The name of a `---`/`+++` line: git ends an unquoted name containing a space with a tab separator (a tab
+/// inside a name is always quoted).
+fn file_header_name(text: &str) -> &str {
+    if text.starts_with('"') {
+        text
+    } else {
+        text.strip_suffix('\t').unwrap_or(text)
+    }
 }
 
 fn closing_quote(quoted: &str) -> Option<usize> {
@@ -619,6 +650,67 @@ mod tests {
         assert_eq!(files[0].path, "notes.md");
         let spans: Vec<_> = files[0].hunks.iter().map(|h| (h.base, h.head)).collect();
         assert_eq!(spans, [(span(1, 2), span(0, 0)), (span(9, 1), span(7, 1))]);
+    }
+
+    fn git(repo: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.test")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.test")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn paths_with_spaces_from_real_git_output() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "main"]);
+        let write = |name: &str, text: &str| std::fs::write(repo.join(name), text).expect("write");
+        write("mod file.txt", "a\nb\nc\nd\ne\nf\n");
+        write("del file.txt", "x\n");
+        write("old name.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n");
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "base"]);
+        let base = CommitSha(git(repo, &["rev-parse", "HEAD"]));
+        write("mod file.txt", "a\nB\nc\nd\ne\nf\n");
+        std::fs::remove_file(repo.join("del file.txt")).expect("remove");
+        write("new file.txt", "n\n");
+        git(repo, &["mv", "old name.txt", "new name.txt"]);
+        write("new name.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\nten\n");
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-q", "-m", "head"]);
+        let head = CommitSha(git(repo, &["rev-parse", "HEAD"]));
+
+        let files = diff(repo, &base, &head).expect("diff");
+        let summary: Vec<(&str, Option<&str>, FileStatus, usize)> = files
+            .iter()
+            .map(|f| {
+                (
+                    f.path.as_str(),
+                    f.old_path.as_deref(),
+                    f.status,
+                    f.hunks.len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("del file.txt", None, FileStatus::Deleted, 1),
+                ("mod file.txt", None, FileStatus::Modified, 1),
+                ("new file.txt", None, FileStatus::Added, 1),
+                ("new name.txt", Some("old name.txt"), FileStatus::Renamed, 1),
+            ]
+        );
     }
 
     #[test]
