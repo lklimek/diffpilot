@@ -3,7 +3,7 @@
 //! `JobExecutor` returning the fixture agent outputs, and the tour and lines endpoints.
 #![expect(clippy::expect_used, reason = "test helpers outside #[test] functions")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
@@ -94,6 +94,10 @@ fn numbered(lines: std::ops::RangeInclusive<u32>) -> String {
 #[derive(Debug, Default)]
 struct ScriptedExecutor {
     stages: Mutex<HashMap<JobId, String>>,
+    /// Analysis of each submitted job.
+    analyses: Mutex<HashMap<JobId, AnalysisId>>,
+    /// Jobs whose result was delivered.
+    finished: Mutex<HashSet<JobId>>,
     submitted: Mutex<Vec<String>>,
     /// Stages answered other than with their fixture output.
     scripts: Mutex<HashMap<String, Script>>,
@@ -150,6 +154,10 @@ impl JobExecutor for ScriptedExecutor {
             .expect("lock")
             .insert(job_id, stage.clone());
         self.submitted.lock().expect("lock").push(stage);
+        self.analyses
+            .lock()
+            .expect("lock")
+            .insert(job_id, request.spec.analysis_id);
         Box::pin(async move { Ok(JobHandle { job_id }) })
     }
 
@@ -167,6 +175,7 @@ impl JobExecutor for ScriptedExecutor {
             },
             Some(Script::Pending) => return stream::pending().boxed(),
         };
+        self.finished.lock().expect("lock").insert(handle.job_id);
         let result = JobResult {
             job_id: handle.job_id,
             attempt: 1,
@@ -182,6 +191,18 @@ impl JobExecutor for ScriptedExecutor {
     fn cancel(&self, handle: &JobHandle) -> BoxFuture<'_, Result<(), ExecutorError>> {
         let stage = self.stages.lock().expect("lock")[&handle.job_id].clone();
         self.cancelled.lock().expect("lock").push(stage);
+        Box::pin(async { Ok(()) })
+    }
+
+    fn cancel_analysis(&self, analysis: AnalysisId) -> BoxFuture<'_, Result<(), ExecutorError>> {
+        let finished = self.finished.lock().expect("lock").clone();
+        let stages = self.stages.lock().expect("lock").clone();
+        let mut cancelled = self.cancelled.lock().expect("lock");
+        for (job, analysis_of_job) in self.analyses.lock().expect("lock").iter() {
+            if *analysis_of_job == analysis && !finished.contains(job) {
+                cancelled.push(stages[job].clone());
+            }
+        }
         Box::pin(async { Ok(()) })
     }
 }

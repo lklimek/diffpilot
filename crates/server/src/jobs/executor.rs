@@ -5,7 +5,7 @@ use std::fmt::Debug;
 
 use chrono::{DateTime, Utc};
 use contracts::common::RepoRef;
-use contracts::ids::JobId;
+use contracts::ids::{AnalysisId, JobId};
 use contracts::job::event::JobEvent;
 use contracts::job::result::JobResult;
 use contracts::job::spec::{JobPriority, JobSpec};
@@ -25,6 +25,10 @@ pub trait JobExecutor: Send + Sync + Debug {
 
     /// Requests cancellation; the job ends with a `cancelled` result unless it finished first.
     fn cancel(&self, handle: &JobHandle) -> BoxFuture<'_, Result<(), ExecutorError>>;
+
+    /// Requests cancellation of every unfinished job of `analysis`, including jobs submitted before a server
+    /// restart; used when the analysis ends.
+    fn cancel_analysis(&self, analysis: AnalysisId) -> BoxFuture<'_, Result<(), ExecutorError>>;
 }
 
 /// A job to run.

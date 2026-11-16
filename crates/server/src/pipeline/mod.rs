@@ -12,7 +12,7 @@
 //! the analysis and cancels its unfinished jobs.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
@@ -29,7 +29,6 @@ use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{
     CredentialKind, JobLimits, JobPriority, JobSpec, LlmCredentialRef, RepoCheckout,
 };
-use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use db::repo::jobs::JobStage;
@@ -168,7 +167,10 @@ pub fn start(state: &AppState, analysis: AnalysisId) {
             } else {
                 tracing::error!(%analysis, error = ?error, "analysis pipeline failed");
             }
-            cancel_jobs(&state, analysis).await;
+            // Every unfinished job of the analysis, also those submitted before a restart.
+            if let Err(error) = state.executor.cancel_analysis(analysis).await {
+                tracing::error!(%analysis, error = ?error, "could not cancel the jobs of the ended analysis");
+            }
             let stored = state
                 .progress
                 .set_analysis_state(&state.db, analysis, &final_state, Utc::now())
@@ -206,8 +208,6 @@ struct Driver<'a> {
     files: Vec<FileDiff>,
     plan: Option<PlanOutput>,
     paused: bool,
-    /// Submitted jobs without a final result yet; cancelled when the driver fails.
-    live: HashMap<JobStage, JobHandle>,
 }
 
 async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), PipelineError> {
@@ -232,9 +232,8 @@ async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), PipelineErr
         files,
         plan,
         paused: false,
-        live: HashMap::new(),
     };
-    driver.run().await
+    driver.run_stages().await
 }
 
 /// Fetches the base tip and head into the mirror and stores their merge base as the analysis base; returns the
@@ -315,73 +314,7 @@ async fn diff_files(
         .map_err(PrDiffError::from)
 }
 
-/// Cancels every unfinished stored job of `analysis`, including jobs submitted before a server restart that no
-/// driver of this process follows: an ended analysis leaves nothing runnable.
-async fn cancel_jobs(state: &AppState, analysis: AnalysisId) {
-    let unfinished = state
-        .db
-        .jobs()
-        .list_for_analysis(
-            analysis,
-            &[
-                JobState::Queued,
-                JobState::Claimed,
-                JobState::Running,
-                JobState::Paused,
-            ],
-        )
-        .await;
-    let jobs = match unfinished {
-        Ok(jobs) => jobs,
-        Err(error) => {
-            tracing::error!(%analysis, error = ?error, "could not list the jobs of the ended analysis");
-            return;
-        }
-    };
-    for job in jobs {
-        match state.executor.cancel(&JobHandle { job_id: job.id }).await {
-            Ok(()) => {
-                tracing::debug!(%analysis, job = %job.id, "job of the ended analysis cancelled");
-            }
-            Err(error) => tracing::warn!(
-                %analysis,
-                job = %job.id,
-                error = ?error,
-                "could not cancel a job of the ended analysis"
-            ),
-        }
-    }
-}
-
 impl Driver<'_> {
-    async fn run(&mut self) -> Result<(), PipelineError> {
-        let result = self.run_stages().await;
-        if result.is_err() {
-            self.cancel_live().await;
-        }
-        result
-    }
-
-    /// Cancels every job this driver submitted without a final result yet.
-    async fn cancel_live(&mut self) {
-        for (stage, handle) in std::mem::take(&mut self.live) {
-            match self.state.executor.cancel(&handle).await {
-                Ok(()) => tracing::debug!(
-                    analysis = %self.analysis,
-                    stage = %stage.key(),
-                    job = %handle.job_id,
-                    "job of the failed analysis cancelled"
-                ),
-                Err(error) => tracing::warn!(
-                    analysis = %self.analysis,
-                    stage = %stage.key(),
-                    error = ?error,
-                    "could not cancel a job of the failed analysis"
-                ),
-            }
-        }
-    }
-
     async fn run_stages(&mut self) -> Result<(), PipelineError> {
         let mut updates = Updates::new();
         if self.plan.is_some() {
@@ -396,7 +329,6 @@ impl Driver<'_> {
         while let Some((stage, item)) = updates.next().await {
             match item {
                 Some(Ok(JobUpdate::Finished(result))) => {
-                    self.live.remove(&stage);
                     self.finish(&mut updates, stage, result).await?;
                 }
                 Some(Ok(JobUpdate::Paused { resumes_at })) => {
@@ -490,7 +422,6 @@ impl Driver<'_> {
             })
             .await?;
         tracing::debug!(analysis = %self.analysis, stage = %stage.key(), job = %handle.job_id, "pipeline job submitted");
-        self.live.insert(stage.clone(), handle);
         self.follow(updates, stage, handle);
         Ok(())
     }

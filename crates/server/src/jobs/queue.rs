@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use contracts::ids::JobId;
+use contracts::ids::{AnalysisId, JobId};
 use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::Db;
@@ -98,6 +98,29 @@ impl JobExecutor for QueueExecutor {
                 Err(DbError::NotFound) => Err(ExecutorError::UnknownJob(job)),
                 Err(error) => Err(error.into()),
             }
+        })
+    }
+
+    fn cancel_analysis(&self, analysis: AnalysisId) -> BoxFuture<'_, Result<(), ExecutorError>> {
+        Box::pin(async move {
+            let unfinished = self
+                .db
+                .jobs()
+                .list_for_analysis(
+                    analysis,
+                    &[
+                        JobState::Queued,
+                        JobState::Claimed,
+                        JobState::Running,
+                        JobState::Paused,
+                    ],
+                )
+                .await?;
+            for job in &unfinished {
+                let state = self.db.jobs().request_cancel(job.id, Utc::now()).await?;
+                tracing::info!(%analysis, job = %job.id, state = state.as_str(), "job of the ended analysis cancelled");
+            }
+            Ok(())
         })
     }
 }
@@ -416,6 +439,38 @@ mod tests {
             "a finished job yields only its result"
         );
         assert!(finished.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn cancel_analysis_cancels_only_its_unfinished_jobs() {
+        let (db, executor, analysis) = setup().await;
+        let running = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit f1");
+        claim(&db, 60).await;
+        let queued = executor
+            .submit(request(analysis, "f2"))
+            .await
+            .expect("submit f2");
+        let other_analysis = seed_analysis(&db).await.expect("seed");
+        let other = executor
+            .submit(request(other_analysis, "f1"))
+            .await
+            .expect("submit other");
+
+        executor
+            .cancel_analysis(analysis)
+            .await
+            .expect("cancel analysis");
+        let running = db.jobs().get(running.job_id).await.expect("f1");
+        assert_eq!(running.state, JobState::Claimed);
+        assert!(running.cancel_requested);
+        let queued = db.jobs().get(queued.job_id).await.expect("f2");
+        assert_eq!(queued.state, JobState::Cancelled);
+        let other = db.jobs().get(other.job_id).await.expect("other");
+        assert_eq!(other.state, JobState::Queued);
+        assert!(!other.cancel_requested);
     }
 
     #[tokio::test]
