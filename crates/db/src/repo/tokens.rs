@@ -1,5 +1,7 @@
 //! Repository for `user_tokens`: GitHub user access and refresh tokens as AES-GCM ciphertext. `version` is the
-//! compare-and-swap counter that keeps a refresh from overwriting a newer pair.
+//! compare-and-swap counter that keeps a refresh from overwriting a newer pair: it starts at a random value for
+//! every new row and grows by one per write, so a version read before the row was deleted and re-created does
+//! not match the new row.
 
 use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
@@ -39,12 +41,24 @@ pub struct EncryptedTokens {
 pub struct StoredTokens {
     /// The pair.
     pub tokens: EncryptedTokens,
-    /// Compare-and-swap counter; changes with every write.
+    /// Compare-and-swap counter; changes with every write and is not reused by a re-created row.
     pub version: i64,
 }
 
+/// Which stored pair [`UserTokens::end_sign_in`] applies to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PairCondition {
+    /// Whatever is stored (explicit sign-out).
+    Any,
+    /// Only the pair with this version (a refresh of that pair was rejected).
+    Version(i64),
+    /// Only when no pair is stored (sessions left without tokens).
+    Absent,
+}
+
 impl UserTokens<'_> {
-    /// Stores the pair of a sign-in, replacing any previous pair (the version still advances).
+    /// Stores the pair of a sign-in, replacing any previous pair (the version still advances; a new row starts
+    /// at a random version below 2^62).
     pub async fn put(
         &self,
         user_id: &str,
@@ -54,8 +68,9 @@ impl UserTokens<'_> {
     ) -> Result<(), DbError> {
         sqlx::query(
             "INSERT INTO user_tokens
-                 (user_id, tenant_id, access_ct, access_expires_at, refresh_ct, refresh_expires_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+                 (user_id, tenant_id, access_ct, access_expires_at, refresh_ct, refresh_expires_at, version,
+                  updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, random() & 0x3FFFFFFFFFFFFFFF, ?)
              ON CONFLICT (user_id) DO UPDATE SET tenant_id = excluded.tenant_id,
                  access_ct = excluded.access_ct, access_expires_at = excluded.access_expires_at,
                  refresh_ct = excluded.refresh_ct, refresh_expires_at = excluded.refresh_expires_at,
@@ -130,13 +145,56 @@ impl UserTokens<'_> {
         Ok(updated.rows_affected() == 1)
     }
 
-    /// Deletes the user's pair; false if there was none.
-    pub async fn delete(&self, user_id: &str) -> Result<bool, DbError> {
-        let deleted = sqlx::query("DELETE FROM user_tokens WHERE user_id = ?")
-            .bind(user_id)
-            .execute(self.pool)
-            .await?;
-        Ok(deleted.rows_affected() > 0)
+    /// Ends the user's sign-in in one transaction: deletes the token pair and every session of the user if the
+    /// stored pair matches `condition`; false (nothing changed) otherwise.
+    pub async fn end_sign_in(
+        &self,
+        user_id: &str,
+        condition: PairCondition,
+    ) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
+        let matched = match condition {
+            PairCondition::Any => {
+                sqlx::query("DELETE FROM user_tokens WHERE user_id = ?")
+                    .bind(user_id)
+                    .execute(&mut *tx)
+                    .await?;
+                true
+            }
+            PairCondition::Version(version) => {
+                sqlx::query("DELETE FROM user_tokens WHERE user_id = ? AND version = ?")
+                    .bind(user_id)
+                    .bind(version)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected()
+                    == 1
+            }
+            PairCondition::Absent => {
+                let stored: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM user_tokens WHERE user_id = ?)",
+                )
+                .bind(user_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                !stored
+            }
+        };
+        if !matched {
+            return Ok(false);
+        }
+        // The guard keeps a pair stored meanwhile (Absent) together with its sessions.
+        sqlx::query(
+            "DELETE FROM sessions WHERE user_id = ?
+             AND (? OR NOT EXISTS (SELECT 1 FROM user_tokens WHERE user_id = ?))",
+        )
+        .bind(user_id)
+        .bind(condition != PairCondition::Absent)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 }
 
@@ -210,7 +268,161 @@ mod tests {
                 .version,
             current.version + 1
         );
-        assert!(tokens.delete("u-1").await.expect("delete"));
+        assert!(
+            tokens
+                .end_sign_in("u-1", PairCondition::Any)
+                .await
+                .expect("end")
+        );
         assert_eq!(tokens.get("u-1").await.expect("get"), None);
+    }
+
+    async fn db_with_signed_in_user() -> Db {
+        let db = Db::in_memory().await.expect("db");
+        let profile = GithubProfile {
+            github_id: 42,
+            login: "lklimek".to_owned(),
+            name: None,
+            avatar_url: None,
+        };
+        db.users()
+            .upsert_member(DEFAULT_TENANT, "u-1", &profile, Utc::now())
+            .await
+            .expect("user");
+        db.user_tokens()
+            .put("u-1", DEFAULT_TENANT, &pair(1), Utc::now())
+            .await
+            .expect("put");
+        db.sessions()
+            .create(
+                &crate::repo::sessions::NewSession {
+                    token_hash: b"h",
+                    tenant_id: DEFAULT_TENANT,
+                    user_id: "u-1",
+                    csrf_token: "c",
+                    expires_at: Utc::now() + TimeDelta::hours(1),
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("session");
+        db
+    }
+
+    async fn session_count(db: &Db) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = 'u-1'")
+            .fetch_one(&db.pool)
+            .await
+            .expect("count")
+    }
+
+    #[tokio::test]
+    async fn stale_version_does_not_match_a_recreated_row() {
+        let db = db_with_signed_in_user().await;
+        let tokens = db.user_tokens();
+        let stale = tokens
+            .get("u-1")
+            .await
+            .expect("get")
+            .expect("stored")
+            .version;
+        assert!(
+            tokens
+                .end_sign_in("u-1", PairCondition::Any)
+                .await
+                .expect("end")
+        );
+        tokens
+            .put("u-1", DEFAULT_TENANT, &pair(5), Utc::now())
+            .await
+            .expect("new sign-in");
+        assert!(
+            !tokens
+                .replace("u-1", stale, &pair(6), Utc::now())
+                .await
+                .expect("stale replace"),
+            "a version read before the row was re-created must not match"
+        );
+        assert!(
+            !tokens
+                .end_sign_in("u-1", PairCondition::Version(stale))
+                .await
+                .expect("stale end"),
+        );
+        assert_eq!(
+            tokens.get("u-1").await.expect("get").expect("kept").tokens,
+            pair(5)
+        );
+    }
+
+    #[tokio::test]
+    async fn end_sign_in_applies_only_to_its_pair() {
+        let db = db_with_signed_in_user().await;
+        let tokens = db.user_tokens();
+        let version = tokens
+            .get("u-1")
+            .await
+            .expect("get")
+            .expect("stored")
+            .version;
+        assert!(
+            !tokens
+                .end_sign_in("u-1", PairCondition::Absent)
+                .await
+                .expect("absent")
+        );
+        assert!(
+            !tokens
+                .end_sign_in("u-1", PairCondition::Version(version + 1))
+                .await
+                .expect("other version")
+        );
+        assert_eq!(session_count(&db).await, 1, "nothing ended");
+        assert!(
+            tokens
+                .end_sign_in("u-1", PairCondition::Version(version))
+                .await
+                .expect("own version")
+        );
+        assert_eq!(tokens.get("u-1").await.expect("get"), None);
+        assert_eq!(session_count(&db).await, 0);
+    }
+
+    #[tokio::test]
+    async fn absent_pair_ends_leftover_sessions() {
+        let db = db_with_signed_in_user().await;
+        sqlx::query("DELETE FROM user_tokens WHERE user_id = 'u-1'")
+            .execute(&db.pool)
+            .await
+            .expect("simulate a pair lost before its sessions");
+        assert!(
+            db.user_tokens()
+                .end_sign_in("u-1", PairCondition::Absent)
+                .await
+                .expect("absent")
+        );
+        assert_eq!(session_count(&db).await, 0);
+    }
+
+    #[tokio::test]
+    async fn end_sign_in_is_one_transaction() {
+        let db = db_with_signed_in_user().await;
+        sqlx::query(
+            "CREATE TRIGGER fail_session_delete BEFORE DELETE ON sessions
+             BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("inject failure");
+        let result = db
+            .user_tokens()
+            .end_sign_in("u-1", PairCondition::Any)
+            .await;
+        assert!(result.is_err(), "{result:?}");
+        assert!(
+            db.user_tokens().get("u-1").await.expect("get").is_some(),
+            "the token delete is rolled back with the failed session delete"
+        );
+        assert_eq!(session_count(&db).await, 1);
     }
 }
