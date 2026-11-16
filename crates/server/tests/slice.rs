@@ -1,0 +1,700 @@
+//! Stage-2 slice through the public router: PR resolve against a fake GitHub (wiremock serving the recorded
+//! fixtures), ingest into the bare mirror from a `file://` clone base, the pipeline over a scripted
+//! `JobExecutor` returning the fixture agent outputs, and the tour and lines endpoints.
+#![expect(clippy::expect_used, reason = "test helpers outside #[test] functions")]
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::response::Response;
+use chrono::{TimeDelta, Utc};
+use contracts::api::analyses::{AnalysisState, AnalysisSummary};
+use contracts::api::pr::PrSummary;
+use contracts::ids::{AnalysisId, JobId};
+use contracts::job::result::{JobOutcome, JobResult};
+use db::repo::analyses::NewAnalysis;
+use db::repo::documents::DocumentKind;
+use db::repo::sessions::NewSession;
+use db::repo::users::GithubProfile;
+use db::repo::{DEFAULT_TENANT, Db};
+use futures::future::BoxFuture;
+use futures::stream::{self, BoxStream, StreamExt};
+use http_body_util::BodyExt;
+use secrecy::SecretString;
+use serde_json::{Value, json};
+use server::api;
+use server::auth::{lock_user, store_sign_in_tokens};
+use server::config::Config;
+use server::github::oauth::TokenGrant;
+use server::jobs::executor::{ExecutorError, JobExecutor, JobHandle, JobRequest, JobUpdate};
+use server::secrets::sha256;
+use server::state::AppState;
+use tempfile::TempDir;
+use tower::ServiceExt;
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const USER_TOKEN: &str = "ghu_fake_slice_token";
+const SESSION_TOKEN: &str = "fake-session-token";
+const CSRF: &str = "fake-csrf-token";
+const PR_URL: &str = "https://github.com/acme/node-client/pull/482";
+
+fn fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/pr-482")
+}
+
+fn read_json(path: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(path).expect("fixture file")).expect("JSON")
+}
+
+/// Answers every job with the fixture agent output of its stage.
+#[derive(Debug, Default)]
+struct ScriptedExecutor {
+    stages: Mutex<HashMap<JobId, String>>,
+    submitted: Mutex<Vec<String>>,
+}
+
+impl ScriptedExecutor {
+    fn submitted(&self) -> Vec<String> {
+        let mut stages = self.submitted.lock().expect("lock").clone();
+        stages.sort();
+        stages
+    }
+}
+
+fn agent_output(stage: &str) -> Value {
+    let file = match stage {
+        "plan:1" => "plan.json".to_owned(),
+        "pr_context" => "pr_context.json".to_owned(),
+        flow => format!(
+            "flow-{}.json",
+            flow.strip_prefix("flow:f").expect("flow stage")
+        ),
+    };
+    read_json(&fixtures().join("agent").join(file))
+}
+
+impl JobExecutor for ScriptedExecutor {
+    fn submit(&self, request: JobRequest) -> BoxFuture<'_, Result<JobHandle, ExecutorError>> {
+        let stage = request.stage.key();
+        let job_id = request.spec.job_id;
+        self.stages
+            .lock()
+            .expect("lock")
+            .insert(job_id, stage.clone());
+        self.submitted.lock().expect("lock").push(stage);
+        Box::pin(async move { Ok(JobHandle { job_id }) })
+    }
+
+    fn events(&self, handle: &JobHandle) -> BoxStream<'static, Result<JobUpdate, ExecutorError>> {
+        let stage = self.stages.lock().expect("lock")[&handle.job_id].clone();
+        let result = JobResult {
+            job_id: handle.job_id,
+            attempt: 1,
+            outcome: JobOutcome::Succeeded {
+                output: agent_output(&stage),
+            },
+            session: None,
+            usage: None,
+            skills_commit: None,
+            llm_call: None,
+        };
+        stream::iter([Ok(JobUpdate::Finished(result))]).boxed()
+    }
+
+    fn cancel(&self, _handle: &JobHandle) -> BoxFuture<'_, Result<(), ExecutorError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+struct Harness {
+    state: AppState,
+    executor: Arc<ScriptedExecutor>,
+    github: MockServer,
+    user_id: String,
+    _dir: TempDir,
+}
+
+fn config(dir: &Path, github: &MockServer) -> Config {
+    let remotes = dir.join("remotes");
+    let env: HashMap<&str, String> = HashMap::from([
+        ("SR_PUBLIC_URL", "http://review.example.test".to_owned()),
+        ("SR_DATA_DIR", dir.join("data").display().to_string()),
+        (
+            "SR_SECRET_KEY",
+            "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=".to_owned(),
+        ),
+        ("SR_RUNNER_SECRET", "fake-runner-secret".to_owned()),
+        ("SR_GITHUB_APP_ID", "1".to_owned()),
+        ("SR_GITHUB_CLIENT_ID", "Iv1.fake".to_owned()),
+        ("SR_GITHUB_CLIENT_SECRET", "fake-client-secret".to_owned()),
+        (
+            "SR_GITHUB_APP_PRIVATE_KEY_FILE",
+            "/nonexistent.pem".to_owned(),
+        ),
+        ("SR_GITHUB_API_URL", format!("{}/api", github.uri())),
+        ("SR_GITHUB_OAUTH_URL", github.uri()),
+        (
+            "SR_GITHUB_CLONE_URL",
+            format!("file://{}", remotes.display()),
+        ),
+        ("SR_MEMCAN_URL", "http://memcan.example.test/mcp".to_owned()),
+        ("SR_MEMCAN_TOKEN", "fake-memcan-token".to_owned()),
+    ]);
+    Config::from_lookup(|key| Ok(env.get(key).cloned())).expect("test configuration")
+}
+
+async fn harness() -> Harness {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let built = Command::new(fixtures().join("repo/build-repo.sh"))
+        .arg(dir.path().join("remotes/acme/node-client.git"))
+        .output()
+        .expect("build-repo.sh");
+    assert!(built.status.success(), "{built:?}");
+    let github = MockServer::start().await;
+    let recorded = read_json(&fixtures().join("github/rest/pull.json"));
+    Mock::given(method("GET"))
+        .and(path("/api/repos/acme/node-client/pulls/482"))
+        .and(header(
+            "authorization",
+            format!("Bearer {USER_TOKEN}").as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&recorded["response"]))
+        .mount(&github)
+        .await;
+
+    let db = Db::in_memory().await.expect("db");
+    let executor = Arc::new(ScriptedExecutor::default());
+    let state = AppState::new(config(dir.path(), &github), db, executor.clone());
+    let now = Utc::now();
+    // The fixture user `alice` is not in the seeded allowlist: sign her in directly.
+    let user = state
+        .db
+        .users()
+        .upsert_member(
+            DEFAULT_TENANT,
+            "u-alice",
+            &GithubProfile {
+                github_id: 3001,
+                login: "alice".to_owned(),
+                name: None,
+                avatar_url: None,
+            },
+            now,
+        )
+        .await
+        .expect("user");
+    let lock = lock_user(&user.id).await;
+    let grant = TokenGrant {
+        access_token: SecretString::from(USER_TOKEN),
+        expires_in: 8 * 3600,
+        refresh_token: SecretString::from("ghr_fake_refresh"),
+        refresh_token_expires_in: 180 * 86_400,
+    };
+    store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, now)
+        .await
+        .expect("tokens");
+    drop(lock);
+    state
+        .db
+        .sessions()
+        .create(
+            &NewSession {
+                token_hash: &sha256(SESSION_TOKEN.as_bytes()),
+                tenant_id: DEFAULT_TENANT,
+                user_id: &user.id,
+                csrf_token: CSRF,
+                expires_at: now + TimeDelta::days(1),
+            },
+            now,
+        )
+        .await
+        .expect("session");
+    Harness {
+        state,
+        executor,
+        github,
+        user_id: user.id,
+        _dir: dir,
+    }
+}
+
+enum Auth {
+    None,
+    Session,
+    SessionCsrf,
+}
+
+impl Harness {
+    async fn send(&self, method: &str, uri: &str, auth: Auth, body: Option<Value>) -> Response {
+        let mut request = Request::builder().method(method).uri(uri);
+        if !matches!(auth, Auth::None) {
+            request = request.header("cookie", format!("sr_session={SESSION_TOKEN}"));
+        }
+        if matches!(auth, Auth::SessionCsrf) {
+            request = request.header("x-csrf-token", CSRF);
+        }
+        let request = match body {
+            Some(body) => request
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string())),
+            None => request.body(Body::empty()),
+        }
+        .expect("request");
+        api::router(self.state.clone())
+            .oneshot(request)
+            .await
+            .expect("infallible")
+    }
+
+    async fn get(&self, uri: &str) -> (StatusCode, Value) {
+        json_of(self.send("GET", uri, Auth::Session, None).await).await
+    }
+
+    async fn post(&self, uri: &str, body: Value) -> (StatusCode, Value) {
+        json_of(self.send("POST", uri, Auth::SessionCsrf, Some(body)).await).await
+    }
+
+    /// An analysis of the fixture PR stored directly (no pipeline run).
+    async fn seed_analysis(&self) -> AnalysisId {
+        let pr: PrSummary = serde_json::from_value(
+            read_json(&fixtures().join("api-seed/default/pr-resolve.json"))["pr"].clone(),
+        )
+        .expect("PrSummary");
+        let repo = self
+            .state
+            .db
+            .repos()
+            .upsert(DEFAULT_TENANT, &pr.repo, None)
+            .await
+            .expect("repo");
+        let pr_id = self
+            .state
+            .db
+            .pull_requests()
+            .upsert(DEFAULT_TENANT, repo.id, &pr, Utc::now())
+            .await
+            .expect("pr");
+        self.state
+            .db
+            .analyses()
+            .create(
+                NewAnalysis {
+                    id: AnalysisId::new_random(),
+                    tenant_id: DEFAULT_TENANT.to_owned(),
+                    pull_request_id: pr_id,
+                    base_sha: pr.base_sha,
+                    head_sha: pr.head_sha,
+                    language: Default::default(),
+                    created_by: self.user_id.clone(),
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("analysis")
+            .id
+    }
+
+    async fn wait_until_finished(&self, id: &str) -> AnalysisSummary {
+        for _ in 0..600 {
+            let (status, body) = self.get(&format!("/api/v1/analyses/{id}")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let summary: AnalysisSummary = serde_json::from_value(body).expect("summary");
+            match summary.state {
+                AnalysisState::Finished { .. } => return summary,
+                AnalysisState::Failed { .. } | AnalysisState::Cancelled => {
+                    panic!("analysis ended as {:?}", summary.state)
+                }
+                _ => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        panic!("analysis did not finish in time");
+    }
+}
+
+async fn json_of(response: Response) -> (StatusCode, Value) {
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).expect("JSON body")
+    };
+    (status, body)
+}
+
+/// Paths where two JSON documents differ (`/`-joined keys and indexes).
+fn differences(path: &str, golden: &Value, seed: &Value, out: &mut Vec<String>) {
+    match (golden, seed) {
+        (Value::Object(a), Value::Object(b)) => {
+            for key in a.keys().chain(b.keys().filter(|key| !a.contains_key(*key))) {
+                let (x, y) = (a.get(key), b.get(key));
+                match (x, y) {
+                    (Some(x), Some(y)) => differences(&format!("{path}/{key}"), x, y, out),
+                    _ => out.push(format!("{path}/{key}: {x:?} vs {y:?}")),
+                }
+            }
+        }
+        (Value::Array(a), Value::Array(b)) if a.len() == b.len() => {
+            for (index, (x, y)) in a.iter().zip(b).enumerate() {
+                differences(&format!("{path}/{index}"), x, y, out);
+            }
+        }
+        _ if golden != seed => out.push(format!("{path}: {golden} vs {seed}")),
+        _ => {}
+    }
+}
+
+#[tokio::test]
+async fn slice_pipeline() {
+    let h = harness().await;
+    let (status, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    let seed_resolve = read_json(&fixtures().join("api-seed/default/pr-resolve.json"));
+    assert_eq!(resolved["pr"], seed_resolve["pr"]);
+    assert_eq!(resolved["analysis"], Value::Null);
+    assert_eq!(resolved["head_moved"], json!(false));
+
+    let (status, created) = h
+        .post(
+            "/api/v1/analyses",
+            json!({
+                "pr": { "repo": { "owner": "acme", "name": "node-client" }, "number": 482 },
+                "head_sha": resolved["pr"]["head_sha"],
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["state"], json!({ "state": "planning" }));
+    let id = created["id"].as_str().expect("id").to_owned();
+
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    assert_eq!(
+        h.executor.submitted(),
+        [
+            "flow:f1",
+            "flow:f2",
+            "flow:f3",
+            "flow:f4",
+            "flow:f5",
+            "plan:1",
+            "pr_context"
+        ]
+    );
+
+    let (status, mut tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    // The analysis id and times are the only run-dependent values: pin them to the seed's.
+    let seed = read_json(&fixtures().join("api-seed/default/tour.json"));
+    for key in ["id", "created_at", "finished_at"] {
+        tour["analysis"][key] = seed["analysis"][key].clone();
+    }
+    let golden_path = fixtures().join("api/default/tour.json");
+    let rendered = format!("{}\n", serde_json::to_string_pretty(&tour).expect("render"));
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        std::fs::create_dir_all(golden_path.parent().expect("dir")).expect("golden dir");
+        std::fs::write(&golden_path, &rendered).expect("write golden");
+    }
+    let golden = std::fs::read_to_string(&golden_path)
+        .expect("golden fixtures/pr-482/api/default/tour.json; create it with UPDATE_GOLDEN=1");
+    assert_eq!(rendered, golden, "tour differs from the golden");
+
+    let mut diffs = Vec::new();
+    differences("", &tour, &seed, &mut diffs);
+    eprintln!(
+        "golden vs api-seed: {} differences\n{}",
+        diffs.len(),
+        diffs.join("\n")
+    );
+}
+
+#[tokio::test]
+async fn pipeline_resumes_unfinished_analysis_from_stored_documents() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let documents = h.state.db.documents();
+    let now = Utc::now();
+    documents
+        .put(id, DocumentKind::Plan, "", &agent_output("plan:1"), now)
+        .await
+        .expect("plan");
+    documents
+        .put(
+            id,
+            DocumentKind::PrContext,
+            "",
+            &agent_output("pr_context"),
+            now,
+        )
+        .await
+        .expect("pr context");
+    for flow in ["f1", "f3"] {
+        documents
+            .put(
+                id,
+                DocumentKind::Flow,
+                flow,
+                &agent_output(&format!("flow:{flow}")),
+                now,
+            )
+            .await
+            .expect("flow");
+    }
+
+    let resumed = server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    assert_eq!(resumed, 1);
+    let finished = h.wait_until_finished(&id.to_string()).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    assert_eq!(h.executor.submitted(), ["flow:f2", "flow:f4", "flow:f5"]);
+}
+
+#[tokio::test]
+async fn lines_match_the_seed_for_whole_files() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let root = fixtures().join("api-seed/default/lines");
+    let mut seeds = Vec::new();
+    let mut dirs = vec![root.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).expect("dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                seeds.push(path);
+            }
+        }
+    }
+    assert!(seeds.len() >= 10);
+    for seed_path in seeds {
+        let mut seed = read_json(&seed_path);
+        let uri = format!(
+            "/api/v1/analyses/{id}/lines?path={}&side={}&from=1&to={}",
+            seed["path"].as_str().expect("path"),
+            seed["side"].as_str().expect("side"),
+            seed["to"]
+        );
+        let (status, lines) = h.get(&uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}: {lines}");
+        // Moved blocks come from the deterministic move detection of WP3-PREPASS.
+        seed["moved"] = json!([]);
+        assert_eq!(lines, seed, "{}", seed_path.display());
+    }
+}
+
+#[tokio::test]
+async fn lines_caps_the_range() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let lines = |from: u32, to: u32| {
+        format!("/api/v1/analyses/{id}/lines?path=src/rpc/client.rs&side=head&from={from}&to={to}")
+    };
+    let (status, body) = h.get(&lines(1, 2000)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        (body["from"].clone(), body["to"].clone()),
+        (json!(1), json!(224))
+    );
+    assert_eq!(body["lines"].as_array().map(Vec::len), Some(224));
+
+    let (status, body) = h.get(&lines(1, 2001)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], json!("range_too_large"));
+    let (status, body) = h.get(&lines(5000, 6000)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["lines"], json!([]));
+    for (from, to) in [(0, 10), (20, 10)] {
+        let (status, body) = h.get(&lines(from, to)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{from}..{to}");
+        assert_eq!(body["code"], json!("invalid_request"));
+    }
+
+    let (status, body) = h.get(&lines(95, 99)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["changed"], json!([95, 96, 97, 98, 99]));
+    assert_eq!(body["lines"].as_array().map(Vec::len), Some(5));
+    assert_eq!(
+        body["comments"]["line_thread_ranges"],
+        json!([{ "start_line": 95, "end_line": 99 }])
+    );
+}
+
+#[tokio::test]
+async fn lines_side_base_serves_deleted_code() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let uri = |side: &str| {
+        format!("/api/v1/analyses/{id}/lines?path=tests/send_once.rs&side={side}&from=1&to=50")
+    };
+    let (status, body) = h.get(&uri("base")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total_lines"], json!(10));
+    assert_eq!(body["changed"], json!((1..=10).collect::<Vec<u32>>()));
+    assert_eq!(body["deleted"], json!([]));
+    assert_eq!(
+        body["comments"],
+        json!({ "scope": "in_diff", "line_thread_ranges": [{ "start_line": 1, "end_line": 10 }] })
+    );
+    let (status, body) = h.get(&uri("head")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    // A removed block inside a kept file: head side shows it at its marker.
+    let (status, body) = h
+        .get(&format!(
+            "/api/v1/analyses/{id}/lines?path=src/rpc/client.rs&side=head&from=50&to=55"
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"][0]["after_line"], json!(52));
+    assert_eq!(
+        body["deleted"][0]["lines"].as_array().map(Vec::len),
+        Some(11)
+    );
+}
+
+#[tokio::test]
+async fn lines_rejects_path_traversal() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    for side in ["head", "base"] {
+        for path in [
+            "../etc/passwd",
+            "/etc/passwd",
+            "src/../../Cargo.toml",
+            "src/./lib.rs",
+            "src//lib.rs",
+            "src%0Alib.rs",
+        ] {
+            let (status, body) = h
+                .get(&format!(
+                    "/api/v1/analyses/{id}/lines?path={path}&side={side}&from=1&to=5"
+                ))
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{side} {path}: {body}");
+            assert_eq!(body["code"], json!("invalid_request"));
+        }
+        // Valid paths outside the pinned tree of that side are unknown, not read from elsewhere.
+        for path in [".git/config", "HEAD", "refs/heads/main"] {
+            let (status, _) = h
+                .get(&format!(
+                    "/api/v1/analyses/{id}/lines?path={path}&side={side}&from=1&to=5"
+                ))
+                .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{side} {path}");
+        }
+    }
+    // A file that exists only at head is not served from the base tree.
+    let (status, _) = h
+        .get(&format!(
+            "/api/v1/analyses/{id}/lines?path=src/rpc/retry.rs&side=base&from=1&to=5"
+        ))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn unauthenticated_requests_get_401() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    for (method, uri) in [
+        ("GET", format!("/api/v1/analyses/{id}")),
+        ("GET", format!("/api/v1/analyses/{id}/tour")),
+        (
+            "GET",
+            format!("/api/v1/analyses/{id}/lines?path=README.md&side=head&from=1&to=2"),
+        ),
+        ("POST", "/api/v1/pr/resolve".to_owned()),
+        ("POST", "/api/v1/analyses".to_owned()),
+    ] {
+        let (status, body) = json_of(h.send(method, &uri, Auth::None, Some(json!({}))).await).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
+        assert_eq!(body["code"], json!("unauthenticated"));
+    }
+}
+
+#[tokio::test]
+async fn mutations_without_csrf_get_403() {
+    let h = harness().await;
+    for uri in ["/api/v1/pr/resolve", "/api/v1/analyses"] {
+        let body = json!({ "url": PR_URL });
+        let (status, body) = json_of(h.send("POST", uri, Auth::Session, Some(body)).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(body["code"], json!("csrf_rejected"));
+    }
+    assert!(
+        h.github
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty(),
+        "no GitHub call before the CSRF check"
+    );
+}
+
+#[tokio::test]
+async fn resolve_and_create_reject_invalid_names_and_private_repositories() {
+    let h = harness().await;
+    let (status, body) = h
+        .post(
+            "/api/v1/pr/resolve",
+            json!({ "url": "https://example.test/acme/node-client/pull/482" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], json!("not_a_pr_url"));
+
+    let (status, body) = h
+        .post(
+            "/api/v1/analyses",
+            json!({
+                "pr": { "repo": { "owner": "acme", "name": ".." }, "number": 482 },
+                "head_sha": "0".repeat(40),
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], json!("invalid_request"));
+
+    let mut private = read_json(&fixtures().join("github/rest/pull.json"))["response"].clone();
+    private["number"] = json!(7);
+    private["base"]["repo"]["private"] = json!(true);
+    Mock::given(method("GET"))
+        .and(path("/api/repos/acme/node-client/pulls/7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(private))
+        .mount(&h.github)
+        .await;
+    let (status, body) = h
+        .post(
+            "/api/v1/pr/resolve",
+            json!({ "url": "https://github.com/acme/node-client/pull/7" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], json!("private_repository"));
+}
+
+#[tokio::test]
+async fn tour_before_finish_is_409_and_unknown_analysis_404() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let (status, body) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], json!("analysis_not_finished"));
+    let unknown = AnalysisId::new_random();
+    let (status, body) = h.get(&format!("/api/v1/analyses/{unknown}/tour")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], json!("not_found"));
+}
