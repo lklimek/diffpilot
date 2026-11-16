@@ -11,7 +11,7 @@ use analysis::order::{OrderInput, tour_order};
 use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
-use contracts::api::analyses::AnalysisSummary;
+use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::tour::{
     Annotation, CiState, CiStatus, Counters, Flow, FlowFacts, FlowGraph, FlowGroup, FlowLlm,
     GraphEdge, GraphNode, ImpactRef, PatternRepetition, PatternSite, PrContextBlock,
@@ -19,7 +19,12 @@ use contracts::api::tour::{
 };
 use contracts::common::{LineRange, LineSide};
 use contracts::ids::{AnnotationId, FlowId, StepId};
+use db::error::DbError;
+use db::repo::documents::DocumentKind;
 use url::Url;
+
+use crate::pipeline::{PrDiffError, pr_diff};
+use crate::state::AppState;
 
 /// The Tour cannot be built from the stored documents.
 #[derive(Debug, thiserror::Error)]
@@ -98,6 +103,47 @@ impl Links {
         url.set_fragment(Some(&format!("L{}-L{}", range.start_line, range.end_line)));
         url.into()
     }
+}
+
+/// The Tour could not be loaded.
+#[derive(Debug, thiserror::Error)]
+pub enum TourLoadError {
+    /// The Tour exists only for finished analyses.
+    #[error("the analysis has not finished")]
+    NotFinished,
+    /// A stored document is missing or the database failed.
+    #[error("the stored documents could not be read")]
+    Db(#[from] DbError),
+    /// The diff of the analysis is not available.
+    #[error("the diff of the analysis is not available")]
+    Diff(#[from] PrDiffError),
+    /// The stored documents do not form a Tour.
+    #[error("the Tour could not be built")]
+    Tour(#[from] TourError),
+}
+
+/// The Tour of a finished analysis, projected from its stored documents and diff.
+pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, TourLoadError> {
+    if !matches!(summary.state, AnalysisState::Finished { .. }) {
+        return Err(TourLoadError::NotFinished);
+    }
+    let documents = state.db.documents();
+    let plan: PlanOutput = documents
+        .get(summary.id, DocumentKind::Plan, "")
+        .await?
+        .ok_or(DbError::NotFound)?;
+    let pr_context: PrContextOutput = documents
+        .get(summary.id, DocumentKind::PrContext, "")
+        .await?
+        .ok_or(DbError::NotFound)?;
+    let flows: Vec<FlowAnalysisOutput> = documents
+        .list(summary.id, DocumentKind::Flow)
+        .await?
+        .into_iter()
+        .map(|(_, flow)| flow)
+        .collect();
+    let (_, files) = pr_diff(state, summary).await?;
+    Ok(project(summary, &plan, pr_context, flows, &files)?)
 }
 
 /// Builds the Tour of a finished analysis.

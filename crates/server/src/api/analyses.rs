@@ -1,5 +1,5 @@
-//! Analyses: create and read. Also the error type and helpers shared by the pull-request, tour and lines
-//! routes. TODO(WP3-PIPE): cancel and retry.
+//! Analyses: create and read (request parsing and the tenant check; the work lives in `pipeline`). Also the
+//! error type and helpers shared by the pull-request, tour and lines routes. TODO(WP3-PIPE): cancel and retry.
 //!
 //! An analysis is created with the pull request's base tip; the pipeline then stores the merge base of base tip
 //! and head (GitHub's three-dot comparison) before any job runs. The diff, `side=base` reads, prompts and
@@ -7,29 +7,27 @@
 //! analysis is prepared.
 
 use std::borrow::Cow;
-use std::path::PathBuf;
 
-use analysis::diff::{DiffError, FileDiff};
+use analysis::diff::DiffError;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Utc;
 use contracts::api::analyses::{AnalysisSummary, CreateAnalysisRequest};
 use contracts::api::error::ApiErrorCode;
-use contracts::common::PrRef;
 use contracts::ids::AnalysisId;
 use contracts::routes::{CREATE_ANALYSIS, GET_ANALYSIS};
 use db::error::DbError;
-use db::repo::analyses::NewAnalysis;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
-use crate::auth::{Session, SessionCsrf, UserTokenError, user_access_token};
+use crate::auth::{Session, SessionCsrf, UserTokenError};
 use crate::github::mirror::MirrorError;
-use crate::github::rest::{self, GithubError, GithubPull};
+use crate::github::rest::GithubError;
+use crate::pipeline::PrDiffError;
+use crate::pipeline::ingest::{self, IngestError};
 use crate::pipeline::lines::LinesError;
-use crate::pipeline::{self, PrDiffError, tour::TourError};
+use crate::pipeline::tour::{TourError, TourLoadError};
 use crate::state::AppState;
 
 /// A pull-request, analysis, tour or lines request failed.
@@ -107,6 +105,31 @@ impl From<PrDiffError> for AnalysisApiError {
             PrDiffError::Diff(error) => Self::Diff(error),
             PrDiffError::Task(error) => Self::DiffTask(error),
             PrDiffError::NotPrepared => Self::NotFinished,
+        }
+    }
+}
+
+impl From<IngestError> for AnalysisApiError {
+    fn from(error: IngestError) -> Self {
+        match error {
+            IngestError::InvalidRepository => Self::InvalidRepository,
+            IngestError::PrivateRepository => Self::PrivateRepository,
+            IngestError::HeadMoved => Self::HeadMoved,
+            IngestError::AnalysisExists => Self::AnalysisExists,
+            IngestError::Token(error) => Self::Token(error),
+            IngestError::Github(error) => Self::Github(error),
+            IngestError::Db(error) => Self::Db(error),
+        }
+    }
+}
+
+impl From<TourLoadError> for AnalysisApiError {
+    fn from(error: TourLoadError) -> Self {
+        match error {
+            TourLoadError::NotFinished => Self::NotFinished,
+            TourLoadError::Db(error) => Self::Db(error),
+            TourLoadError::Diff(error) => error.into(),
+            TourLoadError::Tour(error) => Self::Tour(error),
         }
     }
 }
@@ -208,44 +231,6 @@ pub fn routes() -> Router<AppState> {
         .route(GET_ANALYSIS.path, get(read))
 }
 
-/// Fetches the pull request with the user's token and stores its repository and snapshot; returns it with its
-/// row id. Private repositories and names outside GitHub's charset are refused.
-pub(crate) async fn fetch_pull(
-    state: &AppState,
-    session: &Session,
-    pr: &PrRef,
-) -> ApiResult<(GithubPull, i64)> {
-    if !rest::is_valid_repo(&pr.repo) || pr.number == 0 {
-        return Err(failure(AnalysisApiError::InvalidRepository));
-    }
-    let token = user_access_token(state, &session.user_id)
-        .await
-        .map_err(failure)?;
-    let pull = rest::get_pull(&state.config.github, &token, pr)
-        .await
-        .map_err(failure)?;
-    if pull.private {
-        return Err(failure(AnalysisApiError::PrivateRepository));
-    }
-    let repo = state
-        .db
-        .repos()
-        .upsert(
-            &session.tenant_id,
-            &pull.summary.repo,
-            Some(pull.repo_github_id),
-        )
-        .await
-        .map_err(failure)?;
-    let pr_id = state
-        .db
-        .pull_requests()
-        .upsert(&session.tenant_id, repo.id, &pull.summary, Utc::now())
-        .await
-        .map_err(failure)?;
-    Ok((pull, pr_id))
-}
-
 /// The analysis if the session's tenant may see it; `not_found` otherwise (no existence leak).
 pub(crate) async fn visible_analysis(
     state: &AppState,
@@ -259,65 +244,13 @@ pub(crate) async fn visible_analysis(
     state.db.analyses().summary(id).await.map_err(failure)
 }
 
-/// The mirror of the analysed repository (fetched again if missing) and the pull request's diff;
-/// `analysis_not_finished` until the pipeline has stored the analysis base.
-pub(crate) async fn analysis_diff(
-    state: &AppState,
-    summary: &AnalysisSummary,
-) -> ApiResult<(PathBuf, Vec<FileDiff>)> {
-    pipeline::pr_diff(state, summary).await.map_err(failure)
-}
-
 async fn create(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
     body: Result<Json<CreateAnalysisRequest>, JsonRejection>,
 ) -> ApiResult<(StatusCode, Json<AnalysisSummary>)> {
     let Json(request) = body.map_err(failure)?;
-    let (pull, pr_id) = fetch_pull(&state, &session, &request.pr).await?;
-    if pull.summary.head_sha != request.head_sha {
-        return Err(failure(AnalysisApiError::HeadMoved));
-    }
-    let user = state
-        .db
-        .users()
-        .get(&session.user_id)
-        .await
-        .map_err(failure)?;
-    let created = state
-        .db
-        .analyses()
-        .create(
-            NewAnalysis {
-                id: AnalysisId::new_random(),
-                tenant_id: session.tenant_id.clone(),
-                pull_request_id: pr_id,
-                // The pipeline replaces the base tip with the merge base before any job runs.
-                base_sha: pull.summary.base_sha.clone(),
-                head_sha: pull.summary.head_sha.clone(),
-                language: user.language,
-                created_by: session.user_id.clone(),
-            },
-            Utc::now(),
-        )
-        .await;
-    let record = match created {
-        Ok(record) => record,
-        Err(DbError::Conflict) => return Err(failure(AnalysisApiError::AnalysisExists)),
-        Err(error) => return Err(failure(error)),
-    };
-    tracing::info!(
-        analysis = %record.id,
-        user_id = %session.user_id,
-        repo = %format!("{}/{}", pull.summary.repo.owner, pull.summary.repo.name),
-        number = pull.summary.number,
-        "analysis requested"
-    );
-    pipeline::start(&state, record.id);
-    let summary = state
-        .db
-        .analyses()
-        .summary(record.id)
+    let summary = ingest::create(&state, &session, &request)
         .await
         .map_err(failure)?;
     Ok((StatusCode::CREATED, Json(summary)))
