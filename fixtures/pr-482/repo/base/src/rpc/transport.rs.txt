@@ -1,0 +1,62 @@
+//! HTTP transport to the node.
+
+use std::time::Duration;
+
+use url::Url;
+
+use crate::rpc::error::RpcError;
+
+/// A failure below the RPC layer: connection, TLS or protocol.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct TransportError(pub String);
+
+/// An RPC request: method name and encoded parameters.
+pub struct Request {
+    pub method: String,
+    /// Encoded parameters.
+    pub body: Vec<u8>,
+}
+
+/// The node's answer.
+pub struct Response {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+/// Sends HTTP requests to one node.
+pub struct Transport {
+    endpoint: Url,
+    http: HttpClient,
+}
+
+impl Transport {
+    /// A transport for `endpoint`.
+    pub fn new(endpoint: Url) -> Self {
+        Self { endpoint, http: HttpClient::default() }
+    }
+
+    /// Sends `http` and waits at most `timeout` for the answer.
+    pub async fn execute(&self, http: HttpRequest, timeout: Duration) -> Result<Response, RpcError> {
+        match tokio::time::timeout(timeout, self.http.send(http)).await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(e)) => Err(RpcError::Transport(e)),
+            Err(_) => Err(RpcError::Timeout),
+        }
+    }
+
+    /// The node this transport talks to.
+    pub fn endpoint(&self) -> &Url {
+        &self.endpoint
+    }
+}
+
+/// An HTTP request ready to send.
+pub struct HttpRequest {
+    /// URL with path.
+    pub url: Url,
+    /// Header pairs.
+    pub headers: Vec<(String, String)>,
+    /// Body bytes.
+    pub body: Vec<u8>,
+}

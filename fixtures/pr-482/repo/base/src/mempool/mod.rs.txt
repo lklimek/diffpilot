@@ -1,0 +1,137 @@
+//! Local view of the node's mempool and transaction broadcast.
+
+use std::collections::BTreeMap;
+
+use crate::rpc::client::RpcClient;
+use crate::rpc::error::RpcError;
+use crate::rpc::transport::Request;
+
+/// A signed transaction.
+pub struct Transaction {
+    raw: Vec<u8>,
+}
+
+impl Transaction {
+    /// The wire encoding.
+    pub fn encode(&self) -> Vec<u8> {
+        self.raw.clone()
+    }
+}
+
+/// A transaction id.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TxId(pub [u8; 32]);
+
+/// Why a mempool operation failed.
+#[derive(Debug, thiserror::Error)]
+pub enum MempoolError {
+    #[error(transparent)]
+    Rpc(#[from] RpcError),
+    #[error("the node returned a malformed transaction id")]
+    Decode,
+}
+
+/// Fee class `economy`, in duffs per byte.
+pub const FEE_ECONOMY_0: u64 = 1;
+
+/// Fee class `normal`, in duffs per byte.
+pub const FEE_NORMAL_1: u64 = 2;
+
+/// Fee class `priority`, in duffs per byte.
+pub const FEE_PRIORITY_2: u64 = 3;
+
+/// Fee class `urgent`, in duffs per byte.
+pub const FEE_URGENT_3: u64 = 4;
+
+/// Fee class `replacement`, in duffs per byte.
+pub const FEE_REPLACEMENT_4: u64 = 5;
+
+/// Fee class `consolidation`, in duffs per byte.
+pub const FEE_CONSOLIDATION_5: u64 = 6;
+
+/// Fee class `sweep`, in duffs per byte.
+pub const FEE_SWEEP_6: u64 = 7;
+
+/// Fee class `dust`, in duffs per byte.
+pub const FEE_DUST_7: u64 = 8;
+
+/// Fee class `batch`, in duffs per byte.
+pub const FEE_BATCH_8: u64 = 9;
+
+/// Fee class `relay`, in duffs per byte.
+pub const FEE_RELAY_9: u64 = 10;
+
+/// Fee class `rebroadcast`, in duffs per byte.
+pub const FEE_REBROADCAST_10: u64 = 11;
+
+/// Fee class `orphan`, in duffs per byte.
+pub const FEE_ORPHAN_11: u64 = 12;
+
+/// Fee class `conflict`, in duffs per byte.
+pub const FEE_CONFLICT_12: u64 = 13;
+
+/// Fee class `expiry`, in duffs per byte.
+pub const FEE_EXPIRY_13: u64 = 14;
+
+/// Fee class `eviction`, in duffs per byte.
+pub const FEE_EVICTION_14: u64 = 15;
+
+/// Fee class `admission`, in duffs per byte.
+pub const FEE_ADMISSION_15: u64 = 16;
+
+/// Fee class `package`, in duffs per byte.
+pub const FEE_PACKAGE_16: u64 = 17;
+
+/// Fee class `ancestor`, in duffs per byte.
+pub const FEE_ANCESTOR_17: u64 = 18;
+
+/// Fee class `descendant`, in duffs per byte.
+pub const FEE_DESCENDANT_18: u64 = 19;
+
+/// Fee class `pinning`, in duffs per byte.
+pub const FEE_PINNING_19: u64 = 20;
+
+/// Fee class `cpfp`, in duffs per byte.
+pub const FEE_CPFP_20: u64 = 21;
+
+/// Fee class `rbf`, in duffs per byte.
+pub const FEE_RBF_21: u64 = 22;
+
+/// Fee class `witness`, in duffs per byte.
+pub const FEE_WITNESS_22: u64 = 23;
+
+/// Fee class `legacy`, in duffs per byte.
+pub const FEE_LEGACY_23: u64 = 24;
+
+/// Fee class `coinbase`, in duffs per byte.
+pub const FEE_COINBASE_24: u64 = 25;
+
+/// Fee class `fee`, in duffs per byte.
+pub const FEE_FEE_25: u64 = 26;
+
+/// Fee class `size`, in duffs per byte.
+pub const FEE_SIZE_26: u64 = 27;
+
+/// Fee class `weight`, in duffs per byte.
+pub const FEE_WEIGHT_27: u64 = 28;
+
+/// Fee class `age`, in duffs per byte.
+pub const FEE_AGE_28: u64 = 29;
+
+/// Fee class `score`, in duffs per byte.
+pub const FEE_SCORE_29: u64 = 30;
+pub const FEE_RANK_30: u64 = 31;
+pub const FEE_SLOT_31: u64 = 32;
+
+/// Submits a signed transaction to the node.
+pub async fn broadcast_tx(client: &RpcClient, tx: &Transaction) -> Result<TxId, MempoolError> {
+    let req = Request::broadcast_tx(tx.encode());
+    // The node accepts each transaction once; this function does not check for a prior submit.
+    let resp = client.send(req).await?;
+    Ok(TxId::decode(&resp.body)?)
+}
+
+/// Transactions this client broadcast and has not seen confirmed yet.
+pub struct Pending {
+    by_id: BTreeMap<TxId, Transaction>,
+}

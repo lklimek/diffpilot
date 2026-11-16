@@ -1,0 +1,40 @@
+{
+  "path": "src/rpc/error.rs",
+  "side": "head",
+  "from": 1,
+  "to": 16,
+  "total_lines": 16,
+  "lines": [
+    "//! Errors of RPC calls.",
+    "",
+    "use crate::rpc::transport::TransportError;",
+    "",
+    "/// Why an RPC call failed. Callers keep a wildcard arm: variants are added",
+    "/// without a major version bump.",
+    "#[non_exhaustive]",
+    "#[derive(Debug, thiserror::Error)]",
+    "pub enum RpcError {",
+    "    #[error(\"request timed out\")]",
+    "    Timeout,",
+    "    #[error(\"gave up after {attempts} attempts\")]",
+    "    Exhausted { attempts: u32 },",
+    "    #[error(\"transport failure: {0}\")]",
+    "    Transport(#[from] TransportError),",
+    "}"
+  ],
+  "changed": [
+    12,
+    13
+  ],
+  "deleted": [],
+  "moved": [],
+  "comments": {
+    "scope": "in_diff",
+    "line_thread_ranges": [
+      {
+        "start_line": 9,
+        "end_line": 16
+      }
+    ]
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "pr-resolve": {
+    "analysis": {
+      "id": "6d3a2f1e-0482-4c5e-9a7b-000000000482",
+      "pr": {
+        "repo": {
+          "owner": "acme",
+          "name": "node-client"
+        },
+        "number": 482,
+        "title": "feat(rpc): retry with backoff on timeout",
+        "author": "dana",
+        "html_url": "https://github.com/acme/node-client/pull/482",
+        "base_sha": "33d61c3b90f5394f73319522336f88c195faf6a4",
+        "head_sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+      },
+      "language": "en",
+      "state": {
+        "state": "finished",
+        "total": 5
+      },
+      "created_at": "2026-11-16T09:12:00Z",
+      "finished_at": "2026-11-16T09:31:00Z"
+    }
+  },
+  "review-state": {
+    "ticked_steps": [
+      "f2.1"
+    ],
+    "last_viewed": {
+      "block": "step",
+      "step_id": "f1.5"
+    }
+  },
+  "questions": [
+    {
+      "id": "3f1c5a7e-0482-4d2b-9e6f-000000000001",
+      "step_id": "f1.5",
+      "text": "Does the node deduplicate broadcast_tx by transaction id?",
+      "state": "answered",
+      "answer": {
+        "answer": "Not visible in this repository. mempool::broadcast_tx says the node accepts each transaction once (src/mempool/mod.rs:129) but does not check for a prior submit, and should_retry has no input that could skip it. I read the files around this step and searched for callers; nothing executed, other repositories not checked. Does the node's own documentation state that a repeated broadcast is rejected?",
+        "evidence": [
+          {
+            "file": "src/mempool/mod.rs",
+            "side": "head",
+            "line": 129
+          },
+          {
+            "file": "src/rpc/retry.rs",
+            "side": "head",
+            "line": 24
+          }
+        ]
+      },
+      "failure": null,
+      "created_at": "2026-11-16T10:20:00Z"
+    }
+  ]
+}

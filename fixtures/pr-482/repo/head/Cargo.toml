@@ -1,0 +1,13 @@
+[package]
+name = "node-client"
+version = "0.7.0"
+edition = "2021"
+description = "Client for the acme node RPC API."
+license = "MIT"
+
+[dependencies]
+rand = "0.8"
+thiserror = "1"
+tokio = { version = "1", features = ["macros", "rt", "time"] }
+tracing = "0.1"
+url = "2"

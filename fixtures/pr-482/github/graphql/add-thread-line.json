@@ -1,0 +1,59 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "mutation($in:AddPullRequestReviewThreadInput!){addPullRequestReviewThread(input:$in){thread{...T}}}fragment T on PullRequestReviewThread{id path line startLine diffSide startDiffSide subjectType isOutdated\n comments(first:10){nodes{id databaseId state body url line startLine originalLine subjectType outdated commit{oid} pullRequestReview{id databaseId state}}}}",
+      "variables": {
+        "in": {
+          "pullRequestId": "PR_fixture482",
+          "path": "src/rpc/client.rs",
+          "line": 96,
+          "side": "RIGHT",
+          "body": "The per-attempt timeout is reused for every attempt and the caller's deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes."
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "addPullRequestReviewThread": {
+        "thread": {
+          "id": "PRRT_fixture482_c1",
+          "path": "src/rpc/client.rs",
+          "line": 96,
+          "startLine": 96,
+          "diffSide": "RIGHT",
+          "startDiffSide": null,
+          "subjectType": "LINE",
+          "isOutdated": false,
+          "comments": {
+            "nodes": [
+              {
+                "id": "PRRC_fixture482_c1",
+                "databaseId": 2100000001,
+                "state": "PENDING",
+                "body": "The per-attempt timeout is reused for every attempt and the caller's deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes.",
+                "url": "https://github.com/acme/node-client/pull/482#discussion_r2100000001",
+                "line": 96,
+                "startLine": null,
+                "originalLine": 96,
+                "subjectType": "LINE",
+                "outdated": false,
+                "commit": {
+                  "oid": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+                },
+                "pullRequestReview": {
+                  "id": "PRR_fixture482_pending",
+                  "databaseId": 2200000001,
+                  "state": "PENDING"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

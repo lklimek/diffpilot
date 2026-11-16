@@ -1,0 +1,106 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "query($o:String!,$n:String!,$pr:Int!){viewer{login} repository(owner:$o,name:$n){pullRequest(number:$pr){id number state headRefOid baseRefOid\n reviews(states:[PENDING],first:10){totalCount nodes{id databaseId state author{login} viewerDidAuthor createdAt body\n  comments(first:100){totalCount nodes{id databaseId path line startLine originalLine subjectType state outdated body url}}}}\n reviewThreads(last:100){totalCount nodes{id path line startLine diffSide startDiffSide subjectType isOutdated\n  comments(first:1){nodes{id state pullRequestReview{id state}}}}}}}}",
+      "variables": {
+        "o": "acme",
+        "n": "node-client",
+        "pr": 482
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "viewer": {
+        "login": "alice"
+      },
+      "repository": {
+        "pullRequest": {
+          "id": "PR_fixture482",
+          "number": 482,
+          "state": "OPEN",
+          "headRefOid": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+          "baseRefOid": "33d61c3b90f5394f73319522336f88c195faf6a4",
+          "reviews": {
+            "totalCount": 0,
+            "nodes": []
+          },
+          "reviewThreads": {
+            "totalCount": 3,
+            "nodes": [
+              {
+                "id": "PRRT_fixture482_t1",
+                "path": "src/rpc/client.rs",
+                "line": 99,
+                "startLine": 99,
+                "diffSide": "RIGHT",
+                "startDiffSide": null,
+                "subjectType": "LINE",
+                "isOutdated": false,
+                "comments": {
+                  "nodes": [
+                    {
+                      "id": "PRRC_fixture482_t1",
+                      "state": "SUBMITTED",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_bob",
+                        "state": "COMMENTED"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_t2",
+                "path": "src/rpc/retry.rs",
+                "line": 30,
+                "startLine": 30,
+                "diffSide": "RIGHT",
+                "startDiffSide": null,
+                "subjectType": "LINE",
+                "isOutdated": false,
+                "comments": {
+                  "nodes": [
+                    {
+                      "id": "PRRC_fixture482_t2",
+                      "state": "SUBMITTED",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_carol",
+                        "state": "COMMENTED"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "PRRT_fixture482_t3",
+                "path": "README.md",
+                "line": 17,
+                "startLine": 15,
+                "diffSide": "RIGHT",
+                "startDiffSide": "RIGHT",
+                "subjectType": "LINE",
+                "isOutdated": false,
+                "comments": {
+                  "nodes": [
+                    {
+                      "id": "PRRC_fixture482_t3",
+                      "state": "SUBMITTED",
+                      "pullRequestReview": {
+                        "id": "PRR_fixture482_erin",
+                        "state": "COMMENTED"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

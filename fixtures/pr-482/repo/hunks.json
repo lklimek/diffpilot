@@ -1,0 +1,422 @@
+[
+  {
+    "id": "h1",
+    "path": "Cargo.lock",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 30,
+      "len": 1
+    },
+    "head": {
+      "start": 30,
+      "len": 1
+    },
+    "prepass": "not_analysed:generated_mechanical"
+  },
+  {
+    "id": "h2",
+    "path": "Cargo.lock",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 32,
+      "len": 1
+    },
+    "head": {
+      "start": 32,
+      "len": 1
+    },
+    "prepass": "not_analysed:generated_mechanical"
+  },
+  {
+    "id": "h3",
+    "path": "Cargo.lock",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 36,
+      "len": 1
+    },
+    "head": {
+      "start": 36,
+      "len": 1
+    },
+    "prepass": "not_analysed:generated_mechanical"
+  },
+  {
+    "id": "h4",
+    "path": "Cargo.lock",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 38,
+      "len": 1
+    },
+    "head": {
+      "start": 38,
+      "len": 1
+    },
+    "prepass": "not_analysed:generated_mechanical"
+  },
+  {
+    "id": "h5",
+    "path": "Cargo.lock",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 42,
+      "len": 1
+    },
+    "head": {
+      "start": 42,
+      "len": 1
+    },
+    "prepass": "not_analysed:generated_mechanical"
+  },
+  {
+    "id": "h6",
+    "path": "Cargo.lock",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 44,
+      "len": 1
+    },
+    "head": {
+      "start": 44,
+      "len": 1
+    },
+    "prepass": "not_analysed:generated_mechanical"
+  },
+  {
+    "id": "h7",
+    "path": "README.md",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 14,
+      "len": 0
+    },
+    "head": {
+      "start": 15,
+      "len": 6
+    },
+    "prepass": "not_analysed:docs_comments"
+  },
+  {
+    "id": "h8",
+    "path": "docs/rpc.md",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 3,
+      "len": 1
+    },
+    "head": {
+      "start": 3,
+      "len": 1
+    },
+    "prepass": "not_analysed:docs_comments"
+  },
+  {
+    "id": "h9",
+    "path": "docs/rpc.md",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 7,
+      "len": 3
+    },
+    "head": {
+      "start": 7,
+      "len": 1
+    },
+    "prepass": "not_analysed:docs_comments"
+  },
+  {
+    "id": "h10",
+    "path": "docs/rpc.md",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 13,
+      "len": 1
+    },
+    "head": {
+      "start": 11,
+      "len": 2
+    },
+    "prepass": "not_analysed:docs_comments"
+  },
+  {
+    "id": "h11",
+    "path": "src/config.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 23,
+      "len": 1
+    },
+    "head": {
+      "start": 23,
+      "len": 1
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h12",
+    "path": "src/lib.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 12,
+      "len": 0
+    },
+    "head": {
+      "start": 13,
+      "len": 1
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h13",
+    "path": "src/lib.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 18,
+      "len": 1
+    },
+    "head": {
+      "start": 18,
+      "len": 0
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h14",
+    "path": "src/rpc/client.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 34,
+      "len": 0
+    },
+    "head": {
+      "start": 35,
+      "len": 1
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h15",
+    "path": "src/rpc/client.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 41,
+      "len": 1
+    },
+    "head": {
+      "start": 42,
+      "len": 1
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h16",
+    "path": "src/rpc/client.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 52,
+      "len": 11
+    },
+    "head": {
+      "start": 52,
+      "len": 0
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h17",
+    "path": "src/rpc/client.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 99,
+      "len": 1
+    },
+    "head": {
+      "start": 89,
+      "len": 1
+    },
+    "prepass": "not_analysed:docs_comments"
+  },
+  {
+    "id": "h18",
+    "path": "src/rpc/client.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 101,
+      "len": 3
+    },
+    "head": {
+      "start": 91,
+      "len": 19
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h19",
+    "path": "src/rpc/client.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 105,
+      "len": 0
+    },
+    "head": {
+      "start": 112,
+      "len": 41
+    },
+    "prepass": "identical_move"
+  },
+  {
+    "id": "h20",
+    "path": "src/rpc/client.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 173,
+      "len": 42
+    },
+    "head": {
+      "start": 219,
+      "len": 0
+    },
+    "prepass": "identical_move"
+  },
+  {
+    "id": "h21",
+    "path": "src/rpc/error.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 11,
+      "len": 0
+    },
+    "head": {
+      "start": 12,
+      "len": 2
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h22",
+    "path": "src/rpc/metrics.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 39,
+      "len": 0
+    },
+    "head": {
+      "start": 40,
+      "len": 7
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h23",
+    "path": "src/rpc/retry.rs",
+    "old_path": "src/util/backoff.rs",
+    "status": "renamed",
+    "base": {
+      "start": 5,
+      "len": 2
+    },
+    "head": {
+      "start": 5,
+      "len": 29
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h24",
+    "path": "src/rpc/retry.rs",
+    "old_path": "src/util/backoff.rs",
+    "status": "renamed",
+    "base": {
+      "start": 22,
+      "len": 2
+    },
+    "head": {
+      "start": 49,
+      "len": 2
+    },
+    "prepass": "agent"
+  },
+  {
+    "id": "h25",
+    "path": "tests/common/mod.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 14,
+      "len": 1
+    },
+    "head": {
+      "start": 14,
+      "len": 2
+    },
+    "prepass": "not_analysed:tests"
+  },
+  {
+    "id": "h26",
+    "path": "tests/rpc_retry.rs",
+    "old_path": null,
+    "status": "added",
+    "base": {
+      "start": 0,
+      "len": 0
+    },
+    "head": {
+      "start": 1,
+      "len": 27
+    },
+    "prepass": "not_analysed:tests"
+  },
+  {
+    "id": "h27",
+    "path": "tests/send_once.rs",
+    "old_path": null,
+    "status": "deleted",
+    "base": {
+      "start": 1,
+      "len": 10
+    },
+    "head": {
+      "start": 0,
+      "len": 0
+    },
+    "prepass": "not_analysed:tests"
+  },
+  {
+    "id": "h28",
+    "path": "tests/sync_headers.rs",
+    "old_path": null,
+    "status": "modified",
+    "base": {
+      "start": 19,
+      "len": 1
+    },
+    "head": {
+      "start": 19,
+      "len": 1
+    },
+    "prepass": "not_analysed:tests"
+  }
+]

@@ -1,0 +1,68 @@
+//! Retry timing: exponential delay with jitter.
+
+use std::time::Duration;
+
+/// Attempts a retrying caller should make in total.
+pub const MAX_ATTEMPTS: u32 = 3;
+// ---------------------------------------------------------------------------
+// Delay helpers
+// ---------------------------------------------------------------------------
+
+/// Exponential delay: base * 2^(attempt - 1), saturating at Duration::MAX.
+pub(crate) fn exp_delay(base: Duration, attempt: u32) -> Duration {
+    let shift = attempt.saturating_sub(1).min(16);
+    base.checked_mul(1u32 << shift).unwrap_or(Duration::MAX)
+}
+
+/// Spreads retries of concurrent clients so they do not fire in lockstep.
+pub(crate) fn with_jitter(delay: Duration) -> Duration {
+    delay.mul_f64(1.0 + jitter_fraction())
+}
+
+// Jitter is uniform in [-JITTER, +JITTER]: up to a tenth of the delay either way.
+const JITTER: f64 = 0.1;
+
+fn jitter_fraction() -> f64 {
+    let r: f64 = rand::random();
+    (r * 2.0 - 1.0) * JITTER
+}
+
+/// Full jitter: a uniform delay between zero and `delay`.
+pub(crate) fn full_jitter(delay: Duration) -> Duration {
+    let r: f64 = rand::random();
+    delay.mul_f64(r)
+}
+
+/// Decorrelated jitter: the next delay depends on the previous one, bounded by `cap`.
+pub(crate) fn decorrelated(previous: Duration, base: Duration, cap: Duration) -> Duration {
+    let upper = previous.saturating_mul(3).max(base);
+    let r: f64 = rand::random();
+    (base + (upper - base).mul_f64(r)).min(cap)
+}
+
+/// The delays of attempts 1, 2, 3, ... without jitter, each capped at `cap`.
+pub(crate) struct Delays {
+    base: Duration,
+    cap: Duration,
+    attempt: u32,
+}
+
+impl Delays {
+    /// Delays starting at `base`, capped at `cap`.
+    pub(crate) fn new(base: Duration, cap: Duration) -> Self {
+        Self { base, cap, attempt: 0 }
+    }
+}
+
+impl Iterator for Delays {
+    type Item = Duration;
+    fn next(&mut self) -> Option<Duration> {
+        self.attempt = self.attempt.checked_add(1)?;
+        Some(exp_delay(self.base, self.attempt).min(self.cap))
+    }
+}
+
+/// Total time spent waiting over `attempts` attempts, without jitter.
+pub(crate) fn total_wait(base: Duration, cap: Duration, attempts: u32) -> Duration {
+    Delays::new(base, cap).take(attempts.saturating_sub(1) as usize).sum()
+}

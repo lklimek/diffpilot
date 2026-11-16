@@ -1,0 +1,53 @@
+{
+  "path": "tests/sync_headers.rs",
+  "side": "head",
+  "from": 1,
+  "to": 22,
+  "total_lines": 22,
+  "lines": [
+    "mod common;",
+    "",
+    "use std::time::Duration;",
+    "",
+    "use node_client::rpc::client::{NoAuth, RpcClient};",
+    "use node_client::sync::fetch_headers;",
+    "",
+    "#[tokio::test]",
+    "async fn slow_peer_2000_headers() {",
+    "    let client = RpcClient::new(Default::default(), std::sync::Arc::new(NoAuth))",
+    "        .with_transport(common::slow_transport(Duration::from_secs(12)));",
+    "    let headers = fetch_headers(&client, 0, 2000).await.expect(\"a slow peer still delivers\");",
+    "    assert_eq!(headers.len(), 2000);",
+    "}",
+    "",
+    "#[tokio::test]",
+    "async fn fast_peer_headers() {",
+    "    let client = RpcClient::new(common::config(Duration::from_secs(5)), std::sync::Arc::new(NoAuth))",
+    "        .with_transport(common::slow_transport(Duration::from_millis(20)));",
+    "    let headers = fetch_headers(&client, 0, 10).await.expect(\"headers\");",
+    "    assert_eq!(headers.len(), 10);",
+    "}"
+  ],
+  "changed": [
+    19
+  ],
+  "deleted": [
+    {
+      "after_line": 18,
+      "base_start": 19,
+      "lines": [
+        "        .with_transport(common::slow_transport(Duration::from_millis(50)));"
+      ]
+    }
+  ],
+  "moved": [],
+  "comments": {
+    "scope": "in_diff",
+    "line_thread_ranges": [
+      {
+        "start_line": 16,
+        "end_line": 22
+      }
+    ]
+  }
+}

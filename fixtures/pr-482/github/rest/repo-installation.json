@@ -1,0 +1,45 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.github.com/repos/acme/node-client/installation",
+    "body": null
+  },
+  "status": 200,
+  "response": {
+    "id": 4820001,
+    "client_id": "fixture-app-client-id",
+    "account": {
+      "login": "acme",
+      "id": 4821800,
+      "node_id": "NODE_fixture_4820200",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1000001?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/acme",
+      "html_url": "https://github.com/acme",
+      "type": "Organization",
+      "site_admin": false
+    },
+    "repository_selection": "selected",
+    "access_tokens_url": "https://api.github.com/app/installations/4820001/access_tokens",
+    "repositories_url": "https://api.github.com/installation/repositories",
+    "html_url": "https://github.com/organizations/acme/settings/installations/4820001",
+    "app_id": 4820099,
+    "app_slug": "smart-review-fixture",
+    "target_id": 4823100,
+    "target_type": "Organization",
+    "permissions": {
+      "issues": "write",
+      "contents": "read",
+      "metadata": "read",
+      "pull_requests": "write"
+    },
+    "events": [],
+    "created_at": "2026-09-30T09:29:33.000Z",
+    "updated_at": "2026-09-30T09:39:03.000Z",
+    "single_file_name": null,
+    "has_multiple_single_files": false,
+    "single_file_paths": [],
+    "suspended_by": null,
+    "suspended_at": null
+  }
+}

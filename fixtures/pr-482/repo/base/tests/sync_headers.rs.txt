@@ -1,0 +1,22 @@
+mod common;
+
+use std::time::Duration;
+
+use node_client::rpc::client::{NoAuth, RpcClient};
+use node_client::sync::fetch_headers;
+
+#[tokio::test]
+async fn slow_peer_2000_headers() {
+    let client = RpcClient::new(Default::default(), std::sync::Arc::new(NoAuth))
+        .with_transport(common::slow_transport(Duration::from_secs(12)));
+    let headers = fetch_headers(&client, 0, 2000).await.expect("a slow peer still delivers");
+    assert_eq!(headers.len(), 2000);
+}
+
+#[tokio::test]
+async fn fast_peer_headers() {
+    let client = RpcClient::new(common::config(Duration::from_secs(5)), std::sync::Arc::new(NoAuth))
+        .with_transport(common::slow_transport(Duration::from_millis(50)));
+    let headers = fetch_headers(&client, 0, 10).await.expect("headers");
+    assert_eq!(headers.len(), 10);
+}

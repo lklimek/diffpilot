@@ -1,0 +1,159 @@
+{
+  "flow_id": "f2",
+  "introduction": {
+    "problem_before": "Every RPC call built from RpcConfig::default() waits up to 30 s; the wallet UI froze for 30 s on an unreachable peer (issue #470).",
+    "change": "Every attempt now waits at most 5 s.",
+    "example_before_after": "Before: timeout = Duration::from_secs(30). After: timeout = Duration::from_secs(5), for each of up to 3 attempts."
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "title": "Default timeout 30 s → 5 s",
+      "file": "src/config.rs",
+      "side": "head",
+      "start_line": 12,
+      "end_line": 26,
+      "symbol": "RpcConfig::default",
+      "kind": "modified",
+      "moved_from": null,
+      "called_by": "RpcClient::new (src/rpc/client.rs:40)",
+      "decides": "Sets the default per-attempt timeout.",
+      "next": "every send call",
+      "why": "The wallet UI froze for 30 s on an unreachable peer (issue #470).",
+      "annotations": [
+        {
+          "type": "behaviour",
+          "basis": "fact",
+          "start_line": 23,
+          "end_line": 23,
+          "was": "timeout = 30 s.",
+          "is": "timeout = 5 s, for each of up to 3 attempts.",
+          "text": null,
+          "evidence": [
+            {
+              "file": "src/config.rs",
+              "side": "head",
+              "line": 23
+            }
+          ]
+        },
+        {
+          "type": "consequence",
+          "basis": "fact",
+          "start_line": 23,
+          "end_line": 23,
+          "was": "timeout = 30 s.",
+          "is": "timeout = 5 s.",
+          "text": "sync::fetch_headers relied on the longer wait; CI: sync_headers::slow_peer_2000_headers fails with a timeout after 5 s.",
+          "evidence": [
+            {
+              "file": "src/sync/mod.rs",
+              "side": "head",
+              "line": 63
+            },
+            {
+              "file": "tests/sync_headers.rs",
+              "side": "head",
+              "line": 11
+            }
+          ]
+        },
+        {
+          "type": "question",
+          "basis": "inference",
+          "start_line": 23,
+          "end_line": 23,
+          "was": "timeout = 30 s.",
+          "is": "timeout = 5 s.",
+          "text": "Its own comment says 10-20 s and the failing CI test is about this: does sync::fetch_headers finish within 5 s for 2000 headers on slow peers?",
+          "evidence": [
+            {
+              "file": "src/sync/mod.rs",
+              "side": "head",
+              "line": 63
+            }
+          ]
+        }
+      ],
+      "assessment": {
+        "headline": "Header sync from slow peers may fail where it used to finish; an operator would see sync stall on slow links.",
+        "risk": "medium",
+        "reason": "Affects node sync on slow links, not wallet funds; CI already shows a failing test for it.",
+        "basis_note": "read 3 files (config.rs, sync/mod.rs, the CI log); nothing executed",
+        "not_checked": "real peer latencies",
+        "origin": "introduced",
+        "blocking": "blocks_this_pr",
+        "smallest_correction": "Keep a longer timeout for get_headers or pass a per-request timeout in fetch_headers."
+      }
+    },
+    {
+      "id": "s2",
+      "title": "Affected code: sync::fetch_headers",
+      "file": "src/sync/mod.rs",
+      "side": "head",
+      "start_line": 61,
+      "end_line": 67,
+      "symbol": "sync::fetch_headers",
+      "kind": "context",
+      "moved_from": null,
+      "called_by": "the sync loop (src/sync/mod.rs:41)",
+      "decides": "Requests up to 2000 headers in one reply.",
+      "next": "decodes the headers",
+      "why": "Shown because the default timeout reaches it, although the file is not in the diff.",
+      "annotations": [
+        {
+          "type": "consequence",
+          "basis": "fact",
+          "start_line": 64,
+          "end_line": 65,
+          "was": "One wait of up to 30 s.",
+          "is": "Up to 3 waits of 5 s each, then Exhausted.",
+          "text": "A reply that needs 10-20 s now times out on every attempt.",
+          "evidence": [
+            {
+              "file": "src/sync/mod.rs",
+              "side": "head",
+              "line": 63
+            },
+            {
+              "file": "src/sync/mod.rs",
+              "side": "head",
+              "line": 65
+            }
+          ]
+        },
+        {
+          "type": "question",
+          "basis": "inference",
+          "start_line": 64,
+          "end_line": 64,
+          "was": "One wait of up to 30 s.",
+          "is": "Waits of 5 s per attempt.",
+          "text": "Is a 2000-header reply from a slow peer expected to arrive within 5 s?",
+          "evidence": []
+        }
+      ],
+      "assessment": null
+    }
+  ],
+  "edges": [
+    {
+      "from_step_id": "s1",
+      "to_step_id": "s2",
+      "label": null
+    }
+  ],
+  "impact_refs": [
+    {
+      "step_id": "s1",
+      "file": "tests/sync_headers.rs",
+      "start_line": 8,
+      "end_line": 14,
+      "symbol": "slow_peer_2000_headers",
+      "reason": "The failing CI test: its peer answers after 12 s, longer than the new 5 s timeout.",
+      "basis": "fact"
+    }
+  ],
+  "pattern_repetitions": [],
+  "thread_statuses": []
+}

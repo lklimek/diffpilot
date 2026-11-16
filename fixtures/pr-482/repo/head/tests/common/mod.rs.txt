@@ -1,0 +1,16 @@
+//! Shared test helpers.
+
+use std::time::Duration;
+
+use node_client::config::RpcConfig;
+
+/// A config pointing at the local test node with `timeout`.
+pub fn config(timeout: Duration) -> RpcConfig {
+    RpcConfig { timeout, ..RpcConfig::default() }
+}
+
+/// A transport whose node answers after `delay`.
+pub fn slow_transport(delay: Duration) -> node_client::rpc::transport::Transport {
+    // Every attempt sees the same delay, so retries do not speed it up.
+    test_node::slow_every_attempt(delay)
+}
