@@ -92,7 +92,7 @@ Fixture PR `acme/node-client#482` (`fixtures/pr-482/`): `api-seed/default/` plus
 | `me` | signed in | – | – | – | – | – |
 | `pr/resolve` | no analysis | – | – | – | – | existing finished analysis |
 | `analyses/{id}` | finished, 5 flows | – | – | – | – | – |
-| `tour` | 5 flows / 14 steps | step 3.1 rated high (confidently wrong) | – | no `question` annotations, no assessments | `project_profile.sources = []` | – |
+| `tour` | 5 flows / 17 steps | step 3.1 rated high (confidently wrong) | – | no `question` annotations, no assessments | `project_profile.sources = []` | – |
 | `lines`, `diff` | ranges of #482 | – | `src/rpc/client.rs` 96 changed, no annotation | – | – | – |
 | `review-state` | empty | – | – | – | – | ticks f2.1, last viewed step f1.5 |
 | `questions` | none | – | – | – | – | one answered on f1.5 |

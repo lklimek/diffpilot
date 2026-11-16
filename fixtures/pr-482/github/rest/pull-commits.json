@@ -7,7 +7,7 @@
   "status": 200,
   "response": [
     {
-      "sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+      "sha": "52d2da140191a9d47becf6a446310be803c007fc",
       "node_id": "NODE_fixture_commit_482",
       "commit": {
         "author": {
@@ -22,10 +22,10 @@
         },
         "message": "feat(rpc): retry with backoff on timeout",
         "tree": {
-          "sha": "42401968126b446b7c9ea9835746a31e63f02036",
-          "url": "https://api.github.com/repos/acme/node-client/git/trees/42401968126b446b7c9ea9835746a31e63f02036"
+          "sha": "4519893b89f61582d5efaf76dad78f6003ddf21c",
+          "url": "https://api.github.com/repos/acme/node-client/git/trees/4519893b89f61582d5efaf76dad78f6003ddf21c"
         },
-        "url": "https://api.github.com/repos/acme/node-client/git/commits/33e29663d28ea4f04eaba92fed60f6a958a638c7",
+        "url": "https://api.github.com/repos/acme/node-client/git/commits/52d2da140191a9d47becf6a446310be803c007fc",
         "comment_count": 0,
         "verification": {
           "verified": false,
@@ -35,9 +35,9 @@
           "verified_at": null
         }
       },
-      "url": "https://api.github.com/repos/acme/node-client/commits/33e29663d28ea4f04eaba92fed60f6a958a638c7",
-      "html_url": "https://github.com/acme/node-client/commit/33e29663d28ea4f04eaba92fed60f6a958a638c7",
-      "comments_url": "https://api.github.com/repos/acme/node-client/commits/33e29663d28ea4f04eaba92fed60f6a958a638c7/comments",
+      "url": "https://api.github.com/repos/acme/node-client/commits/52d2da140191a9d47becf6a446310be803c007fc",
+      "html_url": "https://github.com/acme/node-client/commit/52d2da140191a9d47becf6a446310be803c007fc",
+      "comments_url": "https://api.github.com/repos/acme/node-client/commits/52d2da140191a9d47becf6a446310be803c007fc/comments",
       "author": {
         "login": "dana",
         "id": 4821700,
@@ -62,9 +62,9 @@
       },
       "parents": [
         {
-          "sha": "33d61c3b90f5394f73319522336f88c195faf6a4",
-          "url": "https://api.github.com/repos/acme/node-client/commits/33d61c3b90f5394f73319522336f88c195faf6a4",
-          "html_url": "https://github.com/acme/node-client/commit/33d61c3b90f5394f73319522336f88c195faf6a4"
+          "sha": "92f2274efbb93570cc8f820a49c058cf66b0dbe9",
+          "url": "https://api.github.com/repos/acme/node-client/commits/92f2274efbb93570cc8f820a49c058cf66b0dbe9",
+          "html_url": "https://github.com/acme/node-client/commit/92f2274efbb93570cc8f820a49c058cf66b0dbe9"
         }
       ]
     }

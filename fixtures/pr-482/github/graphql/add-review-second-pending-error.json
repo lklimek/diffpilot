@@ -7,7 +7,7 @@
       "variables": {
         "in": {
           "pullRequestId": "PR_fixture482",
-          "commitOID": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+          "commitOID": "52d2da140191a9d47becf6a446310be803c007fc",
           "threads": [
             {
               "path": "src/rpc/client.rs",

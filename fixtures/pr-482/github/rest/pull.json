@@ -55,11 +55,11 @@
     "review_comments_url": "https://api.github.com/repos/acme/node-client/pulls/482/comments",
     "review_comment_url": "https://api.github.com/repos/acme/node-client/pulls/comments{/number}",
     "comments_url": "https://api.github.com/repos/acme/node-client/issues/482/comments",
-    "statuses_url": "https://api.github.com/repos/acme/node-client/statuses/33e29663d28ea4f04eaba92fed60f6a958a638c7",
+    "statuses_url": "https://api.github.com/repos/acme/node-client/statuses/52d2da140191a9d47becf6a446310be803c007fc",
     "head": {
       "label": "acme:feat/retry-timeouts",
       "ref": "feat/retry-timeouts",
-      "sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+      "sha": "52d2da140191a9d47becf6a446310be803c007fc",
       "user": {
         "login": "acme",
         "id": 4821800,
@@ -183,7 +183,7 @@
     "base": {
       "label": "acme:main",
       "ref": "main",
-      "sha": "33d61c3b90f5394f73319522336f88c195faf6a4",
+      "sha": "92f2274efbb93570cc8f820a49c058cf66b0dbe9",
       "user": {
         "login": "acme",
         "id": 4821800,
@@ -327,7 +327,7 @@
         "href": "https://api.github.com/repos/acme/node-client/pulls/482/commits"
       },
       "statuses": {
-        "href": "https://api.github.com/repos/acme/node-client/statuses/33e29663d28ea4f04eaba92fed60f6a958a638c7"
+        "href": "https://api.github.com/repos/acme/node-client/statuses/52d2da140191a9d47becf6a446310be803c007fc"
       }
     },
     "author_association": "CONTRIBUTOR",
