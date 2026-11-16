@@ -10,7 +10,9 @@
   atomically before the old pair is discarded; OAuth errors arrive as HTTP 200 with `error`;
   `bad_refresh_token` ends the session and the user signs in again.
 - **Allowed logins** are a tenant setting without UI or configuration file. The seeded tenant `default` allows
-  `lklimek` and `Claudius-Maginificent` (case-insensitive).
+  `lklimek` and `Claudius-Maginificent` (case-insensitive). The first successful sign-in binds the allowed login
+  to the numeric GitHub user id (`tenant_allowed_logins.github_id`, set once); later sign-ins must match that id,
+  so a renamed or re-registered login cannot take the entry over (threat model WP1-T).
   For the owner: [deviation] brief §2 says the seed allows exactly `lklimek`; the owner approved adding
   `Claudius-Maginificent` (2026-11-16).
 - **Login errors** reach Home through the callback redirect (`/?login_error=<code>`, codes `login_not_allowed`,

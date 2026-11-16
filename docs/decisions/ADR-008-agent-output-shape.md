@@ -35,7 +35,10 @@
   no step has an assessment); the code-view bar style of an annotated range = the step's band, "affected"
   (dotted) without one; flow group (behaviour, LLM-classified refactor, LLM-classified tests) from the
   classification; tour order; trimmed blank edge lines of step ranges; move verification and badges.
-- **Deterministic facts and LLM content are separate API fields** (`facts` / `llm`).
+- **Deterministic facts and LLM content are separate API fields** (`facts` / `llm`). PR-context facts include
+  `agent_instruction_files` (paths in the diff matching AGENTS.md, CLAUDE.md, `.agents/`, `.codex/`, `.claude/`,
+  `.cursor*`, `.github/copilot-instructions.md`; shown as a notice, threat model WP1-T) and
+  `related_work_checked` (false when the GitHub App is not installed on the PR repository, ADR-005).
 - Whitespace-only changes stay in the hunks given to the agent, marked as a fact. Moves with deterministically
   identical text are removed from the agent's hunks and shown as quiet rows.
 
