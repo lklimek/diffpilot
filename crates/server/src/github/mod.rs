@@ -2,5 +2,6 @@
 
 pub mod app_token;
 pub mod checks;
+pub mod oauth;
 pub mod review;
 pub mod threads;

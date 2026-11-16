@@ -96,8 +96,11 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         // Both servers may already be gone; nothing to notify then.
         let _ = stop.send(true);
     });
-    let public = axum::serve(public, api::router(state.clone()))
-        .with_graceful_shutdown(stop_requested(stopped.clone()));
+    let public = axum::serve(
+        public,
+        api::router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(stop_requested(stopped.clone()));
     let runner = axum::serve(runner, api::runner_router(state))
         .with_graceful_shutdown(stop_requested(stopped));
     tokio::try_join!(public.into_future(), runner.into_future()).map_err(StartError::Serve)?;
