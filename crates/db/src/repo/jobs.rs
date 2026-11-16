@@ -9,15 +9,30 @@ use contracts::job::result::JobResult;
 use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::JobState;
 use serde_json::Value;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 use crate::error::DbError;
 
 /// Access to the job queue.
 #[derive(Debug)]
 pub struct Jobs<'a> {
-    #[expect(dead_code, reason = "used once WP2-JOBS implements the operations")]
     pub(crate) pool: &'a SqlitePool,
+}
+
+/// Repair runs allowed after a first run whose output verification rejected (brief §5 Pipeline 6).
+pub const MAX_REPAIR_RUNS: u32 = 2;
+
+/// An installation token of a finished attempt still to be revoked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenToRevoke {
+    /// The job.
+    pub job: JobId,
+    /// The attempt the token was minted for.
+    pub attempt: u32,
+    /// AES-GCM ciphertext of the token.
+    pub ciphertext: Vec<u8>,
+    /// Token expiry; an expired token needs no GitHub call, only the confirmation.
+    pub expires_at: DateTime<Utc>,
 }
 
 /// The pipeline stage a job serves: the durable link from analysis progress to its job (restart recovery).
@@ -84,6 +99,8 @@ pub struct NewJob {
     pub priority: JobPriority,
     /// The pipeline stage (its kind equals `spec.kind`).
     pub stage: JobStage,
+    /// 0 for the first run, 1..=[`MAX_REPAIR_RUNS`] for repair runs after a rejected output.
+    pub generation: u32,
 }
 
 /// A stored job.
@@ -117,6 +134,8 @@ pub struct JobRecord {
     pub result: Option<JobResult>,
     /// The pipeline stage.
     pub stage: JobStage,
+    /// 0 for the first run, else the repair run number.
+    pub generation: u32,
     /// When it was enqueued.
     pub created_at: DateTime<Utc>,
     /// When it reached a terminal state.
@@ -181,8 +200,8 @@ pub enum Completion {
     reason = "signatures frozen by WP1-A; bodies are filled in by WP2-JOBS"
 )]
 impl Jobs<'_> {
-    /// Enqueues a job in state `queued`; `Conflict` if a live or succeeded job of the same stage exists (look it
-    /// up with [`Jobs::list_for_analysis`] and reuse it).
+    /// Enqueues a job in state `queued`; `Conflict` if a live or succeeded job of the same stage and generation
+    /// exists (look it up with [`Jobs::list_for_analysis`] and reuse it).
     pub async fn enqueue(&self, job: NewJob, now: DateTime<Utc>) -> Result<JobRecord, DbError> {
         Err(DbError::NotImplemented {
             operation: "jobs::enqueue",
@@ -249,7 +268,8 @@ impl Jobs<'_> {
 
     /// Ends the lease of claimed or running jobs whose lease passed: `cancelled` when cancel was requested (never
     /// re-claimed), else `queued`, or `failed` without attempts left. Clears `ready_output` and the job token
-    /// hash; the caller revokes the installation token (`take_github_token`) and ends the executor stream.
+    /// hash; the caller revokes the attempt's installation token (see [`Jobs::github_tokens_to_revoke`]) and ends
+    /// the executor stream.
     pub async fn expire_leases(&self, now: DateTime<Utc>) -> Result<Vec<ExpiredLease>, DbError> {
         Err(DbError::NotImplemented {
             operation: "jobs::expire_leases",
@@ -295,23 +315,88 @@ impl Jobs<'_> {
         })
     }
 
-    /// Keeps the encrypted installation token of the current claim so it can be revoked.
-    pub async fn set_github_token(
+    /// Stores the encrypted installation token minted for `attempt` at claim; `Conflict` if one exists.
+    pub async fn record_github_token(
         &self,
         job: JobId,
+        attempt: u32,
         ciphertext: &[u8],
         expires_at: DateTime<Utc>,
     ) -> Result<(), DbError> {
-        Err(DbError::NotImplemented {
-            operation: "jobs::set_github_token",
-        })
+        let inserted = sqlx::query(
+            "INSERT INTO installation_tokens (job_id, tenant_id, attempt, ciphertext, expires_at)
+             SELECT id, tenant_id, ?, ?, ? FROM jobs WHERE id = ?",
+        )
+        .bind(attempt)
+        .bind(ciphertext)
+        .bind(expires_at.to_rfc3339())
+        .bind(job.to_string())
+        .execute(self.pool)
+        .await?;
+        if inserted.rows_affected() == 0 {
+            return Err(DbError::NotFound);
+        }
+        Ok(())
     }
 
-    /// Removes and returns the encrypted installation token for revocation.
-    pub async fn take_github_token(&self, job: JobId) -> Result<Option<Vec<u8>>, DbError> {
-        Err(DbError::NotImplemented {
-            operation: "jobs::take_github_token",
-        })
+    /// The encrypted token of `attempt`, without removing it (revoke, then [`Jobs::confirm_github_token_revoked`]).
+    pub async fn github_token(&self, job: JobId, attempt: u32) -> Result<Option<Vec<u8>>, DbError> {
+        Ok(sqlx::query_scalar(
+            "SELECT ciphertext FROM installation_tokens WHERE job_id = ? AND attempt = ?",
+        )
+        .bind(job.to_string())
+        .bind(attempt)
+        .fetch_optional(self.pool)
+        .await?)
+    }
+
+    /// Tokens not in use by a claimed or running attempt and not yet confirmed revoked, soonest expiry first;
+    /// run at start and after results and lease expiries, so a crash before revocation is recovered.
+    pub async fn github_tokens_to_revoke(&self) -> Result<Vec<TokenToRevoke>, DbError> {
+        let rows = sqlx::query(
+            "SELECT t.job_id, t.attempt, t.ciphertext, t.expires_at
+             FROM installation_tokens t JOIN jobs j ON j.id = t.job_id
+             WHERE NOT (j.state IN ('claimed', 'running') AND j.attempt = t.attempt)
+             ORDER BY t.expires_at, t.job_id, t.attempt",
+        )
+        .fetch_all(self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let job: String = row.try_get("job_id")?;
+                let expires_at: String = row.try_get("expires_at")?;
+                Ok(TokenToRevoke {
+                    job: serde_json::from_value(Value::String(job)).map_err(|_| {
+                        DbError::Corrupt {
+                            column: "installation_tokens.job_id",
+                        }
+                    })?,
+                    attempt: row.try_get("attempt")?,
+                    ciphertext: row.try_get("ciphertext")?,
+                    expires_at: DateTime::parse_from_rfc3339(&expires_at)
+                        .map_err(|_| DbError::Corrupt {
+                            column: "installation_tokens.expires_at",
+                        })?
+                        .with_timezone(&Utc),
+                })
+            })
+            .collect()
+    }
+
+    /// Deletes the token of `attempt` after GitHub confirmed the revocation (or it expired); false if it was
+    /// already gone (idempotent).
+    pub async fn confirm_github_token_revoked(
+        &self,
+        job: JobId,
+        attempt: u32,
+    ) -> Result<bool, DbError> {
+        let deleted =
+            sqlx::query("DELETE FROM installation_tokens WHERE job_id = ? AND attempt = ?")
+                .bind(job.to_string())
+                .bind(attempt)
+                .execute(self.pool)
+                .await?;
+        Ok(deleted.rows_affected() > 0)
     }
 }
 

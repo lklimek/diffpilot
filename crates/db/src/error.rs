@@ -17,6 +17,12 @@ pub enum DbError {
         /// `module::function` of the operation.
         operation: &'static str,
     },
+    /// A stored value is malformed (e.g. a timestamp or id column).
+    #[error("a stored value in {column} is malformed")]
+    Corrupt {
+        /// The column.
+        column: &'static str,
+    },
     /// A stored JSON document could not be written or read.
     #[error("a stored document could not be encoded or decoded")]
     Json(#[from] serde_json::Error),

@@ -10,9 +10,14 @@
      `answered` and `failed`, so an answer finished while the client was disconnected arrives);
   3. sends one `analysis` event and one `question` event per question;
   4. forwards the buffered and later events in channel order.
-  Invariant: every state change is written to the database before it is published. Hence the last event a
-  client receives for an entity is never older than the database; a buffered event older than the snapshot
-  may arrive once after it and is followed by the newer one. A buffer overflow closes the stream; the browser
+  Invariant: updates of one entity (the analysis, or one question) are serialised: the database write and
+  the publish of its event happen under one per-entity lock (or one task owning the entity), so events of an
+  entity are published in the order of their writes and each after its write. Hence the last event a client
+  receives for an entity is never older than the database; a buffered event older than the snapshot may
+  arrive once after it and is followed by the newer one. "Write before publish" alone is not enough: two
+  concurrent updates A → B could otherwise publish B then A. Test idea (WP3): two tasks update the same
+  question concurrently with a forced interleaving (write A, write B, publish B, publish A must be
+  impossible); a subscriber's last event equals the stored state. A buffer overflow closes the stream; the browser
   reconnects (default `EventSource` retry) and gets a fresh snapshot.
 - `analysis {summary}`: full `AnalysisSummary` on connect and on every state or progress change (planning →
   running {done,total} → finished | failed | paused | cancelled). The stream stays open after a terminal state

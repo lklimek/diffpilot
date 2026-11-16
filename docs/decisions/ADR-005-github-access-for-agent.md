@@ -14,8 +14,10 @@
   a response whose permissions or repositories differ from the request is rejected (tested in WP3-APPTOKEN).
 - **Minted at claim, not at submit.** A job may wait in the queue; the token is minted when a runner claims the
   job and placed in `JobSpec.access.github` (`InstallationToken { token, expires_at, repository }`). The stored
-  job spec never contains it; an encrypted copy is kept with the job only to revoke it.
-- **Revoked** (`DELETE /installation/token`) when the job result arrives or its lease expires.
+  job spec never contains it; an encrypted copy is kept per job attempt (`installation_tokens`) only to revoke it.
+- **Revoked** (`DELETE /installation/token`) when the job result arrives or its lease expires. The copy is
+  deleted only after the revocation succeeded (or the token expired); tokens still listed are revoked again at
+  start (`docs/contracts/runner-protocol.md`).
 - **Lifetime.** Fixed at 1 hour by GitHub; no re-mint in v1. Job runtime, compaction included, is capped at
   45 minutes (`JobLimits.max_runtime_secs = 2700`).
 - **Opaque strings.** Tokens have no length limit or format assumptions (S4: 390-character `ghs_` tokens).
