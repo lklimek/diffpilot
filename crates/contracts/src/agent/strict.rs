@@ -1,21 +1,36 @@
-//! The Codex structured-output subset (spike S1a, ADR-009): every object closed with every property
-//! required, optional fields nullable, no `oneOf`/`allOf`/`not`/`if`, local `$ref` only.
+//! The Codex structured-output subset (spike S1a, ADR-009; OpenAI Structured Outputs "Supported schemas"):
+//! every object closed with every property required, optional fields nullable, only the supported keywords,
+//! local `$ref` only and resolvable, an object at the root of an output schema.
 
 use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde_json::{Map, Value};
 
-/// Keywords the Codex strict subset rejects or that this project does not use in agent schemas.
-const FORBIDDEN: [&str; 9] = [
-    "oneOf",
-    "allOf",
-    "not",
-    "if",
-    "then",
-    "else",
-    "patternProperties",
-    "dependentSchemas",
-    "unevaluatedProperties",
+/// The only keywords a schema node may carry (allowlist: anything else, e.g. `oneOf`, `allOf`, `not`,
+/// `if`/`then`/`else`, `dependentRequired`, `dependentSchemas`, `patternProperties`, is outside the subset).
+const ALLOWED: [&str; 22] = [
+    "type",
+    "description",
+    "title",
+    "enum",
+    "const",
+    "properties",
+    "required",
+    "additionalProperties",
+    "items",
+    "anyOf",
+    "$defs",
+    "$ref",
+    "pattern",
+    "format",
+    "multipleOf",
+    "maximum",
+    "exclusiveMaximum",
+    "minimum",
+    "exclusiveMinimum",
+    "minItems",
+    "maxItems",
+    "minLength",
 ];
 
 /// Keywords whose value is one schema.
@@ -56,6 +71,17 @@ pub enum StrictSchemaError {
         /// The property name.
         property: String,
     },
+    /// A local `$ref` naming a definition that does not exist.
+    #[error("reference `{reference}` at {path} names no definition in $defs")]
+    DanglingRef {
+        /// The reference.
+        reference: String,
+        /// JSON pointer of the offending node.
+        path: String,
+    },
+    /// The root of an output schema is not a plain object schema (`type: object`, no `anyOf`).
+    #[error("the root of an output schema must be an object without anyOf")]
+    RootNotObject,
     /// A `$ref` outside the schema's own `$defs`.
     #[error("reference `{reference}` at {path} is not a local $defs reference")]
     NonLocalRef {
@@ -98,9 +124,27 @@ pub fn codex_strict(mut schema: Value) -> Result<Value, StrictSchemaError> {
     Ok(schema)
 }
 
-/// Checks that a schema lies inside the Codex strict subset.
+/// Generates the output schema of `T` with [`schema_for`] and checks it with [`check_output`].
+pub fn output_schema_for<T: JsonSchema>() -> Result<Value, StrictSchemaError> {
+    let schema = schema_for::<T>()?;
+    check_output(&schema)?;
+    Ok(schema)
+}
+
+/// Checks that a schema lies inside the Codex strict subset (any root, e.g. a lone enum).
 pub fn check(schema: &Value) -> Result<(), StrictSchemaError> {
-    check_node(schema, "")
+    let definitions = schema.get("$defs").and_then(Value::as_object);
+    check_node(schema, "", definitions)
+}
+
+/// Checks an `--output-schema`: the subset of [`check`] plus an object root without `anyOf`.
+pub fn check_output(schema: &Value) -> Result<(), StrictSchemaError> {
+    let root_is_object = schema.get("type").and_then(Value::as_str) == Some("object")
+        && schema.get("anyOf").is_none();
+    if !root_is_object {
+        return Err(StrictSchemaError::RootNotObject);
+    }
+    check(schema)
 }
 
 fn tighten(node: &mut Value) {
@@ -184,7 +228,11 @@ fn for_each_subschema_mut(map: &mut Map<String, Value>, f: fn(&mut Value)) {
     }
 }
 
-fn check_node(node: &Value, path: &str) -> Result<(), StrictSchemaError> {
+fn check_node(
+    node: &Value,
+    path: &str,
+    definitions: Option<&Map<String, Value>>,
+) -> Result<(), StrictSchemaError> {
     let map = match node {
         Value::Object(map) => map,
         // `additionalProperties: false` is the only boolean schema the subset uses.
@@ -195,26 +243,17 @@ fn check_node(node: &Value, path: &str) -> Result<(), StrictSchemaError> {
             });
         }
     };
-    if let Some(keyword) = FORBIDDEN.iter().find(|keyword| map.contains_key(**keyword)) {
+    if let Some(keyword) = map
+        .keys()
+        .find(|keyword| !ALLOWED.contains(&keyword.as_str()))
+    {
         return Err(StrictSchemaError::ForbiddenKeyword {
-            keyword: (*keyword).to_owned(),
-            path: path.to_owned(),
-        });
-    }
-    if path.is_empty() && map.contains_key("$schema") {
-        return Err(StrictSchemaError::ForbiddenKeyword {
-            keyword: "$schema".to_owned(),
+            keyword: keyword.clone(),
             path: path.to_owned(),
         });
     }
     if let Some(reference) = map.get("$ref") {
-        let reference = reference.as_str().unwrap_or_default();
-        if !reference.starts_with("#/$defs/") {
-            return Err(StrictSchemaError::NonLocalRef {
-                reference: reference.to_owned(),
-                path: path.to_owned(),
-            });
-        }
+        check_ref(reference.as_str().unwrap_or_default(), path, definitions)?;
     }
     if let Some(format) = map.get("format") {
         let format = format.as_str().unwrap_or_default();
@@ -230,24 +269,49 @@ fn check_node(node: &Value, path: &str) -> Result<(), StrictSchemaError> {
     }
     for keyword in SCHEMA_KEYWORDS {
         if let Some(child) = map.get(keyword) {
-            check_node(child, &format!("{path}/{keyword}"))?;
+            check_node(child, &format!("{path}/{keyword}"), definitions)?;
         }
     }
     for keyword in SCHEMA_ARRAY_KEYWORDS {
         if let Some(Value::Array(children)) = map.get(keyword) {
             for (index, child) in children.iter().enumerate() {
-                check_node(child, &format!("{path}/{keyword}/{index}"))?;
+                check_node(child, &format!("{path}/{keyword}/{index}"), definitions)?;
             }
         }
     }
     for keyword in SCHEMA_MAP_KEYWORDS {
         if let Some(Value::Object(children)) = map.get(keyword) {
             for (name, child) in children {
-                check_node(child, &format!("{path}/{keyword}/{name}"))?;
+                check_node(child, &format!("{path}/{keyword}/{name}"), definitions)?;
             }
         }
     }
     Ok(())
+}
+
+/// `#` (root recursion) or `#/$defs/<name>` with `<name>` defined in the root `$defs`.
+fn check_ref(
+    reference: &str,
+    path: &str,
+    definitions: Option<&Map<String, Value>>,
+) -> Result<(), StrictSchemaError> {
+    if reference == "#" {
+        return Ok(());
+    }
+    let Some(name) = reference.strip_prefix("#/$defs/") else {
+        return Err(StrictSchemaError::NonLocalRef {
+            reference: reference.to_owned(),
+            path: path.to_owned(),
+        });
+    };
+    if definitions.is_some_and(|definitions| definitions.contains_key(name)) {
+        Ok(())
+    } else {
+        Err(StrictSchemaError::DanglingRef {
+            reference: reference.to_owned(),
+            path: path.to_owned(),
+        })
+    }
 }
 
 fn check_object(map: &Map<String, Value>, path: &str) -> Result<(), StrictSchemaError> {

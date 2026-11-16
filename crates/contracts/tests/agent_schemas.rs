@@ -436,3 +436,79 @@ fn strict_transform_closes_objects_and_requires_nullable_fields() {
     assert_eq!(schema["properties"]["a"]["type"], json!(["string", "null"]));
     assert!(schema["properties"]["b"]["items"].get("format").is_none());
 }
+
+#[test]
+fn check_rejects_keywords_outside_the_openai_subset() {
+    for keyword in [
+        "dependentRequired",
+        "dependentSchemas",
+        "allOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "patternProperties",
+        "unevaluatedProperties",
+        "propertyNames",
+        "contains",
+        "uniqueItems",
+    ] {
+        let mut schema = json!({"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"],
+                                "additionalProperties": false});
+        schema[keyword] = json!({});
+        assert_eq!(
+            strict::check(&schema),
+            Err(StrictSchemaError::ForbiddenKeyword {
+                keyword: keyword.to_owned(),
+                path: String::new(),
+            }),
+            "{keyword}"
+        );
+    }
+    let nested = json!({"type": "object", "properties": {"a": {"type": "object", "properties": {},
+        "required": [], "additionalProperties": false, "dependentRequired": {"x": ["y"]}}},
+        "required": ["a"], "additionalProperties": false});
+    assert_eq!(
+        strict::check(&nested),
+        Err(StrictSchemaError::ForbiddenKeyword {
+            keyword: "dependentRequired".to_owned(),
+            path: "/properties/a".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn check_rejects_dangling_local_refs() {
+    let schema = json!({"type": "object", "properties": {"a": {"$ref": "#/$defs/Missing"}}, "required": ["a"],
+                        "additionalProperties": false,
+                        "$defs": {"Present": {"type": "string"}}});
+    assert_eq!(
+        strict::check(&schema),
+        Err(StrictSchemaError::DanglingRef {
+            reference: "#/$defs/Missing".to_owned(),
+            path: "/properties/a".to_owned(),
+        })
+    );
+    let resolved = json!({"type": "object", "properties": {"a": {"$ref": "#/$defs/Present"}, "b": {"$ref": "#"}},
+                          "required": ["a", "b"], "additionalProperties": false,
+                          "$defs": {"Present": {"type": "string"}}});
+    assert_eq!(strict::check(&resolved), Ok(()));
+}
+
+#[test]
+fn output_schemas_need_an_object_root() {
+    let list = strict::schema_for::<Vec<String>>().expect("generic subset");
+    assert_eq!(
+        strict::check_output(&list),
+        Err(StrictSchemaError::RootNotObject)
+    );
+    let any_of = json!({"anyOf": [{"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+                                  {"type": "string"}]});
+    assert_eq!(
+        strict::check_output(&any_of),
+        Err(StrictSchemaError::RootNotObject)
+    );
+    for (kind, schema) in all_schemas() {
+        assert_eq!(strict::check_output(&schema), Ok(()), "{kind:?}");
+    }
+}

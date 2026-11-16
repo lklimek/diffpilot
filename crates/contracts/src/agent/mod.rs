@@ -44,9 +44,9 @@ impl JobKind {
 /// The output JSON Schema of a job kind, in the Codex strict subset.
 pub fn output_schema(kind: JobKind) -> Result<Value, StrictSchemaError> {
     match kind {
-        JobKind::Plan => strict::schema_for::<plan::PlanOutput>(),
-        JobKind::PrContext => strict::schema_for::<pr_context::PrContextOutput>(),
-        JobKind::AnalyseFlow => strict::schema_for::<analyse_flow::FlowAnalysisOutput>(),
-        JobKind::Ask => strict::schema_for::<ask::AskOutput>(),
+        JobKind::Plan => strict::output_schema_for::<plan::PlanOutput>(),
+        JobKind::PrContext => strict::output_schema_for::<pr_context::PrContextOutput>(),
+        JobKind::AnalyseFlow => strict::output_schema_for::<analyse_flow::FlowAnalysisOutput>(),
+        JobKind::Ask => strict::output_schema_for::<ask::AskOutput>(),
     }
 }
