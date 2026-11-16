@@ -19,8 +19,20 @@ describe("ESLint rule A7", () => {
     ['import { TourScreen } from "../../screens/tour/TourScreen";', "no-restricted-imports"],
     ['import { handlers } from "../../mocks/handlers";', "no-restricted-imports"],
     ['export const load = () => fetch("/api/v1/me");', "no-restricted-globals"],
-    ['export const load = () => window.fetch("/api/v1/me");', "no-restricted-properties"],
+    ['import { api } from "../../api/client.js";', "no-restricted-imports"],
+    ['import { api } from "../../api/client.ts";', "no-restricted-imports"],
+    ['import { useTour } from "../../api/queries.js";', "no-restricted-imports"],
+    ['import { api } from "@/api/client";', "no-restricted-imports"],
+    ['export const load = () => import("../../api/client");', "no-restricted-syntax"],
+    ['export const load = () => import("./other");', "no-restricted-syntax"],
+    ['export const load = () => window.fetch("/api/v1/me");', "no-restricted-globals"],
+    ['export const load = () => globalThis["fetch"]("/api/v1/me");', "no-restricted-globals"],
+    ["export const x = () => new window.XMLHttpRequest();", "no-restricted-globals"],
+    ['export const s = new self.EventSource("/x");', "no-restricted-globals"],
+    ['export const w = new globalThis.WebSocket("ws://x");', "no-restricted-globals"],
     ['export const s = new EventSource("/x");', "no-restricted-globals"],
+    ['export const b = () => navigator.sendBeacon("/x");', "no-restricted-properties"],
+    ['export const b = () => window.navigator.sendBeacon("/x");', "no-restricted-properties"],
   ])("rejects %s in a component", async (code, rule) => {
     expect(await lintComponent(code)).toContain(rule);
   });

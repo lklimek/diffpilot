@@ -14,26 +14,31 @@ export const componentRules = {
           message: "Components do not route or query (rule A7): take props, return callbacks.",
         },
         {
-          group: ["**/api/client", "**/api/queries", "**/screens/**", "**/app/**", "**/mocks/**"],
+          // Any extension or alias prefix: `../../api/client.js`, `@/screens/x`.
+          regex: "(^|/)(api/(client|queries)|screens|app|mocks)(/|\\.|$)",
           message: "Components do not fetch or know their screen (rule A7).",
         },
       ],
     },
   ],
+  "no-restricted-syntax": [
+    "error",
+    { selector: "ImportExpression", message: "Components do not load modules at runtime (rule A7)." },
+  ],
+  // `checkGlobalObject` also catches `window.fetch`, `globalThis["fetch"]`, `new self.EventSource(...)`.
   "no-restricted-globals": [
     "error",
-    ...["fetch", "XMLHttpRequest", "EventSource", "WebSocket"].map((name) => ({
-      name,
-      message: "Components do not fetch (rule A7).",
-    })),
+    {
+      checkGlobalObject: true,
+      globals: ["fetch", "XMLHttpRequest", "EventSource", "WebSocket"].map((name) => ({
+        name,
+        message: "Components do not fetch (rule A7).",
+      })),
+    },
   ],
   "no-restricted-properties": [
     "error",
-    ...["window", "globalThis", "self"].map((object) => ({
-      object,
-      property: "fetch",
-      message: "Components do not fetch (rule A7).",
-    })),
+    { property: "sendBeacon", message: "Components do not send requests (rule A7)." },
   ],
 };
 
