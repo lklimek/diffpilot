@@ -22,8 +22,8 @@
           "id": "PR_fixture482",
           "number": 482,
           "state": "OPEN",
-          "headRefOid": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
-          "baseRefOid": "33d61c3b90f5394f73319522336f88c195faf6a4",
+          "headRefOid": "52d2da140191a9d47becf6a446310be803c007fc",
+          "baseRefOid": "92f2274efbb93570cc8f820a49c058cf66b0dbe9",
           "reviews": {
             "totalCount": 0,
             "nodes": []

@@ -20,7 +20,7 @@ use contracts::api::feedback::{Feedback, FeedbackTarget, FeedbackValue};
 use contracts::api::pr::ResolvePrResponse;
 use contracts::api::questions::{AskQuestion, AskState};
 use contracts::api::review::{BlockRef, ReviewState};
-use contracts::api::tour::{Annotation, FlowGroup, Tour};
+use contracts::api::tour::{Annotation, FlowGroup, ProfileSource, Tour};
 use contracts::common::{AnnotationType, Basis, FragmentKind, LineRange, LineSide, NodeKind};
 use contracts::ids::{AnnotationId, StepId};
 use serde::Deserialize;
@@ -698,6 +698,54 @@ fn codex_streams_are_well_formed() {
         entries
             .iter()
             .any(|e| e["job_kind"] == "compaction" && e["session"] == "resumed")
+    );
+}
+
+/// `turn.completed.usage` is cumulative per session (ADR-003), so no counter may shrink across the
+/// jobs of one thread in manifest order.
+#[test]
+fn codex_usage_is_cumulative_per_session() {
+    let manifest = json("codex/manifest.json");
+    let mut last: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    let mut checked = 0;
+    for entry in manifest.as_array().expect("manifest list") {
+        let file = entry["file"].as_str().expect("file");
+        let thread = entry["thread_id"].as_str().expect("thread id").to_owned();
+        for line in read(&format!("codex/{file}")).lines() {
+            let event: Value = serde_json::from_str(line).unwrap_or_else(|e| panic!("{file}: {e}"));
+            if event["type"] != "turn.completed" {
+                continue;
+            }
+            let usage = event["usage"].as_object().expect("usage object");
+            let previous = last.entry(thread.clone()).or_default();
+            for (counter, value) in usage {
+                let value = value
+                    .as_u64()
+                    .unwrap_or_else(|| panic!("{file}: {counter} is a count"));
+                let before = previous.insert(counter.clone(), value).unwrap_or(0);
+                assert!(
+                    value >= before,
+                    "{file}: {counter} drops from {before} to {value} within session {thread}"
+                );
+            }
+            checked += 1;
+        }
+    }
+    assert!(checked > 1, "several completed turns are checked");
+}
+
+/// A `repository_file` profile source needs `.claudius/project-profile.md` on the base ref.
+#[test]
+fn repository_profile_source_is_on_the_base_ref() {
+    let sources = tour_of(&seed()).pr_context.facts.project_profile.sources;
+    assert!(sources.contains(&ProfileSource::RepositoryFile));
+    let profile = ".claudius/project-profile.md";
+    let base = file_lines(LineSide::Base, profile).expect("profile file on the base ref");
+    assert!(!base.is_empty(), "profile file has content");
+    assert_eq!(
+        file_lines(LineSide::Head, profile),
+        Some(base),
+        "unchanged by the PR"
     );
 }
 

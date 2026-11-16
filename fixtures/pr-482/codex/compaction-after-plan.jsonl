@@ -1,4 +1,4 @@
 {"type": "thread.started", "thread_id": "019a8f2c-4820-7000-8000-000000000482"}
 {"type": "turn.started"}
 {"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "OK"}}
-{"type": "turn.completed", "usage": {"input_tokens": 61022, "cached_input_tokens": 47104, "cache_write_input_tokens": 0, "output_tokens": 980, "reasoning_output_tokens": 211}}
+{"type": "turn.completed", "usage": {"input_tokens": 109232, "cached_input_tokens": 78080, "cache_write_input_tokens": 0, "output_tokens": 2884, "reasoning_output_tokens": 851}}

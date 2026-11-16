@@ -9,7 +9,7 @@
         "side": "head",
         "start_line": null,
         "line": 96,
-        "body": "The per-attempt timeout is reused for every attempt and the caller's deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes."
+        "body": "Every attempt gets the full configured timeout (5 s), however little time the caller has left. wallet::send_payment wraps send in a 10 s deadline (src/wallet/pay.rs:57): attempt 2 starts after just over 5 s, the deadline cancels it before its own timeout, the third attempt never runs, and the wallet reports Offline although attempt 1 or 2 may have reached the node."
       }
     ]
   },

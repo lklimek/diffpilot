@@ -337,9 +337,9 @@
         }
       ],
       "assessment": {
-        "headline": "On a slow link a retry may wait up to 6 s instead of 4 s. Few users would notice.",
+        "headline": "With the default policy the two waits stay at most 300 ms and 600 ms; a policy with more attempts could wait up to half longer than max_delay.",
         "risk": "low",
-        "reason": "Bounded (at most one and a half times the cap) and only on the third attempt path.",
+        "reason": "Latent: the 4 s cap is out of reach while every client uses the default of 3 attempts, and no setter can change it.",
         "basis_note": "read 2 files (retry.rs, client.rs); nothing executed",
         "not_checked": "the jitter range at run time",
         "origin": "introduced",
@@ -568,8 +568,13 @@
           "end_line": 30,
           "was": "No delay rule.",
           "is": "backoff = with_jitter(min(exp_delay(base, attempt), max_delay)).",
-          "text": "Jitter is applied after the cap, so one delay can exceed max_delay by up to half (6 s instead of 4 s).",
+          "text": "Jitter is applied after the cap, so one delay can exceed max_delay by up to half; with the default 3 attempts the delays are 200 ms and 400 ms before jitter and never reach the cap.",
           "evidence": [
+            {
+              "file": "src/rpc/retry.rs",
+              "side": "head",
+              "line": 17
+            },
             {
               "file": "src/rpc/retry.rs",
               "side": "head",

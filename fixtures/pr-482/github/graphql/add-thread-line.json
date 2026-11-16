@@ -10,7 +10,7 @@
           "path": "src/rpc/client.rs",
           "line": 96,
           "side": "RIGHT",
-          "body": "The per-attempt timeout is reused for every attempt and the caller's deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes."
+          "body": "Every attempt gets the full configured timeout (5 s), however little time the caller has left. wallet::send_payment wraps send in a 10 s deadline (src/wallet/pay.rs:57): attempt 2 starts after just over 5 s, the deadline cancels it before its own timeout, the third attempt never runs, and the wallet reports Offline although attempt 1 or 2 may have reached the node."
         }
       }
     }
@@ -34,7 +34,7 @@
                 "id": "PRRC_fixture482_c1",
                 "databaseId": 2100000001,
                 "state": "PENDING",
-                "body": "The per-attempt timeout is reused for every attempt and the caller's deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes.",
+                "body": "Every attempt gets the full configured timeout (5 s), however little time the caller has left. wallet::send_payment wraps send in a 10 s deadline (src/wallet/pay.rs:57): attempt 2 starts after just over 5 s, the deadline cancels it before its own timeout, the third attempt never runs, and the wallet reports Offline although attempt 1 or 2 may have reached the node.",
                 "url": "https://github.com/acme/node-client/pull/482#discussion_r2100000001",
                 "line": 96,
                 "startLine": null,
@@ -42,7 +42,7 @@
                 "subjectType": "LINE",
                 "outdated": false,
                 "commit": {
-                  "oid": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+                  "oid": "52d2da140191a9d47becf6a446310be803c007fc"
                 },
                 "pullRequestReview": {
                   "id": "PRR_fixture482_pending",
