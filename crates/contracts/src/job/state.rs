@@ -40,10 +40,12 @@ pub enum JobTransition {
     Pause,
     /// The usage limit reset.
     Resume,
-    /// The lease expired; `exhausted` when no attempt is left.
+    /// The lease expired without a result; cancellation, if requested, wins over requeue and failure.
     LeaseExpired {
         /// No attempt left.
         exhausted: bool,
+        /// Cancellation had been requested.
+        cancel_requested: bool,
     },
 }
 
@@ -95,10 +97,27 @@ impl JobState {
             (Queued, Claim) => Claimed,
             (Claimed, Start) => Running,
             (Claimed | Running, Succeed) => Succeeded,
-            (Claimed | Running, Fail) | (Claimed | Running, LeaseExpired { exhausted: true }) => {
-                Failed
-            }
-            (Claimed | Running, LeaseExpired { exhausted: false }) | (Paused, Resume) => Queued,
+            (
+                Claimed | Running,
+                LeaseExpired {
+                    cancel_requested: true,
+                    ..
+                },
+            ) => Cancelled,
+            (Claimed | Running, Fail)
+            | (
+                Claimed | Running,
+                LeaseExpired {
+                    exhausted: true, ..
+                },
+            ) => Failed,
+            (
+                Claimed | Running,
+                LeaseExpired {
+                    exhausted: false, ..
+                },
+            )
+            | (Paused, Resume) => Queued,
             (Claimed | Running, Pause) => Paused,
             (Queued | Claimed | Running | Paused, Cancel) => Cancelled,
             (from, transition) => return Err(InvalidTransition { from, transition }),

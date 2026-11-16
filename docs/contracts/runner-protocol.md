@@ -41,21 +41,47 @@ the same attempt; 400 malformed body.
 | claimed, running | result `failed` | failed |
 | claimed, running | result `usage_limited` | paused (`resumes_at`; the credential pauses too) |
 | paused | `resumes_at` passed | queued |
+| claimed, running | lease expired, cancel requested | cancelled (never re-claimed) |
 | claimed, running | lease expired, attempts left | queued |
 | claimed, running | lease expired, `attempt ≥ max_attempts` (3) | failed |
 | queued, paused | cancel | cancelled at once |
-| claimed, running | cancel | stays; `cancel_requested` in every ack; ends `cancelled` on any result |
+| claimed, running | cancel | stays; `cancel_requested` in every ack; ends `cancelled` on any result or at lease expiry |
+
+At lease expiry (`Jobs::expire_leases`) the server clears the job token and the ready output, revokes the
+installation token and ends the executor stream; a job with cancel requested ends with a server-built
+`cancelled` result.
 
 ## Liveness and fencing
-- Lease 60 s, renewed by every accepted `events` or `output` request. The runner sends a batch (or an empty
-  heartbeat) at least every 15 s.
-- **Self-fencing.** If the runner has not had a successful ack for 45 s, it stops the agent (SIGTERM, SIGKILL
-  after 10 s), discards the attempt and does not post a result. 45 s < 60 s, so the old process is gone before
-  the server can hand the job to a new claim. The server revokes the installation token when a lease expires
-  or a result arrives.
-- **Credential copy-back** (ADR-003) happens only after the agent process has exited, with compare-and-swap on
-  the master `auth.json`. On start the runner copies back any newer `auth.json` left in per-job directories
-  of a crashed run (same CAS), then deletes those directories.
+Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test checks the inequality).
+
+| Value | Seconds |
+|---|---|
+| lease granted from the server's receipt of an accepted `events` / `output` request | 60 |
+| longest gap between runner requests (empty batch = heartbeat) | 15 |
+| runner fence: after the **send** time of the last acked request | 35 |
+| SIGTERM → SIGKILL grace | 10 |
+| SIGKILL, reaping, credential copy-back | 5 |
+| margin before the lease can end | ≥ 10 |
+
+- The runner keeps, per job, the send time (monotonic clock) of the last request that got a 2xx ack. Its
+  local deadline is that send time + 35 s. A request is sent before the server receives it, so the server's
+  lease (receipt + 60 s) always ends after send + 35 + 10 + 5 + 10 s. A late ack never extends local validity;
+  `lease_expires_at` in replies is informational.
+- At the deadline the runner stops the agent (SIGTERM, SIGKILL after 10 s), copies the credential back (CAS),
+  discards the attempt and posts no result. Only then may the server hand the job to a new claim, so two
+  processes never hold the same refresh token. Two lost heartbeats (30 s) still stay inside the deadline.
+- The server revokes the installation token when a lease expires or a result arrives.
+
+## Credential home (ADR-003)
+- The per-job `CODEX_HOME` (copy of `auth.json`, generated config, the analysis's session files, CAS data)
+  lives on the runner's **persistent private volume** in a per-job directory (uid `runner`, 0700; the agent
+  uid gets access only to its own job's directory), never on tmpfs or under `/tmp`. Only the checkout / work
+  directory may be tmpfs.
+- Copy-back happens after the agent process has exited, with compare-and-swap on the master `auth.json`
+  (written back only if the master is unchanged since the copy).
+- Recovery: on start, before claiming, the runner applies the same CAS to every per-job `CODEX_HOME` left by
+  a crash (a rotated refresh token is the only valid one), then deletes those directories. A container
+  restart therefore never loses a rotated credential.
 
 ## Events
 - `seq` starts at 1 per attempt and increases by one; the server stores `(job, attempt, seq)` and ignores
@@ -68,7 +94,8 @@ the same attempt; 400 malformed body.
   `OutputReady {attempt, output}` **before** compaction, for every job kind. `output` is the parsed final JSON
   (Codex enforced the output schema); the server validates and verifies it exactly as a result.
 - Ordering: after every event of that turn; at most once per attempt; before the result.
-- Retry: on a network error or 5xx the runner retries with the same body (backoff 1, 2, 4 s, within the lease).
+- Retry: on a network error or 5xx the runner retries with the same body (backoff 1, 2, 4 s, within the local
+  deadline).
   The server stores it once per attempt (`jobs.ready_output`); an identical repeat answers 200, a different
   output for the same attempt 409. If it never arrives, nothing is lost: the result carries the output.
 - Publication: the server may publish a verified ready output at once (Ask answer `answered`, flow progress);

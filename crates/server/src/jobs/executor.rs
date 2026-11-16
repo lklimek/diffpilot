@@ -62,7 +62,8 @@ pub enum JobUpdate {
         /// The next attempt number.
         attempt: u32,
     },
-    /// The job ended (succeeded, failed or cancelled).
+    /// The job ended (succeeded, failed or cancelled). A job cancelled at lease expiry without a runner result
+    /// ends with a server-built `cancelled` result.
     Finished(JobResult),
 }
 

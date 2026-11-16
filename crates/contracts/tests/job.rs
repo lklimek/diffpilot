@@ -8,7 +8,8 @@ use contracts::ids::{AnalysisId, CommitSha, JobId};
 use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::protocol::{
-    Claim, ClaimRequest, ClaimResponse, CredentialStatus, EventBatch, EventsAck, OutputReady,
+    Claim, ClaimRequest, ClaimResponse, CredentialStatus, EventBatch, EventsAck, LeaseTiming,
+    OutputReady,
 };
 use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
@@ -211,8 +212,22 @@ fn job_state_transitions() {
         Cancel,
         Pause,
         Resume,
-        LeaseExpired { exhausted: false },
-        LeaseExpired { exhausted: true },
+        LeaseExpired {
+            exhausted: false,
+            cancel_requested: false,
+        },
+        LeaseExpired {
+            exhausted: true,
+            cancel_requested: false,
+        },
+        LeaseExpired {
+            exhausted: false,
+            cancel_requested: true,
+        },
+        LeaseExpired {
+            exhausted: true,
+            cancel_requested: true,
+        },
     ];
     let allowed = [
         (Queued, Claim, Claimed),
@@ -222,14 +237,76 @@ fn job_state_transitions() {
         (Claimed, Fail, Failed),
         (Claimed, Cancel, Cancelled),
         (Claimed, Pause, Paused),
-        (Claimed, LeaseExpired { exhausted: false }, Queued),
-        (Claimed, LeaseExpired { exhausted: true }, Failed),
+        (
+            Claimed,
+            LeaseExpired {
+                exhausted: false,
+                cancel_requested: false,
+            },
+            Queued,
+        ),
+        (
+            Claimed,
+            LeaseExpired {
+                exhausted: true,
+                cancel_requested: false,
+            },
+            Failed,
+        ),
+        // Cancel wins at lease expiry too: never re-claimed.
+        (
+            Claimed,
+            LeaseExpired {
+                exhausted: false,
+                cancel_requested: true,
+            },
+            Cancelled,
+        ),
+        (
+            Claimed,
+            LeaseExpired {
+                exhausted: true,
+                cancel_requested: true,
+            },
+            Cancelled,
+        ),
         (Running, Succeed, Succeeded),
         (Running, Fail, Failed),
         (Running, Cancel, Cancelled),
         (Running, Pause, Paused),
-        (Running, LeaseExpired { exhausted: false }, Queued),
-        (Running, LeaseExpired { exhausted: true }, Failed),
+        (
+            Running,
+            LeaseExpired {
+                exhausted: false,
+                cancel_requested: false,
+            },
+            Queued,
+        ),
+        (
+            Running,
+            LeaseExpired {
+                exhausted: true,
+                cancel_requested: false,
+            },
+            Failed,
+        ),
+        // Cancel wins at lease expiry too: never re-claimed.
+        (
+            Running,
+            LeaseExpired {
+                exhausted: false,
+                cancel_requested: true,
+            },
+            Cancelled,
+        ),
+        (
+            Running,
+            LeaseExpired {
+                exhausted: true,
+                cancel_requested: true,
+            },
+            Cancelled,
+        ),
         (Paused, Resume, Queued),
         (Paused, Cancel, Cancelled),
     ];
@@ -321,4 +398,23 @@ fn output_ready_is_sent_per_attempt() {
         .expect("output route");
     assert_eq!(route.auth, contracts::routes::RouteAuth::JobToken);
     assert_eq!(route.listener, contracts::routes::Listener::Runner);
+}
+
+/// Self-fencing: measured from the send time of the last acked request, the runner stops the agent, kills
+/// it, copies the credential back and still has a margin before the lease granted for that request ends.
+#[test]
+fn self_fencing_ends_before_the_lease() {
+    let t = LeaseTiming::V1;
+    assert_eq!(t.lease_secs, 60);
+    assert!(
+        t.fence_after_send_secs + t.term_grace_secs + t.kill_and_cleanup_secs + t.margin_secs
+            <= t.lease_secs,
+        "{t:?}"
+    );
+    assert!(t.margin_secs >= 10, "{t:?}");
+    assert!(
+        2 * t.heartbeat_secs <= t.fence_after_send_secs,
+        "one lost heartbeat must not fence: {t:?}"
+    );
+    assert!(t.output_retry_secs.iter().sum::<u32>() < t.fence_after_send_secs);
 }

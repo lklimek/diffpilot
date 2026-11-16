@@ -92,6 +92,15 @@ pub struct EventsRecorded {
     pub cancel_requested: bool,
 }
 
+/// A job whose lease expired, and the state it moved to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpiredLease {
+    /// The job.
+    pub job: JobId,
+    /// `queued` (attempts left), `failed` (exhausted) or `cancelled` (cancel had been requested).
+    pub state: JobState,
+}
+
 /// Outcome of recording the output posted before compaction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputRecorded {
@@ -186,8 +195,10 @@ impl Jobs<'_> {
         })
     }
 
-    /// Re-queues claimed or running jobs whose lease ended (failing those without attempts left).
-    pub async fn expire_leases(&self, now: DateTime<Utc>) -> Result<Vec<JobId>, DbError> {
+    /// Ends the lease of claimed or running jobs whose lease passed: `cancelled` when cancel was requested (never
+    /// re-claimed), else `queued`, or `failed` without attempts left. Clears `ready_output` and the job token
+    /// hash; the caller revokes the installation token (`take_github_token`) and ends the executor stream.
+    pub async fn expire_leases(&self, now: DateTime<Utc>) -> Result<Vec<ExpiredLease>, DbError> {
         Err(DbError::NotImplemented {
             operation: "jobs::expire_leases",
         })

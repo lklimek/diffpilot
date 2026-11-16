@@ -51,8 +51,11 @@ pub enum ProviderEvent {
 pub struct ProviderCall {
     /// The job.
     pub job_id: JobId,
-    /// Fresh job directory; the agent's working directory, with the checkout at `job_dir/repo`.
+    /// Fresh job directory; the agent's working directory, with the checkout at `job_dir/repo`. May be tmpfs.
     pub job_dir: PathBuf,
+    /// Per-job `CODEX_HOME` (credential copy, config, session files) on the runner's persistent private
+    /// volume (0700, never tmpfs or `/tmp`), so a rotated credential survives a crash before copy-back.
+    pub codex_home: PathBuf,
     /// This analysis's session store (runner uid); only its files are copied into the call.
     pub session_dir: PathBuf,
     /// The full prompt.

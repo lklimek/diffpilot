@@ -44,7 +44,7 @@ pub struct ClaimResponse {
 pub struct Claim {
     /// Bearer token for this job's events and result; never given to the agent.
     pub job_token: Secret,
-    /// The lease ends unless renewed by posting events.
+    /// Server-side lease end, informational: the runner fences by [`LeaseTiming`] from its own send times.
     pub lease_expires_at: DateTime<Utc>,
     /// The job, with `access` filled in.
     pub spec: JobSpec,
@@ -64,7 +64,7 @@ pub struct EventBatch {
 pub struct EventsAck {
     /// The job should be cancelled: stop the agent and post a `cancelled` result.
     pub cancel_requested: bool,
-    /// The renewed lease.
+    /// The renewed server-side lease end, informational (the runner fences by [`LeaseTiming`]).
     pub lease_expires_at: DateTime<Utc>,
 }
 
@@ -76,4 +76,41 @@ pub struct OutputReady {
     pub attempt: u32,
     /// The agent's final structured output (parsed JSON; the server validates it as it would a result).
     pub output: Value,
+}
+
+/// Lease and self-fencing timing in seconds, shared by server and runner (`docs/contracts/runner-protocol.md`).
+///
+/// The server grants `lease_secs` from when it receives an accepted request. The runner measures its own
+/// deadline from when it SENT the last request that was acked (send ≤ receive, so a delayed ack never extends
+/// it): at `fence_after_send_secs` it sends SIGTERM, after `term_grace_secs` SIGKILL, then copies the
+/// credential back within `kill_and_cleanup_secs`, leaving `margin_secs` before the lease can end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeaseTiming {
+    /// Lease granted per accepted events or output request.
+    pub lease_secs: u32,
+    /// Longest gap between two runner requests (empty batch = heartbeat).
+    pub heartbeat_secs: u32,
+    /// Local deadline after the send time of the last acked request.
+    pub fence_after_send_secs: u32,
+    /// SIGTERM to SIGKILL.
+    pub term_grace_secs: u32,
+    /// SIGKILL, reaping and credential copy-back.
+    pub kill_and_cleanup_secs: u32,
+    /// Slack left before the lease ends.
+    pub margin_secs: u32,
+    /// Backoff of `output` retries.
+    pub output_retry_secs: [u32; 3],
+}
+
+impl LeaseTiming {
+    /// The v1 timing.
+    pub const V1: LeaseTiming = LeaseTiming {
+        lease_secs: 60,
+        heartbeat_secs: 15,
+        fence_after_send_secs: 35,
+        term_grace_secs: 10,
+        kill_and_cleanup_secs: 5,
+        margin_secs: 10,
+        output_retry_secs: [1, 2, 4],
+    };
 }
