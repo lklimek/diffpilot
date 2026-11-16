@@ -169,8 +169,9 @@ risk shown for a flow in the menu is LLM-rated; there is no PR-level risk.
 (questions to check, including LLM suspicions of bugs), `assessment`, `note`. Each carries evidence
 references (file:line). Observed facts are marked as facts; inferences as inferences.
 
-**Call hierarchy** — callers and callees per step symbol, each tagged with `source` (`llm` in v1; `lsp`
-later) and a GitHub link. **Provenance badges** (deterministic only): `text identical` (moved block equal
+**Call hierarchy** — callers and callees per step symbol, each with a GitHub link. It comes from the tech
+plugin (`call_hierarchy`), never from the LLM. In v1 the plugin returns nothing, the field is empty and the
+UI shows "n/a". **Provenance badges** (deterministic only): `text identical` (moved block equal
 after whitespace normalisation), `classified by path`, `classified by line rule`; `git color-moved` is
 internal evidence for move candidates. No badge means LLM analysis.
 
@@ -181,7 +182,7 @@ annotation. `overrated` / `underrated` also become calibration examples in MemCa
 **Candidate JSON** emitted by the agent: base shape in `prior-art.md` §5 (Background material); full schema
 produced at requirements time (`schemars`). Fields: per flow — title, classification, importance,
 flow introduction, flow graph, steps, pattern repetitions, dependencies; per step — file, range, symbol,
-kind, called by, decides, next, why, annotations with evidence references, call hierarchy, impact refs,
+kind, called by, decides, next, why, annotations with evidence references, impact refs,
 assessment; per PR (PR-context job) — problem, related work, fit questions. No confidence number, no overall
 PR risk.
 
@@ -281,8 +282,8 @@ Legend (shown in `?`):
   2. Behaviour (was → is).
   3. Why.
   4. Consequences.
-  5. Call hierarchy — "Callers found" / "Callees"; entries link to file and line on GitHub (new tab);
-     stated as a search result.
+  5. Call hierarchy — callers and callees with links to file and line on GitHub (new tab). In v1 the
+     section shows "n/a — needs a language plugin".
   6. Questions to check — LLM suspicions phrased as questions ("Can `broadcast_tx` be sent twice when the
      reply arrives late?"). If none: "The LLM raised no questions. That is not evidence of no defects."
   7. Assessment (collapsed by default): fields as in §3.
@@ -412,7 +413,7 @@ finishes)
 4. PR context (own job): problem and why, related work through the GitHub lookup tool, fit questions with
    evidence, project profile lookup. Independent of step 5; queued like any job.
 5. Analyse: one agent run per flow — flow graph (structured), flow introduction, steps with called by /
-   decides / next / why, annotations, call hierarchy, assessment, out-of-diff impact, pattern repetitions.
+   decides / next / why, annotations, assessment, out-of-diff impact, pattern repetitions.
    Flows classified as pure refactor or rename are analysed like any other flow.
 6. Verify: schema, ranges within files, coverage of every changed line (uncovered lines become
    "Unexplained"), move claims, flow-graph consistency (edges reference existing nodes, every node maps to a
@@ -421,8 +422,10 @@ finishes)
 There is no summarise step: no PR-level summary or overall risk. The progress bar counts flows analysed
 (step 5).
 
-**Tech plugin** (trait): `detect(file)`, `classify(file) → ranges of test / comment / doc / generated`;
-later `symbols`, `call_hierarchy`. v1 ships `generic`, with built-in "not analysed" rules of two kinds:
+**Tech plugin** (trait): `detect(file)`, `classify(file) → ranges of test / comment / doc / generated`,
+`call_hierarchy(symbol) → Option<callers, callees>`; later `symbols`. In v1 `call_hierarchy` returns `None`
+(TODO: static analysis such as tree-sitter tags in the language plugins; no rust-analyzer, it needs too much
+RAM). v1 ships `generic`, with built-in "not analysed" rules of two kinds:
 - path globs: `tests/`, `*_test.go`, `*.md`, lockfiles, `// Code generated` headers;
 - line regexes: for example lines matching `^\s*//` (comment-only lines).
 Custom rules come later. Rust and Go plugins come in v2.
