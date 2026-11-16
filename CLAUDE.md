@@ -48,7 +48,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - Web, in `web/`: `npm ci`, `npm run lint`, `npm test`, `npm run build`; Playwright (msw): once
   `npx playwright install --with-deps chromium`, then `npm run test:e2e`.
 - Checks: `scripts/check-architecture.sh`, `scripts/check-wording.sh` (after `npm ci` in `web/`; both take
-  `--self-test`), `shellcheck scripts/*.sh`, `python3 -m pytest -q scripts/tests`.
+  `--self-test`), `shellcheck` on `scripts/*.sh tools/**/*.sh deploy/**/*.sh` (globstar), `python3 -m pytest -q scripts/tests`.
 - Schema smoke (manual, real Codex, Docker image and login volume of spike S1a): `scripts/schema-smoke.sh [kind ...]`.
 
 ## Conventions
