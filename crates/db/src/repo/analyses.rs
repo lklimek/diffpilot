@@ -473,6 +473,18 @@ pub mod testing {
         Ok(id)
     }
 
+    /// Inserts a tenant (only `default` is seeded by the schema).
+    pub async fn seed_tenant(db: &Db, id: &str) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT OR IGNORE INTO tenants (id, name, created_at) VALUES (?, ?, '2026-11-16T00:00:00.000000Z')",
+        )
+        .bind(id)
+        .bind(id)
+        .execute(&db.pool)
+        .await?;
+        Ok(())
+    }
+
     /// A spec of `kind` for `analysis` without credentials, running with [`CREDENTIAL`].
     pub fn job_spec(analysis: AnalysisId, kind: JobKind) -> JobSpec {
         JobSpec {

@@ -19,6 +19,7 @@ use futures::stream::{self, Stream, StreamExt};
 use tokio::sync::broadcast;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
+use crate::auth::Session;
 use crate::state::AppState;
 
 /// Keep-alive comment interval.
@@ -56,13 +57,22 @@ pub fn routes() -> Router<AppState> {
     Router::new().route(ANALYSIS_EVENTS.path, get(analysis_events))
 }
 
-// TODO(WP2-AUTH): require a session with WP2-AUTH's extractor and check the analysis's tenant (not_found for
-// another tenant); wired at the M2 merge, see `sse_requires_session`.
 async fn analysis_events(
     State(state): State<AppState>,
+    session: Session,
     path: Result<Path<AnalysisId>, PathRejection>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiFailure<EventsError>> {
     let Path(analysis) = path.map_err(EventsError::from)?;
+    // Another tenant's analysis answers like an unknown one (no existence leak).
+    let record = state
+        .db
+        .analyses()
+        .get(analysis)
+        .await
+        .map_err(EventsError::from)?;
+    if record.tenant_id != session.tenant_id {
+        return Err(EventsError::Db(DbError::NotFound).into());
+    }
     // Subscribe first: an update written after the snapshot read is then buffered, never lost.
     let live = state.progress.subscribe(analysis);
     let summary = state
@@ -130,17 +140,52 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use chrono::TimeDelta;
     use chrono::Utc;
     use contracts::api::analyses::AnalysisState;
-    use db::repo::analyses::testing::seed_analysis;
+    use db::repo::DEFAULT_TENANT;
+    use db::repo::analyses::testing::{seed_analysis, seed_tenant};
+    use db::repo::sessions::NewSession;
     use serde_json::Value;
     use tower::ServiceExt;
 
     use super::*;
     use crate::api::router;
+    use crate::secrets::sha256;
     use crate::state::tests::test_state;
 
     const WAIT: Duration = Duration::from_secs(10);
+
+    /// A session of user `u1` (seeded with the analysis) in `tenant`; returns its `Cookie` header value.
+    async fn session_cookie(state: &AppState, tenant: &str) -> String {
+        let token = format!("session-token-{tenant}");
+        let now = Utc::now();
+        state
+            .db
+            .sessions()
+            .create(
+                &NewSession {
+                    token_hash: &sha256(token.as_bytes()),
+                    tenant_id: tenant,
+                    user_id: "u1",
+                    csrf_token: "csrf",
+                    expires_at: now + TimeDelta::hours(1),
+                },
+                now,
+            )
+            .await
+            .expect("session");
+        // The test configuration's public URL is https, so the cookie carries the `__Host-` prefix.
+        format!("__Host-sr_session={token}")
+    }
+
+    fn events_request(analysis: AnalysisId, cookie: Option<&str>) -> Request<Body> {
+        let mut request = Request::get(ANALYSIS_EVENTS.path.replace("{id}", &analysis.to_string()));
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        request.body(Body::empty()).expect("request")
+    }
 
     /// Reads SSE frames until `count` events arrived; returns (event name, data) pairs.
     async fn read_events(body: Body, count: usize) -> Vec<(String, Value)> {
@@ -177,9 +222,8 @@ mod tests {
     async fn sse_emits_snapshot_then_progress_for_a_scripted_sequence() {
         let state = test_state().await;
         let analysis = seed_analysis(&state.db).await.expect("seed");
-        let request = Request::get(ANALYSIS_EVENTS.path.replace("{id}", &analysis.to_string()))
-            .body(Body::empty())
-            .expect("request");
+        let cookie = session_cookie(&state, DEFAULT_TENANT).await;
+        let request = events_request(analysis, Some(&cookie));
         let response = router(state.clone())
             .oneshot(request)
             .await
@@ -228,28 +272,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_analysis_is_not_found() {
+    async fn unknown_or_other_tenants_analysis_is_not_found() {
         let state = test_state().await;
-        let request = Request::get(
-            ANALYSIS_EVENTS
-                .path
-                .replace("{id}", &AnalysisId::new_random().to_string()),
-        )
-        .body(Body::empty())
-        .expect("request");
-        let response = router(state).oneshot(request).await.expect("infallible");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let analysis = seed_analysis(&state.db).await.expect("seed");
+        seed_tenant(&state.db, "other").await.expect("tenant");
+        let own = session_cookie(&state, DEFAULT_TENANT).await;
+        let foreign = session_cookie(&state, "other").await;
+        for (id, cookie) in [(AnalysisId::new_random(), &own), (analysis, &foreign)] {
+            let response = router(state.clone())
+                .oneshot(events_request(id, Some(cookie)))
+                .await
+                .expect("infallible");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{cookie}");
+        }
     }
 
     #[tokio::test]
-    #[ignore = "wired at M2 merge: needs WP2-AUTH extractor"]
     async fn sse_requires_session() {
         let state = test_state().await;
         let analysis = seed_analysis(&state.db).await.expect("seed");
-        let request = Request::get(ANALYSIS_EVENTS.path.replace("{id}", &analysis.to_string()))
-            .body(Body::empty())
-            .expect("request");
-        let response = router(state).oneshot(request).await.expect("infallible");
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for cookie in [None, Some("__Host-sr_session=not-a-session")] {
+            let response = router(state.clone())
+                .oneshot(events_request(analysis, cookie))
+                .await
+                .expect("infallible");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{cookie:?}");
+        }
     }
 }
