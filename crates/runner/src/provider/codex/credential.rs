@@ -3,11 +3,16 @@
 //! the master's refresh token may be spent, so no further job may use it until the operator recovers it.
 //! A refresh failure blocks it too. The copy is agent-writable, so it is read only as a small regular file
 //! without following symlinks and kept only if it is a credential of the same account.
+//!
+//! The block is set in this process first and then persisted as a marker file; the file work runs on its own
+//! thread with a bounded wait, so a stalled filesystem or a planted FIFO cannot hang the async runtime.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError, mpsc};
+use std::time::Duration;
 
 use contracts::ids::JobId;
 use rustix::fs::OFlags;
@@ -20,10 +25,20 @@ use crate::scrub::Scrubber;
 pub(crate) const AUTH_FILE: &str = "auth.json";
 /// Largest credential file read (a real `auth.json` has a few kB).
 const MAX_AUTH_BYTES: u64 = 64 * 1024;
+/// Most token values remembered from rewrites of the copy during one call; more ends the call.
+const MAX_REMEMBERED_TOKENS: usize = 16;
+/// Most bytes of token values remembered from rewrites of the copy during one call.
+const MAX_REMEMBERED_BYTES: usize = 64 * 1024;
+/// How long settling the copy may take before the credential simply stays blocked.
+const SETTLE_WAIT: Duration = Duration::from_secs(2);
 
-/// Whether the credential whose master is `master_auth` is blocked until the operator recovers it.
+/// Masters blocked in this process; consulted even when the marker file could not be written.
+static BLOCKED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Whether the credential whose master is `master_auth` is blocked until the operator recovers it: blocked in
+/// this process, or anything exists at the marker path.
 pub fn credential_blocked(master_auth: &Path) -> bool {
-    blocked_marker(master_auth).symlink_metadata().is_ok()
+    blocked_here(master_auth) || blocked_marker(master_auth).symlink_metadata().is_ok()
 }
 
 /// Whether jobs may use the credential: a readable master that is not blocked (reported in claims).
@@ -36,15 +51,43 @@ fn blocked_marker(master_auth: &Path) -> PathBuf {
     master_auth.with_file_name(format!("{AUTH_FILE}.blocked"))
 }
 
+fn blocked_here(master_auth: &Path) -> bool {
+    BLOCKED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .any(|blocked| blocked == master_auth)
+}
+
+/// Blocks `master_auth` in this process; false if it already was.
+fn block_here(master_auth: &Path) -> bool {
+    let mut blocked = BLOCKED.lock().unwrap_or_else(PoisonError::into_inner);
+    if blocked.iter().any(|path| path == master_auth) {
+        return false;
+    }
+    blocked.push(master_auth.to_path_buf());
+    true
+}
+
+fn unblock_here(master_auth: &Path) {
+    BLOCKED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|path| path != master_auth);
+}
+
 /// The credential copy of one job and the secrets the provider scrubs (its tokens, rotated ones included).
 pub(crate) struct JobCredential {
     master_auth: PathBuf,
+    codex_home: PathBuf,
     copy: PathBuf,
     job: JobId,
     original: Vec<u8>,
     account: Option<String>,
     last_seen: Vec<u8>,
     scrubber: Scrubber,
+    remembered_tokens: usize,
+    remembered_bytes: usize,
     settled: bool,
 }
 
@@ -81,12 +124,15 @@ impl JobCredential {
         scrubber.extend(tokens.iter().map(String::as_str));
         Ok(Self {
             master_auth: master_auth.to_path_buf(),
+            codex_home: codex_home.to_path_buf(),
             copy,
             job,
             last_seen: original.clone(),
             original,
             account,
             scrubber,
+            remembered_tokens: 0,
+            remembered_bytes: 0,
             settled: false,
         })
     }
@@ -96,71 +142,180 @@ impl JobCredential {
         &self.scrubber
     }
 
-    /// Re-reads the copy; the tokens of a credential rotated meanwhile join the scrubber.
-    pub(crate) fn watch(&mut self) {
+    /// Re-reads the copy; the tokens of a credential rotated meanwhile join the scrubber. False when the copy
+    /// was rewritten more than a real refresh does: the caller ends the call (secrets are never forgotten).
+    pub(crate) fn watch(&mut self) -> bool {
         let Ok(current) = read_regular(&self.copy) else {
-            return;
+            return true;
         };
         if current == self.last_seen {
-            return;
-        }
-        if let Some((tokens, _)) = parse(&current) {
-            self.scrubber.extend(tokens.iter().map(String::as_str));
+            return true;
         }
         self.last_seen = current;
+        let Some((tokens, _)) = parse(&self.last_seen) else {
+            return true;
+        };
+        self.remembered_tokens += tokens.len();
+        self.remembered_bytes += tokens.iter().map(String::len).sum::<usize>();
+        if self.remembered_tokens > MAX_REMEMBERED_TOKENS
+            || self.remembered_bytes > MAX_REMEMBERED_BYTES
+        {
+            tracing::error!(job = %self.job, "the Codex credential copy was rewritten too often; ending the call");
+            return false;
+        }
+        self.scrubber.extend(tokens.iter().map(String::as_str));
+        true
     }
 
-    /// Ends the job's use of the copy (once): a changed copy is kept if valid and the credential is blocked;
-    /// a refresh failure blocks it as well.
+    /// Ends the job's use of the copy (once). The credential is blocked in this process first; a copy found
+    /// unchanged (and no refresh failure) unblocks it. The file work runs on its own thread, waited for at most
+    /// [`SETTLE_WAIT`]; if it does not finish, the credential stays blocked.
     pub(crate) fn settle(&mut self, refresh_failed: bool) {
         if std::mem::replace(&mut self.settled, true) {
             return;
         }
-        let reason = match read_regular(&self.copy) {
-            Ok(current) if current == self.original => {
-                if !refresh_failed {
-                    return;
+        let newly_blocked = block_here(&self.master_auth);
+        let work = Settle {
+            master_auth: self.master_auth.clone(),
+            codex_home: self.codex_home.clone(),
+            copy: self.copy.clone(),
+            job: self.job,
+            original: self.original.clone(),
+            account: self.account.clone(),
+            refresh_failed,
+        };
+        let (done, outcome) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("credential-settle".to_owned())
+            .spawn(move || {
+                let _ = done.send(work.run());
+            });
+        let settled = spawned.map_err(|error| error.to_string()).and_then(|_| {
+            outcome
+                .recv_timeout(SETTLE_WAIT)
+                .map_err(|error| error.to_string())
+        });
+        match settled {
+            Ok(Settled::Unchanged) => {
+                if newly_blocked {
+                    unblock_here(&self.master_auth);
                 }
-                "the credential could not be refreshed".to_owned()
+            }
+            Ok(Settled::Blocked { tokens }) => {
+                self.scrubber.extend(tokens.iter().map(String::as_str))
+            }
+            Err(error) => tracing::error!(
+                job = %self.job,
+                %error,
+                "settling the Codex credential copy did not finish; the credential stays blocked until the runner restarts"
+            ),
+        }
+    }
+}
+
+impl Drop for JobCredential {
+    /// A timed-out, cancelled or fenced call still keeps a rotated credential before the job dir is removed.
+    fn drop(&mut self) {
+        self.settle(false);
+    }
+}
+
+/// The file work of [`JobCredential::settle`], on its own thread.
+struct Settle {
+    master_auth: PathBuf,
+    codex_home: PathBuf,
+    copy: PathBuf,
+    job: JobId,
+    original: Vec<u8>,
+    account: Option<String>,
+    refresh_failed: bool,
+}
+
+enum Settled {
+    /// The copy is unchanged and no refresh failed.
+    Unchanged,
+    /// Blocked; the tokens of a rotated copy, if it parsed.
+    Blocked { tokens: Vec<String> },
+}
+
+impl Settle {
+    fn run(self) -> Settled {
+        let (reason, tokens) = match read_regular(&self.copy) {
+            Ok(current) if current == self.original => {
+                if !self.refresh_failed {
+                    return Settled::Unchanged;
+                }
+                (
+                    "the credential could not be refreshed".to_owned(),
+                    Vec::new(),
+                )
             }
             Ok(current) => self.keep(&current),
-            Err(error) => {
-                format!("the credential copy could not be read safely after the job ({error})")
-            }
+            Err(error) => (
+                format!("the credential copy could not be read safely after the job ({error})"),
+                Vec::new(),
+            ),
         };
-        self.block(&reason);
+        self.write_marker(&reason);
+        Settled::Blocked { tokens }
     }
 
-    /// Keeps a rotated copy that is a credential of the same account; returns the blocking reason.
-    fn keep(&mut self, current: &[u8]) -> String {
-        match parse(current) {
-            Some((tokens, account)) if account == self.account => {
-                self.scrubber.extend(tokens.iter().map(String::as_str));
-                let kept = self
-                    .master_auth
-                    .with_file_name(format!("{AUTH_FILE}.rotated-{}", self.job));
-                match write_new_private(&kept, current) {
-                    Ok(()) => format!(
-                        "Codex rotated the credential during job {}; replace auth.json with {}",
-                        self.job,
-                        kept.display()
-                    ),
-                    Err(error) => format!(
-                        "Codex rotated the credential during job {} and the rotated copy could not be kept ({error}); sign in again",
-                        self.job
-                    ),
-                }
+    /// Keeps a rotated copy of the same (non-empty) account; returns the blocking reason and its tokens.
+    fn keep(&self, current: &[u8]) -> (String, Vec<String>) {
+        let Some((tokens, account)) = parse(current) else {
+            return (
+                "the credential copy changed but is not a credential; sign in again".to_owned(),
+                Vec::new(),
+            );
+        };
+        let same_account = matches!((&account, &self.account), (Some(new), Some(old)) if !new.is_empty() && new == old);
+        if !same_account {
+            return (
+                "the credential copy changed but is not a credential of the same account; sign in again".to_owned(),
+                tokens,
+            );
+        }
+        let kept = self
+            .master_auth
+            .with_file_name(format!("{AUTH_FILE}.rotated-{}", self.job));
+        let reason = match write_new_private(&kept, current) {
+            Ok(()) => format!(
+                "Codex rotated the credential during job {}; replace auth.json with {}",
+                self.job,
+                kept.display()
+            ),
+            Err(error) => format!(
+                "Codex rotated the credential during job {} and the rotated copy could not be kept ({error}); {}",
+                self.job,
+                self.preserve_job_home()
+            ),
+        };
+        (reason, tokens)
+    }
+
+    /// Moves the per-job `CODEX_HOME` out of the way of the job cleanup, so its copy is not deleted.
+    fn preserve_job_home(&self) -> String {
+        let mut kept = self.codex_home.clone().into_os_string();
+        kept.push("-kept");
+        let kept = PathBuf::from(kept);
+        match std::fs::rename(&self.codex_home, &kept) {
+            Ok(()) => {
+                tracing::error!(job = %self.job, dir = %kept.display(), "the rotated Codex credential is left in this directory for recovery");
+                format!("the current credential is in {}", kept.display())
             }
-            _ => "the credential copy changed but is not a credential of the same account; sign in again".to_owned(),
+            Err(error) => {
+                tracing::error!(job = %self.job, dir = %self.codex_home.display(), %error, "the rotated Codex credential could not be preserved; sign in again");
+                "the current credential could not be preserved; sign in again".to_owned()
+            }
         }
     }
 
-    fn block(&self, reason: &str) {
+    /// Persists the block. Never opens an existing path: anything at the marker path already means blocked.
+    fn write_marker(&self, reason: &str) {
         let marker = blocked_marker(&self.master_auth);
         let written = OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
             .custom_flags(OFlags::NOFOLLOW.bits().cast_signed())
             .open(&marker)
@@ -172,20 +327,19 @@ impl JobCredential {
                 %reason,
                 "Codex credential blocked; recover it, delete the marker and restart the runner"
             ),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => tracing::error!(
+                job = %self.job,
+                marker = %marker.display(),
+                %reason,
+                "Codex credential blocked (marker already present); recover it, delete the marker and restart the runner"
+            ),
             Err(error) => tracing::error!(
                 job = %self.job,
                 %error,
                 %reason,
-                "Codex credential must not be used again but the block marker could not be written; stop the runner"
+                "Codex credential blocked in this process only: the marker could not be written; recover it before restarting the runner"
             ),
         }
-    }
-}
-
-impl Drop for JobCredential {
-    /// A timed-out, cancelled or fenced call still keeps a rotated credential before the job dir is removed.
-    fn drop(&mut self) {
-        self.settle(false);
     }
 }
 
@@ -399,5 +553,125 @@ mod tests {
         assert!(status.success());
         drop(credential);
         assert!(credential_blocked(&d.master));
+    }
+
+    #[test]
+    fn master_without_account_id_never_keeps_a_rotated_copy() {
+        let d = dirs();
+        let no_account = |refresh: &str| {
+            json!({"auth_mode": "chatgpt", "tokens": {"refresh_token": refresh}})
+                .to_string()
+                .into_bytes()
+        };
+        std::fs::write(&d.master, no_account("rt-original")).unwrap();
+        let job = JobId::new_random();
+        let credential =
+            JobCredential::install(&d.master, &d.home, job, Scrubber::default()).unwrap();
+        std::fs::write(d.home.join(AUTH_FILE), no_account("rt-rotated")).unwrap();
+        drop(credential);
+        assert!(
+            !rotated(&d, job).exists(),
+            "None == None must not count as the same account"
+        );
+        assert!(credential_blocked(&d.master));
+    }
+
+    fn kept_home(d: &Dirs) -> PathBuf {
+        d.home.with_file_name("home-kept")
+    }
+
+    #[test]
+    fn unwritable_credentials_dir_blocks_in_process_and_preserves_the_job_home() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dirs();
+        let credentials = d.master.parent().unwrap().to_path_buf();
+        let job = JobId::new_random();
+        let credential =
+            JobCredential::install(&d.master, &d.home, job, Scrubber::default()).unwrap();
+        std::fs::write(d.home.join(AUTH_FILE), auth("rt-rotated", "acct-1")).unwrap();
+        std::fs::set_permissions(&credentials, std::fs::Permissions::from_mode(0o500)).unwrap();
+        drop(credential);
+        let marker_written = blocked_marker(&d.master).exists();
+        std::fs::set_permissions(&credentials, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            !marker_written && !rotated(&d, job).exists(),
+            "both writes failed"
+        );
+        assert!(
+            credential_blocked(&d.master),
+            "blocked in this process without the marker"
+        );
+        assert!(!credential_usable(&d.master));
+        assert_eq!(
+            std::fs::read(kept_home(&d).join(AUTH_FILE)).unwrap(),
+            auth("rt-rotated", "acct-1"),
+            "the only current copy is left for the operator"
+        );
+    }
+
+    #[test]
+    fn occupied_rotated_path_preserves_the_job_home() {
+        let d = dirs();
+        let job = JobId::new_random();
+        let credential =
+            JobCredential::install(&d.master, &d.home, job, Scrubber::default()).unwrap();
+        std::fs::write(rotated(&d, job), "occupied").unwrap();
+        std::fs::write(d.home.join(AUTH_FILE), auth("rt-rotated", "acct-1")).unwrap();
+        drop(credential);
+        assert!(blocked_marker(&d.master).exists());
+        assert_eq!(
+            std::fs::read(kept_home(&d).join(AUTH_FILE)).unwrap(),
+            auth("rt-rotated", "acct-1")
+        );
+    }
+
+    #[test]
+    fn fifo_at_the_marker_path_does_not_hang_settle() {
+        let d = dirs();
+        let credential =
+            JobCredential::install(&d.master, &d.home, JobId::new_random(), Scrubber::default())
+                .unwrap();
+        let status = std::process::Command::new("mkfifo")
+            .arg(blocked_marker(&d.master))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::write(d.home.join(AUTH_FILE), auth("rt-rotated", "acct-1")).unwrap();
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(credential);
+            let _ = done.send(());
+        });
+        assert!(
+            finished.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "settle hung on the FIFO"
+        );
+        assert!(credential_blocked(&d.master));
+    }
+
+    #[test]
+    fn rewriting_the_copy_too_often_ends_the_call_without_forgetting_secrets() {
+        let d = dirs();
+        let mut credential =
+            JobCredential::install(&d.master, &d.home, JobId::new_random(), Scrubber::default())
+                .unwrap();
+        let mut accepted = 0;
+        for round in 0..20 {
+            std::fs::write(
+                d.home.join(AUTH_FILE),
+                auth(&format!("rt-round-{round}"), "acct-1"),
+            )
+            .unwrap();
+            if !credential.watch() {
+                break;
+            }
+            accepted += 1;
+        }
+        assert!(accepted < 20, "the number of remembered tokens is capped");
+        assert_eq!(
+            credential.scrubber().text("rt-round-0"),
+            "[redacted]",
+            "older secrets are kept"
+        );
     }
 }

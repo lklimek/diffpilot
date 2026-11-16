@@ -613,3 +613,41 @@ async fn oversized_line_is_skipped_and_the_next_one_read() {
     assert_eq!(lines.next().await.unwrap(), None);
     assert_eq!(lines.skipped, 1);
 }
+
+#[tokio::test]
+async fn group_is_disarmed_after_the_call_and_a_late_cancel_is_a_no_op() {
+    let h = harness("plan.jsonl", 0);
+    run(&h).await.0.expect("success");
+    assert!(
+        h.provider.running.lock().unwrap().is_empty(),
+        "no group id stays registered after the leader is reaped"
+    );
+    h.provider
+        .cancel(h.call.job_id)
+        .await
+        .expect("cancel after the end does nothing");
+}
+
+#[tokio::test]
+async fn kill_and_disarm_unregisters_before_the_leader_is_reaped() {
+    let running = Running::default();
+    let job = JobId::new_random();
+    let mut child = tokio::process::Command::new("sleep")
+        .arg("30")
+        .process_group(0)
+        .kill_on_drop(true)
+        .spawn()
+        .expect("spawn sleep");
+    let mut group = ProcessGroup::register(&running, job, child.id());
+    assert!(running.lock().unwrap().contains_key(&job));
+    assert!(!group.leader_exited());
+    group.kill_and_disarm();
+    assert!(
+        group.pid.is_none(),
+        "disarmed: a later drop signals nothing"
+    );
+    assert!(running.lock().unwrap().is_empty());
+    let status = child.wait().await.expect("reap");
+    assert!(!status.success(), "the group was killed");
+    drop(group);
+}

@@ -24,7 +24,7 @@ use contracts::job::event::JobEvent;
 use contracts::job::result::Usage;
 use contracts::job::spec::{ModelChoice, ReasoningEffort};
 use futures::future::BoxFuture;
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -48,6 +48,8 @@ const SCHEMA_FILE: &str = "output-schema.json";
 const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 /// Bytes of Codex's stderr kept for the debug log.
 const STDERR_TAIL_BYTES: usize = 4096;
+/// How often the loop checks whether Codex exited.
+const EXIT_POLL: Duration = Duration::from_millis(50);
 /// How long stdout may stay open after Codex exited and its group was killed.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 
@@ -175,7 +177,7 @@ impl CodexProvider {
             tracing::error!(binary = %self.settings.binary.display(), %error, "cannot start Codex; check SR_RUNNER_CODEX_BIN");
             ProviderError::Io(error)
         })?;
-        let group = ProcessGroup::register(&self.running, call.job_id, child.id());
+        let mut group = ProcessGroup::register(&self.running, call.job_id, child.id());
         let stdin = child.stdin.take().map(|mut stdin| {
             let prompt = call.prompt.clone();
             tokio::spawn(async move {
@@ -195,7 +197,7 @@ impl CodexProvider {
         let mut parsed = CodexStream::default();
         let status = read_until_exit(
             &mut child,
-            &group,
+            &mut group,
             &mut lines,
             &mut parsed,
             credential,
@@ -209,8 +211,8 @@ impl CodexProvider {
         if let Some(stderr) = stderr
             && let Ok(tail) = stderr.await
             && !tail.is_empty()
+            && credential.watch()
         {
-            credential.watch();
             tracing::debug!(job = %call.job_id, stderr = %credential.scrubber().text(&tail), "Codex stderr tail");
         }
         if parsed.unparsed_lines() > 0 || lines.skipped > 0 {
@@ -246,29 +248,22 @@ impl LlmProvider for CodexProvider {
 
     /// SIGTERM to the call's process group; Codex then exits with 143 and the call ends as cancelled.
     fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
-        let group = self
-            .running
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&job)
-            .copied();
-        let result = match group {
-            Some(pid) => kill_process_group(pid, Signal::TERM)
-                .or_else(|error| {
-                    if error == rustix::io::Errno::SRCH {
-                        Ok(())
-                    } else {
-                        Err(error)
-                    }
-                })
-                .map_err(|error| ProviderError::Io(error.into())),
+        // Signalled under the lock that unregisters the group before its leader is reaped, so the id is ours.
+        let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        let result = match running.get(&job) {
+            Some(pid) => {
+                signal_group(*pid, Signal::TERM).map_err(|error| ProviderError::Io(error.into()))
+            }
             None => Ok(()),
         };
+        drop(running);
         Box::pin(async move { result })
     }
 }
 
-/// The process group of a running call: registered for `cancel`, SIGKILLed when dropped.
+/// The process group of a running call, registered for `cancel`. Signalled only while its leader is not
+/// reaped (a zombie leader keeps the id reserved): [`ProcessGroup::kill_and_disarm`] before reaping, SIGKILL on
+/// drop while still armed.
 struct ProcessGroup {
     running: Running,
     job: JobId,
@@ -293,24 +288,39 @@ impl ProcessGroup {
         }
     }
 
-    /// SIGKILL to every process left in the group.
-    fn kill(&self) {
-        if let Some(pid) = self.pid
-            && let Err(error) = kill_process_group(pid, Signal::KILL)
-            && error != rustix::io::Errno::SRCH
+    /// Whether the leader exited; it stays unreaped (`WNOWAIT`), so the group id is still ours.
+    fn leader_exited(&self) -> bool {
+        let Some(pid) = self.pid else {
+            return true;
+        };
+        let options = WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT;
+        // Only this provider reaps the leader (`Child::wait`), so an error cannot mean "reaped by someone else".
+        !matches!(waitid(WaitId::Pid(pid), options), Ok(None))
+    }
+
+    /// SIGKILL to every process left in the group, then unregister; call before reaping the leader.
+    fn kill_and_disarm(&mut self) {
+        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(pid) = self.pid.take()
+            && let Err(error) = signal_group(pid, Signal::KILL)
         {
             tracing::warn!(job = %self.job, %error, "cannot kill the agent's process group");
         }
+        running.remove(&self.job);
     }
 }
 
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
-        self.kill();
-        self.running
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.job);
+        self.kill_and_disarm();
+    }
+}
+
+/// Signals a process group; an empty group is not an error.
+fn signal_group(pid: Pid, signal: Signal) -> Result<(), rustix::io::Errno> {
+    match kill_process_group(pid, signal) {
+        Err(rustix::io::Errno::SRCH) => Ok(()),
+        other => other,
     }
 }
 
@@ -429,30 +439,36 @@ async fn create_private_dir(path: &Path) -> io::Result<()> {
     tokio::fs::DirBuilder::new().mode(0o700).create(path).await
 }
 
-/// Reads events until Codex exits, kills what is left of its process group, then drains stdout briefly.
+/// Reads events until Codex exits; kills what is left of its group while the exited leader is not yet reaped
+/// (so the group id cannot have been reused), then reaps it and drains stdout briefly.
 async fn read_until_exit<R: AsyncBufRead + Unpin>(
     child: &mut Child,
-    group: &ProcessGroup,
+    group: &mut ProcessGroup,
     lines: &mut Lines<R>,
     parsed: &mut CodexStream,
     credential: &mut JobCredential,
     events: &mpsc::Sender<ProviderEvent>,
 ) -> Result<ExitStatus, ProviderError> {
-    let status = loop {
+    let mut exit_poll = tokio::time::interval(EXIT_POLL);
+    let mut open = true;
+    loop {
         tokio::select! {
-            line = lines.next() => match line? {
-                Some(line) => forward(parsed, &line, credential, events).await,
-                None => break child.wait().await?,
+            line = lines.next(), if open => match line? {
+                Some(line) => forward(parsed, &line, credential, events).await?,
+                None => open = false,
             },
-            status = child.wait() => break status?,
+            _ = exit_poll.tick() => if group.leader_exited() {
+                break;
+            },
         }
-    };
-    group.kill();
+    }
+    group.kill_and_disarm();
+    let status = child.wait().await?;
     let drain = async {
         while let Some(line) = lines.next().await? {
-            forward(parsed, &line, credential, events).await;
+            forward(parsed, &line, credential, events).await?;
         }
-        Ok::<(), io::Error>(())
+        Ok::<(), ProviderError>(())
     };
     match timeout(DRAIN_AFTER_EXIT, drain).await {
         Ok(result) => result?,
@@ -466,15 +482,18 @@ async fn read_until_exit<R: AsyncBufRead + Unpin>(
 }
 
 /// Forwards the activity of `line` with every secret the provider knows scrubbed, the tokens of a credential
-/// rotated meanwhile included. Not clipped: `execute` clips after scrubbing the secrets only it knows.
+/// rotated meanwhile included. Not clipped: `execute` clips after scrubbing the secrets only it knows. Fails
+/// when the credential copy was rewritten more often than a refresh does.
 async fn forward(
     parsed: &mut CodexStream,
     line: &str,
     credential: &mut JobCredential,
     events: &mpsc::Sender<ProviderEvent>,
-) {
+) -> Result<(), ProviderError> {
     if let Some((activity, summary)) = parsed.line(line) {
-        credential.watch();
+        if !credential.watch() {
+            return Err(ProviderError::CredentialUnusable);
+        }
         let event = JobEvent {
             seq: 0,
             at: Utc::now(),
@@ -484,6 +503,7 @@ async fn forward(
         // A closed receiver means execute stopped listening; Codex keeps running until it is stopped.
         let _ = events.send(ProviderEvent::Activity(event)).await;
     }
+    Ok(())
 }
 
 fn exit_of(status: ExitStatus) -> Exit {
