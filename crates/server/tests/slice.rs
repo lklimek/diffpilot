@@ -987,8 +987,8 @@ async fn diverged_base_uses_the_merge_base() {
     );
 }
 
-/// Pull request #10 of `acme/big`: a file over the byte limit, a file whose first line is 1 MiB, and a
-/// 5,000-line block removed from `keep.txt` after its line 1.
+/// Pull request #10 of `acme/big`: a file over the byte limit, a file whose first line is 1 MiB, and from
+/// `keep.txt` a 5,000-line block removed after its line 1 and one line removed after its line 3.
 async fn big_repo(h: &Harness) -> AnalysisSummary {
     h.analyse_repo("big", 10, |repo| {
         let huge = "x".repeat(1023) + "\n";
@@ -998,11 +998,11 @@ async fn big_repo(h: &Harness) -> AnalysisSummary {
             &[
                 ("huge.txt", &huge.repeat(9 * 1024)),
                 ("long.txt", &long),
-                ("keep.txt", &numbered(1..=5003)),
+                ("keep.txt", &numbered(1..=5006)),
             ],
             "base",
         );
-        let kept = numbered(1..=1) + &numbered(5002..=5003);
+        let kept = numbered(1..=1) + &numbered(5002..=5003) + &numbered(5005..=5006);
         let head = commit(repo, &[("keep.txt", &kept)], "remove a large block");
         (base, head)
     })
@@ -1044,16 +1044,27 @@ async fn lines_caps_deleted_blocks() {
     let summary = big_repo(&h).await;
     let (status, body) = h
         .get(&format!(
-            "/api/v1/analyses/{}/lines?path=keep.txt&side=head&from=1&to=1",
+            "/api/v1/analyses/{}/lines?path=keep.txt&side=head&from=1&to=4",
             summary.id
         ))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["deleted"][0]["after_line"], json!(1));
-    assert_eq!(body["deleted"][0]["base_start"], json!(2));
-    let removed = body["deleted"][0]["lines"].as_array().expect("lines");
-    assert_eq!(removed.len(), 2000);
+    let deleted = body["deleted"].as_array().expect("deleted");
+    assert_eq!(
+        deleted.len(),
+        2,
+        "a marker past the budget is still reported"
+    );
+    assert_eq!(deleted[0]["after_line"], json!(1));
+    assert_eq!(deleted[0]["base_start"], json!(2));
+    assert_eq!(deleted[0]["total_lines"], json!(5000));
+    let removed = deleted[0]["lines"].as_array().expect("lines");
+    assert_eq!(removed.len(), 2000, "the block is visibly truncated");
     assert_eq!(removed[0], json!("line 2"));
+    assert_eq!(
+        deleted[1],
+        json!({ "after_line": 3, "base_start": 5004, "lines": [], "total_lines": 1 })
+    );
 }
 
 async fn fail_flow_2(h: &Harness, script: Script) -> AnalysisSummary {

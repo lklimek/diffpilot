@@ -28,6 +28,7 @@ use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf, UserTokenError, user_access_token};
 use crate::github::mirror::MirrorError;
 use crate::github::rest::{self, GithubError, GithubPull};
+use crate::pipeline::lines::LinesError;
 use crate::pipeline::{self, PrDiffError, tour::TourError};
 use crate::state::AppState;
 
@@ -106,6 +107,16 @@ impl From<PrDiffError> for AnalysisApiError {
             PrDiffError::Diff(error) => Self::Diff(error),
             PrDiffError::Task(error) => Self::DiffTask(error),
             PrDiffError::NotPrepared => Self::NotFinished,
+        }
+    }
+}
+
+impl From<LinesError> for AnalysisApiError {
+    fn from(error: LinesError) -> Self {
+        match error {
+            LinesError::Diff(error) => error.into(),
+            LinesError::Mirror(error) => Self::Mirror(error),
+            LinesError::FileNotFound => Self::FileNotFound,
         }
     }
 }

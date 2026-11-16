@@ -43,6 +43,7 @@ use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::model::{ModelContext, select_model};
 use crate::state::AppState;
 
+pub mod lines;
 pub mod prompt;
 pub mod tour;
 
