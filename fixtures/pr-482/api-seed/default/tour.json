@@ -10,8 +10,8 @@
       "title": "feat(rpc): retry with backoff on timeout",
       "author": "dana",
       "html_url": "https://github.com/acme/node-client/pull/482",
-      "base_sha": "33d61c3b90f5394f73319522336f88c195faf6a4",
-      "head_sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+      "base_sha": "92f2274efbb93570cc8f820a49c058cf66b0dbe9",
+      "head_sha": "52d2da140191a9d47becf6a446310be803c007fc"
     },
     "language": "en",
     "state": {
@@ -282,7 +282,7 @@
               "start_line": 126,
               "end_line": 132
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/mempool/mod.rs#L126-L132",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/mempool/mod.rs#L126-L132",
             "changed_lines": [],
             "moved": null,
             "call_hierarchy": null,
@@ -361,7 +361,7 @@
               "start_line": 88,
               "end_line": 96
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/client.rs#L88-L96",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L88-L96",
             "changed_lines": [
               {
                 "start_line": 89,
@@ -443,7 +443,7 @@
               "start_line": 97,
               "end_line": 97
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/client.rs#L97-L97",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L97-L97",
             "changed_lines": [
               {
                 "start_line": 97,
@@ -498,7 +498,7 @@
               "start_line": 98,
               "end_line": 98
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/client.rs#L98-L98",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L98-L98",
             "changed_lines": [
               {
                 "start_line": 98,
@@ -553,7 +553,7 @@
               "start_line": 99,
               "end_line": 99
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/client.rs#L99-L99",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L99-L99",
             "changed_lines": [
               {
                 "start_line": 99,
@@ -667,7 +667,7 @@
               "start_line": 100,
               "end_line": 103
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/client.rs#L100-L103",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L100-L103",
             "changed_lines": [
               {
                 "start_line": 100,
@@ -742,9 +742,9 @@
               }
             ],
             "assessment": {
-              "headline": "On a slow link a retry may wait up to 6 s instead of 4 s. Few users would notice.",
+              "headline": "With the default policy the two waits stay at most 300 ms and 600 ms; a policy with more attempts could wait up to half longer than max_delay.",
               "risk": "low",
-              "reason": "Bounded (at most one and a half times the cap) and only on the third attempt path.",
+              "reason": "Latent: the 4 s cap is out of reach while every client uses the default of 3 attempts, and no setter can change it.",
               "basis_note": "read 2 files (retry.rs, client.rs); nothing executed",
               "not_checked": "the jitter range at run time",
               "origin": "introduced",
@@ -765,7 +765,7 @@
               "start_line": 104,
               "end_line": 106
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/client.rs#L104-L106",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L104-L106",
             "changed_lines": [
               {
                 "start_line": 104,
@@ -876,7 +876,7 @@
               "start_line": 107,
               "end_line": 109
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/client.rs#L107-L109",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L107-L109",
             "changed_lines": [
               {
                 "start_line": 107,
@@ -931,7 +931,7 @@
               "start_line": 30,
               "end_line": 43
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/client.rs#L30-L43",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/client.rs#L30-L43",
             "changed_lines": [
               {
                 "start_line": 35,
@@ -1014,7 +1014,7 @@
               "start_line": 3,
               "end_line": 32
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/retry.rs#L3-L32",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/retry.rs#L3-L32",
             "changed_lines": [
               {
                 "start_line": 5,
@@ -1075,8 +1075,13 @@
                 },
                 "was": "No delay rule.",
                 "is": "backoff = with_jitter(min(exp_delay(base, attempt), max_delay)).",
-                "text": "Jitter is applied after the cap, so one delay can exceed max_delay by up to half (6 s instead of 4 s).",
+                "text": "Jitter is applied after the cap, so one delay can exceed max_delay by up to half; with the default 3 attempts the delays are 200 ms and 400 ms before jitter and never reach the cap.",
                 "evidence": [
+                  {
+                    "file": "src/rpc/retry.rs",
+                    "side": "head",
+                    "line": 17
+                  },
                   {
                     "file": "src/rpc/retry.rs",
                     "side": "head",
@@ -1159,7 +1164,7 @@
               "start_line": 12,
               "end_line": 26
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/config.rs#L12-L26",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/config.rs#L12-L26",
             "changed_lines": [
               {
                 "start_line": 23,
@@ -1263,7 +1268,7 @@
                 "symbol": "slow_peer_2000_headers",
                 "reason": "The failing CI test: its peer answers after 12 s, longer than the new 5 s timeout.",
                 "basis": "fact",
-                "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/tests/sync_headers.rs#L8-L14"
+                "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/tests/sync_headers.rs#L8-L14"
               }
             ]
           }
@@ -1278,7 +1283,7 @@
               "start_line": 61,
               "end_line": 67
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/sync/mod.rs#L61-L67",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/sync/mod.rs#L61-L67",
             "changed_lines": [],
             "moved": null,
             "call_hierarchy": null,
@@ -1372,7 +1377,7 @@
                   "end_line": 205
                 },
                 "step_id": null,
-                "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/sync/peers.rs#L201-L205"
+                "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/sync/peers.rs#L201-L205"
               }
             ]
           }
@@ -1412,7 +1417,7 @@
               "start_line": 7,
               "end_line": 16
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/error.rs#L7-L16",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/error.rs#L7-L16",
             "changed_lines": [
               {
                 "start_line": 12,
@@ -1515,7 +1520,7 @@
                 "symbol": "Prober::probe",
                 "reason": "Err(_) => {} drops Exhausted: a peer that keeps timing out is never marked failed.",
                 "basis": "fact",
-                "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/sync/peers.rs#L201-L205"
+                "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/sync/peers.rs#L201-L205"
               }
             ]
           }
@@ -1530,7 +1535,7 @@
               "start_line": 118,
               "end_line": 122
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/wallet/mod.rs#L118-L122",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/wallet/mod.rs#L118-L122",
             "changed_lines": [],
             "moved": null,
             "call_hierarchy": null,
@@ -1634,7 +1639,7 @@
               "start_line": 52,
               "end_line": 61
             },
-            "github_url": "https://github.com/acme/node-client/blob/33d61c3b90f5394f73319522336f88c195faf6a4/src/rpc/client.rs#L52-L61",
+            "github_url": "https://github.com/acme/node-client/blob/92f2274efbb93570cc8f820a49c058cf66b0dbe9/src/rpc/client.rs#L52-L61",
             "changed_lines": [
               {
                 "start_line": 52,
@@ -1778,7 +1783,7 @@
               "start_line": 38,
               "end_line": 95
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/rpc/retry.rs#L38-L95",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/rpc/retry.rs#L38-L95",
             "changed_lines": [
               {
                 "start_line": 49,
@@ -1875,7 +1880,7 @@
               "start_line": 8,
               "end_line": 20
             },
-            "github_url": "https://github.com/acme/node-client/blob/33e29663d28ea4f04eaba92fed60f6a958a638c7/src/lib.rs#L8-L20",
+            "github_url": "https://github.com/acme/node-client/blob/52d2da140191a9d47becf6a446310be803c007fc/src/lib.rs#L8-L20",
             "changed_lines": [
               {
                 "start_line": 13,
