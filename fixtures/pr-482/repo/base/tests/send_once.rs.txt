@@ -1,0 +1,10 @@
+mod common;
+
+#[tokio::test]
+async fn send_once_does_not_retry() {
+    let client = common::client_with_timeouts(1);
+    let err = client.send_once(common::ping()).await.expect_err("times out");
+    // One request reached the node: no retry happened.
+    assert!(matches!(err, node_client::rpc::error::RpcError::Timeout));
+    assert_eq!(common::requests_seen(), 1);
+}

@@ -1,0 +1,30 @@
+{
+  "pending-review": {
+    "comments": [
+      {
+        "id": "PRRC_fixture482_c1",
+        "thread_id": "PRRT_fixture482_c1",
+        "path": "src/rpc/client.rs",
+        "kind": "line",
+        "side": "head",
+        "start_line": null,
+        "line": 96,
+        "body": "The per-attempt timeout is reused for every attempt and the caller's deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes."
+      }
+    ]
+  },
+  "feedback": [
+    {
+      "id": "0e2b4c6d-0482-4a1b-8c3d-000000000003",
+      "target": {
+        "target": "line",
+        "path": "src/rpc/client.rs",
+        "side": "head",
+        "line": 96
+      },
+      "value": "missed_by_llm",
+      "note": null,
+      "created_at": "2026-11-16T10:12:00Z"
+    }
+  ]
+}

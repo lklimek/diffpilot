@@ -1,0 +1,13 @@
+//! Formatting helpers for log lines.
+
+use std::time::Duration;
+
+/// Formats a duration as whole milliseconds, for example `250ms`.
+pub fn millis(d: Duration) -> String {
+    format!("{}ms", d.as_millis())
+}
+
+/// Shortens a hexadecimal id to its first 12 characters.
+pub fn short_id(id: &str) -> &str {
+    id.get(..12).unwrap_or(id)
+}

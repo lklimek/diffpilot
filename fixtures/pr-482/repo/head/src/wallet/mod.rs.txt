@@ -1,0 +1,123 @@
+//! Wallet: balances and payments.
+
+pub mod pay;
+
+use crate::rpc::client::RpcClient;
+use crate::rpc::error::RpcError;
+use crate::rpc::transport::Request;
+
+/// What the wallet UI shows when a call fails.
+#[derive(Debug, thiserror::Error)]
+pub enum WalletError {
+    /// The node did not answer in time.
+    #[error("offline: the node did not answer")]
+    Offline,
+    /// Any other RPC failure.
+    #[error("the node returned an error")]
+    Rpc,
+}
+
+/// A balance in duffs.
+pub struct Balance(pub u64);
+
+/// Label shown for account slot 0.
+pub const ACCOUNT_LABEL_0: &str = "Account 1";
+
+/// Label shown for account slot 1.
+pub const ACCOUNT_LABEL_1: &str = "Account 2";
+
+/// Label shown for account slot 2.
+pub const ACCOUNT_LABEL_2: &str = "Account 3";
+
+/// Label shown for account slot 3.
+pub const ACCOUNT_LABEL_3: &str = "Account 4";
+
+/// Label shown for account slot 4.
+pub const ACCOUNT_LABEL_4: &str = "Account 5";
+
+/// Label shown for account slot 5.
+pub const ACCOUNT_LABEL_5: &str = "Account 6";
+
+/// Label shown for account slot 6.
+pub const ACCOUNT_LABEL_6: &str = "Account 7";
+
+/// Label shown for account slot 7.
+pub const ACCOUNT_LABEL_7: &str = "Account 8";
+
+/// Label shown for account slot 8.
+pub const ACCOUNT_LABEL_8: &str = "Account 9";
+
+/// Label shown for account slot 9.
+pub const ACCOUNT_LABEL_9: &str = "Account 10";
+
+/// Label shown for account slot 10.
+pub const ACCOUNT_LABEL_10: &str = "Account 11";
+
+/// Label shown for account slot 11.
+pub const ACCOUNT_LABEL_11: &str = "Account 12";
+
+/// Label shown for account slot 12.
+pub const ACCOUNT_LABEL_12: &str = "Account 13";
+
+/// Label shown for account slot 13.
+pub const ACCOUNT_LABEL_13: &str = "Account 14";
+
+/// Label shown for account slot 14.
+pub const ACCOUNT_LABEL_14: &str = "Account 15";
+
+/// Label shown for account slot 15.
+pub const ACCOUNT_LABEL_15: &str = "Account 16";
+
+/// Label shown for account slot 16.
+pub const ACCOUNT_LABEL_16: &str = "Account 17";
+
+/// Label shown for account slot 17.
+pub const ACCOUNT_LABEL_17: &str = "Account 18";
+
+/// Label shown for account slot 18.
+pub const ACCOUNT_LABEL_18: &str = "Account 19";
+
+/// Label shown for account slot 19.
+pub const ACCOUNT_LABEL_19: &str = "Account 20";
+
+/// Label shown for account slot 20.
+pub const ACCOUNT_LABEL_20: &str = "Account 21";
+
+/// Label shown for account slot 21.
+pub const ACCOUNT_LABEL_21: &str = "Account 22";
+
+/// Label shown for account slot 22.
+pub const ACCOUNT_LABEL_22: &str = "Account 23";
+
+/// Label shown for account slot 23.
+pub const ACCOUNT_LABEL_23: &str = "Account 24";
+
+/// Label shown for account slot 24.
+pub const ACCOUNT_LABEL_24: &str = "Account 25";
+
+/// Label shown for account slot 25.
+pub const ACCOUNT_LABEL_25: &str = "Account 26";
+
+/// Label shown for account slot 26.
+pub const ACCOUNT_LABEL_26: &str = "Account 27";
+
+/// Label shown for account slot 27.
+pub const ACCOUNT_LABEL_27: &str = "Account 28";
+
+/// Label shown for account slot 28.
+pub const ACCOUNT_LABEL_28: &str = "Account 29";
+
+/// Label shown for account slot 29.
+pub const ACCOUNT_LABEL_29: &str = "Account 30";
+pub const ACCOUNT_LABEL_30: &str = "Account 31";
+
+/// Asks the node for the balance of `address`.
+pub async fn fetch_balance(client: &RpcClient, address: &str) -> Result<Balance, WalletError> {
+    let req = Request::get_balance(address);
+    // Only Timeout maps to Offline; every other error is shown as a generic RPC error.
+    match client.send(req).await {
+        Ok(resp) => Ok(resp.into()),
+        Err(RpcError::Timeout) => Err(WalletError::Offline),
+        Err(_) => Err(WalletError::Rpc),
+    }
+}

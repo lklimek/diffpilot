@@ -1,0 +1,219 @@
+//! RPC client: builds requests and sends them over the transport.
+
+use std::sync::Arc;
+
+use crate::config::RpcConfig;
+use crate::rpc::error::RpcError;
+use crate::rpc::transport::{HttpRequest, Request, Response, Transport};
+
+/// Identifies this client to the node.
+const CLIENT_ID: &str = "acme-node-client";
+
+/// Largest request body the node accepts, in bytes.
+const MAX_BODY: usize = 4 * 1024 * 1024;
+
+/// Supplies the bearer token for authenticated nodes.
+pub trait Auth: Send + Sync {
+    /// The current token, if any.
+    fn token(&self) -> Option<String>;
+}
+
+/// No authentication.
+pub struct NoAuth;
+
+impl Auth for NoAuth {
+    fn token(&self) -> Option<String> {
+        None
+    }
+}
+
+/// A client for one node.
+pub struct RpcClient {
+    config: RpcConfig,
+    transport: Transport,
+    auth: Arc<dyn Auth>,
+}
+
+impl RpcClient {
+    /// A client for `config.endpoint`.
+    pub fn new(config: RpcConfig, auth: Arc<dyn Auth>) -> Self {
+        let transport = Transport::new(config.endpoint.clone());
+        Self { config, transport, auth }
+    }
+
+    /// The configuration this client was built with.
+    pub fn config(&self) -> &RpcConfig {
+        &self.config
+    }
+
+    /// Replaces the token source, for example after a login.
+    pub fn set_auth(&mut self, auth: Arc<dyn Auth>) { self.auth = auth; }
+
+    /// Sends exactly once; for callers that must not retry.
+    pub async fn send_once(&self, req: Request) -> Result<Response, RpcError> {
+        let http = self.build_request(&req)?;
+        let timeout = self.config.timeout;
+        let resp = self.transport.execute(http, timeout).await?;
+        if resp.status().is_server_error() {
+            tracing::debug!(status = %resp.status(), method = %req.method, "send_once: server error");
+        }
+        Ok(resp)
+    }
+
+    /// The node this client talks to.
+    pub fn endpoint(&self) -> &url::Url {
+        self.transport.endpoint()
+    }
+
+    /// Asks the node for its version; one request, no body.
+    pub async fn node_version(&self) -> Result<String, RpcError> {
+        let resp = self.send(Request { method: "node_version".to_owned(), body: Vec::new() }).await?;
+        String::from_utf8(resp.body).map_err(|e| RpcError::Transport(e.to_string().into()))
+    }
+
+    /// True when the node answers a health request within the configured timeout.
+    pub async fn is_healthy(&self) -> bool {
+        let req = Request { method: "health".to_owned(), body: Vec::new() };
+        match self.build_request(&req) {
+            Ok(http) => self.transport.execute(http, self.config.timeout).await.is_ok(),
+            Err(_) => false,
+        }
+    }
+
+    /// Changes the timeout of later requests.
+    ///
+    /// Requests already in flight keep the timeout they started with.
+    pub fn set_timeout(&mut self, timeout: std::time::Duration) {
+        self.config.timeout = timeout;
+    }
+
+    /// Replaces the transport, for tests that inject a slow or failing node.
+    #[doc(hidden)]
+    pub fn with_transport(mut self, transport: Transport) -> Self {
+        self.transport = transport;
+        self
+    }
+}
+
+impl RpcClient {
+    /// Sends a request.
+    pub async fn send(&self, req: Request) -> Result<Response, RpcError> {
+        let http = self.build_request(&req)?;
+        let resp = self.transport.execute(http, self.config.timeout).await?;
+        Ok(resp)
+    }
+
+}
+
+/// The JSON-RPC envelope around a request body.
+struct Envelope<'a> {
+    jsonrpc: &'static str,
+    id: u64,
+    method: &'a str,
+    params: &'a [u8],
+}
+
+impl Envelope<'_> {
+    /// Encodes the envelope; `params` is already encoded JSON.
+    fn encode(&self) -> Result<Vec<u8>, std::fmt::Error> {
+        use std::fmt::Write;
+        let params = std::str::from_utf8(self.params).map_err(|_| std::fmt::Error)?;
+        let mut out = String::with_capacity(64 + params.len());
+        write!(
+            out,
+            r#"{{"jsonrpc":"{}","id":{},"method":"{}","params":{}}}"#,
+            self.jsonrpc, self.id, self.method, params
+        )?;
+        Ok(out.into_bytes())
+    }
+}
+
+/// Process-wide request counter for `x-request-id`.
+fn next_request_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Request {
+    /// URL path of the method on the node.
+    pub fn path(&self) -> String {
+        format!("rpc/{}", self.method)
+    }
+
+    /// HTTP method used for every RPC call.
+    pub fn http_method(&self) -> &'static str {
+        "POST"
+    }
+
+    /// `broadcast_tx` with a signed transaction.
+    pub fn broadcast_tx(raw: Vec<u8>) -> Self {
+        Self { method: "broadcast_tx".to_owned(), body: raw }
+    }
+
+    /// `get_headers` for `count` headers from height `from`.
+    pub fn get_headers(from: u64, count: u32) -> Self {
+        let body = format!(r#"{{"from":{from},"count":{count}}}"#).into_bytes();
+        Self { method: "get_headers".to_owned(), body }
+    }
+
+    /// `get_balance` of one address.
+    pub fn get_balance(address: &str) -> Self {
+        let body = format!(r#"{{"address":"{address}"}}"#).into_bytes();
+        Self { method: "get_balance".to_owned(), body }
+    }
+
+    /// `send_payment` of `amount` duffs to `address`.
+    pub fn send_payment(address: &str, amount: u64) -> Self {
+        let body = format!(r#"{{"address":"{address}","amount":{amount}}}"#).into_bytes();
+        Self { method: "send_payment".to_owned(), body }
+    }
+}
+
+impl RpcClient {
+    /// Builds the HTTP request for `req`: URL, headers, body.
+    fn build_request(&self, req: &Request) -> Result<HttpRequest, RpcError> {
+        let url = self.config.endpoint.join(req.path())?;
+        let mut builder = HttpRequest::builder(req.http_method(), url);
+        builder = builder.header("x-client", CLIENT_ID);
+        if let Some(token) = self.auth.token() {
+            builder = builder.bearer_auth(token);
+        }
+        if req.body.len() > MAX_BODY {
+            return Err(RpcError::Transport(
+                format!("request body of {} bytes exceeds the node limit", req.body.len()).into(),
+            ));
+        }
+        let id = next_request_id();
+        builder = builder.header("x-request-id", &id.to_string());
+        builder = builder.header("content-type", "application/json");
+        let envelope = Envelope {
+            jsonrpc: "2.0",
+            id,
+            method: &req.method,
+            params: &req.body,
+        };
+        let body = envelope.encode().map_err(|e| {
+            RpcError::Transport(format!("cannot encode {}: {e}", req.method).into())
+        })?;
+        builder = builder.header("content-length", &body.len().to_string());
+        tracing::trace!(
+            method = %req.method,
+            id,
+            bytes = body.len(),
+            "rpc request built"
+        );
+        let http = builder.body(body);
+        // The endpoint is joined above, so only a host-less base URL can end up here.
+        if http.url.host().is_none() {
+            return Err(RpcError::Transport(
+                "the configured endpoint has no host".to_owned().into(),
+            ));
+        }
+        Ok(http)
+    }
+
+    /// Logs a finished call at debug level.
+    fn log_call(&self, method: &str, status: u16) {
+        tracing::debug!(endpoint = %self.config.endpoint, method, status, "rpc call finished");
+    }
+}

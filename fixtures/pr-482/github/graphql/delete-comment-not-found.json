@@ -1,0 +1,35 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "mutation($in:DeletePullRequestReviewCommentInput!){deletePullRequestReviewComment(input:$in){pullRequestReview{id state comments(first:20){totalCount}} pullRequestReviewComment{id}}}",
+      "variables": {
+        "in": {
+          "id": "PRRC_fixture482_c1"
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "deletePullRequestReviewComment": null
+    },
+    "errors": [
+      {
+        "type": "NOT_FOUND",
+        "path": [
+          "deletePullRequestReviewComment"
+        ],
+        "locations": [
+          {
+            "line": 1,
+            "column": 52
+          }
+        ],
+        "message": "Could not resolve to a node with the global id of 'PRRC_fixture482_c1'."
+      }
+    ]
+  }
+}

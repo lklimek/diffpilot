@@ -1,0 +1,29 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "mutation($in:UpdatePullRequestReviewCommentInput!){updatePullRequestReviewComment(input:$in){pullRequestReviewComment{id body state lastEditedAt includesCreatedEdit}}}",
+      "variables": {
+        "in": {
+          "pullRequestReviewCommentId": "PRRC_fixture482_c1",
+          "body": "The per-attempt timeout is reused for every attempt and the caller's deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes. Please pass the remaining deadline into send."
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "updatePullRequestReviewComment": {
+        "pullRequestReviewComment": {
+          "id": "PRRC_fixture482_c1",
+          "body": "The per-attempt timeout is reused for every attempt and the caller's deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes. Please pass the remaining deadline into send.",
+          "state": "PENDING",
+          "lastEditedAt": null,
+          "includesCreatedEdit": false
+        }
+      }
+    }
+  }
+}

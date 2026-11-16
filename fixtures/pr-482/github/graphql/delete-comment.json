@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "mutation($in:DeletePullRequestReviewCommentInput!){deletePullRequestReviewComment(input:$in){pullRequestReview{id state comments(first:20){totalCount}} pullRequestReviewComment{id}}}",
+      "variables": {
+        "in": {
+          "id": "PRRC_fixture482_c1"
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "deletePullRequestReviewComment": {
+        "pullRequestReview": {
+          "id": "PRR_fixture482_pending",
+          "state": "PENDING",
+          "comments": {
+            "totalCount": 0
+          }
+        },
+        "pullRequestReviewComment": {
+          "id": "PRRC_fixture482_c1"
+        }
+      }
+    }
+  }
+}

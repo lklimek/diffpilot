@@ -1,0 +1,44 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://api.github.com/graphql",
+    "body": {
+      "query": "mutation($in:AddPullRequestReviewInput!){addPullRequestReview(input:$in){pullRequestReview{id databaseId state body commit{oid} createdAt\n comments(first:20){nodes{id databaseId path line startLine subjectType state}}}}}",
+      "variables": {
+        "in": {
+          "pullRequestId": "PR_fixture482",
+          "commitOID": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+          "threads": [
+            {
+              "path": "src/rpc/client.rs",
+              "line": 97,
+              "side": "RIGHT",
+              "body": "Second review attempt."
+            }
+          ]
+        }
+      }
+    }
+  },
+  "status": 200,
+  "response": {
+    "data": {
+      "addPullRequestReview": null
+    },
+    "errors": [
+      {
+        "type": "UNPROCESSABLE",
+        "path": [
+          "addPullRequestReview"
+        ],
+        "locations": [
+          {
+            "line": 1,
+            "column": 42
+          }
+        ],
+        "message": "User can only have one pending review per pull request"
+      }
+    ]
+  }
+}

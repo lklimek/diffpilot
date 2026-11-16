@@ -1,0 +1,27 @@
+mod common;
+
+use node_client::rpc::error::RpcError;
+
+#[tokio::test]
+async fn timeout_is_retried_until_exhausted() {
+    let client = common::client_with_timeouts(5);
+    let err = client.send(common::ping()).await.expect_err("every attempt times out");
+    assert!(matches!(err, RpcError::Exhausted { attempts: 3 }));
+    assert_eq!(common::requests_seen(), 3);
+}
+
+#[tokio::test]
+async fn second_attempt_succeeds() {
+    let client = common::client_with_timeouts(1);
+    let resp = client.send(common::ping()).await.expect("second attempt answers");
+    assert_eq!(resp.status, 200);
+    assert_eq!(common::requests_seen(), 2);
+}
+
+#[tokio::test]
+async fn transport_errors_are_not_retried() {
+    let client = common::client_with_transport_error();
+    let err = client.send(common::ping()).await.expect_err("fails at once");
+    assert!(matches!(err, RpcError::Transport(_)));
+    assert_eq!(common::requests_seen(), 1);
+}

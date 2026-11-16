@@ -1,0 +1,415 @@
+{
+  "request": {
+    "method": "GET",
+    "url": "https://api.github.com/repos/acme/node-client/commits/33e29663d28ea4f04eaba92fed60f6a958a638c7/check-runs?per_page=100",
+    "body": null
+  },
+  "status": 200,
+  "response": {
+    "total_count": 6,
+    "check_runs": [
+      {
+        "id": 3000000001,
+        "name": "fmt",
+        "node_id": "NODE_fixture_check_1",
+        "head_sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+        "external_id": "",
+        "url": "https://api.github.com/repos/acme/node-client/check-runs/3000000001",
+        "html_url": "https://github.com/acme/node-client/runs/3000000001",
+        "details_url": "https://github.com/acme/node-client/actions/runs/3000000001",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-11-10T14:36:00Z",
+        "completed_at": "2026-11-10T14:44:00Z",
+        "output": {
+          "title": "Passed",
+          "summary": "",
+          "text": null,
+          "annotations_count": 0,
+          "annotations_url": "https://api.github.com/repos/acme/node-client/check-runs/3000000001/annotations"
+        },
+        "check_suite": {
+          "id": 4822600
+        },
+        "app": {
+          "id": 4822700,
+          "client_id": "fixture-actions-client",
+          "slug": "github-actions",
+          "node_id": "NODE_fixture_4822800",
+          "owner": {
+            "login": "acme",
+            "id": 4821800,
+            "node_id": "NODE_fixture_4820200",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1000001?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/acme",
+            "html_url": "https://github.com/acme",
+            "type": "User",
+            "site_admin": false
+          },
+          "name": "GitHub Actions",
+          "description": "Publishes ci-bot review progress as a check run",
+          "external_url": "https://github.com/ci-bot/review-system",
+          "html_url": "https://github.com/apps/pastaclaw-review",
+          "created_at": "2026-11-06T17:34:12Z",
+          "updated_at": "2026-11-06T17:34:23Z",
+          "permissions": {
+            "checks": "write",
+            "metadata": "read"
+          },
+          "events": []
+        },
+        "pull_requests": [
+          {
+            "url": "https://api.github.com/repos/acme/node-client/pulls/482",
+            "id": 4822900,
+            "number": 482,
+            "head": {
+              "ref": "feat/retry-timeouts",
+              "sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+            },
+            "base": {
+              "ref": "main",
+              "sha": "33d61c3b90f5394f73319522336f88c195faf6a4"
+            }
+          }
+        ]
+      },
+      {
+        "id": 3000000002,
+        "name": "clippy",
+        "node_id": "NODE_fixture_check_2",
+        "head_sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+        "external_id": "",
+        "url": "https://api.github.com/repos/acme/node-client/check-runs/3000000002",
+        "html_url": "https://github.com/acme/node-client/runs/3000000002",
+        "details_url": "https://github.com/acme/node-client/actions/runs/3000000002",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-11-10T14:36:00Z",
+        "completed_at": "2026-11-10T14:44:00Z",
+        "output": {
+          "title": "Passed",
+          "summary": "",
+          "text": null,
+          "annotations_count": 0,
+          "annotations_url": "https://api.github.com/repos/acme/node-client/check-runs/3000000002/annotations"
+        },
+        "check_suite": {
+          "id": 4822600
+        },
+        "app": {
+          "id": 4822700,
+          "client_id": "fixture-actions-client",
+          "slug": "github-actions",
+          "node_id": "NODE_fixture_4822800",
+          "owner": {
+            "login": "acme",
+            "id": 4821800,
+            "node_id": "NODE_fixture_4820200",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1000001?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/acme",
+            "html_url": "https://github.com/acme",
+            "type": "User",
+            "site_admin": false
+          },
+          "name": "GitHub Actions",
+          "description": "Publishes ci-bot review progress as a check run",
+          "external_url": "https://github.com/ci-bot/review-system",
+          "html_url": "https://github.com/apps/pastaclaw-review",
+          "created_at": "2026-11-06T17:34:12Z",
+          "updated_at": "2026-11-06T17:34:23Z",
+          "permissions": {
+            "checks": "write",
+            "metadata": "read"
+          },
+          "events": []
+        },
+        "pull_requests": [
+          {
+            "url": "https://api.github.com/repos/acme/node-client/pulls/482",
+            "id": 4822900,
+            "number": 482,
+            "head": {
+              "ref": "feat/retry-timeouts",
+              "sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+            },
+            "base": {
+              "ref": "main",
+              "sha": "33d61c3b90f5394f73319522336f88c195faf6a4"
+            }
+          }
+        ]
+      },
+      {
+        "id": 3000000003,
+        "name": "test (unit)",
+        "node_id": "NODE_fixture_check_3",
+        "head_sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+        "external_id": "",
+        "url": "https://api.github.com/repos/acme/node-client/check-runs/3000000003",
+        "html_url": "https://github.com/acme/node-client/runs/3000000003",
+        "details_url": "https://github.com/acme/node-client/actions/runs/3000000003",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-11-10T14:36:00Z",
+        "completed_at": "2026-11-10T14:44:00Z",
+        "output": {
+          "title": "Passed",
+          "summary": "",
+          "text": null,
+          "annotations_count": 0,
+          "annotations_url": "https://api.github.com/repos/acme/node-client/check-runs/3000000003/annotations"
+        },
+        "check_suite": {
+          "id": 4822600
+        },
+        "app": {
+          "id": 4822700,
+          "client_id": "fixture-actions-client",
+          "slug": "github-actions",
+          "node_id": "NODE_fixture_4822800",
+          "owner": {
+            "login": "acme",
+            "id": 4821800,
+            "node_id": "NODE_fixture_4820200",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1000001?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/acme",
+            "html_url": "https://github.com/acme",
+            "type": "User",
+            "site_admin": false
+          },
+          "name": "GitHub Actions",
+          "description": "Publishes ci-bot review progress as a check run",
+          "external_url": "https://github.com/ci-bot/review-system",
+          "html_url": "https://github.com/apps/pastaclaw-review",
+          "created_at": "2026-11-06T17:34:12Z",
+          "updated_at": "2026-11-06T17:34:23Z",
+          "permissions": {
+            "checks": "write",
+            "metadata": "read"
+          },
+          "events": []
+        },
+        "pull_requests": [
+          {
+            "url": "https://api.github.com/repos/acme/node-client/pulls/482",
+            "id": 4822900,
+            "number": 482,
+            "head": {
+              "ref": "feat/retry-timeouts",
+              "sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+            },
+            "base": {
+              "ref": "main",
+              "sha": "33d61c3b90f5394f73319522336f88c195faf6a4"
+            }
+          }
+        ]
+      },
+      {
+        "id": 3000000004,
+        "name": "test (integration)",
+        "node_id": "NODE_fixture_check_4",
+        "head_sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+        "external_id": "",
+        "url": "https://api.github.com/repos/acme/node-client/check-runs/3000000004",
+        "html_url": "https://github.com/acme/node-client/runs/3000000004",
+        "details_url": "https://github.com/acme/node-client/actions/runs/3000000004",
+        "status": "completed",
+        "conclusion": "failure",
+        "started_at": "2026-11-10T14:36:00Z",
+        "completed_at": "2026-11-10T14:44:00Z",
+        "output": {
+          "title": "1 test failed",
+          "summary": "sync_headers::slow_peer_2000_headers: timed out after 5 s",
+          "text": null,
+          "annotations_count": 0,
+          "annotations_url": "https://api.github.com/repos/acme/node-client/check-runs/3000000004/annotations"
+        },
+        "check_suite": {
+          "id": 4822600
+        },
+        "app": {
+          "id": 4822700,
+          "client_id": "fixture-actions-client",
+          "slug": "github-actions",
+          "node_id": "NODE_fixture_4822800",
+          "owner": {
+            "login": "acme",
+            "id": 4821800,
+            "node_id": "NODE_fixture_4820200",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1000001?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/acme",
+            "html_url": "https://github.com/acme",
+            "type": "User",
+            "site_admin": false
+          },
+          "name": "GitHub Actions",
+          "description": "Publishes ci-bot review progress as a check run",
+          "external_url": "https://github.com/ci-bot/review-system",
+          "html_url": "https://github.com/apps/pastaclaw-review",
+          "created_at": "2026-11-06T17:34:12Z",
+          "updated_at": "2026-11-06T17:34:23Z",
+          "permissions": {
+            "checks": "write",
+            "metadata": "read"
+          },
+          "events": []
+        },
+        "pull_requests": [
+          {
+            "url": "https://api.github.com/repos/acme/node-client/pulls/482",
+            "id": 4822900,
+            "number": 482,
+            "head": {
+              "ref": "feat/retry-timeouts",
+              "sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+            },
+            "base": {
+              "ref": "main",
+              "sha": "33d61c3b90f5394f73319522336f88c195faf6a4"
+            }
+          }
+        ]
+      },
+      {
+        "id": 3000000005,
+        "name": "doc",
+        "node_id": "NODE_fixture_check_5",
+        "head_sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+        "external_id": "",
+        "url": "https://api.github.com/repos/acme/node-client/check-runs/3000000005",
+        "html_url": "https://github.com/acme/node-client/runs/3000000005",
+        "details_url": "https://github.com/acme/node-client/actions/runs/3000000005",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-11-10T14:36:00Z",
+        "completed_at": "2026-11-10T14:44:00Z",
+        "output": {
+          "title": "Passed",
+          "summary": "",
+          "text": null,
+          "annotations_count": 0,
+          "annotations_url": "https://api.github.com/repos/acme/node-client/check-runs/3000000005/annotations"
+        },
+        "check_suite": {
+          "id": 4822600
+        },
+        "app": {
+          "id": 4822700,
+          "client_id": "fixture-actions-client",
+          "slug": "github-actions",
+          "node_id": "NODE_fixture_4822800",
+          "owner": {
+            "login": "acme",
+            "id": 4821800,
+            "node_id": "NODE_fixture_4820200",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1000001?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/acme",
+            "html_url": "https://github.com/acme",
+            "type": "User",
+            "site_admin": false
+          },
+          "name": "GitHub Actions",
+          "description": "Publishes ci-bot review progress as a check run",
+          "external_url": "https://github.com/ci-bot/review-system",
+          "html_url": "https://github.com/apps/pastaclaw-review",
+          "created_at": "2026-11-06T17:34:12Z",
+          "updated_at": "2026-11-06T17:34:23Z",
+          "permissions": {
+            "checks": "write",
+            "metadata": "read"
+          },
+          "events": []
+        },
+        "pull_requests": [
+          {
+            "url": "https://api.github.com/repos/acme/node-client/pulls/482",
+            "id": 4822900,
+            "number": 482,
+            "head": {
+              "ref": "feat/retry-timeouts",
+              "sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+            },
+            "base": {
+              "ref": "main",
+              "sha": "33d61c3b90f5394f73319522336f88c195faf6a4"
+            }
+          }
+        ]
+      },
+      {
+        "id": 3000000006,
+        "name": "msrv",
+        "node_id": "NODE_fixture_check_6",
+        "head_sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7",
+        "external_id": "",
+        "url": "https://api.github.com/repos/acme/node-client/check-runs/3000000006",
+        "html_url": "https://github.com/acme/node-client/runs/3000000006",
+        "details_url": "https://github.com/acme/node-client/actions/runs/3000000006",
+        "status": "completed",
+        "conclusion": "success",
+        "started_at": "2026-11-10T14:36:00Z",
+        "completed_at": "2026-11-10T14:44:00Z",
+        "output": {
+          "title": "Passed",
+          "summary": "",
+          "text": null,
+          "annotations_count": 0,
+          "annotations_url": "https://api.github.com/repos/acme/node-client/check-runs/3000000006/annotations"
+        },
+        "check_suite": {
+          "id": 4822600
+        },
+        "app": {
+          "id": 4822700,
+          "client_id": "fixture-actions-client",
+          "slug": "github-actions",
+          "node_id": "NODE_fixture_4822800",
+          "owner": {
+            "login": "acme",
+            "id": 4821800,
+            "node_id": "NODE_fixture_4820200",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1000001?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/acme",
+            "html_url": "https://github.com/acme",
+            "type": "User",
+            "site_admin": false
+          },
+          "name": "GitHub Actions",
+          "description": "Publishes ci-bot review progress as a check run",
+          "external_url": "https://github.com/ci-bot/review-system",
+          "html_url": "https://github.com/apps/pastaclaw-review",
+          "created_at": "2026-11-06T17:34:12Z",
+          "updated_at": "2026-11-06T17:34:23Z",
+          "permissions": {
+            "checks": "write",
+            "metadata": "read"
+          },
+          "events": []
+        },
+        "pull_requests": [
+          {
+            "url": "https://api.github.com/repos/acme/node-client/pulls/482",
+            "id": 4822900,
+            "number": 482,
+            "head": {
+              "ref": "feat/retry-timeouts",
+              "sha": "33e29663d28ea4f04eaba92fed60f6a958a638c7"
+            },
+            "base": {
+              "ref": "main",
+              "sha": "33d61c3b90f5394f73319522336f88c195faf6a4"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "request": {
+    "method": "POST",
+    "url": "https://github.com/login/oauth/access_token",
+    "body": {
+      "client_id": "fixture-app-client-id",
+      "client_secret": "fixture-client-secret",
+      "code": "fixture-oauth-code"
+    }
+  },
+  "status": 200,
+  "response": {
+    "access_token": "fixture-user-token-alice",
+    "expires_in": 28800,
+    "refresh_token": "fixture-refresh-token-alice",
+    "refresh_token_expires_in": 15724800,
+    "scope": "",
+    "token_type": "bearer"
+  }
+}

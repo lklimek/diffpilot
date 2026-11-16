@@ -1,0 +1,51 @@
+{
+  "path": "src/lib.rs",
+  "side": "head",
+  "from": 1,
+  "to": 20,
+  "total_lines": 20,
+  "lines": [
+    "//! Client for the acme node RPC API: requests, retries, wallet and sync helpers.",
+    "",
+    "pub mod config;",
+    "pub mod mempool;",
+    "pub mod sync;",
+    "pub mod wallet;",
+    "",
+    "pub mod rpc {",
+    "    //! RPC transport and client.",
+    "    pub mod client;",
+    "    pub mod error;",
+    "    pub mod metrics;",
+    "    pub mod retry;",
+    "    pub mod transport;",
+    "}",
+    "",
+    "pub mod util {",
+    "    //! Small shared helpers.",
+    "    pub mod fmt;",
+    "}"
+  ],
+  "changed": [
+    13
+  ],
+  "deleted": [
+    {
+      "after_line": 18,
+      "base_start": 18,
+      "lines": [
+        "    pub mod backoff;"
+      ]
+    }
+  ],
+  "moved": [],
+  "comments": {
+    "scope": "in_diff",
+    "line_thread_ranges": [
+      {
+        "start_line": 10,
+        "end_line": 20
+      }
+    ]
+  }
+}

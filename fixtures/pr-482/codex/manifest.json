@@ -1,0 +1,122 @@
+[
+  {
+    "file": "plan.jsonl",
+    "job_kind": "plan",
+    "session": "started",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 0,
+    "outcome": "succeeded",
+    "output": "agent/plan.json",
+    "note": "first job of the analysis"
+  },
+  {
+    "file": "compaction-after-plan.jsonl",
+    "job_kind": "compaction",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 0,
+    "outcome": "succeeded",
+    "output": null,
+    "note": "exec resume -c model_auto_compact_token_limit=<small>: pre-turn compaction, no compaction item in the stream"
+  },
+  {
+    "file": "pr-context.jsonl",
+    "job_kind": "pr_context",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 0,
+    "outcome": "succeeded",
+    "output": "agent/pr_context.json",
+    "note": "github-mcp-server tool calls (read-only)"
+  },
+  {
+    "file": "analyse-flow-1.jsonl",
+    "job_kind": "analyse_flow",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 0,
+    "outcome": "succeeded",
+    "output": "agent/flow-1.json",
+    "note": "includes todo_list item.started/item.updated events"
+  },
+  {
+    "file": "analyse-flow-2.jsonl",
+    "job_kind": "analyse_flow",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 0,
+    "outcome": "succeeded",
+    "output": "agent/flow-2.json",
+    "note": ""
+  },
+  {
+    "file": "analyse-flow-3.jsonl",
+    "job_kind": "analyse_flow",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 0,
+    "outcome": "succeeded",
+    "output": "agent/flow-3.json",
+    "note": ""
+  },
+  {
+    "file": "analyse-flow-4.jsonl",
+    "job_kind": "analyse_flow",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 0,
+    "outcome": "succeeded",
+    "output": "agent/flow-4.json",
+    "note": ""
+  },
+  {
+    "file": "analyse-flow-5.jsonl",
+    "job_kind": "analyse_flow",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 0,
+    "outcome": "succeeded",
+    "output": "agent/flow-5.json",
+    "note": ""
+  },
+  {
+    "file": "compaction-after-flow-1.jsonl",
+    "job_kind": "compaction",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 0,
+    "outcome": "succeeded",
+    "output": null,
+    "note": "compaction at the end of an analyse_flow job"
+  },
+  {
+    "file": "schema-error.jsonl",
+    "job_kind": "plan",
+    "session": "started",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000483",
+    "exit_code": 1,
+    "outcome": "failed",
+    "output": null,
+    "note": "output schema rejected by the API before the turn (S1a probe-oneof shape)"
+  },
+  {
+    "file": "cancelled.jsonl",
+    "job_kind": "analyse_flow",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 143,
+    "outcome": "cancelled",
+    "output": null,
+    "note": "SIGTERM while a command runs: rc 143, no turn.completed; the session resumes normally afterwards"
+  },
+  {
+    "file": "usage-limit.jsonl",
+    "job_kind": "analyse_flow",
+    "session": "resumed",
+    "thread_id": "019a8f2c-4820-7000-8000-000000000482",
+    "exit_code": 1,
+    "outcome": "usage_limited",
+    "output": null,
+    "note": "only the Display text reaches exec JSONL; resets_at comes from the rollout rate_limits (S1b)"
+  }
+]

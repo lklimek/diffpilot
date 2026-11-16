@@ -1,0 +1,16 @@
+//! Errors of RPC calls.
+
+use crate::rpc::transport::TransportError;
+
+/// Why an RPC call failed. Callers keep a wildcard arm: variants are added
+/// without a major version bump.
+#[non_exhaustive]
+#[derive(Debug, thiserror::Error)]
+pub enum RpcError {
+    #[error("request timed out")]
+    Timeout,
+    #[error("gave up after {attempts} attempts")]
+    Exhausted { attempts: u32 },
+    #[error("transport failure: {0}")]
+    Transport(#[from] TransportError),
+}
