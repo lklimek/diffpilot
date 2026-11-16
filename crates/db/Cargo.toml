@@ -1,0 +1,12 @@
+[package]
+name = "db"
+description = "smart-review database module: SQLite schema and repository API."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+contracts.workspace = true
+
+[lints]
+workspace = true

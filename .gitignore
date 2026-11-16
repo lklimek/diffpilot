@@ -1,2 +1,5 @@
 # Local secrets (symlink to a directory outside the repository)
 /config
+
+# Cargo build output (when not redirected by a cargo config)
+/target
