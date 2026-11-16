@@ -1,3 +1,174 @@
-//! Runner entry point: the polling loop around `execute`.
+//! Runner entry point: the polling loop around `execute`, until SIGINT or SIGTERM.
 
-fn main() {}
+use std::error::Error;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
+
+use runner::client::{ClientError, ServerClient};
+use runner::config::{Config, ConfigError, ProviderKind};
+use runner::execute::Executor;
+use runner::provider::LlmProvider;
+use runner::provider::codex::{CodexProvider, CodexSettings, credential_usable};
+use runner::worker::{CredentialCheck, Timing, Worker};
+use tokio::signal::unix::{SignalKind, signal};
+use tracing_subscriber::EnvFilter;
+
+/// Per-request timeout towards the server; below the heartbeat interval.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Debug, thiserror::Error)]
+enum StartError {
+    #[error("could not start the async runtime")]
+    Runtime(#[source] io::Error),
+    #[error("the configuration is invalid")]
+    Config(#[from] ConfigError),
+    #[error("could not prepare the directory {}; check SR_RUNNER_STATE_DIR and SR_RUNNER_WORK_DIR", path.display())]
+    Dir {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("could not create the server client")]
+    Client(#[from] ClientError),
+}
+
+fn main() -> ExitCode {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let result = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime.block_on(run()),
+        Err(source) => Err(StartError::Runtime(source)),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            tracing::error!("runner stopped: {}", error_chain(&error));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), StartError> {
+    let config = Config::from_env()?;
+    let dirs = config.dirs();
+    for dir in [
+        &config.state_dir,
+        &dirs.codex_homes,
+        &dirs.mirrors,
+        &dirs.sessions,
+        &dirs.work,
+    ] {
+        private_dir(dir).await?;
+    }
+    remove_leftover_work_dirs(&dirs.work).await?;
+    let (provider, credential_check): (Arc<dyn LlmProvider>, CredentialCheck) =
+        match config.provider {
+            ProviderKind::Codex => {
+                let master_auth = config.master_auth();
+                let provider = CodexProvider::new(CodexSettings {
+                    binary: config.codex_bin.clone(),
+                    master_auth: master_auth.clone(),
+                    egress_proxy: config.egress_proxy.clone(),
+                });
+                (
+                    Arc::new(provider),
+                    Arc::new(move || credential_usable(&master_auth)),
+                )
+            }
+            #[cfg(feature = "fake-provider")]
+            ProviderKind::Fake => {
+                tracing::warn!("using the fake provider: agent output is replayed from fixtures");
+                (
+                    Arc::new(runner::provider::fake::FakeProvider::new(Duration::ZERO)),
+                    Arc::new(|| true),
+                )
+            }
+        };
+    let executor = Arc::new(Executor::new(provider, dirs, config.credential.clone()));
+    let client = ServerClient::new(
+        &config.server_url,
+        config.runner_secret.clone(),
+        REQUEST_TIMEOUT,
+    )?;
+    tracing::info!(runner = %config.runner_id, server = %config.server_url, "runner started");
+    Worker::new(
+        client,
+        executor,
+        config.runner_id,
+        config.runner_secret,
+        Timing::v1(),
+        credential_check,
+    )
+    .run(shutdown_signal())
+    .await;
+    tracing::info!("runner stopped");
+    Ok(())
+}
+
+async fn private_dir(path: &Path) -> Result<(), StartError> {
+    tokio::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+        .await
+        .map_err(|source| StartError::Dir {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+/// Work dirs of a previous run hold only checkouts; per-job `CODEX_HOME`s are kept for credential recovery
+/// (WP3-RUN, T13).
+async fn remove_leftover_work_dirs(work: &Path) -> Result<(), StartError> {
+    let dir_error = |source| StartError::Dir {
+        path: work.to_path_buf(),
+        source,
+    };
+    let mut entries = tokio::fs::read_dir(work).await.map_err(dir_error)?;
+    while let Some(entry) = entries.next_entry().await.map_err(dir_error)? {
+        let path = entry.path();
+        if let Err(error) = tokio::fs::remove_dir_all(&path).await {
+            tracing::warn!(dir = %path.display(), %error, "cannot remove a leftover job directory");
+        }
+    }
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let interrupt = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%error, "cannot listen for Ctrl+C; stop the runner with SIGTERM");
+            std::future::pending::<()>().await;
+        }
+    };
+    let terminate = async {
+        match signal(SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot listen for SIGTERM; stop the runner with Ctrl+C");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    tokio::select! {
+        () = interrupt => {}
+        () = terminate => {}
+    }
+    tracing::info!("shutdown signal received, stopping the running job");
+}
+
+fn error_chain(error: &dyn Error) -> String {
+    let mut message = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(": ");
+        message.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    message
+}

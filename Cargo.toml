@@ -27,6 +27,8 @@ ipnet = "2.12.2"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
 uuid = { version = "1.29.2", features = ["v4", "serde"] }
 base64 = "0.23.1"
+# Runner: process-group signals and O_NOFOLLOW opens without unsafe code.
+rustix = { version = "1.1.6", features = ["fs", "process"] }
 
 # Serialisation and contracts
 serde = { version = "1.0.229", features = ["derive"] }

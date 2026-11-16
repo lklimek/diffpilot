@@ -1,0 +1,272 @@
+//! Runner configuration from `SR_RUNNER_*` environment variables. Error messages name the variable, never
+//! its value.
+
+use std::path::{Path, PathBuf};
+
+use contracts::job::access::Secret;
+use contracts::job::spec::{CredentialKind, LlmCredentialRef};
+
+use crate::execute::RunnerDirs;
+
+/// Base URL of the server's runner listener, e.g. `http://server:3001`.
+pub const SERVER_URL: &str = "SR_RUNNER_SERVER_URL";
+/// Secret the runner presents when claiming jobs (same value as the server's).
+pub const RUNNER_SECRET: &str = "SR_RUNNER_SECRET";
+/// Name of this runner in claims and logs.
+pub const RUNNER_ID: &str = "SR_RUNNER_ID";
+/// The runner's persistent private volume: credentials, per-job `CODEX_HOME`s, mirrors, sessions.
+pub const STATE_DIR: &str = "SR_RUNNER_STATE_DIR";
+/// Directory for job work dirs (may be tmpfs); default `<state>/work`.
+pub const WORK_DIR: &str = "SR_RUNNER_WORK_DIR";
+/// Id of the LLM credential the runner holds (`<state>/credentials/<id>/auth.json`).
+pub const CREDENTIAL_ID: &str = "SR_RUNNER_CREDENTIAL_ID";
+/// The `codex` binary.
+pub const CODEX_BIN: &str = "SR_RUNNER_CODEX_BIN";
+/// Explicit egress proxy URL given to the agent, e.g. `http://egress-proxy:3128`.
+pub const EGRESS_PROXY: &str = "SR_RUNNER_EGRESS_PROXY";
+/// `codex` (default) or `fake` (only in builds with the `fake-provider` feature).
+pub const PROVIDER: &str = "SR_RUNNER_PROVIDER";
+
+const DEFAULT_RUNNER_ID: &str = "runner";
+const DEFAULT_STATE_DIR: &str = "/var/lib/smart-review-runner";
+const DEFAULT_CREDENTIAL_ID: &str = "default";
+const DEFAULT_CODEX_BIN: &str = "codex";
+
+/// Which provider runs the agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderKind {
+    /// The Codex CLI.
+    Codex,
+    /// Fixture replay (`fake-provider` builds only).
+    #[cfg(feature = "fake-provider")]
+    Fake,
+}
+
+/// Complete runner configuration; the secret is redacted in `Debug`.
+#[derive(Debug)]
+pub struct Config {
+    /// Base URL of the runner listener.
+    pub server_url: String,
+    /// Runner secret.
+    pub runner_secret: Secret,
+    /// Runner name.
+    pub runner_id: String,
+    /// Persistent private state directory.
+    pub state_dir: PathBuf,
+    /// Job work directories.
+    pub work_dir: PathBuf,
+    /// The credential the runner holds.
+    pub credential: LlmCredentialRef,
+    /// The `codex` binary.
+    pub codex_bin: PathBuf,
+    /// Egress proxy for the agent.
+    pub egress_proxy: Option<String>,
+    /// The provider.
+    pub provider: ProviderKind,
+}
+
+/// Invalid or missing configuration.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// A required variable is unset or empty.
+    #[error("required environment variable {0} is not set")]
+    Missing(&'static str),
+    /// A URL variable is not an http(s) URL.
+    #[error("environment variable {0} must be an http:// or https:// URL")]
+    NotHttpUrl(&'static str),
+    /// A path variable is not absolute.
+    #[error("environment variable {0} must be an absolute path")]
+    NotAbsolute(&'static str),
+    /// The state directory is under `/tmp` (per-job `CODEX_HOME`s must survive and Codex refuses `/tmp`).
+    #[error(
+        "environment variable {0} must not point below /tmp; use the runner's persistent volume"
+    )]
+    UnderTmp(&'static str),
+    /// The credential id has characters outside `[A-Za-z0-9._-]`.
+    #[error("environment variable {0} may contain only letters, digits, '.', '_' and '-'")]
+    InvalidCredentialId(&'static str),
+    /// Unknown provider name.
+    #[error("environment variable {0} must be 'codex' (or 'fake' in fake-provider builds)")]
+    UnknownProvider(&'static str),
+}
+
+impl Config {
+    /// Reads the configuration from the process environment.
+    pub fn from_env() -> Result<Self, ConfigError> {
+        Self::from_lookup(|key| std::env::var(key).ok())
+    }
+
+    /// Reads the configuration through `lookup`; values are trimmed and empty counts as unset.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        let get = |key: &str| {
+            lookup(key)
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        let required = |key: &'static str| get(key).ok_or(ConfigError::Missing(key));
+
+        let server_url = required(SERVER_URL)?;
+        if !(server_url.starts_with("http://") || server_url.starts_with("https://")) {
+            return Err(ConfigError::NotHttpUrl(SERVER_URL));
+        }
+        let runner_secret = Secret::new(required(RUNNER_SECRET)?);
+        let state_dir = absolute(
+            STATE_DIR,
+            get(STATE_DIR).unwrap_or_else(|| DEFAULT_STATE_DIR.to_owned()),
+        )?;
+        if state_dir.starts_with("/tmp") {
+            return Err(ConfigError::UnderTmp(STATE_DIR));
+        }
+        let work_dir = match get(WORK_DIR) {
+            Some(dir) => absolute(WORK_DIR, dir)?,
+            None => state_dir.join("work"),
+        };
+        let credential_id = get(CREDENTIAL_ID).unwrap_or_else(|| DEFAULT_CREDENTIAL_ID.to_owned());
+        let valid_id = credential_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+            && !matches!(credential_id.as_str(), "." | "..");
+        if !valid_id {
+            return Err(ConfigError::InvalidCredentialId(CREDENTIAL_ID));
+        }
+        let egress_proxy = get(EGRESS_PROXY);
+        if let Some(proxy) = &egress_proxy
+            && !(proxy.starts_with("http://") || proxy.starts_with("https://"))
+        {
+            return Err(ConfigError::NotHttpUrl(EGRESS_PROXY));
+        }
+        let provider = match get(PROVIDER).as_deref() {
+            None | Some("codex") => ProviderKind::Codex,
+            #[cfg(feature = "fake-provider")]
+            Some("fake") => ProviderKind::Fake,
+            Some(_) => return Err(ConfigError::UnknownProvider(PROVIDER)),
+        };
+        Ok(Self {
+            server_url,
+            runner_secret,
+            runner_id: get(RUNNER_ID).unwrap_or_else(|| DEFAULT_RUNNER_ID.to_owned()),
+            state_dir,
+            work_dir,
+            credential: LlmCredentialRef {
+                id: credential_id,
+                kind: CredentialKind::CodexChatgpt,
+            },
+            codex_bin: PathBuf::from(
+                get(CODEX_BIN).unwrap_or_else(|| DEFAULT_CODEX_BIN.to_owned()),
+            ),
+            egress_proxy,
+            provider,
+        })
+    }
+
+    /// The runner directories.
+    pub fn dirs(&self) -> RunnerDirs {
+        RunnerDirs {
+            work: self.work_dir.clone(),
+            codex_homes: self.state_dir.join("codex-homes"),
+            mirrors: self.state_dir.join("mirrors"),
+            sessions: self.state_dir.join("sessions"),
+        }
+    }
+
+    /// The master `auth.json` of the runner's credential.
+    pub fn master_auth(&self) -> PathBuf {
+        self.state_dir
+            .join("credentials")
+            .join(&self.credential.id)
+            .join("auth.json")
+    }
+}
+
+fn absolute(key: &'static str, value: String) -> Result<PathBuf, ConfigError> {
+    let path = PathBuf::from(value);
+    if Path::is_absolute(&path) {
+        Ok(path)
+    } else {
+        Err(ConfigError::NotAbsolute(key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn config(pairs: &[(&str, &str)]) -> Result<Config, ConfigError> {
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        Config::from_lookup(|key| map.get(key).cloned())
+    }
+
+    const BASE: [(&str, &str); 2] = [
+        (SERVER_URL, "http://server:3001"),
+        (RUNNER_SECRET, "s3cret-value"),
+    ];
+
+    #[test]
+    fn defaults() {
+        let config = config(&BASE).unwrap();
+        assert_eq!(
+            config.state_dir,
+            PathBuf::from("/var/lib/smart-review-runner")
+        );
+        assert_eq!(config.work_dir, config.state_dir.join("work"));
+        assert_eq!(config.credential.id, "default");
+        assert_eq!(config.provider, ProviderKind::Codex);
+        assert_eq!(
+            config.master_auth(),
+            PathBuf::from("/var/lib/smart-review-runner/credentials/default/auth.json")
+        );
+        assert!(!format!("{config:?}").contains("s3cret-value"));
+    }
+
+    #[test]
+    fn missing_secret_names_the_variable() {
+        let error = config(&BASE[..1]).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "required environment variable SR_RUNNER_SECRET is not set"
+        );
+    }
+
+    #[test]
+    fn state_dir_under_tmp_is_rejected() {
+        let mut pairs = BASE.to_vec();
+        pairs.push((STATE_DIR, "/tmp/runner"));
+        assert!(matches!(config(&pairs), Err(ConfigError::UnderTmp(_))));
+    }
+
+    #[test]
+    fn credential_id_cannot_escape_the_store() {
+        for id in ["../x", "..", "a/b"] {
+            let mut pairs = BASE.to_vec();
+            pairs.push((CREDENTIAL_ID, id));
+            assert!(
+                matches!(config(&pairs), Err(ConfigError::InvalidCredentialId(_))),
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn server_url_must_be_http() {
+        assert!(matches!(
+            config(&[(SERVER_URL, "file:///x"), (RUNNER_SECRET, "s")]),
+            Err(ConfigError::NotHttpUrl(SERVER_URL))
+        ));
+    }
+
+    #[cfg(not(feature = "fake-provider"))]
+    #[test]
+    fn fake_provider_is_unavailable_in_release_builds() {
+        let mut pairs = BASE.to_vec();
+        pairs.push((PROVIDER, "fake"));
+        assert!(matches!(
+            config(&pairs),
+            Err(ConfigError::UnknownProvider(_))
+        ));
+    }
+}

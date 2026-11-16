@@ -2,6 +2,10 @@
 //! agent call in a prepared job directory, streams normalised events, restores and saves the analysis's
 //! session files and ends every `run` and `resume` by compacting the session (ADR-004).
 
+pub mod codex;
+#[cfg(feature = "fake-provider")]
+pub mod fake;
+
 use std::path::PathBuf;
 
 use chrono::{DateTime, Utc};
