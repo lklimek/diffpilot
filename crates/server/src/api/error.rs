@@ -60,9 +60,10 @@ impl ApiErrorSource for DbError {
         match self {
             Self::NotFound => ApiErrorCode::NotFound,
             Self::Conflict => ApiErrorCode::Conflict,
-            Self::NotImplemented { .. } | Self::Json(_) | Self::Storage(_) => {
-                ApiErrorCode::Internal
-            }
+            Self::NotImplemented { .. }
+            | Self::Corrupt { .. }
+            | Self::Json(_)
+            | Self::Storage(_) => ApiErrorCode::Internal,
         }
     }
 
@@ -70,7 +71,10 @@ impl ApiErrorSource for DbError {
         Cow::Borrowed(match self {
             Self::NotFound => "The requested item was not found.",
             Self::Conflict => "The request conflicts with the current state. Reload and try again.",
-            Self::NotImplemented { .. } | Self::Json(_) | Self::Storage(_) => INTERNAL_MESSAGE,
+            Self::NotImplemented { .. }
+            | Self::Corrupt { .. }
+            | Self::Json(_)
+            | Self::Storage(_) => INTERNAL_MESSAGE,
         })
     }
 }

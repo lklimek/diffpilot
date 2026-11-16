@@ -70,7 +70,8 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - At the deadline the runner stops the agent (SIGTERM, SIGKILL after 10 s), copies the credential back (CAS),
   discards the attempt and posts no result. Only then may the server hand the job to a new claim, so two
   processes never hold the same refresh token. Two lost heartbeats (30 s) still stay inside the deadline.
-- The server revokes the installation token when a lease expires or a result arrives.
+- The server revokes the attempt's installation token when a lease expires or a result arrives (recovery:
+  "Installation-token revocation" below).
 
 ## Credential home (ADR-003)
 - The per-job `CODEX_HOME` (copy of `auth.json`, generated config, the analysis's session files, CAS data)
@@ -117,20 +118,33 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 ## Pipeline recovery (server restart)
 Durable state only; no in-memory handle is needed after a restart.
 - **Stage link.** Every job carries its stage (`JobStage`: `plan:<batch>`, `pr_context`, `flow:<id>`,
-  `ask:<question id>`; `jobs.stage`). The database allows one live or succeeded job per (analysis, stage)
-  (`jobs_one_live_per_stage`); a failed or cancelled stage may be submitted again (Retry).
-- **Submit boundary.** `JobExecutor::submit` is idempotent per stage: an existing live or succeeded job's
-  handle is returned (enqueue `Conflict` → `Jobs::list_for_analysis`). A crash between enqueue and recording
-  progress therefore never duplicates a job.
+  `ask:<question id>`; `jobs.stage`) and its **generation**: 0 for the first run, 1..2 for repair runs
+  (`MAX_REPAIR_RUNS` = 2, brief §5 Pipeline 6). The database allows one live or succeeded job per (analysis,
+  stage, generation) (`jobs_one_live_per_stage`); a failed or cancelled one may be submitted again (Retry).
+- **Repair.** When verification rejects the output of a succeeded job of generation g, the pipeline submits
+  generation g + 1 with the repair prompt; with g = 2 the stage fails ("repair exhausted"). The rejection
+  needs no stored flag: verification is deterministic, so after a restart re-verifying the newest succeeded
+  generation reproduces the decision.
+- **Submit boundary.** `JobExecutor::submit` is idempotent per (stage, generation): an existing live or
+  succeeded job's handle is returned (enqueue `Conflict` → `Jobs::list_for_analysis`). A crash between enqueue
+  and recording progress therefore never duplicates a job, and a repair is never answered with the rejected
+  result of an earlier generation.
 - **Result boundary.** `Jobs::complete` stores the result and the state in one transaction, idempotently per
   attempt; a runner retry after a lost reply changes nothing.
 - **Persist boundary.** Verification and `Documents::put` (upsert by analysis, kind and key) run from the
   stored `jobs.result`; repeating them yields the same documents. Analysis progress is derived from the
   stored documents, not from counters.
-- **At start** the pipeline lists `Analyses::unfinished` and, per analysis, `Jobs::list_for_analysis`:
-  succeeded jobs whose document is missing are verified and persisted again; queued, claimed, running and
-  paused jobs are followed again with `JobExecutor::events`; stages without a job are submitted. Expired
-  leases are handled by `Jobs::expire_leases` as usual.
+- **At start** the pipeline lists `Analyses::unfinished` and, per analysis, `Jobs::list_for_analysis`: for
+  each stage it takes the newest generation; a succeeded one whose document is missing is verified again and
+  persisted, or repaired (next generation) if rejected; queued, claimed, running and paused jobs are followed
+  again with `JobExecutor::events`; stages without a job are submitted. Expired leases are handled by
+  `Jobs::expire_leases` as usual.
+- **Installation-token revocation.** The encrypted token is stored per (job, attempt) at claim
+  (`installation_tokens`). Revocation reads it without removing it (`Jobs::github_token`), calls
+  `DELETE /installation/token`, then confirms (`Jobs::confirm_github_token_revoked`). At start, after every
+  result and after lease expiry, `Jobs::github_tokens_to_revoke` lists every token not used by a claimed or
+  running attempt; expired ones are only confirmed. A crash between read and revocation therefore leaves the
+  token listed, and a re-claim never overwrites the previous attempt's token.
 
 ## Secrets and scrubbing
 The runner scrubs every known secret value (installation token, MemCan token, job token, runner secret,

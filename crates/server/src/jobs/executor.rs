@@ -15,8 +15,8 @@ use futures::stream::BoxStream;
 
 /// Runs agent jobs. The server never assumes a long-lived runner or a filesystem shared with it.
 pub trait JobExecutor: Send + Sync + Debug {
-    /// Submits a job; it runs when an executor slot (v1: a runner claim) takes it. Idempotent per stage: when a
-    /// live or succeeded job of `request.stage` exists, its handle is returned and nothing is submitted.
+    /// Submits a job; it runs when an executor slot (v1: a runner claim) takes it. Idempotent per stage and
+    /// generation: when a live or succeeded job of that (stage, generation) exists, its handle is returned.
     fn submit(&self, request: JobRequest) -> BoxFuture<'_, Result<JobHandle, ExecutorError>>;
 
     /// Updates of a job from now on, ending with [`JobUpdate::Finished`]; a job that already finished yields
@@ -37,6 +37,9 @@ pub struct JobRequest {
     /// The pipeline stage (`flow:<id>`, `ask:<question>`, …); one live or succeeded job per stage, so a
     /// repeated submit after a restart fails with a conflict instead of duplicating work.
     pub stage: JobStage,
+    /// 0 for the first run; 1..=`MAX_REPAIR_RUNS` for a repair run after verification rejected the output of
+    /// the previous generation. Idempotency is per (stage, generation).
+    pub generation: u32,
     /// The pull request's repository: the only repository an installation token is minted for (ADR-005); no
     /// token when the GitHub App is not installed on it.
     pub pr_repo: RepoRef,

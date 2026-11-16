@@ -405,3 +405,117 @@ async fn storage_errors_hide_sqlx_details_in_display() {
         "the sqlx error is kept as the source"
     );
 }
+
+#[tokio::test]
+async fn repair_runs_are_new_generations_of_a_stage() {
+    let db = db().await;
+    seed(&db).await;
+    let insert = |id: &'static str, generation: i64, state: &'static str| {
+        sqlx::query(
+            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at,
+                               stage, generation)
+             VALUES (?, 'default', 'a1', 'analyse_flow', 1, ?, '{}', 'c1', 't', 'flow:f1', ?)",
+        )
+        .bind(id)
+        .bind(state)
+        .bind(generation)
+        .execute(&db.pool)
+    };
+    // The first run succeeded but verification rejected its output: a repair is generation 1.
+    insert("j0", 0, "succeeded").await.expect("first run");
+    insert("j1", 1, "queued")
+        .await
+        .expect("repair run 1 of a rejected output");
+    // A restart submits the same repair again: deduplicated.
+    let again = insert("j1b", 1, "queued").await.map_err(DbError::from);
+    assert!(matches!(again, Err(DbError::Conflict)), "{again:?}");
+    insert("j2", 2, "queued").await.expect("repair run 2");
+    assert!(
+        insert("j3", 3, "queued").await.is_err(),
+        "at most MAX_REPAIR_RUNS repairs"
+    );
+    assert_eq!(jobs::MAX_REPAIR_RUNS, 2);
+}
+
+/// Installation tokens are read without being removed and cleared only after a confirmed revocation, so a
+/// crash between reading and revoking leaves them listed for recovery.
+#[tokio::test]
+async fn installation_tokens_survive_until_revocation_is_confirmed() {
+    use chrono::{Duration, TimeZone, Utc};
+    use contracts::ids::JobId;
+
+    let db = db().await;
+    seed(&db).await;
+    let job = JobId::new_random();
+    let job_key = job.to_string();
+    insert_job(&db, &job_key, "a1", "c1", "running")
+        .await
+        .expect("job");
+    sqlx::query("UPDATE jobs SET attempt = 1 WHERE id = ?")
+        .bind(&job_key)
+        .execute(&db.pool)
+        .await
+        .expect("attempt");
+    let now = Utc
+        .with_ymd_and_hms(2026, 11, 16, 18, 0, 0)
+        .single()
+        .expect("time");
+    let jobs = db.jobs();
+    jobs.record_github_token(job, 1, b"ciphertext-1", now + Duration::hours(1))
+        .await
+        .expect("record");
+    assert_eq!(
+        jobs.github_token(job, 1).await.expect("read"),
+        Some(b"ciphertext-1".to_vec())
+    );
+    assert_eq!(
+        jobs.github_token(job, 1).await.expect("read again"),
+        Some(b"ciphertext-1".to_vec()),
+        "reading does not remove"
+    );
+    assert!(
+        jobs.github_tokens_to_revoke()
+            .await
+            .expect("list")
+            .is_empty(),
+        "the token of the running attempt is in use"
+    );
+    // The attempt ends (lease expired, re-queued) and is claimed again with a new token before the old one
+    // was revoked (crash): both stay, only the old one is due.
+    sqlx::query("UPDATE jobs SET state = 'running', attempt = 2 WHERE id = ?")
+        .bind(&job_key)
+        .execute(&db.pool)
+        .await
+        .expect("re-claim");
+    jobs.record_github_token(job, 2, b"ciphertext-2", now + Duration::hours(2))
+        .await
+        .expect("record second");
+    let due = jobs.github_tokens_to_revoke().await.expect("list");
+    assert_eq!(due.len(), 1, "{due:?}");
+    assert_eq!((due[0].job, due[0].attempt), (job, 1));
+    assert_eq!(due[0].ciphertext, b"ciphertext-1".to_vec());
+    assert_eq!(due[0].expires_at, now + Duration::hours(1));
+    assert!(
+        jobs.confirm_github_token_revoked(job, 1)
+            .await
+            .expect("confirm")
+    );
+    assert!(
+        !jobs
+            .confirm_github_token_revoked(job, 1)
+            .await
+            .expect("confirm twice"),
+        "idempotent"
+    );
+    sqlx::query("UPDATE jobs SET state = 'succeeded' WHERE id = ?")
+        .bind(&job_key)
+        .execute(&db.pool)
+        .await
+        .expect("finish");
+    let due = jobs.github_tokens_to_revoke().await.expect("list");
+    assert_eq!(due.iter().map(|t| t.attempt).collect::<Vec<_>>(), [2]);
+    assert_eq!(
+        jobs.github_token(job, 2).await.expect("read"),
+        Some(b"ciphertext-2".to_vec())
+    );
+}
