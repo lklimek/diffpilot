@@ -6,6 +6,7 @@ use db::repo::Db;
 
 use crate::config::Config;
 use crate::jobs::executor::JobExecutor;
+use crate::jobs::progress::ProgressHub;
 
 /// State shared by all handlers; cheap to clone.
 #[derive(Clone, Debug)]
@@ -16,6 +17,8 @@ pub struct AppState {
     pub db: Db,
     /// Runs agent jobs (v1: `QueueExecutor`).
     pub executor: Arc<dyn JobExecutor>,
+    /// Per-analysis progress channels behind the SSE stream (CCR-J1).
+    pub progress: ProgressHub,
 }
 
 impl AppState {
@@ -25,6 +28,7 @@ impl AppState {
             config: Arc::new(config),
             db,
             executor,
+            progress: ProgressHub::default(),
         }
     }
 }
