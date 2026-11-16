@@ -1,0 +1,20 @@
+[package]
+name = "runner"
+description = "smart-review job runner: executes agent jobs claimed from the server."
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "smart-review-runner"
+path = "src/main.rs"
+
+[features]
+# Scripted LLM provider for tests and development; never enabled in release builds.
+fake-provider = []
+
+[dependencies]
+contracts.workspace = true
+
+[lints]
+workspace = true

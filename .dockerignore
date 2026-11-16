@@ -1,0 +1,4 @@
+config
+target
+.git
+web/node_modules
