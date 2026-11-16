@@ -10,13 +10,14 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 
 ## Architecture rules (never break; details in plan §3–§5)
 - Crates: `contracts` (wire types, no IO) <- `analysis`, `db`, `runner`; `server` -> `contracts`, `analysis`, `db`.
-  Nothing depends on `server` or `runner`. `runner` has no DB access and no GitHub token.
+  Nothing depends on `server` or `runner`. `runner` has no DB access and no GitHub client code.
 - All database code (sqlx, migrations, row types) lives in `crates/db` behind its repository API; nothing else uses sqlx.
 - Pipeline and Ask use only the `JobExecutor` trait; `JobSpec` is self-contained; runner core is
   `execute(JobSpec, EventSink) -> JobResult`.
 - `LlmProvider` is `run` + `resume` + `cancel`: one agent session per analysis, resumed by every batch and Ask
   job, compacted at job end; a lost session falls back to a context pack. Session files stay per analysis.
-  Model and effort come from the server's `select_model` (v1 placeholder: Sol, high).
+  Model and effort come from `select_model`, a plain Rust function in the server (no table, no setting;
+  v1: Sol, high).
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,
@@ -26,8 +27,12 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - Trust and wording rules of brief §1 are tested on rendered text and on agent output: badges only for
   deterministic facts, no numeric confidence, no "no risk"/"verified"/"noise", facts carry evidence, questions
   not verdicts, assessment collapsed.
-- Runner security design (plan §5.4): agent runs as a separate uid without access to runner secrets, cache or
-  master `CODEX_HOME`; MCP token separate from the job token; never mount the host `~/.codex`.
+- GitHub credentials: user tokens and the App private key never leave the server. The agent holds only a
+  short-lived read-only installation token (minted per job by the server, PR repo + related repos, 1 h) for the
+  official `github-mcp-server` in read-only mode.
+- Runner security design (plan §5.4): agent runs as a separate uid without access to runner secrets, job
+  token, cache or master `CODEX_HOME`; never mount the host `~/.codex`. Egress only through the Squid explicit
+  proxy (v1: allow-all, host-name log, no TLS interception); MemCan URL and token are pure configuration.
 - Keep it simple: no abstraction beyond the seams the brief names.
 
 ## Build and test
@@ -43,14 +48,15 @@ To be filled in stage 1 (workspace, web, generated-artefact update, architecture
   test/clippy/nextest via the claudius `cargo-cached.sh` wrapper at the narrowest `-p`
   (`CLAUDIUS_MAX_PARALLEL_BUILDS=1`); never set `CARGO_TARGET_DIR`; long runs in the foreground with a timeout;
   Dockerfiles set `CARGO_BUILD_JOBS=2`; vitest and Playwright at most 2 workers, one Playwright run at a time.
-- Git: one feature branch `feat/v1` and one draft PR for v1; conventional commits; agents commit and never
-  push; the coordinator integrates and pushes `feat/v1` (`ghsudo git push`); never push to `main` (the owner
-  merges the PR); no force-push, no amend. Code-mutating agents work in pre-created worktrees
+- Git: one feature branch `feat/v1`, no pull requests until v1 is deployed; conventional commits; agents
+  commit and never push; the coordinator integrates and pushes `feat/v1` (`ghsudo git push`); never push to
+  `main` (the owner pushes it); no force-push, no amend. Before deployment: one rewritable `0001_init.sql`,
+  no compatibility, no versioning or changelog. Code-mutating agents work in pre-created worktrees
   `/data/git-worktrees/home-ubuntu-git-smart-review-<stream>`. Changes of 50+ code
   lines get an independent review (`claudius:review-changes`).
 - Storage: heavy scratch in `/data/tmp`; durable artefacts in `/data/artifacts/smart-review/YYYY-MM-DD/`;
   no large files in `/tmp`.
-- Language: code, comments, commits, PRs and docs in English; talk to the owner in Polish.
+- Language: code, comments, commits and docs in English; talk to the owner in Polish.
 - Real dashpay PRs (plan §6.1 test targets): only pending review comments, deleted afterwards; never submit.
 - Test isolation: temp dirs and in-memory SQLite, fake GitHub and MemCan (`tools/`), fake LLM provider (feature
   `fake-provider`, never in release builds); never real tokens in tests or fixtures.

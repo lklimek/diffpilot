@@ -74,8 +74,8 @@ can judge the PR at project scale, not only line by line.
 | Languages of code | Any, LLM-only. Built-in `generic` tech plugin (path globs and line regexes). |
 | PR size | No limit. Huge PRs (10k+ lines) are split into many agent runs; long runtime is acceptable. |
 | LLM | Codex CLI on a ChatGPT Pro subscription (no 5-hour window). Model Sol at reasoning effort high for every job kind (§5 Model selection). Provider trait designed for a second provider. Usage-limit pause and resume must work but are not a first-stage priority. |
-| Agent access | Read-only checkout, no code execution. MemCan MCP (read and write), the `claudius` plugin, a server-side read-only GitHub lookup tool, related repos as extra context. |
-| Deployment | docker compose, LAN. Portainer-compatible. Designed to be exposed publicly later. |
+| Agent access | Read-only checkout, no code execution. MemCan MCP (read and write), the `claudius` plugin, GitHub's `github-mcp-server` in read-only mode with a short-lived read-only installation token, related repos as extra context. |
+| Deployment | docker compose, Portainer-compatible. Public base URL is configuration (`SR_PUBLIC_URL`; the owner's instance: `https://review.klimek.ws`). TLS is terminated by an existing reverse proxy; the server speaks HTTP behind it. |
 
 ### Later
 - Later versions (not yet assigned to a number): Groups workspace (flows as a navigable list with a
@@ -191,7 +191,8 @@ PR risk.
 ## 4. Screens
 
 Rules for every screen:
-1. Use the full page width (the owner works on a 21:9 monitor); no narrow centred column.
+1. Use the full page width (the owner works on a 21:9 monitor); no narrow centred column. Light and dark
+   themes follow the system setting, as in the mockups.
 2. The PR number in the top bar opens the PR on GitHub in a new tab.
 3. Every label (risk level, classification, provenance badge, status, button, column header) has a tooltip
    explaining it.
@@ -326,22 +327,30 @@ returning to an interrupted review.
 ## 5. Architecture
 
 ```
-browser ── HTTPS ──> server (axum: JSON API + SSE, embedded React SPA, orchestrator, SQLite, MCP lookup tool)
-                        │  job queue (DB)            │ GitHub API (user token)
-                        ▼                            ▼
-                     runner (Rust binary + codex CLI, git, ripgrep)  ── egress allowlist ──> LLM, MemCan, server MCP, GitHub (git fetch)
+browser ── HTTPS ──> reverse proxy (TLS) ── HTTP ──> server (axum: JSON API + SSE, embedded SPA, orchestrator, SQLite)
+                        │  job queue (DB); JobSpec carries a read-only installation token   │ GitHub API (user token; App key)
+                        ▼                                                                    ▼
+                     runner (Rust + codex CLI + github-mcp-server, git, ripgrep) ── egress proxy (Squid) ──> LLM, MemCan, GitHub
                         own checkouts: per-job work dir + local mirror cache
 ```
 
 - **server** — API, sessions, GitHub integration, own bare mirror (file content for the UI, pre-pass),
   deterministic pre-pass, related-repository detection, validation of agent output, persistence, SSE
-  progress, pending-review writes, read-only GitHub lookup MCP tool. Trusted.
+  progress, pending-review writes, minting of a read-only GitHub App installation token per job. Holds the
+  GitHub App private key and the users' tokens; user tokens never leave the server. Trusted. It speaks HTTP
+  behind the owner's TLS reverse proxy (trusted-proxy setting, Secure cookies); its public base URL is
+  configuration (`SR_PUBLIC_URL`). No built-in TLS or ACME.
 - **runner** — a long-lived compose service, no Docker socket. Takes one job at a time per LLM credential
   (Codex rotates its token on refresh). For each job it fetches the repository itself (local mirror cache),
   checks out the head into a fresh work dir, runs `codex exec --json --output-schema` there, streams events
   back and deletes the work dir. `CODEX_HOME` on a volume, isolated from repo config. The container is the
-  sandbox: non-root, network limited through an allowlist proxy service. It holds no GitHub token and no
-  database access.
+  sandbox: non-root, on an internal network whose only egress is the proxy service. It has no database
+  access; the agent holds only the job's short-lived read-only installation token, never a user token.
+- **egress proxy** — Squid, used by the runner as an explicit proxy (environment variables). v1 policy: allow
+  all public destinations, deny the private LAN except MemCan, and log every destination host (CONNECT
+  host:port, bytes) to learn which hosts are needed. No TLS interception and no cache in v1. Squid is chosen
+  because the same proxy can later, by configuration only, intercept TLS (full-URL logs, own CA in the runner
+  image, `chatgpt.com` / `openai.com` passed through), cache downloads and enforce a host allowlist.
 - **claudius plugin delivery** — the runner keeps a git checkout of `lklimek/claudius` on a volume. Before a
   job, if the last refresh is older than a configured interval, it runs `git pull --ff-only`. It exposes the
   checkout's skills directory to Codex. The ref is configurable. Codex CLI 0.167 accepts `lklimek/agents` as
@@ -353,10 +362,11 @@ browser ── HTTPS ──> server (axum: JSON API + SSE, embedded React SPA, o
 **v1 limit: public repositories only.** The shared runner has one cache and one credential store, so it
 gives no isolation between tenants or users. Private repositories arrive together with per-job containers.
 
-**GitHub lookup MCP tool (server-side, read-only).** The runner has no GitHub token, so related-work
-discovery goes through a tool the server exposes to the agent over MCP: PRs, issues and search, limited to
-the PR's repository and its related repositories. The server executes calls with the requesting user's
-token. The tool cannot write. Related work is found entirely by the LLM through this tool.
+**GitHub access for the agent.** For each job the server mints a GitHub App installation access token with
+read-only permissions (pull requests, issues, contents, metadata), restricted to the PR's repository and its
+related repositories, with a fixed lifetime of one hour, and puts it in the `JobSpec`. The runner starts
+GitHub's official `github-mcp-server` in read-only mode for the agent with that token. Related work is found
+entirely by the LLM through this server. The GitHub App is installed on the target repositories.
 
 **Related repositories** are detected by the server from `Cargo.toml` / `Cargo.lock` on the base ref (git
 and path dependencies) and limited to repositories of the same GitHub organisation. v1 recognises Cargo
@@ -371,7 +381,8 @@ only; there is no manual configuration.
   file and MemCan memory; the file wins on conflict). Every rating opens with what a production user or
   operator would notice. Without a profile, ratings are component-level and the PR context says so.
 - **Calibration memory**: feedback is stored locally and written to MemCan; `overrated` / `underrated` are
-  saved as severity calibration examples that later analyses read through the MemCan MCP.
+  saved as severity calibration examples that later analyses read through the MemCan MCP. MemCan scope:
+  `project` = short name of the analysed repository. MemCan URL and token are configuration.
 - Tests are not shown or walked through, but the agent may read them as evidence ("covered by test X").
 - Deterministic, free signals from Not analysed material (failing CI tests, lines removed from tests,
   changed dependencies) are surfaced by the server; the LLM does not interpret that material in v1.
@@ -383,8 +394,9 @@ tenant's tokens, the container checks out the repository (or unpacks its cache),
 v1 must reach that model by adding one new implementation, without changing the pipeline or the runner logic:
 
 1. `JobSpec` is self-contained: job id, kind, repo clone URL, base and head SHA, prompt, output JSON schema,
-   limits, LLM provider, model and reasoning effort, MCP endpoints, optional credentials (repo token, LLM
-   credential reference), optional agent-session reference. Nothing is passed through shared volumes or
+   limits, LLM provider, model and reasoning effort, MCP endpoints, credentials (the read-only installation
+   token; LLM credential reference; a repo token later for private repositories), optional agent-session
+   reference. Nothing is passed through shared volumes or
    ambient container state except the agent-session store, which is treated like a cache (item 5). In v1 the
    repo token is absent.
 2. `JobExecutor` (server-side trait): `submit(JobSpec) → JobHandle`, `events(JobHandle) → stream`,
@@ -432,7 +444,7 @@ finishes)
    whitespace-only changes, counters (lines removed from tests, changed dependencies), related-repository
    detection.
 3. Plan: the agent partitions hunks into flows. Huge PRs: per-directory summaries first, then grouping.
-4. PR context (own job): problem and why, related work through the GitHub lookup tool, fit questions with
+4. PR context (own job): problem and why, related work through `github-mcp-server`, fit questions with
    evidence, project profile lookup. Independent of step 5; queued like any job.
 5. Analyse: one agent run per flow — flow graph (structured), flow introduction, steps with called by /
    decides / next / why, annotations, assessment, out-of-diff impact, pattern repetitions, LLM status of the
@@ -460,9 +472,9 @@ compacting the session. Credential types: `codex_chatgpt` (subscription; owner's
 `api_key` (required for other tenants: Anthropic forbids subscription tokens in multi-user services, OpenAI
 is unclear). See `llm-runtime.md` (Background material).
 
-**Model selection** — one server-side function: job kind and context in, model and reasoning effort out. In v1
-it is a placeholder that returns Sol at high effort for every job kind; it can become a real decision function
-later without changing its callers. The exact Codex model id is verified at implementation.
+**Model selection** — a plain Rust function in the server (no table, no setting): job kind and context in,
+model and reasoning effort out. In v1 it returns Sol at high effort for every job kind; it can become a real
+decision function later without changing its callers. The exact Codex model id is verified at implementation.
 
 **Comments** — the server writes to the user's GitHub pending review with the user's token: the first
 comment creates the pending review, later ones are added, an existing pending review is reused; edit and
@@ -475,13 +487,15 @@ body links to the line. A comment on a changed line without annotation is also s
 exist from v1 with one seeded tenant `default` (allowed sign-in logins: `lklimek`). No tenant UI.
 
 **Security** — PR content is untrusted (prompt injection): read-only agent, no repo-provided agent config,
-egress allowlist, only the LLM credential in the runner. Sign-in is limited to the logins the tenant
-allows. Agent-session files are agent-writable and persist across the jobs of one analysis only; they are
+explicit egress proxy that logs every destination host, only the LLM credential and the job's read-only installation
+token in the runner. Sign-in is limited to the logins the tenant allows. Agent-session files are agent-writable and persist across the jobs of one analysis only; they are
 stored per analysis and never shared with another analysis.
-The agent has full MemCan MCP access (read and write); an injected PR could write misleading memories. This
-is an accepted risk until MemCan can distinguish agent-written memories; feedback and calibration examples
-are written by the server. The GitHub lookup tool is read-only and limited to
-the repository and its related repositories. Secrets encrypted at rest. Cookie sessions, CSRF, secure-cookie
+Accepted risks in v1: the agent has full MemCan MCP access (read and write) with the shared MemCan token, so
+an injected PR could write misleading memories (until MemCan can distinguish agent-written memories); and
+agent commands have open network access through the proxy (allow-all policy), so an injected PR could
+exfiltrate MemCan content or the per-job Codex credential. Feedback and calibration examples are written by
+the server. MemCan is reached at its Traefik entrypoint, which enforces an IP allowlist (it must include the
+address the egress proxy presents) and a bearer token. Secrets encrypted at rest. Cookie sessions, CSRF, secure-cookie
 and trusted-proxy settings so the app can sit behind a TLS reverse proxy.
 
 ### Frontend structure
@@ -505,14 +519,14 @@ Chosen to match the owner's active projects (penny, gamiscreen, memcan). sqlx (p
 | Server | Rust, tokio, axum 0.8, tower-http, tracing, thiserror, clap, dotenvy |
 | Database | sqlx with SQLite only. All database-dependent code (queries, migrations, row types) lives in one module behind a repository interface; nothing else touches sqlx. Moving to PostgreSQL later is a rewrite of that module, not a supported switch. |
 | API types | serde; `schemars` (JSON schema for agent output), `jsonschema` (validation), `ts-rs` (TypeScript types) |
-| GitHub | GitHub App with user access tokens; `octocrab` or `reqwest`; GraphQL for the pending review |
+| GitHub | GitHub App: user access tokens for the user's actions, installation access tokens (from the App private key) for the agent; `octocrab` or `reqwest`; GraphQL for the pending review |
 | Secrets | `aes-gcm` |
 | MemCan | `rmcp` client (feedback writes); the agent uses MemCan MCP directly (read and write) |
-| Agent tools | `rmcp` server side for the read-only GitHub lookup tool |
+| Agent tools | `github-mcp-server` (official, read-only mode) started by the runner with the job's installation token |
 | Diff / moves | `git` subprocess, `similar` |
 | Frontend | React 19, TypeScript, Vite, TanStack Query, react-router, Tailwind 4; code shown by an own line renderer (plain HTML rows) with Shiki for syntax colouring, no editor component; flow diagram rendered by the UI from the graph data; vitest, Playwright; embedded with `rust-embed` |
 | LLM | Codex CLI (`codex exec`) as a subprocess; no SDK, no third-party crates |
-| Packaging | docker compose: `server`, `runner`, `egress-proxy`; named volumes |
+| Packaging | docker compose: `server`, `runner`, `egress-proxy` (Squid); named volumes |
 
 Exact versions are pinned at implementation time from the registries.
 
@@ -542,7 +556,8 @@ Only what is not decided:
 - Codex in non-interactive mode: session resume from a fresh work dir, the equivalent of `/compact`, and
   sub-agents — verify.
 - Pending comments that are file-level (lines outside the diff): verify the mechanism.
-- Whether the runner needs a MemCan token, and the MemCan scope for calibration examples.
+- `github-mcp-server` with an installation token: accepted, and able to read public repositories where the App
+  is not installed — verify.
 
 ## Background material
 
