@@ -1,0 +1,577 @@
+//! `execute` against the fixture repository (`fixtures/pr-482/repo`, built with `build-repo.sh`) with a stub
+//! provider, and with the fake provider when the feature is on.
+
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Mutex;
+
+use contracts::agent::JobKind;
+use contracts::common::RepoRef;
+use contracts::job::access::{InstallationToken, Secret};
+use contracts::job::event::{ActivityKind, JobEvent};
+use contracts::job::result::Usage;
+use contracts::job::spec::SessionRef;
+use futures::future::BoxFuture;
+use serde_json::{Value, json};
+use tempfile::TempDir;
+
+use super::*;
+use crate::test_support::{build_repo, commits, credential, dirs, shared_repo, spec};
+
+const TOKEN_CANARY: &str = "ghs_EXECUTE_CANARY_000000000000001";
+
+/// What the stub saw while it ran.
+#[derive(Debug, Default, Clone)]
+struct Seen {
+    job_dir: PathBuf,
+    codex_home: PathBuf,
+    head: String,
+    base_present: bool,
+    prompt: String,
+}
+
+enum Behaviour {
+    Succeed,
+    Fail(fn() -> ProviderError),
+    Hang,
+    Leak,
+}
+
+struct Stub {
+    behaviour: Behaviour,
+    seen: Mutex<Option<Seen>>,
+}
+
+impl Stub {
+    fn new(behaviour: Behaviour) -> Arc<Self> {
+        Arc::new(Self {
+            behaviour,
+            seen: Mutex::new(None),
+        })
+    }
+
+    fn seen(&self) -> Seen {
+        self.seen.lock().unwrap().clone().expect("the provider ran")
+    }
+}
+
+impl LlmProvider for Stub {
+    fn run<'a>(
+        &'a self,
+        call: &'a ProviderCall,
+        events: mpsc::Sender<ProviderEvent>,
+    ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
+        Box::pin(async move {
+            let repo = call.job_dir.join("repo");
+            let base = commits().base;
+            let base_present = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["cat-file", "-e", &format!("{base}^{{commit}}")])
+                .status()
+                .is_ok_and(|s| s.success());
+            *self.seen.lock().unwrap() = Some(Seen {
+                job_dir: call.job_dir.clone(),
+                codex_home: call.codex_home.clone(),
+                head: fs::read_to_string(repo.join(".git/HEAD")).unwrap_or_default(),
+                base_present,
+                prompt: call.prompt.clone(),
+            });
+            let activity = |summary: String| {
+                ProviderEvent::Activity(JobEvent {
+                    seq: 0,
+                    at: Utc::now(),
+                    activity: ActivityKind::Command,
+                    summary,
+                })
+            };
+            match &self.behaviour {
+                Behaviour::Succeed => {
+                    events
+                        .send(activity("$ ls (exit 0)".to_owned()))
+                        .await
+                        .unwrap();
+                    events
+                        .send(ProviderEvent::OutputReady(json!({"ok": true})))
+                        .await
+                        .unwrap();
+                    Ok(outcome(json!({"ok": true})))
+                }
+                Behaviour::Fail(error) => Err(error()),
+                Behaviour::Hang => std::future::pending().await,
+                Behaviour::Leak => {
+                    events
+                        .send(activity(format!("$ echo {TOKEN_CANARY}")))
+                        .await
+                        .unwrap();
+                    events.send(activity("x".repeat(500))).await.unwrap();
+                    let leaked = json!({"text": format!("token {TOKEN_CANARY}")});
+                    events
+                        .send(ProviderEvent::OutputReady(leaked.clone()))
+                        .await
+                        .unwrap();
+                    events
+                        .send(ProviderEvent::OutputReady(json!({"second": 1})))
+                        .await
+                        .unwrap();
+                    Ok(outcome(leaked))
+                }
+            }
+        })
+    }
+
+    fn resume<'a>(
+        &'a self,
+        _session_id: &'a str,
+        _call: &'a ProviderCall,
+        _events: mpsc::Sender<ProviderEvent>,
+    ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
+        Box::pin(async { Err(ProviderError::SessionUnavailable) })
+    }
+
+    fn cancel(&self, _job: contracts::ids::JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn outcome(output: Value) -> ProviderOutcome {
+    ProviderOutcome {
+        output,
+        session_id: Some("thread-1".to_owned()),
+        usage: Usage {
+            input_tokens: 10,
+            cached_input_tokens: 5,
+            output_tokens: 2,
+        },
+        skills_commit: None,
+    }
+}
+
+async fn execute_collect(executor: &Executor, spec: JobSpec) -> (JobResult, Vec<ProviderEvent>) {
+    let (tx, mut rx) = mpsc::channel(1024);
+    let result = executor.execute(spec, tx).await;
+    let mut events = Vec::new();
+    while let Some(event) = rx.recv().await {
+        events.push(event);
+    }
+    (result, events)
+}
+
+fn assert_removed(seen: &Seen) {
+    assert!(!seen.job_dir.exists(), "job dir left behind");
+    assert!(!seen.codex_home.exists(), "per-job CODEX_HOME left behind");
+}
+
+#[tokio::test]
+async fn work_dir_removed_on_success() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Succeed);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
+    assert!(
+        matches!(result.outcome, JobOutcome::Succeeded { .. }),
+        "{result:?}"
+    );
+    let seen = stub.seen();
+    assert_eq!(
+        seen.head.trim(),
+        commits().head,
+        "head checked out at job_dir/repo"
+    );
+    assert!(seen.base_present, "base commit fetched for diffs");
+    assert!(
+        seen.codex_home
+            .starts_with(root.path().join("state/codex-homes"))
+    );
+    assert_removed(&seen);
+}
+
+#[tokio::test]
+async fn work_dir_removed_on_failure() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Fail(|| ProviderError::Failed {
+        message: "boom".to_owned(),
+    }));
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
+    assert!(
+        matches!(
+            result.outcome,
+            JobOutcome::Failed {
+                kind: JobFailureKind::ProviderFailed,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(matches!(
+        result.llm_call,
+        Some(LlmCallOutcome {
+            status: LlmCallStatus::NotWorking { .. },
+            ..
+        })
+    ));
+    assert_removed(&stub.seen());
+}
+
+#[tokio::test]
+async fn work_dir_removed_when_the_job_is_dropped() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Hang);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let (tx, _rx) = mpsc::channel(16);
+    let running = executor.execute(spec(JobKind::Plan, shared_repo()), tx);
+    let dropped = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::pin!(running);
+        loop {
+            tokio::select! {
+                _ = &mut running => panic!("a hanging provider cannot finish"),
+                () = tokio::time::sleep(Duration::from_millis(20)) => {
+                    if stub.seen.lock().unwrap().is_some() { break; }
+                }
+            }
+        }
+    })
+    .await;
+    assert!(dropped.is_ok(), "the provider never started");
+    assert_removed(&stub.seen());
+}
+
+#[tokio::test]
+async fn empty_cache_works() {
+    let root = TempDir::new().unwrap();
+    let source = TempDir::new().unwrap();
+    let repo = source.path().join("node-client");
+    build_repo(&repo);
+    assert!(
+        !root.path().join("state").exists(),
+        "no cache, no session store"
+    );
+    let stub = Stub::new(Behaviour::Succeed);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, &repo)).await;
+    assert!(
+        matches!(result.outcome, JobOutcome::Succeeded { .. }),
+        "{result:?}"
+    );
+    // The mirror now serves the commits even without the source.
+    fs::remove_dir_all(&repo).unwrap();
+    let (again, _) = execute_collect(&executor, spec(JobKind::Plan, &repo)).await;
+    assert!(
+        matches!(again.outcome, JobOutcome::Succeeded { .. }),
+        "cached mirror: {again:?}"
+    );
+}
+
+#[tokio::test]
+async fn checkout_failure_is_reported_and_cleaned_up() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Succeed);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let spec = spec(JobKind::Plan, &root.path().join("missing-repo"));
+    let key = format!("{}-{}", spec.job_id, spec.attempt);
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(
+        matches!(
+            result.outcome,
+            JobOutcome::Failed {
+                kind: JobFailureKind::CheckoutFailed,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(result.llm_call.is_none(), "no LLM call was made");
+    assert!(stub.seen.lock().unwrap().is_none());
+    assert!(!root.path().join("work").join(&key).exists());
+    assert!(!root.path().join("state/codex-homes").join(&key).exists());
+}
+
+#[tokio::test]
+async fn events_are_numbered_scrubbed_and_clipped() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Leak);
+    let executor = Executor::new(stub, dirs(root.path()), credential());
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.access.github = Some(InstallationToken {
+        token: Secret::new(TOKEN_CANARY),
+        expires_at: Utc::now(),
+        repository: RepoRef {
+            owner: "acme".to_owned(),
+            name: "node-client".to_owned(),
+        },
+    });
+    let (result, events) = execute_collect(&executor, spec).await;
+    let mut seqs = Vec::new();
+    let mut outputs = Vec::new();
+    for event in &events {
+        match event {
+            ProviderEvent::Activity(event) => {
+                seqs.push(event.seq);
+                assert!(event.summary.chars().count() <= SUMMARY_MAX_CHARS);
+            }
+            ProviderEvent::OutputReady(output) => outputs.push(output.clone()),
+        }
+    }
+    assert_eq!(seqs, [1, 2]);
+    assert_eq!(
+        outputs,
+        [json!({"text": "token [redacted]"})],
+        "one ready output, scrubbed"
+    );
+    let all = format!("{events:?} {result:?}");
+    assert!(!all.contains(TOKEN_CANARY), "{all}");
+}
+
+#[tokio::test]
+async fn runtime_cap_ends_with_timeout() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Hang);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.limits.max_runtime_secs = 1;
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(
+        matches!(
+            result.outcome,
+            JobOutcome::Failed {
+                kind: JobFailureKind::Timeout,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert_removed(&stub.seen());
+}
+
+#[tokio::test]
+async fn requested_session_counts_as_lost_and_the_context_pack_seeds_the_new_one() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Succeed);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.session = Some(SessionRef {
+        analysis_id: spec.analysis_id,
+        thread_id: "old-thread".to_owned(),
+    });
+    spec.context_pack = Some("CONTEXT PACK".to_owned());
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(stub.seen().prompt.starts_with("CONTEXT PACK\n\n"));
+    assert_eq!(
+        result.session,
+        Some(SessionReport {
+            thread_id: "thread-1".to_owned(),
+            outcome: SessionOutcome::StartedAfterLoss
+        })
+    );
+}
+
+#[tokio::test]
+async fn first_job_reports_a_started_session_and_usage() {
+    let root = TempDir::new().unwrap();
+    let executor = Executor::new(
+        Stub::new(Behaviour::Succeed),
+        dirs(root.path()),
+        credential(),
+    );
+    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
+    assert_eq!(
+        result.session,
+        Some(SessionReport {
+            thread_id: "thread-1".to_owned(),
+            outcome: SessionOutcome::Started
+        })
+    );
+    assert_eq!(result.usage.map(|u| u.input_tokens), Some(10));
+    assert!(matches!(
+        result.llm_call,
+        Some(LlmCallOutcome {
+            status: LlmCallStatus::Working,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn foreign_credential_is_rejected_before_any_work() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Succeed);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.credential.id = "someone-else".to_owned();
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(
+        matches!(
+            result.outcome,
+            JobOutcome::Failed {
+                kind: JobFailureKind::Internal,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(stub.seen.lock().unwrap().is_none());
+}
+
+type ResultCheck = fn(&JobResult) -> bool;
+
+#[tokio::test]
+async fn provider_errors_map_to_typed_outcomes() {
+    let cases: [(fn() -> ProviderError, ResultCheck); 4] = [
+        (
+            || ProviderError::UsageLimit { resets_at: None },
+            |r| matches!(r.outcome, JobOutcome::UsageLimited { resets_at: None }),
+        ),
+        (
+            || ProviderError::Cancelled,
+            |r| matches!(r.outcome, JobOutcome::Cancelled) && r.llm_call.is_none(),
+        ),
+        (
+            || ProviderError::CredentialUnusable,
+            |r| {
+                matches!(
+                    r.outcome,
+                    JobOutcome::Failed {
+                        kind: JobFailureKind::CredentialUnusable,
+                        ..
+                    }
+                )
+            },
+        ),
+        (
+            || ProviderError::OutputNotJson,
+            |r| {
+                matches!(
+                    r.outcome,
+                    JobOutcome::Failed {
+                        kind: JobFailureKind::OutputNotJson,
+                        ..
+                    }
+                )
+            },
+        ),
+    ];
+    for (error, check) in cases {
+        let root = TempDir::new().unwrap();
+        let executor = Executor::new(
+            Stub::new(Behaviour::Fail(error)),
+            dirs(root.path()),
+            credential(),
+        );
+        let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
+        assert!(check(&result), "{result:?}");
+    }
+}
+
+#[cfg(feature = "fake-provider")]
+mod fake {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::provider::fake::FakeProvider;
+    use crate::test_support::fixture;
+
+    /// Activities the recording yields through the Codex stream parser.
+    fn recorded_activities(file: &str) -> usize {
+        let text = fs::read_to_string(fixture(&format!("codex/{file}"))).unwrap();
+        let mut stream = crate::provider::codex::CodexStream::default();
+        text.lines()
+            .filter(|line| stream.line(line).is_some())
+            .count()
+    }
+
+    #[tokio::test]
+    async fn fake_provider_reproduces_fixture_events_and_result() {
+        let mut cases = vec![
+            (
+                JobKind::Plan,
+                "Job: plan.".to_owned(),
+                "plan.jsonl".to_owned(),
+                "agent/plan.json".to_owned(),
+            ),
+            (
+                JobKind::PrContext,
+                "Job: pr_context.".to_owned(),
+                "pr-context.jsonl".to_owned(),
+                "agent/pr_context.json".to_owned(),
+            ),
+        ];
+        for flow in 1..=5 {
+            cases.push((
+                JobKind::AnalyseFlow,
+                format!("Job: analyse_flow f{flow}. Plan: f1 f2 f3 f4 f5"),
+                format!("analyse-flow-{flow}.jsonl"),
+                format!("agent/flow-{flow}.json"),
+            ));
+        }
+        for (kind, prompt, recording, output) in cases {
+            let root = TempDir::new().unwrap();
+            let executor = Executor::new(
+                Arc::new(FakeProvider::new(Duration::ZERO)),
+                dirs(root.path()),
+                credential(),
+            );
+            let mut spec = spec(kind, shared_repo());
+            spec.prompt = prompt;
+            let (result, events) = execute_collect(&executor, spec).await;
+            let expected: Value =
+                serde_json::from_str(&fs::read_to_string(fixture(&output)).unwrap()).unwrap();
+            assert_eq!(
+                result.outcome,
+                JobOutcome::Succeeded {
+                    output: expected.clone()
+                },
+                "{recording}"
+            );
+            assert_eq!(
+                result.session.as_ref().map(|s| s.thread_id.as_str()),
+                Some("019a8f2c-4820-7000-8000-000000000482")
+            );
+            assert!(
+                result.usage.is_some_and(|u| u.input_tokens > 0),
+                "{recording}"
+            );
+            let activities = recorded_activities(&recording);
+            assert!(activities > 0);
+            let seqs: Vec<u32> = events
+                .iter()
+                .filter_map(|e| match e {
+                    ProviderEvent::Activity(event) => Some(event.seq),
+                    ProviderEvent::OutputReady(_) => None,
+                })
+                .collect();
+            assert_eq!(
+                seqs,
+                (1..=u32::try_from(activities).unwrap()).collect::<Vec<_>>(),
+                "{recording}"
+            );
+            assert_eq!(
+                events.last(),
+                Some(&ProviderEvent::OutputReady(expected)),
+                "{recording}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fake_provider_has_no_ask_recording() {
+        let root = TempDir::new().unwrap();
+        let executor = Executor::new(
+            Arc::new(FakeProvider::new(Duration::ZERO)),
+            dirs(root.path()),
+            credential(),
+        );
+        let (result, _) = execute_collect(&executor, spec(JobKind::Ask, shared_repo())).await;
+        assert!(
+            matches!(
+                result.outcome,
+                JobOutcome::Failed {
+                    kind: JobFailureKind::ProviderFailed,
+                    ..
+                }
+            ),
+            "{result:?}"
+        );
+    }
+}
