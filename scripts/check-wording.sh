@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Enforces the wording rules of docs/design-brief.md §1 (trust rules) on web source text,
+# Enforces the wording rules of docs/design-brief.md §1 (trust rules) on web UI text,
 # docs/implementation-plan.md §12.4 (rule A9).
 #
 # Usage:
@@ -7,40 +7,22 @@
 #   scripts/check-wording.sh --src DIR        check another source directory
 #   scripts/check-wording.sh --self-test      prove the check fails on injected violations
 #
-# Scope: web source text only. Prompts must name the banned words, so prompts/ is not checked.
-# Comments and test files (*.test.*, *.spec.*, __tests__/) are skipped; everything else in
-# .ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts/.json files is checked, so JSX text counts as well as string
-# literals. A line containing `wording-check: allow` (with a reason) is exempt.
+# Checks string literal values, template literal static parts and JSX text (scripts/check-wording.mjs,
+# TypeScript 6 parser) in .ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts/.json files; test files (*.test.*,
+# *.spec.*, __tests__/) and prompts/ (which must name the banned words) are not checked.
+# `// wording-check: allow <reason>` (or a block comment) exempts percentages on its line, never words.
+# Needs node and TypeScript 6: CHECK_WORDING_TYPESCRIPT=<package dir>, else web/node_modules/@typescript/typescript6
+# or web/node_modules/typescript. Fails when they cannot be loaded.
 # Not caught here (left to the rendered-text Playwright tests, plan §12.4): text assembled at runtime
 # from fragments, text outside web/src, decimals.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-# Banned wording: brief §1 "Silence is not safety", "A badge names exactly what was checked",
-# "No numeric confidence"; plan §12.4 ("Was wrong", "confidence", percentages incl. `${x}%`).
-# Perl program: blanks comments (keeping strings and line breaks), then reports each banned match.
-# shellcheck disable=SC2016 # perl program, not shell expansion
-SCAN='
-  my $dir = shift @ARGV;
-  my $banned = qr/\bno\s+risk|\bnothing\s+to\s+review\b|\bno\s+review\s+needed\b|\bnoise\b|\bverified\b
-                  |\bwas\s+wrong\b|\bconfidence\b|(?:[0-9]+|\})(?:\x20|\xc2\xa0)?%/xi;
-  for my $file (@ARGV) {
-    open(my $fh, "<", $file) or die "wording check: cannot read $file: $!\n";
-    my $src = do { local $/; <$fh> };
-    close $fh;
-    my @lines = split /\n/, $src, -1;
-    $src =~ s{(\x27(?:\\.|[^\x27\\\n])*\x27|"(?:\\.|[^"\\\n])*"|`(?:\\.|[^`\\])*`)|(//[^\n]*|/\*.*?\*/)}
-             {defined $1 ? $1 : ($2 =~ tr/\n//cdr)}gse;
-    (my $rel = $file) =~ s{^\Q$dir\E/}{};
-    while ($src =~ /$banned/g) {
-      my $line = 1 + (substr($src, 0, $-[0]) =~ tr/\n//);
-      next if $lines[$line - 1] =~ /wording-check: allow/;
-      (my $match = $&) =~ s/\s+/ /g;
-      print "$rel:$line: \"$match\"\n";
-    }
-  }
-'
+TYPESCRIPT="${CHECK_WORDING_TYPESCRIPT:-}"
+if [[ -z "$TYPESCRIPT" ]]; then
+  TYPESCRIPT="$ROOT/web/node_modules/typescript"
+  [[ -d "$ROOT/web/node_modules/@typescript/typescript6" ]] && TYPESCRIPT="$ROOT/web/node_modules/@typescript/typescript6"
+fi
 
 # Prints one line per violation (`file:line: "match"`); prints nothing when the sources are clean.
 violations() {
@@ -49,7 +31,7 @@ violations() {
     \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.mjs' -o -name '*.cjs' \
        -o -name '*.mts' -o -name '*.cts' -o -name '*.json' \) \
     ! -name '*.test.*' ! -name '*.spec.*' -print0 \
-    | sort -z | xargs -0 -r perl -e "$SCAN" "$dir"
+    | sort -z | node "$ROOT/scripts/check-wording.mjs" "$TYPESCRIPT" "$dir"
 }
 
 # Exit 0 when clean; otherwise prints the violations to stderr and exits 1.
@@ -114,27 +96,59 @@ self_test() {
   expect_fail "confidence"         a.ts  "const s = 'High confidence';"               "a.ts:1: \"confidence\""
   expect_fail "percentage"         a.ts  "const s = '42% covered';"                   "a.ts:1: \"42%\""
   expect_fail "spaced percentage"  a.ts  "const s = '42 %';"                          "a.ts:1: \"42 %\""
-  expect_fail "computed percentage" a.tsx '<b>{`${share}%`}</b>'                      "a.tsx:1: \"}%\""
-  expect_fail "multi-line JSX text" a.tsx $'<p>\n  Nothing\n  to review\n</p>'       "a.tsx:2: \"Nothing"
+  expect_fail "computed percentage" a.tsx '<b>{`${share}%`}</b>'                      "a.tsx:1: \"{}%\""
+  expect_fail "JSX computed percentage" a.tsx '<p>{share}% covered</p>'               "a.tsx:1: \"{}%\""
+  expect_fail "multi-line JSX text" a.tsx $'<p>\n  Nothing\n  to review\n</p>'       "a.tsx:2: \"Nothing to review\""
+  expect_fail "nested JSX text"    a.tsx '<p>No <b>risk</b> here</p>'                 "a.tsx:1: \"No risk\""
   expect_fail "line number"        a.ts  $'const a = 1;\n\nconst s = "noise";'        "a.ts:3:"
   expect_fail "nested directory"   components/x/a.tsx '<p>No risk</p>'              "components/x/a.tsx:1:"
   expect_fail "json strings"       mocks/a.json '{"label": "verified"}'             "mocks/a.json:1:"
   expect_fail "string after URL"   a.ts  "const u = 'https://x.test'; const s = 'no risk';" "a.ts:1: \"no risk\""
   expect_fail "comment then code"  a.ts  $'/* note */\nconst s = "noise";'          "a.ts:2: \"noise\""
+  expect_fail "URL in JSX text"    a.tsx '<p>https://example.com No risk</p>'         "a.tsx:1: \"No risk\""
+  expect_fail "comment-like JSX text" a.tsx '<p>/* No risk */</p>'                    "a.tsx:1: \"No risk\""
+  expect_fail "after regex literal" a.ts 'const slash = /\//; const text = "No risk";' "a.ts:1: \"No risk\""
+  expect_fail "newline escape"     a.ts  'const text = "Nothing\nto review";'         "a.ts:1: \"Nothing to review\""
+  expect_fail "tab escape"         a.ts  'const text = "no\trisk";'                   "a.ts:1: \"no risk\""
+  expect_fail "unicode escape"     a.ts  'const text = "No\u0020risk";'               "a.ts:1: \"No risk\""
+  expect_fail "JSX entity"         a.tsx '<p>No&nbsp;risk</p>'                        "a.tsx:1: \"No risk\""
 
-  # Not violations.
+  # Allow marker: only in a comment, only with a reason, only for the percentage rule.
+  expect_pass "allow marker"        a.tsx "<div style={{ width: '50%' }} /> {/* wording-check: allow CSS width */}"
+  expect_pass "allow line comment"  a.ts  "const w = '50%'; // wording-check: allow CSS width"
+  expect_fail "allow marker keeps words" a.tsx '<div style={{ width: "50%" }}>No risk</div> {/* wording-check: allow CSS width */}' "a.tsx:1: \"No risk\""
+  expect_fail "allow marker in string" a.ts "const s = '50% // wording-check: allow CSS width';" "a.ts:1: \"50%\""
+  expect_fail "allow marker without reason" a.tsx "<div style={{ width: '50%' }} /> {/* wording-check: allow */}" "a.tsx:1: \"50%\""
+
+  # Not violations: comments, code (identifiers, operators, module paths), tests, other files.
   expect_pass "clean text"          a.tsx '<p>The LLM raised no questions. That is not evidence of no defects.</p>'
   expect_pass "not analysed"        a.ts  "const s = 'Not analysed';"
   expect_pass "line comment"        a.ts  '// never say "no risk" or "noise"'
   expect_pass "block comment"       a.ts  $'/*\n * verified, confidence, 50%\n */'
   expect_pass "JSX comment"         a.tsx '<div>{/* no review needed */}</div>'
   expect_pass "word parts"          a.ts  "const isVerified = x.verified_by || unverified || noisy;"
+  expect_pass "identifier"          a.ts  "const verified = signatureCheck(confidence, noise);"
   expect_pass "modulo"              a.ts  "const odd = i % 2;"
+  expect_pass "modulo of literals"  a.ts  "const odd = 42%2;"
+  expect_pass "module path"         a.ts  "import { Badge } from './verified-badge';"
   expect_pass "test file"           a.test.tsx "expect(text).not.toContain('no risk');"
   expect_pass "spec file"           a.spec.ts  "expect(text).not.toContain('noise');"
   expect_pass "tests directory"     __tests__/a.ts "const banned = ['verified'];"
   expect_pass "other file types"    a.css '.bar { width: 50%; }'
-  expect_pass "allow marker"        a.tsx "<div style={{ width: '50%' }} /> {/* wording-check: allow CSS width */}"
+
+  # The parser must load; a TypeScript without the classic compiler API (7+) is an error.
+  mkdir -p "$tmp/ts7" "$tmp/clean"
+  printf "const s = 'fine';\\n" > "$tmp/clean/a.ts"
+  printf '{"name": "typescript", "main": "index.js"}\n' > "$tmp/ts7/package.json"
+  printf 'module.exports = { version: "7.0.0" };\n' > "$tmp/ts7/index.js"
+  for ts in "$tmp/missing-typescript" "$tmp/ts7"; do
+    if CHECK_WORDING_TYPESCRIPT="$ts" "$0" --src "$tmp/clean" > /dev/null 2>&1; then
+      echo "FAIL unusable TypeScript $ts: expected a non-zero exit"
+      failures=$((failures + 1))
+    else
+      echo "ok   unusable TypeScript $(basename "$ts") fails"
+    fi
+  done
 
   # The entry point: missing directory passes, a violation exits non-zero.
   if "$0" --src "$tmp/missing" > /dev/null 2>&1; then

@@ -38,10 +38,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked --features runner/fake-provider -- -D warnings
       # Plan §5.1: the drift test regenerates schemas/agent and web/src/api/generated; nothing may change.
+      # Skipped only while crates/contracts/src/lib.rs is the doc-comment stub; afterwards a missing test fails.
       - name: Contract drift (generated JSON Schemas and TS types)
         run: |
-          if ! grep -rqs --include='*.rs' 'fn generated_artifacts_are_current' crates; then
-            echo "::notice title=Contract drift::test generated_artifacts_are_current does not exist yet (plan §5.1); drift check skipped"
+          if ! grep -qvE '^(//!.*)?$' crates/contracts/src/lib.rs; then
+            echo "::notice title=Contract drift::crates/contracts is still a stub (plan §5.1); drift check skipped"
             exit 0
           fi
           UPDATE_GENERATED=1 cargo nextest run --workspace --locked --features runner/fake-provider \
@@ -81,6 +82,16 @@ jobs:
         run: scripts/check-architecture.sh --self-test
       - name: Architecture check
         run: scripts/check-architecture.sh
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          package-manager-cache: false
+      # The wording checker needs the TypeScript 6 compiler API (TypeScript 7 has none); installed and
+      # self-tested on every run, so a broken checker cannot pass silently.
+      - name: Install TypeScript for the wording check
+        run: |
+          npm install --prefix "$RUNNER_TEMP/wording" --no-save --no-audit --no-fund --ignore-scripts typescript@6.0.3
+          echo "CHECK_WORDING_TYPESCRIPT=$RUNNER_TEMP/wording/node_modules/typescript" >> "$GITHUB_ENV"
       - name: Wording check self-test
         run: scripts/check-wording.sh --self-test
       - name: Wording check
