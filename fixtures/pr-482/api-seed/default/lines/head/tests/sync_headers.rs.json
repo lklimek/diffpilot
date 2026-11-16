@@ -37,7 +37,8 @@
       "base_start": 19,
       "lines": [
         "        .with_transport(common::slow_transport(Duration::from_millis(50)));"
-      ]
+      ],
+      "total_lines": 1
     }
   ],
   "moved": [],

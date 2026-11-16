@@ -465,9 +465,14 @@ after_line: number,
  */
 base_start: number,
 /**
- * Removed lines.
+ * Removed lines, from `base_start` on; fewer than `total_lines` when the response's line budget ran out
+ * (read the rest with `side=base`).
  */
-lines: Array<string>, };
+lines: Array<string>,
+/**
+ * Number of removed lines in the block.
+ */
+total_lines: number, };
 
 /**
  * A diff hunk.

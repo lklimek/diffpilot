@@ -301,7 +301,8 @@
       "base_start": 41,
       "lines": [
         "        Self { config, transport, auth }"
-      ]
+      ],
+      "total_lines": 1
     },
     {
       "after_line": 52,
@@ -318,14 +319,16 @@
         "        Ok(resp)",
         "    }",
         ""
-      ]
+      ],
+      "total_lines": 11
     },
     {
       "after_line": 88,
       "base_start": 99,
       "lines": [
         "    /// Sends a request."
-      ]
+      ],
+      "total_lines": 1
     },
     {
       "after_line": 90,
@@ -334,7 +337,8 @@
         "        let http = self.build_request(&req)?;",
         "        let resp = self.transport.execute(http, self.config.timeout).await?;",
         "        Ok(resp)"
-      ]
+      ],
+      "total_lines": 3
     },
     {
       "after_line": 219,
@@ -382,7 +386,8 @@
         "        Ok(http)",
         "    }",
         ""
-      ]
+      ],
+      "total_lines": 42
     }
   ],
   "moved": [

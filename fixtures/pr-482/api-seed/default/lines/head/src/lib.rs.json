@@ -35,7 +35,8 @@
       "base_start": 18,
       "lines": [
         "    pub mod backoff;"
-      ]
+      ],
+      "total_lines": 1
     }
   ],
   "moved": [],

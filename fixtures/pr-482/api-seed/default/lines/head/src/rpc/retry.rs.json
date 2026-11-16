@@ -141,7 +141,8 @@
       "lines": [
         "/// Attempts a retrying caller should make in total.",
         "pub const MAX_ATTEMPTS: u32 = 3;"
-      ]
+      ],
+      "total_lines": 2
     },
     {
       "after_line": 48,
@@ -149,7 +150,8 @@
       "lines": [
         "// Jitter is uniform in [-JITTER, +JITTER]: up to a tenth of the delay either way.",
         "const JITTER: f64 = 0.1;"
-      ]
+      ],
+      "total_lines": 2
     }
   ],
   "moved": [
