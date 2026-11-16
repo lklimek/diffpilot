@@ -3,9 +3,17 @@
 `GET /api/v1/analyses/{id}/events` (session). Type: `AnalysisEvent` (`crates/contracts/src/api/events.rs`).
 
 - SSE `event:` = the `event` tag (`analysis` | `question`), `data:` = the JSON of the variant. No `id:` and no
-  replay: on (re)connect the server first sends one `analysis` snapshot and a `question` event per question in
-  `pending` or `answering`, so a client that missed events is current again. The browser reconnects with the
-  default `EventSource` retry.
+  replay. Every event is a full snapshot of one entity (the analysis or one question), applied by id.
+- **(Re)connect = snapshot, then live events.** On every connection the server:
+  1. subscribes to the analysis's in-process event channel (events are buffered from here on);
+  2. reads from the database the analysis and **all** questions of the analysis, in every state (also
+     `answered` and `failed`, so an answer finished while the client was disconnected arrives);
+  3. sends one `analysis` event and one `question` event per question;
+  4. forwards the buffered and later events in channel order.
+  Invariant: every state change is written to the database before it is published. Hence the last event a
+  client receives for an entity is never older than the database; a buffered event older than the snapshot
+  may arrive once after it and is followed by the newer one. A buffer overflow closes the stream; the browser
+  reconnects (default `EventSource` retry) and gets a fresh snapshot.
 - `analysis {summary}`: full `AnalysisSummary` on connect and on every state or progress change (planning →
   running {done,total} → finished | failed | paused | cancelled). The stream stays open after a terminal state
   (re-analysis and Ask still emit) until the client closes it.
