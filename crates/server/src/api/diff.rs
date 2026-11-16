@@ -1,0 +1,10 @@
+//! Classic diff of a file range.
+
+use axum::Router;
+
+use crate::state::AppState;
+
+/// Routes of this module.
+pub fn routes() -> Router<AppState> {
+    Router::new()
+}
