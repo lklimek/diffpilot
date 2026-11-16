@@ -216,7 +216,7 @@ body.narrow .conn{display:block}
     <div class="zs">One binary, SPA embedded (feature <code>embed-ui</code>). <span class="key">GitHub user tokens (AES-GCM)</span><span class="key">App private key</span><span class="key">sessions</span><span class="key">job tokens</span><span class="key">MemCan token</span></div>
     <div class="stk grow">
      <div class="box" id="sv-rapi" tabindex="0" data-detail="claim (runner secret) -> JobSpec (with installation token and MemCan credentials) + job token; events and result (job token, idempotent per attempt)."><h3>runner API</h3><p>claim, events, result</p></div>
-     <div class="box" id="sv-tok" tabindex="0" data-detail="App JWT from the private key -> installation access token per job: permissions pull requests, issues, contents, metadata (read); repositories = PR repo + related repos; fixed 1 h lifetime. Put into JobSpec."><h3>installation-token minting</h3><p>read-only, PR repo + related repos, 1 h</p></div>
+     <div class="box" id="sv-tok" tabindex="0" data-detail="App JWT from the private key -> installation access token per job: permissions pull requests, issues, contents, metadata (read); repositories = PR repo only (ADR-005; related repos are read as public data); fixed 1 h lifetime. Put into JobSpec."><h3>installation-token minting</h3><p>read-only, PR repo only, 1 h</p></div>
      <div class="box" id="sv-api" tabindex="0" data-detail="/api/v1 JSON, /auth/github/*, SSE progress. Mutating routes need the CSRF header."><h3>API + SSE + auth</h3><p>cookie session, CSRF, JSON routes</p></div>
      <div class="box seam" id="sv-pipe" tabindex="0" data-detail="Pipeline and Ask talk only to JobExecutor; QueueExecutor is the only v1 implementation. A ContainerExecutor (per-job containers) comes later."><h3>pipeline + <code>JobExecutor</code><span class="tag">SEAM</span></h3><p>QueueExecutor -> DB queue; ContainerExecutor later</p></div>
      <div class="box" id="sv-db" tabindex="0" data-detail="All database code lives in crates/db behind the repository API. Every table carries tenant_id."><h3>SQLite via <code>db</code></h3><p>queue, analyses, review state, encrypted tokens</p></div>
@@ -233,9 +233,9 @@ body.narrow .conn{display:block}
      <div class="box" id="rn-loop" tabindex="0" data-detail="Thin wrapper around execute(). A one-shot entry point for per-job containers is later work."><h3>polling loop <span class="tag">runner uid</span></h3><p>claim job, post events + result</p></div>
      <div class="box" id="rn-exec" tabindex="0" data-detail="Fetch via mirror cache, fresh work dir, provider run, events, cleanup. A job succeeds with an empty cache."><h3><code>execute(JobSpec, EventSink) -> JobResult</code></h3><p>mirror fetch, checkout, run agent, clean up</p></div>
      <div class="box seam" id="rn-sess" tabindex="0" data-detail="One Codex session per PR analysis, resumed by each job (plan, pr_context, analyse_flow, ask) and compacted at the end of each job."><h3>session store <span class="tag">per analysis</span></h3><p>LlmProvider: run, resume, cancel</p></div>
-     <div class="zone" id="rn-agent" data-detail="Codex, github-mcp-server and every agent command run as uid agent with a per-job CODEX_HOME. Holds only the 1 h read-only installation token and the MemCan token; PR content is untrusted (prompt injection). Repo-provided agent config is never loaded.">
+     <div class="zone" id="rn-agent" data-detail="Codex, github-mcp-server and every agent command run as uid agent with a per-job CODEX_HOME. Can read its per-job Codex credential (auth.json copy), the 1 h read-only installation token and the MemCan token (accepted risk AR-4). Codex sandbox off: 'no code execution' is a prompt rule only (AR-6). PR content is untrusted (prompt injection). Repo-provided agent config is never loaded.">
       <div class="zh">uid <code>agent</code> - untrusted</div>
-      <div class="box llm" id="rn-codex"><h3>Codex CLI <span class="tag">LLM</span></h3><p>exec --json --output-schema; read-only</p><span class="key">MemCan token</span><span class="key none">no LLM credential</span></div>
+      <div class="box llm" id="rn-codex"><h3>Codex CLI <span class="tag">LLM</span></h3><p>exec --json --output-schema; sandbox off</p><span class="key">MemCan token</span><span class="key">per-job LLM credential (AR-4)</span></div>
       <div class="box" id="rn-ghmcp"><h3><code>github-mcp-server</code> <span class="tag">stdio MCP</span></h3><p>official, read-only mode; started from the per-job config</p><span class="key">installation token (1 h, read-only)</span></div>
      </div>
     </div>
@@ -248,16 +248,16 @@ body.narrow .conn{display:block}
     <ul class="conn"></ul>
    </div>
 
-   <div class="box" id="s-sec" tabindex="0" style="grid-row:2" data-detail="Secrets map: nothing secret reaches the browser, logs or the agent.">
+   <div class="box" id="s-sec" tabindex="0" style="grid-row:2" data-detail="Secrets map: nothing secret reaches the browser or logs; the agent uid can read its per-job credentials (AR-4).">
     <h3>Who holds what</h3>
     <p><span class="key">GitHub user tokens</span> server only</p>
-    <p><span class="key">LLM credential</span> runner uid only</p>
+    <p><span class="key">LLM credential</span> master: runner uid only; per-job copy: agent uid (AR-4)</p>
     <p><span class="key">App private key</span> server only</p>
-    <p><span class="key">installation token</span> agent uid: read-only, 1 h, PR repo + related</p>
+    <p><span class="key">installation token</span> agent uid: read-only, 1 h, PR repo only</p>
     <p><span class="key">MemCan token</span> server and agent uid</p>
     <p><span class="key">job token</span> runner uid, never the agent</p>
     <p><span class="key none">agent</span> has no user token, no DB, no job token</p>
-    <p class="muted">Accepted risks: agent has full MemCan MCP (read + write); open egress (allow-all) could exfiltrate MemCan content or the per-job Codex credential.</p>
+    <p class="muted">Accepted risks: agent reads its per-job Codex credential, installation token and MemCan token (AR-4) and can run commands (sandbox off, AR-6); full MemCan MCP (read + write); open egress (allow-all) could exfiltrate MemCan content or these credentials.</p>
    </div>
 
    <div class="box ext" id="s-mc" tabindex="0" data-detail="Project profile and calibration examples. Traefik entrypoint (port 8190): IP allowlist (must include the egress proxy's source address; edited by the owner) + bearer token. The agent reads and writes via MCP (accepted risk: an injected PR may write misleading memories). Moves to another host before deployment; only configuration changes.">

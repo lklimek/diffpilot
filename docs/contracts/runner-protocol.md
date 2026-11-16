@@ -138,10 +138,12 @@ Durable state only; no in-memory handle is needed after a restart.
 - **Persist boundary.** Verification and `Documents::put` (upsert by analysis, kind and key) run from the
   stored `jobs.result`; repeating them yields the same documents. Analysis progress is derived from the
   stored documents, not from counters.
-- **At start** the pipeline lists `Analyses::unfinished` and, per analysis, `Jobs::list_for_analysis`: for
-  each stage it takes the newest generation; a succeeded one whose document is missing is verified again and
-  persisted, or repaired (next generation) if rejected; queued, claimed, running and paused jobs are followed
-  again with `JobExecutor::events`; stages without a job are submitted. Expired leases are handled by
+- **At start** the pipeline lists `Analyses::unfinished` and starts one driver per analysis
+  (`pipeline::resume_unfinished`). The driver uses only `JobExecutor` and the stored documents, never the jobs
+  table: a stage with a document is skipped; every other stage is submitted again, which the submit boundary
+  answers with the existing live or succeeded job, followed with `JobExecutor::events`; a succeeded result whose
+  document is missing is verified again and persisted, or repaired (next generation) if rejected. Because
+  verification is deterministic, this replay reaches the newest generation. Expired leases are handled by
   `Jobs::expire_leases` as usual.
 - **Installation-token revocation.** The encrypted token is stored per (job, attempt) at claim
   (`installation_tokens`). Revocation reads it without removing it (`Jobs::github_token`), calls
