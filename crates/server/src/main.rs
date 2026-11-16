@@ -4,11 +4,17 @@ use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
+use db::error::DbError;
+use db::repo::Db;
 use server::api;
-use server::config::{Config, ConfigError};
+use server::config::{Config, ConfigError, LISTEN_ADDR, RUNNER_LISTEN_ADDR};
+use server::jobs::queue::QueueExecutor;
 use server::state::AppState;
+use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, thiserror::Error)]
@@ -22,8 +28,21 @@ enum StartError {
     Runtime(#[source] std::io::Error),
     #[error("the configuration is invalid")]
     Config(#[from] ConfigError),
-    #[error("could not listen on {addr}; check SR_LISTEN_ADDR and whether the port is in use")]
+    #[error("could not create the data directory {}; check SR_DATA_DIR", path.display())]
+    DataDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("could not open the database {}", path.display())]
+    Database {
+        path: PathBuf,
+        #[source]
+        source: DbError,
+    },
+    #[error("could not listen on {addr}; check {key} and whether the port is in use")]
     Bind {
+        key: &'static str,
         addr: SocketAddr,
         #[source]
         source: std::io::Error,
@@ -50,18 +69,52 @@ fn main() -> ExitCode {
     }
 }
 
+/// File name of the SQLite database inside `SR_DATA_DIR`.
+const DATABASE_FILE: &str = "smart-review.sqlite";
+
 async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> {
     dotenv_outcome(dotenv)?;
     let config = Config::from_env()?;
-    let addr = config.listen_addr;
-    let listener = tokio::net::TcpListener::bind(addr)
+    tokio::fs::create_dir_all(&config.data_dir)
         .await
-        .map_err(|source| StartError::Bind { addr, source })?;
-    tracing::info!(%addr, "server listening");
-    axum::serve(listener, api::router(AppState::new(config)))
-        .with_graceful_shutdown(shutdown_signal())
+        .map_err(|source| StartError::DataDir {
+            path: config.data_dir.clone(),
+            source,
+        })?;
+    let path = config.data_dir.join(DATABASE_FILE);
+    let db = Db::open(&path)
         .await
-        .map_err(StartError::Serve)
+        .map_err(|source| StartError::Database { path, source })?;
+    let public = bind(LISTEN_ADDR, config.listen_addr).await?;
+    let runner = bind(RUNNER_LISTEN_ADDR, config.runner_listen_addr).await?;
+    let executor = Arc::new(QueueExecutor::new(db.clone()));
+    let state = AppState::new(config, db, executor);
+
+    let (stop, stopped) = watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        // Both servers may already be gone; nothing to notify then.
+        let _ = stop.send(true);
+    });
+    let public = axum::serve(public, api::router(state.clone()))
+        .with_graceful_shutdown(stop_requested(stopped.clone()));
+    let runner = axum::serve(runner, api::runner_router(state))
+        .with_graceful_shutdown(stop_requested(stopped));
+    tokio::try_join!(public.into_future(), runner.into_future()).map_err(StartError::Serve)?;
+    Ok(())
+}
+
+async fn bind(key: &'static str, addr: SocketAddr) -> Result<TcpListener, StartError> {
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|source| StartError::Bind { key, addr, source })?;
+    tracing::info!(%addr, listener = key, "server listening");
+    Ok(listener)
+}
+
+async fn stop_requested(mut stopped: watch::Receiver<bool>) {
+    // An error means the sender is gone, which also ends the server.
+    let _ = stopped.wait_for(|stop| *stop).await;
 }
 
 async fn shutdown_signal() {

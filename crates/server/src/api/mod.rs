@@ -1,4 +1,5 @@
-//! HTTP routes: every module contributes one `routes()`, merged here exactly once.
+//! HTTP routes: every module contributes one `routes()`, merged here exactly once. The runner protocol is
+//! served only on the runner listener (`SR_RUNNER_LISTEN_ADDR`), never on the public one.
 
 use axum::Router;
 
@@ -8,6 +9,7 @@ pub mod analyses;
 pub mod auth;
 pub mod comments;
 pub mod diff;
+pub mod error;
 pub mod events;
 pub mod feedback;
 pub mod lines;
@@ -18,7 +20,7 @@ pub mod runner;
 pub mod settings;
 pub mod tour;
 
-/// Builds the application router from all route modules and the web UI.
+/// Builds the public router (browser API, auth, web UI) from all route modules except the runner protocol.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(analyses::routes())
@@ -31,11 +33,15 @@ pub fn router(state: AppState) -> Router {
         .merge(pr::routes())
         .merge(questions::routes())
         .merge(review_state::routes())
-        .merge(runner::routes())
         .merge(settings::routes())
         .merge(tour::routes())
         .merge(crate::frontend::routes())
         .with_state(state)
+}
+
+/// Builds the runner-only router (`/runner/v1/*`), served on the runner listener.
+pub fn runner_router(state: AppState) -> Router {
+    Router::new().merge(runner::routes()).with_state(state)
 }
 
 #[cfg(test)]
@@ -45,15 +51,50 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::config::tests::test_config;
+    use crate::state::tests::test_state;
+
+    async fn status_of(app: Router, request: Request<Body>) -> StatusCode {
+        app.oneshot(request).await.expect("infallible").status()
+    }
 
     #[tokio::test]
     async fn router_merges_all_modules_and_answers_unknown_path_with_404() {
-        let app = router(AppState::new(test_config()));
         let request = Request::get("/api/v1/no-such-route")
             .body(Body::empty())
             .expect("request");
-        let response = app.oneshot(request).await.expect("infallible");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            status_of(router(test_state().await), request).await,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn runner_protocol_is_not_served_on_the_public_router() {
+        for route in contracts::routes::ROUTES
+            .iter()
+            .filter(|route| route.listener == contracts::routes::Listener::Runner)
+        {
+            let path = route
+                .path
+                .replace("{id}", "00000000-0000-4000-8000-000000000000");
+            let request = Request::post(path).body(Body::empty()).expect("request");
+            assert_eq!(
+                status_of(router(test_state().await), request).await,
+                StatusCode::NOT_FOUND,
+                "{}",
+                route.path
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_api_is_not_served_on_the_runner_router() {
+        let request = Request::get("/api/v1/me")
+            .body(Body::empty())
+            .expect("request");
+        assert_eq!(
+            status_of(runner_router(test_state().await), request).await,
+            StatusCode::NOT_FOUND
+        );
     }
 }
