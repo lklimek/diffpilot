@@ -1,0 +1,477 @@
+{
+  "type": "object",
+  "properties": {
+    "flow_id": {
+      "type": "string",
+      "pattern": "^f[0-9]+$",
+      "description": "Id of the analysed flow."
+    },
+    "introduction": {
+      "type": "object",
+      "properties": {
+        "problem_before": {
+          "type": "string",
+          "description": "Problem before this pull request: the local trigger and what was wrong or missing."
+        },
+        "change": {
+          "type": "string",
+          "description": "The intended correction this pull request makes."
+        },
+        "example_before_after": {
+          "type": "string",
+          "description": "A short concrete example of behaviour before and after."
+        }
+      },
+      "required": [
+        "problem_before",
+        "change",
+        "example_before_after"
+      ],
+      "description": "The flow introduction.",
+      "additionalProperties": false
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "description": "One step: a line range of one file at the head commit.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Step id, unique within this output; used by edges and references.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Short title, also the diagram label.",
+            "type": "string"
+          },
+          "file": {
+            "description": "Repository-relative path.",
+            "type": "string"
+          },
+          "start_line": {
+            "description": "First head line of the step.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_line": {
+            "description": "Last head line of the step.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "symbol": {
+            "description": "Enclosing symbol, or null.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "description": "Step kind. `modified`: Logic changed in place. `added`: New code. `moved`: Block moved from elsewhere. `renamed`: Identifier rename only. `deleted_site`: Code removed here. `context`: Unchanged code connecting the flow.",
+            "type": "string",
+            "enum": [
+              "modified",
+              "added",
+              "moved",
+              "renamed",
+              "deleted_site",
+              "context"
+            ]
+          },
+          "moved_from": {
+            "description": "Original location of a moved block, or null.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "file": {
+                "description": "Repository-relative path at the base commit.",
+                "type": "string"
+              },
+              "base_start": {
+                "description": "First base line.",
+                "type": "integer",
+                "minimum": 0
+              },
+              "base_end": {
+                "description": "Last base line.",
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "file",
+              "base_start",
+              "base_end"
+            ],
+            "additionalProperties": false
+          },
+          "called_by": {
+            "description": "Who reaches this step.",
+            "type": "string"
+          },
+          "decides": {
+            "description": "What this step decides or changes.",
+            "type": "string"
+          },
+          "next": {
+            "description": "Where execution goes next.",
+            "type": "string"
+          },
+          "why": {
+            "description": "Why this step or modification is needed.",
+            "type": "string"
+          },
+          "annotations": {
+            "description": "Annotations anchored to lines inside the step.",
+            "type": "array",
+            "items": {
+              "description": "An annotation anchored to lines inside a step.",
+              "type": "object",
+              "properties": {
+                "type": {
+                  "description": "Annotation type; behaviour is written as was → is. `behaviour`: Behaviour change, was → is. `consequence`: A consequence of the change. `question`: A question for the reviewer to check (also LLM suspicions). `note`: Any other remark.",
+                  "type": "string",
+                  "enum": [
+                    "behaviour",
+                    "consequence",
+                    "question",
+                    "note"
+                  ]
+                },
+                "basis": {
+                  "description": "fact needs evidence lines you read; anything else is inference. `fact`: Read in the code; needs at least one evidence line. `inference`: Not directly read; a conclusion.",
+                  "type": "string",
+                  "enum": [
+                    "fact",
+                    "inference"
+                  ]
+                },
+                "start_line": {
+                  "description": "First annotated head line.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_line": {
+                  "description": "Last annotated head line.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "text": {
+                  "description": "The annotation text.",
+                  "type": "string"
+                },
+                "evidence": {
+                  "description": "Lines read that support the annotation.",
+                  "type": "array",
+                  "items": {
+                    "description": "A line the agent actually read and cites as evidence.",
+                    "type": "object",
+                    "properties": {
+                      "file": {
+                        "description": "Repository-relative path at the head commit.",
+                        "type": "string"
+                      },
+                      "line": {
+                        "description": "1-based line number at the head commit.",
+                        "type": "integer",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "file",
+                      "line"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "type",
+                "basis",
+                "start_line",
+                "end_line",
+                "text",
+                "evidence"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "assessment": {
+            "description": "Assessment, or null unless a production user or operator would notice something.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "headline": {
+                "description": "What a production user or operator would notice.",
+                "type": "string"
+              },
+              "risk": {
+                "description": "Risk band from the severity skill; never its numeric scores. `low`: Small or contained effect. `medium`: Noticeable in some situations or by some users. `high`: A production user or operator would clearly notice.",
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ]
+              },
+              "reason": {
+                "description": "Reason for the band, also for low.",
+                "type": "string"
+              },
+              "basis_note": {
+                "description": "What was read and that nothing was executed.",
+                "type": "string"
+              },
+              "not_checked": {
+                "description": "What was not checked.",
+                "type": "string"
+              },
+              "origin": {
+                "description": "Introduced by this pull request or pre-existing. `introduced`: Introduced by this pull request. `pre_existing`: Existed before this pull request. `unclear`: Cannot be told from what was read.",
+                "type": "string",
+                "enum": [
+                  "introduced",
+                  "pre_existing",
+                  "unclear"
+                ]
+              },
+              "blocking": {
+                "description": "Whether it blocks this pull request or is a follow-up. `blocks_this_pr`: Should be resolved before this pull request merges. `follow_up`: Can be handled in a follow-up.",
+                "type": "string",
+                "enum": [
+                  "blocks_this_pr",
+                  "follow_up"
+                ]
+              },
+              "smallest_correction": {
+                "description": "The smallest correction, or null.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "headline",
+              "risk",
+              "reason",
+              "basis_note",
+              "not_checked",
+              "origin",
+              "blocking",
+              "smallest_correction"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "file",
+          "start_line",
+          "end_line",
+          "symbol",
+          "kind",
+          "moved_from",
+          "called_by",
+          "decides",
+          "next",
+          "why",
+          "annotations",
+          "assessment"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Steps in reading order following control flow; every changed line of the flow lies inside a step."
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "description": "A graph edge between two steps.",
+        "type": "object",
+        "properties": {
+          "from_step_id": {
+            "description": "Source step id.",
+            "type": "string"
+          },
+          "to_step_id": {
+            "description": "Target step id.",
+            "type": "string"
+          },
+          "label": {
+            "description": "Label for decision outcomes, loop back-edges and error exits; null otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "from_step_id",
+          "to_step_id",
+          "label"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Graph edges between steps in execution order."
+    },
+    "impact_refs": {
+      "type": "array",
+      "items": {
+        "description": "Code outside the diff that the change may affect; its location is its evidence.",
+        "type": "object",
+        "properties": {
+          "step_id": {
+            "description": "Id of the step whose change reaches this code.",
+            "type": "string"
+          },
+          "file": {
+            "description": "Repository-relative path at the head commit.",
+            "type": "string"
+          },
+          "start_line": {
+            "description": "First head line.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_line": {
+            "description": "Last head line.",
+            "type": "integer",
+            "minimum": 0
+          },
+          "symbol": {
+            "description": "Enclosing symbol, or null.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "Why this code may be affected.",
+            "type": "string"
+          },
+          "basis": {
+            "description": "fact if read in the code, otherwise inference. `fact`: Read in the code; needs at least one evidence line. `inference`: Not directly read; a conclusion.",
+            "type": "string",
+            "enum": [
+              "fact",
+              "inference"
+            ]
+          }
+        },
+        "required": [
+          "step_id",
+          "file",
+          "start_line",
+          "end_line",
+          "symbol",
+          "reason",
+          "basis"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Code outside the diff that this change may affect."
+    },
+    "pattern_repetitions": {
+      "type": "array",
+      "items": {
+        "description": "A pattern applied in several places, explained once in a step.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "The pattern.",
+            "type": "string"
+          },
+          "explained_in_step_id": {
+            "description": "Id of the step that explains it.",
+            "type": "string"
+          },
+          "sites": {
+            "description": "The other places where it is applied.",
+            "type": "array",
+            "items": {
+              "description": "One place where a repeated pattern is applied.",
+              "type": "object",
+              "properties": {
+                "file": {
+                  "description": "Repository-relative path at the head commit.",
+                  "type": "string"
+                },
+                "start_line": {
+                  "description": "First head line.",
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_line": {
+                  "description": "Last head line.",
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "file",
+                "start_line",
+                "end_line"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "description",
+          "explained_in_step_id",
+          "sites"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Patterns applied in several places, explained once."
+    },
+    "thread_statuses": {
+      "type": "array",
+      "items": {
+        "description": "The status of a listed GitHub review thread.",
+        "type": "object",
+        "properties": {
+          "thread_alias": {
+            "description": "Thread alias from the thread list: t1, t2, ….",
+            "type": "string"
+          },
+          "status": {
+            "description": "Status against the current code. `still_valid`: The thread still applies to the current code. `stale`: The thread refers to code that no longer exists here. `already_addressed`: The current code already addresses the thread.",
+            "type": "string",
+            "enum": [
+              "still_valid",
+              "stale",
+              "already_addressed"
+            ]
+          },
+          "reason": {
+            "description": "One line on why.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_alias",
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Status of every listed GitHub thread located in this flow's steps."
+    }
+  },
+  "required": [
+    "flow_id",
+    "introduction",
+    "steps",
+    "edges",
+    "impact_refs",
+    "pattern_repetitions",
+    "thread_statuses"
+  ],
+  "description": "The analysis of one flow.",
+  "additionalProperties": false
+}

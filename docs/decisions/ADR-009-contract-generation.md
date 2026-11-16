@@ -9,7 +9,7 @@
   (`--features runner/fake-provider`). Deviation from plan §5.1 "gamiscreen's ts feature pattern".
 - **Generated, checked in:** `schemas/agent/<kind>.schema.json` (agent output, Codex strict subset);
   `web/src/api/generated/types.ts` (every TypeScript type in one file, `TS::decl`) and
-  `web/src/api/generated/routes.ts` (from `contracts::routes::ROUTES`).
+  `web/src/api/generated/routes.ts` (the public-listener routes of `contracts::routes::ROUTES`).
 - **Drift test** `generated_artifacts_are_current` (`crates/contracts/tests/generated.rs`) regenerates in memory
   and compares byte for byte; `UPDATE_GENERATED=1` rewrites the files. No `#[ts(export)]`: running tests never
   writes files otherwise.

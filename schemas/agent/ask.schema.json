@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "The answer; suspicions phrased as questions to check."
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "description": "A line the agent actually read and cites as evidence.",
+        "type": "object",
+        "properties": {
+          "file": {
+            "description": "Repository-relative path at the head commit.",
+            "type": "string"
+          },
+          "line": {
+            "description": "1-based line number at the head commit.",
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "file",
+          "line"
+        ],
+        "additionalProperties": false
+      },
+      "description": "Lines read that support the answer."
+    }
+  },
+  "required": [
+    "answer",
+    "evidence"
+  ],
+  "description": "An LLM answer to a question about a step.",
+  "additionalProperties": false
+}
