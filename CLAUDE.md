@@ -28,7 +28,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   deterministic facts, no numeric confidence, no "no risk"/"verified"/"noise", facts carry evidence, questions
   not verdicts, assessment collapsed.
 - GitHub credentials: user tokens and the App private key never leave the server. The agent holds only a
-  short-lived read-only installation token (minted per job by the server, PR repo + related repos, 1 h) for the
+  short-lived read-only installation token (minted per job by the server, PR repository only (ADR-005), 1 h) for the
   official `github-mcp-server` in read-only mode.
 - Runner security design (plan §5.4): agent runs as a separate uid without access to runner secrets, job
   token, cache or master `CODEX_HOME`; never mount the host `~/.codex`. Egress only through the Squid explicit
@@ -36,7 +36,20 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - Keep it simple: no abstraction beyond the seams the brief names.
 
 ## Build and test
-To be filled in stage 1 (workspace, web, generated-artefact update, architecture and wording checks).
+`W` = claudius `scripts/cargo-cached.sh` with `CLAUDIUS_MAX_PARALLEL_BUILDS=1`; narrowest `-p`. CI
+(`.github/workflows/ci.yml`) runs the workspace with `--features runner/fake-provider`.
+- Tests: `$W nextest run -p <crate>`; runner with the scripted provider `-p runner --features fake-provider`;
+  fake GitHub `-p fake-github`; embedded UI `-p server --features embed-ui` (after `npm run build` in `web/`).
+  Doctests: `$W test -p <crate> --doc`.
+- Clippy: `$W clippy -p <crate> --all-targets -- -D warnings` (runner: add `--features fake-provider`).
+  Format: `cargo fmt --all`.
+- Checked-in schemas and TS types: `UPDATE_GENERATED=1 $W nextest run -p contracts -E 'test(generated_artifacts_are_current)'`.
+- Tour golden: `UPDATE_GOLDEN=1 $W nextest run -p server --test slice -E 'test(slice_pipeline)'`.
+- Web, in `web/`: `npm ci`, `npm run lint`, `npm test`, `npm run build`; Playwright (msw): once
+  `npx playwright install --with-deps chromium`, then `npm run test:e2e`.
+- Checks: `scripts/check-architecture.sh`, `scripts/check-wording.sh` (after `npm ci` in `web/`; both take
+  `--self-test`), `shellcheck` on `scripts/*.sh tools/**/*.sh deploy/**/*.sh` (globstar), `python3 -m pytest -q scripts/tests`.
+- Schema smoke (manual, real Codex, Docker image and login volume of spike S1a): `scripts/schema-smoke.sh [kind ...]`.
 
 ## Conventions
 - Rust: `thiserror` typed enums for all errors (no anyhow/eyre/`Box<dyn Error>`/String errors); no `unwrap`/`expect`

@@ -3,3 +3,6 @@
 
 # Cargo build output (when not redirected by a cargo config)
 /target
+
+# Python bytecode (scripts/tests)
+__pycache__/

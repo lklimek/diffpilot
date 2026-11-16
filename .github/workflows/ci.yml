@@ -76,14 +76,17 @@ jobs:
       # check-architecture.sh reads `cargo metadata --no-deps`.
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update && cargo --version
+      # nullglob: tools/ or deploy/ may hold no script (or not exist).
       - name: Shellcheck
-        run: shellcheck scripts/*.sh
-      # Script tests (schema-smoke archive must not follow symlinks). Python libraries come from apt, pinned to
-      # the Ubuntu 24.04 archive versions (project policy: no pip).
+        run: |
+          shopt -s globstar nullglob
+          shellcheck scripts/*.sh tools/**/*.sh deploy/**/*.sh
+      # Script tests (schema-smoke archive must not follow symlinks). Python libraries come from apt
+      # (project policy: no pip).
       - name: Install Python test dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends python3-pytest=7.4.4-1 python3-jsonschema=4.10.3-2ubuntu1
+          sudo apt-get install -y --no-install-recommends python3-pytest python3-jsonschema
       - name: Script tests
         run: python3 -m pytest -q scripts/tests
       - name: Architecture check self-test
@@ -93,20 +96,20 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
-          package-manager-cache: false
-      # The wording checker needs the TypeScript 6 compiler API (TypeScript 7 has none); installed and
-      # self-tested on every run, so a broken checker cannot pass silently.
-      - name: Install TypeScript for the wording check
-        run: |
-          npm install --prefix "$RUNNER_TEMP/wording" --no-save --no-audit --no-fund --ignore-scripts typescript@6.0.3
-          echo "CHECK_WORDING_TYPESCRIPT=$RUNNER_TEMP/wording/node_modules/typescript" >> "$GITHUB_ENV"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # The wording checker loads the TypeScript 6 compiler API from web/node_modules (ADR-012); self-tested on
+      # every run, so a broken checker cannot pass silently.
+      - name: Install web dependencies for the wording check
+        working-directory: web
+        run: npm ci
       - name: Wording check self-test
         run: scripts/check-wording.sh --self-test
       - name: Wording check
         run: scripts/check-wording.sh
 
   web:
-    name: Web (lint, tests, build)
+    name: Web (lint, tests, build, Playwright)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -138,3 +141,11 @@ jobs:
         if: hashFiles('web/package.json') != ''
         working-directory: web
         run: npm run build
+      - name: Install Playwright browser
+        if: hashFiles('web/package.json') != ''
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Playwright
+        if: hashFiles('web/package.json') != ''
+        working-directory: web
+        run: npm run test:e2e
