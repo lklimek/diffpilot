@@ -32,6 +32,10 @@ const MAX_REMEMBERED_BYTES: usize = 64 * 1024;
 /// How long settling the copy may take before the credential simply stays blocked.
 const SETTLE_WAIT: Duration = Duration::from_secs(2);
 
+/// Masters whose settle thread stalls past [`SETTLE_WAIT`] (tests of the timeout path).
+#[cfg(test)]
+pub(crate) static STALL_SETTLE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
 /// Masters blocked in this process; consulted even when the marker file could not be written.
 static BLOCKED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
@@ -88,7 +92,8 @@ pub(crate) struct JobCredential {
     scrubber: Scrubber,
     remembered_tokens: usize,
     remembered_bytes: usize,
-    settled: bool,
+    /// Set once settled: whether the scrubber is known complete and the copy was handled.
+    settled: Option<bool>,
 }
 
 impl JobCredential {
@@ -133,7 +138,7 @@ impl JobCredential {
             scrubber,
             remembered_tokens: 0,
             remembered_bytes: 0,
-            settled: false,
+            settled: None,
         })
     }
 
@@ -167,48 +172,70 @@ impl JobCredential {
         true
     }
 
-    /// Ends the job's use of the copy (once). The credential is blocked in this process first; a copy found
-    /// unchanged (and no refresh failure) unblocks it. The file work runs on its own thread, waited for at most
-    /// [`SETTLE_WAIT`]; if it does not finish, the credential stays blocked.
-    pub(crate) fn settle(&mut self, refresh_failed: bool) {
-        if std::mem::replace(&mut self.settled, true) {
-            return;
+    /// Ends the job's use of the copy (once). The credential is blocked in this process first; the copy is
+    /// read inline (bounded, non-blocking) so rotated tokens join the scrubber before anything else. An unchanged
+    /// copy (and no refresh failure) unblocks it; otherwise the file work runs on its own thread, waited for at
+    /// most [`SETTLE_WAIT`]. False when the outcome is uncertain (unreadable copy, thread not started or not
+    /// finished): the caller must not forward agent text then.
+    pub(crate) fn settle(&mut self, refresh_failed: bool) -> bool {
+        if let Some(certain) = self.settled {
+            return certain;
         }
+        let certain = self.settle_once(refresh_failed);
+        self.settled = Some(certain);
+        certain
+    }
+
+    fn settle_once(&mut self, refresh_failed: bool) -> bool {
         let newly_blocked = block_here(&self.master_auth);
+        let current = read_regular(&self.copy);
+        if let Ok(current) = &current
+            && *current != self.original
+            && let Some((tokens, _)) = parse(current)
+        {
+            self.scrubber.extend(tokens.iter().map(String::as_str));
+        }
+        if !refresh_failed
+            && current
+                .as_ref()
+                .is_ok_and(|current| *current == self.original)
+        {
+            if newly_blocked {
+                unblock_here(&self.master_auth);
+            }
+            return true;
+        }
+        let readable = current.is_ok();
         let work = Settle {
             master_auth: self.master_auth.clone(),
             codex_home: self.codex_home.clone(),
-            copy: self.copy.clone(),
             job: self.job,
             original: self.original.clone(),
             account: self.account.clone(),
-            refresh_failed,
+            current: current.map_err(|error| error.to_string()),
         };
-        let (done, outcome) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("credential-settle".to_owned())
             .spawn(move || {
-                let _ = done.send(work.run());
+                work.run();
+                let _ = done.send(());
             });
         let settled = spawned.map_err(|error| error.to_string()).and_then(|_| {
-            outcome
+            finished
                 .recv_timeout(SETTLE_WAIT)
                 .map_err(|error| error.to_string())
         });
         match settled {
-            Ok(Settled::Unchanged) => {
-                if newly_blocked {
-                    unblock_here(&self.master_auth);
-                }
+            Ok(()) => readable,
+            Err(error) => {
+                tracing::error!(
+                    job = %self.job,
+                    %error,
+                    "settling the Codex credential copy did not finish; the credential stays blocked until the runner restarts"
+                );
+                false
             }
-            Ok(Settled::Blocked { tokens }) => {
-                self.scrubber.extend(tokens.iter().map(String::as_str))
-            }
-            Err(error) => tracing::error!(
-                job = %self.job,
-                %error,
-                "settling the Codex credential copy did not finish; the credential stays blocked until the runner restarts"
-            ),
         }
     }
 }
@@ -220,65 +247,53 @@ impl Drop for JobCredential {
     }
 }
 
-/// The file work of [`JobCredential::settle`], on its own thread.
+/// The file work of [`JobCredential::settle`] for a blocked credential, on its own thread.
 struct Settle {
     master_auth: PathBuf,
     codex_home: PathBuf,
-    copy: PathBuf,
     job: JobId,
     original: Vec<u8>,
     account: Option<String>,
-    refresh_failed: bool,
-}
-
-enum Settled {
-    /// The copy is unchanged and no refresh failed.
-    Unchanged,
-    /// Blocked; the tokens of a rotated copy, if it parsed.
-    Blocked { tokens: Vec<String> },
+    /// The copy as read by `settle`, or why it could not be read.
+    current: Result<Vec<u8>, String>,
 }
 
 impl Settle {
-    fn run(self) -> Settled {
-        let (reason, tokens) = match read_regular(&self.copy) {
-            Ok(current) if current == self.original => {
-                if !self.refresh_failed {
-                    return Settled::Unchanged;
-                }
-                (
-                    "the credential could not be refreshed".to_owned(),
-                    Vec::new(),
-                )
+    fn run(self) {
+        #[cfg(test)]
+        if STALL_SETTLE
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&self.master_auth)
+        {
+            std::thread::sleep(SETTLE_WAIT + Duration::from_millis(500));
+        }
+        let reason = match &self.current {
+            Ok(current) if *current == self.original => {
+                "the credential could not be refreshed".to_owned()
             }
-            Ok(current) => self.keep(&current),
-            Err(error) => (
-                format!("the credential copy could not be read safely after the job ({error})"),
-                Vec::new(),
-            ),
+            Ok(current) => self.keep(current),
+            Err(error) => {
+                format!("the credential copy could not be read safely after the job ({error})")
+            }
         };
         self.write_marker(&reason);
-        Settled::Blocked { tokens }
     }
 
-    /// Keeps a rotated copy of the same (non-empty) account; returns the blocking reason and its tokens.
-    fn keep(&self, current: &[u8]) -> (String, Vec<String>) {
-        let Some((tokens, account)) = parse(current) else {
-            return (
-                "the credential copy changed but is not a credential; sign in again".to_owned(),
-                Vec::new(),
-            );
+    /// Keeps a rotated copy of the same (non-empty) account; returns the blocking reason.
+    fn keep(&self, current: &[u8]) -> String {
+        let Some((_, account)) = parse(current) else {
+            return "the credential copy changed but is not a credential; sign in again".to_owned();
         };
         let same_account = matches!((&account, &self.account), (Some(new), Some(old)) if !new.is_empty() && new == old);
         if !same_account {
-            return (
-                "the credential copy changed but is not a credential of the same account; sign in again".to_owned(),
-                tokens,
-            );
+            return "the credential copy changed but is not a credential of the same account; sign in again"
+                .to_owned();
         }
         let kept = self
             .master_auth
             .with_file_name(format!("{AUTH_FILE}.rotated-{}", self.job));
-        let reason = match write_new_private(&kept, current) {
+        match write_new_private(&kept, current) {
             Ok(()) => format!(
                 "Codex rotated the credential during job {}; replace auth.json with {}",
                 self.job,
@@ -289,8 +304,7 @@ impl Settle {
                 self.job,
                 self.preserve_job_home()
             ),
-        };
-        (reason, tokens)
+        }
     }
 
     /// Moves the per-job `CODEX_HOME` out of the way of the job cleanup, so its copy is not deleted.

@@ -109,7 +109,10 @@ impl CodexProvider {
         )?;
         self.prepare(call).await?;
         let result = self.exec(call, &mut credential, events).await;
-        credential.settle(matches!(result, Err(ProviderError::CredentialUnusable)));
+        if !credential.settle(matches!(result, Err(ProviderError::CredentialUnusable))) {
+            // Rotated tokens may be missing from the scrubber: no agent text leaves.
+            return Err(ProviderError::CredentialUnusable);
+        }
         let scrubber = credential.scrubber();
         let finished = result.map_err(|error| scrub_error(error, scrubber))?;
         let output = scrubber.value(finished.output);

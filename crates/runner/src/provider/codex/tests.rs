@@ -651,3 +651,26 @@ async fn kill_and_disarm_unregisters_before_the_leader_is_reaped() {
     assert!(!status.success(), "the group was killed");
     drop(group);
 }
+
+#[tokio::test]
+async fn rotation_with_a_stalled_settle_ends_the_call_without_agent_text() {
+    let h = harness("plan.jsonl", 1);
+    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
+    fs::write(
+        h.call.job_dir.join("scenario.jsonl"),
+        json!({"type": "turn.failed", "error": {"message": format!("boom {NEW_REFRESH_CANARY}")}})
+            .to_string(),
+    )
+    .unwrap();
+    super::credential::STALL_SETTLE
+        .lock()
+        .unwrap()
+        .push(h.master_auth.clone());
+    let (result, events) = run(&h).await;
+    let all = format!("{result:?} {events:?}");
+    assert!(!all.contains(NEW_REFRESH_CANARY), "{all}");
+    assert!(
+        matches!(result, Err(ProviderError::CredentialUnusable)),
+        "an uncertain settle ends the call with the fixed error: {result:?}"
+    );
+}
