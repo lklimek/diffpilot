@@ -9,7 +9,7 @@ use contracts::ids::JobId;
 use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::Db;
-use db::repo::jobs::{ExpiredLease, NewJob};
+use db::repo::jobs::{ExpiredLease, JobSnapshot, NewJob};
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 
@@ -112,7 +112,7 @@ struct Follower {
     output_sent: bool,
     pending: VecDeque<JobUpdate>,
     done: bool,
-    /// Runs between reading the job and reading its events, to force interleavings in tests.
+    /// Runs after the follower's read and before it acts on it, to force interleavings in tests.
     #[cfg(test)]
     between_reads: Option<tests::Hook>,
 }
@@ -157,37 +157,29 @@ impl Follower {
 
     async fn poll(&mut self) -> Result<(), ExecutorError> {
         let now = Utc::now();
-        let mut job = self.read().await?;
+        let mut snapshot = self.snapshot().await?;
         if self.last_state.is_none() {
-            self.attempt = job.attempt;
+            self.attempt = snapshot.job.attempt;
         }
-        if matches!(job.state, JobState::Claimed | JobState::Running)
-            && job.lease_expires_at.is_some_and(|lease| lease < now)
+        if matches!(snapshot.job.state, JobState::Claimed | JobState::Running)
+            && snapshot
+                .job
+                .lease_expires_at
+                .is_some_and(|lease| lease < now)
         {
             expire_leases(&self.db, now).await?;
             // The follower saw the job active, so a requeue it caused is reported like any other.
-            self.last_state.get_or_insert(job.state);
-            job = self.read().await?;
+            self.last_state.get_or_insert(snapshot.job.state);
+            snapshot = self.snapshot().await?;
         }
+        // State, ready output and events come from one read, so they belong to one attempt and one moment.
+        let JobSnapshot { job, events } = snapshot;
         if self.last_state.is_none() && job.state.is_terminal() {
             return self.finish(job.result);
         }
-        let after_seq = if job.attempt == self.attempt {
-            self.seq
-        } else {
-            0
-        };
         #[cfg(test)]
         if let Some(hook) = &self.between_reads {
             hook().await;
-        }
-        let events = self.db.jobs().events(self.job, after_seq).await?;
-        // State and ready output are taken from a read after the events, and only if no claim happened between:
-        // then events, state and output all belong to one attempt.
-        let read_attempt = job.attempt;
-        let job = self.read().await?;
-        if job.attempt != read_attempt {
-            return Ok(());
         }
         let new_attempt = job.attempt != self.attempt;
         let requeued = (is_active(self.last_state)
@@ -233,9 +225,14 @@ impl Follower {
         Ok(())
     }
 
-    async fn read(&self) -> Result<db::repo::jobs::JobRecord, ExecutorError> {
-        match self.db.jobs().get(self.job).await {
-            Ok(job) => Ok(job),
+    async fn snapshot(&self) -> Result<JobSnapshot, ExecutorError> {
+        match self
+            .db
+            .jobs()
+            .snapshot(self.job, self.attempt, self.seq)
+            .await
+        {
+            Ok(snapshot) => Ok(snapshot),
             Err(DbError::NotFound) => Err(ExecutorError::UnknownJob(self.job)),
             Err(error) => Err(error.into()),
         }
@@ -485,6 +482,114 @@ mod tests {
     /// Test hook run by the follower between its reads.
     pub(super) type Hook = std::sync::Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
 
+    /// A hook that runs `step` once, on the follower's second poll.
+    fn second_poll_hook<F, Fut>(step: F) -> Hook
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let step = std::sync::Arc::new(step);
+        std::sync::Arc::new(move || {
+            let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let step = step.clone();
+            Box::pin(async move {
+                if call == 1 {
+                    step().await;
+                }
+            })
+        })
+    }
+
+    fn kinds(updates: &[JobUpdate]) -> Vec<String> {
+        updates
+            .iter()
+            .map(|update| match update {
+                JobUpdate::Event(e) => format!("event {}", e.seq),
+                JobUpdate::OutputReady(_) => "output".to_owned(),
+                JobUpdate::Requeued { attempt } => format!("requeued {attempt}"),
+                JobUpdate::Paused { .. } => "paused".to_owned(),
+                JobUpdate::Finished(result) => format!("finished {}", result.attempt),
+            })
+            .collect()
+    }
+
+    /// The runner posts event 3 and then `last` right after the follower's second read.
+    async fn updates_after_a_late_event(last: Last) -> Vec<String> {
+        let (db, executor, analysis) = setup().await;
+        let handle = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit");
+        let job = handle.job_id;
+        let lease = || Utc::now() + TimeDelta::seconds(60);
+        claim(&db, 60).await;
+        db.jobs()
+            .record_events(job, 1, &[event(1), event(2)], lease())
+            .await
+            .expect("events");
+        let hook = second_poll_hook({
+            let db = db.clone();
+            move || {
+                let db = db.clone();
+                async move {
+                    db.jobs()
+                        .record_events(job, 1, &[event(3)], lease())
+                        .await
+                        .expect("late event");
+                    match last {
+                        Last::Output => {
+                            db.jobs()
+                                .record_output(job, 1, &json!({"ok": true}), lease())
+                                .await
+                                .expect("output");
+                        }
+                        Last::Result => {
+                            db.jobs()
+                                .complete(&succeeded(job, 1), Utc::now())
+                                .await
+                                .expect("result");
+                        }
+                    }
+                }
+            }
+        });
+        let mut follower = Follower::new(db.clone(), job);
+        follower.between_reads = Some(hook);
+        let mut updates = stream::unfold(follower, Follower::next).boxed();
+        let mut seen = vec![next(&mut updates).await, next(&mut updates).await];
+        loop {
+            let update = next(&mut updates).await;
+            let end = matches!(update, JobUpdate::OutputReady(_) | JobUpdate::Finished(_));
+            seen.push(update);
+            if end {
+                return kinds(&seen);
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum Last {
+        Output,
+        Result,
+    }
+
+    #[tokio::test]
+    async fn follower_emits_a_late_event_before_the_output() {
+        assert_eq!(
+            updates_after_a_late_event(Last::Output).await,
+            ["event 1", "event 2", "event 3", "output"]
+        );
+    }
+
+    #[tokio::test]
+    async fn follower_emits_a_late_event_before_the_result() {
+        assert_eq!(
+            updates_after_a_late_event(Last::Result).await,
+            ["event 1", "event 2", "event 3", "finished 1"]
+        );
+    }
+
     #[tokio::test]
     async fn follower_never_mixes_attempts_when_reclaimed_between_reads() {
         let (db, executor, analysis) = setup().await;
@@ -499,38 +604,33 @@ mod tests {
             .record_events(job, 1, &[event(1)], lease())
             .await
             .expect("events");
-        // On the follower's second poll, between its job read and its event read: the output of attempt 1
-        // is already read, then the lease ends, attempt 2 is claimed and posts events.
-        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let hook: Hook = {
+        // On the follower's second poll, after its read: attempt 1 posts its output, the lease ends, attempt 2
+        // is claimed and posts events.
+        let hook = second_poll_hook({
             let db = db.clone();
-            let calls = calls.clone();
-            std::sync::Arc::new(move || {
+            move || {
                 let db = db.clone();
-                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Box::pin(async move {
-                    if call == 1 {
-                        db.jobs()
-                            .expire_leases(Utc::now() + TimeDelta::seconds(61))
-                            .await
-                            .expect("expire");
-                        claim(&db, 60).await;
-                        db.jobs()
-                            .record_events(job, 2, &[event(1), event(2)], lease())
-                            .await
-                            .expect("events of attempt 2");
-                    }
-                })
-            })
-        };
+                async move {
+                    db.jobs()
+                        .record_output(job, 1, &json!({"attempt": 1}), lease())
+                        .await
+                        .expect("output of attempt 1");
+                    db.jobs()
+                        .expire_leases(Utc::now() + TimeDelta::seconds(61))
+                        .await
+                        .expect("expire");
+                    claim(&db, 60).await;
+                    db.jobs()
+                        .record_events(job, 2, &[event(1), event(2)], lease())
+                        .await
+                        .expect("events of attempt 2");
+                }
+            }
+        });
         let mut follower = Follower::new(db.clone(), job);
         follower.between_reads = Some(hook);
         let mut updates = stream::unfold(follower, Follower::next).boxed();
         assert!(matches!(next(&mut updates).await, JobUpdate::Event(e) if e.seq == 1));
-        db.jobs()
-            .record_output(job, 1, &json!({"attempt": 1}), lease())
-            .await
-            .expect("output of attempt 1");
         let mut seen = Vec::new();
         loop {
             let update = next(&mut updates).await;
@@ -545,18 +645,8 @@ mod tests {
             .await
             .expect("complete");
         seen.push(next(&mut updates).await);
-        let kinds: Vec<String> = seen
-            .iter()
-            .map(|update| match update {
-                JobUpdate::Event(e) => format!("event {}", e.seq),
-                JobUpdate::OutputReady(_) => "output".to_owned(),
-                JobUpdate::Requeued { attempt } => format!("requeued {attempt}"),
-                JobUpdate::Paused { .. } => "paused".to_owned(),
-                JobUpdate::Finished(result) => format!("finished {}", result.attempt),
-            })
-            .collect();
         assert_eq!(
-            kinds,
+            kinds(&seen),
             ["requeued 2", "event 1", "event 2", "finished 2"],
             "no output of the invalidated attempt, no attempt-2 event before the requeue, no repeats"
         );

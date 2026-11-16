@@ -26,15 +26,12 @@ base64.workspace = true
 chrono.workspace = true
 dotenvy.workspace = true
 futures.workspace = true
-getrandom.workspace = true
 ipnet.workspace = true
 jsonschema.workspace = true
 mime_guess = { workspace = true, optional = true }
 rust-embed = { workspace = true, optional = true }
 secrecy.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
-subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
