@@ -59,11 +59,11 @@ can judge the PR at project scale, not only line by line.
 |---|---|
 | Screens | Four: Home, Analysis progress, Tour, Settings. The Tour is the whole review screen. |
 | Input | One field: GitHub PR URL. Public repositories only. No dashboard, no recent-reviews list. |
-| Users | GitHub login (GitHub App, user access tokens). Sign-in limited to an allowlist of GitHub logins in the configuration (default: the owner). Single tenant `default`, hardcoded. |
+| Users | GitHub login (GitHub App, user access tokens). The GitHub logins allowed to sign in are a tenant setting; v1 has no UI or configuration file for it: the seeded tenant `default` allows exactly `lklimek`. Single tenant `default`, hardcoded. |
 | Analysis | The review opens only when the analysis has finished. No partial review. |
 | PR context | Problem and why, related work, fit questions, CI, deterministic counters, project profile status. |
 | GitHub context | Existing review threads at their steps, with an LLM status; CI status. |
-| Ask | Free-text question about the current step, answered by a fresh on-demand agent run with repo access and a context pack, pinned and labelled as an LLM answer. In the MVP. No one-click deepen actions. |
+| Ask | Free-text question about the current step, answered by an on-demand agent run with repo access that resumes the analysis's agent session, pinned and labelled as an LLM answer. In the MVP. No one-click deepen actions. |
 | Progress | Tick off steps; a flow is reviewed when all its steps are ticked; top-bar counter "flows reviewed k / n"; persisted per analysis, together with the last viewed block. |
 | Comments | On any displayed line; written straight into the user's GitHub pending review (a line outside the PR diff becomes a file-level comment that links to the line). No local drafts. |
 | Feedback | correct / wrong / irrelevant / overrated / underrated + note; "missed by the LLM" recorded automatically. Stored locally and written to MemCan. |
@@ -204,11 +204,11 @@ States every screen needs: loading, empty, error.
 
 ### 4.1 Home
 One field (PR URL) and "Analyze"; signed-out state "Sign in with GitHub"; error states for a URL that is not
-a PR, a repository without the GitHub App installed, and a GitHub login that is not on the allowlist. After a
+a PR, a repository without the GitHub App installed, and a GitHub login the tenant does not allow. After a
 cancelled analysis Home shows "Analysis cancelled — analyze again". A PR with an existing analysis is
-resumed ("Resume review": ticks, answers and last viewed block kept, nothing re-analysed). If the head moved: banner "This
-analysis is for `abc123`; the PR is now at `def456`" with "Re-analyze" (fresh analysis, ticks not carried
-over) and a link to open the old analysis.
+resumed ("Resume review": ticks, answers and last viewed block kept, nothing re-analysed). If the head
+moved: banner "This analysis is for `abc123`; the PR is now at `def456`" with "Re-analyze" (fresh analysis,
+ticks not carried over) and a link to open the old analysis.
 
 ### 4.2 Analysis progress
 A single centred progress bar: "k of n flows analysed" and "Cancel analysis". No stages, activity feed or
@@ -314,9 +314,10 @@ overrated; (2) a defect in a plain changed line without annotation, commented by
 returning to an interrupted review.
 
 ### 4.4 Settings
-- LLM credentials: "working" / "not working" only, with "Check again" (the runner runs a cheap check on
-  demand). Credentials never reach the browser. The first Codex login is a one-time manual command in the
-  runner container (runbook); there is no login UI.
+- LLM status: the outcome of the most recent LLM call — "working" if it succeeded, otherwise "not working"
+  with the plain error message — and the time of that call. No on-demand check. Credentials never reach the
+  browser. The first Codex login is a one-time manual command in the runner container (runbook); there is no
+  login UI.
 - Language of LLM texts.
 - GitHub App installation status.
 - Per repository, read-only: built-in "not analysed" rules (path globs and line regexes), related
@@ -383,8 +384,9 @@ v1 must reach that model by adding one new implementation, without changing the 
 
 1. `JobSpec` is self-contained: job id, kind, repo clone URL, base and head SHA, prompt, output JSON schema,
    limits, LLM provider, model and reasoning effort, MCP endpoints, optional credentials (repo token, LLM
-   credential reference). Nothing is passed through shared volumes or ambient container state. In v1 the repo
-   token is absent.
+   credential reference), optional agent-session reference. Nothing is passed through shared volumes or
+   ambient container state except the agent-session store, which is treated like a cache (item 5). In v1 the
+   repo token is absent.
 2. `JobExecutor` (server-side trait): `submit(JobSpec) → JobHandle`, `events(JobHandle) → stream`,
    `cancel(JobHandle)`. The pipeline and Ask only talk to this trait. v1 has one implementation,
    `QueueExecutor` (puts the job on the DB queue for the long-lived runner). A later `ContainerExecutor`
@@ -395,18 +397,29 @@ v1 must reach that model by adding one new implementation, without changing the 
    is a second thin wrapper, not built in v1.
 4. Runner ↔ server protocol is the same in both models: authenticated HTTP — claim job, post events,
    post result. Each job carries its own short-lived token scoped to that job.
-5. Caches are an optimisation only: a job must succeed with an empty cache.
+5. Caches are an optimisation only: a job must succeed with an empty cache. This includes the agent-session
+   store: a missing or unusable session falls back to a new session (see Agent sessions). In v1 the store is
+   a runner volume keyed by analysis; for per-job containers the session archive will travel with the job
+   (stored by the server or on a session-store volume) — later work.
 6. Per-job containers must not carry the stack's `com.docker.compose.project` label (Portainer attributes
    containers to stacks by it). Docker socket access goes through a restricting proxy. Both are later work.
 
 **Job kinds**: `plan`, `pr_context`, `analyse_flow`, `ask`. Batch kinds form the analysis pipeline; `ask` is
 interactive.
 
+**Agent sessions.** Each analysis has one agent session. Its batch jobs (`plan`, `pr_context`, each
+`analyse_flow`) and later `ask` jobs resume that session instead of starting cold, one job at a time per
+session; at the end of every job the session is compacted. For a large PR the agent may delegate to
+sub-agents at its own discretion (the prompt permits it; the server does not orchestrate them). If the session
+is missing or unusable, the job starts a new session seeded with a context pack built from stored results
+(PR context, plan, analysed flows; for Ask also the step, its flow analysis and earlier questions and answers
+of that step). A re-analysis on a moved head starts a new session. If resume or compaction is not available
+in non-interactive mode, every job is a new session with a context pack.
+
 **Ask requires on-demand interactive jobs.** Ask is not part of the batch pipeline. A question about a step
-becomes an `ask` job on the same `JobSpec` / `JobExecutor` interface. Every question is a fresh agent run
-(no session resume) with a context pack: the question, the step's data, the flow's analysis and the earlier
-questions and answers of that step. The job streams the answer through the same events channel; the answer is
-stored as a `Question` of the step. Ask is available only after the analysis has finished, so it competes
+becomes an `ask` job on the same `JobSpec` / `JobExecutor` interface; it resumes the analysis's agent session
+and carries the question and the step. The job streams the answer through the same events channel; the
+answer is stored as a `Question` of the step. Ask is available only after the analysis has finished, so it competes
 with batch jobs only during a re-analysis; then an `ask` job is claimed before the next batch job (a running
 job is not pre-empted).
 The job interface must not assume that all jobs are long-running batches.
@@ -442,7 +455,8 @@ Custom rules come later. Rust and Go plugins come in v2; until then test code in
 LLM-classified (§3).
 
 **LLM provider** (trait): `run(prompt, cwd, json_schema, model, limits) → event stream → {structured,
-usage}`, `cancel`. Credential types: `codex_chatgpt` (subscription; owner's tenant only) and
+session_id, usage}`, `resume(session_id, …)` with the same result, `cancel`; `run` and `resume` end by
+compacting the session. Credential types: `codex_chatgpt` (subscription; owner's tenant only) and
 `api_key` (required for other tenants: Anthropic forbids subscription tokens in multi-user services, OpenAI
 is unclear). See `llm-runtime.md` (Background material).
 
@@ -457,11 +471,13 @@ delete act on GitHub; the user submits on GitHub. Expected API: GraphQL `addPull
 body links to the line. A comment on a changed line without annotation is also saved as feedback
 `missed by the LLM`. The pending-review count in the top bar and the list in the centre are read from GitHub.
 
-**Multi-tenancy** — every table carries `tenant_id`; `tenants`, `users`, `memberships` exist from v1 with
-one seeded tenant `default`. No tenant UI.
+**Multi-tenancy** — every table carries `tenant_id`; `tenants`, `users`, `memberships` and tenant settings
+exist from v1 with one seeded tenant `default` (allowed sign-in logins: `lklimek`). No tenant UI.
 
 **Security** — PR content is untrusted (prompt injection): read-only agent, no repo-provided agent config,
-egress allowlist, only the LLM credential in the runner. Sign-in is limited to the configured allowlist.
+egress allowlist, only the LLM credential in the runner. Sign-in is limited to the logins the tenant
+allows. Agent-session files are agent-writable and persist across the jobs of one analysis only; they are
+stored per analysis and never shared with another analysis.
 The agent has full MemCan MCP access (read and write); an injected PR could write misleading memories. This
 is an accepted risk until MemCan can distinguish agent-written memories; feedback and calibration examples
 are written by the server. The GitHub lookup tool is read-only and limited to
@@ -523,6 +539,8 @@ Only what is not decided:
 - Exact Claude and Codex flags and settings that neutralise repository-provided agent configuration
   (instruction files, hooks, MCP and plugin config in the checkout).
 - Portainer handling of containers created outside the stack (the later per-job model).
+- Codex in non-interactive mode: session resume from a fresh work dir, the equivalent of `/compact`, and
+  sub-agents — verify.
 - Pending comments that are file-level (lines outside the diff): verify the mechanism.
 - Whether the runner needs a MemCan token, and the MemCan scope for calibration examples.
 

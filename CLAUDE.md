@@ -14,8 +14,9 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - All database code (sqlx, migrations, row types) lives in `crates/db` behind its repository API; nothing else uses sqlx.
 - Pipeline and Ask use only the `JobExecutor` trait; `JobSpec` is self-contained; runner core is
   `execute(JobSpec, EventSink) -> JobResult`.
-- `LlmProvider` is `run` + `cancel` (Ask = fresh run with a context pack, no session resume); model and effort
-  come from the server's `select_model` (v1 placeholder: Sol, high).
+- `LlmProvider` is `run` + `resume` + `cancel`: one agent session per analysis, resumed by every batch and Ask
+  job, compacted at job end; a lost session falls back to a context pack. Session files stay per analysis.
+  Model and effort come from the server's `select_model` (v1 placeholder: Sol, high).
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,
@@ -42,13 +43,15 @@ To be filled in stage 1 (workspace, web, generated-artefact update, architecture
   test/clippy/nextest via the claudius `cargo-cached.sh` wrapper at the narrowest `-p`
   (`CLAUDIUS_MAX_PARALLEL_BUILDS=1`); never set `CARGO_TARGET_DIR`; long runs in the foreground with a timeout;
   Dockerfiles set `CARGO_BUILD_JOBS=2`; vitest and Playwright at most 2 workers, one Playwright run at a time.
-- Git: feature branches only; conventional commits; agents commit and never push; the coordinator pushes
-  feature branches (`ghsudo git push`); never push to `main` (the owner merges stage PRs); no force-push, no amend. Code-mutating agents work
-  in pre-created worktrees `/data/git-worktrees/home-ubuntu-git-smart-review-<stream>`. Changes of 50+ code
+- Git: one feature branch `feat/v1` and one draft PR for v1; conventional commits; agents commit and never
+  push; the coordinator integrates and pushes `feat/v1` (`ghsudo git push`); never push to `main` (the owner
+  merges the PR); no force-push, no amend. Code-mutating agents work in pre-created worktrees
+  `/data/git-worktrees/home-ubuntu-git-smart-review-<stream>`. Changes of 50+ code
   lines get an independent review (`claudius:review-changes`).
 - Storage: heavy scratch in `/data/tmp`; durable artefacts in `/data/artifacts/smart-review/YYYY-MM-DD/`;
   no large files in `/tmp`.
 - Language: code, comments, commits, PRs and docs in English; talk to the owner in Polish.
+- Real dashpay PRs (plan §6.1 test targets): only pending review comments, deleted afterwards; never submit.
 - Test isolation: temp dirs and in-memory SQLite, fake GitHub and MemCan (`tools/`), fake LLM provider (feature
   `fake-provider`, never in release builds); never real tokens in tests or fixtures.
 
