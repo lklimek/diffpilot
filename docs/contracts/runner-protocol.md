@@ -36,7 +36,7 @@ the same attempt; 400 malformed body.
 | From | Event | To |
 |---|---|---|
 | queued | claim | claimed |
-| claimed | first events | running |
+| claimed | first non-empty events or the `output` | running (an empty heartbeat does not start the job) |
 | claimed, running | result `succeeded` | succeeded |
 | claimed, running | result `failed` | failed |
 | claimed, running | result `usage_limited` | paused (`resumes_at`; the credential pauses too) |
