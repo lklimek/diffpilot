@@ -13,7 +13,7 @@ pub struct JobEvent {
     pub at: DateTime<Utc>,
     /// What kind of activity.
     pub activity: ActivityKind,
-    /// Short plain summary, at most 200 characters, never a credential.
+    /// Short plain summary, at most 200 characters; never raw command output; known secret values scrubbed.
     pub summary: String,
 }
 

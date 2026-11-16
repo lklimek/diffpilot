@@ -65,10 +65,10 @@ fn spec() -> JobSpec {
             github: Some(InstallationToken {
                 token: Secret::new(GITHUB_TOKEN),
                 expires_at: at,
-                repositories: vec![RepoRef {
+                repository: RepoRef {
                     owner: "acme".to_owned(),
                     name: "node-client".to_owned(),
-                }],
+                },
             }),
             memcan: Some(McpHttpEndpoint {
                 url: "https://memcan.example/mcp".to_owned(),
