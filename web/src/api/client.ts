@@ -1,0 +1,125 @@
+// The only fetch layer of the web app: typed calls to the routes of crates/contracts.
+import { routes, type RouteName } from "./generated/routes";
+import type {
+  AnalysisId,
+  AnalysisSummary,
+  ApiErrorCode,
+  CreateAnalysisRequest,
+  LinesResponse,
+  MeResponse,
+  RangeQuery,
+  ResolvePrRequest,
+  ResolvePrResponse,
+  ReviewState,
+  Tour,
+} from "./generated/types";
+
+/** A failed API call: `status` 0 when the server was not reached; `message` is plain text for the user. */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: ApiErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+const CSRF_HEADER = "X-CSRF-Token";
+
+/** Path of a route with its `{param}` placeholders filled and encoded. */
+export function routePath(name: RouteName, params: Record<string, string> = {}): string {
+  return routes[name].path.replace(/\{(\w+)\}/g, (_, key: string) => {
+    const value = params[key];
+    if (value === undefined) throw new Error(`route ${name} needs the parameter ${key}`);
+    return encodeURIComponent(value);
+  });
+}
+
+interface CallOptions {
+  params?: Record<string, string>;
+  query?: Record<string, string | number>;
+  body?: unknown;
+}
+
+function isErrorBody(value: unknown): value is { code: ApiErrorCode; message: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { code?: unknown }).code === "string" &&
+    typeof (value as { message?: unknown }).message === "string"
+  );
+}
+
+/** Creates a client for the API at `baseUrl` (empty = same origin); holds the session's CSRF token. */
+export function createApiClient(baseUrl = "") {
+  let csrfToken: string | null | undefined;
+
+  async function send(name: RouteName, options: CallOptions, csrf: string | null): Promise<Response> {
+    const route = routes[name];
+    const url = new URL(baseUrl + routePath(name, options.params), globalThis.location?.origin);
+    for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, String(value));
+    const headers = new Headers({ Accept: "application/json" });
+    if (options.body !== undefined) headers.set("Content-Type", "application/json");
+    if (csrf !== null) headers.set(CSRF_HEADER, csrf);
+    try {
+      return await fetch(url, {
+        method: route.method,
+        headers,
+        credentials: "same-origin",
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+    } catch {
+      throw new ApiError(
+        0,
+        "internal",
+        "Cannot reach the smart-review server. Check the connection and retry.",
+      );
+    }
+  }
+
+  async function errorOf(response: Response): Promise<ApiError> {
+    const body: unknown = await response.json().catch(() => null);
+    if (isErrorBody(body)) return new ApiError(response.status, body.code, body.message);
+    return new ApiError(response.status, "internal", "The server gave an unexpected answer. Retry later.");
+  }
+
+  async function call<T>(name: RouteName, options: CallOptions = {}): Promise<T> {
+    const needsCsrf = routes[name].auth === "session_csrf";
+    if (needsCsrf && csrfToken === undefined) await getMe();
+    let response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
+    if (needsCsrf && response.status === 403) {
+      const error = await errorOf(response);
+      if (error.code !== "csrf_rejected") throw error;
+      await getMe();
+      response = await send(name, options, csrfToken ?? null);
+    }
+    if (!response.ok) throw await errorOf(response);
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
+  }
+
+  async function getMe(): Promise<MeResponse> {
+    const me = await call<MeResponse>("getMe");
+    csrfToken = me.csrf_token;
+    return me;
+  }
+
+  return {
+    getMe,
+    resolvePr: (body: ResolvePrRequest) => call<ResolvePrResponse>("resolvePr", { body }),
+    createAnalysis: (body: CreateAnalysisRequest) => call<AnalysisSummary>("createAnalysis", { body }),
+    getAnalysis: (id: AnalysisId) => call<AnalysisSummary>("getAnalysis", { params: { id } }),
+    getTour: (id: AnalysisId) => call<Tour>("getTour", { params: { id } }),
+    getLines: (id: AnalysisId, query: RangeQuery) =>
+      call<LinesResponse>("getLines", { params: { id }, query: { ...query } }),
+    getReviewState: (id: AnalysisId) => call<ReviewState>("getReviewState", { params: { id } }),
+  };
+}
+
+/** The API client of the app (same origin). */
+export type ApiClient = ReturnType<typeof createApiClient>;
+
+/** The app's client instance. */
+export const api = createApiClient();
