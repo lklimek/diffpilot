@@ -180,6 +180,8 @@ impl<'a> DiffIndex<'a> {
 pub const MAX_DIFF_BYTES: u64 = 64 * 1024 * 1024;
 /// Longest `git diff` may run before it is killed.
 pub const DIFF_TIMEOUT: Duration = Duration::from_secs(120);
+/// Interval between checks whether git has exited.
+const WAIT_POLL: Duration = Duration::from_millis(10);
 /// Most `git` error output kept.
 const MAX_STDERR_BYTES: u64 = 64 * 1024;
 
@@ -257,13 +259,21 @@ fn diff_with(
         None => Ok(()),
     };
     let too_large = stdout.len() > usize::try_from(MAX_DIFF_BYTES).unwrap_or(usize::MAX);
-    let status = {
-        let mut child = child.lock().unwrap_or_else(PoisonError::into_inner);
-        if too_large || read.is_err() {
-            // git may block on a full pipe; it is no longer needed.
-            let _ = child.kill();
+    if too_large || read.is_err() {
+        // git may block on a full pipe; it is no longer needed.
+        let _ = child.lock().unwrap_or_else(PoisonError::into_inner).kill();
+    }
+    // Poll instead of a blocking wait: the watchdog needs the lock to kill a git that closed stdout but runs on.
+    let status = loop {
+        let exited = child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .try_wait();
+        match exited {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => thread::sleep(WAIT_POLL),
+            Err(error) => break Err(error),
         }
-        child.wait()
     };
     let _ = finished.send(());
     let timed_out = watchdog.join().unwrap_or(false);
@@ -785,11 +795,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hanging_git_is_killed_at_the_deadline() {
+    /// Runs `diff_with` against a stub `git` with the shell `script`, a 300 ms deadline.
+    fn diff_with_stub(script: &str) -> (Result<Vec<FileDiff>, DiffError>, Duration) {
         let dir = tempfile::tempdir().expect("temp dir");
         let stub = dir.path().join("git");
-        std::fs::write(&stub, "#!/bin/sh\nexec sleep 30\n").expect("stub");
+        std::fs::write(&stub, script).expect("stub");
         let made_executable = Command::new("chmod")
             .arg("+x")
             .arg(&stub)
@@ -805,11 +815,27 @@ mod tests {
             &sha,
             Duration::from_millis(300),
         );
+        (result, started.elapsed())
+    }
+
+    #[test]
+    fn hanging_git_is_killed_at_the_deadline() {
+        let (result, elapsed) = diff_with_stub("#!/bin/sh\nexec sleep 30\n");
         assert!(
             matches!(result, Err(DiffError::Timeout { .. })),
             "{result:?}"
         );
-        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(elapsed < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn git_that_closes_stdout_and_hangs_is_killed_at_the_deadline() {
+        let (result, elapsed) = diff_with_stub("#!/bin/sh\nexec 1>&-\nexec sleep 30\n");
+        assert!(
+            matches!(result, Err(DiffError::Timeout { .. })),
+            "{result:?}"
+        );
+        assert!(elapsed < Duration::from_secs(10));
     }
 
     #[test]
