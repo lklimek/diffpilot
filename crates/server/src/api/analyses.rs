@@ -1,13 +1,15 @@
 //! Analyses: create and read. Also the error type and helpers shared by the pull-request, tour and lines
 //! routes. TODO(WP3-PIPE): cancel and retry.
 //!
-//! An analysis's base commit is the merge base of the pull request's base tip and head (GitHub's three-dot
-//! comparison), fixed at creation: the diff, `side=base` reads, prompts and permalinks all use it.
+//! An analysis is created with the pull request's base tip; the pipeline then stores the merge base of base tip
+//! and head (GitHub's three-dot comparison) before any job runs. The diff, `side=base` reads, prompts and
+//! permalinks all use that stored base, so routes serving the diff answer `analysis_not_finished` until the
+//! analysis is prepared.
 
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-use analysis::diff::{self, DiffError, FileDiff};
+use analysis::diff::{DiffError, FileDiff};
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -24,9 +26,9 @@ use db::repo::analyses::NewAnalysis;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf, UserTokenError, user_access_token};
-use crate::github::mirror::{self, MirrorError};
+use crate::github::mirror::MirrorError;
 use crate::github::rest::{self, GithubError, GithubPull};
-use crate::pipeline::{self, tour::TourError};
+use crate::pipeline::{self, PrDiffError, tour::TourError};
 use crate::state::AppState;
 
 /// A pull-request, analysis, tour or lines request failed.
@@ -56,7 +58,7 @@ pub enum AnalysisApiError {
     /// A live analysis exists for this head and language.
     #[error("an analysis of this head already exists")]
     AnalysisExists,
-    /// The Tour exists only for finished analyses.
+    /// The Tour exists only for finished analyses; the diff only once the analysis base is stored.
     #[error("the analysis has not finished")]
     NotFinished,
     /// A line range is malformed (`from` 0 or after `to`).
@@ -96,6 +98,17 @@ pub enum AnalysisApiError {
 
 const SERVER_ERROR: &str = "Something went wrong on the server. Try again later.";
 const GITHUB_ERROR: &str = "GitHub did not answer as expected. Try again later.";
+
+impl From<PrDiffError> for AnalysisApiError {
+    fn from(error: PrDiffError) -> Self {
+        match error {
+            PrDiffError::Mirror(error) => Self::Mirror(error),
+            PrDiffError::Diff(error) => Self::Diff(error),
+            PrDiffError::Task(error) => Self::DiffTask(error),
+            PrDiffError::NotPrepared => Self::NotFinished,
+        }
+    }
+}
 
 impl AnalysisApiError {
     fn is_fetch_failure(&self) -> bool {
@@ -235,21 +248,13 @@ pub(crate) async fn visible_analysis(
     state.db.analyses().summary(id).await.map_err(failure)
 }
 
-/// The mirror of the analysed repository (fetched again if missing) and the pull request's diff.
+/// The mirror of the analysed repository (fetched again if missing) and the pull request's diff;
+/// `analysis_not_finished` until the pipeline has stored the analysis base.
 pub(crate) async fn analysis_diff(
     state: &AppState,
     summary: &AnalysisSummary,
 ) -> ApiResult<(PathBuf, Vec<FileDiff>)> {
-    let pr = &summary.pr;
-    let mirror = mirror::ensure_commits(&state.config, &pr.repo, &[&pr.base_sha, &pr.head_sha])
-        .await
-        .map_err(failure)?;
-    let (path, base, head) = (mirror.clone(), pr.base_sha.clone(), pr.head_sha.clone());
-    let files = tokio::task::spawn_blocking(move || diff::diff(&path, &base, &head))
-        .await
-        .map_err(|error| failure(AnalysisApiError::DiffTask(error)))?
-        .map_err(failure)?;
-    Ok((mirror, files))
+    pipeline::pr_diff(state, summary).await.map_err(failure)
 }
 
 async fn create(
@@ -262,15 +267,6 @@ async fn create(
     if pull.summary.head_sha != request.head_sha {
         return Err(failure(AnalysisApiError::HeadMoved));
     }
-    // The analysis compares the head with its merge base, as GitHub's pull-request diff does: changes made
-    // only on the base branch after the fork point are not part of the pull request.
-    let pr = &pull.summary;
-    let mirror = mirror::ensure_commits(&state.config, &pr.repo, &[&pr.base_sha, &pr.head_sha])
-        .await
-        .map_err(failure)?;
-    let base_sha = mirror::merge_base(&mirror, &pr.base_sha, &pr.head_sha)
-        .await
-        .map_err(failure)?;
     let user = state
         .db
         .users()
@@ -285,7 +281,8 @@ async fn create(
                 id: AnalysisId::new_random(),
                 tenant_id: session.tenant_id.clone(),
                 pull_request_id: pr_id,
-                base_sha,
+                // The pipeline replaces the base tip with the merge base before any job runs.
+                base_sha: pull.summary.base_sha.clone(),
                 head_sha: pull.summary.head_sha.clone(),
                 language: user.language,
                 created_by: session.user_id.clone(),

@@ -23,6 +23,8 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Largest file the server reads for display (the lines endpoint answers `not_rendered` above it).
 pub const MAX_BLOB_BYTES: u64 = 8 * 1024 * 1024;
+/// Longest wait for another fetch into the same mirror (one fetch plus its local checks).
+const LOCK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// Longest `cat-file --batch` header line read.
 const HEADER_LIMIT: u64 = 4096;
 
@@ -121,11 +123,7 @@ pub async fn ensure_commits(
     commits: &[&CommitSha],
 ) -> Result<PathBuf, MirrorError> {
     let mirror = mirror_path(config, repo)?;
-    let lock = {
-        let mut locks = MIRROR_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
-        Arc::clone(locks.entry(mirror.clone()).or_default())
-    };
-    let _guard = lock.lock().await;
+    let _guard = lock_mirror(&mirror, LOCK_TIMEOUT).await?;
 
     if !mirror.join("HEAD").exists() {
         tokio::fs::create_dir_all(&mirror).await?;
@@ -163,6 +161,23 @@ pub async fn ensure_commits(
         }
     }
     Ok(mirror)
+}
+
+/// Takes the lock of `mirror`, waiting at most `wait`.
+async fn lock_mirror(
+    mirror: &Path,
+    wait: Duration,
+) -> Result<tokio::sync::OwnedMutexGuard<()>, MirrorError> {
+    let lock = {
+        let mut locks = MIRROR_LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(locks.entry(mirror.to_path_buf()).or_default())
+    };
+    tokio::time::timeout(wait, lock.lock_owned())
+        .await
+        .map_err(|_| MirrorError::Timeout {
+            operation: "lock",
+            timeout: wait,
+        })
 }
 
 fn check(output: Output, operation: &'static str) -> Result<Output, MirrorError> {
@@ -273,6 +288,31 @@ pub async fn merge_base(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn waiting_for_a_busy_mirror_is_bounded() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let held = lock_mirror(dir.path(), Duration::from_secs(1))
+            .await
+            .expect("first lock");
+        let waited = lock_mirror(dir.path(), Duration::from_millis(50)).await;
+        assert!(
+            matches!(
+                waited,
+                Err(MirrorError::Timeout {
+                    operation: "lock",
+                    ..
+                })
+            ),
+            "{waited:?}"
+        );
+        drop(held);
+        assert!(
+            lock_mirror(dir.path(), Duration::from_secs(1))
+                .await
+                .is_ok()
+        );
+    }
 
     #[test]
     fn tree_paths_reject_traversal_and_absolute_paths() {

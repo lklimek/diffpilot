@@ -1,14 +1,19 @@
 //! Analysis pipeline orchestration over `JobExecutor` (stage-2 slice: no pre-pass rules, no verification beyond
 //! the output schema, no repair runs, no session resume).
 //!
-//! One driver task per analysis: fetch base and head into the mirror, diff, then `plan` and `pr_context`, then
-//! one `analyse_flow` per planned flow. Each succeeded output is validated against its schema and stored as a
+//! One driver task per analysis. It first prepares the analysis: fetches the base tip and head into the mirror
+//! and stores their merge base as the analysis base (GitHub's three-dot comparison), before any job is submitted
+//! and before [`pr_diff`] serves the diff. Then it diffs, runs `plan` and `pr_context`, then one
+//! `analyse_flow` per planned flow. Each succeeded output is validated against its schema and stored as a
 //! document; progress is derived from the stored documents. The driver is restart-safe
 //! (`runner-protocol.md` "Pipeline recovery"): stages with a document are skipped, the others are submitted
-//! again, which `JobExecutor::submit` answers with the existing live or succeeded job of the stage.
+//! again, which `JobExecutor::submit` answers with the existing live or succeeded job of the stage. Preparing
+//! again is a no-op: the merge base of a merge base and the head is the merge base itself. Every failure ends
+//! the analysis and cancels its unfinished jobs.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use analysis::diff::{self, DiffError, FileDiff};
@@ -24,6 +29,7 @@ use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{
     CredentialKind, JobLimits, JobPriority, JobSpec, LlmCredentialRef, RepoCheckout,
 };
+use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use db::repo::jobs::JobStage;
@@ -63,6 +69,9 @@ pub enum PipelineError {
     /// The diff task panicked or was cancelled.
     #[error("the diff task did not finish")]
     DiffTask(#[source] tokio::task::JoinError),
+    /// The stored base is not the merge base after preparing.
+    #[error("the analysis base is not the merge base")]
+    NotPrepared,
     /// The job executor failed.
     #[error("the job executor failed")]
     Executor(#[from] ExecutorError),
@@ -123,6 +132,7 @@ impl PipelineError {
             Self::Db(_)
             | Self::Diff(_)
             | Self::DiffTask(_)
+            | Self::NotPrepared
             | Self::Executor(_)
             | Self::Schema(_)
             | Self::NoResult { .. } => (
@@ -156,6 +166,7 @@ pub fn start(state: &AppState, analysis: AnalysisId) {
             } else {
                 tracing::error!(%analysis, error = ?error, "analysis pipeline failed");
             }
+            cancel_jobs(&state, analysis).await;
             let stored = state
                 .progress
                 .set_analysis_state(&state.db, analysis, &final_state, Utc::now())
@@ -198,20 +209,15 @@ struct Driver<'a> {
 }
 
 async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), PipelineError> {
-    let summary = state.db.analyses().summary(analysis).await?;
+    let mut summary = state.db.analyses().summary(analysis).await?;
     if !matches!(
         summary.state,
         AnalysisState::Planning | AnalysisState::Running { .. } | AnalysisState::Paused { .. }
     ) {
         return Ok(());
     }
-    let pr = &summary.pr;
-    let mirror =
-        mirror::ensure_commits(&state.config, &pr.repo, &[&pr.base_sha, &pr.head_sha]).await?;
-    let (base, head) = (pr.base_sha.clone(), pr.head_sha.clone());
-    let files = tokio::task::spawn_blocking(move || diff::diff(&mirror, &base, &head))
-        .await
-        .map_err(PipelineError::DiffTask)??;
+    let mirror = prepare(state, &mut summary).await?;
+    let files = diff_files(mirror, &summary).await?;
     let plan = state
         .db
         .documents()
@@ -229,6 +235,122 @@ async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), PipelineErr
     driver.run().await
 }
 
+/// Fetches the base tip and head into the mirror and stores their merge base as the analysis base; returns the
+/// mirror.
+async fn prepare(
+    state: &AppState,
+    summary: &mut AnalysisSummary,
+) -> Result<PathBuf, PipelineError> {
+    let pr = &summary.pr;
+    let mirror =
+        mirror::ensure_commits(&state.config, &pr.repo, &[&pr.base_sha, &pr.head_sha]).await?;
+    let merge_base = mirror::merge_base(&mirror, &pr.base_sha, &pr.head_sha).await?;
+    if merge_base != pr.base_sha {
+        state
+            .db
+            .analyses()
+            .set_base_sha(summary.id, &merge_base)
+            .await?;
+        tracing::debug!(analysis = %summary.id, base = %merge_base.0, "analysis base set to the merge base");
+        summary.pr.base_sha = merge_base;
+    }
+    Ok(mirror)
+}
+
+/// The pull request's diff could not be produced.
+#[derive(Debug, thiserror::Error)]
+pub enum PrDiffError {
+    /// The analysis is not prepared yet: its stored base is not the merge base.
+    #[error("the analysis base is not prepared yet")]
+    NotPrepared,
+    /// The repository could not be fetched or read.
+    #[error("the repository mirror failed")]
+    Mirror(#[from] MirrorError),
+    /// The diff could not be computed.
+    #[error("the diff could not be computed")]
+    Diff(#[from] DiffError),
+    /// The diff task panicked or was cancelled.
+    #[error("the diff task did not finish")]
+    Task(#[source] tokio::task::JoinError),
+}
+
+impl From<PrDiffError> for PipelineError {
+    fn from(error: PrDiffError) -> Self {
+        match error {
+            PrDiffError::Mirror(error) => Self::Mirror(error),
+            PrDiffError::Diff(error) => Self::Diff(error),
+            PrDiffError::Task(error) => Self::DiffTask(error),
+            PrDiffError::NotPrepared => Self::NotPrepared,
+        }
+    }
+}
+
+/// The mirror of the analysed repository (fetched again if missing) and the diff between the stored base and
+/// head of the analysis; [`PrDiffError::NotPrepared`] until the pipeline has stored the merge base (preparing
+/// is the only writer of the base, and the merge base of a merge base and the head is that merge base).
+pub async fn pr_diff(
+    state: &AppState,
+    summary: &AnalysisSummary,
+) -> Result<(PathBuf, Vec<FileDiff>), PrDiffError> {
+    let pr = &summary.pr;
+    let mirror =
+        mirror::ensure_commits(&state.config, &pr.repo, &[&pr.base_sha, &pr.head_sha]).await?;
+    if mirror::merge_base(&mirror, &pr.base_sha, &pr.head_sha).await? != pr.base_sha {
+        return Err(PrDiffError::NotPrepared);
+    }
+    let files = diff_files(mirror.clone(), summary).await?;
+    Ok((mirror, files))
+}
+
+async fn diff_files(
+    mirror: PathBuf,
+    summary: &AnalysisSummary,
+) -> Result<Vec<FileDiff>, PrDiffError> {
+    let (base, head) = (summary.pr.base_sha.clone(), summary.pr.head_sha.clone());
+    tokio::task::spawn_blocking(move || diff::diff(&mirror, &base, &head))
+        .await
+        .map_err(PrDiffError::Task)?
+        .map_err(PrDiffError::from)
+}
+
+/// Cancels every unfinished stored job of `analysis`, including jobs submitted before a server restart that no
+/// driver of this process follows: an ended analysis leaves nothing runnable.
+async fn cancel_jobs(state: &AppState, analysis: AnalysisId) {
+    let unfinished = state
+        .db
+        .jobs()
+        .list_for_analysis(
+            analysis,
+            &[
+                JobState::Queued,
+                JobState::Claimed,
+                JobState::Running,
+                JobState::Paused,
+            ],
+        )
+        .await;
+    let jobs = match unfinished {
+        Ok(jobs) => jobs,
+        Err(error) => {
+            tracing::error!(%analysis, error = ?error, "could not list the jobs of the ended analysis");
+            return;
+        }
+    };
+    for job in jobs {
+        match state.executor.cancel(&JobHandle { job_id: job.id }).await {
+            Ok(()) => {
+                tracing::debug!(%analysis, job = %job.id, "job of the ended analysis cancelled");
+            }
+            Err(error) => tracing::warn!(
+                %analysis,
+                job = %job.id,
+                error = ?error,
+                "could not cancel a job of the ended analysis"
+            ),
+        }
+    }
+}
+
 impl Driver<'_> {
     async fn run(&mut self) -> Result<(), PipelineError> {
         let result = self.run_stages().await;
@@ -238,7 +360,7 @@ impl Driver<'_> {
         result
     }
 
-    /// Cancels every submitted job without a final result: a failed analysis leaves nothing runnable.
+    /// Cancels every job this driver submitted without a final result yet.
     async fn cancel_live(&mut self) {
         for (stage, handle) in std::mem::take(&mut self.live) {
             match self.state.executor.cancel(&handle).await {

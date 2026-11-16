@@ -13,12 +13,16 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use chrono::{TimeDelta, Utc};
+use contracts::agent::JobKind;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::pr::PrSummary;
-use contracts::ids::{AnalysisId, JobId};
+use contracts::ids::{AnalysisId, CommitSha, JobId};
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
+use contracts::job::spec::JobPriority;
+use contracts::job::state::JobState;
 use db::repo::analyses::NewAnalysis;
 use db::repo::documents::DocumentKind;
+use db::repo::jobs::JobStage;
 use db::repo::sessions::NewSession;
 use db::repo::users::GithubProfile;
 use db::repo::{DEFAULT_TENANT, Db};
@@ -32,6 +36,7 @@ use server::auth::{lock_user, store_sign_in_tokens};
 use server::config::Config;
 use server::github::oauth::TokenGrant;
 use server::jobs::executor::{ExecutorError, JobExecutor, JobHandle, JobRequest, JobUpdate};
+use server::jobs::queue::QueueExecutor;
 use server::secrets::sha256;
 use server::state::AppState;
 use tempfile::TempDir;
@@ -331,6 +336,11 @@ impl Harness {
 
     /// An analysis of the fixture PR stored directly (no pipeline run).
     async fn seed_analysis(&self) -> AnalysisId {
+        self.seed_analysis_at(None).await
+    }
+
+    /// Like [`Harness::seed_analysis`], at another head commit when given.
+    async fn seed_analysis_at(&self, head: Option<String>) -> AnalysisId {
         let pr: PrSummary = serde_json::from_value(
             read_json(&fixtures().join("api-seed/default/pr-resolve.json"))["pr"].clone(),
         )
@@ -358,7 +368,7 @@ impl Harness {
                     tenant_id: DEFAULT_TENANT.to_owned(),
                     pull_request_id: pr_id,
                     base_sha: pr.base_sha,
-                    head_sha: pr.head_sha,
+                    head_sha: head.map_or(pr.head_sha, CommitSha),
                     language: Default::default(),
                     created_by: self.user_id.clone(),
                 },
@@ -395,17 +405,27 @@ impl Harness {
         panic!("analysis did not end in time");
     }
 
-    /// A repository `acme/<name>` under the clone base, built by `build`, served as pull request `number`
-    /// with base tip `base` and head `head` (returned by `build`); creates its analysis through the API.
+    /// Creates the remote repository `acme/<name>` with `build`, which returns the pull request's base tip and
+    /// head.
+    fn remote_repo(
+        &self,
+        name: &str,
+        build: impl FnOnce(&Path) -> (String, String),
+    ) -> (String, String) {
+        let repo = self._dir.path().join(format!("remotes/acme/{name}.git"));
+        git(&repo, &["init", "-q", "-b", "main"]);
+        build(&repo)
+    }
+
+    /// Creates pull request `number` of a new remote `acme/<name>` and analyses it through the API; returns the
+    /// analysis once its pipeline has ended (prepared, with the merge base stored).
     async fn analyse_repo(
         &self,
         name: &str,
         number: u32,
         build: impl FnOnce(&Path) -> (String, String),
     ) -> AnalysisSummary {
-        let repo = self._dir.path().join(format!("remotes/acme/{name}.git"));
-        git(&repo, &["init", "-q", "-b", "main"]);
-        let (base, head) = build(&repo);
+        let (base, head) = self.remote_repo(name, build);
         let mut pull = read_json(&fixtures().join("github/rest/pull.json"))["response"].clone();
         pull["number"] = json!(number);
         pull["html_url"] = json!(format!("https://github.com/acme/{name}/pull/{number}"));
@@ -427,7 +447,52 @@ impl Harness {
             )
             .await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
-        serde_json::from_value(created).expect("summary")
+        assert_eq!(created["state"], json!({ "state": "planning" }));
+        let id = created["id"].as_str().expect("id").to_owned();
+        self.wait_until_ended(&id).await
+    }
+
+    /// An analysis of `acme/<name>` stored directly with the base tip as its base (no pipeline run).
+    async fn seed_unprepared(&self, name: &str, base: &str, head: &str) -> AnalysisId {
+        let mut pr: PrSummary = serde_json::from_value(
+            read_json(&fixtures().join("api-seed/default/pr-resolve.json"))["pr"].clone(),
+        )
+        .expect("PrSummary");
+        pr.repo.name = name.to_owned();
+        pr.base_sha = CommitSha(base.to_owned());
+        pr.head_sha = CommitSha(head.to_owned());
+        let repo = self
+            .state
+            .db
+            .repos()
+            .upsert(DEFAULT_TENANT, &pr.repo, None)
+            .await
+            .expect("repo");
+        let pr_id = self
+            .state
+            .db
+            .pull_requests()
+            .upsert(DEFAULT_TENANT, repo.id, &pr, Utc::now())
+            .await
+            .expect("pr");
+        self.state
+            .db
+            .analyses()
+            .create(
+                NewAnalysis {
+                    id: AnalysisId::new_random(),
+                    tenant_id: DEFAULT_TENANT.to_owned(),
+                    pull_request_id: pr_id,
+                    base_sha: pr.base_sha,
+                    head_sha: pr.head_sha,
+                    language: Default::default(),
+                    created_by: self.user_id.clone(),
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("analysis")
+            .id
     }
 }
 
@@ -855,35 +920,42 @@ async fn other_tenants_analysis_is_not_found() {
     }
 }
 
+/// A pull request whose base branch moved after the fork point: returns (fork point, base tip, head).
+fn diverged(repo: &Path) -> (String, String, String) {
+    let fork = commit(
+        repo,
+        &[("a.txt", &numbered(1..=10)), ("b.txt", &numbered(1..=10))],
+        "fork point",
+    );
+    git(repo, &["checkout", "-q", "-b", "feature"]);
+    let head = commit(
+        repo,
+        &[(
+            "a.txt",
+            &numbered(1..=10).replace("line 2\n", "changed 2\n"),
+        )],
+        "change on the pull request",
+    );
+    git(repo, &["checkout", "-q", "main"]);
+    let base_tip = commit(
+        repo,
+        &[(
+            "b.txt",
+            &numbered(1..=10).replace("line 1\n", "changed on main\n"),
+        )],
+        "change only on the base branch",
+    );
+    (fork, base_tip, head)
+}
+
 #[tokio::test]
 async fn diverged_base_uses_the_merge_base() {
     let h = harness().await;
     let mut fork = String::new();
     let summary = h
         .analyse_repo("diverged", 9, |repo| {
-            fork = commit(
-                repo,
-                &[("a.txt", &numbered(1..=10)), ("b.txt", &numbered(1..=10))],
-                "fork point",
-            );
-            git(repo, &["checkout", "-q", "-b", "feature"]);
-            let head = commit(
-                repo,
-                &[(
-                    "a.txt",
-                    &numbered(1..=10).replace("line 2\n", "changed 2\n"),
-                )],
-                "change on the pull request",
-            );
-            git(repo, &["checkout", "-q", "main"]);
-            let base_tip = commit(
-                repo,
-                &[(
-                    "b.txt",
-                    &numbered(1..=10).replace("line 1\n", "changed on main\n"),
-                )],
-                "change only on the base branch",
-            );
+            let (fork_point, base_tip, head) = diverged(repo);
+            fork = fork_point;
             (base_tip, head)
         })
         .await;
@@ -1038,4 +1110,111 @@ async fn schema_invalid_output_fails_and_cancels_the_other_jobs() {
     let h = harness().await;
     let summary = fail_flow_2(&h, Script::Output(json!({ "flow_id": "f2" }))).await;
     assert_failed_in_f2_and_rest_cancelled(&h, &summary, "did not have the expected structure");
+}
+
+#[tokio::test]
+async fn restart_with_failing_preparation_cancels_live_jobs() {
+    let h = harness().await;
+    // The head commit is not on the remote: preparing the analysis (fetch) fails at restart.
+    let id = h.seed_analysis_at(Some("f".repeat(40))).await;
+    let queue: Arc<QueueExecutor> = Arc::new(QueueExecutor::new(h.state.db.clone()));
+    let state = AppState::new(
+        config(h._dir.path(), &h.github),
+        h.state.db.clone(),
+        queue.clone(),
+    );
+    let pending = queue
+        .submit(JobRequest {
+            spec: db::repo::analyses::testing::job_spec(id, JobKind::Plan),
+            priority: JobPriority::Batch,
+            stage: JobStage::Plan { batch: 1 },
+            generation: 0,
+            pr_repo: contracts::common::RepoRef {
+                owner: "acme".to_owned(),
+                name: "node-client".to_owned(),
+            },
+        })
+        .await
+        .expect("submit");
+
+    server::pipeline::resume_unfinished(&state)
+        .await
+        .expect("resume");
+    let summary = h.wait_until_ended(&id.to_string()).await;
+    assert!(
+        matches!(summary.state, AnalysisState::Failed { .. }),
+        "{:?}",
+        summary.state
+    );
+    let job = state.db.jobs().get(pending.job_id).await.expect("job");
+    assert_eq!(job.state, JobState::Cancelled);
+}
+
+#[tokio::test]
+async fn create_returns_at_once_and_lines_wait_for_preparation() {
+    let h = harness().await;
+    // No remote repository exists for acme/missing: the ingest fails after the analysis exists.
+    let mut pull = read_json(&fixtures().join("github/rest/pull.json"))["response"].clone();
+    pull["number"] = json!(11);
+    pull["base"]["repo"]["name"] = json!("missing");
+    let head = pull["head"]["sha"].clone();
+    Mock::given(method("GET"))
+        .and(path("/api/repos/acme/missing/pulls/11"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull))
+        .mount(&h.github)
+        .await;
+    let (status, created) = h
+        .post(
+            "/api/v1/analyses",
+            json!({
+                "pr": { "repo": { "owner": "acme", "name": "missing" }, "number": 11 },
+                "head_sha": head,
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    assert_eq!(created["state"], json!({ "state": "planning" }));
+    let id = created["id"].as_str().expect("id").to_owned();
+    let ended = h.wait_until_ended(&id).await;
+    match ended.state {
+        AnalysisState::Failed {
+            flow: None,
+            message,
+        } => {
+            assert!(
+                message.contains("repository could not be fetched"),
+                "{message}"
+            );
+        }
+        other => panic!("expected a failed preparation, got {other:?}"),
+    }
+    assert!(
+        h.executor.submitted().is_empty(),
+        "no job before preparation"
+    );
+}
+
+#[tokio::test]
+async fn lines_answer_409_until_the_merge_base_is_stored() {
+    let h = harness().await;
+    let (fork, base_tip, head) = {
+        let mut out = (String::new(), String::new(), String::new());
+        h.remote_repo("diverged", |repo| {
+            out = diverged(repo);
+            (out.1.clone(), out.2.clone())
+        });
+        out
+    };
+    let id = h.seed_unprepared("diverged", &base_tip, &head).await;
+    let lines = format!("/api/v1/analyses/{id}/lines?path=a.txt&side=head&from=1&to=10");
+    let (status, body) = h.get(&lines).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], json!("analysis_not_finished"));
+
+    server::pipeline::start(&h.state, id);
+    let ended = h.wait_until_ended(&id.to_string()).await;
+    assert_eq!(ended.pr.base_sha.0, fork);
+    let (status, body) = h.get(&lines).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["changed"], json!([2]));
 }
