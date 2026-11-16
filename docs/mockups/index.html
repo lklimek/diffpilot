@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Index - smart-review mockup</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body data-page="index">
+<a class="skip" href="#main">Skip to content</a>
+<noscript><p style="padding:8px">This mockup needs JavaScript for its interactions.</p></noscript>
+<header class="topbar"><a class="brand" href="01-home.html">smart<span>-</span>review</a><div class="pr"></div><a class="muted" href="09-settings.html">Settings</a><button class="iconbtn" id="help-btn" type="button" aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts (?)">?</button><span class="muted" data-tip="Signed in as alice">alice</span></header>
+
+<main class="page" id="main"><h1>smart-review mockups, version 2</h1><p class="muted">Static HTML for the owner&rsquo;s final approval. One example PR: <strong>acme/node-client #482</strong> &ldquo;feat(rpc): retry with backoff on timeout&rdquo; (Rust, head <code>9f3c2e1</code>). Follows <code>decisions-after-mockup-round-1.md</code>. Each page has a &ldquo;mockup states&rdquo; bar where states exist.</p><ol class="idx prose"><li><a href="01-home.html"><strong>01 Home</strong></a> &mdash; one field; states: new PR, resume existing analysis, head moved, error, signed out.</li><li><a href="02-analysis-progress.html"><strong>02 Analysis progress</strong></a> &mdash; clickable group cards, activity; states: running, paused (usage limit), failed chunk.</li><li><a href="04-group-workspace.html"><strong>04 Group workspace</strong></a> &mdash; three columns, flow diagram, inspector; states: <a href="04-group-workspace.html?s=wrong">1 confident but wrong HIGH</a>, <a href="04-group-workspace.html?s=missed">2 defect on a plain changed line</a>, <a href="04-group-workspace.html?s=noq">3 LLM raised no questions</a>.</li><li><a href="05-tour.html"><strong>05 Tour</strong></a> &mdash; the flows as a sequence, no ticks, skipped material listed.</li><li><a href="09-settings.html"><strong>09 Settings</strong></a> &mdash; credentials status, language, GitHub App, read-only repository rules.</li></ol><p class="small muted">Press <kbd>?</kbd> for keyboard shortcuts. Light and dark follow the system. No network requests are made; links to github.com open in a new tab.</p></main>
+<footer class="mock-foot">Mockup &mdash; static example data</footer>
+<dialog id="help" aria-labelledby="help-t"><h2 id="help-t">Keyboard shortcuts</h2><table><tbody><tr><td><kbd>j</kbd> <kbd>k</kbd></td><td>next / previous step (tour: next / previous step)</td></tr><tr><td><kbd>n</kbd> <kbd>p</kbd></td><td>next / previous group</td></tr><tr><td><kbd>x</kbd></td><td>tick the current fragment as reviewed</td></tr><tr><td><kbd>d</kbd></td><td>show / hide old code of the current fragment</td></tr><tr><td><kbd>c</kbd></td><td>comment on the current line (click a line number to pick another)</td></tr><tr><td><kbd>a</kbd></td><td>ask about the current step</td></tr><tr><td><kbd>?</kbd></td><td>this help</td></tr><tr><td><kbd>Esc</kbd></td><td>close</td></tr></tbody></table><p class="muted small">Active on the group workspace; <kbd>j</kbd> <kbd>k</kbd> also on the tour.</p><form method="dialog"><button class="btn pri">Close</button></form></dialog>
+<div id="tip" role="tooltip" hidden></div><div id="toast" role="status" hidden></div>
+<script src="mockup.js"></script>
+</body>
+</html>

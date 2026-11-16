@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Files — acme/node-client #482 — smart-review mockup</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body data-page="files" data-view="files" data-progress="22">
+<div class="files">
+ <nav class="ftree" aria-label="Changed files">
+  <h2>14 files <span class="muted small">+612 &minus;148</span></h2>
+  <p class="small muted">Dot = highest risk in the file (text label too). Files without a drawn view link to their group.</p>
+  <h3>Production (6)</h3>
+  <ul>
+   <li><button data-file="client" aria-current="true"><span class="dot h" aria-hidden="true"></span>src/rpc/client.rs<span class="st">HIGH</span></button></li>
+   <li><a href="04-group-workspace.html#g1"><span class="dot m" aria-hidden="true"></span>src/rpc/retry.rs<span class="st">MEDIUM</span></a></li>
+   <li><button data-file="error"><span class="dot m" aria-hidden="true"></span>src/rpc/error.rs<span class="st">MEDIUM</span></button></li>
+   <li><a href="04-group-workspace.html#g2"><span class="dot m" aria-hidden="true"></span>src/config.rs<span class="st">MEDIUM</span></a></li>
+   <li class="mutedf"><a href="03-overview.html#noise"><span class="dot n" aria-hidden="true"></span>src/rpc/mod.rs<span class="st">imports</span></a></li>
+   <li class="mutedf"><a href="04-group-workspace.html#g6"><span class="dot n" aria-hidden="true"></span>src/util/backoff.rs<span class="st">deleted (moved)</span></a></li>
+  </ul>
+  <h3>Tests (4)</h3>
+  <ul class="mutedf"><li class="mutedf"><a href="03-overview.html#noise"><span class="dot n" aria-hidden="true"></span>tests/rpc_retry.rs<span class="st">+118</span></a></li>
+   <li class="mutedf"><a href="03-overview.html#noise"><span class="dot n" aria-hidden="true"></span>tests/rpc_timeout.rs<span class="st">+46 &minus;12</span></a></li>
+   <li class="mutedf"><a href="03-overview.html#noise"><span class="dot n" aria-hidden="true"></span>tests/common/mock_transport.rs<span class="st">+37</span></a></li>
+   <li class="mutedf"><a href="03-overview.html#noise"><span class="dot n" aria-hidden="true"></span>tests/common/mod.rs<span class="st">+11</span></a></li></ul>
+  <h3>Docs (3)</h3>
+  <ul><li class="mutedf"><a href="03-overview.html#noise"><span class="dot n" aria-hidden="true"></span>README.md</a></li><li class="mutedf"><a href="03-overview.html#noise"><span class="dot n" aria-hidden="true"></span>docs/rpc.md</a></li><li class="mutedf"><a href="03-overview.html#noise"><span class="dot n" aria-hidden="true"></span>CHANGELOG.md</a></li></ul>
+  <h3>Generated (1)</h3>
+  <ul><li class="mutedf"><a href="03-overview.html#noise"><span class="dot n" aria-hidden="true"></span>Cargo.lock<span class="st">path_rule</span></a></li></ul>
+ </nav>
+
+ <main id="main" style="padding:14px 18px 40px">
+  <!-- client.rs -->
+  <section data-pane="client" aria-labelledby="fc-t">
+   <div class="row" style="margin-bottom:8px"><h1 id="fc-t" style="font-size:17px;margin:0"><code>src/rpc/client.rs</code></h1>
+    <span class="b b-h">HIGH</span><span class="muted small">4 changes &middot; groups <a href="04-group-workspace.html#g1">1</a>, <a href="04-group-workspace.html#g4">4</a>, <a href="04-group-workspace.html#g5">5</a></span><span class="sp"></span>
+    <a class="btn sm" href="04-group-workspace.html#g1">Open in group workspace</a></div>
+   <p class="small muted">Final code with highlights; unchanged regions are folded. Hover a highlight for a one-line summary.</p>
+   <div class="code" role="group" aria-label="src/rpc/client.rs, changed regions only">
+<button class="fold" data-unfold type="button">&#8943; 85 unchanged lines (L1&ndash;85) &mdash; click to expand &#8943;</button>
+<div hidden>
+<div class="l"><span class="n">1</span><span class="g"></span><code>use std::time::Duration;</code></div>
+<div class="l"><span class="n">2</span><span class="g"></span><code>&#8943; (unchanged code)</code></div>
+</div>
+<div class="l"><span class="n">86</span><span class="g"></span><code>impl RpcClient {</code></div>
+<div class="delsite" style="margin:2px 6px" data-tip="send_once() (23 lines) was removed here; no remaining references found." data-risk="LOW risk &middot; deleted site"><span class="gl" aria-hidden="true">&#8854;</span><div><strong>send_once() removed here</strong> <span class="muted">(23 lines)</span> <span class="b b-llm">LLM-claimed</span></div></div>
+<div class="l"><span class="n">87</span><span class="g"></span><code>    /// Sends a request; retries on timeout with exponential backoff.</code></div>
+<div class="l"><span class="n">88</span><span class="g"></span><code>    pub async fn send(&amp;self, req: Request) -&gt; Result&lt;Response, RpcError&gt; {</code></div>
+<div class="l"><span class="n">93</span><span class="g"></span><code>        loop {</code></div>
+<div class="l"><span class="n">97</span><span class="g"></span><code>            match self.transport.<span class="rn" title="renamed from send_raw">execute</span>(http, timeout).await {</code></div>
+<div class="hl h" data-label="HIGH RISK" tabindex="0" data-tip="Timeouts are retried for every method, including broadcast_tx, so a transaction may be sent twice." data-risk="HIGH risk &middot; suspected bug">
+<div class="l"><span class="n">99</span><span class="g"><b title="Annotation" aria-label="Annotation">&#9670;</b><b title="GitHub thread" aria-label="GitHub thread">&#9635;</b></span><code>                Err(RpcError::Timeout) if policy.should_retry(attempt) =&gt; {</code></div>
+<div class="l"><span class="n">100</span><span class="g"></span><code>                    let delay = policy.backoff(attempt);</code></div>
+<div class="l"><span class="n">101</span><span class="g"></span><code>                    tracing::warn!(attempt, ?delay, method = %req.method, "rpc timeout; retrying");</code></div>
+<div class="l"><span class="n">102</span><span class="g"></span><code>                    tokio::time::sleep(delay).await;</code></div>
+<div class="l"><span class="n">103</span><span class="g"></span><code>                }</code></div>
+</div>
+<div class="hl m" data-label="MEDIUM RISK" tabindex="0" data-tip="After the last attempt the caller receives Exhausted instead of Timeout." data-risk="MEDIUM risk &middot; consequence">
+<div class="l"><span class="n">104</span><span class="g"><b title="Annotation" aria-label="Annotation">&#9670;</b></span><code>                Err(RpcError::Timeout) =&gt; {</code></div>
+<div class="l"><span class="n">105</span><span class="g"></span><code>                    return Err(RpcError::Exhausted { attempts: attempt });</code></div>
+<div class="l"><span class="n">106</span><span class="g"></span><code>                }</code></div>
+</div>
+<div class="l"><span class="n">107</span><span class="g"></span><code>                Err(e) =&gt; return Err(e),</code></div>
+<button class="fold" data-unfold type="button">&#8943; 1 unchanged line &#8943;</button>
+<div hidden><div class="l"><span class="n">111</span><span class="g"></span><code></code></div></div>
+<div class="mvblk" data-tip="build_request() extracted from send(): 41 lines, verified identical. Nothing to review." data-risk="no risk &middot; verified identical">
+<div class="l"><span class="n">112</span><span class="g"></span><code>    /// Builds the HTTP request for `req`: URL, headers, body.   [moved, identical]</code></div>
+<div class="l"><span class="n">113</span><span class="g"></span><code>    fn build_request(&amp;self, req: &amp;Request) -&gt; Result&lt;HttpRequest, RpcError&gt; {</code></div>
+<div class="fold" style="cursor:default">&#8943; 39 more identical lines (L114&ndash;152) &middot; verified identical (token_hash) &#8943;</div>
+</div>
+<button class="fold" data-unfold type="button">&#8943; 41 unchanged lines (L153&ndash;193) &#8943;</button>
+<div hidden><div class="l"><span class="n">153</span><span class="g"></span><code>&#8943; (unchanged code)</code></div></div>
+   </div>
+  </section>
+
+  <!-- error.rs -->
+  <section data-pane="error" hidden aria-labelledby="fe-t">
+   <div class="row" style="margin-bottom:8px"><h1 id="fe-t" style="font-size:17px;margin:0"><code>src/rpc/error.rs</code></h1>
+    <span class="b b-m">MEDIUM</span><span class="muted small">1 change &middot; group <a href="04-group-workspace.html#g3">3</a></span><span class="sp"></span><a class="btn sm" href="04-group-workspace.html#g3">Open in group workspace</a></div>
+   <div class="code" role="group" aria-label="src/rpc/error.rs, changed regions">
+<div class="l"><span class="n">8</span><span class="g"></span><code>#[derive(Debug, thiserror::Error)]</code></div>
+<div class="l"><span class="n">9</span><span class="g"></span><code>pub enum RpcError {</code></div>
+<div class="l"><span class="n">10</span><span class="g"></span><code>    #[error("request timed out")]</code></div>
+<div class="l"><span class="n">11</span><span class="g"></span><code>    Timeout,</code></div>
+<div class="hl m" data-label="MEDIUM RISK" tabindex="0" data-tip="A new error variant is added; two match sites with wildcard arms swallow it." data-risk="MEDIUM risk &middot; api_contract">
+<div class="l"><span class="n">12</span><span class="g"><b title="Annotation" aria-label="Annotation">&#9670;</b></span><code>    #[error("gave up after {attempts} attempts")]</code></div>
+<div class="l"><span class="n">13</span><span class="g"></span><code>    Exhausted { attempts: u32 },</code></div>
+</div>
+<div class="l"><span class="n">14</span><span class="g"></span><code>    #[error("transport failure: {0}")]</code></div>
+<div class="l"><span class="n">15</span><span class="g"></span><code>    Transport(#[from] TransportError),</code></div>
+<div class="l"><span class="n">16</span><span class="g"></span><code>}</code></div>
+   </div>
+  </section>
+ </main>
+</div>
+<script src="mockup.js"></script>
+</body>
+</html>

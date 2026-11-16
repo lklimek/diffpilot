@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings — smart-review mockup</title>
+<link rel="stylesheet" href="mockup.css">
+</head>
+<body data-page="settings" data-chrome="min">
+<div class="states" role="group" aria-label="Mockup states"><b>mockup states:</b>
+ <button data-s="ok" aria-pressed="true">all healthy</button><button data-s="expired" aria-pressed="false">Codex session expired</button>
+</div>
+<main class="page" id="main">
+ <h1>Settings</h1>
+ <div class="banner err" data-for="expired" hidden role="alert"><strong>Codex session expired.</strong><span>Running analyses are paused. Sign in again to continue; finished groups remain readable.</span><span class="sp"></span><button class="btn sm pri" type="button">Sign in with ChatGPT</button></div>
+
+ <div class="setgrid">
+  <section class="card" aria-labelledby="llm-t">
+   <h2 id="llm-t">LLM credentials</h2>
+   <p class="small"><strong>Provider:</strong> Codex CLI &middot; <span class="b b-cls">codex_chatgpt</span> <span class="muted">(subscription; this tenant only)</span></p>
+   <p class="small"><strong>Sign-in:</strong> <span data-for="ok">signed in as ChatGPT Plus (owner) <span class="b b-ok">active</span></span><span data-for="expired" hidden><span class="b b-h">expired</span></span></p>
+   <p class="small" style="margin-bottom:2px"><strong>Usage window (5 h):</strong> 62% used &middot; resets 14:20</p>
+   <div class="meter" role="img" aria-label="62 percent of the 5 hour window used"><i style="width:62%"></i></div>
+   <p class="small" style="margin:8px 0 2px"><strong>Weekly:</strong> 31% used</p>
+   <div class="meter" role="img" aria-label="31 percent of the weekly window used"><i style="width:31%;background:var(--low-bd)"></i></div>
+   <div class="row" style="margin-top:10px"><button class="btn" type="button">Sign in again</button><button class="btn" type="button">Test connection</button></div>
+   <p class="small muted" style="margin-top:8px">Analyses run one at a time per credential. Credentials are stored encrypted and are never sent to the browser.</p>
+  </section>
+
+  <section class="card" aria-labelledby="lang-t">
+   <h2 id="lang-t">Language of LLM texts</h2>
+   <label for="lang">Explanations, summaries and recommendations are written in</label>
+   <select id="lang"><option value="en" selected>English (default)</option><option value="pl">Polski</option></select>
+   <p class="small muted" style="margin-top:6px">The interface stays English; only generated text changes. Code, identifiers and comments you push to GitHub are always English.</p>
+   <h3 style="margin-top:10px">Example annotation</h3>
+   <div class="qa" id="lang-en"><span class="b b-h">HIGH</span> Retry also applies to <code>broadcast_tx</code>, so a transaction may be sent twice. <span class="b b-llm">LLM-claimed</span></div>
+   <div class="qa" id="lang-pl" hidden lang="pl"><span class="b b-h">HIGH</span> Ponowienie dotyczy każdej metody, także <code>broadcast_tx</code>, więc transakcja może zostać wysłana dwukrotnie. <span class="b b-llm">LLM-claimed</span></div>
+  </section>
+
+  <section class="card" aria-labelledby="gh-t">
+   <h2 id="gh-t">GitHub App</h2>
+   <p class="small"><span class="b b-ok">installation active</span> on <strong>acme</strong> &middot; 2 repositories: <code>node-client</code>, <code>wallet-ui</code></p>
+   <ul class="small"><li>Pull requests: read &amp; write (pending reviews only)</li><li>Contents and Metadata: read</li><li>Checks: read</li></ul>
+   <p class="small muted">Your sign-in uses a user access token, so you only see PRs you can already open on GitHub.</p>
+   <a class="btn" href="https://github.com/settings/installations" rel="noopener noreferrer">Manage on GitHub &#8599;</a>
+  </section>
+
+  <section class="card" aria-labelledby="repo-t">
+   <h2 id="repo-t">Per-repository</h2>
+   <label for="repo">Repository</label>
+   <select id="repo"><option>acme/node-client</option><option>acme/wallet-ui</option></select>
+   <h3 style="margin-top:10px">Related repositories <span class="muted">(extra context for the agent, read-only)</span></h3>
+   <ul class="chips"><li>acme/node-types</li><li>acme/wallet-ui</li></ul>
+   <div class="row" style="flex-wrap:nowrap"><input type="text" aria-label="Add related repository" placeholder="owner/repo"><button class="btn" type="button">Add</button></div>
+   <h3 style="margin-top:12px">Noise path rules</h3>
+   <table class="tbl small"><thead><tr><th>Pattern</th><th>Class</th><th>Source</th></tr></thead><tbody>
+    <tr><td class="mono">tests/**</td><td>test</td><td><span class="b">built-in</span></td></tr>
+    <tr><td class="mono">**/*_test.rs</td><td>test</td><td><span class="b">built-in</span></td></tr>
+    <tr><td class="mono">docs/**, *.md</td><td>docs_comments</td><td><span class="b">built-in</span></td></tr>
+    <tr><td class="mono">Cargo.lock</td><td>generated_mechanical</td><td><span class="b">built-in</span></td></tr>
+    <tr><td class="mono">**/*.pb.rs</td><td>generated_mechanical</td><td><span class="b b-new">custom</span> <button class="btn sm" type="button" aria-label="Remove rule **/*.pb.rs">Remove</button></td></tr></tbody></table>
+   <div class="row" style="margin-top:6px;flex-wrap:nowrap"><input type="text" aria-label="New path pattern" placeholder="glob, e.g. fixtures/**"><select aria-label="Class" style="width:auto"><option>test</option><option>docs_comments</option><option>generated_mechanical</option></select><button class="btn" type="button">Add rule</button></div>
+   <p class="small muted">Path rules are the only thing that may auto-collapse a file without a deterministic check on its content.</p>
+  </section>
+ </div>
+</main>
+<script src="mockup.js"></script>
+</body>
+</html>

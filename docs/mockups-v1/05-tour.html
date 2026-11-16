@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tour — acme/node-client #482 — smart-review mockup</title>
+<link rel="stylesheet" href="mockup.css">
+<style>.stepgrid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:14px}@media (max-width:1100px){.stepgrid{grid-template-columns:1fr}}</style>
+</head>
+<body data-page="tour" data-view="tour" data-progress="22">
+<div class="tour">
+ <nav aria-label="Tour steps">
+  <h2>Guided tour</h2>
+  <p class="small muted">Same content as the groups, in the order that is easiest to understand: types first, then the logic that uses them. Order differs from importance.</p>
+  <ol class="steps" id="steps">
+   <li data-step="st1" class="cur"><a href="#st1">1. New error variant <span class="b b-m">MED</span></a></li>
+   <li data-step="st2"><a href="#st2">2. RetryPolicy <span class="b b-l">LOW</span></a></li>
+   <li data-step="st3"><a href="#st3">3. Backoff helpers moved <span class="b b-m">MED</span></a></li>
+   <li data-step="st4"><a href="#st4">4. The retry loop in send <span class="b b-h">HIGH</span></a></li>
+   <li data-step="st5"><a href="#st5">5. Default timeout <span class="b b-m">MED</span></a></li>
+   <li data-step="nz1" class="skip-noise" hidden><a href="#nz1">+ Tests (noise)</a></li>
+   <li data-step="nz2" class="skip-noise" hidden><a href="#nz2">+ build_request() extraction (noise)</a></li>
+  </ol>
+  <p class="small" id="skipped" style="margin-top:10px"><span class="muted">Skipped by default:</span> tests (4 files), docs (3), generated (3), 1 verified refactor.</p>
+  <label class="small" style="font-weight:400;margin-top:6px"><input type="checkbox" id="inc-noise"> Include noise in the tour</label>
+  <p class="kbdbar" style="margin-top:12px"><kbd>j</kbd> / <kbd>&rarr;</kbd> next &middot; <kbd>k</kbd> / <kbd>&larr;</kbd> previous &middot; <kbd>?</kbd> help</p>
+ </nav>
+
+ <main id="main">
+  <div class="row" style="margin-bottom:8px"><strong id="step-k" aria-live="polite">Step 1 of 5</strong><span class="sp"></span><a class="small" href="04-group-workspace.html">Open the same code in the group workspace</a></div>
+
+  <section class="step card" id="st1" aria-labelledby="st1-t">
+   <div class="row"><h1 id="st1-t" style="font-size:18px">New error variant <code>RpcError::Exhausted</code></h1><span class="b b-m">MEDIUM</span><span class="b b-cls">api_contract</span><span class="b b-llm">LLM-claimed</span><span class="sp"></span>
+    <button class="btn sm" data-act="rev" aria-pressed="false">Mark reviewed <kbd>x</kbd></button></div>
+   <p class="muted small"><code>src/rpc/error.rs</code> L8&ndash;16 &middot; group 3</p>
+   <div class="stepgrid">
+    <div class="code" role="group" aria-label="src/rpc/error.rs lines 8 to 16">
+<div class="l"><span class="n">8</span><span class="g"></span><code>#[derive(Debug, thiserror::Error)]</code></div>
+<div class="l"><span class="n">9</span><span class="g"></span><code>pub enum RpcError {</code></div>
+<div class="l"><span class="n">10</span><span class="g"></span><code>    #[error("request timed out")]</code></div>
+<div class="l"><span class="n">11</span><span class="g"></span><code>    Timeout,</code></div>
+<div class="hl m" data-label="MEDIUM RISK">
+<div class="l"><span class="n">12</span><span class="g"><b title="Annotation" aria-label="Annotation">&#9670;</b></span><code>    #[error("gave up after {attempts} attempts")]</code></div>
+<div class="l"><span class="n">13</span><span class="g"></span><code>    Exhausted { attempts: u32 },</code></div>
+</div>
+<div class="l"><span class="n">14</span><span class="g"></span><code>    #[error("transport failure: {0}")]</code></div>
+<div class="l"><span class="n">15</span><span class="g"></span><code>    Transport(#[from] TransportError),</code></div>
+<div class="l"><span class="n">16</span><span class="g"></span><code>}</code></div>
+    </div>
+    <div>
+     <h3>Behaviour</h3><div class="wasis"><div><h3>Was</h3>Two failure variants.</div><div><h3>Is</h3>Three; a third case callers must handle.</div></div>
+     <h3>Consequences</h3><ul class="small"><li><code>wallet/mod.rs:121</code> and <code>sync/peers.rs:204</code> use <code>Err(_)</code> and swallow it <span class="ood-flag" style="color:var(--low);font-weight:700">outside diff</span>.</li></ul>
+     <h3 style="margin-top:8px">Assessment</h3><p class="small">Recommendation: handle the variant explicitly at both sites. Confidence 0.8.</p>
+    </div>
+   </div>
+  </section>
+
+  <section class="step card" id="st2" hidden aria-labelledby="st2-t">
+   <div class="row"><h1 id="st2-t" style="font-size:18px"><code>RetryPolicy</code> &mdash; 3 attempts by default</h1><span class="b b-l">LOW</span><span class="b b-cls">added</span><span class="b b-llm">LLM-claimed</span><span class="sp"></span>
+    <button class="btn sm" data-act="rev" aria-pressed="false">Mark reviewed <kbd>x</kbd></button></div>
+   <p class="muted small"><code>src/rpc/retry.rs</code> L21&ndash;32 (excerpt) &middot; group 1</p>
+   <div class="stepgrid">
+    <div class="code" role="group" aria-label="src/rpc/retry.rs lines 21 to 32">
+<div class="hl ad" data-label="NEW &middot; LOW RISK">
+<div class="l"><span class="n">21</span><span class="g"></span><code>impl RetryPolicy {</code></div>
+<div class="l"><span class="n">22</span><span class="g"></span><code>    /// True while another attempt is allowed after `attempt` tries.</code></div>
+<div class="l"><span class="n">23</span><span class="g"><b title="Annotation" aria-label="Annotation">&#9670;</b></span><code>    pub fn should_retry(&amp;self, attempt: u32) -&gt; bool {</code></div>
+<div class="l"><span class="n">24</span><span class="g"></span><code>        attempt &lt; self.max_attempts</code></div>
+<div class="l"><span class="n">25</span><span class="g"></span><code>    }</code></div>
+<div class="l"><span class="n">26</span><span class="g"></span><code></code></div>
+<div class="l"><span class="n">27</span><span class="g"></span><code>    /// Delay before the next attempt: exponential, capped, jittered.</code></div>
+<div class="l"><span class="n">28</span><span class="g"></span><code>    pub fn backoff(&amp;self, attempt: u32) -&gt; Duration {</code></div>
+<div class="l"><span class="n">29</span><span class="g"></span><code>        let raw = exp_delay(self.base_delay, attempt);</code></div>
+<div class="l"><span class="n">30</span><span class="g"></span><code>        with_jitter(raw.min(self.max_delay))</code></div>
+<div class="l"><span class="n">31</span><span class="g"></span><code>    }</code></div>
+<div class="l"><span class="n">32</span><span class="g"></span><code>}</code></div>
+</div>
+    </div>
+    <div>
+     <h3>Behaviour</h3><div class="wasis"><div><h3>Was</h3>No retry concept.</div><div><h3>Is</h3>Retry while <code>attempt &lt; 3</code>; 200&nbsp;ms doubling, cap 4&nbsp;s.</div></div>
+     <h3>Consequences</h3><ul class="small"><li>Jitter is applied after the cap, so a delay can exceed <code>max_delay</code>.</li><li>The policy has no idempotency input &mdash; see step 4.</li></ul>
+    </div>
+   </div>
+  </section>
+
+  <section class="step card" id="st3" hidden aria-labelledby="st3-t">
+   <div class="row"><h1 id="st3-t" style="font-size:18px">Backoff helpers moved &mdash; 2 lines differ</h1><span class="b b-m">MEDIUM</span><span class="b b-cls">move</span><span class="b b-ok">verified: 56 of 58 identical</span><span class="sp"></span>
+    <button class="btn sm" data-act="rev" aria-pressed="false">Mark reviewed <kbd>x</kbd></button></div>
+   <p class="muted small"><code>src/util/backoff.rs</code> &rarr; <code>src/rpc/retry.rs</code> L38&ndash;95 &middot; group 6. Only the differing lines are shown.</p>
+   <div class="stepgrid">
+    <div class="code" role="group" aria-label="The two differing lines">
+<div class="mvblk"><div class="fold" style="cursor:default">&#8943; 11 identical lines (L38&ndash;48) &#8943;</div></div>
+<div class="hl m" data-label="&#8800; DIFFERS">
+<div class="l"><span class="n">49</span><span class="g"><b title="Differs" aria-label="Differs">&#8800;</b><b title="Annotation" aria-label="Annotation">&#9670;</b></span><code>// Jitter is uniform in [-JITTER, +JITTER], i.e. +/-50% of the delay.</code></div>
+<div class="l"><span class="n">50</span><span class="g"><b title="Differs" aria-label="Differs">&#8800;</b></span><code>const JITTER: f64 = 0.5;</code></div>
+</div>
+<div class="mvblk"><div class="fold" style="cursor:default">&#8943; 45 identical lines (L51&ndash;95) &#8943;</div></div>
+    </div>
+    <div>
+     <h3>Behaviour</h3><div class="wasis"><div><h3>Was</h3>Delay &times; 0.9&ndash;1.1</div><div><h3>Is</h3>Delay &times; 0.5&ndash;1.5</div></div>
+     <h3>Consequences</h3><ul class="small"><li>A change hidden inside a move; the commit message only says &ldquo;move helpers&rdquo;.</li></ul>
+     <p class="small"><strong>Recommendation:</strong> confirm &plusmn;50% is intended. Confidence 0.7 <span class="b b-llm">LLM-claimed</span></p>
+    </div>
+   </div>
+  </section>
+
+  <section class="step card" id="st4" hidden aria-labelledby="st4-t">
+   <div class="row"><h1 id="st4-t" style="font-size:18px">The retry loop in <code>RpcClient::send</code></h1><span class="b b-h">HIGH</span><span class="b b-cls">behavioural</span><span class="b b-llm">LLM-claimed</span><span class="sp"></span>
+    <button class="btn sm" data-act="rev" aria-pressed="false">Mark reviewed <kbd>x</kbd></button></div>
+   <p class="muted small"><code>src/rpc/client.rs</code> L93&ndash;110 (excerpt) &middot; group 1 &middot; 1 GitHub thread</p>
+   <div class="stepgrid">
+    <div class="code" role="group" aria-label="src/rpc/client.rs lines 93 to 110">
+<div class="l"><span class="n">93</span><span class="g"></span><code>        loop {</code></div>
+<div class="l"><span class="n">94</span><span class="g"></span><code>            attempt += 1;</code></div>
+<div class="l"><span class="n">95</span><span class="g"></span><code>            let http = self.build_request(&amp;req)?;</code></div>
+<div class="l"><span class="n">96</span><span class="g"></span><code>            let timeout = self.config.timeout;</code></div>
+<div class="l"><span class="n">97</span><span class="g"></span><code>            match self.transport.<span class="rn" title="renamed from send_raw">execute</span>(http, timeout).await {</code></div>
+<div class="l"><span class="n">98</span><span class="g"></span><code>                Ok(resp) =&gt; return Ok(resp),</code></div>
+<div class="hl h" data-label="HIGH RISK">
+<div class="l"><span class="n">99</span><span class="g"><b title="Annotation" aria-label="Annotation">&#9670;</b><b title="GitHub thread" aria-label="GitHub thread">&#9635;</b></span><code>                Err(RpcError::Timeout) if policy.should_retry(attempt) =&gt; {</code></div>
+<div class="l"><span class="n">100</span><span class="g"></span><code>                    let delay = policy.backoff(attempt);</code></div>
+<div class="l"><span class="n">101</span><span class="g"></span><code>                    tracing::warn!(attempt, ?delay, method = %req.method, "rpc timeout; retrying");</code></div>
+<div class="l"><span class="n">102</span><span class="g"></span><code>                    tokio::time::sleep(delay).await;</code></div>
+<div class="l"><span class="n">103</span><span class="g"></span><code>                }</code></div>
+</div>
+<div class="hl m" data-label="MEDIUM RISK">
+<div class="l"><span class="n">104</span><span class="g"><b title="Annotation" aria-label="Annotation">&#9670;</b></span><code>                Err(RpcError::Timeout) =&gt; {</code></div>
+<div class="l"><span class="n">105</span><span class="g"></span><code>                    return Err(RpcError::Exhausted { attempts: attempt });</code></div>
+<div class="l"><span class="n">106</span><span class="g"></span><code>                }</code></div>
+</div>
+<div class="l"><span class="n">107</span><span class="g"></span><code>                Err(e) =&gt; return Err(e),</code></div>
+<div class="l"><span class="n">108</span><span class="g"></span><code>            }</code></div>
+<div class="l"><span class="n">109</span><span class="g"></span><code>        }</code></div>
+<div class="l"><span class="n">110</span><span class="g"></span><code>    }</code></div>
+    </div>
+    <div>
+     <h3>Behaviour</h3><div class="wasis"><div><h3>Was</h3>One attempt per call.</div><div><h3>Is</h3>Up to 3 attempts for any method that times out.</div></div>
+     <h3>Consequences</h3><ul class="small"><li><code>mempool::broadcast_tx</code> may send a transaction twice <span style="color:var(--low);font-weight:700">outside diff</span>.</li></ul>
+     <h3 style="margin-top:8px">Assessment</h3><p class="small"><span class="b b-h">suspected bug</span> confidence 0.70. Skip retry for non-idempotent methods. <span class="b b-llm">LLM-claimed</span></p>
+     <h3 style="margin-top:8px">GitHub thread</h3><div class="thread small"><span class="who">@mira-k</span>: Do we really want to retry every method?</div>
+     <p class="small"><a href="04-group-workspace.html#h-a1">Open with full inspector &rarr;</a></p>
+    </div>
+   </div>
+  </section>
+
+  <section class="step card" id="st5" hidden aria-labelledby="st5-t">
+   <div class="row"><h1 id="st5-t" style="font-size:18px">Default timeout 30&nbsp;s &rarr; 5&nbsp;s</h1><span class="b b-m">MEDIUM</span><span class="b b-cls">behavioural</span><span class="b b-llm">LLM-claimed</span><span class="sp"></span>
+    <button class="btn sm" data-act="rev" aria-pressed="false">Mark reviewed <kbd>x</kbd></button></div>
+   <p class="muted small"><code>src/config.rs</code> L19&ndash;26 (excerpt) &middot; group 2</p>
+   <div class="stepgrid">
+    <div class="code" role="group" aria-label="src/config.rs lines 19 to 26">
+<div class="l"><span class="n">19</span><span class="g"></span><code>impl Default for RpcConfig {</code></div>
+<div class="l"><span class="n">20</span><span class="g"></span><code>    fn default() -&gt; Self {</code></div>
+<div class="l"><span class="n">21</span><span class="g"></span><code>        Self {</code></div>
+<div class="l"><span class="n">22</span><span class="g"></span><code>            endpoint: default_endpoint(),</code></div>
+<div class="hl m" data-label="MEDIUM RISK">
+<div class="l"><span class="n">23</span><span class="g"><b title="Annotation" aria-label="Annotation">&#9670;</b></span><code>            timeout: Duration::from_secs(5),</code></div>
+</div>
+<div class="l"><span class="n">24</span><span class="g"></span><code>        }</code></div>
+<div class="l"><span class="n">25</span><span class="g"></span><code>    }</code></div>
+<div class="l"><span class="n">26</span><span class="g"></span><code>}</code></div>
+    </div>
+    <div>
+     <h3>Behaviour</h3><div class="wasis"><div><h3>Was</h3>30&nbsp;s per request.</div><div><h3>Is</h3>5&nbsp;s per attempt.</div></div>
+     <h3>Outside the diff</h3><p class="small"><code>sync::fetch_headers</code> (<code>src/sync/mod.rs:61</code>, unchanged) downloads batches that take 10&ndash;20&nbsp;s and will now time out.</p>
+     <p class="small"><a href="04-group-workspace.html#h-g2">Open with full inspector &rarr;</a></p>
+    </div>
+   </div>
+  </section>
+
+  <section class="step card" id="nz1" data-noise="1" hidden aria-labelledby="nz1-t">
+   <div class="row"><h1 id="nz1-t" style="font-size:18px">Tests &mdash; 4 files, 212 lines</h1><span class="b b-mv">noise</span><span class="b b-ok">verified: path_rule</span></div>
+   <p class="small">Adds retry and timeout tests. CI failing: <code>rpc::retry::exhausted_returns_error</code>. No highlighted code in the tour; open the files view to read them.</p>
+   <p><a class="btn sm" href="06-files.html">Open in Files</a></p>
+  </section>
+  <section class="step card" id="nz2" data-noise="1" hidden aria-labelledby="nz2-t">
+   <div class="row"><h1 id="nz2-t" style="font-size:18px"><code>build_request()</code> extracted</h1><span class="b b-mv">pure refactor</span><span class="b b-ok">verified: identical (token_hash)</span></div>
+   <p class="small">41 lines moved out of <code>send()</code>, unchanged. Nothing to review.</p>
+  </section>
+
+  <div class="stepnav"><button class="btn" id="prev" type="button">&larr; Previous</button><button class="btn pri" id="next" type="button">Next &rarr;</button><span class="small muted">Review marks here are shared with the group workspace.</span></div>
+ </main>
+</div>
+<script src="mockup.js"></script>
+</body>
+</html>
