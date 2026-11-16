@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Seed helpers for tests of dependent crates (`repo::analyses::testing`); never enabled in release builds.
+test-util = []
+
 [dependencies]
 contracts.workspace = true
 chrono.workspace = true
