@@ -29,8 +29,8 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | POST | `/api/v1/analyses/{id}/cancel` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/retry` | session_csrf | – | `AnalysisSummary` |
 | GET | `/api/v1/analyses/{id}/tour` | session | – | `Tour` (409 `analysis_not_finished` before) |
-| GET | `/api/v1/analyses/{id}/lines` | session | `RangeQuery` | `LinesResponse` (409 `analysis_not_finished` before the analysis base is stored) |
-| GET | `/api/v1/analyses/{id}/diff` | session | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis base is stored) |
+| GET | `/api/v1/analyses/{id}/lines` | session | `RangeQuery` | `LinesResponse` (409 `analysis_not_finished` before the analysis is ready) |
+| GET | `/api/v1/analyses/{id}/diff` | session | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis is ready) |
 | GET / PUT | `/api/v1/analyses/{id}/review-state` | session / session_csrf | – / `ReviewState` | `ReviewState` / 204 |
 | GET | `/api/v1/analyses/{id}/questions` | session | – | `AskQuestion[]` |
 | POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` |
@@ -53,8 +53,10 @@ mapping, query rules and the endpoint × fixture-state inventory.
   `total_lines`; its `lines` hold at most `RangeQuery::MAX_LINES` removed lines per response, shared by the
   blocks in order (a block past the budget has empty `lines`). `lines.len() < total_lines` means truncated: read
   the rest with `side=base` from `base_start + lines.len()`.
-- **Analysis base**: `POST /analyses` stores the PR's base tip; the pipeline replaces it with the merge base of
-  base tip and head before any job runs. `lines` and `diff` answer `analysis_not_finished` until then.
+- **Analysis base**: the analysed diff is GitHub's three-dot comparison, from the merge base of the PR's base
+  tip and head to the head. An analysis is ready to serve code when its stored base is the merge base of its
+  stored base and head, both commits being in the server's mirror (fetched on demand); no job runs before
+  that. `lines` and `diff` answer `analysis_not_finished` while it is not ready.
 - **Commenting** (ADR-006): `LinesResponse.comments` is `in_diff {line_thread_ranges}` or `not_in_diff`; a create
   request for a `not_in_diff` target is `position_rejected` without a GitHub call. `commenting_available` is
   false (and comment routes answer `app_not_installed`) when the GitHub App is not installed on the PR repo.
@@ -80,7 +82,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `csrf_rejected` | 403 | missing or wrong `X-CSRF-Token` |
 | `not_found` | 404 | unknown or not visible |
 | `conflict` | 409 | state conflict (e.g. analysis already live for this head) |
-| `analysis_not_finished` | 409 | tour, questions before `finished`; lines, diff before the analysis base is stored |
+| `analysis_not_finished` | 409 | tour, questions before `finished`; lines, diff before the analysis is ready (stored base is the merge base) |
 | `pr_head_changed` | 409 | comment write when the PR head moved |
 | `private_repository` | 422 | v1 is public repositories only |
 | `app_not_installed` | 422 | comment routes without the App on the PR repo |
