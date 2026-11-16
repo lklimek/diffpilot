@@ -6,7 +6,7 @@ use std::path::Path;
 
 use analysis::diff::FileDiff;
 use analysis::lines::{
-    changed_lines, deleted_blocks, deletion_markers, line_window, thread_ranges,
+    LineWindow, changed_lines_within, deleted_blocks, deletion_markers, line_window, thread_ranges,
 };
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::code::{CommentScope, DeletedBlock, LinesResponse, RangeQuery};
@@ -46,18 +46,18 @@ pub async fn read(
     let text = read_blob(&mirror, commit, &query.path)
         .await?
         .ok_or(LinesError::FileNotFound)?;
-    let (total_lines, shown_lines) = line_window(&text, query.from, query.to);
+    let LineWindow {
+        total_lines,
+        from,
+        to,
+        lines,
+    } = line_window(&text, query.from, query.to);
     drop(text);
-    let (from, to) = (query.from, query.to.min(total_lines));
-    let shown = |line: &u32| (from..=to).contains(line);
 
     let file = files
         .iter()
         .find(|file| file.path_on(query.side) == Some(query.path.as_str()));
-    let changed: Vec<u32> = changed_lines(&files, &query.path, query.side)
-        .into_iter()
-        .filter(shown)
-        .collect();
+    let changed = changed_lines_within(&files, &query.path, query.side, from, to);
     let deleted = match (query.side, file) {
         (LineSide::Head, Some(file)) => {
             removed_code(&mirror, &summary.pr.base_sha, file, from, to).await?
@@ -76,7 +76,7 @@ pub async fn read(
         from,
         to,
         total_lines,
-        lines: shown_lines,
+        lines,
         changed,
         deleted,
         // TODO(WP3-PREPASS): moved blocks from the deterministic move detection.

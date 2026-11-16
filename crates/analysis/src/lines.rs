@@ -18,23 +18,39 @@ pub struct DeletionMarker {
     pub base: LineSpan,
 }
 
-/// The line count of `bytes` and its lines `from..=to` (1-based, `str::lines` rules); only the lines in the
-/// window are decoded.
-pub fn line_window(bytes: &[u8], from: u32, to: u32) -> (u32, Vec<String>) {
-    let mut shown = Vec::new();
-    if bytes.is_empty() {
-        return (0, shown);
-    }
-    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+/// A window of a file: its line count and the requested lines clamped to the file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LineWindow {
+    /// Lines in the file.
+    pub total_lines: u32,
+    /// First requested line.
+    pub from: u32,
+    /// Last requested line, at most `total_lines`.
+    pub to: u32,
+    /// Lines `from..=to`.
+    pub lines: Vec<String>,
+}
+
+/// The window `from..=to` of the file `bytes` (1-based, `str::lines` rules); only its lines are decoded.
+pub fn line_window(bytes: &[u8], from: u32, to: u32) -> LineWindow {
+    let mut lines = Vec::new();
     let mut total = 0u32;
-    for line in body.split(|&byte| byte == b'\n') {
-        total = total.saturating_add(1);
-        if (from..=to).contains(&total) {
-            let line = line.strip_suffix(b"\r").unwrap_or(line);
-            shown.push(String::from_utf8_lossy(line).into_owned());
+    if !bytes.is_empty() {
+        let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+        for line in body.split(|&byte| byte == b'\n') {
+            total = total.saturating_add(1);
+            if (from..=to).contains(&total) {
+                let line = line.strip_suffix(b"\r").unwrap_or(line);
+                lines.push(String::from_utf8_lossy(line).into_owned());
+            }
         }
     }
-    (total, shown)
+    LineWindow {
+        total_lines: total,
+        from,
+        to: to.min(total),
+        lines,
+    }
 }
 
 /// The deletion markers of `file` between head lines `from - 1` and `to`, in file order.
@@ -103,8 +119,14 @@ pub fn deleted_blocks(
     blocks
 }
 
-/// Lines changed by the pull request in one file on one side.
-pub fn changed_lines(files: &[FileDiff], path: &str, side: LineSide) -> Vec<u32> {
+/// Lines changed by the pull request in one file on one side, within `from..=to`, sorted.
+pub fn changed_lines_within(
+    files: &[FileDiff],
+    path: &str,
+    side: LineSide,
+    from: u32,
+    to: u32,
+) -> Vec<u32> {
     let mut lines: Vec<u32> = files
         .iter()
         .filter(|file| file.path_on(side) == Some(path))
@@ -114,10 +136,25 @@ pub fn changed_lines(files: &[FileDiff], path: &str, side: LineSide) -> Vec<u32>
             LineSide::Base => &hunk.removed,
         })
         .copied()
+        .filter(|line| (from..=to).contains(line))
         .collect();
     lines.sort_unstable();
     lines.dedup();
     lines
+}
+
+/// Lines changed by the pull request on either side, over all files (the size of the change).
+pub fn changed_line_count(files: &[FileDiff]) -> u32 {
+    files
+        .iter()
+        .flat_map(|file| &file.hunks)
+        .map(|hunk| hunk.base.len.saturating_add(hunk.head.len))
+        .fold(0, u32::saturating_add)
+}
+
+/// `inner` lies within `outer`.
+pub fn contains_range(outer: &LineRange, inner: &LineRange) -> bool {
+    outer.start_line <= inner.start_line && inner.end_line <= outer.end_line
 }
 
 /// Sorted lines as ranges of consecutive lines.
@@ -200,14 +237,50 @@ mod tests {
         }
     }
 
+    fn window(total_lines: u32, from: u32, to: u32, lines: &[&str]) -> LineWindow {
+        LineWindow {
+            total_lines,
+            from,
+            to,
+            lines: lines.iter().map(|line| (*line).to_owned()).collect(),
+        }
+    }
+
     #[test]
-    fn line_window_counts_all_lines_and_decodes_the_window() {
+    fn line_window_counts_all_lines_and_clamps_the_window() {
         assert_eq!(
             line_window(b"a\r\nb\nc\n", 2, 5),
-            (3, vec!["b".to_owned(), "c".to_owned()])
+            window(3, 2, 3, &["b", "c"])
         );
-        assert_eq!(line_window(b"", 1, 1), (0, Vec::new()));
-        assert_eq!(line_window(b"a\nb", 1, 1), (2, vec!["a".to_owned()]));
+        assert_eq!(line_window(b"", 1, 1), window(0, 1, 0, &[]));
+        assert_eq!(line_window(b"a\nb", 1, 1), window(2, 1, 1, &["a"]));
+    }
+
+    #[test]
+    fn changed_lines_are_counted_and_kept_within_a_range() {
+        let file = |path: &str| FileDiff {
+            path: path.to_owned(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            hunks: vec![hunk((2, 1), (2, 3)), hunk((9, 2), (11, 0))],
+        };
+        let files = [file("a.rs"), file("b.rs")];
+        assert_eq!(
+            changed_lines_within(&files, "a.rs", LineSide::Head, 3, 9),
+            [3, 4]
+        );
+        assert_eq!(
+            changed_lines_within(&files, "a.rs", LineSide::Base, 1, 100),
+            [2, 9, 10]
+        );
+        assert!(changed_lines_within(&files, "c.rs", LineSide::Head, 1, 100).is_empty());
+        assert_eq!(changed_line_count(&files), 12);
+        let outer = range(3, 9);
+        assert!(contains_range(&outer, &range(3, 9)));
+        assert!(contains_range(&outer, &range(4, 5)));
+        assert!(!contains_range(&outer, &range(2, 5)));
+        assert!(!contains_range(&outer, &range(8, 10)));
     }
 
     #[test]

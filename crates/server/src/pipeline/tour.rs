@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use analysis::diff::FileDiff;
-use analysis::lines::{changed_lines, ranges};
+use analysis::lines::{changed_lines_within, contains_range, ranges};
 use analysis::order::{OrderInput, tour_order};
 use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
@@ -274,10 +274,13 @@ fn project_flow(
                             .steps
                             .iter()
                             .find(|step| {
+                                let step_range = LineRange {
+                                    start_line: step.start_line,
+                                    end_line: step.end_line,
+                                };
                                 step.file == site.file
                                     && step.side == site.side
-                                    && step.start_line <= site.start_line
-                                    && site.end_line <= step.end_line
+                                    && contains_range(&step_range, &range)
                             })
                             .and_then(|step| server_id(&step.id));
                         PatternSite {
@@ -325,10 +328,13 @@ fn project_step(
         start_line: step.start_line,
         end_line: step.end_line,
     };
-    let inside: Vec<u32> = changed_lines(files, &step.file, step.side)
-        .into_iter()
-        .filter(|line| (step.start_line..=step.end_line).contains(line))
-        .collect();
+    let inside = changed_lines_within(
+        files,
+        &step.file,
+        step.side,
+        range.start_line,
+        range.end_line,
+    );
     let annotations = step
         .annotations
         .iter()

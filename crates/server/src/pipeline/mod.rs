@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use analysis::diff::{self, DiffError, FileDiff};
+use analysis::lines::changed_line_count;
 use chrono::Utc;
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::plan::PlanOutput;
@@ -377,12 +378,7 @@ impl Driver<'_> {
             }
             JobStage::Ask(_) => return Err(self.invalid(&stage, "not a pipeline stage")),
         };
-        let changed_lines = self
-            .files
-            .iter()
-            .flat_map(|file| &file.hunks)
-            .map(|hunk| hunk.base.len.saturating_add(hunk.head.len))
-            .fold(0u32, u32::saturating_add);
+        let changed_lines = changed_line_count(&self.files);
         let spec = JobSpec {
             job_id: JobId::new_random(),
             attempt: 0,
