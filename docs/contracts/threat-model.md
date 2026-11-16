@@ -63,7 +63,7 @@ only**. `[S6-2]` = pending S6 part 2 (§10).
 | T1d | Before the compaction turn and at job end: kill every uid-`agent` process, then regenerate `config.toml` (before compaction) or copy back (at end) | WP3-RUN | `agent_processes_killed_at_job_end` (agent starts `nohup sleep`); `config_regenerated_before_compaction` |
 | T1e | **Does not hold**: the per-job `auth.json` copy and `config.toml` (installation token, MemCan bearer) are readable by `agent` — Codex needs them in-process (AR-4) | — | — |
 | T2 | Codex starts with a constructed environment (cleared + allow-list: `HOME`, `PATH`, `CODEX_HOME`, `TMPDIR`, `LANG`, proxy variables and twins, `NO_PROXY` without the MemCan host); **no secret in Codex's env**: installation token only in `[mcp_servers.github].env` (S5), MemCan bearer only in `http_headers` of the per-job config, never `bearer_token_env_var` (`[S6-2]`) | WP3-RUN | `codex_env_has_no_secret`: canaries for job token, runner secret, installation token, MemCan token absent from `/proc/<codex>/environ` and from an agent `env` command |
-| T3a | Mint body always has explicit `permissions = {contents, issues, metadata, pull_requests: read}` and explicit `repositories = [PR repository]` only, verified `private: false`; related repositories are not in the token (read as public data, S4 §1); response permissions/selection compared, mismatch → reject + revoke | WP3-APPTOKEN | `installation_token_read_only_permissions` (asserts the request body), `installation_token_repositories_pr_repo_only`, `mint_rejects_private_repo`, `mint_response_with_write_permission_rejected` |
+| T3a | Mint body always has explicit `permissions = {contents, issues, metadata, pull_requests: read}` and explicit `repositories = [PR repository]` only, verified `private: false`; related repositories are not in the token (read as public data, S4 §1); response permissions/selection compared, mismatch → reject + revoke. PR repository in no installation → no token and no `github-mcp-server` (`AgentAccess.github = None`): analysis runs (ingest with the user token), related work shown as "not checked", commenting disabled; never a token from another installation | WP3-APPTOKEN, WP3-RUN, WP3-PIPE | `installation_token_read_only_permissions` (asserts the request body), `installation_token_repositories_pr_repo_only`, `mint_rejects_private_repo`, `mint_response_with_write_permission_rejected`, `uninstalled_repo_job_has_no_github_access` (no mint call, config without `github`) |
 | T3b | Token minted at claim time, never stored in the jobs table; revoked (`DELETE /installation/token`) at every job end (success, failure, cancel, lease expiry); job runtime cap 45 min < 1 h lifetime | WP3-APPTOKEN, WP2-JOBS | `installation_token_revoked_on_job_end` (4 outcomes); `jobs_row_has_no_credentials` |
 | T3c | `github-mcp-server` 2.1.0: `--read-only`, `--tools=` the 10-tool allow-list, same `enabled_tools`, `get_me` excluded; token only in its `env`; `codex mcp list` never run or logged | WP3-RUN | `generated_config_github_read_only` (snapshot) |
 | T3d | User tokens, App key, client secret only in `server::{auth,github,secrets}`; never in `JobSpec`, claim response, events, logs | WP2-AUTH, WP3-APPTOKEN | `check-architecture.sh` grep; serialisation test of `JobSpec` + claim response; log capture |
@@ -136,16 +136,16 @@ Secrets in env → T2. Secrets in `CODEX_HOME` → not compensated, and would no
 | R11 | Partly: instruction-file notice accepted; bidi/invisible characters in the code view deferred after v1 | T14, AR-5 |
 | R12, R13, R14 | Accepted as proposed | T4, T7a + T7b, T4 + T12 |
 
-**Open for the coordinator:** PR repository not covered by any installation. The earlier decision (analysis
-allowed, comments disabled, token from any tenant installation) conflicts with T3a, which lists only the PR
-repository. Options: no `github-mcp-server` for such jobs (related work then from the agent's knowledge only), or
-list one public repository of another installation.
+**PR repository in no installation** (decided, option a): the job gets no GitHub token and no
+`github-mcp-server` (`AgentAccess.github = None`); the analysis runs, related work is "not checked", commenting is
+disabled. A token is never minted from another installation; supersedes the S4 decision "token from any tenant
+installation" (T3a).
 
 ## 8. Deviations from plan §5.4
 
 - **T1**: two uids via the root supervisor (T1b); the per-job `auth.json` and `config.toml` are agent-readable (T1e, AR-4).
 - **T2**: tightened — no token in Codex's env (plan allowed installation and MemCan tokens there).
-- **T3**: `repositories` = PR repository only (was PR repo + related repos); explicit `repositories`, public
+- **T3**: `repositories` = PR repository only (was PR repo + related repos); no token when the PR repository is in no installation; explicit `repositories`, public
   check, response check, claim-time minting, revocation at job end, 45-min cap added.
 - **T4**: "non-root" except the supervisor entrypoint; default seccomp/AppArmor stated; image without
   toolchains; `pids_limit`, `mem_limit`, tmpfs caps added.
