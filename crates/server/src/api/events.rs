@@ -140,44 +140,19 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use chrono::TimeDelta;
     use chrono::Utc;
     use contracts::api::analyses::AnalysisState;
     use db::repo::DEFAULT_TENANT;
     use db::repo::analyses::testing::{seed_analysis, seed_tenant};
-    use db::repo::sessions::NewSession;
     use serde_json::Value;
     use tower::ServiceExt;
 
     use super::*;
     use crate::api::router;
-    use crate::secrets::sha256;
     use crate::state::tests::test_state;
+    use crate::test_support::session_cookie;
 
     const WAIT: Duration = Duration::from_secs(10);
-
-    /// A session of user `u1` (seeded with the analysis) in `tenant`; returns its `Cookie` header value.
-    async fn session_cookie(state: &AppState, tenant: &str) -> String {
-        let token = format!("session-token-{tenant}");
-        let now = Utc::now();
-        state
-            .db
-            .sessions()
-            .create(
-                &NewSession {
-                    token_hash: &sha256(token.as_bytes()),
-                    tenant_id: tenant,
-                    user_id: "u1",
-                    csrf_token: "csrf",
-                    expires_at: now + TimeDelta::hours(1),
-                },
-                now,
-            )
-            .await
-            .expect("session");
-        // The test configuration's public URL is https, so the cookie carries the `__Host-` prefix.
-        format!("__Host-sr_session={token}")
-    }
 
     fn events_request(analysis: AnalysisId, cookie: Option<&str>) -> Request<Body> {
         let mut request = Request::get(ANALYSIS_EVENTS.path.replace("{id}", &analysis.to_string()));

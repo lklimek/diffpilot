@@ -5,6 +5,13 @@ use axum::Router;
 
 use crate::state::AppState;
 
+/// Security headers of every browser-facing response, web UI and API (threat model T7b); each adds its own CSP.
+pub(crate) const SECURITY_HEADERS: [(&str, &str); 3] = [
+    ("x-content-type-options", "nosniff"),
+    ("referrer-policy", "same-origin"),
+    ("x-frame-options", "DENY"),
+];
+
 /// Web UI routes.
 #[cfg(not(feature = "embed-ui"))]
 pub fn routes() -> Router<AppState> {
@@ -24,6 +31,8 @@ mod embedded {
     use axum::response::{IntoResponse, Response};
     use rust_embed::Embed;
 
+    use super::SECURITY_HEADERS;
+
     /// The built web UI (path relative to this crate).
     #[derive(Embed)]
     #[folder = "../../web/dist"]
@@ -32,15 +41,10 @@ mod embedded {
     const INDEX: &str = "index.html";
     /// Prefixes the UI never answers.
     const NOT_UI: [&str; 4] = ["/api/", "/auth/", "/runner/", "/healthz"];
-    const SECURITY_HEADERS: [(&str, &str); 4] = [
-        (
-            "content-security-policy",
-            "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-        ),
-        ("x-content-type-options", "nosniff"),
-        ("referrer-policy", "same-origin"),
-        ("x-frame-options", "DENY"),
-    ];
+    const CSP: (&str, &str) = (
+        "content-security-policy",
+        "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    );
 
     /// What a request path resolves to.
     #[derive(Debug, PartialEq, Eq)]
@@ -99,7 +103,7 @@ mod embedded {
             headers.insert(CONTENT_TYPE, value);
         }
         headers.insert(CACHE_CONTROL, HeaderValue::from_static(cache));
-        for (name, value) in SECURITY_HEADERS {
+        for (name, value) in SECURITY_HEADERS.into_iter().chain([CSP]) {
             headers.insert(name, HeaderValue::from_static(value));
         }
         response
@@ -114,7 +118,7 @@ mod embedded {
             let response = serve(Method::GET, Uri::from_static("/analyses/1/tour")).await;
             assert_eq!(response.status(), StatusCode::OK);
             let headers = response.headers();
-            for (name, value) in SECURITY_HEADERS {
+            for (name, value) in SECURITY_HEADERS.into_iter().chain([CSP]) {
                 assert_eq!(
                     headers.get(name).and_then(|v| v.to_str().ok()),
                     Some(value),
