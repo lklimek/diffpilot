@@ -14,6 +14,12 @@ path = "src/main.rs"
 embed-ui = ["dep:rust-embed", "dep:mime_guess"]
 
 [dependencies]
+aes-gcm.workspace = true
+getrandom.workspace = true
+reqwest = { workspace = true, features = ["form"] }
+serde.workspace = true
+sha2.workspace = true
+uuid.workspace = true
 contracts.workspace = true
 analysis.workspace = true
 db.workspace = true
@@ -34,6 +40,7 @@ tracing-subscriber.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+wiremock.workspace = true
 http-body-util.workspace = true
 tower.workspace = true
 
