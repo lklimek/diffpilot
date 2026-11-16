@@ -48,8 +48,7 @@ can judge the PR at project scale, not only line by line.
   assessment; assessment is collapsed until clicked. LLM suspicions are phrased as questions to check, not
   verdicts. The hover tooltip on a highlight states only the was → is fact: no risk, no verdict.
 - **No numeric confidence** anywhere (no decimals, no percentages). Observed facts carry a line reference;
-  inferences are marked as inferences; hedges survive shortening. Call hierarchies are stated as a search
-  result, not a complete list.
+  inferences are marked as inferences; hedges survive shortening.
 - **LLM-classified refactors** (LLM says "pure refactor" or "rename", no deterministic confirmation) are
   shown as normal flows with that label, never collapsed (§3, §4.3).
 
