@@ -78,6 +78,14 @@ jobs:
         run: rustup toolchain install --no-self-update && cargo --version
       - name: Shellcheck
         run: shellcheck scripts/*.sh
+      # Script tests (schema-smoke archive must not follow symlinks). Python libraries come from apt, pinned to
+      # the Ubuntu 24.04 archive versions (project policy: no pip).
+      - name: Install Python test dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends python3-pytest=7.4.4-1 python3-jsonschema=4.10.3-2ubuntu1
+      - name: Script tests
+        run: python3 -m pytest -q scripts/tests
       - name: Architecture check self-test
         run: scripts/check-architecture.sh --self-test
       - name: Architecture check
