@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use analysis::diff::FileDiff;
+use analysis::lines::{changed_lines, ranges};
 use analysis::order::{OrderInput, tour_order};
 use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
@@ -32,38 +33,6 @@ pub enum TourError {
     /// A planned flow has no stored analysis.
     #[error("flow {0} has no stored analysis")]
     MissingFlow(FlowId),
-}
-
-/// Lines changed by the pull request in one file on one side.
-pub fn changed_lines(files: &[FileDiff], path: &str, side: LineSide) -> Vec<u32> {
-    let mut lines: Vec<u32> = files
-        .iter()
-        .filter(|file| file.path_on(side) == Some(path))
-        .flat_map(|file| &file.hunks)
-        .flat_map(|hunk| match side {
-            LineSide::Head => &hunk.added,
-            LineSide::Base => &hunk.removed,
-        })
-        .copied()
-        .collect();
-    lines.sort_unstable();
-    lines.dedup();
-    lines
-}
-
-/// Sorted lines as ranges of consecutive lines.
-pub fn ranges(lines: &[u32]) -> Vec<LineRange> {
-    let mut out: Vec<LineRange> = Vec::new();
-    for &line in lines {
-        match out.last_mut() {
-            Some(last) if last.end_line + 1 == line => last.end_line = line,
-            _ => out.push(LineRange {
-                start_line: line,
-                end_line: line,
-            }),
-        }
-    }
-    out
 }
 
 /// GitHub permalinks into the analysed repository.
@@ -416,23 +385,5 @@ fn project_step(
             moved_from: step.moved_from.clone(),
             impact,
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn consecutive_lines_merge_into_ranges() {
-        let range = |start_line, end_line| LineRange {
-            start_line,
-            end_line,
-        };
-        assert_eq!(
-            ranges(&[3, 5, 6, 7, 10]),
-            [range(3, 3), range(5, 7), range(10, 10)]
-        );
-        assert!(ranges(&[]).is_empty());
     }
 }

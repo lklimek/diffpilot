@@ -1,0 +1,305 @@
+//! Line arithmetic for showing a file by line range: the window of a file, removed blocks at their deletion
+//! markers, changed lines and the lines GitHub accepts line threads on. Pure functions over file bytes and hunks.
+
+use contracts::api::code::DeletedBlock;
+use contracts::common::{LineRange, LineSide};
+
+use crate::diff::{FileDiff, LineSpan};
+
+/// Context lines GitHub shows around a change; lines inside them can carry a line thread (ADR-006).
+pub const DIFF_CONTEXT: u32 = 3;
+
+/// A deletion marker on the head side: base lines removed after a head line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeletionMarker {
+    /// Head line after which the code was removed; 0 = before the first line.
+    pub after_line: u32,
+    /// The removed lines at the base commit.
+    pub base: LineSpan,
+}
+
+/// The line count of `bytes` and its lines `from..=to` (1-based, `str::lines` rules); only the lines in the
+/// window are decoded.
+pub fn line_window(bytes: &[u8], from: u32, to: u32) -> (u32, Vec<String>) {
+    let mut shown = Vec::new();
+    if bytes.is_empty() {
+        return (0, shown);
+    }
+    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    let mut total = 0u32;
+    for line in body.split(|&byte| byte == b'\n') {
+        total = total.saturating_add(1);
+        if (from..=to).contains(&total) {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            shown.push(String::from_utf8_lossy(line).into_owned());
+        }
+    }
+    (total, shown)
+}
+
+/// The deletion markers of `file` between head lines `from - 1` and `to`, in file order.
+pub fn deletion_markers(file: &FileDiff, from: u32, to: u32) -> Vec<DeletionMarker> {
+    file.hunks
+        .iter()
+        .filter(|hunk| hunk.base.len > 0)
+        .map(|hunk| DeletionMarker {
+            after_line: if hunk.head.len == 0 {
+                hunk.head.start
+            } else {
+                hunk.head.start.saturating_sub(1)
+            },
+            base: hunk.base,
+        })
+        .filter(|marker| marker.after_line + 1 >= from && marker.after_line <= to)
+        .collect()
+}
+
+/// The removed code of every marker, read from the base file `base_text`; at most `budget` removed lines in
+/// total, in marker order (`lines.len() < total_lines` marks a truncated block).
+pub fn deleted_blocks(
+    markers: &[DeletionMarker],
+    base_text: &[u8],
+    mut budget: u32,
+) -> Vec<DeletedBlock> {
+    let mut blocks = Vec::with_capacity(markers.len());
+    let mut wanted = Vec::with_capacity(markers.len());
+    for &DeletionMarker {
+        after_line,
+        base: span,
+    } in markers
+    {
+        let take = span.len.min(budget);
+        budget -= take;
+        if take > 0 {
+            wanted.push((blocks.len(), span.start..=span.start + take - 1));
+        }
+        blocks.push(DeletedBlock {
+            after_line,
+            base_start: span.start,
+            lines: Vec::new(),
+            total_lines: span.len,
+        });
+    }
+    // One pass over the base file; hunks are in file order and do not overlap.
+    let body = base_text.strip_suffix(b"\n").unwrap_or(base_text);
+    let mut next = 0;
+    for (number, line) in (1u32..).zip(body.split(|&byte| byte == b'\n')) {
+        while wanted
+            .get(next)
+            .is_some_and(|(_, range)| *range.end() < number)
+        {
+            next += 1;
+        }
+        let Some((block, range)) = wanted.get(next) else {
+            break;
+        };
+        if let Some(target) = blocks.get_mut(*block).filter(|_| range.contains(&number)) {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            target
+                .lines
+                .push(String::from_utf8_lossy(line).into_owned());
+        }
+    }
+    blocks
+}
+
+/// Lines changed by the pull request in one file on one side.
+pub fn changed_lines(files: &[FileDiff], path: &str, side: LineSide) -> Vec<u32> {
+    let mut lines: Vec<u32> = files
+        .iter()
+        .filter(|file| file.path_on(side) == Some(path))
+        .flat_map(|file| &file.hunks)
+        .flat_map(|hunk| match side {
+            LineSide::Head => &hunk.added,
+            LineSide::Base => &hunk.removed,
+        })
+        .copied()
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+/// Sorted lines as ranges of consecutive lines.
+pub fn ranges(lines: &[u32]) -> Vec<LineRange> {
+    let mut out: Vec<LineRange> = Vec::new();
+    for &line in lines {
+        match out.last_mut() {
+            Some(last) if last.end_line + 1 == line => last.end_line = line,
+            _ => out.push(LineRange {
+                start_line: line,
+                end_line: line,
+            }),
+        }
+    }
+    out
+}
+
+/// The diff hunks of `file` on `side` with GitHub's context lines, merged and clipped to `from..=to`.
+pub fn thread_ranges(
+    file: &FileDiff,
+    side: LineSide,
+    total: u32,
+    from: u32,
+    to: u32,
+) -> Vec<LineRange> {
+    let mut lines: Vec<u32> = Vec::new();
+    for hunk in &file.hunks {
+        let span = match side {
+            LineSide::Head => hunk.head,
+            LineSide::Base => hunk.base,
+        };
+        let (start, end) = if span.len == 0 {
+            // Lines were added or removed after `start`: context on both sides of the gap.
+            (
+                span.start.saturating_sub(DIFF_CONTEXT - 1),
+                span.start + DIFF_CONTEXT,
+            )
+        } else {
+            (
+                span.start.saturating_sub(DIFF_CONTEXT),
+                span.start + span.len - 1 + DIFF_CONTEXT,
+            )
+        };
+        lines.extend(start.max(from).max(1)..=end.min(total).min(to));
+    }
+    lines.sort_unstable();
+    lines.dedup();
+    ranges(&lines)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::diff::{FileStatus, Hunk};
+    use contracts::ids::HunkId;
+
+    use super::*;
+
+    fn hunk(base: (u32, u32), head: (u32, u32)) -> Hunk {
+        let base = LineSpan {
+            start: base.0,
+            len: base.1,
+        };
+        let head = LineSpan {
+            start: head.0,
+            len: head.1,
+        };
+        Hunk {
+            id: HunkId("h".to_owned()),
+            base,
+            head,
+            added: (head.start..head.start + head.len).collect(),
+            removed: (base.start..base.start + base.len).collect(),
+        }
+    }
+
+    fn range(start_line: u32, end_line: u32) -> LineRange {
+        LineRange {
+            start_line,
+            end_line,
+        }
+    }
+
+    #[test]
+    fn line_window_counts_all_lines_and_decodes_the_window() {
+        assert_eq!(
+            line_window(b"a\r\nb\nc\n", 2, 5),
+            (3, vec!["b".to_owned(), "c".to_owned()])
+        );
+        assert_eq!(line_window(b"", 1, 1), (0, Vec::new()));
+        assert_eq!(line_window(b"a\nb", 1, 1), (2, vec!["a".to_owned()]));
+    }
+
+    #[test]
+    fn deleted_blocks_share_the_budget_and_keep_every_marker() {
+        let base: String = (1..=10).map(|n| format!("line {n}\n")).collect();
+        let file = FileDiff {
+            path: "a.txt".to_owned(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            hunks: vec![
+                hunk((2, 3), (1, 0)),
+                hunk((7, 1), (3, 0)),
+                hunk((9, 1), (4, 0)),
+            ],
+        };
+        let markers = deletion_markers(&file, 1, 5);
+        assert_eq!(
+            markers.iter().map(|m| m.after_line).collect::<Vec<_>>(),
+            [1, 3, 4]
+        );
+        let blocks = deleted_blocks(&markers, base.as_bytes(), 4);
+        let shape: Vec<(u32, u32, Vec<&str>, u32)> = blocks
+            .iter()
+            .map(|b| {
+                let lines = b.lines.iter().map(String::as_str).collect();
+                (b.after_line, b.base_start, lines, b.total_lines)
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (1, 2, vec!["line 2", "line 3", "line 4"], 3),
+                (3, 7, vec!["line 7"], 1),
+                (4, 9, vec![], 1),
+            ]
+        );
+        assert!(deletion_markers(&file, 6, 6).is_empty());
+    }
+
+    #[test]
+    fn thread_ranges_follow_github_context_lines() {
+        // src/rpc/client.rs of the fixture (api-seed lines, both sides).
+        let file = FileDiff {
+            path: "src/rpc/client.rs".to_owned(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            hunks: vec![
+                hunk((34, 0), (35, 1)),
+                hunk((41, 1), (42, 1)),
+                hunk((52, 11), (52, 0)),
+                hunk((99, 1), (89, 1)),
+                hunk((101, 3), (91, 19)),
+                hunk((105, 0), (112, 41)),
+                hunk((173, 42), (219, 0)),
+            ],
+        };
+        assert_eq!(
+            thread_ranges(&file, LineSide::Head, 224, 1, 224),
+            [
+                range(32, 45),
+                range(50, 55),
+                range(86, 155),
+                range(217, 222)
+            ]
+        );
+        assert_eq!(
+            thread_ranges(&file, LineSide::Base, 219, 1, 219),
+            [
+                range(32, 44),
+                range(49, 65),
+                range(96, 108),
+                range(170, 217)
+            ]
+        );
+        assert_eq!(
+            thread_ranges(&file, LineSide::Head, 224, 40, 52),
+            [range(40, 45), range(50, 52)]
+        );
+    }
+
+    #[test]
+    fn consecutive_lines_merge_into_ranges() {
+        let range = |start_line, end_line| LineRange {
+            start_line,
+            end_line,
+        };
+        assert_eq!(
+            ranges(&[3, 5, 6, 7, 10]),
+            [range(3, 3), range(5, 7), range(10, 10)]
+        );
+        assert!(ranges(&[]).is_empty());
+    }
+}
