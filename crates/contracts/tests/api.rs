@@ -468,14 +468,14 @@ fn no_floats_in_api_types() {
     }
 }
 
-fn lines(side: LineSide, total_lines: u32, deleted: Vec<DeletedBlock>) -> LinesResponse {
+fn lines(side: LineSide, total_lines: u8, deleted: Vec<DeletedBlock>) -> LinesResponse {
     LinesResponse {
         path: "src/rpc/old.rs".to_owned(),
         side,
         from: 1,
-        to: total_lines,
-        total_lines,
-        lines: vec!["x".to_owned(); usize::try_from(total_lines).expect("small")],
+        to: u32::from(total_lines),
+        total_lines: u32::from(total_lines),
+        lines: vec!["x".to_owned(); usize::from(total_lines)],
         changed: vec![],
         deleted,
         moved: vec![],
@@ -611,6 +611,6 @@ fn settings_lists_known_repositories() {
 
 #[test]
 fn flow_facts_have_no_changed_line_counter() {
-    let json = serde_json::to_value(&tour()).expect("serialises");
+    let json = serde_json::to_value(tour()).expect("serialises");
     assert!(json["flows"][0]["facts"].get("changed_lines").is_none());
 }
