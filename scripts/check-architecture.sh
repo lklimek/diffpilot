@@ -6,13 +6,21 @@
 #   scripts/check-architecture.sh                    check the workspace
 #   scripts/check-architecture.sh --metadata FILE    check a saved `cargo metadata --no-deps` JSON
 #   scripts/check-architecture.sh --self-test        prove the check fails on injected violations
+#
+# Not caught here (left to review, plan §4.2): hand-written GitHub HTTP calls through a generic client
+# (reqwest) outside server::github; sqlx types leaking through db's public API (A2); database or GitHub
+# crates whose names match none of the patterns below, or that arrive transitively through another
+# crate; module-level ownership inside a crate (A3-A6).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Rules. Dependencies of every kind (normal, dev, build) count.
 # A1: workspace crates a member may depend on; any other member (tools/*) may depend only on contracts.
-# A2/§3: crates only one member may use (sqlx and SQLite only in db; GitHub client only in server).
+# A2/§3: crate families only one member may use, matched by name pattern:
+#   db only:     sqlx and sqlx-*, diesel*, sea-orm*, sea-query*, SQLite/PostgreSQL/MySQL drivers;
+#   server only: GitHub API clients (names containing "octo", "github" or "hubcaps": octocrab, octorust,
+#                github-rs, roctogen, ...).
 # A11: error crates nobody may use (thiserror typed errors instead).
 # shellcheck disable=SC2016 # jq program, not shell expansion
 RULES='
@@ -24,10 +32,12 @@ RULES='
     server: ["contracts", "analysis", "db"]
   };
   def default_allowed: ["contracts"];
-  def owner: {
-    "sqlx": "db", "sqlx-core": "db", "sqlx-sqlite": "db", "libsqlite3-sys": "db", "rusqlite": "db",
-    "octocrab": "server"
-  };
+  def owner:
+    if test("^(sqlx|diesel|sea-orm|sea-query)([-_].*)?$")
+      or test("^(rusqlite|tokio-rusqlite|libsqlite3-sys|postgres|tokio-postgres|mysql|mysql_async)$")
+    then "db"
+    elif test("octo|github|hubcaps") then "server"
+    else null end;
   def forbidden: ["anyhow", "eyre", "color-eyre"];
 
   [.packages[].name] as $members
@@ -39,8 +49,8 @@ RULES='
       | .name as $d
       | (select($members | index($d)) | select((allowed[$p.name] // default_allowed) | index($d) | not)
           | "A1: \($p.name) must not depend on workspace crate \($d) (\($kind))"),
-        (select(owner[$d] != null and owner[$d] != $p.name)
-          | "A2: \($d) is allowed only in crate \(owner[$d]), found in \($p.name) (\($kind))"),
+        (($d | owner) as $owner | select($owner != null and $owner != $p.name)
+          | "A2: \($d) is allowed only in crate \($owner), found in \($p.name) (\($kind))"),
         (select(forbidden | index($d))
           | "A11: \($p.name) depends on \($d) (\($kind)); use thiserror typed errors"))
 '
@@ -113,6 +123,15 @@ self_test() {
   with_dep server sqlx normal > "$tmp/8.json";        expect_fail "sqlx outside db" "$tmp/8.json" "sqlx is allowed only in crate db, found in server"
   with_dep runner libsqlite3-sys normal > "$tmp/9.json"; expect_fail "libsqlite3-sys outside db" "$tmp/9.json" "libsqlite3-sys is allowed only in crate db, found in runner"
   with_dep runner octocrab normal > "$tmp/10.json";   expect_fail "octocrab outside server" "$tmp/10.json" "octocrab is allowed only in crate server, found in runner"
+  with_dep server sqlx-postgres normal > "$tmp/16.json"; expect_fail "sqlx-* family outside db" "$tmp/16.json" "sqlx-postgres is allowed only in crate db, found in server"
+  with_dep analysis diesel normal > "$tmp/17.json";   expect_fail "diesel outside db" "$tmp/17.json" "diesel is allowed only in crate db, found in analysis"
+  with_dep contracts sea-orm dev > "$tmp/18.json";    expect_fail "sea-orm outside db" "$tmp/18.json" "sea-orm is allowed only in crate db, found in contracts"
+  with_dep runner tokio-postgres normal > "$tmp/19.json"; expect_fail "postgres driver outside db" "$tmp/19.json" "tokio-postgres is allowed only in crate db, found in runner"
+  with_dep runner github-rs normal > "$tmp/20.json";  expect_fail "github-rs outside server" "$tmp/20.json" "github-rs is allowed only in crate server, found in runner"
+  with_dep runner octorust normal > "$tmp/21.json";   expect_fail "octorust outside server" "$tmp/21.json" "octorust is allowed only in crate server, found in runner"
+  with_dep analysis hubcaps normal > "$tmp/22.json";  expect_fail "hubcaps outside server" "$tmp/22.json" "hubcaps is allowed only in crate server, found in analysis"
+  with_dep db sqlx-sqlite normal > "$tmp/23.json";    expect_pass "sqlx-sqlite in db" "$tmp/23.json"
+  with_dep server octocrab normal > "$tmp/24.json";   expect_pass "octocrab in server" "$tmp/24.json"
   with_dep analysis anyhow normal > "$tmp/11.json";   expect_fail "anyhow" "$tmp/11.json" "analysis depends on anyhow"
   with_dep server eyre dev > "$tmp/12.json";          expect_fail "eyre (dev)" "$tmp/12.json" "server depends on eyre"
   with_member fake-github server > "$tmp/13.json";    expect_fail "tool -> server" "$tmp/13.json" "fake-github must not depend on workspace crate server"
