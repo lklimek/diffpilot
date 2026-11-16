@@ -14,17 +14,20 @@
 #   SR_DEV_RUNNER_BIN       prebuilt runner with feature fake-provider
 #   SR_DEV_FAKE_GITHUB_BIN  prebuilt tools/fake-github
 #   RUST_LOG                log filter of all components (default: info)
+#   SR_DEV_GITHUB_RECORDINGS  recordings fake GitHub serves (default: fixtures/pr-482/github)
+#   SR_DEV_CLONE_URL        clone base (default: the fixture remote built into <state>/remotes)
+#   SR_DEV_RUNNER_LISTEN_ADDR  runner listener (default: 127.0.0.1:<free port>); for a runner in a container
 #
 # Environment set for the components (each starts from an empty environment plus these; the fixture clone
 # base build gets the `all` set):
 #   all          PATH (inherited), HOME=<state>/home (empty, isolates git config), LANG=C.UTF-8,
 #                NO_COLOR=1 (plain-text logs), RUST_LOG
 #   fake-github  FAKE_GITHUB_LISTEN        127.0.0.1:<free port>
-#                FAKE_GITHUB_FIXTURE_DIR   fixtures/pr-482/github
+#                FAKE_GITHUB_FIXTURE_DIR   = SR_DEV_GITHUB_RECORDINGS
 #                FAKE_GITHUB_APP_URL       = SR_PUBLIC_URL (callback <url>/auth/github/callback)
 #   server       SR_PUBLIC_URL             http://127.0.0.1:<public port> (plain HTTP: cookies not Secure)
 #                SR_LISTEN_ADDR            127.0.0.1:<public port>
-#                SR_RUNNER_LISTEN_ADDR     127.0.0.1:<free port> (runner protocol only)
+#                SR_RUNNER_LISTEN_ADDR     = SR_DEV_RUNNER_LISTEN_ADDR (runner protocol only)
 #                SR_DATA_DIR               <state>/server (SQLite database, bare mirrors)
 #                SR_SECRET_KEY             random 32 bytes, base64 (token encryption at rest)
 #                SR_RUNNER_SECRET          random hex, shared with the runner
@@ -34,10 +37,11 @@
 #                SR_GITHUB_APP_PRIVATE_KEY_FILE  <state>/github-app-key.pem (placeholder, not a key; unread in stage 2)
 #                SR_GITHUB_API_URL         http://127.0.0.1:<fake-github port>
 #                SR_GITHUB_OAUTH_URL       http://127.0.0.1:<fake-github port>
-#                SR_GITHUB_CLONE_URL       file://<state>/remotes (tools/fake-github/prepare-clone-base.sh)
+#                SR_GITHUB_CLONE_URL       = SR_DEV_CLONE_URL, default file://<state>/remotes
+#                                          (tools/fake-github/prepare-clone-base.sh)
 #                SR_MEMCAN_URL             http://127.0.0.1:<free port>/mcp (nothing listens: no fake MemCan yet)
 #                SR_MEMCAN_TOKEN           fake-memcan-token
-#   runner       SR_RUNNER_SERVER_URL      http://<SR_RUNNER_LISTEN_ADDR>
+#   runner       SR_RUNNER_SERVER_URL      http://<SR_RUNNER_LISTEN_ADDR>  (not started with --without runner)
 #                SR_RUNNER_SECRET          = the server's
 #                SR_RUNNER_ID              dev-runner
 #                SR_RUNNER_STATE_DIR       <state>/runner
@@ -129,6 +133,8 @@ for s in socks:
     s.bind(("127.0.0.1", 0))
 print(*(s.getsockname()[1] for s in socks))')
 public_port="${SR_DEV_PORT:-$free_public}"
+runner_addr="${SR_DEV_RUNNER_LISTEN_ADDR:-127.0.0.1:$runner_port}"
+recordings="${SR_DEV_GITHUB_RECORDINGS:-$repo/fixtures/pr-482/github}"
 url="http://127.0.0.1:$public_port"
 github="http://127.0.0.1:$github_port"
 # A reused state dir keeps its secrets: the database holds tokens encrypted with SR_SECRET_KEY.
@@ -140,12 +146,12 @@ echo "placeholder: stage 2 mints no GitHub App tokens" > "$state/github-app-key.
 
 common=(PATH="$PATH" HOME="$state/home" LANG=C.UTF-8 NO_COLOR=1 RUST_LOG="${RUST_LOG:-info}")
 # Empty environment: inherited GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE would redirect the fixture's git commands.
-[[ -d "$state/remotes/acme/node-client.git" ]] ||
+[[ -n "${SR_DEV_CLONE_URL:-}" || -d "$state/remotes/acme/node-client.git" ]] ||
   env -i "${common[@]}" "$repo/tools/fake-github/prepare-clone-base.sh" "$state/remotes" > /dev/null
 server_env=(
   SR_PUBLIC_URL="$url"
   SR_LISTEN_ADDR="127.0.0.1:$public_port"
-  SR_RUNNER_LISTEN_ADDR="127.0.0.1:$runner_port"
+  SR_RUNNER_LISTEN_ADDR="$runner_addr"
   SR_DATA_DIR="$state/server"
   SR_SECRET_KEY="$secret_key"
   SR_RUNNER_SECRET="$runner_secret"
@@ -155,12 +161,12 @@ server_env=(
   SR_GITHUB_APP_PRIVATE_KEY_FILE="$state/github-app-key.pem"
   SR_GITHUB_API_URL="$github"
   SR_GITHUB_OAUTH_URL="$github"
-  SR_GITHUB_CLONE_URL="file://$state/remotes"
+  SR_GITHUB_CLONE_URL="${SR_DEV_CLONE_URL:-file://$state/remotes}"
   SR_MEMCAN_URL="http://127.0.0.1:$memcan_port/mcp"
   SR_MEMCAN_TOKEN=fake-memcan-token
 )
 runner_env=(
-  SR_RUNNER_SERVER_URL="http://127.0.0.1:$runner_port"
+  SR_RUNNER_SERVER_URL="http://$runner_addr"
   SR_RUNNER_SECRET="$runner_secret"
   SR_RUNNER_ID=dev-runner
   SR_RUNNER_STATE_DIR="$state/runner"
@@ -187,7 +193,7 @@ wait_for() {
 
 if ! skipped fake-github; then
   start fake-github "$state" FAKE_GITHUB_LISTEN="127.0.0.1:$github_port" \
-    FAKE_GITHUB_FIXTURE_DIR="$repo/fixtures/pr-482/github" FAKE_GITHUB_APP_URL="$url" "$fake_github_bin"
+    FAKE_GITHUB_FIXTURE_DIR="$recordings" FAKE_GITHUB_APP_URL="$url" "$fake_github_bin"
   wait_for fake-github "$github/user"
 fi
 # The server reads a `.env` of its working directory or a parent: run it in the state dir.
@@ -201,7 +207,7 @@ fi
 
 echo "SR_DEV_URL=$url"
 echo "SR_DEV_STATE_DIR=$state"
-echo "smart-review dev stack ready at $url (sign in as $login; PR https://github.com/acme/node-client/pull/482)" >&2
+echo "smart-review dev stack ready at $url (sign in as $login; fixture PR https://github.com/acme/node-client/pull/482)" >&2
 echo "skipped: ${without[*]:-none}; logs: $state/logs; Ctrl+C stops the stack" >&2
 # Stop the stack when any component exits.
 wait -n

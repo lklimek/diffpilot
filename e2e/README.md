@@ -40,4 +40,5 @@ Component logs stay in the state directory the launcher prints (`<state>/logs/*.
 deploy/dev/stack.sh            # prints SR_DEV_URL=...; open it and sign in; Ctrl+C stops everything
 deploy/dev/stack.sh --help     # every input and every variable it sets
 deploy/dev/stack-check.sh      # launcher checks: git isolation, relative state dir, cleanup on start timeout
+deploy/dev/real-codex-smoke.sh # one analysis of a public PR with the real Codex provider (see its header)
 ```
