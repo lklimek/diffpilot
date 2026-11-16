@@ -25,11 +25,12 @@ Prebuilt binaries skip the build (e.g. on a host where builds must go through a 
 `SR_DEV_SERVER_BIN` (server, feature `embed-ui`, built after `npm run build` in `web/`), `SR_DEV_RUNNER_BIN`
 (runner, feature `fake-provider`), `SR_DEV_FAKE_GITHUB_BIN`.
 
-| Variable            | Effect                                                                                                 |
-| ------------------- | ------------------------------------------------------------------------------------------------------ |
-| `SR_E2E_STACK_ARGS` | Extra launcher arguments, e.g. `--without runner` (the test then fails: the analysis never finishes).  |
-| `SCREENSHOT_DIR`    | Saves sign-in, progress, PR context, flow introduction and step 1 at 1440 and 3440 px, light and dark. |
-| `RUST_LOG`          | Log level of the components (default `info`).                                                          |
+| Variable                  | Effect                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `SR_E2E_STACK_ARGS`       | Extra launcher arguments, e.g. `--without runner` (the test then fails: the analysis never finishes).  |
+| `SCREENSHOT_DIR`          | Saves sign-in, progress, PR context, flow introduction and step 1 at 1440 and 3440 px, light and dark. |
+| `RUST_LOG`                | Log level of the components (default `info`).                                                          |
+| `SR_E2E_START_TIMEOUT_MS` | Bound for the stack start, build included (default 15 min).                                            |
 
 Component logs stay in the state directory the launcher prints (`<state>/logs/*.log`).
 
@@ -38,4 +39,5 @@ Component logs stay in the state directory the launcher prints (`<state>/logs/*.
 ```sh
 deploy/dev/stack.sh            # prints SR_DEV_URL=...; open it and sign in; Ctrl+C stops everything
 deploy/dev/stack.sh --help     # every input and every variable it sets
+deploy/dev/stack-check.sh      # launcher checks: git isolation, relative state dir, cleanup on start timeout
 ```

@@ -6,7 +6,8 @@
 # Usage: deploy/dev/stack.sh [--without COMPONENT]...     COMPONENT: runner | fake-github
 #
 # Inputs (all optional):
-#   SR_DEV_STATE_DIR        state and logs (default: new dir /data/tmp/smart-review-dev.XXXXXX); kept on exit;
+#   SR_DEV_STATE_DIR        state and logs (default: new dir /data/tmp/smart-review-dev.XXXXXX; relative paths
+#                           are resolved against the working directory); kept on exit;
 #                           reusing it keeps the database, the clone base and the generated secrets
 #   SR_DEV_PORT             public port of the server (default: a free port)
 #   SR_DEV_SERVER_BIN       prebuilt server with feature embed-ui; with the two below, nothing is built
@@ -14,7 +15,8 @@
 #   SR_DEV_FAKE_GITHUB_BIN  prebuilt tools/fake-github
 #   RUST_LOG                log filter of all components (default: info)
 #
-# Environment set for the components (each starts from an empty environment plus these):
+# Environment set for the components (each starts from an empty environment plus these; the fixture clone
+# base build gets the `all` set):
 #   all          PATH (inherited), HOME=<state>/home (empty, isolates git config), LANG=C.UTF-8,
 #                NO_COLOR=1 (plain-text logs), RUST_LOG
 #   fake-github  FAKE_GITHUB_LISTEN        127.0.0.1:<free port>
@@ -117,6 +119,8 @@ done
 # --- state, ports, generated credentials ----------------------------------------------------------------------
 mkdir -p /data/tmp
 state="${SR_DEV_STATE_DIR:-$(mktemp -d /data/tmp/smart-review-dev.XXXXXX)}"
+# Components start in other working directories: the state dir must be absolute.
+state="$(mkdir -p "$state" && cd "$state" && pwd)"
 mkdir -p "$state/logs" "$state/home" "$state/server" "$state/runner"
 chmod 700 "$state"
 read -r free_public github_port runner_port memcan_port < <(python3 -c 'import socket
@@ -133,9 +137,11 @@ runner_secret="$(sed -n 's/^SR_RUNNER_SECRET=//p' "$state/stack.env" 2> /dev/nul
 [[ -n "$secret_key" ]] || secret_key="$(head -c 32 /dev/urandom | base64)"
 [[ -n "$runner_secret" ]] || runner_secret="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 echo "placeholder: stage 2 mints no GitHub App tokens" > "$state/github-app-key.pem"
-[[ -d "$state/remotes/acme/node-client.git" ]] || "$repo/tools/fake-github/prepare-clone-base.sh" "$state/remotes" > /dev/null
 
 common=(PATH="$PATH" HOME="$state/home" LANG=C.UTF-8 NO_COLOR=1 RUST_LOG="${RUST_LOG:-info}")
+# Empty environment: inherited GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE would redirect the fixture's git commands.
+[[ -d "$state/remotes/acme/node-client.git" ]] ||
+  env -i "${common[@]}" "$repo/tools/fake-github/prepare-clone-base.sh" "$state/remotes" > /dev/null
 server_env=(
   SR_PUBLIC_URL="$url"
   SR_LISTEN_ADDR="127.0.0.1:$public_port"

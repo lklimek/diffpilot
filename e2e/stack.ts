@@ -2,17 +2,31 @@
 // environment, and returns the teardown that stops the whole stack.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const LAUNCHER = fileURLToPath(new URL("../deploy/dev/stack.sh", import.meta.url));
 // Long enough for a first build when no prebuilt binaries are given.
-const START_TIMEOUT_MS = 15 * 60_000;
+const START_TIMEOUT_MS = Number(process.env.SR_E2E_START_TIMEOUT_MS ?? 15 * 60_000);
 const STOP_TIMEOUT_MS = 20_000;
 
 export default async function globalSetup(): Promise<() => Promise<void>> {
   const args = (process.env.SR_E2E_STACK_ARGS ?? "").split(/\s+/).filter(Boolean);
-  const stack = spawn(LAUNCHER, args, { stdio: ["ignore", "pipe", "inherit"] });
+  // Own process group: the launcher and its build (npm, cargo) are stopped together; the components run in
+  // groups of their own, which the launcher stops.
+  const stack = spawn(LAUNCHER, args, { detached: true, stdio: ["ignore", "pipe", "inherit"] });
+  const group = stack.pid;
+  if (group === undefined) throw new Error("the dev stack launcher could not be started");
   const exited = new Promise<void>((resolve) => stack.once("exit", () => resolve()));
+  const signalGroup = (signal: NodeJS.Signals | 0) => {
+    try {
+      process.kill(-group, signal);
+      return true;
+    } catch {
+      return false; // the group is gone
+    }
+  };
+  process.once("exit", () => signalGroup("SIGTERM"));
 
   const ready = new Promise<Record<string, string>>((resolve, reject) => {
     const values: Record<string, string> = {};
@@ -35,12 +49,11 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
   });
 
   const stop = async () => {
-    if (stack.exitCode !== null || stack.signalCode !== null) return;
-    stack.kill("SIGTERM");
-    const timeout = new Promise<"timeout">((resolve) =>
-      setTimeout(() => resolve("timeout"), STOP_TIMEOUT_MS),
-    );
-    if ((await Promise.race([exited, timeout])) === "timeout") stack.kill("SIGKILL");
+    signalGroup("SIGTERM");
+    await Promise.race([exited, delay(STOP_TIMEOUT_MS)]);
+    // Build processes may outlive the launcher (bash runs its TERM trap only after the foreground command).
+    if (signalGroup(0)) signalGroup("SIGKILL");
+    for (let i = 0; i < 50 && signalGroup(0); i++) await delay(100);
   };
 
   try {
