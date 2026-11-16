@@ -15,6 +15,8 @@ use url::Url;
 pub const PUBLIC_URL: &str = "SR_PUBLIC_URL";
 /// Address the HTTP server listens on.
 pub const LISTEN_ADDR: &str = "SR_LISTEN_ADDR";
+/// Address the runner-only listener (`/runner/v1/*`) listens on; never exposed through the reverse proxy.
+pub const RUNNER_LISTEN_ADDR: &str = "SR_RUNNER_LISTEN_ADDR";
 /// Comma-separated IP addresses or networks of reverse proxies whose forwarding headers are trusted.
 pub const TRUSTED_PROXIES: &str = "SR_TRUSTED_PROXIES";
 /// Directory for the SQLite database and the bare mirrors.
@@ -44,6 +46,8 @@ pub const MEMCAN_TOKEN: &str = "SR_MEMCAN_TOKEN";
 
 const DEFAULT_LISTEN_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 3000);
+const DEFAULT_RUNNER_LISTEN_ADDR: SocketAddr =
+    SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 3001);
 const DEFAULT_DATA_DIR: &str = "data";
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 const DEFAULT_GITHUB_WEB_URL: &str = "https://github.com";
@@ -56,6 +60,8 @@ pub struct Config {
     pub public_url: Url,
     /// HTTP listen address (default `0.0.0.0:3000`); TLS is terminated by the reverse proxy.
     pub listen_addr: SocketAddr,
+    /// Runner-only listen address (default `0.0.0.0:3001`); serves only the runner protocol.
+    pub runner_listen_addr: SocketAddr,
     /// Reverse proxies whose forwarding headers are trusted (default: none).
     pub trusted_proxies: Vec<IpNet>,
     /// Directory for the database and the bare mirrors (default `data`).
@@ -166,6 +172,14 @@ pub enum ConfigError {
         #[source]
         source: base64::DecodeError,
     },
+    /// The public and the runner listener would share one address.
+    #[error("{key} and {other} must differ: the runner protocol has its own listener")]
+    ListenersCollide {
+        /// Variable name.
+        key: &'static str,
+        /// The other variable.
+        other: &'static str,
+    },
     /// The secret key does not decode to 32 bytes.
     #[error("environment variable {key} must decode to exactly 32 bytes, got {len}")]
     SecretKeyLength {
@@ -201,15 +215,26 @@ impl Config {
             Ok(get(key)?.unwrap_or_else(|| default.to_owned()))
         };
 
-        let listen_addr = match get(LISTEN_ADDR)? {
-            Some(value) => value
-                .parse()
-                .map_err(|source| ConfigError::InvalidSocketAddr {
-                    key: LISTEN_ADDR,
-                    source,
-                })?,
-            None => DEFAULT_LISTEN_ADDR,
+        let socket_addr = |key, default| -> Result<SocketAddr, ConfigError> {
+            match get(key)? {
+                Some(value) => value
+                    .parse()
+                    .map_err(|source| ConfigError::InvalidSocketAddr { key, source }),
+                None => Ok(default),
+            }
         };
+        let listen_addr = socket_addr(LISTEN_ADDR, DEFAULT_LISTEN_ADDR)?;
+        let runner_listen_addr = socket_addr(RUNNER_LISTEN_ADDR, DEFAULT_RUNNER_LISTEN_ADDR)?;
+        if listen_addr.port() == runner_listen_addr.port()
+            && (listen_addr.ip() == runner_listen_addr.ip()
+                || listen_addr.ip().is_unspecified()
+                || runner_listen_addr.ip().is_unspecified())
+        {
+            return Err(ConfigError::ListenersCollide {
+                key: RUNNER_LISTEN_ADDR,
+                other: LISTEN_ADDR,
+            });
+        }
         let trusted_proxies = match get(TRUSTED_PROXIES)? {
             Some(value) => parse_trusted_proxies(&value)?,
             None => Vec::new(),
@@ -218,6 +243,7 @@ impl Config {
         Ok(Self {
             public_url: parse_http_url(PUBLIC_URL, &require(PUBLIC_URL)?)?,
             listen_addr,
+            runner_listen_addr,
             trusted_proxies,
             data_dir: PathBuf::from(or_default(DATA_DIR, DEFAULT_DATA_DIR)?),
             secret_key: parse_secret_key(&require(SECRET_KEY)?)?,
@@ -360,6 +386,10 @@ pub(crate) mod tests {
         let config = parse(&required_env()).expect("valid");
         assert_eq!(config.public_url.as_str(), "https://review.example.test/");
         assert_eq!(config.listen_addr, "0.0.0.0:3000".parse().expect("addr"));
+        assert_eq!(
+            config.runner_listen_addr,
+            "0.0.0.0:3001".parse().expect("addr")
+        );
         assert!(config.trusted_proxies.is_empty());
         assert_eq!(config.data_dir, PathBuf::from("data"));
         let expected_key: Vec<u8> = (0u8..32).collect();
@@ -406,6 +436,7 @@ pub(crate) mod tests {
     fn optional_variables_override_defaults() {
         let mut env = required_env();
         env.insert(LISTEN_ADDR, "127.0.0.1:8080".to_owned());
+        env.insert(RUNNER_LISTEN_ADDR, "172.20.0.2:9001".to_owned());
         env.insert(TRUSTED_PROXIES, " 172.18.0.0/16 , 10.0.0.5,::1 ".to_owned());
         env.insert(DATA_DIR, "/var/lib/smart-review".to_owned());
         env.insert(GITHUB_API_URL, "http://127.0.0.1:9000/api".to_owned());
@@ -413,6 +444,10 @@ pub(crate) mod tests {
         env.insert(GITHUB_CLONE_URL, "file:///data/tmp/remotes".to_owned());
         let config = parse(&env).expect("valid");
         assert_eq!(config.listen_addr, "127.0.0.1:8080".parse().expect("addr"));
+        assert_eq!(
+            config.runner_listen_addr,
+            "172.20.0.2:9001".parse().expect("addr")
+        );
         let proxies: Vec<String> = config
             .trusted_proxies
             .iter()
@@ -538,6 +573,40 @@ pub(crate) mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn invalid_runner_listen_addr_is_rejected() {
+        let mut env = required_env();
+        env.insert(RUNNER_LISTEN_ADDR, "runner".to_owned());
+        assert!(matches!(
+            parse(&env),
+            Err(ConfigError::InvalidSocketAddr {
+                key: RUNNER_LISTEN_ADDR,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn runner_listener_must_not_share_the_public_address() {
+        for (public, runner) in [
+            ("0.0.0.0:3000", "0.0.0.0:3000"),
+            ("127.0.0.1:3000", "0.0.0.0:3000"),
+            ("0.0.0.0:4000", "10.0.0.2:4000"),
+        ] {
+            let mut env = required_env();
+            env.insert(LISTEN_ADDR, public.to_owned());
+            env.insert(RUNNER_LISTEN_ADDR, runner.to_owned());
+            assert!(
+                matches!(parse(&env), Err(ConfigError::ListenersCollide { .. })),
+                "{public} / {runner}"
+            );
+        }
+        let mut env = required_env();
+        env.insert(LISTEN_ADDR, "127.0.0.1:3000".to_owned());
+        env.insert(RUNNER_LISTEN_ADDR, "10.0.0.2:3000".to_owned());
+        assert!(parse(&env).is_ok(), "same port on different addresses");
     }
 
     #[test]

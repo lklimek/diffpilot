@@ -36,6 +36,7 @@ Values are trimmed; an empty value counts as unset. Error messages name the vari
 |---|---|---|---|
 | `SR_PUBLIC_URL` | yes | — | Public base URL (owner: `https://review.klimek.ws`); OAuth callback `…/auth/github/callback`. http/https. |
 | `SR_LISTEN_ADDR` | no | `0.0.0.0:3000` | HTTP listen address. TLS is terminated by the owner's reverse proxy; no built-in TLS or ACME. |
+| `SR_RUNNER_LISTEN_ADDR` | no | `0.0.0.0:3001` | Runner-only listener: serves `/runner/v1/*` and nothing else; never routed through the reverse proxy (threat model WP1-T). Must differ from `SR_LISTEN_ADDR`. |
 | `SR_TRUSTED_PROXIES` | no | none | Comma-separated IP addresses or networks of reverse proxies whose forwarding headers are trusted. |
 | `SR_DATA_DIR` | no | `data` | Directory for the SQLite database and the bare mirrors. |
 | `SR_SECRET_KEY` | yes | — | AES-GCM key, see Secrets. |
@@ -50,6 +51,7 @@ Values are trimmed; an empty value counts as unset. Error messages name the vari
 | `SR_MEMCAN_URL` | yes | — | MemCan MCP endpoint. Pure configuration: nothing assumes the current MemCan host. |
 | `SR_MEMCAN_TOKEN` | yes | — | MemCan bearer token. |
 
+`SR_RUNNER_LISTEN_ADDR` was added by WP1-A (coordinator change request after the threat model, 2026-11-16).
 `SR_LISTEN_ADDR`, `SR_DATA_DIR`, `SR_RUNNER_SECRET` and `SR_TRUSTED_PROXIES` are not spelled out in §5.2 but
 are implied by it (port 3000, trusted-proxy setting) or by the runner protocol and storage (plan §5.3); they
 are recorded here per rule A12 (approved by the coordinator, 2026-11-16). Cookies are Secure behind the proxy
