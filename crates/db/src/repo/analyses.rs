@@ -115,6 +115,13 @@ impl Analyses<'_> {
         })
     }
 
+    /// Analyses still in `planning`, `running` or `paused`, oldest first: the pipeline resumes them at start.
+    pub async fn unfinished(&self) -> Result<Vec<AnalysisRecord>, DbError> {
+        Err(DbError::NotImplemented {
+            operation: "analyses::unfinished",
+        })
+    }
+
     /// Stores a new state (progress included); terminal states set `finished_at`.
     pub async fn set_state(
         &self,

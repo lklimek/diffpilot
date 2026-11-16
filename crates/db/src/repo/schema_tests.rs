@@ -60,13 +60,14 @@ async fn insert_job(
     state: &str,
 ) -> Result<(), DbError> {
     sqlx::query(
-        "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at)
-         VALUES (?, 'default', ?, 'analyse_flow', 1, ?, '{}', ?, 't')",
+        "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at, stage)
+         VALUES (?, 'default', ?, 'analyse_flow', 1, ?, '{}', ?, 't', ?)",
     )
     .bind(id)
     .bind(analysis)
     .bind(state)
     .bind(credential)
+    .bind(format!("flow:{id}"))
     .execute(&db.pool)
     .await?;
     Ok(())
@@ -333,6 +334,52 @@ async fn feedback_rows_start_at_revision_one_and_never_below() {
         insert("fb2", "f1.2", Some(0)).await.is_err(),
         "revision 0 rejected"
     );
+}
+
+#[tokio::test]
+async fn one_live_job_per_pipeline_stage() {
+    let db = db().await;
+    seed(&db).await;
+    let insert = |id: &'static str,
+                  kind: &'static str,
+                  stage: &'static str,
+                  state: &'static str| {
+        sqlx::query(
+            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at, stage)
+             VALUES (?, 'default', 'a1', ?, 1, ?, '{}', 'c1', 't', ?)",
+        )
+        .bind(id)
+        .bind(kind)
+        .bind(state)
+        .bind(stage)
+        .execute(&db.pool)
+    };
+    insert("j1", "analyse_flow", "flow:f1", "failed")
+        .await
+        .expect("failed job");
+    insert("j2", "analyse_flow", "flow:f1", "queued")
+        .await
+        .expect("a failed stage may be retried");
+    let duplicate = insert("j3", "analyse_flow", "flow:f1", "queued")
+        .await
+        .map_err(DbError::from);
+    assert!(matches!(duplicate, Err(DbError::Conflict)), "{duplicate:?}");
+    insert("j4", "analyse_flow", "flow:f2", "queued")
+        .await
+        .expect("another flow");
+    insert("j5", "plan", "plan:1", "succeeded")
+        .await
+        .expect("plan");
+    let replan = insert("j6", "plan", "plan:1", "queued")
+        .await
+        .map_err(DbError::from);
+    assert!(
+        matches!(replan, Err(DbError::Conflict)),
+        "a succeeded stage is not submitted again: {replan:?}"
+    );
+    insert("j7", "plan", "plan:2", "queued")
+        .await
+        .expect("another plan batch");
 }
 
 #[tokio::test]

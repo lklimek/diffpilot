@@ -19,7 +19,7 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `analyses` | one analysis per PR head and language: state, progress, agent thread id, `session_state`, skills commit | partial unique index: one live (not cancelled) per (PR, head, language) |
 | `documents` | validated agent output and pre-pass as JSON: `prepass`, `plan`, `pr_context`, `flow` (key = flow id), `github_snapshot` (threads, checks) | `json_valid` |
 | `llm_credentials` | credential ids runners hold (never the secret), pause, unusable, last call outcome | kind `codex_chatgpt` |
-| `jobs` | the queue: kind, priority (0 Ask, 1 batch), state, spec (no secrets), attempt/max, lease, job-token hash, cancel flag, `resumes_at`, encrypted installation token (for revocation), `ready_output` + `ready_output_attempt`, result | partial unique indexes: one claimed/running job per analysis and per credential; claim-order index |
+| `jobs` | the queue: kind, priority (0 Ask, 1 batch), state, spec (no secrets), attempt/max, lease, job-token hash, cancel flag, `resumes_at`, encrypted installation token (for revocation), `ready_output` + `ready_output_attempt`, result, `stage` (`plan:<n>`, `pr_context`, `flow:<id>`, `ask:<id>`) | partial unique indexes: one claimed/running job per analysis and per credential, one live or succeeded job per (analysis, stage); claim-order and by-analysis indexes |
 | `job_events` | bounded activity log (last 500 per job) | PK `(job_id, attempt, seq)` |
 | `review_states` | ticks and last viewed block per user and analysis | – |
 | `questions` | Ask questions and answers | – |

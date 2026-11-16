@@ -114,6 +114,24 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
   discarded.
 - `llm_call` (last provider call outcome) updates the LLM status in Settings; `usage` is the job's own delta.
 
+## Pipeline recovery (server restart)
+Durable state only; no in-memory handle is needed after a restart.
+- **Stage link.** Every job carries its stage (`JobStage`: `plan:<batch>`, `pr_context`, `flow:<id>`,
+  `ask:<question id>`; `jobs.stage`). The database allows one live or succeeded job per (analysis, stage)
+  (`jobs_one_live_per_stage`); a failed or cancelled stage may be submitted again (Retry).
+- **Submit boundary.** `JobExecutor::submit` is idempotent per stage: an existing live or succeeded job's
+  handle is returned (enqueue `Conflict` → `Jobs::list_for_analysis`). A crash between enqueue and recording
+  progress therefore never duplicates a job.
+- **Result boundary.** `Jobs::complete` stores the result and the state in one transaction, idempotently per
+  attempt; a runner retry after a lost reply changes nothing.
+- **Persist boundary.** Verification and `Documents::put` (upsert by analysis, kind and key) run from the
+  stored `jobs.result`; repeating them yields the same documents. Analysis progress is derived from the
+  stored documents, not from counters.
+- **At start** the pipeline lists `Analyses::unfinished` and, per analysis, `Jobs::list_for_analysis`:
+  succeeded jobs whose document is missing are verified and persisted again; queued, claimed, running and
+  paused jobs are followed again with `JobExecutor::events`; stages without a job are submitted. Expired
+  leases are handled by `Jobs::expire_leases` as usual.
+
 ## Secrets and scrubbing
 The runner scrubs every known secret value (installation token, MemCan token, job token, runner secret,
 Codex access and refresh tokens) from events, ready outputs, results and the session files it stores, before

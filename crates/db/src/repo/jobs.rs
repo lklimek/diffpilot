@@ -20,6 +20,61 @@ pub struct Jobs<'a> {
     pub(crate) pool: &'a SqlitePool,
 }
 
+/// The pipeline stage a job serves: the durable link from analysis progress to its job (restart recovery).
+/// At most one job per (analysis, stage) is live or succeeded, so a repeated submit is a `Conflict`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum JobStage {
+    /// A `plan` job; huge pull requests are planned in several directory batches, numbered from 1.
+    Plan {
+        /// Batch number.
+        batch: u32,
+    },
+    /// The `pr_context` job.
+    PrContext,
+    /// The `analyse_flow` job of a flow.
+    Flow(FlowId),
+    /// The `ask` job of a question.
+    Ask(QuestionId),
+}
+
+impl JobStage {
+    /// The stored key: `plan:<batch>`, `pr_context`, `flow:<id>`, `ask:<question id>`.
+    pub fn key(&self) -> String {
+        match self {
+            Self::Plan { batch } => format!("plan:{batch}"),
+            Self::PrContext => "pr_context".to_owned(),
+            Self::Flow(flow) => format!("flow:{flow}"),
+            Self::Ask(question) => format!("ask:{question}"),
+        }
+    }
+
+    /// Parses a stored key; `None` for anything [`JobStage::key`] does not produce.
+    pub fn parse(key: &str) -> Option<Self> {
+        if key == "pr_context" {
+            return Some(Self::PrContext);
+        }
+        let (prefix, rest) = key.split_once(':')?;
+        match prefix {
+            "plan" => rest.parse().ok().map(|batch| Self::Plan { batch }),
+            "flow" if !rest.is_empty() => Some(Self::Flow(FlowId(rest.to_owned()))),
+            "ask" => serde_json::from_value(serde_json::Value::String(rest.to_owned()))
+                .ok()
+                .map(Self::Ask),
+            _ => None,
+        }
+    }
+
+    /// The job kind of the stage.
+    pub fn kind(&self) -> JobKind {
+        match self {
+            Self::Plan { .. } => JobKind::Plan,
+            Self::PrContext => JobKind::PrContext,
+            Self::Flow(_) => JobKind::AnalyseFlow,
+            Self::Ask(_) => JobKind::Ask,
+        }
+    }
+}
+
 /// A job to enqueue; the tenant is the analysis's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewJob {
@@ -27,10 +82,8 @@ pub struct NewJob {
     pub spec: JobSpec,
     /// Claim priority.
     pub priority: JobPriority,
-    /// The flow an `analyse_flow` job analyses.
-    pub flow_id: Option<FlowId>,
-    /// The question an `ask` job answers.
-    pub question_id: Option<QuestionId>,
+    /// The pipeline stage (its kind equals `spec.kind`).
+    pub stage: JobStage,
 }
 
 /// A stored job.
@@ -62,10 +115,8 @@ pub struct JobRecord {
     pub ready_output: Option<Value>,
     /// The final result.
     pub result: Option<JobResult>,
-    /// Flow of an `analyse_flow` job.
-    pub flow_id: Option<FlowId>,
-    /// Question of an `ask` job.
-    pub question_id: Option<QuestionId>,
+    /// The pipeline stage.
+    pub stage: JobStage,
     /// When it was enqueued.
     pub created_at: DateTime<Utc>,
     /// When it reached a terminal state.
@@ -130,7 +181,8 @@ pub enum Completion {
     reason = "signatures frozen by WP1-A; bodies are filled in by WP2-JOBS"
 )]
 impl Jobs<'_> {
-    /// Enqueues a job in state `queued`.
+    /// Enqueues a job in state `queued`; `Conflict` if a live or succeeded job of the same stage exists (look it
+    /// up with [`Jobs::list_for_analysis`] and reuse it).
     pub async fn enqueue(&self, job: NewJob, now: DateTime<Utc>) -> Result<JobRecord, DbError> {
         Err(DbError::NotImplemented {
             operation: "jobs::enqueue",
@@ -218,6 +270,17 @@ impl Jobs<'_> {
         })
     }
 
+    /// Jobs of an analysis, oldest first; only those in `states` unless `states` is empty.
+    pub async fn list_for_analysis(
+        &self,
+        analysis: AnalysisId,
+        states: &[JobState],
+    ) -> Result<Vec<JobRecord>, DbError> {
+        Err(DbError::NotImplemented {
+            operation: "jobs::list_for_analysis",
+        })
+    }
+
     /// The job-token hash of the current claim, for constant-time comparison by the server.
     pub async fn token_hash(&self, job: JobId) -> Result<Option<Vec<u8>>, DbError> {
         Err(DbError::NotImplemented {
@@ -249,5 +312,44 @@ impl Jobs<'_> {
         Err(DbError::NotImplemented {
             operation: "jobs::take_github_token",
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_keys_round_trip_and_are_distinct() {
+        let question = QuestionId::new_random();
+        let stages = [
+            JobStage::Plan { batch: 1 },
+            JobStage::Plan { batch: 2 },
+            JobStage::PrContext,
+            JobStage::Flow(FlowId("f3".to_owned())),
+            JobStage::Ask(question),
+        ];
+        let keys: Vec<String> = stages.iter().map(JobStage::key).collect();
+        assert_eq!(keys[0], "plan:1");
+        assert_eq!(keys[2], "pr_context");
+        assert_eq!(keys[3], "flow:f3");
+        assert_eq!(keys[4], format!("ask:{question}"));
+        for (stage, key) in stages.iter().zip(&keys) {
+            assert_eq!(JobStage::parse(key).as_ref(), Some(stage), "{key}");
+        }
+        for bad in ["", "plan", "plan:x", "flow:", "ask:not-a-uuid", "other"] {
+            assert_eq!(JobStage::parse(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn stage_kind_matches_job_kind() {
+        assert_eq!(JobStage::Plan { batch: 1 }.kind(), JobKind::Plan);
+        assert_eq!(JobStage::PrContext.kind(), JobKind::PrContext);
+        assert_eq!(
+            JobStage::Flow(FlowId("f1".to_owned())).kind(),
+            JobKind::AnalyseFlow
+        );
+        assert_eq!(JobStage::Ask(QuestionId::new_random()).kind(), JobKind::Ask);
     }
 }

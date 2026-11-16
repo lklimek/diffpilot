@@ -172,6 +172,10 @@ CREATE TABLE jobs (
     ready_output            TEXT CHECK (ready_output IS NULL OR json_valid(ready_output)), -- posted before compaction
     ready_output_attempt    INTEGER CHECK ((ready_output IS NULL) = (ready_output_attempt IS NULL)),
     result                  TEXT CHECK (result IS NULL OR json_valid(result)),
+    stage                   TEXT NOT NULL CHECK ((kind = 'plan' AND stage LIKE 'plan:%')
+                                OR (kind = 'pr_context' AND stage = 'pr_context')
+                                OR (kind = 'analyse_flow' AND stage LIKE 'flow:%')
+                                OR (kind = 'ask' AND stage LIKE 'ask:%')), -- JobStage::key
     flow_id                 TEXT,
     question_id             TEXT,
     created_at              TEXT NOT NULL,
@@ -183,6 +187,9 @@ CREATE TABLE jobs (
 CREATE UNIQUE INDEX jobs_one_running_per_analysis ON jobs (analysis_id) WHERE state IN ('claimed', 'running');
 CREATE UNIQUE INDEX jobs_one_running_per_credential ON jobs (credential_id) WHERE state IN ('claimed', 'running');
 CREATE INDEX jobs_claim_order ON jobs (state, priority, created_at);
+-- Idempotent submit: one live or succeeded job per pipeline stage; a failed or cancelled stage may be retried.
+CREATE UNIQUE INDEX jobs_one_live_per_stage ON jobs (analysis_id, stage) WHERE state NOT IN ('failed', 'cancelled');
+CREATE INDEX jobs_by_analysis ON jobs (analysis_id, state);
 
 -- Bounded event log (the last 500 events per job are kept).
 CREATE TABLE job_events (
