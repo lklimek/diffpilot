@@ -236,3 +236,9 @@ variant the Tour is the whole review screen and takes over what the workspace di
 - Ask (a question to the LLM about the current step, answered by an on-demand agent run) is part of the MVP.
   It keeps the LLM integration honest: the architecture must support interactive, on-demand jobs with
   session context, not only the batch analysis pipeline.
+- The inspector is never empty. With no highlight selected it describes the current block: for a step —
+  classic diff of the step, behaviour (was → is), why, consequences, call hierarchy, GitHub threads, with
+  Questions and Assessment collapsed; for a flow introduction or PR context — the matching summary. Clicking
+  a highlight narrows it to that annotation; a "Back to step" link returns. Ask, feedback and comment work
+  at step level without selecting a highlight. This replaces "the inspector is empty until a click"; the
+  rule "nothing evaluative is shown before the evidence" stays (Assessment collapsed).
