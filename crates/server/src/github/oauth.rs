@@ -1,5 +1,6 @@
-//! GitHub App user authorisation (web flow with PKCE S256) and user-token refresh against the configured OAuth
-//! and API base URLs. OAuth errors arrive as HTTP 200 with an `error` field (spike S4).
+//! GitHub HTTP transport for user sign-in: authorisation URL (web flow, PKCE S256), code exchange, user-token
+//! refresh and `GET /user` against the configured OAuth and API base URLs; orchestration lives in `auth`.
+//! OAuth errors arrive as HTTP 200 with an `error` field (spike S4).
 
 use std::time::Duration;
 

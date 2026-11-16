@@ -23,12 +23,12 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::api::error::ApiFailure;
-use crate::auth::oauth::{self, OauthError};
 use crate::auth::{
     BrowserTransport, Cookie, OAUTH_LOGIN_TTL, SESSION_TTL, Session, SessionCsrf, UserTokenError,
-    end_sign_in, store_sign_in_tokens,
+    end_sign_in, lock_user, store_sign_in_tokens,
 };
 use crate::config::Config;
+use crate::github::oauth::{self, OauthError};
 use crate::secrets::{Aad, SecretError, TokenCipher, random_token, secrets_equal, sha256};
 use crate::state::AppState;
 
@@ -266,7 +266,9 @@ async fn complete_login(
         .users()
         .upsert_member(&tenant_id, &uuid::Uuid::new_v4().to_string(), &profile, now)
         .await?;
-    store_sign_in_tokens(state, &tenant_id, &user.id, &grant, now).await?;
+    // Tokens and session are written under the user's lock, never interleaved with a refresh or sign-out.
+    let lock = lock_user(&user.id).await;
+    store_sign_in_tokens(state, &lock, &tenant_id, &grant, now).await?;
 
     let session_token = random_token()?;
     let csrf_token = random_token()?;
@@ -284,6 +286,7 @@ async fn complete_login(
             now,
         )
         .await?;
+    drop(lock);
     tracing::info!(login = %user.profile.login, user_id = %user.id, "user signed in");
     Ok(Cookie::Session.set(&session_token, SESSION_TTL, transport.https))
 }

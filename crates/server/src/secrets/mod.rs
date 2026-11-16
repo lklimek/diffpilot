@@ -11,6 +11,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 const NONCE_LEN: usize = 12;
 const TOKEN_BYTES: usize = 32;
@@ -121,9 +122,9 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
 }
 
-/// Compares two secrets without a data-dependent early exit (compares their SHA-256 digests).
+/// Compares two secrets in constant time (over their SHA-256 digests, so lengths do not leak either).
 pub fn secrets_equal(a: &str, b: &str) -> bool {
-    sha256(a.as_bytes()) == sha256(b.as_bytes())
+    sha256(a.as_bytes()).ct_eq(&sha256(b.as_bytes())).into()
 }
 
 #[cfg(test)]

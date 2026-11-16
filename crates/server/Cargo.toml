@@ -19,6 +19,7 @@ getrandom.workspace = true
 reqwest = { workspace = true, features = ["form"] }
 serde.workspace = true
 sha2.workspace = true
+subtle.workspace = true
 uuid.workspace = true
 contracts.workspace = true
 analysis.workspace = true

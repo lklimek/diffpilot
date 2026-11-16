@@ -32,12 +32,13 @@ use crate::config::Config;
 use crate::secrets::{secrets_equal, sha256};
 use crate::state::AppState;
 
-pub mod oauth;
 #[cfg(test)]
 mod tests;
 mod tokens;
 
-pub use tokens::{UserTokenError, end_sign_in, store_sign_in_tokens, user_access_token};
+pub use tokens::{
+    UserLock, UserTokenError, end_sign_in, lock_user, store_sign_in_tokens, user_access_token,
+};
 
 /// Lifetime of a session (absolute; the user signs in again afterwards).
 pub const SESSION_TTL: TimeDelta = TimeDelta::days(7);

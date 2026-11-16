@@ -14,6 +14,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{TimeDelta, Utc};
 use db::repo::DEFAULT_TENANT;
 use db::repo::Db;
+use db::repo::sessions::NewSession;
+use db::repo::users::GithubProfile;
 use http_body_util::BodyExt;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
@@ -23,10 +25,10 @@ use url::Url;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::oauth::TokenGrant;
-use super::{CSRF_HEADER, UserTokenError, store_sign_in_tokens, user_access_token};
+use super::{CSRF_HEADER, UserTokenError, lock_user, store_sign_in_tokens, user_access_token};
 use crate::api;
 use crate::config::tests::test_config;
+use crate::github::oauth::TokenGrant;
 use crate::jobs::queue::QueueExecutor;
 use crate::secrets::{Aad, TokenCipher, sha256};
 use crate::state::AppState;
@@ -505,7 +507,7 @@ async fn pkce_verifier_required() {
 }
 
 #[tokio::test]
-async fn secure_cookie_behind_trusted_proxy() {
+async fn browser_transport_from_peer_and_forwarded_proto() {
     let h = harness_with("http://review.lan:3000", &["10.0.0.0/8"]).await;
     let login_from = |peer: &str, forwarded_https: bool| {
         let mut request = get("/auth/github/login");
@@ -710,6 +712,13 @@ async fn token_row_is_ciphertext() {
     assert_eq!(access.expose_secret(), ACCESS);
 }
 
+async fn store_pair(h: &Harness, user_id: &str, grant: TokenGrant) {
+    let lock = lock_user(user_id).await;
+    store_sign_in_tokens(&h.state, &lock, DEFAULT_TENANT, &grant, Utc::now())
+        .await
+        .expect("store pair");
+}
+
 fn grant(access: &str, expires_in: i64, refresh: &str) -> TokenGrant {
     TokenGrant {
         access_token: SecretString::from(access),
@@ -723,15 +732,12 @@ fn grant(access: &str, expires_in: i64, refresh: &str) -> TokenGrant {
 async fn refresh_is_serialised_and_atomic() {
     let h = harness().await;
     let signed_in = h.sign_in("lklimek", 1001).await;
-    store_sign_in_tokens(
-        &h.state,
-        DEFAULT_TENANT,
+    store_pair(
+        &h,
         &signed_in.user_id,
-        &grant("ghu_expiring", 60, "ghr_current"),
-        Utc::now(),
+        grant("ghu_expiring", 60, "ghr_current"),
     )
-    .await
-    .expect("expiring pair");
+    .await;
     let before = h
         .state
         .db
@@ -791,15 +797,12 @@ async fn refresh_is_serialised_and_atomic() {
 async fn bad_refresh_token_ends_sign_in() {
     let h = harness().await;
     let signed_in = h.sign_in("lklimek", 1001).await;
-    store_sign_in_tokens(
-        &h.state,
-        DEFAULT_TENANT,
+    store_pair(
+        &h,
         &signed_in.user_id,
-        &grant("ghu_expired", -10, "ghr_replayed"),
-        Utc::now(),
+        grant("ghu_expired", -10, "ghr_replayed"),
     )
-    .await
-    .expect("expired pair");
+    .await;
     Mock::given(method("POST"))
         .and(path("/login/oauth/access_token"))
         .and(body_string_contains("grant_type=refresh_token"))
@@ -832,6 +835,221 @@ async fn bad_refresh_token_ends_sign_in() {
         me["user"],
         Value::Null,
         "the session ended with the sign-in"
+    );
+}
+
+fn stored_access(h: &Harness, stored: &db::repo::tokens::StoredTokens, user_id: &str) -> String {
+    TokenCipher::new(&h.state.config.secret_key)
+        .decrypt(
+            Aad {
+                table: "user_tokens",
+                column: "access_ct",
+                row_id: user_id,
+            },
+            &stored.tokens.access_ct,
+        )
+        .expect("access token")
+        .expose_secret()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn late_refresh_error_keeps_newer_sign_in() {
+    let h = harness().await;
+    let old = h.sign_in("lklimek", 1001).await;
+    store_pair(&h, &old.user_id, grant("ghu_old", 60, "ghr_old")).await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_old"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"error": "bad_refresh_token"}))
+                .set_delay(Duration::from_millis(400)),
+        )
+        .mount(&h.github)
+        .await;
+    let started = h.start_login().await;
+
+    // The callback of a fresh sign-in arrives while the refresh of the old pair waits for GitHub.
+    let (refresh, callback) = tokio::join!(user_access_token(&h.state, &old.user_id), async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        h.callback(&started).await
+    });
+    assert!(
+        matches!(refresh, Err(UserTokenError::SignInRequired)),
+        "{refresh:?}"
+    );
+    assert_eq!(location(&callback), "/");
+    let cookie = cookie_pair(&callback, "__Host-sr_session").expect("new session");
+    let me = json_body(h.send(get_with_cookie("/api/v1/me", &cookie)).await).await;
+    assert_eq!(me["user"]["login"], "lklimek", "the newer sign-in survives");
+    let stored = h
+        .state
+        .db
+        .user_tokens()
+        .get(&old.user_id)
+        .await
+        .expect("lookup")
+        .expect("newer pair kept");
+    assert_eq!(stored_access(&h, &stored, &old.user_id), ACCESS);
+}
+
+#[tokio::test]
+async fn refresh_logout_login_interleaving_keeps_latest_sign_in() {
+    let h = harness().await;
+    let old = h.sign_in("lklimek", 1001).await;
+    store_pair(&h, &old.user_id, grant("ghu_old", 60, "ghr_old")).await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_old"))
+        .respond_with(
+            token_response("ghu_rotated", "ghr_rotated").set_delay(Duration::from_millis(500)),
+        )
+        .mount(&h.github)
+        .await;
+    let started = h.start_login().await;
+
+    // Refresh waits for GitHub; meanwhile sign-out everywhere, then a new sign-in.
+    let (refresh, logout, callback) = tokio::join!(
+        user_access_token(&h.state, &old.user_id),
+        async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            h.send(logout_request(Some(&old.cookie), Some(&old.csrf), true))
+                .await
+        },
+        async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            h.callback(&started).await
+        },
+    );
+    assert_eq!(refresh.expect("refresh").expose_secret(), "ghu_rotated");
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+    assert_eq!(location(&callback), "/");
+    let stored = h
+        .state
+        .db
+        .user_tokens()
+        .get(&old.user_id)
+        .await
+        .expect("lookup")
+        .expect("pair of the latest sign-in");
+    assert_eq!(
+        stored_access(&h, &stored, &old.user_id),
+        ACCESS,
+        "the stale refresh must not overwrite the pair of the later sign-in"
+    );
+    let cookie = cookie_pair(&callback, "__Host-sr_session").expect("new session");
+    let me = json_body(h.send(get_with_cookie("/api/v1/me", &cookie)).await).await;
+    assert_eq!(me["user"]["login"], "lklimek");
+    let me = json_body(h.send(get_with_cookie("/api/v1/me", &old.cookie)).await).await;
+    assert_eq!(me["user"], Value::Null, "signed out everywhere");
+}
+
+#[tokio::test]
+async fn missing_token_row_ends_sessions() {
+    let h = harness().await;
+    let now = Utc::now();
+    let profile = GithubProfile {
+        github_id: 77,
+        login: "Claudius-Maginificent".to_owned(),
+        name: None,
+        avatar_url: None,
+    };
+    // Sessions without a token pair, as an interrupted sign-out could leave them.
+    h.state
+        .db
+        .users()
+        .upsert_member(DEFAULT_TENANT, "u-orphan", &profile, now)
+        .await
+        .expect("user");
+    h.state
+        .db
+        .sessions()
+        .create(
+            &NewSession {
+                token_hash: &sha256(b"orphan-session-token"),
+                tenant_id: DEFAULT_TENANT,
+                user_id: "u-orphan",
+                csrf_token: "csrf",
+                expires_at: now + TimeDelta::hours(1),
+            },
+            now,
+        )
+        .await
+        .expect("session");
+    let cookie = "__Host-sr_session=orphan-session-token";
+    let me = json_body(h.send(get_with_cookie("/api/v1/me", cookie)).await).await;
+    assert_eq!(me["user"]["login"], "Claudius-Maginificent", "precondition");
+
+    let result = user_access_token(&h.state, "u-orphan").await;
+    assert!(
+        matches!(result, Err(UserTokenError::SignInRequired)),
+        "{result:?}"
+    );
+    let me = json_body(h.send(get_with_cookie("/api/v1/me", cookie)).await).await;
+    assert_eq!(me["user"], Value::Null, "sessions without tokens end");
+}
+
+/// Serves the public router on a real TCP listener the way `main` does (with the peer address).
+async fn serve_over_tcp(state: AppState) -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("address");
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            api::router(state).into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+    });
+    addr
+}
+
+async fn login_cookie_over_tcp(addr: SocketAddr, forwarded_https: bool) -> String {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("client");
+    let mut request = client.get(format!("http://{addr}/auth/github/login"));
+    if forwarded_https {
+        request = request.header("x-forwarded-proto", "https");
+    }
+    let response = request.send().await.expect("response");
+    assert_eq!(response.status(), reqwest::StatusCode::FOUND);
+    response
+        .headers()
+        .get(SET_COOKIE)
+        .expect("Set-Cookie")
+        .to_str()
+        .expect("ascii")
+        .to_owned()
+}
+
+#[tokio::test]
+async fn secure_cookie_behind_trusted_proxy() {
+    let h = harness_with("http://review.lan:3000", &["127.0.0.0/8"]).await;
+    let addr = serve_over_tcp(h.state.clone()).await;
+    let cookie = login_cookie_over_tcp(addr, true).await;
+    assert!(
+        cookie.starts_with("__Host-sr_oauth_state=") && cookie.contains("; Secure"),
+        "{cookie}"
+    );
+    let cookie = login_cookie_over_tcp(addr, false).await;
+    assert!(
+        cookie.starts_with("sr_oauth_state=") && !cookie.contains("Secure"),
+        "plain HTTP through the proxy: {cookie}"
+    );
+}
+
+#[tokio::test]
+async fn forwarded_headers_ignored_from_untrusted_peer() {
+    let h = harness_with("http://review.lan:3000", &["10.0.0.0/8"]).await;
+    let addr = serve_over_tcp(h.state.clone()).await;
+    let cookie = login_cookie_over_tcp(addr, true).await;
+    assert!(
+        cookie.starts_with("sr_oauth_state=") && !cookie.contains("Secure"),
+        "{cookie}"
     );
 }
 
@@ -918,15 +1136,12 @@ async fn no_token_or_secret_in_logs_or_error_bodies() {
         .await;
     bodies.push(location(&h.callback(&h.start_login().await).await));
     h.github.reset().await;
-    store_sign_in_tokens(
-        &h.state,
-        DEFAULT_TENANT,
+    store_pair(
+        &h,
         &signed_in.user_id,
-        &grant("ghu_expiring_canary", 0, "ghr_current_canary"),
-        Utc::now(),
+        grant("ghu_expiring_canary", 0, "ghr_current_canary"),
     )
-    .await
-    .expect("expiring pair");
+    .await;
     exposed.extend(
         [
             "ghu_expiring_canary",
@@ -953,15 +1168,12 @@ async fn no_token_or_secret_in_logs_or_error_bodies() {
         .await;
     bodies.push(json_body(wrong_csrf).await.to_string());
     h.github.reset().await;
-    store_sign_in_tokens(
-        &h.state,
-        DEFAULT_TENANT,
+    store_pair(
+        &h,
         &signed_in.user_id,
-        &grant("ghu_dead_canary", 0, "ghr_dead_canary"),
-        Utc::now(),
+        grant("ghu_dead_canary", 0, "ghr_dead_canary"),
     )
-    .await
-    .expect("dead pair");
+    .await;
     exposed.extend(["ghu_dead_canary", "ghr_dead_canary"].map(str::to_owned));
     Mock::given(method("POST"))
         .and(path("/login/oauth/access_token"))
