@@ -23,11 +23,19 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `job_events` | bounded activity log (last 500 per job) | PK `(job_id, attempt, seq)` |
 | `review_states` | ticks and last viewed block per user and analysis | – |
 | `questions` | Ask questions and answers | – |
-| `feedback` | one entry per (user, analysis, target); `memcan_state` pending/written/failed | `target_key`: step id, annotation id, or `<side>:<line>:<path>` for lines |
+| `feedback` | one entry per (user, analysis, target); `revision` (+1 per replacement); `memcan_state` pending/written/failed of the current revision | `target_key`: step id, annotation id, or `<side>:<line>:<path>` for lines |
 | `comment_requests` | pending-review idempotency: request hash + response per (user, key) | – |
 
 Every table except `tenants` and `users` has a `NOT NULL tenant_id` (schema test). `CHECK` lists mirror the
 closed contract enums (schema test compares them with the serde names).
+
+## Feedback → MemCan
+The writer takes `pending_memcan` entries with their `revision`, writes them and acknowledges with
+`set_memcan_state(id, revision, state)`, which applies only if the revision is still current; a replacement
+made meanwhile stays pending (`MemcanAck::Superseded`) and is written next. The MemCan memory is keyed by the
+feedback id (metadata `feedback_id`, `revision`): the writer updates the existing memory of that id instead of
+adding a second one, and never overwrites a memory carrying a higher revision, so retries and reordered writes
+are idempotent and the newest correction wins (also for overrated / underrated calibration examples).
 
 ## Ownership
 Frozen cross-WP signatures (bodies return `NotImplemented` until filled): `jobs` (WP2-JOBS), `analyses`

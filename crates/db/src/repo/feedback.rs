@@ -32,6 +32,26 @@ pub struct NewFeedback {
     pub note: Option<String>,
 }
 
+/// A feedback revision still to be written to MemCan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingFeedback {
+    /// Analysis.
+    pub analysis_id: AnalysisId,
+    /// The entry as of `revision`.
+    pub feedback: Feedback,
+    /// Revision of the entry; every replacement increments it.
+    pub revision: u32,
+}
+
+/// Whether a MemCan outcome was recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemcanAck {
+    /// The acknowledged revision is current; the state was stored.
+    Recorded,
+    /// The entry was replaced meanwhile; it stays pending for its newer revision.
+    Superseded,
+}
+
 /// State of the MemCan write of a feedback entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MemcanState {
@@ -48,7 +68,8 @@ pub enum MemcanState {
     reason = "signatures frozen by WP1-A; bodies are filled in by WP3-MEMCAN"
 )]
 impl FeedbackRepo<'_> {
-    /// Inserts or replaces the user's feedback for the target; resets the MemCan state to pending.
+    /// Inserts or replaces the user's feedback for the target; a replacement keeps the id, increments the
+    /// revision and resets the MemCan state to pending.
     pub async fn upsert(
         &self,
         feedback: NewFeedback,
@@ -70,19 +91,20 @@ impl FeedbackRepo<'_> {
         })
     }
 
-    /// Entries not yet written to MemCan (pending or failed), oldest first.
-    pub async fn pending_memcan(&self, limit: u32) -> Result<Vec<(AnalysisId, Feedback)>, DbError> {
+    /// Entries whose current revision is not yet written to MemCan (pending or failed), oldest first.
+    pub async fn pending_memcan(&self, limit: u32) -> Result<Vec<PendingFeedback>, DbError> {
         Err(DbError::NotImplemented {
             operation: "feedback::pending_memcan",
         })
     }
 
-    /// Records the outcome of the MemCan write.
+    /// Records the outcome of writing `revision` to MemCan, only if `revision` is still current.
     pub async fn set_memcan_state(
         &self,
         id: FeedbackId,
+        revision: u32,
         state: MemcanState,
-    ) -> Result<(), DbError> {
+    ) -> Result<MemcanAck, DbError> {
         Err(DbError::NotImplemented {
             operation: "feedback::set_memcan_state",
         })

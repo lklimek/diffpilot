@@ -307,6 +307,35 @@ async fn ready_output_is_json_with_its_attempt() {
 }
 
 #[tokio::test]
+async fn feedback_rows_start_at_revision_one_and_never_below() {
+    let db = db().await;
+    seed(&db).await;
+    let insert = |id: &'static str, key: &'static str, revision: Option<i64>| {
+        let sql = match revision {
+            Some(_) => "INSERT INTO feedback (id, tenant_id, analysis_id, user_id, target_kind, target_key, value,
+                        created_at, updated_at, revision) VALUES (?, 'default', 'a1', 'u1', 'step', ?, 'wrong', 't', 't', ?)",
+            None => "INSERT INTO feedback (id, tenant_id, analysis_id, user_id, target_kind, target_key, value,
+                     created_at, updated_at) VALUES (?, 'default', 'a1', 'u1', 'step', ?, 'wrong', 't', 't')",
+        };
+        sqlx::query(sql)
+            .bind(id)
+            .bind(key)
+            .bind(revision)
+            .execute(&db.pool)
+    };
+    insert("fb1", "f1.1", None).await.expect("default revision");
+    let revision: i64 = sqlx::query_scalar("SELECT revision FROM feedback WHERE id = 'fb1'")
+        .fetch_one(&db.pool)
+        .await
+        .expect("revision");
+    assert_eq!(revision, 1);
+    assert!(
+        insert("fb2", "f1.2", Some(0)).await.is_err(),
+        "revision 0 rejected"
+    );
+}
+
+#[tokio::test]
 async fn foreign_keys_are_enforced() {
     let db = db().await;
     let orphan = insert_job(&db, "j1", "missing", "c1", "queued").await;

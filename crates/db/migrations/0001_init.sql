@@ -222,7 +222,8 @@ CREATE TABLE questions (
 
 CREATE INDEX questions_by_analysis ON questions (analysis_id, created_at);
 
--- One entry per user and target; later feedback replaces it. memcan_state tracks the MemCan write.
+-- One entry per user and target; later feedback replaces it and increments revision. memcan_state tracks the
+-- MemCan write of the current revision; an ack for an older revision leaves the row pending.
 CREATE TABLE feedback (
     id           TEXT NOT NULL PRIMARY KEY,
     tenant_id    TEXT NOT NULL REFERENCES tenants (id),
@@ -233,6 +234,7 @@ CREATE TABLE feedback (
     value        TEXT NOT NULL CHECK (value IN ('correct', 'wrong', 'irrelevant', 'overrated', 'underrated', 'missed_by_llm')),
     note         TEXT,
     memcan_state TEXT NOT NULL DEFAULT 'pending' CHECK (memcan_state IN ('pending', 'written', 'failed')),
+    revision     INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
     UNIQUE (user_id, analysis_id, target_kind, target_key)
