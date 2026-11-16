@@ -214,6 +214,15 @@ pub struct JobAuthorization {
     pub cancel_requested: bool,
 }
 
+/// A job with the events of its current attempt, read in one transaction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobSnapshot {
+    /// The job.
+    pub job: JobRecord,
+    /// Events of `job.attempt`, in order.
+    pub events: Vec<JobEvent>,
+}
+
 /// Events kept per job: `job_events` is a bounded activity log.
 const EVENTS_KEPT: i64 = 500;
 
@@ -830,6 +839,48 @@ impl Jobs<'_> {
         })
     }
 
+    /// The job and the events of its current attempt after `after_seq` (all of them when the current attempt is
+    /// not `attempt`), read in one transaction: state, ready output and events belong to one moment.
+    pub async fn snapshot(
+        &self,
+        job: JobId,
+        attempt: u32,
+        after_seq: u32,
+    ) -> Result<JobSnapshot, DbError> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            job_columns!(),
+            " FROM jobs WHERE id = ?"
+        ))
+        .bind(job.to_string())
+        .fetch_one(&mut *tx)
+        .await?;
+        let record = job_from_row(&row)?;
+        let after_seq = if record.attempt == attempt {
+            after_seq
+        } else {
+            0
+        };
+        let bodies: Vec<String> = sqlx::query_scalar(
+            "SELECT body FROM job_events WHERE job_id = ? AND attempt = ? AND seq > ? ORDER BY seq",
+        )
+        .bind(job.to_string())
+        .bind(record.attempt)
+        .bind(after_seq)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        let events = bodies
+            .iter()
+            .map(|body| serde_json::from_str(body).map_err(DbError::from))
+            .collect::<Result<_, _>>()?;
+        Ok(JobSnapshot {
+            job: record,
+            events,
+        })
+    }
+
     /// Events of a job after `after_seq` of the current attempt, in order.
     pub async fn events(&self, job: JobId, after_seq: u32) -> Result<Vec<JobEvent>, DbError> {
         let bodies: Vec<String> = sqlx::query_scalar(
@@ -1313,6 +1364,39 @@ mod tests {
                 .expect("heartbeat")
                 .cancel_requested
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_returns_the_job_with_events_of_its_current_attempt() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        claim(&db, 0).await.expect("claim");
+        db.jobs()
+            .record_events(job, 1, &[event(1), event(2)], at(60))
+            .await
+            .expect("events");
+        let seqs = |snapshot: &JobSnapshot| -> Vec<u32> {
+            snapshot.events.iter().map(|event| event.seq).collect()
+        };
+        let snapshot = db.jobs().snapshot(job, 1, 1).await.expect("snapshot");
+        assert_eq!((snapshot.job.attempt, seqs(&snapshot)), (1, vec![2]));
+        db.jobs().expire_leases(at(61)).await.expect("expire");
+        claim(&db, 62).await.expect("re-claim");
+        db.jobs()
+            .record_events(job, 2, &[event(1)], at(120))
+            .await
+            .expect("events");
+        let snapshot = db.jobs().snapshot(job, 1, 2).await.expect("snapshot");
+        assert_eq!(
+            (snapshot.job.attempt, seqs(&snapshot)),
+            (2, vec![1]),
+            "a new attempt starts from its first event"
+        );
+        assert!(matches!(
+            db.jobs().snapshot(JobId::new_random(), 0, 0).await,
+            Err(DbError::NotFound)
+        ));
     }
 
     #[tokio::test]
