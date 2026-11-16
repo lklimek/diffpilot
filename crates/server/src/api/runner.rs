@@ -414,8 +414,6 @@ mod tests {
     use contracts::job::access::AgentAccess;
     use contracts::job::event::ActivityKind;
     use contracts::job::protocol::{CredentialStatus, LeaseTiming};
-    use std::sync::{Arc, Mutex};
-
     use contracts::job::result::{JobFailureKind, SessionOutcome, SessionReport};
     use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
@@ -428,6 +426,7 @@ mod tests {
     use super::*;
     use crate::api::runner_router;
     use crate::state::tests::test_state;
+    use crate::test_support::logs::LogCapture;
 
     struct Harness {
         state: AppState,
@@ -1061,55 +1060,9 @@ mod tests {
         );
     }
 
-    #[derive(Clone, Default)]
-    struct Captured(Arc<Mutex<Vec<u8>>>);
-
-    thread_local! {
-        static CAPTURE: std::cell::RefCell<Option<Captured>> = const { std::cell::RefCell::new(None) };
-    }
-
-    /// Writes log lines into the capture buffer of the current test thread, if any.
-    struct ThreadWriter;
-
-    impl std::io::Write for ThreadWriter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            CAPTURE.with(|capture| {
-                if let Some(captured) = capture.borrow().as_ref() {
-                    captured
-                        .0
-                        .lock()
-                        .expect("log buffer")
-                        .extend_from_slice(bytes);
-                }
-            });
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// Captures every log line of the current thread. A global subscriber (installed once) avoids per-thread
-    /// dispatchers, whose callsite interest other test threads can race with.
-    fn capture_logs() -> Captured {
-        static INSTALL: std::sync::Once = std::sync::Once::new();
-        INSTALL.call_once(|| {
-            let subscriber = tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::TRACE)
-                .with_ansi(false)
-                .with_writer(|| ThreadWriter)
-                .finish();
-            tracing::subscriber::set_global_default(subscriber).expect("first global subscriber");
-        });
-        let captured = Captured::default();
-        CAPTURE.with(|capture| *capture.borrow_mut() = Some(captured.clone()));
-        captured
-    }
-
     #[tokio::test]
     async fn invalid_runner_body_is_not_logged() {
-        let captured = capture_logs();
+        let capture = LogCapture::start();
         let harness = Harness::new().await;
         harness.enqueue(CREDENTIAL).await;
         let claimed = harness.claim(CREDENTIAL).await;
@@ -1132,8 +1085,7 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST);
             assert!(!reply.to_string().contains(canary));
         }
-        let logs =
-            String::from_utf8(captured.0.lock().expect("log buffer").clone()).expect("utf-8");
+        let logs = capture.text();
         assert!(logs.contains("API request rejected"), "{logs}");
         assert!(!logs.contains(canary), "{logs}");
         assert!(logs.contains("line"), "position is kept: {logs}");

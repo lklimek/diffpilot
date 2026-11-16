@@ -14,3 +14,5 @@ pub mod pipeline;
 pub mod prompts;
 pub mod secrets;
 pub mod state;
+#[cfg(test)]
+pub(crate) mod test_support;

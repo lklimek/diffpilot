@@ -1,7 +1,7 @@
 //! Sign-in, session, CSRF and token tests through the public router against a wiremock GitHub.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -20,7 +20,6 @@ use http_body_util::BodyExt;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use tower::ServiceExt;
-use tracing_subscriber::fmt::MakeWriter;
 use url::Url;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -32,6 +31,7 @@ use crate::github::oauth::TokenGrant;
 use crate::jobs::queue::QueueExecutor;
 use crate::secrets::{Aad, TokenCipher, sha256};
 use crate::state::AppState;
+use crate::test_support::logs::LogCapture;
 
 const ACCESS: &str = "ghu_test_access_canary";
 const REFRESH: &str = "ghr_test_refresh_canary";
@@ -1053,55 +1053,9 @@ async fn forwarded_headers_ignored_from_untrusted_peer() {
     );
 }
 
-#[derive(Clone, Copy)]
-struct LogBuffer;
-
-/// Every event of this test process at all levels: thread-scoped subscribers miss events in parallel tests
-/// because callsite interest is cached process-wide.
-static LOGS: Mutex<Vec<u8>> = Mutex::new(Vec::new());
-
-impl std::io::Write for LogBuffer {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        LOGS.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend_from_slice(data);
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> MakeWriter<'a> for LogBuffer {
-    type Writer = LogBuffer;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        *self
-    }
-}
-
-fn captured_logs() -> String {
-    static INSTALL: std::sync::Once = std::sync::Once::new();
-    INSTALL.call_once(|| {
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_ansi(false)
-            .with_writer(LogBuffer)
-            .finish();
-        tracing::subscriber::set_global_default(subscriber).expect("first global subscriber");
-    });
-    String::from_utf8_lossy(
-        &LOGS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
-    .into_owned()
-}
-
 #[tokio::test]
 async fn no_token_or_secret_in_logs_or_error_bodies() {
-    captured_logs();
+    let capture = LogCapture::start();
     let h = harness().await;
     let signed_in = h.sign_in("lklimek", 1001).await;
     let mut exposed = vec![
@@ -1187,7 +1141,7 @@ async fn no_token_or_secret_in_logs_or_error_bodies() {
         .expect_err("rejected refresh");
     bodies.push(format!("{error} {error:?}"));
 
-    let logs = captured_logs();
+    let logs = capture.text();
     assert!(
         logs.contains("user signed in"),
         "logs were captured: {logs}"
