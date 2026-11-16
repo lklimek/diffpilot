@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [feat/v1]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, drift, tests, doctests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Installs the toolchain and components pinned in rust-toolchain.toml.
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update && cargo --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/feat/v1' }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked --features runner/fake-provider -- -D warnings
+      # Plan §5.1: the drift test regenerates schemas/agent and web/src/api/generated; nothing may change.
+      - name: Contract drift (generated JSON Schemas and TS types)
+        run: |
+          if ! grep -rqs --include='*.rs' 'fn generated_artifacts_are_current' crates; then
+            echo "::notice title=Contract drift::test generated_artifacts_are_current does not exist yet (plan §5.1); drift check skipped"
+            exit 0
+          fi
+          UPDATE_GENERATED=1 cargo nextest run --workspace --locked --features runner/fake-provider \
+            --no-tests=fail -E 'test(generated_artifacts_are_current)'
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short
+            git diff
+            echo "::error title=Contract drift::generated artefacts are stale; run the drift test with UPDATE_GENERATED=1 and commit the result"
+            exit 1
+          fi
+      - name: Tests
+        run: cargo nextest run --workspace --locked --features runner/fake-provider --no-fail-fast
+      - name: Doctests
+        run: cargo test --workspace --locked --features runner/fake-provider --doc
+      - name: Working tree unchanged by build and tests
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short
+            echo "::error::the build or the tests changed tracked or untracked files"
+            exit 1
+          fi
+
+  checks:
+    name: Architecture and wording checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # check-architecture.sh reads `cargo metadata --no-deps`.
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update && cargo --version
+      - name: Shellcheck
+        run: shellcheck scripts/*.sh
+      - name: Architecture check self-test
+        run: scripts/check-architecture.sh --self-test
+      - name: Architecture check
+        run: scripts/check-architecture.sh
+      - name: Wording check self-test
+        run: scripts/check-wording.sh --self-test
+      - name: Wording check
+        run: scripts/check-wording.sh
+
+  web:
+    name: Web (lint, tests, build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: No web project yet
+        if: hashFiles('web/package.json') == ''
+        run: echo "::notice title=Web::web/package.json does not exist yet; web jobs skipped"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: hashFiles('web/package.json') != ''
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        if: hashFiles('web/package.json') != ''
+        working-directory: web
+        run: npm ci
+      - name: Lint
+        if: hashFiles('web/package.json') != ''
+        working-directory: web
+        run: npm run lint
+      - name: Tests
+        if: hashFiles('web/package.json') != ''
+        working-directory: web
+        run: npm test
+      - name: Build
+        if: hashFiles('web/package.json') != ''
+        working-directory: web
+        run: npm run build
