@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 contracts.workspace = true
+thiserror.workspace = true
 
 [lints]
 workspace = true
