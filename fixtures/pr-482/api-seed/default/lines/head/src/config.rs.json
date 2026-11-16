@@ -41,7 +41,8 @@
       "base_start": 23,
       "lines": [
         "            timeout: Duration::from_secs(30),"
-      ]
+      ],
+      "total_lines": 1
     }
   ],
   "moved": [],

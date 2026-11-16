@@ -72,8 +72,11 @@ pub struct DeletedBlock {
     pub after_line: u32,
     /// First removed line at the base commit.
     pub base_start: u32,
-    /// Removed lines.
+    /// Removed lines, from `base_start` on; fewer than `total_lines` when the response's line budget ran out
+    /// (read the rest with `side=base`).
     pub lines: Vec<String>,
+    /// Number of removed lines in the block.
+    pub total_lines: u32,
 }
 
 /// A moved block in the range.

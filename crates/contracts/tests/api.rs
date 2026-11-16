@@ -490,6 +490,7 @@ fn removed(after_line: u32, base_start: u32) -> DeletedBlock {
         after_line,
         base_start,
         lines: vec!["fn send_once() {}".to_owned()],
+        total_lines: 1,
     }
 }
 

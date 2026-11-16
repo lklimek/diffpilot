@@ -360,6 +360,33 @@ impl Analyses<'_> {
         Ok(())
     }
 
+    /// Replaces the base commit (the merge base found when the analysis is prepared); `Conflict` once the
+    /// analysis has a job or a document, since those were made against the stored base.
+    pub async fn set_base_sha(&self, id: AnalysisId, sha: &CommitSha) -> Result<(), DbError> {
+        let updated = sqlx::query(
+            "UPDATE analyses SET base_sha = ?
+             WHERE id = ?
+               AND NOT EXISTS (SELECT 1 FROM jobs WHERE analysis_id = analyses.id)
+               AND NOT EXISTS (SELECT 1 FROM documents WHERE analysis_id = analyses.id)",
+        )
+        .bind(&sha.0)
+        .bind(id.to_string())
+        .execute(self.pool)
+        .await?;
+        if updated.rows_affected() == 1 {
+            return Ok(());
+        }
+        let exists = sqlx::query("SELECT 1 FROM analyses WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(self.pool)
+            .await?;
+        Err(if exists.is_some() {
+            DbError::Conflict
+        } else {
+            DbError::NotFound
+        })
+    }
+
     /// Records the agent session reported by a job and marks it active.
     pub async fn set_session(
         &self,
@@ -520,9 +547,14 @@ pub mod testing {
 mod tests {
     use chrono::TimeZone;
 
-    use super::testing::seed_analysis;
+    use contracts::agent::JobKind;
+    use contracts::job::spec::JobPriority;
+
+    use super::testing::{self, seed_analysis};
     use super::*;
     use crate::repo::Db;
+    use crate::repo::documents::DocumentKind;
+    use crate::repo::jobs::{JobStage, NewJob};
 
     fn at(minute: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 11, 16, 12, minute, 0)
@@ -572,6 +604,54 @@ mod tests {
             .create(new_analysis("a"), at(4))
             .await
             .expect("a cancelled analysis may be analysed again");
+    }
+
+    #[tokio::test]
+    async fn base_sha_changes_only_before_jobs_and_documents() {
+        let db = db().await;
+        let merge_base = CommitSha("7".repeat(40));
+        let id = seed_analysis(&db).await.expect("seed");
+        db.analyses()
+            .set_base_sha(id, &merge_base)
+            .await
+            .expect("set before any job");
+        assert_eq!(
+            db.analyses().get(id).await.expect("get").base_sha,
+            merge_base
+        );
+
+        db.documents()
+            .put(id, DocumentKind::Plan, "", &serde_json::json!({}), at(1))
+            .await
+            .expect("document");
+        assert!(matches!(
+            db.analyses().set_base_sha(id, &merge_base).await,
+            Err(DbError::Conflict)
+        ));
+
+        let with_job = seed_analysis(&db).await.expect("seed");
+        db.jobs()
+            .enqueue(
+                NewJob {
+                    spec: testing::job_spec(with_job, JobKind::Plan),
+                    priority: JobPriority::Batch,
+                    stage: JobStage::Plan { batch: 1 },
+                    generation: 0,
+                },
+                at(2),
+            )
+            .await
+            .expect("enqueue");
+        assert!(matches!(
+            db.analyses().set_base_sha(with_job, &merge_base).await,
+            Err(DbError::Conflict)
+        ));
+        assert!(matches!(
+            db.analyses()
+                .set_base_sha(AnalysisId::new_random(), &merge_base)
+                .await,
+            Err(DbError::NotFound)
+        ));
     }
 
     #[tokio::test]

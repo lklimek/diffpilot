@@ -129,6 +129,10 @@ Durable state only; no in-memory handle is needed after a restart.
   succeeded job's handle is returned (enqueue `Conflict` → `Jobs::list_for_analysis`). A crash between enqueue
   and recording progress therefore never duplicates a job, and a repair is never answered with the rejected
   result of an earlier generation.
+- **End boundary.** When an analysis fails or is cancelled, the pipeline calls
+  `JobExecutor::cancel_analysis(analysis_id)` once. It requests cancellation of every queued, claimed, running or
+  paused job of the analysis, also jobs submitted before a restart (`QueueExecutor`: `Jobs::list_for_analysis`
+  + `Jobs::request_cancel`); the pipeline itself never reads the jobs table.
 - **Result boundary.** `Jobs::complete` stores the result and the state in one transaction, idempotently per
   attempt; a runner retry after a lost reply changes nothing.
 - **Persist boundary.** Verification and `Documents::put` (upsert by analysis, kind and key) run from the

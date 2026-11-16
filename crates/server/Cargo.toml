@@ -30,12 +30,13 @@ chrono.workspace = true
 dotenvy.workspace = true
 futures.workspace = true
 ipnet.workspace = true
+jsonschema.workspace = true
 mime_guess = { workspace = true, optional = true }
 rust-embed = { workspace = true, optional = true }
 secrecy.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
@@ -45,6 +46,7 @@ db = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 http-body-util.workspace = true
 serde.workspace = true
+tempfile.workspace = true
 tower.workspace = true
 
 [lints]

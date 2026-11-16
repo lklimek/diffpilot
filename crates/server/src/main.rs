@@ -47,6 +47,8 @@ enum StartError {
         #[source]
         source: std::io::Error,
     },
+    #[error("could not resume the unfinished analyses")]
+    Resume(#[source] DbError),
     #[error("the HTTP server stopped with an I/O error")]
     Serve(#[source] std::io::Error),
 }
@@ -89,6 +91,9 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     let runner = bind(RUNNER_LISTEN_ADDR, config.runner_listen_addr).await?;
     let executor = Arc::new(QueueExecutor::new(db.clone()));
     let state = AppState::new(config, db, executor);
+    server::pipeline::resume_unfinished(&state)
+        .await
+        .map_err(StartError::Resume)?;
 
     let (stop, stopped) = watch::channel(false);
     tokio::spawn(async move {
