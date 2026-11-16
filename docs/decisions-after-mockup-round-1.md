@@ -210,3 +210,29 @@ components. Expected components: navigation list, PR context, flow diagram, step
 code view (line renderer with gutter marks and highlights), inspector and each of its sections, Ask,
 feedback buttons, comment composer, pending-review list. Purpose: adding the inspector and commenting to the
 Tour later is a layout change, not a rewrite.
+
+## L. Tour-only variant (candidate for the MVP, mockups in `docs/mockups-tour/`)
+
+The owner considers moving the Groups workspace to a later version and starting with the Tour alone. In this
+variant the Tour is the whole review screen and takes over what the workspace did.
+
+- Screens: Home, Analysis progress, Tour, Settings. No Groups / Tour switch in the top bar.
+- Sequence: PR context → for each flow: flow introduction → its steps, one at a time → next flow.
+- Left menu: PR context; flows in importance order (title, risk, tick), the current flow lists its numbered
+  steps; then text-identical moves, "Not analysed" sections and "Unexplained" lines, which open in the centre.
+- Centre is split horizontally. Top: the flow diagram, hidden by default; when shown, the current step is
+  marked and clicking a node goes to that step. Bottom: one block — the flow introduction or one step
+  (header, four facts, code, impact outside the diff, collapsed assessment, show old code, tick).
+  Under it: Previous / Next.
+- Flow introduction wording: "Problem (before this PR)" and "Change (what this PR does)", then the
+  Before / After example. The label "Was wrong" is not used.
+- Inspector on the right, a strip until a highlight is clicked (sections and dock as in section E).
+- Comments on any displayed line. While a comment is being written its line is highlighted; after posting,
+  the line keeps a comment marker. Pending review count in the top bar; the list opens in the centre.
+- Ticks per step; a flow is reviewed when all its steps are ticked; top bar "flows reviewed k / n".
+  Opening the PR again returns to the last viewed block.
+- Carried over unchanged: resizable columns, click-anywhere strip to restore a hidden column, legend in
+  `?`, tooltips on labels, neutral deterministic labels, the three hard cases, keyboard.
+- Ask (a question to the LLM about the current step, answered by an on-demand agent run) is part of the MVP.
+  It keeps the LLM integration honest: the architecture must support interactive, on-demand jobs with
+  session context, not only the batch analysis pipeline.
