@@ -80,17 +80,11 @@ impl JobExecutor for QueueExecutor {
     }
 
     fn events(&self, handle: &JobHandle) -> BoxStream<'static, Result<JobUpdate, ExecutorError>> {
-        let follower = Follower {
-            db: self.db.clone(),
-            job: handle.job_id,
-            attempt: 0,
-            seq: 0,
-            last_state: None,
-            output_sent: false,
-            pending: VecDeque::new(),
-            done: false,
-        };
-        stream::unfold(follower, Follower::next).boxed()
+        stream::unfold(
+            Follower::new(self.db.clone(), handle.job_id),
+            Follower::next,
+        )
+        .boxed()
     }
 
     fn cancel(&self, handle: &JobHandle) -> BoxFuture<'_, Result<(), ExecutorError>> {
@@ -118,6 +112,9 @@ struct Follower {
     output_sent: bool,
     pending: VecDeque<JobUpdate>,
     done: bool,
+    /// Runs between reading the job and reading its events, to force interleavings in tests.
+    #[cfg(test)]
+    between_reads: Option<tests::Hook>,
 }
 
 fn is_active(state: Option<JobState>) -> bool {
@@ -125,6 +122,21 @@ fn is_active(state: Option<JobState>) -> bool {
 }
 
 impl Follower {
+    fn new(db: Db, job: JobId) -> Self {
+        Self {
+            db,
+            job,
+            attempt: 0,
+            seq: 0,
+            last_state: None,
+            output_sent: false,
+            pending: VecDeque::new(),
+            done: false,
+            #[cfg(test)]
+            between_reads: None,
+        }
+    }
+
     async fn next(mut self) -> Option<(Result<JobUpdate, ExecutorError>, Self)> {
         loop {
             if let Some(update) = self.pending.pop_front() {
@@ -160,6 +172,23 @@ impl Follower {
         if self.last_state.is_none() && job.state.is_terminal() {
             return self.finish(job.result);
         }
+        let after_seq = if job.attempt == self.attempt {
+            self.seq
+        } else {
+            0
+        };
+        #[cfg(test)]
+        if let Some(hook) = &self.between_reads {
+            hook().await;
+        }
+        let events = self.db.jobs().events(self.job, after_seq).await?;
+        // State and ready output are taken from a read after the events, and only if no claim happened between:
+        // then events, state and output all belong to one attempt.
+        let read_attempt = job.attempt;
+        let job = self.read().await?;
+        if job.attempt != read_attempt {
+            return Ok(());
+        }
         let new_attempt = job.attempt != self.attempt;
         let requeued = (is_active(self.last_state)
             && (new_attempt || job.state == JobState::Queued))
@@ -177,7 +206,7 @@ impl Follower {
             self.seq = 0;
             self.output_sent = false;
         }
-        for event in self.db.jobs().events(self.job, self.seq).await? {
+        for event in events {
             self.seq = event.seq;
             self.pending.push_back(JobUpdate::Event(event));
         }
@@ -450,6 +479,86 @@ mod tests {
         assert_eq!(
             db.jobs().get(handle.job_id).await.expect("get").state,
             JobState::Queued
+        );
+    }
+
+    /// Test hook run by the follower between its reads.
+    pub(super) type Hook = std::sync::Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>;
+
+    #[tokio::test]
+    async fn follower_never_mixes_attempts_when_reclaimed_between_reads() {
+        let (db, executor, analysis) = setup().await;
+        let handle = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit");
+        let job = handle.job_id;
+        let lease = || Utc::now() + TimeDelta::seconds(60);
+        claim(&db, 60).await;
+        db.jobs()
+            .record_events(job, 1, &[event(1)], lease())
+            .await
+            .expect("events");
+        // On the follower's second poll, between its job read and its event read: the output of attempt 1
+        // is already read, then the lease ends, attempt 2 is claimed and posts events.
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook: Hook = {
+            let db = db.clone();
+            let calls = calls.clone();
+            std::sync::Arc::new(move || {
+                let db = db.clone();
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async move {
+                    if call == 1 {
+                        db.jobs()
+                            .expire_leases(Utc::now() + TimeDelta::seconds(61))
+                            .await
+                            .expect("expire");
+                        claim(&db, 60).await;
+                        db.jobs()
+                            .record_events(job, 2, &[event(1), event(2)], lease())
+                            .await
+                            .expect("events of attempt 2");
+                    }
+                })
+            })
+        };
+        let mut follower = Follower::new(db.clone(), job);
+        follower.between_reads = Some(hook);
+        let mut updates = stream::unfold(follower, Follower::next).boxed();
+        assert!(matches!(next(&mut updates).await, JobUpdate::Event(e) if e.seq == 1));
+        db.jobs()
+            .record_output(job, 1, &json!({"attempt": 1}), lease())
+            .await
+            .expect("output of attempt 1");
+        let mut seen = Vec::new();
+        loop {
+            let update = next(&mut updates).await;
+            let last = matches!(&update, JobUpdate::Event(e) if e.seq == 2);
+            seen.push(update);
+            if last {
+                break;
+            }
+        }
+        db.jobs()
+            .complete(&succeeded(job, 2), Utc::now())
+            .await
+            .expect("complete");
+        seen.push(next(&mut updates).await);
+        let kinds: Vec<String> = seen
+            .iter()
+            .map(|update| match update {
+                JobUpdate::Event(e) => format!("event {}", e.seq),
+                JobUpdate::OutputReady(_) => "output".to_owned(),
+                JobUpdate::Requeued { attempt } => format!("requeued {attempt}"),
+                JobUpdate::Paused { .. } => "paused".to_owned(),
+                JobUpdate::Finished(result) => format!("finished {}", result.attempt),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["requeued 2", "event 1", "event 2", "finished 2"],
+            "no output of the invalidated attempt, no attempt-2 event before the requeue, no repeats"
         );
     }
 

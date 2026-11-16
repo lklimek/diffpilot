@@ -13,11 +13,11 @@ use contracts::api::error::ApiErrorCode;
 use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
 use contracts::job::protocol::{ClaimRequest, ClaimResponse, EventBatch, EventsAck, OutputReady};
-use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
+use contracts::job::result::{JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus};
 use contracts::job::state::JobState;
 use contracts::routes::{RUNNER_CLAIM, RUNNER_EVENTS, RUNNER_OUTPUT, RUNNER_RESULT};
 use db::error::DbError;
-use db::repo::jobs::{Completion, JobRecord, OutputRecorded};
+use db::repo::jobs::{Completion, OutputRecorded};
 use secrecy::ExposeSecret;
 use serde_json::Value;
 
@@ -42,9 +42,17 @@ pub enum RunnerError {
     /// Missing or wrong runner secret or job token, or the job's lease is over.
     #[error("the runner credentials are missing or not valid")]
     Unauthenticated,
-    /// The body is not the expected JSON.
-    #[error("the request body is not valid")]
-    Body(#[from] JsonRejection),
+    /// The body is not the expected JSON. Only the category and position are kept: the deserialiser's message
+    /// quotes the body, which may hold a secret.
+    #[error("the request body is not valid ({kind}, line {line}, column {column})")]
+    Body {
+        /// Category of the rejection.
+        kind: &'static str,
+        /// Line of the error, 0 when unknown.
+        line: usize,
+        /// Column of the error, 0 when unknown.
+        column: usize,
+    },
     /// The job id in the path is not valid.
     #[error("the job id is not valid")]
     Path(#[from] PathRejection),
@@ -63,7 +71,7 @@ impl ApiErrorSource for RunnerError {
     fn code(&self) -> ApiErrorCode {
         match self {
             Self::Unauthenticated => ApiErrorCode::Unauthenticated,
-            Self::Body(_) | Self::Path(_) | Self::JobMismatch => ApiErrorCode::InvalidRequest,
+            Self::Body { .. } | Self::Path(_) | Self::JobMismatch => ApiErrorCode::InvalidRequest,
             Self::Claim(ClaimError::Db(error)) | Self::Db(error) => error.code(),
             Self::Claim(ClaimError::Random(_)) => ApiErrorCode::Internal,
         }
@@ -72,7 +80,7 @@ impl ApiErrorSource for RunnerError {
     fn public_message(&self) -> Cow<'static, str> {
         match self {
             Self::Unauthenticated => Cow::Borrowed("The runner credentials are not valid."),
-            Self::Body(_) | Self::Path(_) => Cow::Borrowed("The request is not valid."),
+            Self::Body { .. } | Self::Path(_) => Cow::Borrowed("The request is not valid."),
             Self::JobMismatch => Cow::Borrowed("The result belongs to another job."),
             Self::Claim(ClaimError::Db(error)) | Self::Db(error) => error.public_message(),
             Self::Claim(ClaimError::Random(_)) => {
@@ -80,6 +88,30 @@ impl ApiErrorSource for RunnerError {
             }
         }
     }
+}
+
+impl From<JsonRejection> for RunnerError {
+    fn from(rejection: JsonRejection) -> Self {
+        let kind = match &rejection {
+            JsonRejection::JsonDataError(_) => "unexpected shape",
+            JsonRejection::JsonSyntaxError(_) => "syntax error",
+            JsonRejection::MissingJsonContentType(_) => "missing JSON content type",
+            JsonRejection::BytesRejection(_) => "unreadable or too large",
+            _ => "rejected",
+        };
+        let (line, column) = json_position(&rejection.body_text());
+        Self::Body { kind, line, column }
+    }
+}
+
+/// Line and column from serde_json's trailing "at line L column C"; (0, 0) when absent.
+fn json_position(text: &str) -> (usize, usize) {
+    text.rsplit_once(" at line ")
+        .and_then(|(_, rest)| {
+            let (line, column) = rest.split_once(" column ")?;
+            Some((line.trim().parse().ok()?, column.trim().parse().ok()?))
+        })
+        .unwrap_or((0, 0))
 }
 
 type RunnerResult<T> = Result<T, ApiFailure<RunnerError>>;
@@ -123,38 +155,59 @@ fn authorize_runner(state: &AppState, headers: &HeaderMap) -> Result<(), RunnerE
     }
 }
 
-/// Checks the job token of the current claim; returns the job and the presented token (for scrubbing).
+/// A request authorised by a job token, bound to the attempt that token was issued for.
+#[derive(Debug)]
+struct Authorized {
+    job: JobId,
+    attempt: u32,
+    cancel_requested: bool,
+    token: String,
+}
+
+impl Authorized {
+    /// A body may only speak for the attempt the token was issued for; the write re-checks it in its transaction.
+    fn bind(&self, attempt: u32) -> Result<(), RunnerError> {
+        if attempt == self.attempt {
+            Ok(())
+        } else {
+            Err(RunnerError::Db(DbError::Conflict))
+        }
+    }
+}
+
+/// Checks the job token against the current claim, read together with its attempt and lease.
 async fn authorize_job(
     state: &AppState,
     headers: &HeaderMap,
     job: JobId,
-) -> Result<(JobRecord, String), RunnerError> {
+) -> Result<Authorized, RunnerError> {
     let presented = bearer(headers).ok_or(RunnerError::Unauthenticated)?;
-    let stored = state
-        .db
-        .jobs()
-        .token_hash(job)
-        .await?
-        .ok_or(RunnerError::Unauthenticated)?;
+    let claim = state.db.jobs().authorization(job).await?;
+    let stored = claim.token_hash.ok_or(RunnerError::Unauthenticated)?;
     if !hashes_match(&stored, &token_hash(presented)) {
         return Err(RunnerError::Unauthenticated);
     }
-    let record = state.db.jobs().get(job).await?;
-    let lease_over = record
+    let lease_over = claim
         .lease_expires_at
         .is_some_and(|lease| lease < Utc::now());
-    if lease_over && matches!(record.state, JobState::Claimed | JobState::Running) {
+    if lease_over && matches!(claim.state, JobState::Claimed | JobState::Running) {
         return Err(RunnerError::Unauthenticated);
     }
-    Ok((record, presented.to_owned()))
+    Ok(Authorized {
+        job,
+        attempt: claim.attempt,
+        cancel_requested: claim.cancel_requested,
+        token: presented.to_owned(),
+    })
 }
 
 /// Known secret values that must never be stored from runner data (threat model T10).
-fn known_secrets<'a>(state: &'a AppState, job_token: &'a str) -> [&'a str; 3] {
+fn known_secrets<'a>(state: &'a AppState, job_token: &'a str) -> [&'a str; 4] {
     [
         job_token,
         state.config.runner_secret.expose_secret(),
         state.config.memcan.token.expose_secret(),
+        state.config.github.client_secret.expose_secret(),
     ]
 }
 
@@ -167,12 +220,59 @@ fn scrub(text: &str, secrets: &[&str]) -> String {
         })
 }
 
+/// Scrubs strings and object keys; a key that collides after scrubbing gets the first free `#<n>` suffix, so no
+/// value is lost.
 fn scrub_value(value: &mut Value, secrets: &[&str]) {
     match value {
         Value::String(text) => *text = scrub(text, secrets),
         Value::Array(items) => items.iter_mut().for_each(|item| scrub_value(item, secrets)),
-        Value::Object(map) => map.values_mut().for_each(|item| scrub_value(item, secrets)),
+        Value::Object(map) => {
+            for (key, mut item) in std::mem::take(map) {
+                scrub_value(&mut item, secrets);
+                let key = scrub(&key, secrets);
+                let key = if map.contains_key(&key) {
+                    (2usize..)
+                        .map(|n| format!("{key}#{n}"))
+                        .find(|candidate| !map.contains_key(candidate))
+                        .unwrap_or(key)
+                } else {
+                    key
+                };
+                map.insert(key, item);
+            }
+        }
         Value::Null | Value::Bool(_) | Value::Number(_) => {}
+    }
+}
+
+/// Scrubs every text field of a result before it is stored (also the LLM status copied to the credential).
+fn scrub_result(result: &mut JobResult, secrets: &[&str]) {
+    let JobResult {
+        job_id: _,
+        attempt: _,
+        outcome,
+        session,
+        usage: _,
+        skills_commit,
+        llm_call,
+    } = result;
+    match outcome {
+        JobOutcome::Succeeded { output } => scrub_value(output, secrets),
+        JobOutcome::Failed { kind: _, message } => *message = scrub(message, secrets),
+        JobOutcome::Cancelled | JobOutcome::UsageLimited { resets_at: _ } => {}
+    }
+    if let Some(session) = session {
+        session.thread_id = scrub(&session.thread_id, secrets);
+    }
+    if let Some(commit) = skills_commit {
+        *commit = scrub(commit, secrets);
+    }
+    if let Some(LlmCallOutcome {
+        at: _,
+        status: LlmCallStatus::NotWorking { message },
+    }) = llm_call
+    {
+        *message = scrub(message, secrets);
     }
 }
 
@@ -204,9 +304,18 @@ async fn post_events(
     body: Result<Json<EventBatch>, JsonRejection>,
 ) -> RunnerResult<Json<EventsAck>> {
     let Path(job) = path.map_err(RunnerError::from)?;
-    let (_, token) = authorize_job(&state, &headers, job).await?;
+    let auth = authorize_job(&state, &headers, job).await?;
     let Json(batch) = body.map_err(RunnerError::from)?;
-    let secrets = known_secrets(&state, &token);
+    Ok(Json(apply_events(&state, &auth, batch).await?))
+}
+
+async fn apply_events(
+    state: &AppState,
+    auth: &Authorized,
+    batch: EventBatch,
+) -> Result<EventsAck, RunnerError> {
+    auth.bind(batch.attempt)?;
+    let secrets = known_secrets(state, &auth.token);
     let events: Vec<JobEvent> = batch
         .events
         .into_iter()
@@ -216,13 +325,12 @@ async fn post_events(
     let recorded = state
         .db
         .jobs()
-        .record_events(job, batch.attempt, &events, lease_expires_at)
-        .await
-        .map_err(RunnerError::from)?;
-    Ok(Json(EventsAck {
+        .record_events(auth.job, auth.attempt, &events, lease_expires_at)
+        .await?;
+    Ok(EventsAck {
         cancel_requested: recorded.cancel_requested,
         lease_expires_at,
-    }))
+    })
 }
 
 async fn post_output(
@@ -232,24 +340,32 @@ async fn post_output(
     body: Result<Json<OutputReady>, JsonRejection>,
 ) -> RunnerResult<Json<EventsAck>> {
     let Path(job) = path.map_err(RunnerError::from)?;
-    let (record, token) = authorize_job(&state, &headers, job).await?;
-    let Json(mut ready) = body.map_err(RunnerError::from)?;
-    scrub_value(&mut ready.output, &known_secrets(&state, &token));
+    let auth = authorize_job(&state, &headers, job).await?;
+    let Json(ready) = body.map_err(RunnerError::from)?;
+    Ok(Json(apply_output(&state, &auth, ready).await?))
+}
+
+async fn apply_output(
+    state: &AppState,
+    auth: &Authorized,
+    mut ready: OutputReady,
+) -> Result<EventsAck, RunnerError> {
+    auth.bind(ready.attempt)?;
+    scrub_value(&mut ready.output, &known_secrets(state, &auth.token));
     let lease_expires_at = lease_until(Utc::now());
     let recorded = state
         .db
         .jobs()
-        .record_output(job, ready.attempt, &ready.output, lease_expires_at)
-        .await
-        .map_err(RunnerError::from)?;
+        .record_output(auth.job, auth.attempt, &ready.output, lease_expires_at)
+        .await?;
     let cancel_requested = match recorded {
         OutputRecorded::Stored { cancel_requested } => cancel_requested,
-        OutputRecorded::AlreadyStored => record.cancel_requested,
+        OutputRecorded::AlreadyStored => auth.cancel_requested,
     };
-    Ok(Json(EventsAck {
+    Ok(EventsAck {
         cancel_requested,
         lease_expires_at,
-    }))
+    })
 }
 
 async fn post_result(
@@ -259,69 +375,33 @@ async fn post_result(
     body: Result<Json<JobResult>, JsonRejection>,
 ) -> RunnerResult<StatusCode> {
     let Path(job) = path.map_err(RunnerError::from)?;
-    let (record, token) = authorize_job(&state, &headers, job).await?;
-    let Json(mut result) = body.map_err(RunnerError::from)?;
-    if result.job_id != job {
-        return Err(RunnerError::JobMismatch.into());
-    }
-    let secrets = known_secrets(&state, &token);
-    match &mut result.outcome {
-        JobOutcome::Succeeded { output } => scrub_value(output, &secrets),
-        JobOutcome::Failed { message, .. } => *message = scrub(message, &secrets),
-        JobOutcome::Cancelled | JobOutcome::UsageLimited { .. } => {}
-    }
-    let now = Utc::now();
-    let completion = state
-        .db
-        .jobs()
-        .complete(&result, now)
-        .await
-        .map_err(RunnerError::from)?;
-    if let Completion::Applied { state: job_state } = completion {
-        tracing::info!(%job, attempt = result.attempt, state = job_state.as_str(), "job result recorded");
-        record_credential_outcome(&state, &record, &result, job_state).await;
-        // TODO(WP3-APPTOKEN): revoke the attempt's installation token (`Jobs::github_tokens_to_revoke`).
-    }
+    let auth = authorize_job(&state, &headers, job).await?;
+    let Json(result) = body.map_err(RunnerError::from)?;
+    apply_result(&state, &auth, result).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Updates the LLM status and the credential's pause or usability from an applied result. The result is already
-/// stored, so a failure here is logged rather than turned into an error the runner would retry.
-async fn record_credential_outcome(
+async fn apply_result(
     state: &AppState,
-    record: &JobRecord,
-    result: &JobResult,
-    job_state: JobState,
-) {
-    let credentials = state.db.llm_credentials();
-    let credential = record.spec.credential.id.as_str();
-    if let Some(call) = &result.llm_call
-        && let Err(error) = credentials.record_call(credential, call).await
-    {
-        tracing::warn!(%error, credential, "could not record the LLM call outcome; Settings shows an older status");
+    auth: &Authorized,
+    mut result: JobResult,
+) -> Result<(), RunnerError> {
+    if result.job_id != auth.job {
+        return Err(RunnerError::JobMismatch);
     }
-    if job_state == JobState::Paused {
-        let paused = match state.db.jobs().get(record.id).await {
-            Ok(job) => job.resumes_at,
-            Err(error) => {
-                tracing::warn!(%error, job = %record.id, "could not read the pause end of a usage-limited job");
-                None
-            }
-        };
-        if let Some(until) = paused
-            && let Err(error) = credentials.pause(credential, until).await
-        {
-            tracing::warn!(%error, credential, "could not pause the LLM credential after a usage limit");
-        }
+    auth.bind(result.attempt)?;
+    scrub_result(&mut result, &known_secrets(state, &auth.token));
+    let completion = state.db.jobs().complete(&result, Utc::now()).await?;
+    if let Completion::Applied { state: job_state } = completion {
+        tracing::info!(
+            job = %auth.job,
+            attempt = result.attempt,
+            state = job_state.as_str(),
+            "job result recorded"
+        );
+        // TODO(WP3-APPTOKEN): revoke the attempt's installation token (`Jobs::github_tokens_to_revoke`).
     }
-    if let JobOutcome::Failed {
-        kind: JobFailureKind::CredentialUnusable,
-        ..
-    } = result.outcome
-        && let Err(error) = credentials.mark_unusable(credential, Utc::now()).await
-    {
-        tracing::warn!(%error, credential, "could not mark the LLM credential unusable");
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -334,7 +414,9 @@ mod tests {
     use contracts::job::access::AgentAccess;
     use contracts::job::event::ActivityKind;
     use contracts::job::protocol::{CredentialStatus, LeaseTiming};
-    use contracts::job::result::{LlmCallOutcome, LlmCallStatus};
+    use std::sync::{Arc, Mutex};
+
+    use contracts::job::result::{JobFailureKind, SessionOutcome, SessionReport};
     use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
     use db::repo::jobs::{JobStage, NewJob};
@@ -843,6 +925,218 @@ mod tests {
         }
         assert!(stored.contains(REDACTED));
         assert_eq!(events[0].summary.chars().count(), SUMMARY_MAX_CHARS);
+    }
+
+    #[tokio::test]
+    async fn server_scrubs_secrets_from_result_metadata_keys_and_llm_status() {
+        let harness = Harness::new().await;
+        harness.enqueue(CREDENTIAL).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        let memcan = harness.state.config.memcan.token.expose_secret().to_owned();
+        let token = claimed.token.clone();
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_OUTPUT.path, claimed.job),
+                Some(&token),
+                OutputReady {
+                    attempt: 1,
+                    output: json!({ token.clone(): {format!("k{memcan}"): 1} }),
+                },
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let mut result = succeeded(claimed.job, 1);
+        result.outcome = JobOutcome::Succeeded {
+            output: json!({ token.clone(): [format!("v{memcan}")] }),
+        };
+        result.session = Some(SessionReport {
+            thread_id: format!("thread-{token}"),
+            outcome: SessionOutcome::Started,
+        });
+        result.skills_commit = Some(memcan.clone());
+        result.llm_call = Some(LlmCallOutcome {
+            at: Utc::now(),
+            status: LlmCallStatus::NotWorking {
+                message: format!("refresh failed for {token}"),
+            },
+        });
+        let (status, _) = harness
+            .send(&path(RUNNER_RESULT.path, claimed.job), Some(&token), result)
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
+        let credential = harness
+            .state
+            .db
+            .llm_credentials()
+            .get(CREDENTIAL)
+            .await
+            .expect("credential");
+        let stored = format!(
+            "{:?} {:?} {:?}",
+            job.ready_output, job.result, credential.last_call
+        );
+        for secret in [token.as_str(), memcan.as_str()] {
+            assert!(!stored.contains(secret), "secret stored: {stored}");
+        }
+        assert!(credential.last_call.is_some(), "the status row was written");
+    }
+
+    #[test]
+    fn scrubbed_object_keys_stay_unique() {
+        let mut value = json!({"Sa": 1, "[redacted]a": 2, "x": {"S": "S"}});
+        scrub_value(&mut value, &["S"]);
+        let map = value.as_object().expect("object");
+        assert_eq!(map.len(), 3, "{value}");
+        assert!(!value.to_string().contains('S'), "{value}");
+        assert!(map.contains_key("[redacted]a") && map.contains_key("[redacted]a#2"));
+        let mut kept: Vec<i64> = ["[redacted]a", "[redacted]a#2"]
+            .iter()
+            .filter_map(|key| map[*key].as_i64())
+            .collect();
+        kept.sort_unstable();
+        assert_eq!(kept, [1, 2], "no value is lost on a collision");
+    }
+
+    #[tokio::test]
+    async fn old_token_cannot_write_a_reclaimed_attempt() {
+        let harness = Harness::new().await;
+        harness.enqueue(CREDENTIAL).await;
+        let first = harness.claim(CREDENTIAL).await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {}", first.token).parse().expect("header"),
+        );
+        // Authorise with the first attempt's token, then the lease ends and the job is claimed again.
+        let auth = authorize_job(&harness.state, &headers, first.job)
+            .await
+            .expect("authorised for attempt 1");
+        harness
+            .state
+            .db
+            .jobs()
+            .expire_leases(Utc::now() + TimeDelta::seconds(61))
+            .await
+            .expect("expire");
+        let second = harness.claim(CREDENTIAL).await;
+        assert_eq!(second.job, first.job);
+        for attempt in [1, 2] {
+            let events = apply_events(&harness.state, &auth, batch(attempt, "old")).await;
+            assert!(
+                matches!(events, Err(RunnerError::Db(DbError::Conflict))),
+                "{events:?}"
+            );
+            let output = apply_output(
+                &harness.state,
+                &auth,
+                OutputReady {
+                    attempt,
+                    output: json!({"old": true}),
+                },
+            )
+            .await;
+            assert!(
+                matches!(output, Err(RunnerError::Db(DbError::Conflict))),
+                "{output:?}"
+            );
+            let result = apply_result(&harness.state, &auth, succeeded(first.job, attempt)).await;
+            assert!(
+                matches!(result, Err(RunnerError::Db(DbError::Conflict))),
+                "{result:?}"
+            );
+        }
+        let job = harness.state.db.jobs().get(first.job).await.expect("get");
+        assert_eq!((job.attempt, job.state), (2, JobState::Claimed));
+        assert_eq!((job.ready_output, job.result), (None, None));
+        assert!(
+            harness
+                .state
+                .db
+                .jobs()
+                .events(first.job, 0)
+                .await
+                .expect("events")
+                .is_empty()
+        );
+    }
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    thread_local! {
+        static CAPTURE: std::cell::RefCell<Option<Captured>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// Writes log lines into the capture buffer of the current test thread, if any.
+    struct ThreadWriter;
+
+    impl std::io::Write for ThreadWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            CAPTURE.with(|capture| {
+                if let Some(captured) = capture.borrow().as_ref() {
+                    captured
+                        .0
+                        .lock()
+                        .expect("log buffer")
+                        .extend_from_slice(bytes);
+                }
+            });
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Captures every log line of the current thread. A global subscriber (installed once) avoids per-thread
+    /// dispatchers, whose callsite interest other test threads can race with.
+    fn capture_logs() -> Captured {
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_ansi(false)
+                .with_writer(|| ThreadWriter)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber).expect("first global subscriber");
+        });
+        let captured = Captured::default();
+        CAPTURE.with(|capture| *capture.borrow_mut() = Some(captured.clone()));
+        captured
+    }
+
+    #[tokio::test]
+    async fn invalid_runner_body_is_not_logged() {
+        let captured = capture_logs();
+        let harness = Harness::new().await;
+        harness.enqueue(CREDENTIAL).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        let canary = "canary-secret-7f3a";
+        let bodies = [
+            format!(
+                r#"{{"attempt":1,"events":[{{"seq":1,"at":"2026-11-16T12:00:00Z","activity":"{canary}","summary":"s"}}]}}"#
+            ),
+            format!(r#"{{"attempt":1,"events":[{{"{canary}":1}}]}}"#),
+            format!(r#"{{"attempt":1,"events":["{canary}"#),
+        ];
+        for body in bodies {
+            let (status, reply) = harness
+                .send_raw(
+                    &path(RUNNER_EVENTS.path, claimed.job),
+                    Some(&claimed.token),
+                    body.into_bytes(),
+                )
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(!reply.to_string().contains(canary));
+        }
+        let logs =
+            String::from_utf8(captured.0.lock().expect("log buffer").clone()).expect("utf-8");
+        assert!(logs.contains("API request rejected"), "{logs}");
+        assert!(!logs.contains(canary), "{logs}");
+        assert!(logs.contains("line"), "position is kept: {logs}");
     }
 
     #[tokio::test]
