@@ -71,6 +71,9 @@ name = "analysis"
 version = "0.0.0"
 dependencies = [
  "contracts",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

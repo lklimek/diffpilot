@@ -1,7 +1,8 @@
-//! Hunks of a pull request from `git diff` between base and head. Body filled in by WP2-INGEST.
+//! Hunks of a pull request from `git diff -U0 -M` between base and head.
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::process::Command;
 
 use contracts::common::LineSide;
 use contracts::ids::{CommitSha, HunkId};
@@ -166,10 +167,189 @@ impl<'a> DiffIndex<'a> {
 
 /// The changed files between `base` and `head` in the repository at `repo` (read-only).
 pub fn diff(repo: &Path, base: &CommitSha, head: &CommitSha) -> Result<Vec<FileDiff>, DiffError> {
-    let _ = (repo, base, head);
-    Err(DiffError::NotImplemented {
-        operation: "diff::diff",
-    })
+    // Fixed options and no user or system config: hunks (and their ids) depend only on the two commits.
+    let output = Command::new("git")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "-U0",
+            "-M",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--diff-algorithm=myers",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--end-of-options",
+        ])
+        .arg(&base.0)
+        .arg(&head.0)
+        .arg("--")
+        .output()?;
+    if !output.status.success() {
+        return Err(DiffError::Git {
+            message: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    parse(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parses `git diff -U0` output and assigns hunk ids in path order, then file order.
+fn parse(text: &str) -> Result<Vec<FileDiff>, DiffError> {
+    let mut files: Vec<FileDiff> = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            files.push(FileDiff {
+                path: header_path(rest).unwrap_or_default(),
+                old_path: None,
+                status: FileStatus::Modified,
+                binary: false,
+                hunks: Vec::new(),
+            });
+            continue;
+        }
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
+        if line.starts_with("new file mode ") {
+            file.status = FileStatus::Added;
+        } else if line.starts_with("deleted file mode ") {
+            file.status = FileStatus::Deleted;
+        } else if let Some(from) = line.strip_prefix("rename from ") {
+            file.status = FileStatus::Renamed;
+            file.old_path = Some(unquote(from));
+        } else if let Some(to) = line.strip_prefix("rename to ") {
+            file.path = unquote(to);
+        } else if let Some(old) = line.strip_prefix("--- ") {
+            if file.status == FileStatus::Deleted {
+                file.path = strip_side_prefix(&unquote(old), "a/");
+            }
+        } else if let Some(new) = line.strip_prefix("+++ ") {
+            if file.status != FileStatus::Deleted {
+                file.path = strip_side_prefix(&unquote(new), "b/");
+            }
+        } else if line.starts_with("Binary files ") {
+            file.binary = true;
+        } else if let Some(header) = line.strip_prefix("@@ ") {
+            let (base, head) = hunk_header(header).ok_or_else(|| DiffError::Git {
+                message: format!("unexpected hunk header in the diff output: {line}"),
+            })?;
+            // Consume the hunk's lines: a removed line "-- x" reads "--- x" and is not a header.
+            let (mut old, mut new) = (base.len, head.len);
+            while old > 0 || new > 0 {
+                match lines.next() {
+                    Some(body) if body.starts_with('-') => old = old.saturating_sub(1),
+                    Some(body) if body.starts_with('+') => new = new.saturating_sub(1),
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+            file.hunks.push(Hunk {
+                id: HunkId(String::new()),
+                base,
+                head,
+                added: (head.start..head.start + head.len).collect(),
+                removed: (base.start..base.start + base.len).collect(),
+            });
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let hunks = files.iter_mut().flat_map(|file| file.hunks.iter_mut());
+    for (index, hunk) in hunks.enumerate() {
+        hunk.id = HunkId(format!("h{}", index + 1));
+    }
+    Ok(files)
+}
+
+/// The path of `a/<p> b/<p>` (quoted, or two equal halves); renames and deletions get theirs from later lines.
+fn header_path(rest: &str) -> Option<String> {
+    if rest.starts_with('"') {
+        let end = closing_quote(rest)?;
+        return Some(strip_side_prefix(&unquote(&rest[..=end]), "a/"));
+    }
+    let len = rest.len().checked_sub(5)? / 2;
+    let old = rest.strip_prefix("a/")?.get(..len)?;
+    let new = rest.get(2 + len..)?.strip_prefix(" b/")?;
+    (old == new).then(|| old.to_owned())
+}
+
+fn closing_quote(quoted: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (index, c) in quoted.char_indices().skip(1) {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => return Some(index),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn strip_side_prefix(path: &str, prefix: &str) -> String {
+    path.strip_prefix(prefix).unwrap_or(path).to_owned()
+}
+
+/// Undoes git's C-style path quoting (`"a/x\tb\303\251"`); unquoted input is returned as is.
+fn unquote(text: &str) -> String {
+    let Some(inner) = text
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    else {
+        return text.to_owned();
+    };
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut input = inner.bytes().peekable();
+    while let Some(byte) = input.next() {
+        if byte != b'\\' {
+            bytes.push(byte);
+            continue;
+        }
+        match input.next() {
+            Some(b'a') => bytes.push(0x07),
+            Some(b'b') => bytes.push(0x08),
+            Some(b't') => bytes.push(b'\t'),
+            Some(b'n') => bytes.push(b'\n'),
+            Some(b'v') => bytes.push(0x0b),
+            Some(b'f') => bytes.push(0x0c),
+            Some(b'r') => bytes.push(b'\r'),
+            Some(digit @ b'0'..=b'7') => {
+                let mut value = u32::from(digit - b'0');
+                for _ in 0..2 {
+                    if let Some(next @ b'0'..=b'7') = input.peek().copied() {
+                        value = value * 8 + u32::from(next - b'0');
+                        input.next();
+                    }
+                }
+                bytes.push(u8::try_from(value).unwrap_or(u8::MAX));
+            }
+            Some(other) => bytes.push(other),
+            None => bytes.push(b'\\'),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// `-a[,b] +c[,d] @@ …` → base and head spans (an omitted length is 1).
+fn hunk_header(header: &str) -> Option<(LineSpan, LineSpan)> {
+    let mut parts = header.split(' ');
+    let base = span_of(parts.next()?.strip_prefix('-')?)?;
+    let head = span_of(parts.next()?.strip_prefix('+')?)?;
+    (parts.next()? == "@@").then_some((base, head))
+}
+
+fn span_of(text: &str) -> Option<LineSpan> {
+    let (start, len) = match text.split_once(',') {
+        Some((start, len)) => (start.parse().ok()?, len.parse().ok()?),
+        None => (text.parse().ok()?, 1),
+    };
+    Some(LineSpan { start, len })
 }
 
 #[cfg(test)]
@@ -293,5 +473,161 @@ mod tests {
         assert_eq!(index.deletion_marker("src/gone.rs", 3), None);
         // Not a removed line.
         assert_eq!(index.deletion_marker("src/edges.rs", 10), None);
+    }
+
+    fn fixture_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/pr-482/repo")
+    }
+
+    #[derive(serde::Deserialize)]
+    struct FixtureHunk {
+        id: String,
+        path: String,
+        old_path: Option<String>,
+        status: String,
+        base: FixtureSpan,
+        head: FixtureSpan,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct FixtureSpan {
+        start: u32,
+        len: u32,
+    }
+
+    #[test]
+    fn fixture_hunks_match_hunks_json() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let repo = dir.path().join("repo");
+        let built = Command::new(fixture_dir().join("build-repo.sh"))
+            .arg(&repo)
+            .output()
+            .expect("run build-repo.sh");
+        assert!(built.status.success(), "{built:?}");
+        let commits: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture_dir().join("commits.json")).expect("commits.json"),
+        )
+        .expect("commits JSON");
+        let sha = |key: &str| CommitSha(commits[key].as_str().expect("sha").to_owned());
+
+        let files = diff(&repo, &sha("base"), &sha("head")).expect("diff");
+
+        let expected: Vec<FixtureHunk> = serde_json::from_str(
+            &std::fs::read_to_string(fixture_dir().join("hunks.json")).expect("hunks.json"),
+        )
+        .expect("hunks JSON");
+        let actual: Vec<(String, String, Option<String>, String, LineSpan, LineSpan)> = files
+            .iter()
+            .flat_map(|file| {
+                file.hunks.iter().map(move |hunk| {
+                    let status = match file.status {
+                        FileStatus::Added => "added",
+                        FileStatus::Modified => "modified",
+                        FileStatus::Deleted => "deleted",
+                        FileStatus::Renamed => "renamed",
+                    };
+                    (
+                        hunk.id.0.clone(),
+                        file.path.clone(),
+                        file.old_path.clone(),
+                        status.to_owned(),
+                        hunk.base,
+                        hunk.head,
+                    )
+                })
+            })
+            .collect();
+        let expected: Vec<_> = expected
+            .into_iter()
+            .map(|h| {
+                (
+                    h.id,
+                    h.path,
+                    h.old_path,
+                    h.status,
+                    span(h.base.start, h.base.len),
+                    span(h.head.start, h.head.len),
+                )
+            })
+            .collect();
+        assert_eq!(actual, expected);
+        let deleted = files
+            .iter()
+            .find(|file| file.path == "tests/send_once.rs")
+            .expect("deleted file");
+        assert_eq!(deleted.path_on(LineSide::Head), None);
+        assert_eq!(deleted.hunks[0].removed, (1..=10).collect::<Vec<_>>());
+        assert!(deleted.hunks[0].added.is_empty());
+    }
+
+    #[test]
+    fn parses_quoted_paths_binary_files_and_omitted_lengths() {
+        let text = concat!(
+            "diff --git \"a/dir/sp\\303\\251cial\\tname.rs\" \"b/dir/sp\\303\\251cial\\tname.rs\"\n",
+            "index 1..2 100644\n",
+            "--- \"a/dir/sp\\303\\251cial\\tname.rs\"\n",
+            "+++ \"b/dir/sp\\303\\251cial\\tname.rs\"\n",
+            "@@ -3 +3,2 @@ fn x()\n",
+            "-old\n",
+            "+new\n",
+            "+more\n",
+            "diff --git a/assets/logo.png b/assets/logo.png\n",
+            "index 3..4 100644\n",
+            "Binary files a/assets/logo.png and b/assets/logo.png differ\n",
+            "diff --git a/with space.txt b/with space.txt\n",
+            "old mode 100644\n",
+            "new mode 100755\n",
+        );
+        let files = parse(text).expect("parse");
+        let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            [
+                "assets/logo.png",
+                "dir/sp\u{e9}cial\tname.rs",
+                "with space.txt"
+            ]
+        );
+        assert!(files[0].binary && files[0].hunks.is_empty());
+        let hunk = &files[1].hunks[0];
+        assert_eq!(
+            (hunk.id.0.as_str(), hunk.base, hunk.head),
+            ("h1", span(3, 1), span(3, 2))
+        );
+        assert_eq!(
+            (hunk.removed.clone(), hunk.added.clone()),
+            (vec![3], vec![3, 4])
+        );
+        assert!(files[2].hunks.is_empty());
+    }
+
+    #[test]
+    fn hunk_lines_that_look_like_headers_stay_content() {
+        let text = concat!(
+            "diff --git a/notes.md b/notes.md\n",
+            "--- a/notes.md\n",
+            "+++ b/notes.md\n",
+            "@@ -1,2 +0,0 @@\n",
+            "--- a/elsewhere.md\n",
+            "-diff --git a/x b/x\n",
+            "@@ -9 +7 @@\n",
+            "-++ b/notes.md\n",
+            "++++ b/other.md\n",
+        );
+        let files = parse(text).expect("parse");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "notes.md");
+        let spans: Vec<_> = files[0].hunks.iter().map(|h| (h.base, h.head)).collect();
+        assert_eq!(spans, [(span(1, 2), span(0, 0)), (span(9, 1), span(7, 1))]);
+    }
+
+    #[test]
+    fn git_failure_is_reported() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sha = CommitSha("0".repeat(40));
+        assert!(matches!(
+            diff(dir.path(), &sha, &sha),
+            Err(DiffError::Git { .. })
+        ));
     }
 }

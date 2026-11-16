@@ -9,5 +9,10 @@ publish.workspace = true
 contracts.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
 [lints]
 workspace = true
