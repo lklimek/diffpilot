@@ -442,3 +442,27 @@ dialog{max-width:640px}
 .pbar.failed{border-color:var(--high-bd);border-style:dotted}
 .pbar.done>i{background:var(--accent)}
 .pbtns{display:flex;gap:8px;flex:none}
+
+/* ---- tour-only variant ---- */
+.dpane{flex:none;border-bottom:1px solid var(--border);background:var(--surface)}
+.dbar{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:0;background:var(--surface-2);color:var(--text);font:600 13px system-ui;padding:7px 12px;cursor:pointer}
+.dbar:hover{background:var(--accent-bg)}
+.dbar .chev{width:14px;color:var(--accent)}
+.dbody{position:relative;overflow:auto;padding:10px 14px 14px;min-height:120px}
+.dgw .dg{margin:0}
+.dgw svg{max-width:640px}
+.gut-h{position:sticky;bottom:-14px;left:0;right:0;height:8px;margin:6px -14px -14px;background:var(--border);cursor:row-resize;touch-action:none}
+.gut-h:hover,.gut-h.drag,.gut-h:focus-visible{background:var(--accent)}
+.node.rv .sh{stroke-width:3.5}
+.node .rvm{font:700 11px system-ui;fill:var(--accent)}
+.mn.rv::after{content:" \2611 reviewed";font:700 11px system-ui;color:var(--accent)}
+.node.sel .sh,.mn.sel{stroke:var(--accent);stroke-width:4}
+.mn.sel{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg),0 0 0 4px var(--accent)}
+.ctxitem{font-weight:600;margin-bottom:4px}
+.resumed{border:1px solid var(--accent);background:var(--accent-bg);border-radius:6px;padding:5px 10px;font-size:12.5px;margin:0 0 10px}
+.l.cmt-active{background:var(--accent-bg)!important;outline:3px solid var(--accent);outline-offset:-3px}
+.l.cmt-active code::after{content:"   \270E commenting on this line";font:700 11.5px system-ui;color:var(--accent);margin-left:10px}
+.l.cm code::after{content:"   \25A3 your comment";font:600 11px system-ui;color:var(--accent);margin-left:10px}
+.l.cmt-active .n{color:var(--accent);font-weight:700}
+.linkbtn{background:none;border:0;padding:0;color:var(--accent);font:inherit;text-decoration:underline;cursor:pointer;text-align:left}
+.linkbtn:hover{text-decoration-thickness:2px}

@@ -242,3 +242,30 @@ variant the Tour is the whole review screen and takes over what the workspace di
   a highlight narrows it to that annotation; a "Back to step" link returns. Ask, feedback and comment work
   at step level without selecting a highlight. This replaces "the inspector is empty until a click"; the
   rule "nothing evaluative is shown before the evidence" stays (Assessment collapsed).
+
+## M. Final decisions (2026-11-16, end of design phase) — these win over every section above
+
+1. **MVP = Tour only.** The Groups workspace is not built in v1. Section L describes the review screen;
+   the workspace parts of section E apply only where L refers to them (step block, inspector sections,
+   wording and provenance, hard cases). Screens of v1: Home, Analysis progress, Tour, Settings.
+2. **Analysis progress** is a single centred progress bar: "k of n groups analysed" and "Cancel analysis";
+   states running, paused (usage limit, resume time), failed (Retry), finished ("Open review"). The review
+   opens only when the analysis has finished; no partial review in v1.
+3. **Inspector is never empty** (section L, last bullets). **Ask is in the MVP.**
+4. **Unverifiable refactors** (LLM says pure refactor or rename, no deterministic confirmation): shown as a
+   normal flow labelled as LLM-classified refactor, ordered after behaviour-changing flows and before quiet
+   rows; never collapsed. Deterministic rename / syntax-level confirmation comes with language plugins (v2).
+5. **Project profile** = union of `.claudius/project-profile.md` on the base ref and MemCan
+   `type: project-profile`; on conflict the repository file wins. Missing both: the analysis runs without
+   and the PR context says "no project profile — ratings are component-level".
+6. **Related repositories** are auto-detected from `Cargo.toml` / `Cargo.lock` (git and path dependencies),
+   limited to repositories of the same GitHub organisation. No manual configuration in v1.
+7. **claudius plugin for the agent**: the runner keeps a git checkout of `lklimek/claudius` on a volume,
+   refreshes it (`git pull --ff-only`) before a job when the last refresh is older than a configured
+   interval, and exposes its skills directory to Codex. Ref configurable. Verified 2026-11-16: Codex CLI
+   0.167 accepts `lklimek/agents` as a marketplace but finds no plugins in it (Claude-format manifest only).
+8. **ChatGPT plan: Pro** (no 5-hour window). Usage-limit pause and resume must work but is not a first-stage
+   priority.
+9. **Mockups**: the approved set is `docs/mockups/` (tour-only). Earlier sets are archived outside the
+   repository in `/data/artifacts/smart-review/2026-11-16/` (`mockups`, `mockups-v2`, `mockups-v3`).
+10. **Frontend components** (section K) are mandatory structure, not a suggestion.

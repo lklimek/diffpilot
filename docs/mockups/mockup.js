@@ -62,7 +62,7 @@
   }
 
   /* ---------- collapsible sections, state kept in localStorage ---------- */
-  function secState(k) { var s = ls.get('sr2.sec', {}); return k in s ? s[k] : (k === 'assess' ? false : (k === 'ctx-rel' || k === 'ctx-fit') ? innerHeight >= 1000 : true); }
+  function secState(k) { var s = ls.get('sr2.sec', {}); return k in s ? s[k] : (k === 'assess' || k === 'qs' ? false : true); }
   function applySecs(root) { $$('details[data-sec]', root).forEach(function (d) { d.open = secState(d.dataset.sec); }); }
   document.addEventListener('toggle', function (e) {
     var d = e.target; if (!d.dataset || !d.dataset.sec) return;
@@ -128,7 +128,7 @@
     '1-4': { t: 'Return the response', file: 'src/rpc/client.rs', a: 98, z: 98, kind: 'changed',
       tip: 'Was: the response was returned after one attempt. Is: the response is returned from inside the loop.',
       by: 'step 3 (Ok)', dec: 'Nothing; ends the call.', next: 'back to the caller', why: 'A successful attempt ends the loop at once.',
-      was: 'Returned the response.', is: 'Returns the response from any attempt.', diff: null, conseq: [], callers: [], callees: [], qs: [], as: null, th: [] },
+      was: 'Returned the response.', is: 'Returns the response from any attempt.', diff: [['@', '', '@@ -54,1 +98,1 @@'], ['-', 54, '        let resp = self.transport.execute(http, self.config.timeout).await?;'], ['+', 98, '                Ok(resp) => return Ok(resp),']], conseq: [], callers: [], callees: [], qs: [], as: null, th: [] },
     '1-5': { t: 'Retry allowed?', file: 'src/rpc/client.rs', a: 99, z: 99, kind: 'added',
       tip: 'Was: a timeout was returned to the caller. Is: a timeout is retried while attempt < 3, for every method.',
       by: 'step 3 (Timeout)', dec: 'Asks <code>RetryPolicy::should_retry(attempt)</code>; yes goes to step 6, no goes to step 7.', next: 'step 6 or step 7',
@@ -170,7 +170,7 @@
     '1-8': { t: 'Other errors returned as before', file: 'src/rpc/client.rs', a: 107, z: 107, kind: 'changed',
       tip: 'Was: every error was returned by <code>?</code>. Is: non-timeout errors are returned from the match, never retried.',
       by: 'step 3 (other error)', dec: 'Nothing; ends the call.', next: 'back to the caller', why: 'Only timeouts are worth another attempt.',
-      was: 'Returned any error.', is: 'Returns any non-timeout error at once.', diff: null, conseq: [], callers: [], callees: [], qs: [], as: null, th: [] },
+      was: 'Returned any error.', is: 'Returns any non-timeout error at once.', diff: [['@', '', '@@ -54,1 +107,1 @@'], ['-', 54, '        let resp = self.transport.execute(http, self.config.timeout).await?;'], ['+', 107, '                Err(e) => return Err(e),']], conseq: [], callers: [], callees: [], qs: [], as: null, th: [] },
     '2-1': { t: 'Default timeout 30 s &rarr; 5 s', file: 'src/config.rs', a: 12, z: 26, kind: 'changed',
       tip: 'Was: every request waited up to 30 s. Is: every attempt waits up to 5 s.',
       by: 'RpcClient::new (src/rpc/client.rs:40)', dec: 'Sets the default per-attempt timeout.', next: 'every <code>send</code> call', why: 'The wallet UI froze for 30 s on an unreachable peer (issue #470).',
@@ -263,38 +263,78 @@
   }
   function answersHTML(id) {
     var a = (S.answers[id] || []);
-    if (!a.length) return '<p class="small muted">No questions asked about this step yet. Answers stay pinned here.</p>';
+    if (!a.length) return '<p class="small muted">No questions asked about this block yet. Answers stay pinned here.</p>';
     return a.map(function (x) { return '<div class="qa"><div class="q">' + esc(x.q) + '</div><div>' + esc(x.a) + ' ' + bd('b-llm', 'LLM answer', 'llma') + '</div></div>'; }).join('');
   }
   function sec(key, title, inner) { return '<details class="sec" data-sec="' + key + '"><summary>' + title + '</summary><div>' + inner + '</div></details>'; }
-  function render(id) {
-    var d = getI(id), box = $('#insp-body');
-    if (!d) { box.hidden = true; $('#insp-empty').hidden = false; return; }
+  function titleOf(key) {
+    var b = $('.blk[data-key="' + key + '"]'); if (!b) return key;
+    return b.dataset.title.replace(/^(Step \d+): /, '$1 · ').replace(/^Flow (\d+): /, 'Flow $1 · ');
+  }
+  function tgt() { return S.sel || S.blk; }
+  var DEPS = { 1: 'flow 3 (the variant) and flow 5 (the helpers)' };
+  function summaryHTML(k) {
+    var noq = D.state === 'noq', body = '', t = titleOf(k);
+    var m = /^g(\d)$/.exec(k);
+    if (m) {
+      var n = m[1], keys = Object.keys(INSP).filter(function (x) { return x.charAt(0) === n && $('.blk[data-key="' + x + '"]'); }), files = [], qn = 0;
+      keys.forEach(function (x) { var d = getI(x); if (files.indexOf(d.file) < 0) files.push(d.file); qn += noq ? 0 : d.qs.length; });
+      var rt = $('#gl-' + n + ' .rate'), kinds = keys.map(function (x) { var d = getI(x), kb = KB[d.kind]; return '<li><button type="button" class="linkbtn" data-go="' + x + '">' + esc(titleOf(x)) + '</button> ' + bd(kb[0], kb[1], d.kind) + '</li>'; }).join('');
+      body = sec('fsum', 'Steps of this flow', '<ul class="small" style="list-style:none;padding:0">' + kinds + '</ul>') +
+        sec('ffiles', 'Files touched', '<ul class="small">' + files.map(function (f) { return '<li><code>' + esc(f) + '</code></li>'; }).join('') + '</ul>') +
+        sec('fq', 'Questions to check', '<p class="small">' + (qn ? qn + ' question' + (qn > 1 ? 's' : '') + ' across the steps of this flow. Open a step to read them.' : 'The LLM raised no questions. That is not evidence of no defects.') + '</p>') +
+        sec('fdep', 'Depends on', '<p class="small">' + (DEPS[n] || 'No other flow.') + '</p>');
+      t += rt ? ' ' + rb(rt.textContent) : '';
+    } else if (k === 'ctx') {
+      body = sec('c1', 'At a glance', '<ul class="small"><li>CI: 1 of 6 checks failing (<code>sync_headers::slow_peer_2000_headers</code>)</li><li>Related work: 3 items (competing PR #479, issue #470, stacked PR node-sdk#118)</li><li>Fit questions to check: 3</li><li>Counters: 12 lines removed from tests, 3 dependencies changed</li><li>Project profile: ' + (D.state === 'noprofile' ? 'none (ratings are component-level)' : 'found') + '</li><li>5 flows, 14 steps</li></ul>');
+    } else if (k === 'pending') {
+      body = sec('p1', 'Pending review', '<p class="small">' + $$('#pc-list li').length + ' comments are in your GitHub pending review. Edit and delete act on GitHub. Submit the review on GitHub.</p>');
+    } else if (k === 'q-build') {
+      body = sec('q1', 'Moved block, text identical', '<p class="small"><code>build_request()</code>: 41 lines, body text identical after whitespace normalisation. The call site changed in flow 1, step 2.</p>');
+    } else if (k === 'q-tests') {
+      body = sec('q1', 'Not analysed: Tests', '<p class="small">4 files recognised by path, 12 lines removed from tests. Shown as a count only; the agent may read tests as evidence.</p>');
+    } else if (k === 'q-docs') {
+      body = sec('q1', 'Not analysed: Docs and comments', '<p class="small">3 files by path or line rule. Not interpreted.</p>');
+    } else if (k === 'q-mech') {
+      body = sec('q1', 'Not analysed: Mechanical and generated', '<p class="small"><code>Cargo.lock</code>: 3 dependencies changed. Counted, not interpreted.</p>');
+    }
+    return '<div class="insp"><h2>' + t + '</h2><p class="llmline">LLM analysis unless marked otherwise.</p>' + body +
+      sec('ask', 'Ask: pinned answers', '<div id="answers">' + answersHTML(k) + '</div>') + '</div>';
+  }
+  function renderInsp() {
+    var box = $('#insp-body'), id = S.sel, k = S.blk;
+    $('#insp-empty').hidden = true; box.hidden = false;
+    if (id && getI(id)) { render(id, 'ann'); return; }
+    if (getI(k) && /^\d-\d$/.test(k)) { render(k, 'step'); return; }
+    box.innerHTML = summaryHTML(k); applySecs(box); initTips(box); $('#insp').scrollTop = 0;
+  }
+  function render(id, mode) {
+    var d = getI(id), box = $('#insp-body'), ann = mode === 'ann';
     var kb = KB[d.kind], noq = D.state === 'noq';
-    var q = (noq || !d.qs.length) ? '<p class="small">The LLM raised no questions here. That is not evidence of no defects.</p>' : '<ul>' + d.qs.map(function (x) { return '<li>' + bd('b-q', 'question', 'q') + ' ' + x + '</li>'; }).join('') + '</ul>';
-    var th = d.th.length ? d.th.map(function (t) { return '<div class="thread"><strong>@' + t[0] + '</strong> on <code>' + t[3] + '</code><br>' + esc(t[1]) + '<br>' + bd(t[2] === 'valid' ? 'b-chg' : 'b-same', t[2] === 'valid' ? 'still valid' : t[2], t[2] === 'valid' ? 'valid' : t[2]) + ' <span class="small muted">LLM status</span></div>'; }).join('') : '<p class="small muted">No GitHub threads at this location.</p>';
+    var q = (noq || !d.qs.length) ? '<p class="small">The LLM raised no questions. That is not evidence of no defects.</p>' : '<ul>' + d.qs.map(function (x) { return '<li>' + bd('b-q', 'question', 'q') + ' ' + x + '</li>'; }).join('') + '</ul>';
+    var th = d.th.length ? d.th.map(function (t) { return '<div class="thread"><strong>@' + t[0] + '</strong> on <code>' + t[3] + '</code><br>' + esc(t[1]) + '<br>' + bd(t[2] === 'valid' ? 'b-chg' : 'b-same', t[2] === 'valid' ? 'still valid' : t[2], t[2] === 'valid' ? 'valid' : t[2]) + ' <span class="small muted">LLM status</span></div>'; }).join('') : '';
     var rate = (d.as && !noq) ? ' ' + rb(d.as.risk) : '';
-    box.innerHTML =
-      '<div class="insp"><h2>' + d.t + '</h2><p class="row" style="margin:0 0 2px">' + bd(kb[0], kb[1], d.kind) + rate +
+    var title = ann ? 'Annotation · ' + d.t : titleOf(id);
+    var back = ann ? '<p style="margin:0 0 6px"><button type="button" class="linkbtn" data-back>&larr; Back to step</button> <span class="small muted">' + esc(titleOf(S.blk)) + '</span></p>' : '';
+    var diff = sec('diff', ann ? 'Classic diff of this range' : 'Classic diff of this step', d.diff ? diffHTML(d.diff) : '<p class="small muted">No diff: this is unchanged code shown for context, or a moved block with identical text.</p>');
+    var beh = sec('beh', 'Behaviour: was &rarr; is', '<div class="wi"><div><h3>Was</h3>' + d.was + '</div><div><h3>Is</h3>' + d.is + '</div></div>');
+    var thr = sec('threads', 'GitHub threads at this location', th || '<p class="small muted">No GitHub threads at this location.</p>');
+    var qs = sec(ann ? 'aqs' : 'qs', 'Questions to check', q), as = sec('assess', 'Assessment', assessHTML(d));
+    var mid = ann ? '' : sec('why', 'Why', '<p>' + d.why + '</p>') +
+      sec('conseq', 'Consequences', d.conseq.length ? '<ul>' + d.conseq.map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' : '<p class="small muted">None found by the LLM.</p>') +
+      sec('calls', 'Call hierarchy', '<p class="small muted">Search result by the LLM (reading files, searching), not a complete list. Entries open GitHub in a new tab.</p><ul class="tree">' + (treeHTML('Callers found', d.callers) + treeHTML('Callees', d.callees) || '<li class="small muted">Nothing found.</li>') + '</ul>');
+    box.innerHTML = '<div class="insp">' + back + '<h2>' + title + '</h2><p class="row" style="margin:0 0 2px">' + bd(kb[0], kb[1], d.kind) + rate +
       ' <a class="loclink" href="' + ghl(d.file, d.a, d.z) + '" target="_blank" rel="noopener noreferrer" aria-label="Open ' + esc(d.file) + ' on GitHub at the head commit, new tab">' + esc(d.file) + ':' + d.a + (d.z !== d.a ? '&ndash;' + d.z : '') + ' &#8599;</a></p>' +
       '<p class="llmline">LLM analysis unless marked otherwise.</p>' +
-      sec('diff', '1. Classic diff of this range', d.diff ? diffHTML(d.diff) : '<p class="small muted">No diff: this is unchanged code shown for context, or a moved block with identical text.</p>') +
-      sec('beh', '2. Behaviour: was &rarr; is', '<div class="wi"><div><h3>Was</h3>' + d.was + '</div><div><h3>Is</h3>' + d.is + '</div></div>') +
-      sec('why', '3. Why', '<p>' + d.why + '</p>') +
-      sec('conseq', '4. Consequences', d.conseq.length ? '<ul>' + d.conseq.map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' : '<p class="small muted">None found by the LLM.</p>') +
-      sec('calls', '5. Call hierarchy', '<p class="small muted">Search result by the LLM (reading files, searching), not a complete list. Entries open GitHub in a new tab.</p><ul class="tree">' + treeHTML('Callers found', d.callers) + treeHTML('Callees', d.callees) + '</ul>') +
-      sec('qs', '6. Questions to check', q) +
-      sec('assess', '7. Assessment', assessHTML(d)) +
-      sec('threads', '8. GitHub threads at this location', th) +
-      sec('ask', '9. Ask: pinned answers', '<div id="answers">' + answersHTML(id) + '</div>') + '</div>';
-    box.hidden = false; $('#insp-empty').hidden = true;
+      (ann ? diff + beh + qs + as + thr : diff + beh + mid + (th ? thr : '') + qs + as) +
+      sec('ask', 'Ask: pinned answers', '<div id="answers">' + answersHTML(S.blk) + '</div>') + '</div>';
     applySecs(box); initTips(box); $('#insp').scrollTop = 0;
   }
 
   /* ---------- workspace: one block at a time ---------- */
   var S = { sel: null, fb: {}, answers: {}, cmt: null, blk: null, cur: null, ticks: ss.get('sr2.ticks', ['f2-1']) };
   function workspace() {
-    var scroller = $('#scroller'), blks = $$('.blk'), ORDER = $$('.grp .blk');
+    var scroller = $('#scroller'), blks = $$('.blk'), ORDER = [$('.blk[data-key="ctx"]')].concat($$('.grp .blk'));
     function byKey(k) { return $('.blk[data-key="' + k + '"]'); }
     ORDER.forEach(function (b, i) {
       var p = ORDER[i - 1], n = ORDER[i + 1], d = document.createElement('div'); d.className = 'bnav';
@@ -309,19 +349,23 @@
       S.blk = key; var g = groupOf(key);
       $$('.gitem,.qitem,.sitem').forEach(function (x) { x.setAttribute('aria-current', x.dataset.go === key ? 'true' : 'false'); });
       $$('.substeps').forEach(function (o, i) { o.hidden = (i + 1) !== g; });
-      S.cur = $('.frag', t); scroller.scrollTop = 0; select(null);
+      S.cur = $('.frag', t); scroller.scrollTop = 0; select(null); clearCmtActive();
+      var dp = $('#dpane'); dp.hidden = g === null; $$('.dgw').forEach(function (d) { d.hidden = +d.dataset.g !== g; });
+      $('#dbar-f').textContent = g ? '(flow ' + g + ')' : ''; markNodes(); scrollNode(); renderInsp(); updateFb();
     }
     function go(d) { var i = ORDER.map(function (b) { return b.dataset.key; }).indexOf(S.blk); if (i >= 0 && ORDER[i + d]) showBlock(ORDER[i + d].dataset.key); }
-    function goGroup(d) { var g = groupOf(S.blk) || (d > 0 ? 0 : 6); g = Math.max(1, Math.min(5, g + d)); showBlock('g' + g); }
+    function goGroup(d) { if (S.blk === 'ctx' && d < 0) return; var g = groupOf(S.blk) || (d > 0 ? 0 : 6); g = Math.max(1, Math.min(5, g + d)); showBlock('g' + g); }
     function route() {
       var h = location.hash, m;
       if ((m = /^#open=([\d-]+)/.exec(h))) showBlock(m[1]);
       else if (/^#g\d$/.test(h)) showBlock(h.slice(1));
+      else if (h === '#ctx') showBlock('ctx');
       else if ((m = /^#f(\d-\d)$/.exec(h))) showBlock(m[1]);
       else if (h === '#pending') showBlock('pending');
     }
     window.addEventListener('hashchange', route);
     document.addEventListener('click', function (e) {
+      var nd = e.target.closest('.node,.mn'); if (nd) { showBlock(nd.dataset.step); return; }
       var g = e.target.closest('[data-go]'); if (g) { showBlock(g.dataset.go); return; }
       var n = e.target.closest('[data-nav]'); if (n) { go(+n.dataset.nav); return; }
       var h = e.target.closest('.hl[data-a],.delsite[data-a]');
@@ -329,11 +373,50 @@
     });
     document.addEventListener('keydown', function (e) {
       var t = e.target; if (e.key !== 'Enter' && e.key !== ' ') return;
-      if (t.matches && t.matches('.hl[data-a],.delsite[data-a]') && D.state !== 'noq') { e.preventDefault(); select(t.dataset.a); }
+      if (t.matches && t.matches('.node,.mn')) { if (t.tagName !== 'BUTTON') { e.preventDefault(); showBlock(t.dataset.step); } }
+      else if (t.matches && t.matches('.hl[data-a],.delsite[data-a]') && D.state !== 'noq') { e.preventDefault(); select(t.dataset.a); }
     });
 
+    /* diagram pane: hidden by default, state and height remembered */
+    var dgOpen = ls.get('sr2.dg', false), dh = ls.get('sr2.dh', null);
+    function applyDiagram() {
+      var body = $('#dbody'), bar = $('#dbar'); body.hidden = !dgOpen; bar.setAttribute('aria-expanded', dgOpen);
+      $('#dbar-t').textContent = dgOpen ? 'Hide flow diagram' : 'Show flow diagram'; $('.chev', bar).innerHTML = dgOpen ? '&#9662;' : '&#9656;';
+      body.style.height = (dh || 300) + 'px'; markNodes(); scrollNode();
+    }
+    $('#dbar').addEventListener('click', function () { dgOpen = !dgOpen; ls.set('sr2.dg', dgOpen); applyDiagram(); });
+    function clampH(v) { return Math.round(Math.max(130, Math.min(v, $('#col-main').getBoundingClientRect().height * 0.7))); }
+    var gh = $('#gut-h'), hdrag = false;
+    gh.addEventListener('pointerdown', function (e) { hdrag = true; gh.setPointerCapture(e.pointerId); gh.classList.add('drag'); e.preventDefault(); });
+    gh.addEventListener('pointermove', function (e) { if (!hdrag) return; dh = clampH(e.clientY - $('#dbody').getBoundingClientRect().top); $('#dbody').style.height = dh + 'px'; });
+    function hend() { if (hdrag) { hdrag = false; gh.classList.remove('drag'); ls.set('sr2.dh', dh); } }
+    gh.addEventListener('pointerup', hend); gh.addEventListener('pointercancel', hend);
+    gh.addEventListener('dblclick', function () { dh = null; ls.set('sr2.dh', null); applyDiagram(); });
+    gh.addEventListener('keydown', function (e) { if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return; e.preventDefault(); dh = clampH((dh || 300) + (e.key === 'ArrowDown' ? 24 : -24)); ls.set('sr2.dh', dh); applyDiagram(); });
+    function scrollNode() {
+      var body = $('#dbody'); if (body.hidden) return;
+      var n = $('.dgw:not([hidden]) .node.sel, .dgw:not([hidden]) .mn.sel'); if (!n) { body.scrollTop = 0; return; }
+      var b = body.getBoundingClientRect(), r = n.getBoundingClientRect();
+      if (r.top < b.top + 8 || r.bottom > b.bottom - 16) body.scrollTop += r.top - b.top - (b.height - r.height) / 2;
+    }
+    function markNodes() {
+      $$('.node,.mn').forEach(function (n) {
+        var st = n.dataset.step, rv = S.ticks.indexOf('f' + st) >= 0;
+        n.classList.toggle('sel', st === S.blk); n.classList.toggle('rv', rv);
+        if (st === S.blk) n.setAttribute('aria-current', 'step'); else n.removeAttribute('aria-current');
+        var old = n.querySelector('.rvm'); if (old) n.removeChild(old);
+        if (rv && n.tagName === 'g' && dgOpen && !n.closest('[hidden]')) {
+          var bb = n.querySelector('.sh').getBBox(), t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          t.setAttribute('class', 'rvm'); t.setAttribute('x', bb.x + bb.width - 8); t.setAttribute('y', bb.y + 13); t.setAttribute('text-anchor', 'end'); t.textContent = '☑ reviewed'; n.appendChild(t);
+        }
+      });
+    }
+    /* comment highlight: the line being commented stays highlighted while the box is open */
+    function clearCmtActive() { $$('.l.cmt-active').forEach(function (x) { x.classList.remove('cmt-active'); }); }
+
     /* columns: hide, full screen, drag-resize (sizes kept in localStorage) */
-    var cs = { left: 'n', main: 'n', right: 'h' }, W = ls.get('sr2.w', { l: null, r: null });
+    function defRight() { return ls.get('sr2.insph', false) ? 'h' : (innerWidth >= 1440 ? 'n' : 'h'); }
+    var cs = { left: 'n', main: 'n', right: defRight() }, W = ls.get('sr2.w', { l: null, r: null });
     function defW(k) { return k === 'l' ? Math.max(260, Math.min(400, Math.round(innerWidth * 0.17))) : Math.max(370, Math.min(620, Math.round(innerWidth * 0.27))); }
     function layout() {
       var ws = $('#ws'), full = Object.keys(cs).filter(function (k) { return cs[k] === 'f'; })[0], hid = {};
@@ -354,6 +437,7 @@
     function openInsp() { var full = Object.keys(cs).some(function (k) { return cs[k] === 'f'; }); if (full) { cs.left = cs.main = 'n'; } if (full || cs.right !== 'n') { cs.right = 'n'; layout(); } }
     document.addEventListener('click', function (e) {
       var b = e.target.closest('[data-colbtn]'); if (!b) return; var k = b.dataset.col, a = b.dataset.colbtn;
+      if (k === 'right' && (a === 'hide' || a === 'show')) ls.set('sr2.insph', a === 'hide');
       if (a === 'hide') { var vis = Object.keys(cs).filter(function (x) { return cs[x] !== 'h' && x !== k; }); if (!vis.length) { toast('At least one column must stay visible.'); return; } if (Object.keys(cs).some(function (x) { return cs[x] === 'f'; })) { cs.left = cs.main = 'n'; cs.right = 'n'; } cs[k] = 'h'; }
       if (a === 'show') { if (Object.keys(cs).some(function (x) { return cs[x] === 'f'; })) { cs.left = cs.main = 'n'; cs.right = 'h'; } cs[k] = 'n'; }
       if (a === 'full') { var on = cs[k] !== 'f'; var r = cs.right; cs.left = cs.main = 'n'; cs.right = r === 'f' ? 'n' : r; if (on) cs[k] = 'f'; }
@@ -384,11 +468,12 @@
     function select(id) {
       $$('.hl.sel,.delsite.sel').forEach(function (x) { x.classList.remove('sel'); });
       S.sel = id; B.dataset.sel = id || '';
-      if (!id || !getI(id)) { S.sel = null; B.dataset.sel = ''; render(null); updateFb(); return; }
+      if (!id || !getI(id)) { S.sel = null; B.dataset.sel = ''; renderInsp(); updateFb(); return; }
       $$('.hl[data-a="' + id + '"],.delsite[data-a="' + id + '"]').forEach(function (x) { x.classList.add('sel'); });
-      render(id); updateFb(); openInsp();
+      renderInsp(); updateFb(); openInsp();
     }
     window.__select = select;
+    document.addEventListener('click', function (e) { if (e.target.closest('[data-back]')) select(null); });
 
     function fillFrags() {
       $$('.facts[data-meta]').forEach(function (dl) {
@@ -407,12 +492,12 @@
       $$('.sitem').forEach(function (x) { x.classList.toggle('done', S.ticks.indexOf('f' + x.dataset.go) >= 0); });
       $$('.grp').forEach(function (g) {
         var fs = groupFrags(g), d = fs.filter(function (f) { return f.classList.contains('reviewed'); }).length, all = d === fs.length;
-        $('[data-gp]', g).textContent = d + ' of ' + fs.length + ' fragments reviewed';
-        var gb = $('[data-act="grp"]', g); gb.setAttribute('aria-pressed', all); gb.textContent = all ? 'Group reviewed (undo)' : 'Mark group reviewed';
+        $('[data-gp]', g).textContent = d + ' of ' + fs.length + ' steps reviewed';
+        var gb = $('[data-act="grp"]', g); gb.setAttribute('aria-pressed', all); gb.textContent = all ? 'Flow reviewed (undo)' : 'Mark flow reviewed';
         var t = $('#gl-' + g.id.slice(1) + ' .gt'); if (t) t.hidden = !all;
         if (all) k++;
       });
-      setK(k); ss.set('sr2.ticks', S.ticks);
+      setK(k); ss.set('sr2.ticks', S.ticks); markNodes();
     }
     function toggleTick(f) { var i = S.ticks.indexOf(f.id); if (i >= 0) S.ticks.splice(i, 1); else S.ticks.push(f.id); applyTicks(); }
     function toggleOld(f) {
@@ -432,18 +517,21 @@
 
     /* feedback */
     function updateFb() {
-      var cur = S.fb[S.sel];
-      $$('[data-fb]').forEach(function (b) { b.disabled = !S.sel; b.setAttribute('aria-pressed', cur === b.dataset.fb ? 'true' : 'false'); });
+      var t = tgt(), cur = S.fb[t], ok = !!getI(t);
+      $$('[data-fb]').forEach(function (b) { b.disabled = !ok; b.setAttribute('aria-pressed', cur === b.dataset.fb ? 'true' : 'false'); });
       $('#fb-note-r').hidden = !(cur && cur !== 'correct');
-      $('#ask-for').textContent = S.sel ? 'about ' + S.sel + '; answers stay pinned in the inspector' : 'click a coloured range first';
+      var lab = S.sel ? 'annotation \u00b7 ' + getI(S.sel).t : titleOf(S.blk);
+      $('#ask-for').textContent = 'about ' + lab + '; answers stay pinned in the inspector';
+      $('#ask-input').placeholder = 'Ask about ' + lab + '…';
+      $('#fb-for').textContent = ok ? '' : 'feedback applies to steps';
     }
     $$('[data-fb]').forEach(function (b) {
       b.addEventListener('click', function () {
-        if (!S.sel) { toast('Click a highlight in the code first.'); return; }
-        var k = b.dataset.fb; if (S.fb[S.sel] === k) delete S.fb[S.sel]; else S.fb[S.sel] = k;
+        var t = tgt(); if (!getI(t)) return;
+        var k = b.dataset.fb; if (S.fb[t] === k) delete S.fb[t]; else S.fb[t] = k;
         updateFb();
-        var g = S.sel.split('-')[0], m = $('#gl-' + g + ' .mine'); if (m) { m.hidden = !S.fb[S.sel]; m.textContent = S.fb[S.sel] ? 'you marked: ' + S.fb[S.sel] : ''; }
-        if (S.fb[S.sel]) toast(/rated/.test(k) ? 'Saved as a severity calibration example (mock): ' + k + '.' : 'Feedback saved locally and queued for MemCan (mock): ' + k + '.');
+        var g = t.split('-')[0], m = $('#gl-' + g + ' .mine'); if (m) { m.hidden = !S.fb[t]; m.textContent = S.fb[t] ? 'you marked: ' + S.fb[t] : ''; }
+        if (S.fb[t]) toast(/rated/.test(k) ? 'Saved as a severity calibration example (mock): ' + k + '.' : 'Feedback saved locally and queued for MemCan (mock): ' + k + '.');
       });
     });
     function grow(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, 170) + 'px'; }
@@ -451,8 +539,7 @@
     $('#ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#ask-form').requestSubmit(); } });
     $('#ask-form').addEventListener('submit', function (e) {
       e.preventDefault(); var i = $('#ask-input'), q = i.value.trim(); if (!q) return;
-      if (!S.sel) { toast('Click a highlight in the code first.'); return; }
-      var id = S.sel; (S.answers[id] = S.answers[id] || []).unshift({ q: q, a: 'I read the files around this step and searched for callers (nothing executed). The call hierarchy lists what I found; I did not check other repositories.' });
+      var id = S.blk; (S.answers[id] = S.answers[id] || []).unshift({ q: q, a: 'I read the files around this step and searched for callers (nothing executed). The call hierarchy lists what I found; I did not check other repositories.' });
       i.value = ''; grow(i); var an = $('#answers'); if (an) an.innerHTML = answersHTML(id);
       var sd = $('.sec[data-sec="ask"]'); if (sd) sd.open = true;
       toast('Answer pinned in the inspector (mock).');
@@ -463,6 +550,7 @@
       var row = btn.closest('.l'), code = row.closest('.code'); if (!code || !code.dataset.file) return;
       var old = row.dataset.side === 'old', ann = !!row.closest('.hl,.delsite');
       S.cmt = { file: code.dataset.file, ln: row.dataset.ln, old: old, ann: ann, row: row };
+      clearCmtActive(); row.classList.add('cmt-active'); row.scrollIntoView({ block: 'nearest' });
       openInsp();
       $('#cmt-loc').textContent = code.dataset.file + ':' + row.dataset.ln + (old ? ' (removed line, old numbering)' : '');
       $('#cmt-miss').hidden = ann; $('#cmt-form').hidden = false; $('#cmt-hint').hidden = true; $('#cmt-err').hidden = true;
@@ -470,7 +558,7 @@
       $('#dock').scrollTop = $('#dock').scrollHeight;
     }
     document.addEventListener('click', function (e) { var n = e.target.closest('.code button.n'); if (n) startComment(n); });
-    $('#cmt-cancel').addEventListener('click', function () { $('#cmt-form').hidden = true; $('#cmt-hint').hidden = false; S.cmt = null; });
+    $('#cmt-cancel').addEventListener('click', function () { clearCmtActive(); $('#cmt-form').hidden = true; $('#cmt-hint').hidden = false; S.cmt = null; });
     $('#cmt-form').addEventListener('submit', function (e) {
       e.preventDefault(); var t = $('#cmt-text'), c = S.cmt;
       if (!t.value.trim()) { $('#cmt-err').hidden = false; t.setAttribute('aria-invalid', 'true'); t.focus(); return; }
@@ -480,7 +568,7 @@
         '<p class="txt" style="margin:3px 0"></p><textarea hidden rows="2" aria-label="Edit comment"></textarea><button class="btn sm" type="button" data-pc="edit">Edit</button> <button class="btn sm" type="button" data-pc="del" aria-label="Delete comment on ' + esc(loc) + '">Delete</button>';
       $('.txt', li).textContent = t.value.trim();
       $('#pc-list').insertBefore(li, $('#pc-list').firstChild); initTips(li);
-      setPend($$('#pc-list li').length); c.row.classList.add('cm'); t.value = ''; grow(t);
+      setPend($$('#pc-list li').length); clearCmtActive(); c.row.classList.add('cm'); t.value = ''; grow(t);
       $('#cmt-form').hidden = true; $('#cmt-hint').hidden = false; S.cmt = null;
       toast('Added to your GitHub pending review (mock)' + (c.ann ? '.' : ' and recorded as missed by the LLM.'));
     });
@@ -499,7 +587,7 @@
       else if (k === 'x' && S.cur) toggleTick(S.cur);
       else if (k === 'd' && S.cur) toggleOld(S.cur);
       else if (k === 'c') { e.preventDefault(); if (S.cmt) { openInsp(); $('#cmt-text').focus(); } else { var n = $('.blk:not([hidden]) .code button.n'); if (n) startComment(n); else toast('Open a step with code first.'); } }
-      else if (k === 'a') { e.preventDefault(); if (!S.sel && getI(S.blk)) select(S.blk); else openInsp(); $('#ask-input').focus(); }
+      else if (k === 'a') { e.preventDefault(); openInsp(); $('#ask-input').focus(); }
     });
 
     function rerate() {
@@ -509,40 +597,19 @@
       });
     }
     stateHook = function (s) {
-      rerate(); fillFrags(); $('#cmt-form').hidden = true; $('#cmt-hint').hidden = false; S.cmt = null;
-      cs.left = cs.main = 'n'; cs.right = 'h'; layout(); showBlock('g1');
+      rerate(); fillFrags(); clearCmtActive(); $('#cmt-form').hidden = true; $('#cmt-hint').hidden = false; S.cmt = null;
+      cs.left = cs.main = 'n'; cs.right = defRight(); layout(); showBlock('ctx');
       if (s === 'wrong') showBlock('3-1');
+      if (s === 'noq') showBlock('g1');
+      if (s === 'resume') showBlock('1-5');
       if (s === 'missed') {
         showBlock('1-2');
         var n = $('.blk[data-key="1-2"] .l[data-ln="96"] .n'); if (n) startComment(n, 'The per-attempt timeout is reused for every attempt and the caller\'s deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes.');
       }
     };
-    applySecs(document); applyTicks(); layout(); fillFrags(); rerate(); updateFb(); showBlock('g1');
+    applySecs(document); applyTicks(); layout(); applyDiagram(); fillFrags(); rerate(); updateFb(); showBlock('ctx');
     $$('.code .n').forEach(function (n) { var r = n.closest('.l'), c = n.closest('.code'); if (n.tagName === 'BUTTON' && c && c.dataset.file) n.setAttribute('aria-label', 'Comment on ' + c.dataset.file + ' line ' + r.dataset.ln); });
     setTimeout(route, 0);
-  }
-
-  /* ---------- tour ---------- */
-  function tour() {
-    var steps = $$('.step'), idx = 0;
-    function render() {
-      idx = Math.max(0, Math.min(steps.length - 1, idx));
-      steps.forEach(function (s, i) { s.hidden = i !== idx; });
-      $$('#steps li').forEach(function (li, i) { li.classList.toggle('cur', i === idx); var a = $('a', li); if (i === idx) a.setAttribute('aria-current', 'step'); else a.removeAttribute('aria-current'); });
-      $('#step-k').textContent = idx === 0 ? 'PR context' : 'Step ' + idx + ' of ' + (steps.length - 1);
-      $('#prev').disabled = idx === 0; $('#next').disabled = idx === steps.length - 1;
-      $('.tour-main').scrollTop = 0;
-    }
-    $('#next').addEventListener('click', function () { idx++; render(); });
-    $('#prev').addEventListener('click', function () { idx--; render(); });
-    $$('#steps a').forEach(function (a, i) { a.addEventListener('click', function (e) { e.preventDefault(); idx = i; render(); }); });
-    $$('.node,.mn').forEach(function (n) { n.addEventListener('click', function () { location.href = '04-group-workspace.html#open=' + n.dataset.step; }); });
-    document.addEventListener('keydown', function (e) {
-      if (/input|textarea|select/i.test(e.target.tagName) || e.ctrlKey || e.metaKey || e.altKey || (help && help.open)) return;
-      if (e.key === 'j') { idx++; render(); } else if (e.key === 'k') { idx--; render(); }
-    });
-    var m = /^#t(\d)$/.exec(location.hash); if (m) idx = +m[1];
-    render();
   }
 
   /* ---------- home ---------- */
@@ -551,7 +618,7 @@
     $('#analyze-form').addEventListener('submit', function (e) {
       e.preventDefault(); var v = $('#pr-url').value.trim();
       if (!/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/.test(v)) { btn('error'); $('#pr-url').focus(); return; }
-      if (B.dataset.state === 'resume') { location.href = '04-group-workspace.html'; return; }
+      if (B.dataset.state === 'resume') { location.href = '05-tour.html'; return; }
       if (B.dataset.state === 'moved') { btn('moved'); return; }
       toast('Opening the analysis (mock)'); setTimeout(function () { location.href = '02-analysis-progress.html'; }, 900);
     });
@@ -562,7 +629,6 @@
   initTips(document); applySecs(document);
   var start = states();
   if (D.page === 'workspace') workspace();
-  if (D.page === 'tour') tour();
   if (D.page === 'home') home();
   if (start) start();
 }());
