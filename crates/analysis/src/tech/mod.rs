@@ -2,7 +2,7 @@
 //! `Generic::classify` is filled in by WP3-PREPASS.
 
 use contracts::api::tour::CallHierarchy;
-use contracts::common::{LineRange, NotAnalysedCategory, ProvenanceBadge};
+use contracts::common::{LineRange, LineSide, NotAnalysedCategory, ProvenanceBadge};
 
 /// A language plugin.
 pub trait TechPlugin: Send + Sync {
@@ -10,28 +10,33 @@ pub trait TechPlugin: Send + Sync {
     fn name(&self) -> &'static str;
     /// Whether the plugin handles this file.
     fn detect(&self, path: &str) -> bool;
-    /// Material of the file that is not analysed (tests, docs and comments, generated), by path or line rule.
+    /// Material of one side of a file that is not analysed (tests, docs and comments, generated), by path or
+    /// line rule; called once per side with changed lines (removed lines on base, e.g. a deleted comment).
     fn classify(&self, file: &FileSource<'_>) -> Result<Vec<Classified>, TechError>;
     /// Callers and callees of a symbol; `None` when the plugin cannot tell.
     fn call_hierarchy(&self, symbol: &SymbolAt) -> Option<CallHierarchy>;
 }
 
-/// A changed file as a plugin sees it.
+/// One side of a changed file as a plugin sees it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileSource<'a> {
-    /// Repository-relative path at the head commit.
+    /// Repository-relative path on that side.
     pub path: &'a str,
-    /// Head text; `None` for deleted or binary files.
-    pub head_text: Option<&'a str>,
-    /// Changed head lines.
+    /// `head` (added lines) or `base` (removed lines).
+    pub side: LineSide,
+    /// Text on that side; `None` for binary files.
+    pub text: Option<&'a str>,
+    /// Changed lines on that side: added head lines or removed base lines.
     pub changed_lines: &'a [u32],
 }
 
 /// Material recognised by a rule.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Classified {
-    /// Repository-relative path.
+    /// Repository-relative path on that side.
     pub file: String,
+    /// Side of `ranges`; `base` for a deleted file or removed lines.
+    pub side: LineSide,
     /// Matched changed lines; `None` for the whole file.
     pub ranges: Option<Vec<LineRange>>,
     /// Section.

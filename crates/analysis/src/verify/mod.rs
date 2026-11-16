@@ -9,20 +9,20 @@ use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::tour::{FlowGraph, MoveFact};
-use contracts::common::FileRanges;
+use contracts::common::{FileRanges, LineSide};
 use contracts::ids::{CommitSha, FlowId, StepId};
 
-use crate::diff::Hunk;
+use crate::diff::DiffIndex;
 use crate::moves::MovesReport;
 
-/// Line facts of the head files the agent output refers to.
+/// Line facts of the files the agent output refers to, on both sides (base for deleted or emptied files,
+/// removed blocks and base-side evidence).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct HeadFacts {
-    /// Facts per repository-relative path.
-    pub files: BTreeMap<String, FileFacts>,
+pub struct LineFacts {
+    files: BTreeMap<(LineSide, String), FileFacts>,
 }
 
-/// Line facts of one head file.
+/// Line facts of one file on one side.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileFacts {
     /// Number of lines.
@@ -31,13 +31,28 @@ pub struct FileFacts {
     pub blank_lines: Vec<u32>,
 }
 
-impl HeadFacts {
-    /// Reads the facts of `paths` at `head` from the repository at `repo` (read-only).
-    pub fn load(repo: &Path, head: &CommitSha, paths: &[String]) -> Result<Self, VerifyError> {
-        let _ = (repo, head, paths);
+impl LineFacts {
+    /// Reads the facts of `files` (side, path) at `base` or `head` from the repository at `repo` (read-only).
+    pub fn load(
+        repo: &Path,
+        base: &CommitSha,
+        head: &CommitSha,
+        files: &[(LineSide, String)],
+    ) -> Result<Self, VerifyError> {
+        let _ = (repo, base, head, files);
         Err(VerifyError::NotImplemented {
-            operation: "verify::HeadFacts::load",
+            operation: "verify::LineFacts::load",
         })
+    }
+
+    /// Adds or replaces the facts of `path` on `side`.
+    pub fn insert(&mut self, side: LineSide, path: &str, facts: FileFacts) {
+        self.files.insert((side, path.to_owned()), facts);
+    }
+
+    /// The facts of `path` on `side`, if loaded (absent: the file does not exist on that side).
+    pub fn get(&self, side: LineSide, path: &str) -> Option<&FileFacts> {
+        self.files.get(&(side, path.to_owned()))
     }
 }
 
@@ -146,25 +161,28 @@ pub struct FlowContext<'a> {
     pub planned: &'a PlannedFlow,
     /// The verified plan.
     pub plan: &'a VerifiedPlan,
-    /// Head line facts.
-    pub head: &'a HeadFacts,
+    /// Line facts of both sides.
+    pub facts: &'a LineFacts,
+    /// The diff: hunk paths on both sides and removed lines → head deletion markers.
+    pub diff: &'a DiffIndex<'a>,
     /// Deterministic moves.
     pub moves: &'a MovesReport,
     /// Aliases of the GitHub threads listed in the prompt (`t1`, …).
     pub thread_aliases: &'a [String],
 }
 
-/// Verifies a `plan` output against the pre-pass hunks.
-pub fn plan(output: &PlanOutput, hunks: &[Hunk]) -> Result<VerifiedPlan, VerifyError> {
-    let _ = (output, hunks);
+/// Verifies a `plan` output against the pre-pass hunks. Hunks resolve through `diff` to their own file and
+/// side (two files may share line numbers; a renamed file has a base and a head path).
+pub fn plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<VerifiedPlan, VerifyError> {
+    let _ = (output, diff);
     Err(VerifyError::NotImplemented {
         operation: "verify::plan",
     })
 }
 
-/// Verifies a `pr_context` output (evidence lines inside head files).
-pub fn pr_context(output: &PrContextOutput, head: &HeadFacts) -> Result<(), VerifyError> {
-    let _ = (output, head);
+/// Verifies a `pr_context` output (evidence lines inside their file on their side).
+pub fn pr_context(output: &PrContextOutput, facts: &LineFacts) -> Result<(), VerifyError> {
+    let _ = (output, facts);
     Err(VerifyError::NotImplemented {
         operation: "verify::pr_context",
     })
@@ -179,4 +197,46 @@ pub fn flow(
     Err(VerifyError::NotImplemented {
         operation: "verify::flow",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use contracts::common::LineSide;
+
+    use super::*;
+
+    #[test]
+    fn facts_are_kept_per_side() {
+        let mut facts = LineFacts::default();
+        facts.insert(
+            LineSide::Base,
+            "src/rpc/old.rs",
+            FileFacts {
+                line_count: 40,
+                blank_lines: vec![12],
+            },
+        );
+        facts.insert(
+            LineSide::Head,
+            "src/rpc/old.rs",
+            FileFacts {
+                line_count: 0,
+                blank_lines: vec![],
+            },
+        );
+        assert_eq!(
+            facts
+                .get(LineSide::Base, "src/rpc/old.rs")
+                .map(|f| f.line_count),
+            Some(40)
+        );
+        assert_eq!(
+            facts
+                .get(LineSide::Head, "src/rpc/old.rs")
+                .map(|f| f.line_count),
+            Some(0),
+            "an emptied file"
+        );
+        assert!(facts.get(LineSide::Head, "src/rpc/gone.rs").is_none());
+    }
 }

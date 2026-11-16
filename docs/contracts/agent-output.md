@@ -53,6 +53,11 @@ repository there is no GitHub tool: `related_work` is `[]` and the server shows 
 `answer` (suspicions as questions to check) and `evidence[]`.
 
 ## Verify rules (`analysis::verify`, issues feed one repair prompt)
+Inputs cover both sides: `diff::DiffIndex` resolves hunk ids to their file's base and head paths (renames,
+equal line numbers in different files) and removed base lines to head deletion markers; `verify::LineFacts`
+holds line counts and blank lines per (side, path). The tech classifier runs once per side, so removed
+material (e.g. a deleted comment) is classified on the base side.
+
 | Issue | Rule |
 |---|---|
 | `UnknownHunk`, `RangeOutsideHunk` | plan hunk ids exist; sub-ranges inside their hunk |
