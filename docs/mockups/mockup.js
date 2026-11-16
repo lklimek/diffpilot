@@ -71,7 +71,7 @@
 
   /* ---------- counters shared across pages ---------- */
   function setK(k) { var e = $('#gcount'); if (e) e.textContent = k; ss.set('sr2.k', k); }
-  function setPend(n) { var e = $('#pend-n'); if (e) e.textContent = n; var c = $('#pc-n'); if (c) c.textContent = n; ss.set('sr2.pend', n); }
+  function setPend(n) { var e = $('#pend-n'); if (e) e.textContent = n; $$('.pcn').forEach(function (c) { c.textContent = n; }); ss.set('sr2.pend', n); }
   setK(ss.get('sr2.k', 1)); setPend(D.page === 'workspace' ? $$('#pc-list li').length : ss.get('sr2.pend', 2));
 
   /* ---------- help ---------- */
@@ -291,35 +291,105 @@
     applySecs(box); initTips(box); $('#insp').scrollTop = 0;
   }
 
-  /* ---------- workspace ---------- */
-  var S = { sel: null, fb: {}, answers: {}, cmt: null, cur: null, ticks: ss.get('sr2.ticks', ['f2-1']) };
+  /* ---------- workspace: one block at a time ---------- */
+  var S = { sel: null, fb: {}, answers: {}, cmt: null, blk: null, cur: null, ticks: ss.get('sr2.ticks', ['f2-1']) };
   function workspace() {
-    var scroller = $('#scroller');
-    function fragOf(id) { return $('#f' + id) || ($('[data-a="' + id + '"]') || document.body).closest('.frag'); }
-    function select(id, opt) {
-      opt = opt || {};
-      $$('.hl.sel,.node.sel,.mn.sel,.delsite.sel').forEach(function (x) { x.classList.remove('sel'); });
-      $$('.frag.cur').forEach(function (x) { x.classList.remove('cur'); });
-      S.sel = id; B.dataset.sel = id || '';
-      if (!id || !getI(id)) { S.sel = null; render(null); updateFb(); return; }
-      $$('.hl[data-a="' + id + '"],.delsite[data-a="' + id + '"],.node[data-step="' + id + '"],.mn[data-step="' + id + '"]').forEach(function (x) { x.classList.add('sel'); });
-      var f = fragOf(id); if (f) { f.classList.add('cur'); S.cur = f; }
-      render(id); updateFb();
-      if (opt.scroll) { var t = $('#f' + id) || $('[data-a="' + id + '"]'); if (t) t.scrollIntoView({ block: t.classList.contains('frag') ? 'start' : 'center' }); }
+    var scroller = $('#scroller'), blks = $$('.blk'), ORDER = $$('.grp .blk');
+    function byKey(k) { return $('.blk[data-key="' + k + '"]'); }
+    ORDER.forEach(function (b, i) {
+      var p = ORDER[i - 1], n = ORDER[i + 1], d = document.createElement('div'); d.className = 'bnav';
+      d.innerHTML = '<button class="btn" type="button" data-nav="-1"' + (p ? '' : ' disabled') + '>&larr; Previous' + (p ? ': ' + esc(p.dataset.title) : '') + '</button><span class="sp"></span>' +
+        '<button class="btn pri" type="button" data-nav="1"' + (n ? '' : ' disabled') + '>Next' + (n ? ': ' + esc(n.dataset.title) : '') + ' &rarr;</button>';
+      b.appendChild(d);
+    });
+    function groupOf(k) { var m = /^g?(\d)/.exec(k); return /^(g\d|\d-\d)$/.test(k) && m ? +m[1] : null; }
+    function showBlock(key) {
+      var t = byKey(key); if (!t) return;
+      blks.forEach(function (b) { b.hidden = b !== t; });
+      S.blk = key; var g = groupOf(key);
+      $$('.gitem,.qitem,.sitem').forEach(function (x) { x.setAttribute('aria-current', x.dataset.go === key ? 'true' : 'false'); });
+      $$('.substeps').forEach(function (o, i) { o.hidden = (i + 1) !== g; });
+      S.cur = $('.frag', t); scroller.scrollTop = 0; select(null);
     }
-    window.__select = select;
+    function go(d) { var i = ORDER.map(function (b) { return b.dataset.key; }).indexOf(S.blk); if (i >= 0 && ORDER[i + d]) showBlock(ORDER[i + d].dataset.key); }
+    function goGroup(d) { var g = groupOf(S.blk) || (d > 0 ? 0 : 6); g = Math.max(1, Math.min(5, g + d)); showBlock('g' + g); }
+    function route() {
+      var h = location.hash, m;
+      if ((m = /^#open=([\d-]+)/.exec(h))) showBlock(m[1]);
+      else if (/^#g\d$/.test(h)) showBlock(h.slice(1));
+      else if ((m = /^#f(\d-\d)$/.exec(h))) showBlock(m[1]);
+      else if (h === '#pending') showBlock('pending');
+    }
+    window.addEventListener('hashchange', route);
     document.addEventListener('click', function (e) {
-      var n = e.target.closest('.node,.mn'); if (n) { select(n.dataset.step, { scroll: true }); return; }
+      var g = e.target.closest('[data-go]'); if (g) { showBlock(g.dataset.go); return; }
+      var n = e.target.closest('[data-nav]'); if (n) { go(+n.dataset.nav); return; }
       var h = e.target.closest('.hl[data-a],.delsite[data-a]');
       if (h && !e.target.closest('button,a,summary') && D.state !== 'noq') select(h.dataset.a);
     });
     document.addEventListener('keydown', function (e) {
       var t = e.target; if (e.key !== 'Enter' && e.key !== ' ') return;
-      if (t.matches && t.matches('.node,.mn')) { if (t.tagName !== 'BUTTON') { e.preventDefault(); select(t.dataset.step, { scroll: true }); } }
-      else if (t.matches && t.matches('.hl[data-a],.delsite[data-a]') && D.state !== 'noq') { e.preventDefault(); select(t.dataset.a); }
+      if (t.matches && t.matches('.hl[data-a],.delsite[data-a]') && D.state !== 'noq') { e.preventDefault(); select(t.dataset.a); }
     });
 
-    /* fill fragment meta and assessment */
+    /* columns: hide, full screen, drag-resize (sizes kept in localStorage) */
+    var cs = { left: 'n', main: 'n', right: 'h' }, W = ls.get('sr2.w', { l: null, r: null });
+    function defW(k) { return k === 'l' ? Math.max(260, Math.min(400, Math.round(innerWidth * 0.17))) : Math.max(370, Math.min(620, Math.round(innerWidth * 0.27))); }
+    function layout() {
+      var ws = $('#ws'), full = Object.keys(cs).filter(function (k) { return cs[k] === 'f'; })[0], hid = {};
+      ['left', 'main', 'right'].forEach(function (k) { hid[k] = full ? k !== full : cs[k] === 'h'; });
+      var wl = W.l || defW('l'), wr = W.r || defW('r'), tpl = [];
+      tpl.push(hid.left ? '34px' : (hid.main ? 'minmax(0,1fr)' : wl + 'px'));
+      tpl.push(hid.left || hid.main ? '0px' : '6px');
+      tpl.push(hid.main ? '34px' : 'minmax(0,1fr)');
+      tpl.push(hid.right || hid.main ? '0px' : '6px');
+      tpl.push(hid.right ? '34px' : (hid.main ? 'minmax(0,1fr)' : wr + 'px'));
+      ws.style.gridTemplateColumns = tpl.join(' ');
+      $('#gut-l').classList.toggle('off', hid.left || hid.main); $('#gut-r').classList.toggle('off', hid.right || hid.main);
+      ['left', 'main', 'right'].forEach(function (k) {
+        var c = $('#col-' + k); c.classList.toggle('is-rail', hid[k]);
+        var fb = $('[data-colbtn="full"]', c); fb.setAttribute('aria-pressed', cs[k] === 'f'); fb.firstChild.textContent = cs[k] === 'f' ? 'Exit full screen' : 'Full screen';
+      });
+    }
+    function openInsp() { var full = Object.keys(cs).some(function (k) { return cs[k] === 'f'; }); if (full) { cs.left = cs.main = 'n'; } if (full || cs.right !== 'n') { cs.right = 'n'; layout(); } }
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest('[data-colbtn]'); if (!b) return; var k = b.dataset.col, a = b.dataset.colbtn;
+      if (a === 'hide') { var vis = Object.keys(cs).filter(function (x) { return cs[x] !== 'h' && x !== k; }); if (!vis.length) { toast('At least one column must stay visible.'); return; } if (Object.keys(cs).some(function (x) { return cs[x] === 'f'; })) { cs.left = cs.main = 'n'; cs.right = 'n'; } cs[k] = 'h'; }
+      if (a === 'show') { if (Object.keys(cs).some(function (x) { return cs[x] === 'f'; })) { cs.left = cs.main = 'n'; cs.right = 'h'; } cs[k] = 'n'; }
+      if (a === 'full') { var on = cs[k] !== 'f'; var r = cs.right; cs.left = cs.main = 'n'; cs.right = r === 'f' ? 'n' : r; if (on) cs[k] = 'f'; }
+      layout();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !(help && help.open) && Object.keys(cs).some(function (x) { return cs[x] === 'f'; })) { cs.left = cs.main = 'n'; cs.right = 'n'; layout(); }
+    });
+    var drag = null;
+    function clampW(k, v) { var tot = $('#ws').getBoundingClientRect().width, other = k === 'l' ? (cs.right === 'h' ? 34 : (W.r || defW('r'))) : (cs.left === 'h' ? 34 : (W.l || defW('l'))); return Math.round(Math.max(k === 'l' ? 200 : 300, Math.min(v, tot - other - 12 - 320))); }
+    $$('.gut').forEach(function (g) {
+      var k = g.dataset.gut;
+      g.addEventListener('pointerdown', function (e) { drag = k; g.setPointerCapture(e.pointerId); g.classList.add('drag'); e.preventDefault(); });
+      g.addEventListener('pointermove', function (e) {
+        if (drag !== k) return; var r = $('#ws').getBoundingClientRect();
+        W[k] = clampW(k, k === 'l' ? e.clientX - r.left : r.right - e.clientX); layout();
+      });
+      function end() { if (drag === k) { drag = null; g.classList.remove('drag'); ls.set('sr2.w', W); } }
+      g.addEventListener('pointerup', end); g.addEventListener('pointercancel', end);
+      g.addEventListener('dblclick', function () { W[k] = null; ls.set('sr2.w', W); layout(); });
+      g.addEventListener('keydown', function (e) {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return; e.preventDefault();
+        var d = (e.key === 'ArrowRight' ? 1 : -1) * (k === 'l' ? 1 : -1) * 24, cur = W[k] || defW(k); W[k] = clampW(k, cur + d); ls.set('sr2.w', W); layout();
+      });
+    });
+
+    /* inspector selection: only from a clicked highlight */
+    function select(id) {
+      $$('.hl.sel,.delsite.sel').forEach(function (x) { x.classList.remove('sel'); });
+      S.sel = id; B.dataset.sel = id || '';
+      if (!id || !getI(id)) { S.sel = null; B.dataset.sel = ''; render(null); updateFb(); return; }
+      $$('.hl[data-a="' + id + '"],.delsite[data-a="' + id + '"]').forEach(function (x) { x.classList.add('sel'); });
+      render(id); updateFb(); openInsp();
+    }
+    window.__select = select;
+
     function fillFrags() {
       $$('.facts[data-meta]').forEach(function (dl) {
         var d = getI(dl.dataset.meta); if (!d) return;
@@ -327,8 +397,6 @@
       });
       $$('.frag-assess').forEach(function (x) { x.querySelector('.assess-body').innerHTML = assessHTML(getI(x.dataset.assess)); initTips(x); });
     }
-
-    /* ticks */
     function groupFrags(g) { return $$('.frag', g); }
     function applyTicks() {
       var k = 0;
@@ -336,6 +404,7 @@
         var on = S.ticks.indexOf(f.id) >= 0; f.classList.toggle('reviewed', on);
         var b = $('[data-act="rev"]', f); b.setAttribute('aria-pressed', on); b.firstChild.textContent = on ? 'Reviewed (undo) ' : 'Mark reviewed ';
       });
+      $$('.sitem').forEach(function (x) { x.classList.toggle('done', S.ticks.indexOf('f' + x.dataset.go) >= 0); });
       $$('.grp').forEach(function (g) {
         var fs = groupFrags(g), d = fs.filter(function (f) { return f.classList.contains('reviewed'); }).length, all = d === fs.length;
         $('[data-gp]', g).textContent = d + ' of ' + fs.length + ' fragments reviewed';
@@ -347,7 +416,7 @@
     }
     function toggleTick(f) { var i = S.ticks.indexOf(f.id); if (i >= 0) S.ticks.splice(i, 1); else S.ticks.push(f.id); applyTicks(); }
     function toggleOld(f) {
-      var o = $$('.old', f).filter(function (x) { return !x.closest('.insp'); })[0], b = $('[data-act="old"]', f); if (!o || !b) return;
+      var o = $('.old', f), b = $('[data-act="old"]', f); if (!o || !b) return;
       o.hidden = !o.hidden; b.setAttribute('aria-pressed', !o.hidden); b.firstChild.textContent = o.hidden ? 'Show old code ' : 'Hide old code ';
     }
     document.addEventListener('click', function (e) {
@@ -361,52 +430,28 @@
       }
     });
 
-    /* columns: hide and full screen */
-    var cs = { left: 'n', main: 'n', right: 'n' };
-    function layout() {
-      var ws = $('#ws'), full = Object.keys(cs).filter(function (k) { return cs[k] === 'f'; })[0], tpl = [];
-      var hidden = {}; ['left', 'main', 'right'].forEach(function (k) { hidden[k] = full ? k !== full : cs[k] === 'h'; });
-      var anyMain = !hidden.main;
-      ['left', 'main', 'right'].forEach(function (k) {
-        var w = k === 'left' ? 'var(--wl)' : k === 'right' ? 'var(--wr)' : 'minmax(0,1fr)';
-        tpl.push(hidden[k] ? '34px' : (k === 'main' || !anyMain ? 'minmax(0,1fr)' : w));
-        var c = $('#col-' + k); c.classList.toggle('is-rail', hidden[k]);
-        var fb = $('[data-colbtn="full"]', c); fb.setAttribute('aria-pressed', cs[k] === 'f'); fb.firstChild.textContent = cs[k] === 'f' ? 'Exit full screen' : 'Full screen';
-      });
-      ws.style.gridTemplateColumns = tpl.join(' ');
-    }
-    document.addEventListener('click', function (e) {
-      var b = e.target.closest('[data-colbtn]'); if (!b) return; var k = b.dataset.col, a = b.dataset.colbtn;
-      if (a === 'hide') { var vis = Object.keys(cs).filter(function (x) { return cs[x] !== 'h' && x !== k; }); if (!vis.length) { toast('At least one column must stay visible.'); return; } cs[k] = 'h'; if (cs.left === 'f' || cs.main === 'f' || cs.right === 'f') cs.left = cs.main = cs.right = 'n', cs[k] = 'h'; }
-      if (a === 'show') { var wasFull = Object.keys(cs).some(function (x) { return cs[x] === 'f'; }); if (wasFull) { cs.left = cs.main = cs.right = 'n'; } else cs[k] = 'n'; }
-      if (a === 'full') { var on = cs[k] !== 'f'; cs.left = cs.main = cs.right = 'n'; if (on) cs[k] = 'f'; }
-      layout();
-    });
-
     /* feedback */
     function updateFb() {
       var cur = S.fb[S.sel];
       $$('[data-fb]').forEach(function (b) { b.disabled = !S.sel; b.setAttribute('aria-pressed', cur === b.dataset.fb ? 'true' : 'false'); });
       $('#fb-note-r').hidden = !(cur && cur !== 'correct');
-      $('#ask-for').textContent = S.sel ? 'about step ' + S.sel.split('-')[1] + ' of group ' + S.sel.split('-')[0] + '; answers stay pinned in the inspector' : 'select a step first';
+      $('#ask-for').textContent = S.sel ? 'about ' + S.sel + '; answers stay pinned in the inspector' : 'click a coloured range first';
     }
     $$('[data-fb]').forEach(function (b) {
       b.addEventListener('click', function () {
-        if (!S.sel) { toast('Select a highlight or a step first.'); return; }
+        if (!S.sel) { toast('Click a highlight in the code first.'); return; }
         var k = b.dataset.fb; if (S.fb[S.sel] === k) delete S.fb[S.sel]; else S.fb[S.sel] = k;
         updateFb();
         var g = S.sel.split('-')[0], m = $('#gl-' + g + ' .mine'); if (m) { m.hidden = !S.fb[S.sel]; m.textContent = S.fb[S.sel] ? 'you marked: ' + S.fb[S.sel] : ''; }
         if (S.fb[S.sel]) toast(/rated/.test(k) ? 'Saved as a severity calibration example (mock): ' + k + '.' : 'Feedback saved locally and queued for MemCan (mock): ' + k + '.');
       });
     });
-
-    /* growing text fields */
     function grow(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight + 2, 170) + 'px'; }
     $$('#ask-input,#fb-note,#cmt-text').forEach(function (t) { t.addEventListener('input', function () { grow(t); }); });
     $('#ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#ask-form').requestSubmit(); } });
     $('#ask-form').addEventListener('submit', function (e) {
       e.preventDefault(); var i = $('#ask-input'), q = i.value.trim(); if (!q) return;
-      if (!S.sel) { toast('Select a highlight or a step first.'); return; }
+      if (!S.sel) { toast('Click a highlight in the code first.'); return; }
       var id = S.sel; (S.answers[id] = S.answers[id] || []).unshift({ q: q, a: 'I read the files around this step and searched for callers (nothing executed). The call hierarchy lists what I found; I did not check other repositories.' });
       i.value = ''; grow(i); var an = $('#answers'); if (an) an.innerHTML = answersHTML(id);
       var sd = $('.sec[data-sec="ask"]'); if (sd) sd.open = true;
@@ -418,6 +463,7 @@
       var row = btn.closest('.l'), code = row.closest('.code'); if (!code || !code.dataset.file) return;
       var old = row.dataset.side === 'old', ann = !!row.closest('.hl,.delsite');
       S.cmt = { file: code.dataset.file, ln: row.dataset.ln, old: old, ann: ann, row: row };
+      openInsp();
       $('#cmt-loc').textContent = code.dataset.file + ':' + row.dataset.ln + (old ? ' (removed line, old numbering)' : '');
       $('#cmt-miss').hidden = ann; $('#cmt-form').hidden = false; $('#cmt-hint').hidden = true; $('#cmt-err').hidden = true;
       var t = $('#cmt-text'); if (prefill) { t.value = prefill; grow(t); } t.focus();
@@ -437,50 +483,25 @@
       setPend($$('#pc-list li').length); c.row.classList.add('cm'); t.value = ''; grow(t);
       $('#cmt-form').hidden = true; $('#cmt-hint').hidden = false; S.cmt = null;
       toast('Added to your GitHub pending review (mock)' + (c.ann ? '.' : ' and recorded as missed by the LLM.'));
-      li.scrollIntoView({ block: 'nearest' });
     });
     document.addEventListener('click', function (e) {
       var b = e.target.closest('[data-pc]'); if (!b) return; var li = b.closest('li');
       if (b.dataset.pc === 'del') { li.remove(); setPend($$('#pc-list li').length); toast('Deleted from the GitHub pending review (mock).'); }
       else { var p = $('.txt', li), ta = $('textarea', li), ed = ta.hidden; if (ed) { ta.value = p.textContent; } else { p.textContent = ta.value; toast('Saved to the GitHub pending review (mock).'); } ta.hidden = !ed; p.hidden = ed; b.textContent = ed ? 'Save' : 'Edit'; if (ed) ta.focus(); }
     });
-    function commentCurrent() {
-      if (S.cmt) { $('#cmt-text').focus(); return; }
-      var f = S.cur; if (!f) { toast('Select a step first, or click a line number.'); return; }
-      var n = $('.code .l .n', f); if (n) startComment(n);
-    }
 
     /* keyboard */
-    function steps() { return $$('.frag'); }
-    function goStep(d) {
-      var fs = steps(), i = fs.indexOf(S.cur); i = i < 0 ? (d > 0 ? 0 : fs.length - 1) : Math.max(0, Math.min(fs.length - 1, i + d));
-      select(fs[i].dataset.step, { scroll: true });
-    }
-    function curGroup() { return S.cur ? +S.cur.closest('.grp').id.slice(1) : 1; }
-    function goGroup(d) {
-      var n = Math.max(1, Math.min(5, curGroup() + d)), g = $('#g' + n); g.scrollIntoView({ block: 'start' });
-      var f = $('.frag', g); select(f.dataset.step); markGroup(n);
-    }
-    function markGroup(n) { $$('.glist li').forEach(function (li, i) { li.classList.toggle('cur', i + 1 === n); }); }
     document.addEventListener('keydown', function (e) {
       if (/input|textarea|select/i.test(e.target.tagName) || e.ctrlKey || e.metaKey || e.altKey || (help && help.open)) return;
       var k = e.key;
-      if (k === 'j') goStep(1); else if (k === 'k') goStep(-1);
+      if (k === 'j') go(1); else if (k === 'k') go(-1);
       else if (k === 'n') goGroup(1); else if (k === 'p') goGroup(-1);
       else if (k === 'x' && S.cur) toggleTick(S.cur);
       else if (k === 'd' && S.cur) toggleOld(S.cur);
-      else if (k === 'c') { e.preventDefault(); commentCurrent(); }
-      else if (k === 'a') { e.preventDefault(); $('#ask-input').focus(); }
-    });
-    var raf = 0;
-    scroller.addEventListener('scroll', function () {
-      if (raf) return; raf = requestAnimationFrame(function () {
-        raf = 0; var top = scroller.getBoundingClientRect().top, n = 1;
-        $$('.grp').forEach(function (g, i) { if (g.getBoundingClientRect().top - top < 80) n = i + 1; }); markGroup(n);
-      });
+      else if (k === 'c') { e.preventDefault(); if (S.cmt) { openInsp(); $('#cmt-text').focus(); } else { var n = $('.blk:not([hidden]) .code button.n'); if (n) startComment(n); else toast('Open a step with code first.'); } }
+      else if (k === 'a') { e.preventDefault(); if (!S.sel && getI(S.blk)) select(S.blk); else openInsp(); $('#ask-input').focus(); }
     });
 
-    /* state hook */
     function rerate() {
       $$('.rate').forEach(function (r) {
         var lv = r.dataset.r; if (D.state === 'noq') lv = 'LOW'; else if (D.state === 'wrong' && r.dataset.rw) lv = r.dataset.rw;
@@ -488,16 +509,17 @@
       });
     }
     stateHook = function (s) {
-      rerate(); fillFrags(); select(null); $('#cmt-form').hidden = true; $('#cmt-hint').hidden = false; S.cmt = null;
-      if (s === 'wrong') select('3-1', { scroll: true });
+      rerate(); fillFrags(); $('#cmt-form').hidden = true; $('#cmt-hint').hidden = false; S.cmt = null;
+      cs.left = cs.main = 'n'; cs.right = 'h'; layout(); showBlock('g1');
+      if (s === 'wrong') showBlock('3-1');
       if (s === 'missed') {
-        select('1-2', { scroll: true });
-        var n = $('#f1-2 .l[data-ln="96"] .n'); if (n) startComment(n, 'The per-attempt timeout is reused for every attempt and the caller\'s deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes.');
+        showBlock('1-2');
+        var n = $('.blk[data-key="1-2"] .l[data-ln="96"] .n'); if (n) startComment(n, 'The per-attempt timeout is reused for every attempt and the caller\'s deadline is ignored: 3 attempts of 5 s plus delays can exceed the 10 s deadline that wallet::send_payment passes.');
       }
     };
-    applySecs(document); applyTicks(); layout(); fillFrags(); rerate(); updateFb();
-    var m = /#open=([\d-]+)/.exec(location.hash); if (m) setTimeout(function () { select(m[1], { scroll: true }); }, 0);
+    applySecs(document); applyTicks(); layout(); fillFrags(); rerate(); updateFb(); showBlock('g1');
     $$('.code .n').forEach(function (n) { var r = n.closest('.l'), c = n.closest('.code'); if (n.tagName === 'BUTTON' && c && c.dataset.file) n.setAttribute('aria-label', 'Comment on ' + c.dataset.file + ' line ' + r.dataset.ln); });
+    setTimeout(route, 0);
   }
 
   /* ---------- tour ---------- */
@@ -507,7 +529,7 @@
       idx = Math.max(0, Math.min(steps.length - 1, idx));
       steps.forEach(function (s, i) { s.hidden = i !== idx; });
       $$('#steps li').forEach(function (li, i) { li.classList.toggle('cur', i === idx); var a = $('a', li); if (i === idx) a.setAttribute('aria-current', 'step'); else a.removeAttribute('aria-current'); });
-      $('#step-k').textContent = 'Step ' + (idx + 1) + ' of ' + steps.length;
+      $('#step-k').textContent = idx === 0 ? 'PR context' : 'Step ' + idx + ' of ' + (steps.length - 1);
       $('#prev').disabled = idx === 0; $('#next').disabled = idx === steps.length - 1;
       $('.tour-main').scrollTop = 0;
     }
@@ -516,10 +538,10 @@
     $$('#steps a').forEach(function (a, i) { a.addEventListener('click', function (e) { e.preventDefault(); idx = i; render(); }); });
     $$('.node,.mn').forEach(function (n) { n.addEventListener('click', function () { location.href = '04-group-workspace.html#open=' + n.dataset.step; }); });
     document.addEventListener('keydown', function (e) {
-      if (/input|textarea|select/i.test(e.target.tagName) || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (/input|textarea|select/i.test(e.target.tagName) || e.ctrlKey || e.metaKey || e.altKey || (help && help.open)) return;
       if (e.key === 'j') { idx++; render(); } else if (e.key === 'k') { idx--; render(); }
     });
-    var m = /^#t(\d)$/.exec(location.hash); if (m) idx = +m[1] - 1;
+    var m = /^#t(\d)$/.exec(location.hash); if (m) idx = +m[1];
     render();
   }
 

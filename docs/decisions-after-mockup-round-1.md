@@ -52,20 +52,31 @@ and size statistics (dropped with Overview); numeric confidence; settings switch
 
 ## E. Group workspace
 
-### Layout
-- Three columns: Groups | Code | Inspector. Each column has "hide" and "full screen".
-- The inspector is empty until the user clicks a highlight or step. Nothing is pinned automatically.
-- Inspector sections are collapsible; the collapsed state is remembered across fragments and files
-  (browser localStorage).
+### Layout (revised after mockup round 2: one block at a time)
+The owner found the first workspace overloaded. Rule: the screen shows only what is to be read now — ONE
+block at a time. Never two steps side by side, on any screen width.
 
-### Left column, in this order
-1. **PR context** (first item, see below).
-2. Flow groups, most important first.
-3. Quiet rows, always last and never above a rated group: moves with identical text; "Not analysed" sections
+- Three columns: Navigation | Centre | Inspector.
+- **The workspace has no diagram and no PR context.** Both live in the Tour (section F).
+- **Centre shows one block.** Group selected, no step: the group's problem statement. Step selected: that
+  one step — header, the four facts (called by / decides or changes / goes next / why), its code, impact
+  outside the diff, collapsed assessment, tick.
+- Under the block: "Previous" / "Next" (step order; after the last step, the next group).
+- The navigation column lists the steps of the selected group under it.
+- The inspector is hidden (a thin strip) until the user clicks a highlight in the code; nothing is pinned
+  automatically. Inspector sections are collapsible; the collapsed state is remembered (localStorage).
+- The legend is not on the page; it is in the `?` help.
+- Column widths are resizable by dragging; sizes are remembered.
+- Each column has "hide" and "full screen". A hidden column leaves a strip with its name; clicking anywhere
+  on the strip shows it again.
+
+### Navigation column, in this order
+1. Flow groups, most important first: title, risk, tick; the selected group shows its numbered steps.
+2. Quiet rows, always last and never above a rated group: moves with identical text; "Not analysed" sections
    (Tests, Docs & comments, Mechanical & generated).
-4. Pending review panel: comments read from the user's GitHub pending review, link "Finish on GitHub".
+3. Pending review: count and link; the list opens in the centre.
 
-### PR context
+### PR context (shown in the Tour, not in the workspace)
 - The problem the PR solves and why it is needed.
 - Related work found by the agent: duplicates, competing solutions, stacked PRs, linked issues, companion
   repositories — each with a link and one line on the overlap.
@@ -80,9 +91,9 @@ and size statistics (dropped with Overview); numeric confidence; settings switch
   code that connects the changes.
 - Group header: local problem statement — trigger, what was wrong or missing, intended correction, a short
   before/after example.
-- Flow diagram under the header: numbered steps, decisions with labelled branches, loops, error exits.
+- Flow diagram (Tour only): numbered steps, decisions with labelled branches, loops, error exits.
   Added code, changed code and unchanged context are distinguishable by colour AND by a second signal
-  (border style or marker). Clicking a step scrolls to its code.
+  (border style or marker).
 - A pattern applied in several places is explained once; the other places are a collapsed row
   "same pattern × N".
 
@@ -135,7 +146,12 @@ and size statistics (dropped with Overview); numeric confidence; settings switch
 
 ## F. Tour
 
-- Under the title: what the change gives and why it is needed.
+- Both views exist in v1: the workspace (Groups) and the Tour. The Tour is read-only: no comments, Ask or
+  feedback there in v1.
+- **Start screen = PR context.** Entering the Tour for the first time shows the PR context (contents as in
+  section E "PR context", plus what the change gives and why it is needed). The left menu has a
+  "PR context" link above step 1.
+- The flow diagram is shown in the Tour only.
 - Steps follow control flow (the same flows as the groups), including deletions.
 - No ticks in the tour. A link jumps to the highest-rated question.
 - "Not analysed" material is skipped and listed as skipped.
@@ -185,3 +201,12 @@ and size statistics (dropped with Overview); numeric confidence; settings switch
 
 - v2: re-review delta; recent reviews; LLM auto-comment; Claude provider; Rust and Go plugins.
 - Later: static-analysis actions (callers, test coverage); sync of ticks with GitHub "Viewed"; custom rules.
+
+## K. Frontend structure
+
+Every block on a screen is a self-contained component that can be placed on another screen without change:
+it receives its data and callbacks as inputs and does not know which screen hosts it. Screens only arrange
+components. Expected components: navigation list, PR context, flow diagram, step block (four facts + code),
+code view (line renderer with gutter marks and highlights), inspector and each of its sections, Ask,
+feedback buttons, comment composer, pending-review list. Purpose: adding the inspector and commenting to the
+Tour later is a layout change, not a rewrite.
