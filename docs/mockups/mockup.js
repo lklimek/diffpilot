@@ -135,11 +135,11 @@
       why: 'The loop needs a rule for when to stop; the rule is a plain attempt limit.',
       was: 'No retry decision; the timeout went straight to the caller.', is: 'Retries while <code>attempt &lt; max_attempts</code> (3). The method of the request is not an input.',
       diff: [['@', '', '@@ -0,0 +99,1 @@'], ['+', 99, '                Err(RpcError::Timeout) if policy.should_retry(attempt) => {'], ['@', '', '@@ -0,0 +21,5 @@ src/rpc/retry.rs (new file)'], ['+', 23, '    pub fn should_retry(&self, attempt: u32) -> bool {'], ['+', 24, '        attempt < self.max_attempts'], ['+', 25, '    }']],
-      conseq: ['<code>mempool::broadcast_tx</code> may submit the same transaction twice if attempt 1 reached the node and only the reply was late.', 'Callers that cannot tolerate a repeat have no way to opt out; <code>send_once()</code> is removed (group 4).'],
+      conseq: ['<code>mempool::broadcast_tx</code> may submit the same transaction twice if attempt 1 reached the node and only the reply was late.', 'Callers that cannot tolerate a repeat have no way to opt out; <code>send_once()</code> is removed (flow 4).'],
       callers: [['RpcClient::send', 'src/rpc/client.rs', 99]], callees: [],
       qs: ['Can <code>broadcast_tx</code> be sent twice when the reply arrives late? <code>should_retry</code> receives only the attempt number; no method or idempotency input reaches it.'],
       as: { notice: 'A wallet user could see one payment broadcast twice after a slow node reply. An operator would see duplicate-transaction rejections in the node log.', risk: 'HIGH',
-        reason: 'A repeated value-moving request at system scale (wallet and relay both call it). It needs a reply delayed past 5 s, which group 2 makes more likely.',
+        reason: 'A repeated value-moving request at system scale (wallet and relay both call it). It needs a reply delayed past 5 s, which flow 2 makes more likely.',
         basis: 'read 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs); nothing executed. Not checked: node-side deduplication (not in this repository).',
         orig: 'introduced by this PR', blocks: 'blocks this PR', fix: 'Pass an idempotency input into <code>should_retry</code> (or skip retry for <code>broadcast_tx</code>); add a test with a transport that delivers the request and then times out.' },
       th: [['bob', 'Should we retry non-idempotent calls at all?', 'valid', 'src/rpc/client.rs:99']] },
@@ -161,9 +161,9 @@
       why: 'Callers need to tell a retried failure from a single timeout.',
       was: 'Returned <code>Err(Timeout)</code>.', is: 'Returns <code>Err(Exhausted { attempts })</code> once the policy refuses another attempt.',
       diff: [['@', '', '@@ -0,0 +104,3 @@'], ['+', 104, '                Err(RpcError::Timeout) => {'], ['+', 105, '                    return Err(RpcError::Exhausted { attempts: attempt });'], ['+', 106, '                }']],
-      conseq: ['Callers that matched on <code>Timeout</code> no longer see it from <code>send</code>.', 'Two sites outside the diff swallow the new variant (group 3).'],
+      conseq: ['Callers that matched on <code>Timeout</code> no longer see it from <code>send</code>.', 'Two sites outside the diff swallow the new variant (flow 3).'],
       callers: [['RpcClient::send', 'src/rpc/client.rs', 104]], callees: [['RpcError::Exhausted', 'src/rpc/error.rs', 13]],
-      qs: ['Do all callers of <code>send</code> still handle the case that used to be <code>Timeout</code>? Two wildcard sites were found (group 3).'],
+      qs: ['Do all callers of <code>send</code> still handle the case that used to be <code>Timeout</code>? Two wildcard sites were found (flow 3).'],
       as: { notice: 'Wallet users get a generic RPC error instead of the &ldquo;offline&rdquo; message once retries run out.', risk: 'MEDIUM', reason: 'User-visible message change on a common failure; not data-affecting.',
         basis: 'read 3 files; nothing executed. Not checked: callers in other repositories.', orig: 'introduced by this PR', blocks: 'follow-up', fix: 'Map <code>Exhausted</code> to the same wallet error as <code>Timeout</code>.' },
       th: [] },
@@ -190,7 +190,7 @@
       qs: ['Is a 2000-header reply from a slow peer expected to arrive within 5 s?'], as: null, th: [] },
     '3-1': { t: 'New error variant RpcError::Exhausted', file: 'src/rpc/error.rs', a: 7, z: 16, kind: 'added',
       tip: 'Was: send could fail with Timeout or Transport. Is: a third variant, Exhausted, exists.',
-      by: 'RpcClient::send (step 7 of group 1)', dec: 'Adds a variant that carries the attempt count.', next: 'every <code>match</code> on <code>RpcError</code>', why: 'Callers need to tell &ldquo;retried and failed&rdquo; from one timeout.',
+      by: 'RpcClient::send (step 7 of flow 1)', dec: 'Adds a variant that carries the attempt count.', next: 'every <code>match</code> on <code>RpcError</code>', why: 'Callers need to tell &ldquo;retried and failed&rdquo; from one timeout.',
       was: 'Two failure variants.', is: 'Three; wildcard arms treat the new one as a generic failure.',
       diff: [['@', '', '@@ -11,3 +11,5 @@ pub enum RpcError'], [' ', 11, '    Timeout,'], ['+', 12, '    #[error("gave up after {attempts} attempts")]'], ['+', 13, '    Exhausted { attempts: u32 },'], [' ', 14, '    #[error("transport failure: {0}")]']],
       conseq: ['Two wildcard <code>match</code> sites outside the diff swallow it (wallet and peers).'], callers: [['RpcClient::send', 'src/rpc/client.rs', 105]], callees: [],
@@ -209,7 +209,7 @@
       by: 'callers that must not retry (none left in this repository)', dec: 'Nothing; the code is gone.', next: 'callers now use <code>send()</code>', why: 'One entry point instead of two.',
       was: 'Two ways to send: with and without retry.', is: 'One way, always with retry.',
       diff: [['@', '', '@@ -52,10 +0,0 @@ impl RpcClient'], ['-', 52, '    /// Sends exactly once; for callers that must not retry.'], ['-', 53, '    pub async fn send_once(&self, req: Request) -> Result<Response, RpcError> {'], ['-', '', '    ... 8 more removed lines']],
-      conseq: ['No way is left to send a request exactly once (see group 1, step 5).', 'Downstream crates that call <code>send_once</code> stop compiling.'],
+      conseq: ['No way is left to send a request exactly once (see flow 1, step 5).', 'Downstream crates that call <code>send_once</code> stop compiling.'],
       callers: [['search for send_once in this repository: 0 hits', 'src/', 0]], callees: [],
       qs: ['Does <code>acme/node-sdk</code> (PR #118) still call <code>send_once()</code>?', 'How does a caller now send a request that must not be repeated?'],
       as: { notice: 'A downstream developer gets a compile error; a user of <code>broadcast_tx</code> loses the only no-retry path.', risk: 'MEDIUM', reason: 'Public API removal with a known downstream user; ties to the double-send question.',
@@ -217,7 +217,7 @@
       th: [] },
     '5-1': { t: 'Backoff helpers moved', file: 'src/rpc/retry.rs', a: 38, z: 95, kind: 'moved',
       tip: 'Was: jitter of up to 10% of the delay. Is: jitter of up to 50% of the delay.',
-      by: 'RetryPolicy::backoff (group 1, step 6)', dec: 'Computes the exponential delay and the jitter.', next: 'returns the delay to <code>backoff</code>', why: 'Keeps the helpers next to the policy that uses them.',
+      by: 'RetryPolicy::backoff (flow 1, step 6)', dec: 'Computes the exponential delay and the jitter.', next: 'returns the delay to <code>backoff</code>', why: 'Keeps the helpers next to the policy that uses them.',
       was: '<code>JITTER = 0.1</code>.', is: '<code>JITTER = 0.5</code>.',
       diff: [['@', '', '@@ -22,2 +49,2 @@ moved from src/util/backoff.rs'], ['-', 22, '// Jitter is uniform in [-JITTER, +JITTER], i.e. +/-10% of the delay.'], ['-', 23, 'const JITTER: f64 = 0.1;'], ['+', 49, '// Jitter is uniform in [-JITTER, +JITTER], i.e. +/-50% of the delay.'], ['+', 50, 'const JITTER: f64 = 0.5;']],
       conseq: ['Retry times of concurrent clients are spread over a wider window.'], callers: [['RetryPolicy::backoff', 'src/rpc/retry.rs', 30]], callees: [],
@@ -289,6 +289,8 @@
       body = sec('c1', 'At a glance', '<ul class="small"><li>CI: 1 of 6 checks failing (<code>sync_headers::slow_peer_2000_headers</code>)</li><li>Related work: 3 items (competing PR #479, issue #470, stacked PR node-sdk#118)</li><li>Fit questions to check: 3</li><li>Counters: 12 lines removed from tests, 3 dependencies changed</li><li>Project profile: ' + (D.state === 'noprofile' ? 'none (ratings are component-level)' : 'found') + '</li><li>5 flows, 14 steps</li></ul>');
     } else if (k === 'pending') {
       body = sec('p1', 'Pending review', '<p class="small">' + $$('#pc-list li').length + ' comments are in your GitHub pending review. Edit and delete act on GitHub. Submit the review on GitHub.</p>');
+    } else if (k === 'q-unexp') {
+      body = sec('q1', 'Unexplained lines', '<p class="small">6 changed lines in <code>src/rpc/metrics.rs</code> (L41\u201346) were not assigned to any flow. The analysis did not explain them; read them yourself. You can comment on any line.</p><p class="small muted">No LLM remark exists for these lines, so a comment here is also recorded as missed by the LLM.</p>');
     } else if (k === 'q-build') {
       body = sec('q1', 'Moved block, text identical', '<p class="small"><code>build_request()</code>: 41 lines, body text identical after whitespace normalisation. The call site changed in flow 1, step 2.</p>');
     } else if (k === 'q-tests') {
@@ -320,13 +322,14 @@
     var beh = sec('beh', 'Behaviour: was &rarr; is', '<div class="wi"><div><h3>Was</h3>' + d.was + '</div><div><h3>Is</h3>' + d.is + '</div></div>');
     var thr = sec('threads', 'GitHub threads at this location', th || '<p class="small muted">No GitHub threads at this location.</p>');
     var qs = sec(ann ? 'aqs' : 'qs', 'Questions to check', q), as = sec('assess', 'Assessment', assessHTML(d));
+    var calls = sec('calls', 'Call hierarchy', '<p class="small muted" data-tip="Callers and callees will come from static analysis in a later version." tabindex="0">n/a \u2014 needs a language plugin</p>');
     var mid = ann ? '' : sec('why', 'Why', '<p>' + d.why + '</p>') +
       sec('conseq', 'Consequences', d.conseq.length ? '<ul>' + d.conseq.map(function (x) { return '<li>' + x + '</li>'; }).join('') + '</ul>' : '<p class="small muted">None found by the LLM.</p>') +
-      sec('calls', 'Call hierarchy', '<p class="small muted">Search result by the LLM (reading files, searching), not a complete list. Entries open GitHub in a new tab.</p><ul class="tree">' + (treeHTML('Callers found', d.callers) + treeHTML('Callees', d.callees) || '<li class="small muted">Nothing found.</li>') + '</ul>');
+      calls;
     box.innerHTML = '<div class="insp">' + back + '<h2>' + title + '</h2><p class="row" style="margin:0 0 2px">' + bd(kb[0], kb[1], d.kind) + rate +
       ' <a class="loclink" href="' + ghl(d.file, d.a, d.z) + '" target="_blank" rel="noopener noreferrer" aria-label="Open ' + esc(d.file) + ' on GitHub at the head commit, new tab">' + esc(d.file) + ':' + d.a + (d.z !== d.a ? '&ndash;' + d.z : '') + ' &#8599;</a></p>' +
       '<p class="llmline">LLM analysis unless marked otherwise.</p>' +
-      (ann ? diff + beh + qs + as + thr : diff + beh + mid + (th ? thr : '') + qs + as) +
+      (ann ? diff + beh + calls + qs + as + thr : diff + beh + mid + (th ? thr : '') + qs + as) +
       sec('ask', 'Ask: pinned answers', '<div id="answers">' + answersHTML(S.blk) + '</div>') + '</div>';
     applySecs(box); initTips(box); $('#insp').scrollTop = 0;
   }
@@ -334,7 +337,7 @@
   /* ---------- workspace: one block at a time ---------- */
   var S = { sel: null, fb: {}, answers: {}, cmt: null, blk: null, cur: null, ticks: ss.get('sr2.ticks', ['f2-1']) };
   function workspace() {
-    var scroller = $('#scroller'), blks = $$('.blk'), ORDER = [$('.blk[data-key="ctx"]')].concat($$('.grp .blk'));
+    var scroller = $('#scroller'), blks = $$('.blk'), ORDER = [$('.blk[data-key="ctx"]')].concat($$('.grp .blk'), [$('.blk[data-key="q-unexp"]')]);
     function byKey(k) { return $('.blk[data-key="' + k + '"]'); }
     ORDER.forEach(function (b, i) {
       var p = ORDER[i - 1], n = ORDER[i + 1], d = document.createElement('div'); d.className = 'bnav';
@@ -539,7 +542,7 @@
     $('#ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#ask-form').requestSubmit(); } });
     $('#ask-form').addEventListener('submit', function (e) {
       e.preventDefault(); var i = $('#ask-input'), q = i.value.trim(); if (!q) return;
-      var id = S.blk; (S.answers[id] = S.answers[id] || []).unshift({ q: q, a: 'I read the files around this step and searched for callers (nothing executed). The call hierarchy lists what I found; I did not check other repositories.' });
+      var id = S.blk; (S.answers[id] = S.answers[id] || []).unshift({ q: q, a: 'I read the files around this step and searched for callers (nothing executed). I did not check other repositories.' });
       i.value = ''; grow(i); var an = $('#answers'); if (an) an.innerHTML = answersHTML(id);
       var sd = $('.sec[data-sec="ask"]'); if (sd) sd.open = true;
       toast('Answer pinned in the inspector (mock).');
