@@ -15,6 +15,7 @@ pub(crate) const RECORDED_ENDPOINTS: &[&str] = &[
     "rest/pull.json",
     "rest/pull-commits.json",
     "rest/pull-files.json",
+    "rest/check-runs.json",
 ];
 /// `GET /user` of the fixture user.
 pub(crate) const USER: &str = "rest/user.json";

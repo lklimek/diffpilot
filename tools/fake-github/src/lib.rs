@@ -84,6 +84,12 @@ struct Recorded {
 /// Recorded REST responses by method and path.
 type RecordedEndpoints = HashMap<(Method, String), Recorded>;
 
+/// State of the recorded REST endpoints: the responses and the OAuth state that checks present tokens.
+struct RecordedState {
+    endpoints: RecordedEndpoints,
+    oauth: Arc<oauth::Oauth>,
+}
+
 /// Loads every recording and builds the router; fails when the fixture directory or a recording is missing.
 pub fn router(config: &Config) -> Result<Router, StartError> {
     if !config.fixture_dir.is_dir() {
@@ -91,7 +97,7 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
             path: config.fixture_dir.clone(),
         });
     }
-    let oauth = oauth::Oauth::load(config)?;
+    let oauth = Arc::new(oauth::Oauth::load(config)?);
     let mut recorded = RecordedEndpoints::new();
     for file in RECORDED_ENDPOINTS {
         let recording: RawRecording = load(&config.fixture_dir, file)?;
@@ -117,8 +123,11 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
     );
     Ok(Router::new()
         .fallback(serve_recorded)
-        .with_state(Arc::new(recorded))
-        .merge(oauth::routes(Arc::new(oauth))))
+        .with_state(Arc::new(RecordedState {
+            endpoints: recorded,
+            oauth: Arc::clone(&oauth),
+        }))
+        .merge(oauth::routes(oauth)))
 }
 
 /// A JSON response with a pre-serialised body.
@@ -153,9 +162,10 @@ fn require_user_agent(headers: &HeaderMap) -> Option<Response> {
     ))
 }
 
-/// Serves a recorded REST response by method and path (the query is ignored); 404 otherwise.
+/// Serves a recorded REST response by method and path (the query is ignored); 404 otherwise. Anonymous
+/// reads are allowed (public repository); a present but invalid token gets 401, as on GitHub.
 async fn serve_recorded(
-    State(recorded): State<Arc<RecordedEndpoints>>,
+    State(state): State<Arc<RecordedState>>,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -163,7 +173,17 @@ async fn serve_recorded(
     if let Some(rejection) = require_user_agent(&headers) {
         return rejection;
     }
-    match recorded.get(&(method.clone(), uri.path().to_owned())) {
+    if state.oauth.credentials(&headers) == oauth::Credentials::Invalid {
+        tracing::debug!(
+            path = uri.path(),
+            "fake-github REST request with an unknown or rotated token"
+        );
+        return github_error(StatusCode::UNAUTHORIZED, "Bad credentials");
+    }
+    match state
+        .endpoints
+        .get(&(method.clone(), uri.path().to_owned()))
+    {
         Some(response) => json_body(response.status, response.body.clone()),
         None => {
             tracing::warn!(

@@ -56,6 +56,17 @@ struct Issued {
     access: HashSet<String>,
 }
 
+/// What a request's `Authorization` header amounts to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Credentials {
+    /// No `Authorization` header.
+    Anonymous,
+    /// A currently valid access token.
+    Valid,
+    /// Malformed, unknown or rotated-out token.
+    Invalid,
+}
+
 pub(crate) struct Oauth {
     client_id: String,
     client_secret: String,
@@ -116,6 +127,23 @@ impl Oauth {
             user: Bytes::from(user),
             issued: Mutex::default(),
         })
+    }
+
+    /// The request's `Authorization` against the currently valid access tokens.
+    pub(crate) fn credentials(&self, headers: &HeaderMap) -> Credentials {
+        let Some(value) = headers.get(AUTHORIZATION) else {
+            return Credentials::Anonymous;
+        };
+        let token = value.to_str().ok().and_then(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("token "))
+        });
+        if token.is_some_and(|token| self.issued().access.contains(token)) {
+            Credentials::Valid
+        } else {
+            Credentials::Invalid
+        }
     }
 
     fn issued(&self) -> MutexGuard<'_, Issued> {
@@ -204,10 +232,18 @@ async fn authorize(
         drop(pairs);
         return found(&location);
     }
-    if query.code_challenge.is_some() && query.code_challenge_method.as_deref() != Some("S256") {
+    let pkce_valid = matches!(
+        (
+            &query.code_challenge,
+            query.code_challenge_method.as_deref()
+        ),
+        (None, None) | (Some(_), Some("S256"))
+    );
+    if !pkce_valid {
+        tracing::debug!("fake-github authorize with incomplete or non-S256 PKCE parameters");
         return (
             StatusCode::BAD_REQUEST,
-            "only code_challenge_method=S256 is supported",
+            "send code_challenge with code_challenge_method=S256, or neither",
         )
             .into_response();
     }
@@ -337,15 +373,7 @@ async fn user(State(oauth): State<Arc<Oauth>>, headers: HeaderMap) -> Response {
     if let Some(rejection) = require_user_agent(&headers) {
         return rejection;
     }
-    let token = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| {
-            value
-                .strip_prefix("Bearer ")
-                .or_else(|| value.strip_prefix("token "))
-        });
-    if !token.is_some_and(|token| oauth.issued().access.contains(token)) {
+    if oauth.credentials(&headers) != Credentials::Valid {
         tracing::debug!("fake-github GET /user with a missing, unknown or rotated token");
         return github_error(StatusCode::UNAUTHORIZED, "Bad credentials");
     }

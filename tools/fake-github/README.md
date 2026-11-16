@@ -35,10 +35,10 @@ SR_GITHUB_CLONE_URL=file://<clone base>          # see below
 
 | Endpoint | Behaviour |
 |---|---|
-| `GET /login/oauth/authorize` | Signs the fake user in at once: `302` to the callback with `code` and `state`. Unknown `client_id` → 404; `redirect_uri` other than the callback → `302` to the callback with `error=redirect_uri_mismatch`; PKCE only `S256`. |
+| `GET /login/oauth/authorize` | Signs the fake user in at once: `302` to the callback with `code` and `state`. Unknown `client_id` → 404; `redirect_uri` other than the callback → `302` to the callback with `error=redirect_uri_mismatch`; PKCE: `code_challenge` with `code_challenge_method=S256`, or neither (400 otherwise). |
 | `POST /login/oauth/access_token` | Form body, `Accept: application/json` required (406 otherwise). Code exchange checks client credentials, `redirect_uri` and the PKCE verifier; codes are single-use (a wrong verifier leaves the code usable). `grant_type=refresh_token` rotates the pair and invalidates the old access token. Errors are HTTP 200 with `error` (`incorrect_client_credentials`, `bad_verification_code`, `bad_refresh_token`, `redirect_uri_mismatch`), as on GitHub (spike S4). |
 | `GET /user` | The recorded user (login/id overridable) for a valid `Bearer`/`token` access token; 401 `Bad credentials` otherwise. |
-| Recorded REST (`RECORDED_ENDPOINTS` in `src/fixtures.rs`) | The recording's `response` byte for byte with its `status`, matched by method and path (the query is ignored). PR, commits and files of `acme/node-client#482`. |
+| Recorded REST (`RECORDED_ENDPOINTS` in `src/fixtures.rs`) | The recording's `response` byte for byte with its `status`, matched by method and path (the query is ignored). PR, commits, files and head check runs of `acme/node-client#482`. A present `Authorization` must be a valid access token (401 `Bad credentials` otherwise); anonymous reads are served. |
 | Anything else | 404 `Not Found` and a `WARN fake-github has no recording …` log line. |
 
 REST requests without `User-Agent` get 403, as on GitHub.

@@ -329,6 +329,41 @@ async fn unregistered_redirect_uri_redirects_to_callback_with_error() {
 }
 
 #[tokio::test]
+async fn incomplete_pkce_parameters_are_rejected() {
+    let base = spawn(config()).await;
+    for params in [
+        [("code_challenge_method", "S256")],
+        [("code_challenge", "abc")],
+    ] {
+        let response = client()
+            .get(format!("{base}/login/oauth/authorize"))
+            .query(&[("client_id", CLIENT_ID), ("redirect_uri", CALLBACK)])
+            .query(&params)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{params:?}");
+    }
+}
+
+#[tokio::test]
+async fn authorize_without_pkce_still_grants() {
+    let base = spawn(config()).await;
+    let response = client()
+        .get(format!("{base}/login/oauth/authorize"))
+        .query(&[("client_id", CLIENT_ID), ("redirect_uri", CALLBACK)])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = Url::parse(response.headers()[LOCATION].to_str().unwrap()).unwrap();
+    let code = query_value(&location, "code").unwrap();
+    let (status, body) = token_request(&base, &[("code", &code)]).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("access_token").is_some(), "{body}");
+}
+
+#[tokio::test]
 async fn unknown_client_id_is_not_found() {
     let base = spawn(config()).await;
     let response = client()
@@ -371,34 +406,64 @@ async fn configured_user_overrides_login_and_id() {
     );
 }
 
+const RECORDED_REST: [&str; 4] = [
+    "rest/pull.json",
+    "rest/pull-commits.json",
+    "rest/pull-files.json",
+    "rest/check-runs.json",
+];
+
+/// `GET` of a recorded REST endpoint (path and query as recorded), anonymous or with a bearer token.
+async fn get_recorded(base: &str, file: &str, token: Option<&str>) -> reqwest::Response {
+    let recorded = recording(file);
+    let url = Url::parse(recorded["request"]["url"].as_str().unwrap()).unwrap();
+    let path_and_query = &url[url::Position::BeforePath..];
+    let mut request = client()
+        .get(format!("{base}{path_and_query}"))
+        .header(ACCEPT, "application/vnd.github+json")
+        .header(USER_AGENT, "smart-review");
+    if let Some(token) = token {
+        request = request.header(AUTHORIZATION, format!("Bearer {token}"));
+    }
+    request.send().await.unwrap()
+}
+
+async fn assert_recorded(response: reqwest::Response, file: &str) {
+    assert_eq!(
+        response.status().as_u16(),
+        recording(file)["status"].as_u64().unwrap() as u16,
+        "{file}"
+    );
+    assert_eq!(
+        response.text().await.unwrap(),
+        recorded_response_text(file),
+        "{file}"
+    );
+}
+
 #[tokio::test]
 async fn pull_request_endpoints_serve_recordings_byte_equal() {
     let base = spawn(config()).await;
-    for file in [
-        "rest/pull.json",
-        "rest/pull-commits.json",
-        "rest/pull-files.json",
-    ] {
-        let recorded = recording(file);
-        let url = Url::parse(recorded["request"]["url"].as_str().unwrap()).unwrap();
-        let path_and_query = &url[url::Position::BeforePath..];
-        let response = client()
-            .get(format!("{base}{path_and_query}"))
-            .header(ACCEPT, "application/vnd.github+json")
-            .header(USER_AGENT, "smart-review")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status().as_u16(),
-            recorded["status"].as_u64().unwrap() as u16,
-            "{file}"
-        );
-        assert_eq!(
-            response.text().await.unwrap(),
-            recorded_response_text(file),
-            "{file}"
-        );
+    for file in RECORDED_REST {
+        assert_recorded(get_recorded(&base, file, None).await, file).await;
+    }
+}
+
+#[tokio::test]
+async fn recorded_endpoints_validate_a_present_token() {
+    let base = spawn(config()).await;
+    let revoked = sign_in(&base).await;
+    let (_, current) = refresh(&base, &token(&revoked, "refresh_token")).await;
+    for file in RECORDED_REST {
+        assert_recorded(get_recorded(&base, file, None).await, file).await;
+        let current = get_recorded(&base, file, Some(&token(&current, "access_token"))).await;
+        assert_recorded(current, file).await;
+        for bad in [token(&revoked, "access_token"), "unknown-token".to_owned()] {
+            let response = get_recorded(&base, file, Some(&bad)).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{file} {bad}");
+            let body: Value = response.json().await.unwrap();
+            assert_eq!(body["message"], "Bad credentials", "{file}");
+        }
     }
 }
 
