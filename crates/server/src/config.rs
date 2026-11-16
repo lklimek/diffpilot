@@ -26,9 +26,9 @@ pub const RUNNER_SECRET: &str = "SR_RUNNER_SECRET";
 /// GitHub App id.
 pub const GITHUB_APP_ID: &str = "SR_GITHUB_APP_ID";
 /// GitHub App OAuth client id.
-pub const GITHUB_APP_CLIENT_ID: &str = "SR_GITHUB_APP_CLIENT_ID";
+pub const GITHUB_CLIENT_ID: &str = "SR_GITHUB_CLIENT_ID";
 /// GitHub App OAuth client secret.
-pub const GITHUB_APP_CLIENT_SECRET: &str = "SR_GITHUB_APP_CLIENT_SECRET";
+pub const GITHUB_CLIENT_SECRET: &str = "SR_GITHUB_CLIENT_SECRET";
 /// Path of the GitHub App private key (.pem, read-only mount).
 pub const GITHUB_APP_PRIVATE_KEY_FILE: &str = "SR_GITHUB_APP_PRIVATE_KEY_FILE";
 /// GitHub REST API base URL (GraphQL is `<base>/graphql`).
@@ -229,8 +229,8 @@ impl Config {
                         source,
                     }
                 })?,
-                client_id: require(GITHUB_APP_CLIENT_ID)?,
-                client_secret: SecretString::from(require(GITHUB_APP_CLIENT_SECRET)?),
+                client_id: require(GITHUB_CLIENT_ID)?,
+                client_secret: SecretString::from(require(GITHUB_CLIENT_SECRET)?),
                 private_key_file: PathBuf::from(require(GITHUB_APP_PRIVATE_KEY_FILE)?),
                 api_url: parse_http_url(
                     GITHUB_API_URL,
@@ -322,8 +322,8 @@ pub(crate) mod tests {
         SECRET_KEY,
         RUNNER_SECRET,
         GITHUB_APP_ID,
-        GITHUB_APP_CLIENT_ID,
-        GITHUB_APP_CLIENT_SECRET,
+        GITHUB_CLIENT_ID,
+        GITHUB_CLIENT_SECRET,
         GITHUB_APP_PRIVATE_KEY_FILE,
         MEMCAN_URL,
         MEMCAN_TOKEN,
@@ -335,8 +335,8 @@ pub(crate) mod tests {
             (SECRET_KEY, KEY_B64.to_owned()),
             (RUNNER_SECRET, RUNNER_SECRET_VALUE.to_owned()),
             (GITHUB_APP_ID, "123456".to_owned()),
-            (GITHUB_APP_CLIENT_ID, "Iv1.client".to_owned()),
-            (GITHUB_APP_CLIENT_SECRET, CLIENT_SECRET.to_owned()),
+            (GITHUB_CLIENT_ID, "Iv1.client".to_owned()),
+            (GITHUB_CLIENT_SECRET, CLIENT_SECRET.to_owned()),
             (
                 GITHUB_APP_PRIVATE_KEY_FILE,
                 "/run/secrets/app.pem".to_owned(),
@@ -383,6 +383,23 @@ pub(crate) mod tests {
             "http://memcan.example.test:8190/mcp"
         );
         assert_eq!(config.memcan.token.expose_secret(), MEMCAN_TOKEN_VALUE);
+    }
+
+    #[test]
+    fn required_variable_names_match_adr_001() {
+        let env: HashMap<&str, &str> = HashMap::from([
+            ("SR_PUBLIC_URL", "https://review.example.test"),
+            ("SR_SECRET_KEY", KEY_B64),
+            ("SR_RUNNER_SECRET", "runner"),
+            ("SR_GITHUB_APP_ID", "1"),
+            ("SR_GITHUB_CLIENT_ID", "Iv1.client"),
+            ("SR_GITHUB_CLIENT_SECRET", "secret"),
+            ("SR_GITHUB_APP_PRIVATE_KEY_FILE", "/run/secrets/app.pem"),
+            ("SR_MEMCAN_URL", "http://memcan.example.test"),
+            ("SR_MEMCAN_TOKEN", "token"),
+        ]);
+        let result = Config::from_lookup(|key| Ok(env.get(key).map(|value| (*value).to_owned())));
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]

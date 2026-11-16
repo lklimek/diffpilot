@@ -41,8 +41,8 @@ Values are trimmed; an empty value counts as unset. Error messages name the vari
 | `SR_SECRET_KEY` | yes | — | AES-GCM key, see Secrets. |
 | `SR_RUNNER_SECRET` | yes | — | Secret runners present on `POST /runner/v1/claim`. |
 | `SR_GITHUB_APP_ID` | yes | — | GitHub App id (number). |
-| `SR_GITHUB_APP_CLIENT_ID` | yes | — | OAuth client id of the App. |
-| `SR_GITHUB_APP_CLIENT_SECRET` | yes | — | OAuth client secret of the App. |
+| `SR_GITHUB_CLIENT_ID` | yes | — | OAuth client id of the App. |
+| `SR_GITHUB_CLIENT_SECRET` | yes | — | OAuth client secret of the App. |
 | `SR_GITHUB_APP_PRIVATE_KEY_FILE` | yes | — | Path of the App private key (.pem, read-only mount, 0400). |
 | `SR_GITHUB_API_URL` | no | `https://api.github.com` | REST base; GraphQL at `<base>/graphql`. http/https. Dev: fake GitHub. |
 | `SR_GITHUB_OAUTH_URL` | no | `https://github.com` | OAuth base. http/https. Dev: fake GitHub. |
@@ -52,8 +52,18 @@ Values are trimmed; an empty value counts as unset. Error messages name the vari
 
 `SR_LISTEN_ADDR`, `SR_DATA_DIR`, `SR_RUNNER_SECRET` and `SR_TRUSTED_PROXIES` are not spelled out in §5.2 but
 are implied by it (port 3000, trusted-proxy setting) or by the runner protocol and storage (plan §5.3); they
-are recorded here per rule A12. Cookies are Secure behind the proxy (WP2-AUTH). Runner configuration belongs
-to the runner (WP2-RUN) and is not part of this table.
+are recorded here per rule A12 (approved by the coordinator, 2026-11-16). Cookies are Secure behind the proxy
+(WP2-AUTH). Runner configuration belongs to the runner (WP2-RUN) and is not part of this table.
+
+### Deviation from plan §4.3: `AppState` and API error mapping completed in WP1-A
+- Plan §4.3 has WP1-S pre-declare every `AppState` field. WP1-S declares only `config`; the database handle,
+  `Arc<dyn JobExecutor>` and the final `AppState` constructor are added by **WP1-A**, together with the shared
+  `crates/server/src/api/error.rs` (server error → `ApiError` response mapping).
+- Reason: those types (`db` repository handle, `JobExecutor`, `ApiError`) are contracts and seams that WP1-A
+  defines; they do not exist before it. No placeholder types or traits are added only to make the skeleton
+  compile (A12). Coordinator decision, 2026-11-16.
+- After WP1-A the fields and `api/error.rs` are frozen like the rest of §4.3; stage-2 WPs fill only their own
+  constructor parts.
 
 ### Model selection
 - `select_model(job kind, context) -> ModelChoice { model, reasoning_effort }` is a plain Rust function in
