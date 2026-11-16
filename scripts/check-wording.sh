@@ -8,8 +8,9 @@
 #   scripts/check-wording.sh --self-test      prove the check fails on injected violations
 #
 # Checks string literal values, template literal static parts and JSX text (scripts/check-wording.mjs,
-# TypeScript 6 parser) in .ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts/.json files; test files (*.test.*,
-# *.spec.*, __tests__/) and prompts/ (which must name the banned words) are not checked.
+# TypeScript 6 parser) in .ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts/.json files; property names, type
+# positions, module paths, test files (*.test.*, *.spec.*, __tests__/) and prompts/ (which must name the
+# banned words) are not checked. Files that do not parse fail the check (exit 2).
 # `// wording-check: allow <reason>` (or a block comment) exempts percentages on its line, never words.
 # Needs node and TypeScript 6: CHECK_WORDING_TYPESCRIPT=<package dir>, else web/node_modules/@typescript/typescript6
 # or web/node_modules/typescript. Fails when they cannot be loaded.
@@ -90,7 +91,7 @@ self_test() {
   expect_fail "no risks"           a.ts  'const s = "no risks found";'                "a.ts:1: \"no risk\""
   expect_fail "nothing to review"  a.ts  'const s = `Nothing to review`;'             "a.ts:1: \"Nothing to review\""
   expect_fail "no review needed"   a.tsx '<p>No review needed</p>'                    "a.tsx:1: \"No review needed\""
-  expect_fail "noise"              a.ts  "label: 'noise',"                            "a.ts:1: \"noise\""
+  expect_fail "noise"              a.ts  "const o = { label: 'noise' };"              "a.ts:1: \"noise\""
   expect_fail "verified"           a.tsx '<span title="Verified">x</span>'           "a.tsx:1: \"Verified\""
   expect_fail "was wrong"          a.tsx '<button>Was wrong</button>'                 "a.tsx:1: \"Was wrong\""
   expect_fail "confidence"         a.ts  "const s = 'High confidence';"               "a.ts:1: \"confidence\""
@@ -113,12 +114,25 @@ self_test() {
   expect_fail "unicode escape"     a.ts  'const text = "No\u0020risk";'               "a.ts:1: \"No risk\""
   expect_fail "JSX entity"         a.tsx '<p>No&nbsp;risk</p>'                        "a.tsx:1: \"No risk\""
 
+  expect_fail "adjacent elements"  a.tsx '<section><h2>Status</h2><p>No risk</p></section>' "a.tsx:1: \"No risk\""
+  expect_fail "adjacent badge"     a.tsx '<div><span>Status</span><b>Verified</b></div>' "a.tsx:1: \"Verified\""
+  expect_fail "adjacent link"      a.tsx '<p><span>Nothing to review</span><a>Details</a></p>' "a.tsx:1: \"Nothing to review\""
+  expect_fail "boundary after element" a.tsx '<div><h2>No</h2>risk</div>'               "a.tsx:1: \"No risk\""
+  expect_fail "phrase split by element" a.tsx '<p><b>No</b> risk</p>'                "a.tsx:1: \"No risk\""
+  expect_fail "JSX text after literal" a.tsx '<p>{"Status"}No risk</p>'              "a.tsx:1: \"No risk\""
+  expect_fail "named entity"       a.tsx '<p>No&ensp;risk</p>'                        "a.tsx:1: \"No risk\""
+  expect_fail "named entity in attribute" a.tsx '<p title="No&ensp;risk">x</p>'      "a.tsx:1: \"No risk\""
+  expect_fail "property value"     a.ts  'const o = { label: "verified" };'          "a.ts:1: \"verified\""
+
   # Allow marker: only in a comment, only with a reason, only for the percentage rule.
-  expect_pass "allow marker"        a.tsx "<div style={{ width: '50%' }} /> {/* wording-check: allow CSS width */}"
+  expect_pass "allow marker"        a.tsx "<p><div style={{ width: '50%' }} /> {/* wording-check: allow CSS width */}</p>"
   expect_pass "allow line comment"  a.ts  "const w = '50%'; // wording-check: allow CSS width"
-  expect_fail "allow marker keeps words" a.tsx '<div style={{ width: "50%" }}>No risk</div> {/* wording-check: allow CSS width */}' "a.tsx:1: \"No risk\""
+  expect_fail "allow marker keeps words" a.tsx '<p><div style={{ width: "50%" }}>No risk</div> {/* wording-check: allow CSS width */}</p>' "a.tsx:1: \"No risk\""
   expect_fail "allow marker in string" a.ts "const s = '50% // wording-check: allow CSS width';" "a.ts:1: \"50%\""
-  expect_fail "allow marker without reason" a.tsx "<div style={{ width: '50%' }} /> {/* wording-check: allow */}" "a.tsx:1: \"50%\""
+  expect_fail "allow marker in regex" a.ts 'const r = /[// wording-check: allow regex]/; const text = "95% certain";' "a.ts:1: \"95%\""
+  expect_fail "allow marker in JSX text" a.tsx '<p>50% // wording-check: allow text</p>' "a.tsx:1: \"50%\""
+  expect_fail "allow marker as JSX text" a.tsx '<p>// wording-check: allow text, 50%</p>' "a.tsx:1: \"50%\""
+  expect_fail "allow marker without reason" a.tsx "<p><div style={{ width: '50%' }} /> {/* wording-check: allow */}</p>" "a.tsx:1: \"50%\""
 
   # Not violations: comments, code (identifiers, operators, module paths), tests, other files.
   expect_pass "clean text"          a.tsx '<p>The LLM raised no questions. That is not evidence of no defects.</p>'
@@ -131,10 +145,30 @@ self_test() {
   expect_pass "modulo"              a.ts  "const odd = i % 2;"
   expect_pass "modulo of literals"  a.ts  "const odd = 42%2;"
   expect_pass "module path"         a.ts  "import { Badge } from './verified-badge';"
+  expect_pass "property name"       a.ts  'const o = { "verified": true, noise: 1 };'
+  expect_pass "interface member"    a.ts  'interface A { "confidence": string }'
+  expect_pass "element access key"  a.ts  'const v = o["verified"];'
+  expect_pass "literal type"        a.ts  'type Status = "verified" | `noise`;'
+  expect_pass "i18n key"            i18n/en.json '{"verified": "Checked text"}'
   expect_pass "test file"           a.test.tsx "expect(text).not.toContain('no risk');"
   expect_pass "spec file"           a.spec.ts  "expect(text).not.toContain('noise');"
   expect_pass "tests directory"     __tests__/a.ts "const banned = ['verified'];"
   expect_pass "other file types"    a.css '.bar { width: 50%; }'
+
+  # A file that does not parse cannot be checked: exit 2 with the diagnostics.
+  expect_error() {
+    local code=0
+    case_dir "$2" "$3"
+    "$0" --src "$tmp/$n" > /dev/null 2>&1 || code=$?
+    if ((code == 2)); then
+      echo "ok   $1"
+    else
+      echo "FAIL $1: expected exit 2, got $code"
+      failures=$((failures + 1))
+    fi
+  }
+  expect_error "unterminated comment" a.ts $'/* unterminated\nconst s = "No risk";'
+  expect_error "broken JSON"          a.json '{"label": '
 
   # The parser must load; a TypeScript without the classic compiler API (7+) is an error.
   mkdir -p "$tmp/ts7" "$tmp/clean"

@@ -32,36 +32,47 @@ const WORDS = /\bno\s+risk|\bnothing\s+to\s+review\b|\bno\s+review\s+needed\b|\b
 // `{}` stands for an interpolated value, so `${share}%` and `{share}%` count as percentages.
 const PERCENT = /(?:\d+|\{\})\s?%/gu;
 const SLOT = "{}";
-// Exempts the percentage rule (never the words) on its line; must be a comment with a reason.
-const ALLOW = /(?:\/\/|\/\*)[ \t]*wording-check: allow[ \t]+[^\s*]/g;
+// Exempts the percentage rule (never the words) on its line; must be in a comment, with a reason.
+const ALLOW = /wording-check: allow[ \t]+[^\s*]/;
 const KINDS = {
   ".ts": ts.ScriptKind.TS, ".mts": ts.ScriptKind.TS, ".cts": ts.ScriptKind.TS, ".tsx": ts.ScriptKind.TSX,
   ".js": ts.ScriptKind.JS, ".mjs": ts.ScriptKind.JS, ".cjs": ts.ScriptKind.JS, ".jsx": ts.ScriptKind.JSX,
   ".json": ts.ScriptKind.JSON,
 };
-const ENTITIES = { nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+// JSX nodes after which JSX text (not trivia) may follow.
+const JSX_TEXT_NEIGHBOURS = new Set([SK.JsxText, SK.JsxElement, SK.JsxFragment, SK.JsxSelfClosingElement,
+  SK.JsxOpeningElement, SK.JsxClosingElement, SK.JsxOpeningFragment, SK.JsxClosingFragment, SK.JsxExpression]);
 
+// Numeric entities and the syntax-relevant named ones are decoded; any other named entity (&nbsp;, &ensp;,
+// &mdash;, ...) counts as a space: no JSX entity is an ASCII letter, digit or `%`, so matching stays exact.
 function decodeEntities(text) {
-  return text.replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (entity, dec, hex, name) =>
-    dec ? String.fromCodePoint(Number(dec)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : ENTITIES[name] ?? entity);
+  return text.replace(/&(?:#(\d+)|#x([0-9a-f]+)|(\w+));/gi, (entity, dec, hex, name) =>
+    dec ? String.fromCodePoint(Number(dec)) : hex ? String.fromCodePoint(parseInt(hex, 16)) : ENTITIES[name] ?? " ");
 }
 
-function isModuleSpecifier(node) {
+// Strings that are code, not UI text: module paths, property names, element access keys.
+function isCodeString(node) {
   const parent = node.parent;
   return ((ts.isImportDeclaration(parent) || ts.isExportDeclaration(parent)) && parent.moduleSpecifier === node)
     || ts.isExternalModuleReference(parent)
-    || (ts.isCallExpression(parent) && parent.expression.kind === SK.ImportKeyword);
+    || (ts.isCallExpression(parent) && parent.expression.kind === SK.ImportKeyword)
+    || parent.name === node
+    || (ts.isElementAccessExpression(parent) && parent.argumentExpression === node);
 }
 
 const isJsxContainer = (node) => node.kind === SK.JsxElement || node.kind === SK.JsxFragment;
 
-// Rendered text of a JSX element: nested elements inline, `{"literal"}` inline, other expressions as SLOT.
+// Rendered text of a JSX element: nested elements inline between spaces (element boundaries keep word
+// boundaries), `{"literal"}` inline, other expressions as SLOT.
 function jsxPieces(element, sf, pieces) {
   for (const child of element.children) {
     if (child.kind === SK.JsxText) {
       pieces.push({ text: decodeEntities(child.text), pos: child.pos, exact: true });
-    } else if (isJsxContainer(child)) {
-      jsxPieces(child, sf, pieces);
+    } else if (isJsxContainer(child) || child.kind === SK.JsxSelfClosingElement) {
+      pieces.push({ text: " ", pos: child.getStart(sf) });
+      if (isJsxContainer(child)) jsxPieces(child, sf, pieces);
+      pieces.push({ text: " ", pos: child.end });
     } else if (child.kind === SK.JsxExpression && !child.expression) {
       // comment only: renders nothing
     } else if (child.kind === SK.JsxExpression && ts.isStringLiteralLike(child.expression)) {
@@ -73,26 +84,33 @@ function jsxPieces(element, sf, pieces) {
   return pieces;
 }
 
-// Returns the UI texts of a file (each a list of pieces) and the source ranges of text nodes.
+// Returns the UI texts of a file (each a list of pieces; every JSX text and element also on its own) and
+// the comments, taken from the trivia around AST nodes outside JSX text.
 function extract(sf) {
   const texts = [];
-  const ranges = [];
+  const comments = [];
+  // Leading ranges start after a line break; same-line comments are trailing ranges.
+  const commentsAt = (pos) => comments.push(...(ts.getLeadingCommentRanges(sf.text, pos) ?? []),
+    ...(ts.getTrailingCommentRanges(sf.text, pos) ?? []));
   const visit = (node) => {
+    if (ts.isTypeNode(node)) return;
+    if (node.kind !== SK.JsxText) {
+      commentsAt(node.pos);
+      if (node.kind === SK.JsxExpression) commentsAt(node.pos + 1);
+      if (!JSX_TEXT_NEIGHBOURS.has(node.kind)) commentsAt(node.end);
+    }
     switch (node.kind) {
       case SK.StringLiteral:
-        if (isModuleSpecifier(node)) return;
-        ranges.push([node.getStart(sf), node.end]);
+        if (isCodeString(node)) return;
         texts.push([{
           text: node.parent.kind === SK.JsxAttribute ? decodeEntities(node.text) : node.text,
           pos: node.getStart(sf),
         }]);
         return;
       case SK.NoSubstitutionTemplateLiteral:
-        ranges.push([node.getStart(sf), node.end]);
         texts.push([{ text: node.text, pos: node.getStart(sf) }]);
         return;
       case SK.TemplateExpression: {
-        ranges.push([node.getStart(sf), node.end]);
         const pieces = [{ text: node.head.text, pos: node.head.getStart(sf) }];
         for (const span of node.templateSpans) {
           pieces.push({ text: SLOT, pos: span.expression.getStart(sf) });
@@ -103,17 +121,17 @@ function extract(sf) {
         return;
       }
       case SK.JsxText:
-        ranges.push([node.pos, node.end]);
+        texts.push([{ text: decodeEntities(node.text), pos: node.pos, exact: true }]);
         return;
       case SK.JsxElement:
       case SK.JsxFragment:
-        if (!isJsxContainer(node.parent)) texts.push(jsxPieces(node, sf, []));
+        texts.push(jsxPieces(node, sf, []));
         break;
     }
     ts.forEachChild(node, visit);
   };
   visit(sf);
-  return { texts, ranges };
+  return { texts, comments };
 }
 
 function scan(file) {
@@ -121,10 +139,16 @@ function scan(file) {
   const ext = file.slice(file.lastIndexOf("."));
   const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, KINDS[ext] ?? ts.ScriptKind.TS);
   const lineOf = (pos) => sf.getLineAndCharacterOfPosition(pos).line + 1;
-  const { texts, ranges } = extract(sf);
+  if (!Array.isArray(sf.parseDiagnostics)) fail(`TypeScript ${ts.version} exposes no parse diagnostics`);
+  if (sf.parseDiagnostics.length > 0) {
+    fail(`cannot check ${relative(srcDir, file)}, it does not parse:\n` + sf.parseDiagnostics
+      .map((d) => `  line ${lineOf(d.start)}: ${ts.flattenDiagnosticMessageText(d.messageText, " ")}`).join("\n"));
+  }
+  const { texts, comments } = extract(sf);
   const allowed = new Set();
-  for (const marker of source.matchAll(ALLOW)) {
-    if (!ranges.some(([start, end]) => marker.index >= start && marker.index < end)) allowed.add(lineOf(marker.index));
+  for (const comment of comments) {
+    const marker = ALLOW.exec(source.slice(comment.pos, comment.end));
+    if (marker) allowed.add(lineOf(comment.pos + marker.index));
   }
   const found = new Set();
   for (const pieces of texts) {
@@ -137,7 +161,7 @@ function scan(file) {
       const before = piece.exact ? piece.text.slice(0, match.index - starts[i]) : "";
       const line = lineOf(piece.pos) + (before.match(/\n/g)?.length ?? 0);
       if (isPercent && allowed.has(line)) return;
-      found.add(`${relative(srcDir, file)}:${line}: "${match[0].replace(/\s+/g, " ")}"`);
+      found.add(`${relative(srcDir, file)}:${line}: "${match[0].trim().replace(/\s+/g, " ")}"`);
     };
     for (const match of joined.matchAll(WORDS)) report(match, false);
     for (const match of joined.matchAll(PERCENT)) report(match, true);
