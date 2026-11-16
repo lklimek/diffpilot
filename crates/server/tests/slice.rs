@@ -698,3 +698,45 @@ async fn tour_before_finish_is_409_and_unknown_analysis_404() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], json!("not_found"));
 }
+
+#[tokio::test]
+async fn other_tenants_analysis_is_not_found() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    db::repo::analyses::testing::seed_tenant(&h.state.db, "other")
+        .await
+        .expect("tenant");
+    let now = Utc::now();
+    h.state
+        .db
+        .sessions()
+        .create(
+            &NewSession {
+                token_hash: &sha256(b"other-tenant-session"),
+                tenant_id: "other",
+                user_id: &h.user_id,
+                csrf_token: CSRF,
+                expires_at: now + TimeDelta::days(1),
+            },
+            now,
+        )
+        .await
+        .expect("session");
+    for uri in [
+        format!("/api/v1/analyses/{id}"),
+        format!("/api/v1/analyses/{id}/tour"),
+        format!("/api/v1/analyses/{id}/lines?path=README.md&side=head&from=1&to=2"),
+    ] {
+        let request = Request::get(&uri)
+            .header("cookie", "sr_session=other-tenant-session")
+            .body(Body::empty())
+            .expect("request");
+        let response = api::router(h.state.clone())
+            .oneshot(request)
+            .await
+            .expect("infallible");
+        let (status, body) = json_of(response).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
+        assert_eq!(body["code"], json!("not_found"));
+    }
+}
