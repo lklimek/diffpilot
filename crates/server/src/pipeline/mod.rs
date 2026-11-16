@@ -8,7 +8,7 @@
 //! again, which `JobExecutor::submit` answers with the existing live or succeeded job of the stage.
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use analysis::diff::{self, DiffError, FileDiff};
@@ -193,6 +193,8 @@ struct Driver<'a> {
     files: Vec<FileDiff>,
     plan: Option<PlanOutput>,
     paused: bool,
+    /// Submitted jobs without a final result yet; cancelled when the driver fails.
+    live: HashMap<JobStage, JobHandle>,
 }
 
 async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), PipelineError> {
@@ -222,12 +224,41 @@ async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), PipelineErr
         files,
         plan,
         paused: false,
+        live: HashMap::new(),
     };
     driver.run().await
 }
 
 impl Driver<'_> {
     async fn run(&mut self) -> Result<(), PipelineError> {
+        let result = self.run_stages().await;
+        if result.is_err() {
+            self.cancel_live().await;
+        }
+        result
+    }
+
+    /// Cancels every submitted job without a final result: a failed analysis leaves nothing runnable.
+    async fn cancel_live(&mut self) {
+        for (stage, handle) in std::mem::take(&mut self.live) {
+            match self.state.executor.cancel(&handle).await {
+                Ok(()) => tracing::debug!(
+                    analysis = %self.analysis,
+                    stage = %stage.key(),
+                    job = %handle.job_id,
+                    "job of the failed analysis cancelled"
+                ),
+                Err(error) => tracing::warn!(
+                    analysis = %self.analysis,
+                    stage = %stage.key(),
+                    error = ?error,
+                    "could not cancel a job of the failed analysis"
+                ),
+            }
+        }
+    }
+
+    async fn run_stages(&mut self) -> Result<(), PipelineError> {
         let mut updates = Updates::new();
         if self.plan.is_some() {
             self.submit_flows(&mut updates).await?;
@@ -241,6 +272,7 @@ impl Driver<'_> {
         while let Some((stage, item)) = updates.next().await {
             match item {
                 Some(Ok(JobUpdate::Finished(result))) => {
+                    self.live.remove(&stage);
                     self.finish(&mut updates, stage, result).await?;
                 }
                 Some(Ok(JobUpdate::Paused { resumes_at })) => {
@@ -267,7 +299,11 @@ impl Driver<'_> {
     }
 
     /// Submits the stage's job (idempotent per stage and generation) and follows its updates.
-    async fn submit(&self, updates: &mut Updates, stage: JobStage) -> Result<(), PipelineError> {
+    async fn submit(
+        &mut self,
+        updates: &mut Updates,
+        stage: JobStage,
+    ) -> Result<(), PipelineError> {
         let kind = stage.kind();
         let pr = &self.summary.pr;
         let prompt = match &stage {
@@ -330,6 +366,7 @@ impl Driver<'_> {
             })
             .await?;
         tracing::debug!(analysis = %self.analysis, stage = %stage.key(), job = %handle.job_id, "pipeline job submitted");
+        self.live.insert(stage.clone(), handle);
         self.follow(updates, stage, handle);
         Ok(())
     }
@@ -345,7 +382,7 @@ impl Driver<'_> {
         updates.push(events.boxed());
     }
 
-    async fn submit_flows(&self, updates: &mut Updates) -> Result<(), PipelineError> {
+    async fn submit_flows(&mut self, updates: &mut Updates) -> Result<(), PipelineError> {
         self.set_progress().await?;
         let ids: Vec<_> = self
             .plan

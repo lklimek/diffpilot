@@ -52,8 +52,8 @@ async fn lines(
         .await
         .map_err(failure)?
         .ok_or_else(|| failure(AnalysisApiError::FileNotFound))?;
-    let all = split_lines(&text);
-    let total_lines = u32::try_from(all.len()).unwrap_or(u32::MAX);
+    let (total_lines, shown_lines) = line_window(&text, query.from, query.to);
+    drop(text);
     let (from, to) = (query.from, query.to.min(total_lines));
     let shown = |line: &u32| (from..=to).contains(line);
 
@@ -82,10 +82,7 @@ async fn lines(
         from,
         to,
         total_lines,
-        lines: all
-            .get(usize_of(from) - 1..usize_of(to).max(usize_of(from) - 1))
-            .unwrap_or_default()
-            .to_vec(),
+        lines: shown_lines,
         changed,
         deleted,
         // TODO(WP3-PREPASS): moved blocks from the deterministic move detection.
@@ -94,18 +91,27 @@ async fn lines(
     }))
 }
 
-fn usize_of(line: u32) -> usize {
-    usize::try_from(line).unwrap_or(usize::MAX)
+/// The line count of `bytes` and its lines `from..=to` (1-based, `str::lines` rules); only the lines in the
+/// window are decoded.
+fn line_window(bytes: &[u8], from: u32, to: u32) -> (u32, Vec<String>) {
+    let mut shown = Vec::new();
+    if bytes.is_empty() {
+        return (0, shown);
+    }
+    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    let mut total = 0u32;
+    for line in body.split(|&byte| byte == b'\n') {
+        total = total.saturating_add(1);
+        if (from..=to).contains(&total) {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            shown.push(String::from_utf8_lossy(line).into_owned());
+        }
+    }
+    (total, shown)
 }
 
-fn split_lines(bytes: &[u8]) -> Vec<String> {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// Removed code at deletion markers between lines `from - 1` and `to` of the head side.
+/// Removed code at deletion markers between lines `from - 1` and `to` of the head side; at most
+/// `RangeQuery::MAX_LINES` removed lines in total (the rest of a long block is read with `side=base`).
 async fn deleted_blocks(
     mirror: &std::path::Path,
     base: &contracts::ids::CommitSha,
@@ -130,24 +136,44 @@ async fn deleted_blocks(
     let Some(base_path) = file.path_on(LineSide::Base).filter(|_| !markers.is_empty()) else {
         return Ok(Vec::new());
     };
-    let base_lines = split_lines(
-        &read_blob(mirror, base, base_path)
-            .await
-            .map_err(failure)?
-            .unwrap_or_default(),
-    );
-    Ok(markers
-        .into_iter()
-        .map(|(after_line, span)| {
-            let start = usize_of(span.start) - 1;
-            let end = start + usize_of(span.len);
-            DeletedBlock {
-                after_line,
-                base_start: span.start,
-                lines: base_lines.get(start..end).unwrap_or_default().to_vec(),
-            }
-        })
-        .collect())
+    let base_text = read_blob(mirror, base, base_path)
+        .await
+        .map_err(failure)?
+        .unwrap_or_default();
+    let mut budget = RangeQuery::MAX_LINES;
+    let mut blocks = Vec::with_capacity(markers.len());
+    let mut wanted = Vec::with_capacity(markers.len());
+    for (after_line, span) in markers {
+        let take = span.len.min(budget);
+        if take == 0 {
+            break;
+        }
+        budget -= take;
+        wanted.push(span.start..=span.start + take - 1);
+        blocks.push(DeletedBlock {
+            after_line,
+            base_start: span.start,
+            lines: Vec::new(),
+        });
+    }
+    // One pass over the base file; hunks are in file order and do not overlap.
+    let body = base_text.strip_suffix(b"\n").unwrap_or(&base_text);
+    let mut block = 0;
+    for (number, line) in (1u32..).zip(body.split(|&byte| byte == b'\n')) {
+        while wanted.get(block).is_some_and(|range| *range.end() < number) {
+            block += 1;
+        }
+        let Some(range) = wanted.get(block) else {
+            break;
+        };
+        if let Some(target) = blocks.get_mut(block).filter(|_| range.contains(&number)) {
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            target
+                .lines
+                .push(String::from_utf8_lossy(line).into_owned());
+        }
+    }
+    Ok(blocks)
 }
 
 /// The diff hunks of `file` on `side` with GitHub's context lines, merged and clipped to `from..=to`.

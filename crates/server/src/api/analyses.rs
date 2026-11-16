@@ -1,5 +1,8 @@
 //! Analyses: create and read. Also the error type and helpers shared by the pull-request, tour and lines
 //! routes. TODO(WP3-PIPE): cancel and retry.
+//!
+//! An analysis's base commit is the merge base of the pull request's base tip and head (GitHub's three-dot
+//! comparison), fixed at creation: the diff, `side=base` reads, prompts and permalinks all use it.
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -123,6 +126,7 @@ impl ApiErrorSource for AnalysisApiError {
             Self::FileNotFound | Self::Github(GithubError::NotFound) => ApiErrorCode::NotFound,
             Self::Github(GithubError::Unauthorized) => ApiErrorCode::Unauthenticated,
             Self::Github(_) => ApiErrorCode::GithubUnavailable,
+            Self::Mirror(MirrorError::BlobTooLarge { .. }) => ApiErrorCode::NotRendered,
             Self::Token(error) => error.code(),
             Self::Db(error) => error.code(),
             _ if self.is_fetch_failure() => ApiErrorCode::GithubUnavailable,
@@ -158,6 +162,7 @@ impl ApiErrorSource for AnalysisApiError {
                 "Your GitHub sign-in has ended. Sign in again."
             }
             Self::Github(_) => GITHUB_ERROR,
+            Self::Mirror(MirrorError::BlobTooLarge { .. }) => "The file is too large to show.",
             _ if self.is_fetch_failure() => GITHUB_ERROR,
             Self::Mirror(_) | Self::Diff(_) | Self::DiffTask(_) | Self::Tour(_) => SERVER_ERROR,
         })
@@ -257,6 +262,15 @@ async fn create(
     if pull.summary.head_sha != request.head_sha {
         return Err(failure(AnalysisApiError::HeadMoved));
     }
+    // The analysis compares the head with its merge base, as GitHub's pull-request diff does: changes made
+    // only on the base branch after the fork point are not part of the pull request.
+    let pr = &pull.summary;
+    let mirror = mirror::ensure_commits(&state.config, &pr.repo, &[&pr.base_sha, &pr.head_sha])
+        .await
+        .map_err(failure)?;
+    let base_sha = mirror::merge_base(&mirror, &pr.base_sha, &pr.head_sha)
+        .await
+        .map_err(failure)?;
     let user = state
         .db
         .users()
@@ -271,7 +285,7 @@ async fn create(
                 id: AnalysisId::new_random(),
                 tenant_id: session.tenant_id.clone(),
                 pull_request_id: pr_id,
-                base_sha: pull.summary.base_sha.clone(),
+                base_sha,
                 head_sha: pull.summary.head_sha.clone(),
                 language: user.language,
                 created_by: session.user_id.clone(),

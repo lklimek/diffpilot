@@ -16,7 +16,7 @@ use chrono::{TimeDelta, Utc};
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::pr::PrSummary;
 use contracts::ids::{AnalysisId, JobId};
-use contracts::job::result::{JobOutcome, JobResult};
+use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use db::repo::analyses::NewAnalysis;
 use db::repo::documents::DocumentKind;
 use db::repo::sessions::NewSession;
@@ -52,11 +52,55 @@ fn read_json(path: &Path) -> Value {
     serde_json::from_str(&std::fs::read_to_string(path).expect("fixture file")).expect("JSON")
 }
 
+/// Runs git in `repo` (created when missing) without user configuration; returns trimmed stdout.
+fn git(repo: &Path, args: &[&str]) -> String {
+    std::fs::create_dir_all(repo).expect("repo dir");
+    let output = Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.test")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.test")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+/// Writes `files` (path, content) into the work tree and commits everything; returns the commit id.
+fn commit(repo: &Path, files: &[(&str, &str)], message: &str) -> String {
+    for (name, content) in files {
+        std::fs::write(repo.join(name), content).expect("write");
+    }
+    git(repo, &["add", "-A"]);
+    git(repo, &["commit", "-q", "-m", message]);
+    git(repo, &["rev-parse", "HEAD"])
+}
+
+fn numbered(lines: std::ops::RangeInclusive<u32>) -> String {
+    lines.map(|n| format!("line {n}\n")).collect()
+}
+
 /// Answers every job with the fixture agent output of its stage.
 #[derive(Debug, Default)]
 struct ScriptedExecutor {
     stages: Mutex<HashMap<JobId, String>>,
     submitted: Mutex<Vec<String>>,
+    /// Stages answered other than with their fixture output.
+    scripts: Mutex<HashMap<String, Script>>,
+    cancelled: Mutex<Vec<String>>,
+}
+
+/// How a stage's job ends instead of returning its fixture output.
+#[derive(Clone, Debug)]
+enum Script {
+    Output(Value),
+    Fail,
+    Pending,
 }
 
 impl ScriptedExecutor {
@@ -64,6 +108,19 @@ impl ScriptedExecutor {
         let mut stages = self.submitted.lock().expect("lock").clone();
         stages.sort();
         stages
+    }
+
+    fn cancelled(&self) -> Vec<String> {
+        let mut stages = self.cancelled.lock().expect("lock").clone();
+        stages.sort();
+        stages
+    }
+
+    fn script(&self, stage: &str, script: Script) {
+        self.scripts
+            .lock()
+            .expect("lock")
+            .insert(stage.to_owned(), script);
     }
 }
 
@@ -93,12 +150,22 @@ impl JobExecutor for ScriptedExecutor {
 
     fn events(&self, handle: &JobHandle) -> BoxStream<'static, Result<JobUpdate, ExecutorError>> {
         let stage = self.stages.lock().expect("lock")[&handle.job_id].clone();
+        let script = self.scripts.lock().expect("lock").get(&stage).cloned();
+        let outcome = match script {
+            None => JobOutcome::Succeeded {
+                output: agent_output(&stage),
+            },
+            Some(Script::Output(output)) => JobOutcome::Succeeded { output },
+            Some(Script::Fail) => JobOutcome::Failed {
+                kind: JobFailureKind::ProviderFailed,
+                message: "the provider exited with an error".to_owned(),
+            },
+            Some(Script::Pending) => return stream::pending().boxed(),
+        };
         let result = JobResult {
             job_id: handle.job_id,
             attempt: 1,
-            outcome: JobOutcome::Succeeded {
-                output: agent_output(&stage),
-            },
+            outcome,
             session: None,
             usage: None,
             skills_commit: None,
@@ -107,7 +174,9 @@ impl JobExecutor for ScriptedExecutor {
         stream::iter([Ok(JobUpdate::Finished(result))]).boxed()
     }
 
-    fn cancel(&self, _handle: &JobHandle) -> BoxFuture<'_, Result<(), ExecutorError>> {
+    fn cancel(&self, handle: &JobHandle) -> BoxFuture<'_, Result<(), ExecutorError>> {
+        let stage = self.stages.lock().expect("lock")[&handle.job_id].clone();
+        self.cancelled.lock().expect("lock").push(stage);
         Box::pin(async { Ok(()) })
     }
 }
@@ -301,19 +370,64 @@ impl Harness {
     }
 
     async fn wait_until_finished(&self, id: &str) -> AnalysisSummary {
+        let summary = self.wait_until_ended(id).await;
+        assert!(
+            matches!(summary.state, AnalysisState::Finished { .. }),
+            "analysis ended as {:?}",
+            summary.state
+        );
+        summary
+    }
+
+    /// Waits for `finished`, `failed` or `cancelled`.
+    async fn wait_until_ended(&self, id: &str) -> AnalysisSummary {
         for _ in 0..600 {
             let (status, body) = self.get(&format!("/api/v1/analyses/{id}")).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             let summary: AnalysisSummary = serde_json::from_value(body).expect("summary");
             match summary.state {
-                AnalysisState::Finished { .. } => return summary,
-                AnalysisState::Failed { .. } | AnalysisState::Cancelled => {
-                    panic!("analysis ended as {:?}", summary.state)
-                }
+                AnalysisState::Finished { .. }
+                | AnalysisState::Failed { .. }
+                | AnalysisState::Cancelled => return summary,
                 _ => tokio::time::sleep(Duration::from_millis(50)).await,
             }
         }
-        panic!("analysis did not finish in time");
+        panic!("analysis did not end in time");
+    }
+
+    /// A repository `acme/<name>` under the clone base, built by `build`, served as pull request `number`
+    /// with base tip `base` and head `head` (returned by `build`); creates its analysis through the API.
+    async fn analyse_repo(
+        &self,
+        name: &str,
+        number: u32,
+        build: impl FnOnce(&Path) -> (String, String),
+    ) -> AnalysisSummary {
+        let repo = self._dir.path().join(format!("remotes/acme/{name}.git"));
+        git(&repo, &["init", "-q", "-b", "main"]);
+        let (base, head) = build(&repo);
+        let mut pull = read_json(&fixtures().join("github/rest/pull.json"))["response"].clone();
+        pull["number"] = json!(number);
+        pull["html_url"] = json!(format!("https://github.com/acme/{name}/pull/{number}"));
+        pull["base"]["sha"] = json!(base);
+        pull["head"]["sha"] = json!(head);
+        pull["base"]["repo"]["name"] = json!(name);
+        Mock::given(method("GET"))
+            .and(path(format!("/api/repos/acme/{name}/pulls/{number}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(pull))
+            .mount(&self.github)
+            .await;
+        let (status, created) = self
+            .post(
+                "/api/v1/analyses",
+                json!({
+                    "pr": { "repo": { "owner": "acme", "name": name }, "number": number },
+                    "head_sha": head,
+                }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        serde_json::from_value(created).expect("summary")
     }
 }
 
@@ -739,4 +853,189 @@ async fn other_tenants_analysis_is_not_found() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
         assert_eq!(body["code"], json!("not_found"));
     }
+}
+
+#[tokio::test]
+async fn diverged_base_uses_the_merge_base() {
+    let h = harness().await;
+    let mut fork = String::new();
+    let summary = h
+        .analyse_repo("diverged", 9, |repo| {
+            fork = commit(
+                repo,
+                &[("a.txt", &numbered(1..=10)), ("b.txt", &numbered(1..=10))],
+                "fork point",
+            );
+            git(repo, &["checkout", "-q", "-b", "feature"]);
+            let head = commit(
+                repo,
+                &[(
+                    "a.txt",
+                    &numbered(1..=10).replace("line 2\n", "changed 2\n"),
+                )],
+                "change on the pull request",
+            );
+            git(repo, &["checkout", "-q", "main"]);
+            let base_tip = commit(
+                repo,
+                &[(
+                    "b.txt",
+                    &numbered(1..=10).replace("line 1\n", "changed on main\n"),
+                )],
+                "change only on the base branch",
+            );
+            (base_tip, head)
+        })
+        .await;
+    assert_eq!(
+        summary.pr.base_sha.0, fork,
+        "the analysis base is the merge base"
+    );
+
+    let lines = |file: &str, side: &str| {
+        format!(
+            "/api/v1/analyses/{}/lines?path={file}&side={side}&from=1&to=10",
+            summary.id
+        )
+    };
+    let (status, a) = h.get(&lines("a.txt", "head")).await;
+    assert_eq!(status, StatusCode::OK, "{a}");
+    assert_eq!(a["changed"], json!([2]));
+    // b.txt changed only on the base branch: not part of the pull request.
+    let (status, b) = h.get(&lines("b.txt", "head")).await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    assert_eq!(b["changed"], json!([]));
+    assert_eq!(b["comments"], json!({ "scope": "not_in_diff" }));
+    let (status, b_base) = h.get(&lines("b.txt", "base")).await;
+    assert_eq!(status, StatusCode::OK, "{b_base}");
+    assert_eq!(
+        b_base["lines"][0],
+        json!("line 1"),
+        "base side reads the merge base"
+    );
+}
+
+/// Pull request #10 of `acme/big`: a file over the byte limit, a file whose first line is 1 MiB, and a
+/// 5,000-line block removed from `keep.txt` after its line 1.
+async fn big_repo(h: &Harness) -> AnalysisSummary {
+    h.analyse_repo("big", 10, |repo| {
+        let huge = "x".repeat(1023) + "\n";
+        let long = "y".repeat(1024 * 1024) + "\nend\n";
+        let base = commit(
+            repo,
+            &[
+                ("huge.txt", &huge.repeat(9 * 1024)),
+                ("long.txt", &long),
+                ("keep.txt", &numbered(1..=5003)),
+            ],
+            "base",
+        );
+        let kept = numbered(1..=1) + &numbered(5002..=5003);
+        let head = commit(repo, &[("keep.txt", &kept)], "remove a large block");
+        (base, head)
+    })
+    .await
+}
+
+#[tokio::test]
+async fn lines_refuses_blobs_over_the_byte_limit() {
+    let h = harness().await;
+    let summary = big_repo(&h).await;
+    let (status, body) = h
+        .get(&format!(
+            "/api/v1/analyses/{}/lines?path=huge.txt&side=head&from=1&to=1",
+            summary.id
+        ))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], json!("not_rendered"));
+}
+
+#[tokio::test]
+async fn lines_reads_a_window_of_a_file_with_a_very_long_line() {
+    let h = harness().await;
+    let summary = big_repo(&h).await;
+    let (status, body) = h
+        .get(&format!(
+            "/api/v1/analyses/{}/lines?path=long.txt&side=head&from=2&to=2",
+            summary.id
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["total_lines"], json!(2));
+    assert_eq!(body["lines"], json!(["end"]));
+}
+
+#[tokio::test]
+async fn lines_caps_deleted_blocks() {
+    let h = harness().await;
+    let summary = big_repo(&h).await;
+    let (status, body) = h
+        .get(&format!(
+            "/api/v1/analyses/{}/lines?path=keep.txt&side=head&from=1&to=1",
+            summary.id
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["deleted"][0]["after_line"], json!(1));
+    assert_eq!(body["deleted"][0]["base_start"], json!(2));
+    let removed = body["deleted"][0]["lines"].as_array().expect("lines");
+    assert_eq!(removed.len(), 2000);
+    assert_eq!(removed[0], json!("line 2"));
+}
+
+async fn fail_flow_2(h: &Harness, script: Script) -> AnalysisSummary {
+    h.executor.script("flow:f2", script);
+    for flow in ["flow:f3", "flow:f4", "flow:f5"] {
+        h.executor.script(flow, Script::Pending);
+    }
+    let (status, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    let (status, created) = h
+        .post(
+            "/api/v1/analyses",
+            json!({
+                "pr": { "repo": { "owner": "acme", "name": "node-client" }, "number": 482 },
+                "head_sha": resolved["pr"]["head_sha"],
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    h.wait_until_ended(created["id"].as_str().expect("id"))
+        .await
+}
+
+fn assert_failed_in_f2_and_rest_cancelled(h: &Harness, summary: &AnalysisSummary, message: &str) {
+    match &summary.state {
+        AnalysisState::Failed {
+            flow: Some(flow),
+            message: text,
+        } => {
+            assert_eq!(flow.id.0, "f2");
+            assert!(text.contains(message), "{text}");
+        }
+        other => panic!("expected a failure in f2, got {other:?}"),
+    }
+    let cancelled = h.executor.cancelled();
+    for flow in ["flow:f3", "flow:f4", "flow:f5"] {
+        assert!(
+            cancelled.contains(&flow.to_owned()),
+            "{flow} not cancelled: {cancelled:?}"
+        );
+    }
+    assert!(!cancelled.contains(&"flow:f2".to_owned()));
+}
+
+#[tokio::test]
+async fn failed_job_cancels_the_other_jobs() {
+    let h = harness().await;
+    let summary = fail_flow_2(&h, Script::Fail).await;
+    assert_failed_in_f2_and_rest_cancelled(&h, &summary, "The agent run failed");
+}
+
+#[tokio::test]
+async fn schema_invalid_output_fails_and_cancels_the_other_jobs() {
+    let h = harness().await;
+    let summary = fail_flow_2(&h, Script::Output(json!({ "flow_id": "f2" }))).await;
+    assert_failed_in_f2_and_rest_cancelled(&h, &summary, "did not have the expected structure");
 }
