@@ -1436,11 +1436,28 @@ async fn forwarded_headers_ignored_from_untrusted_peer() {
     );
 }
 
+/// The PKCE verifiers GitHub received in code exchanges.
+async fn exchanged_verifiers(h: &Harness) -> Vec<String> {
+    h.github
+        .received_requests()
+        .await
+        .expect("recording")
+        .into_iter()
+        .filter_map(|request| {
+            url::form_urlencoded::parse(&request.body)
+                .find(|(key, _)| key == "code_verifier")
+                .map(|(_, value)| value.into_owned())
+        })
+        .collect()
+}
+
+/// Sign-in → refresh → 401 → rejected refresh → logout, captured at TRACE ([`LogCapture`]): no secret in the logs,
+/// error bodies or redirects (threat model T7a, T7b `no_secret_in_logs`).
 #[tokio::test]
-async fn no_token_or_secret_in_logs_or_error_bodies() {
+async fn no_secret_in_logs_over_sign_in_refresh_logout() {
     let capture = LogCapture::start();
     let h = harness().await;
-    let signed_in = h.sign_in("lklimek", 1001).await;
+    let key = h.state.config.secret_key.expose_secret().to_vec();
     let mut exposed = vec![
         h.state
             .config
@@ -1448,21 +1465,47 @@ async fn no_token_or_secret_in_logs_or_error_bodies() {
             .client_secret
             .expose_secret()
             .to_owned(),
+        base64::engine::general_purpose::STANDARD.encode(&key),
+        URL_SAFE_NO_PAD.encode(&key),
+        key.iter().map(|byte| format!("{byte:02x}")).collect(),
+        format!("{key:?}"),
         ACCESS.to_owned(),
         REFRESH.to_owned(),
-        signed_in
-            .cookie
-            .split_once('=')
-            .expect("cookie")
-            .1
-            .to_owned(),
-        signed_in.csrf.clone(),
+        CODE.to_owned(),
     ];
+    let mut bodies = Vec::new();
 
-    // Refused login, failed exchange, refresh, rejected refresh and rejected requests.
+    // Sign-in (twice, so one session can end alone); the OAuth state, PKCE verifier and session ids are secret.
+    h.github.reset().await;
+    h.mock_github_user("lklimek", 1001).await;
+    let mut sessions = Vec::new();
+    for _ in 0..2 {
+        let started = h.start_login().await;
+        exposed.push(started.state.clone());
+        let response = h.callback(&started).await;
+        bodies.push(location(&response));
+        let cookie = cookie_pair(&response, "__Host-sr_session").expect("session cookie");
+        let me = json_body(h.send(get_with_cookie("/api/v1/me", &cookie)).await).await;
+        let csrf = me["csrf_token"].as_str().expect("csrf").to_owned();
+        exposed.push(cookie.split_once('=').expect("cookie").1.to_owned());
+        exposed.push(csrf.clone());
+        sessions.push((cookie, csrf));
+    }
+    exposed.extend(exchanged_verifiers(&h).await);
+    let user_id = h
+        .state
+        .db
+        .users()
+        .find_by_github_id(1001)
+        .await
+        .expect("lookup")
+        .expect("user")
+        .id;
+
+    // Refused login and failed exchange.
     h.github.reset().await;
     h.mock_github_user("mallory", 666).await;
-    let mut bodies = vec![location(&h.callback(&h.start_login().await).await)];
+    bodies.push(location(&h.callback(&h.start_login().await).await));
     h.github.reset().await;
     Mock::given(method("POST"))
         .and(path("/login/oauth/access_token"))
@@ -1472,64 +1515,105 @@ async fn no_token_or_secret_in_logs_or_error_bodies() {
         .mount(&h.github)
         .await;
     bodies.push(location(&h.callback(&h.start_login().await).await));
+
+    // Refresh, then a GitHub 401 for the rotated token and a rejected refresh.
     h.github.reset().await;
     store_pair(
         &h,
-        &signed_in.user_id,
+        &user_id,
         grant("ghu_expiring_canary", 0, "ghr_current_canary"),
     )
     .await;
-    exposed.extend(
-        [
-            "ghu_expiring_canary",
-            "ghr_current_canary",
-            "ghu_rotated_canary",
-            "ghr_rotated_canary",
-        ]
-        .map(str::to_owned),
-    );
+    let canaries = [
+        "ghu_expiring_canary",
+        "ghr_current_canary",
+        "ghu_rotated_canary",
+        "ghr_rotated_canary",
+    ];
+    exposed.extend(canaries.map(str::to_owned));
     Mock::given(method("POST"))
         .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_current_canary"))
         .respond_with(token_response("ghu_rotated_canary", "ghr_rotated_canary"))
         .mount(&h.github)
         .await;
-    user_access_token(&h.state, &signed_in.user_id)
-        .await
-        .expect("refreshed");
-    let wrong_csrf = h
-        .send(logout_request(
-            Some(&signed_in.cookie),
-            Some("wrong"),
-            false,
-        ))
-        .await;
-    bodies.push(json_body(wrong_csrf).await.to_string());
-    h.github.reset().await;
-    store_pair(
-        &h,
-        &signed_in.user_id,
-        grant("ghu_dead_canary", 0, "ghr_dead_canary"),
-    )
-    .await;
-    exposed.extend(["ghu_dead_canary", "ghr_dead_canary"].map(str::to_owned));
     Mock::given(method("POST"))
         .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_rotated_canary"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"error": "bad_refresh_token"})),
         )
         .mount(&h.github)
         .await;
-    let error = user_access_token(&h.state, &signed_in.user_id)
-        .await
-        .expect_err("rejected refresh");
-    bodies.push(format!("{error} {error:?}"));
+    mock_installations(&h, "ghu_rotated_canary", "unused").await;
+    let (first_cookie, first_csrf) = &sessions[0];
+    for _ in 0..2 {
+        let response = h
+            .send(get_with_cookie("/api/v1/settings", first_cookie))
+            .await;
+        bodies.push(json_body(response).await.to_string());
+    }
+    let signed_out = h
+        .send(get_with_cookie("/api/v1/settings", first_cookie))
+        .await;
+    assert_eq!(
+        signed_out.status(),
+        StatusCode::UNAUTHORIZED,
+        "the rejected refresh ended the sign-in"
+    );
+    bodies.push(json_body(signed_out).await.to_string());
+
+    // Sign in again, rejected and accepted logouts.
+    h.github.reset().await;
+    h.mock_github_user("lklimek", 1001).await;
+    let again = h.sign_in("lklimek", 1001).await;
+    let other = h.sign_in("lklimek", 1001).await;
+    exposed.extend(exchanged_verifiers(&h).await);
+    for signed_in in [&again, &other] {
+        exposed.push(
+            signed_in
+                .cookie
+                .split_once('=')
+                .expect("cookie")
+                .1
+                .to_owned(),
+        );
+        exposed.push(signed_in.csrf.clone());
+    }
+    for (cookie, csrf) in [
+        (first_cookie.as_str(), first_csrf.as_str()),
+        (&again.cookie, "wrong"),
+    ] {
+        let response = h
+            .send(logout_request(Some(cookie), Some(csrf), false))
+            .await;
+        bodies.push(json_body(response).await.to_string());
+    }
+    for (signed_in, everywhere) in [(&again, false), (&other, true)] {
+        let response = h
+            .send(logout_request(
+                Some(&signed_in.cookie),
+                Some(&signed_in.csrf),
+                everywhere,
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
 
     let logs = capture.text();
-    assert!(
-        logs.contains("user signed in"),
-        "logs were captured: {logs}"
-    );
+    for expected in [
+        "user signed in",
+        "GitHub user token refreshed",
+        "ending the sign-in",
+        "user signed out",
+    ] {
+        assert!(logs.contains(expected), "{expected} not logged: {logs}");
+    }
     for secret in &exposed {
+        assert!(
+            secret.len() >= 8,
+            "canary too short to be meaningful: {secret}"
+        );
         assert!(!logs.contains(secret.as_str()), "secret in logs: {secret}");
         for body in &bodies {
             assert!(!body.contains(secret.as_str()), "secret in {body}");
