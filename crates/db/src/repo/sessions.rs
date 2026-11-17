@@ -219,7 +219,7 @@ impl Sessions<'_> {
     /// session, and expired OAuth logins, in one transaction.
     pub async fn delete_expired(&self, live: Liveness) -> Result<(), DbError> {
         let now = timestamp(live.now);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::write_tx(self.pool).await?;
         sqlx::query(concat!("DELETE FROM sessions WHERE NOT ", live_session!()))
             .bind(&now)
             .bind(timestamp(live.seen_after))

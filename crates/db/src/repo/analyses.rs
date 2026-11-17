@@ -345,7 +345,7 @@ impl Analyses<'_> {
     /// lookup is deleted too, so the new round looks the profile up again. `false` when the analysis is not failed
     /// (nothing changed).
     pub async fn retry(&self, id: AnalysisId, now: DateTime<Utc>) -> Result<bool, DbError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = super::write_tx(self.pool).await?;
         let updated = sqlx::query(
             "UPDATE analyses SET state = 'planning', flows_total = NULL, flows_done = 0, paused_until = NULL,
                  failure_flow_id = NULL, failure_flow_title = NULL, failure_message = NULL, finished_at = NULL,
@@ -811,7 +811,8 @@ mod tests {
         .execute(&db.pool)
         .await
         .expect("trigger");
-        assert!(db.analyses().retry(id, at(3)).await.is_err());
+        let error = db.analyses().retry(id, at(3)).await.expect_err("aborted");
+        assert!(error.sqlite_code().is_some(), "{error:?}");
         assert_eq!(db.analyses().get(id).await.expect("get").state, failed());
         assert_eq!(profile_lookup(&db, id).await, Some(lookup));
     }
