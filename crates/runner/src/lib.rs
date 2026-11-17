@@ -8,6 +8,7 @@ pub mod provider;
 pub mod scrub;
 pub mod sessions;
 pub mod skills;
+pub mod supervisor;
 pub mod worker;
 
 #[cfg(test)]
