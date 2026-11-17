@@ -1,0 +1,297 @@
+{
+  "analysis": {
+    "id": "9ecdc459-cd46-4cb7-8389-ec0a91c8ce9a",
+    "pr": {
+      "repo": { "owner": "dashpay", "name": "dash-evo-tool" },
+      "number": 1169,
+      "title": "fix(ui): keep sub-navigation labels on one line",
+      "author": "Claudius-Maginificent",
+      "html_url": "https://github.com/dashpay/dash-evo-tool/pull/1169",
+      "base_sha": "32f8ede362bd0b4e02b641f022ad6d88b0087a48",
+      "head_sha": "9ac623c939da4282ba43a93dca52455dfd206e48"
+    },
+    "language": "en",
+    "state": { "state": "finished", "total": 1 },
+    "created_at": "2026-11-17T12:23:25.898535Z",
+    "finished_at": "2026-11-17T12:32:03.240753Z"
+  },
+  "pr_context": {
+    "facts": {
+      "ci": { "state": "passing", "total": 5, "failing": [] },
+      "threads_status": "checked",
+      "counters": {
+        "lines_removed_from_tests": 0,
+        "dependencies_changed": [],
+        "dependency_files_not_checked": []
+      },
+      "project_profile": { "sources": [], "memcan": "not_checked" },
+      "agent_instruction_files": [],
+      "related_work_checked": true,
+      "flow_count": 1,
+      "step_count": 3
+    },
+    "llm": {
+      "problem": "The PR reports that sub-navigation labels can wrap mid-word after a narrow window episode, leaving panels narrow even after restarting. The changed nav_button explicitly selects TextWrapMode::Extend in src/ui/components/subscreen_chooser_panel.rs:43.",
+      "why_needed": "Tokens, Tools and DashPay share this button through add_subscreen_chooser_panel, so the shared component controls label wrapping across these menus. Recovery from persisted narrow panel state is claimed by the author; restart behavior was not checked.",
+      "what_it_gives": "A shared single-line label policy and a regression test that resizes the window, navigates between token screens, and checks button heights and consistent panel widths. The test code was read but not run.",
+      "related_work": [],
+      "fit_questions": [
+        {
+          "question": "Is the author's stated narrow-window tradeoff—clipping labels and preventing DashPay's resizable chooser from shrinking below its longest label—the intended navigation policy across all three menus?",
+          "topic": "other",
+          "evidence": [
+            { "file": "src/ui/components/subscreen_chooser_panel.rs", "side": "head", "line": 43 },
+            { "file": "src/ui/components/dashpay_subscreen_chooser_panel.rs", "side": "head", "line": 50 },
+            { "file": "src/ui/components/tokens_subscreen_chooser_panel.rs", "side": "head", "line": 42 },
+            { "file": "src/ui/components/tools_subscreen_chooser_panel.rs", "side": "head", "line": 35 }
+          ]
+        }
+      ]
+    }
+  },
+  "flows": [
+    {
+      "id": "f1",
+      "position": 1,
+      "group": "behaviour",
+      "facts": { "files": ["src/ui/components/subscreen_chooser_panel.rs"], "step_count": 3 },
+      "llm": {
+        "title": "Prevent subscreen navigation labels from wrapping",
+        "classification": "behavioural",
+        "risk": "low",
+        "introduction": {
+          "problem_before": "The reported trigger is a narrow chooser panel: navigation labels could wrap mid-word and keep the panel narrow. Previously, nav_button did not specify a wrap mode.",
+          "change": "Set TextWrapMode::Extend in the shared button builder so navigation labels remain on one line.",
+          "example_before_after": "A label such as \"Token Creator\" could previously split across lines; the changed button requests a single-line layout even when available width is narrow."
+        },
+        "depends_on": [],
+        "pattern_repetitions": []
+      },
+      "graph": {
+        "nodes": [
+          {
+            "step_id": "f1.1",
+            "number": 1,
+            "kind": "unchanged",
+            "label": "Render the shared subscreen chooser"
+          },
+          {
+            "step_id": "f1.2",
+            "number": 2,
+            "kind": "changed",
+            "label": "Prevent navigation labels from wrapping"
+          },
+          {
+            "step_id": "f1.3",
+            "number": 3,
+            "kind": "unchanged",
+            "label": "Return the clicked navigation action"
+          }
+        ],
+        "edges": [
+          { "from": "f1.1", "to": "f1.2", "label": "For each navigation item" },
+          { "from": "f1.2", "to": "f1.3", "label": null },
+          { "from": "f1.3", "to": "f1.2", "label": "Next navigation item" }
+        ]
+      },
+      "steps": [
+        {
+          "id": "f1.1",
+          "number": 1,
+          "facts": {
+            "file": "src/ui/components/subscreen_chooser_panel.rs",
+            "side": "head",
+            "range": { "start_line": 53, "end_line": 85 },
+            "github_url": "https://github.com/dashpay/dash-evo-tool/blob/9ac623c939da4282ba43a93dca52455dfd206e48/src/ui/components/subscreen_chooser_panel.rs#L53-L85",
+            "changed_lines": [],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Render the shared subscreen chooser",
+            "kind": "context",
+            "symbol": "add_subscreen_chooser_panel",
+            "called_by": "The Tokens, Tools and DashPay chooser wrappers supply navigation items and panel options.",
+            "decides": "Creates the left panel with the caller's identifier and resizability setting, then builds a navigation button for each item.",
+            "next": "Calls nav_button with the item's label, active state and current theme.",
+            "why": "This shared entry point propagates the button layout change to all chooser callers.",
+            "annotations": [],
+            "assessment": null,
+            "moved_from": null,
+            "impact": []
+          }
+        },
+        {
+          "id": "f1.2",
+          "number": 2,
+          "facts": {
+            "file": "src/ui/components/subscreen_chooser_panel.rs",
+            "side": "head",
+            "range": { "start_line": 28, "end_line": 47 },
+            "github_url": "https://github.com/dashpay/dash-evo-tool/blob/9ac623c939da4282ba43a93dca52455dfd206e48/src/ui/components/subscreen_chooser_panel.rs#L28-L47",
+            "changed_lines": [{ "start_line": 43, "end_line": 43 }],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Prevent navigation labels from wrapping",
+            "kind": "modified",
+            "symbol": "nav_button",
+            "called_by": "add_subscreen_chooser_panel constructs this button for each navigation item.",
+            "decides": "Explicitly selects TextWrapMode::Extend for both active and inactive buttons.",
+            "next": "Returns the configured button to ui.add in the shared renderer.",
+            "why": "Keeping labels on one line prevents wrapping from reducing their horizontal layout requirement.",
+            "annotations": [
+              {
+                "id": "f1.2.a1",
+                "type": "behaviour",
+                "basis": "fact",
+                "range": { "start_line": 43, "end_line": 43 },
+                "was": "The button builder did not specify a wrap mode.",
+                "is": "The button builder explicitly selects egui::TextWrapMode::Extend.",
+                "text": null,
+                "evidence": [
+                  { "file": "src/ui/components/subscreen_chooser_panel.rs", "side": "base", "line": 38 },
+                  { "file": "src/ui/components/subscreen_chooser_panel.rs", "side": "base", "line": 39 },
+                  { "file": "src/ui/components/subscreen_chooser_panel.rs", "side": "head", "line": 43 }
+                ]
+              },
+              {
+                "id": "f1.2.a2",
+                "type": "note",
+                "basis": "fact",
+                "range": { "start_line": 43, "end_line": 43 },
+                "was": "The button builder did not specify a wrap mode.",
+                "is": "The button builder explicitly selects egui::TextWrapMode::Extend.",
+                "text": "The token regression test resizes from a narrow window to wider windows, visits the token screens, and checks button heights and consistent panel widths. It uses the same harness throughout rather than restarting the app.",
+                "evidence": [
+                  { "file": "tests/kittest/tokens_screen.rs", "side": "head", "line": 1291 },
+                  { "file": "tests/kittest/tokens_screen.rs", "side": "head", "line": 1302 },
+                  { "file": "tests/kittest/tokens_screen.rs", "side": "head", "line": 1304 },
+                  { "file": "tests/kittest/tokens_screen.rs", "side": "head", "line": 1336 },
+                  { "file": "tests/kittest/tokens_screen.rs", "side": "head", "line": 1351 }
+                ]
+              },
+              {
+                "id": "f1.2.a3",
+                "type": "question",
+                "basis": "inference",
+                "range": { "start_line": 43, "end_line": 43 },
+                "was": "The button builder did not specify a wrap mode.",
+                "is": "The button builder explicitly selects egui::TextWrapMode::Extend.",
+                "text": "Does the non-wrapping layout keep navigation and main content usable at the smallest supported window size, including when dragging the resizable DashPay chooser narrower?",
+                "evidence": [
+                  { "file": "src/ui/components/subscreen_chooser_panel.rs", "side": "head", "line": 43 },
+                  {
+                    "file": "src/ui/components/dashpay_subscreen_chooser_panel.rs",
+                    "side": "head",
+                    "line": 50
+                  }
+                ]
+              }
+            ],
+            "assessment": {
+              "headline": "Navigation labels stay on one line across Tokens, Tools and DashPay.",
+              "risk": "low",
+              "reason": "The change is confined to shared navigation layout. Its noticeable effects concern label readability and the horizontal space available to adjacent content; navigation actions remain unchanged.",
+              "basis_note": "Read the base and head button builders, shared renderer, chooser callers and token regression test. Nothing was executed.",
+              "not_checked": "Actual rendering at narrow widths, DashPay panel dragging, and recovery after reloading persisted panel state.",
+              "origin": "introduced",
+              "blocking": "follow_up",
+              "smallest_correction": null
+            },
+            "moved_from": null,
+            "impact": [
+              {
+                "file": "src/ui/components/tokens_subscreen_chooser_panel.rs",
+                "range": { "start_line": 18, "end_line": 42 },
+                "symbol": "add_tokens_subscreen_chooser_panel",
+                "reason": "Supplies the token navigation labels to the shared renderer with resizing and scrolling disabled.",
+                "basis": "fact",
+                "github_url": "https://github.com/dashpay/dash-evo-tool/blob/9ac623c939da4282ba43a93dca52455dfd206e48/src/ui/components/tokens_subscreen_chooser_panel.rs#L18-L42"
+              },
+              {
+                "file": "src/ui/components/tools_subscreen_chooser_panel.rs",
+                "range": { "start_line": 24, "end_line": 35 },
+                "symbol": "add_tools_subscreen_chooser_panel",
+                "reason": "Uses the same button builder through a vertically scrollable chooser with resizing disabled.",
+                "basis": "fact",
+                "github_url": "https://github.com/dashpay/dash-evo-tool/blob/9ac623c939da4282ba43a93dca52455dfd206e48/src/ui/components/tools_subscreen_chooser_panel.rs#L24-L35"
+              },
+              {
+                "file": "src/ui/components/dashpay_subscreen_chooser_panel.rs",
+                "range": { "start_line": 24, "end_line": 50 },
+                "symbol": "add_dashpay_subscreen_chooser_panel",
+                "reason": "Uses the same button builder in a resizable chooser, so the wrapping policy also applies during panel resizing.",
+                "basis": "fact",
+                "github_url": "https://github.com/dashpay/dash-evo-tool/blob/9ac623c939da4282ba43a93dca52455dfd206e48/src/ui/components/dashpay_subscreen_chooser_panel.rs#L24-L50"
+              }
+            ]
+          }
+        },
+        {
+          "id": "f1.3",
+          "number": 3,
+          "facts": {
+            "file": "src/ui/components/subscreen_chooser_panel.rs",
+            "side": "head",
+            "range": { "start_line": 86, "end_line": 102 },
+            "github_url": "https://github.com/dashpay/dash-evo-tool/blob/9ac623c939da4282ba43a93dca52455dfd206e48/src/ui/components/subscreen_chooser_panel.rs#L86-L102",
+            "changed_lines": [],
+            "moved": null,
+            "call_hierarchy": null,
+            "thread_ids": []
+          },
+          "llm": {
+            "title": "Return the clicked navigation action",
+            "kind": "context",
+            "symbol": "add_subscreen_chooser_panel",
+            "called_by": "The shared renderer receives the response from ui.add.",
+            "decides": "Copies the item's action when clicked. The caller's scrollable option selects a vertical scroll area or a vertical layout.",
+            "next": "Renders remaining items, then returns the selected action or AppAction::None.",
+            "why": "Connects the changed visual layout to the existing navigation result.",
+            "annotations": [],
+            "assessment": null,
+            "moved_from": null,
+            "impact": []
+          }
+        }
+      ]
+    }
+  ],
+  "quiet": {
+    "unexplained": [],
+    "moves": [],
+    "not_analysed": [
+      {
+        "category": "tests",
+        "file_count": 1,
+        "items": [
+          {
+            "file": "tests/kittest/tokens_screen.rs",
+            "side": "head",
+            "ranges": [{ "start_line": 1276, "end_line": 1357 }],
+            "badge": "classified_by_path",
+            "rule": "tests/**"
+          }
+        ]
+      },
+      {
+        "category": "docs_comments",
+        "file_count": 1,
+        "items": [
+          {
+            "file": "src/ui/components/subscreen_chooser_panel.rs",
+            "side": "head",
+            "ranges": [{ "start_line": 24, "end_line": 27 }],
+            "badge": "classified_by_line_rule",
+            "rule": "comment-only lines (Rust, by the compiler's lexer)"
+          }
+        ]
+      }
+    ]
+  },
+  "threads": []
+}

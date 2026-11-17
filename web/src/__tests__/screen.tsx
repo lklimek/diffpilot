@@ -1,8 +1,9 @@
+import { RouterProvider } from "react-router/dom";
 // Renders the app's routes in memory against the msw handlers of src/mocks (screen tests).
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import { setupServer } from "msw/node";
-import { createMemoryRouter, RouterProvider, type InitialEntry } from "react-router";
+import { createMemoryRouter, type InitialEntry } from "react-router";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { reviewStates } from "../api/review-state";
 import { appRoutes } from "../app/routes";

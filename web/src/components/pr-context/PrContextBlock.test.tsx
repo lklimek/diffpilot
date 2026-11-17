@@ -10,6 +10,16 @@ const renderBlock = (t: Tour, context: PrContextView = t.pr_context) =>
   render(<PrContextBlock pr={t.analysis.pr} context={context} threadCount={t.threads.length} />);
 
 describe("PrContextBlock", () => {
+  it("uses singular counts and puts Problem before the benefit", () => {
+    const context = structuredClone(tour.pr_context);
+    context.facts.flow_count = 1;
+    context.facts.step_count = 1;
+    renderBlock(tour, context);
+    const text = screen.getByRole("region", { name: "LLM analysis" }).textContent!;
+    expect(text).toContain("1 flow with 1 step.");
+    expect(text.indexOf("Problem:")).toBeLessThan(text.indexOf("What the change gives:"));
+  });
+
   it("separates the LLM analysis from the deterministic facts", () => {
     renderBlock(tour);
     const llm = screen.getByRole("region", { name: "LLM analysis" });

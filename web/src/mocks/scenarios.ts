@@ -16,6 +16,7 @@ import type {
   Tour,
 } from "../api/generated/types";
 import { seedFor, seedNow } from "./fixtures";
+import { REAL_QUESTIONS, REAL_TOURS } from "./real";
 
 /** When this module loaded (the page in the browser): the start of the scenarios' running stages. */
 const LOADED = new Date().toISOString();
@@ -287,6 +288,17 @@ const SCENARIOS = {
   "repo-not-known": { repoSettings: null },
   "binary-file": { tour: withBinaryFile },
   "comment-published": { commentPublished: true },
+  // Real PRs (mocks/real): their tours and questions, synthetic file text, no pending comments.
+  "real-small": {
+    tour: () => realTour()!,
+    questions: () => REAL_QUESTIONS,
+    pendingReview: (seed) => ({ ...seed, comments: [] }),
+  },
+  "real-tiny": {
+    tour: () => realTour()!,
+    questions: () => [],
+    pendingReview: (seed) => ({ ...seed, comments: [] }),
+  },
   "pending-incomplete": { pendingReview: (seed) => ({ ...seed, incomplete: true }) },
   "threads-partial": { tour: (seed) => withThreads(seed, "partial") },
   "threads-not-checked": { tour: (seed) => withThreads(seed, "not_checked") },
@@ -313,6 +325,13 @@ let current: ScenarioName | null = null;
 export function setScenario(name: ScenarioName | null): void {
   if (name !== null && !(name in SCENARIOS)) throw new Error(`unknown scenario "${String(name)}"`);
   current = name;
+}
+
+/** The real tour of a `real-*` scenario, with the mocks' analysis id; undefined for the fixture PR. */
+export function realTour(): Tour | undefined {
+  if (current !== "real-small" && current !== "real-tiny") return undefined;
+  const tour = REAL_TOURS[current];
+  return { ...tour, analysis: { ...tour.analysis, id: (seedNow("analysis") as AnalysisSummary).id } };
 }
 
 /** The selected scenario's overrides. */

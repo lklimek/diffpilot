@@ -1,0 +1,23 @@
+[
+  {
+    "id": "f915f473-cf25-4e1f-846f-e4afa22df4ac",
+    "step_id": "f1.5",
+    "text": "When a surplus reply makes Respond return errUnsolicitedResponse, at what log level does the reactor log it, and is the sending peer penalised or disconnected?",
+    "state": "answered",
+    "answer": {
+      "answer": "The reactor logs it at Error level with the message `error processing light block response`. It also logs receipt at Info level beforehand.\n\nThe sending peer is not penalised or disconnected by this error path: `handleLightBlockMessage` logs the error and returns `nil`, so `processChannels` does not call `SendError` with a `PeerError`. Nothing was executed; runtime behaviour was not checked.",
+      "evidence": [
+        { "file": "internal/statesync/dispatcher.go", "side": "head", "line": 199 },
+        { "file": "internal/statesync/reactor.go", "side": "head", "line": 1171 },
+        { "file": "internal/statesync/reactor.go", "side": "head", "line": 1172 },
+        { "file": "internal/statesync/reactor.go", "side": "head", "line": 1173 },
+        { "file": "internal/statesync/reactor.go", "side": "head", "line": 1182 },
+        { "file": "internal/statesync/reactor.go", "side": "head", "line": 1243 },
+        { "file": "internal/statesync/reactor.go", "side": "head", "line": 1270 },
+        { "file": "internal/statesync/reactor.go", "side": "head", "line": 1286 }
+      ]
+    },
+    "failure": null,
+    "created_at": "2026-11-17T13:13:48.102274Z"
+  }
+]

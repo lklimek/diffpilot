@@ -1,3 +1,4 @@
+import { CodeText } from "../section/CodeText";
 import { useId, type ReactNode } from "react";
 import type { ImpactRef, PatternRepetition, Step, StepId, ThreadsStatus } from "../../api/generated/types";
 import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
@@ -132,9 +133,9 @@ function Impact({
                 L{rangeText(impact.range)}
               </GithubLink>
             </p>
-            <p>
-              {impact.reason} <span className="text-muted">({impact.basis})</span>
-            </p>
+            <div>
+              <CodeText text={impact.reason} /> <span className="text-muted">({impact.basis})</span>
+            </div>
             {impactCode?.(impact)}
           </li>
         ))}
@@ -154,7 +155,9 @@ function Pattern({
     <details className="rounded-lg border border-border bg-surface px-4 py-2 text-[12.5px]">
       <summary className="cursor-pointer font-semibold">Same pattern × {pattern.sites.length}</summary>
       <p className="mt-1.5 text-[11.5px] text-llm">LLM analysis unless marked otherwise.</p>
-      <p className="mt-1">{pattern.description}</p>
+      <div className="mt-1">
+        <CodeText text={pattern.description} />
+      </div>
       <ul className="m-0 mt-1 list-disc pl-5">
         {pattern.sites.map((site) => {
           const where = `${site.file}:${rangeText(site.range)}`;
@@ -282,7 +285,9 @@ export function StepBlock({
             {fourFacts.map(([term, value]) => (
               <div key={term} className="contents">
                 <dt className="pt-0.5 text-[10.5px] font-bold tracking-wide text-muted uppercase">{term}</dt>
-                <dd className={`m-0 max-w-[100ch] ${term === "Why" ? "font-semibold" : ""}`}>{value}</dd>
+                <dd className={`m-0 max-w-[100ch] ${term === "Why" ? "font-semibold" : ""}`}>
+                  <CodeText text={value} />
+                </dd>
               </div>
             ))}
           </dl>

@@ -15,9 +15,14 @@ export type ShortcutAction =
 
 /** Shortcuts in help order: `key` is `KeyboardEvent.key`, `label` the key cap, `text` the help line. */
 export const SHORTCUTS: { key: string; label: string; action: ShortcutAction; text: string }[] = [
-  { key: "j", label: "j", action: "next_block", text: "next block (flow introduction or step)" },
+  {
+    key: "j",
+    label: "j",
+    action: "next_block",
+    text: "next block (including Not analysed and pending review)",
+  },
   { key: "k", label: "k", action: "previous_block", text: "previous block" },
-  { key: "n", label: "n", action: "next_flow", text: "next flow" },
+  { key: "n", label: "n", action: "next_flow", text: "next flow; after the last flow, next quiet block" },
   { key: "p", label: "p", action: "previous_flow", text: "previous flow" },
   { key: "x", label: "x", action: "tick_step", text: "tick the current step as reviewed" },
   { key: "d", label: "d", action: "toggle_old_code", text: "show / hide old code of the current step" },
