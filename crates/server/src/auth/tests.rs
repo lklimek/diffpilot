@@ -1006,6 +1006,89 @@ async fn refresh_is_serialised_and_atomic() {
     assert!(after.tokens.access_expires_at > Utc::now() + TimeDelta::hours(7));
 }
 
+/// GitHub rotates the pair as soon as it answers; a request dropped meanwhile (browser gone) must still store it.
+#[tokio::test]
+async fn refresh_survives_a_cancelled_request() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    store_pair(
+        &h,
+        &signed_in.user_id,
+        grant("ghu_expiring", 60, "ghr_current"),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_current"))
+        .respond_with(
+            token_response("ghu_rotated", "ghr_rotated").set_delay(Duration::from_millis(300)),
+        )
+        .expect(1)
+        .mount(&h.github)
+        .await;
+    let cancelled = tokio::time::timeout(
+        Duration::from_millis(100),
+        user_access_token(&h.state, &signed_in.user_id),
+    )
+    .await;
+    assert!(
+        cancelled.is_err(),
+        "the caller gave up before GitHub answered"
+    );
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let stored = h
+        .state
+        .db
+        .user_tokens()
+        .get(&signed_in.user_id)
+        .await
+        .expect("lookup")
+        .expect("pair kept");
+    assert_eq!(
+        stored_access(&h, &stored, &signed_in.user_id),
+        "ghu_rotated"
+    );
+    assert_eq!(
+        user_access_token(&h.state, &signed_in.user_id)
+            .await
+            .expect("token")
+            .expose_secret(),
+        "ghu_rotated",
+        "no second refresh"
+    );
+}
+
+/// A pair that no longer decrypts (`SR_SECRET_KEY` replaced, ADR-001) ends the sign-in instead of failing forever.
+#[tokio::test]
+async fn unreadable_tokens_ask_to_sign_in_again() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let mut config = test_config();
+    config.github.oauth_url = h.state.config.github.oauth_url.clone();
+    config.github.api_url = h.state.config.github.api_url.clone();
+    config.secret_key = secrecy::SecretBox::new(Box::new([9u8; 32]));
+    let rekeyed = AppState::new(
+        config,
+        h.state.db.clone(),
+        Arc::new(QueueExecutor::new(h.state.db.clone())),
+    );
+    let result = user_access_token(&rekeyed, &signed_in.user_id).await;
+    assert!(
+        matches!(result, Err(UserTokenError::SignInRequired)),
+        "{result:?}"
+    );
+    assert_eq!(
+        h.state
+            .db
+            .user_tokens()
+            .get(&signed_in.user_id)
+            .await
+            .expect("lookup"),
+        None
+    );
+    assert_eq!(me_login(&h, &signed_in.cookie).await, None, "session ended");
+}
+
 #[tokio::test]
 async fn bad_refresh_token_ends_sign_in() {
     let h = harness().await;
