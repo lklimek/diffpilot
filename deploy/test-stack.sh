@@ -90,7 +90,19 @@ for uid in 10002 10001; do
     direct+="uid $uid -> $target: $(tcp "$runner" "$uid" "${target%:*}" "${target##*:}"); "
   done
 done
+for uid in 10002 10001; do
+  direct+="uid $uid -> [2606:4700:4700::1111]:443: $(tcp "$runner" "$uid" 2606:4700:4700::1111 443); "
+done
 check runner_reaches_no_host_service "$([[ "$direct" != *CONNECTED* ]] && echo 1)" "$direct"
+preflight="$(docker logs "$runner" 2>&1 | grep 'runner preflight: network' | tail -n 1)"
+check runner_preflight_proved_isolation "$([[ "$preflight" == *"network isolated (no default route"* ]] && echo 1)" "$preflight"
+# DNS through the embedded resolver (127.0.0.11): names of the runner network resolve, external names do not (on an
+# internal network Docker does not forward queries out); the server, on a normal network, resolves them.
+dns_internal="$(docker exec -u 10002 "$runner" getent hosts egress-proxy 2>&1 || echo failed)"
+dns_external="$(docker exec -u 10002 "$runner" getent ahosts example.com 2>&1 || echo "failed (exit $?)")"
+dns_server="$(docker exec "$server" getent ahosts example.com 2>&1 | head -n 1 || echo failed)"
+check runner_dns_no_external_names "$([[ "$dns_internal" == 172.29.81.3* && "$dns_external" == failed* && -n "$dns_server" && "$dns_server" != failed* ]] && echo 1)" \
+  "agent: egress-proxy -> $dns_internal; example.com -> $dns_external; server: example.com -> $dns_server"
 inner="server runner listener: $(tcp "$runner" 10002 172.29.81.2 3001); proxy: $(tcp "$runner" 10002 172.29.81.3 3128)"
 check runner_reaches_listener_and_proxy "$([[ "$(grep -o CONNECTED <<< "$inner" | wc -l)" == 2 ]] && echo 1)" "$inner"
 
