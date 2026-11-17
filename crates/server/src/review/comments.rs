@@ -162,6 +162,7 @@ fn validate_body(body: &str) -> Result<(), CommentError> {
 }
 
 /// Passes `result` on; a GitHub 401 for the user's `token` makes its next use refresh the pair (ADR-007 addendum).
+/// Never retries the call.
 async fn note_rejected<T>(
     state: &AppState,
     user_id: &str,
@@ -425,7 +426,8 @@ async fn add_comment(
     .await?;
     let added = review::add_thread(&state.config.github, &token, &pr, &pull, &thread, &body)
         .await
-        .map_err(write_error)?;
+        .map_err(write_error);
+    let added = note_rejected(state, user_id, &token, added).await?;
     let head = &summary.pr.head_sha.0;
     if added.commits.is_empty() || added.commits.iter().any(|oid| oid != head) {
         return Err(remove_misplaced(state, &token, summary, &added.comment.id).await);
@@ -529,10 +531,10 @@ pub async fn update(
     let token = user_access_token(state, user_id).await?;
     let comment = own_pending_comment(state, &token, summary, comment_id).await;
     let comment = note_rejected(state, user_id, &token, comment).await?;
-    let (body, review_state) =
-        review::update_comment(&state.config.github, &token, &comment.id, body)
-            .await
-            .map_err(github_error)?;
+    let updated = review::update_comment(&state.config.github, &token, &comment.id, body)
+        .await
+        .map_err(github_error);
+    let (body, review_state) = note_rejected(state, user_id, &token, updated).await?;
     if review_state == ReviewState::Published {
         tracing::warn!(analysis = %summary.id, user_id,
             "the review was published meanwhile; the edit applied to the published comment");
@@ -555,9 +557,10 @@ pub async fn delete(
     let token = user_access_token(state, user_id).await?;
     let comment = own_pending_comment(state, &token, summary, comment_id).await;
     let comment = note_rejected(state, user_id, &token, comment).await?;
-    let review_state = review::delete_comment(&state.config.github, &token, &comment.id)
+    let deleted = review::delete_comment(&state.config.github, &token, &comment.id)
         .await
-        .map_err(github_error)?;
+        .map_err(github_error);
+    let review_state = note_rejected(state, user_id, &token, deleted).await?;
     if review_state == ReviewState::Published {
         tracing::warn!(analysis = %summary.id, user_id,
             "the review was published meanwhile; the deletion applied to the published comment");
@@ -1261,6 +1264,61 @@ mod github_tests {
             ),
             "{edit:?}"
         );
+    }
+
+    /// A GitHub 401 on the write itself (after reads that succeeded) marks the user token expired; nothing is
+    /// retried.
+    #[tokio::test]
+    async fn github_401_on_a_write_marks_the_user_token_expired() {
+        let f = fixture().await;
+        let token_expired = || async {
+            let stored = f
+                .state
+                .db
+                .user_tokens()
+                .get("u1")
+                .await
+                .expect("lookup")
+                .expect("pair");
+            let expired = stored.tokens.access_expires_at <= Utc::now();
+            let lock = crate::auth::lock_user("u1").await;
+            let grant = crate::github::oauth::TokenGrant {
+                access_token: SecretString::from(crate::review::tests::USER_TOKEN),
+                expires_in: 8 * 3600,
+                refresh_token: SecretString::from("ghr_review_refresh_u1"),
+                refresh_token_expires_in: 180 * 86_400,
+            };
+            crate::auth::store_sign_in_tokens(&f.state, &lock, DEFAULT_TENANT, &grant, Utc::now())
+                .await
+                .expect("fresh pair again");
+            expired
+        };
+        f.head_is(HEAD, 1).await;
+        f.add_thread_answers(json!({}), ResponseTemplate::new(401), 1)
+            .await;
+        let created = f
+            .create(Uuid::new_v4(), LineSide::Head, None, 96, CLIENT, "b")
+            .await;
+        assert!(
+            matches!(created, Err(CommentError::Github(_))),
+            "{created:?}"
+        );
+        assert!(token_expired().await, "add thread");
+
+        f.pending_is(pending_one(), 2).await;
+        for query in [UPDATE_COMMENT, DELETE_COMMENT] {
+            f.mock(json!({"query": query}), ResponseTemplate::new(401), 1)
+                .await;
+        }
+        let edit = update(&f.state, "u1", &f.summary, "PRRC_fixture482_c1", "edited").await;
+        assert!(matches!(edit, Err(CommentError::Github(_))), "{edit:?}");
+        assert!(token_expired().await, "update comment");
+        let removal = delete(&f.state, "u1", &f.summary, "PRRC_fixture482_c1").await;
+        assert!(
+            matches!(removal, Err(CommentError::Github(_))),
+            "{removal:?}"
+        );
+        assert!(token_expired().await, "delete comment");
     }
 
     #[tokio::test]
