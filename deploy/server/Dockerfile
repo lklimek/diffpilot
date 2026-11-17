@@ -48,5 +48,5 @@ ENV SR_DATA_DIR=/var/lib/smart-review \
     HOME=/nonexistent
 USER 10010:10010
 EXPOSE 3000 3001
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD ["/usr/local/bin/smart-review-healthcheck"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=1s CMD ["/usr/local/bin/smart-review-healthcheck"]
 ENTRYPOINT ["/usr/local/bin/smart-review-server"]

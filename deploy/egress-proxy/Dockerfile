@@ -10,5 +10,5 @@ COPY --chmod=0644 squid.conf /etc/squid/squid.conf
 USER proxy
 EXPOSE 3128
 # Healthy when Squid answers an HTTP request (403 from the manager deny); loopback requests are not access-logged.
-HEALTHCHECK --interval=30s --timeout=3s CMD ["perl", "-MIO::Socket::INET", "-e", "$s = IO::Socket::INET->new(PeerAddr => q(127.0.0.1:3128), Timeout => 2) or exit 1; print $s qq(GET http://127.0.0.1:3128/squid-internal-mgr/info HTTP/1.0\\r\\n\\r\\n); exit((<$s> // q()) =~ m{^HTTP/1\\.[01] \\d{3}} ? 0 : 1)"]
+HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --start-interval=1s CMD ["perl", "-MIO::Socket::INET", "-e", "$s = IO::Socket::INET->new(PeerAddr => q(127.0.0.1:3128), Timeout => 2) or exit 1; print $s qq(GET http://127.0.0.1:3128/squid-internal-mgr/info HTTP/1.0\\r\\n\\r\\n); exit((<$s> // q()) =~ m{^HTTP/1\\.[01] \\d{3}} ? 0 : 1)"]
 ENTRYPOINT ["/usr/local/bin/egress-proxy-entrypoint"]
