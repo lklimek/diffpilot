@@ -152,6 +152,10 @@ total: number, } | { "state": "cancelled" };
  */
 export type AnalysisSummary = {
 /**
+ * Provider-reported totals of finished jobs; null without reports.
+ */
+usage: UsageTotals | null,
+/**
  * Whole-run progress derived from existing jobs and documents, absent on older servers.
  */
 progress?: AnalysisProgress,
@@ -1840,6 +1844,10 @@ url: string, };
  */
 export type ResolvePrResponse = {
 /**
+ * Non-blocking notice for a large PR, using this same GitHub metadata response.
+ */
+size_warning: SizeWarning | null,
+/**
  * The pull request now.
  */
 pr: PrSummary,
@@ -1915,6 +1923,10 @@ language: LlmLanguage, };
  */
 export type Settings = {
 /**
+ * Tenant usage in the server's local calendar; absent on older responses.
+ */
+llm_usage?: UsageWindows,
+/**
  * Outcome of the most recent LLM call; null before the first call. No on-demand check.
  */
 llm_status: LlmCallOutcome | null,
@@ -1935,6 +1947,23 @@ app_installations: Array<AppInstallation> | null,
  * The tenant's known repositories (any pull request opened); each one's settings can be opened.
  */
 repos: Array<RepoRef>, };
+
+/**
+ * Large-PR facts and a rough estimate, never a prerequisite for starting.
+ */
+export type SizeWarning = {
+/**
+ * Additions plus deletions reported by GitHub.
+ */
+changed_lines: number,
+/**
+ * Changed files reported by GitHub.
+ */
+changed_files: number,
+/**
+ * Rough estimate from recent local runs; null without enough history.
+ */
+estimate: AnalysisEstimate | null, };
 
 /**
  * Whether a source was checked.
@@ -2141,6 +2170,44 @@ export type UpdateCommentRequest = {
  * New text.
  */
 body: string, };
+
+/**
+ * Token sums; cached input is included in input, not additional to it.
+ */
+export type UsageTotals = {
+/**
+ * Input tokens, including cached input.
+ */
+input_tokens: number,
+/**
+ * Cached input tokens.
+ */
+cached_input_tokens: number,
+/**
+ * Output tokens.
+ */
+output_tokens: number,
+/**
+ * Unknown: the retained job-result contract does not store reasoning tokens separately.
+ */
+reasoning_output_tokens: number | null,
+/**
+ * Finished jobs with a provider usage report, including Ask and all analysis rounds.
+ */
+jobs: number, };
+
+/**
+ * Usage windows in the server's local calendar, scoped to the current tenant.
+ */
+export type UsageWindows = {
+/**
+ * From local midnight through now; null without reports.
+ */
+today: UsageTotals | null,
+/**
+ * Today and the previous six local calendar days; null without reports.
+ */
+last_7_days: UsageTotals | null, };
 
 /**
  * Feedback values a reviewer can choose.

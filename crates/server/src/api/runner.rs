@@ -458,6 +458,15 @@ async fn apply_result(
             state = job_state.as_str(),
             "job result recorded"
         );
+        if job_state.is_terminal() {
+            let job = state.db.jobs().get(auth.job).await?;
+            tracing::info!(job = %auth.job, kind = job.kind.as_str(),
+                input_tokens = result.usage.map(|u| u.input_tokens),
+                cached_input_tokens = result.usage.map(|u| u.cached_input_tokens),
+                output_tokens = result.usage.map(|u| u.output_tokens),
+                reasoning_output_tokens = tracing::field::Empty,
+                "job token usage");
+        }
         // The provider's raw text (already scrubbed) is for operators: users see a plain sentence by its kind.
         if let Some(LlmCallOutcome {
             status: LlmCallStatus::NotWorking { message },
@@ -999,15 +1008,36 @@ mod tests {
 
     #[tokio::test]
     async fn result_posted_twice_is_stored_once() {
+        let logs = LogCapture::start();
         let harness = Harness::new().await;
         harness.enqueue(CREDENTIAL).await;
         let claimed = harness.claim(CREDENTIAL).await;
         let target = path(RUNNER_RESULT.path, claimed.job);
-        let result = succeeded(claimed.job, 1);
+        let mut result = succeeded(claimed.job, 1);
+        result.usage = Some(contracts::job::result::Usage {
+            input_tokens: 1200,
+            cached_input_tokens: 900,
+            output_tokens: 45,
+        });
         for _ in 0..2 {
             let (status, body) = harness.send(&target, Some(&claimed.token), &result).await;
             assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
         }
+        let text = logs.text();
+        let lines: Vec<_> = text
+            .lines()
+            .filter(|line| line.contains("job token usage"))
+            .collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        assert!(
+            lines[0].contains("INFO")
+                && lines[0].contains("input_tokens=1200")
+                && lines[0].contains("cached_input_tokens=900")
+                && lines[0].contains("output_tokens=45")
+                && lines[0].contains("analyse_flow"),
+            "{}",
+            lines[0]
+        );
         let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
         assert_eq!(job.state, JobState::Succeeded);
         assert_eq!(job.result, Some(result));

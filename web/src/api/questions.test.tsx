@@ -144,3 +144,27 @@ describe("question stream", () => {
     expect(FakeEventSource.instances).toHaveLength(1);
   });
 });
+
+it("refreshes Tour usage from the existing Ask event stream", async () => {
+  const client = new QueryClient();
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const tour = seedFor("default", "tour");
+  client.setQueryData(["tour", ID], tour);
+  renderHook(() => useQuestionEvents(ID), { wrapper });
+  const usage = {
+    input_tokens: 100,
+    cached_input_tokens: 40,
+    output_tokens: 12,
+    reasoning_output_tokens: null,
+    jobs: 1,
+  };
+  act(() =>
+    FakeEventSource.latest().emit({
+      event: "analysis",
+      summary: { ...(seedFor("default", "analysis") as AnalysisSummary), usage },
+    }),
+  );
+  expect(client.getQueryData<{ analysis: { usage: unknown } }>(["tour", ID])?.analysis.usage).toEqual(usage);
+});

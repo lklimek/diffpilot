@@ -1,3 +1,5 @@
+import { SizeWarning } from "./SizeWarning";
+import type { SizeWarning as Warning } from "../../api/generated/types";
 import { useId, useState } from "react";
 import { busyTip, buttonClass } from "../button/button";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -7,12 +9,13 @@ interface PrUrlFormProps {
   initialUrl?: string;
   /** A request is running: Analyze is unavailable (aria-disabled, its tip says why). */
   busy: boolean;
+  sizeWarning?: { url: string; warning: Warning };
   /** Called with the trimmed URL. */
   onSubmit: (url: string) => void;
 }
 
 /** The one input of Home: GitHub PR URL with an example, and Analyze. */
-export function PrUrlForm({ initialUrl = "", busy, onSubmit }: PrUrlFormProps) {
+export function PrUrlForm({ initialUrl = "", busy, onSubmit, sizeWarning }: PrUrlFormProps) {
   const id = useId();
   const [url, setUrl] = useState(initialUrl);
   return (
@@ -47,6 +50,7 @@ export function PrUrlForm({ initialUrl = "", busy, onSubmit }: PrUrlFormProps) {
           </button>
         </Tooltip>
       </div>
+      {sizeWarning?.url === url.trim() && <SizeWarning warning={sizeWarning.warning} />}
       <p id={`${id}-help`} className="mt-1 text-xs text-muted">
         Example: https://github.com/owner/repo/pull/123
       </p>

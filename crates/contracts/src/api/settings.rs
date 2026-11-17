@@ -11,6 +11,10 @@ use crate::job::result::LlmCallOutcome;
 /// Response of `GET /api/v1/settings`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Settings {
+    /// Tenant usage in the server's local calendar; absent on older responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub llm_usage: Option<crate::api::usage::UsageWindows>,
     /// Outcome of the most recent LLM call; null before the first call. No on-demand check.
     pub llm_status: Option<LlmCallOutcome>,
     /// Observed MemCan connection state, without an on-demand probe.

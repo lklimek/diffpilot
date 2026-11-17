@@ -389,3 +389,25 @@ it("shows the plan part without resetting the whole-analysis clock", () => {
   expect(screen.getByText(/About 40 min left.*rough estimate from this analysis/)).toBeVisible();
   expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12");
 });
+
+it("shows provider-reported usage compactly", () => {
+  render(
+    <AnalysisProgress
+      state={{ state: "planning" }}
+      reviewHref="/review"
+      busy={false}
+      onCancel={() => {}}
+      onRetry={() => {}}
+      usage={{
+        input_tokens: 1_200_000,
+        cached_input_tokens: 900_000,
+        output_tokens: 45_000,
+        reasoning_output_tokens: null,
+        jobs: 7,
+      }}
+    />,
+  );
+  expect(
+    screen.getByText("LLM usage so far: 1.2 M input (0.9 M cached), 45 k output tokens in 7 jobs"),
+  ).toBeVisible();
+});

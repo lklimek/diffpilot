@@ -2166,6 +2166,9 @@ async fn huge_pull_request_is_planned_in_batches() {
             .script(&format!("flow:{flow}"), Script::Output(output));
     }
     let mut pull = read_json(&fixtures().join("github/rest/pull.json"))["response"].clone();
+    pull["additions"] = json!(26081);
+    pull["deletions"] = json!(1000);
+    pull["changed_files"] = json!(371);
     pull["number"] = json!(11);
     pull["html_url"] = json!("https://github.com/acme/huge/pull/11");
     pull["base"]["sha"] = json!(base);
@@ -2176,6 +2179,17 @@ async fn huge_pull_request_is_planned_in_batches() {
         .respond_with(ResponseTemplate::new(200).set_body_json(pull))
         .mount(&h.github)
         .await;
+    let (status, resolved) = h
+        .post(
+            "/api/v1/pr/resolve",
+            json!({"url": "https://github.com/acme/huge/pull/11"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        resolved["size_warning"],
+        json!({"changed_lines": 27081, "changed_files": 371, "estimate": null})
+    );
     let (status, created) = h
         .post(
             "/api/v1/analyses",

@@ -35,6 +35,7 @@ mod driver;
 pub mod ingest;
 pub mod lines;
 pub mod prepass;
+pub mod statistics;
 pub mod tour;
 pub mod unsent;
 pub mod verdict;
@@ -208,6 +209,7 @@ pub fn start(state: &AppState, analysis: AnalysisId) {
             Ok(()) => false,
             Err(error) => end(&state, analysis, error).await,
         };
+        state.statistics.forget(analysis);
         DRIVING
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

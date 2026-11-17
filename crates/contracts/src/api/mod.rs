@@ -13,3 +13,4 @@ pub mod questions;
 pub mod review;
 pub mod settings;
 pub mod tour;
+pub mod usage;

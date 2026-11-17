@@ -1,3 +1,5 @@
+import { UsageLine } from "../usage/UsageLine";
+import type { UsageWindows } from "../../api/generated/types";
 import type { LlmCallOutcome } from "../../api/generated/types";
 import { dateTimeText } from "../format/time";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -6,7 +8,7 @@ import { SettingsCard } from "./Card";
 const CHIP = "cursor-help rounded border px-1.5 text-[11px] leading-[18px] font-semibold";
 
 /** LLM status = outcome of the most recent LLM call and its time (brief §4.4); no on-demand check. */
-export function LlmStatusCard({ status }: { status: LlmCallOutcome | null }) {
+export function LlmStatusCard({ status, usage }: { status: LlmCallOutcome | null; usage?: UsageWindows }) {
   return (
     <SettingsCard title="LLM status">
       {status === null && (
@@ -31,6 +33,9 @@ export function LlmStatusCard({ status }: { status: LlmCallOutcome | null }) {
         </p>
       )}
       {status?.status.state === "not_working" && <p className="max-w-[100ch]">{status.status.message}</p>}
+      <UsageLine usage={usage?.today} label="Today" />
+      <UsageLine usage={usage?.last_7_days} label="Last 7 days" />
+      {usage && <p className="text-xs text-muted">Usage windows follow the server’s local calendar.</p>}
       <p className="text-xs text-muted">
         This is the outcome of the most recent LLM call; there is no on-demand check. Credentials stay on the
         server and never reach the browser. The first Codex login is a one-time command in the runner

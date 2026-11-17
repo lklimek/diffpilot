@@ -117,7 +117,27 @@ pub async fn resolve(
             );
             false
         });
+    let size_warning = match pull.size {
+        Some((changed_lines, changed_files)) if changed_lines >= LARGE_PR_LINES => {
+            Some(contracts::api::pr::SizeWarning {
+                changed_lines,
+                changed_files,
+                estimate: state
+                    .db
+                    .analyses()
+                    .estimate_for_size(&session.tenant_id, changed_lines)
+                    .await?,
+            })
+        }
+        _ => None,
+    };
+    state.statistics.resolved(
+        session,
+        &pull.summary,
+        size_warning.as_ref().and_then(|warning| warning.estimate),
+    );
     Ok(ResolvePrResponse {
+        size_warning,
         pr: pull.summary,
         commenting_available,
         analysis,
@@ -164,6 +184,9 @@ pub async fn create(
         Err(DbError::Conflict) => return Err(IngestError::AnalysisExists),
         Err(error) => return Err(error.into()),
     };
+    state
+        .statistics
+        .begin(record.id, session, &pull.summary, pull.size);
     // A re-analysis on a moved head starts a new agent session; the old analysis's session files are deleted.
     if let Some(old) = superseded {
         state.db.analyses().request_session_drop(old.id).await?;
@@ -187,3 +210,6 @@ pub async fn create(
         .summary_for_user(record.id, &session.user_id)
         .await?)
 }
+
+/// A non-blocking heads-up starts at this many additions plus deletions.
+const LARGE_PR_LINES: u64 = 3_000;

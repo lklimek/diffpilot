@@ -797,6 +797,14 @@ fn state(name: &str) -> BTreeMap<String, Value> {
         );
     }
     merge(&mut doc, &patch);
+    // RFC 7396 deletes nulls, so a patch creating an analysis cannot insert the nullable usage field.
+    // Materialize the current API default only here; old snapshots may still omit it (tested in api.rs).
+    if let Some(analysis) = doc
+        .pointer_mut("/pr-resolve/analysis")
+        .and_then(Value::as_object_mut)
+    {
+        analysis.entry("usage").or_insert(Value::Null);
+    }
     doc.as_object()
         .expect("object")
         .clone()

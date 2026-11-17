@@ -144,12 +144,62 @@ fn stage(done: u32, total: Option<u32>, current: bool) -> RunStage {
 }
 
 impl Analyses<'_> {
+    /// A rough pre-start estimate from the same history and formula as waiting progress.
+    pub async fn estimate_for_size(
+        &self,
+        tenant: &str,
+        lines: u64,
+    ) -> Result<Option<AnalysisEstimate>, DbError> {
+        let history = self.recent_timings(tenant, None).await?;
+        let progress = AnalysisProgress {
+            started_at: chrono::Utc::now(),
+            planning: stage(0, Some(1), true),
+            pr_context: stage(0, Some(1), false),
+            flows: stage(0, None, false),
+            finishing: stage(0, Some(1), false),
+            estimate: None,
+            percent: None,
+        };
+        Ok(estimate(&progress, &[], &history, lines))
+    }
+
+    async fn recent_timings(
+        &self,
+        tenant: &str,
+        excluding: Option<&str>,
+    ) -> Result<Vec<Timing>, DbError> {
+        let history = sqlx::query(
+            "WITH recent AS (SELECT id FROM analyses WHERE state = 'finished'
+               AND tenant_id = ?1 AND (?2 IS NULL OR id <> ?2)
+               ORDER BY finished_at DESC LIMIT 30)
+             SELECT j.kind, SUM((julianday(j.finished_at) - julianday(j.claimed_at)) * 86400) AS seconds,
+                    COUNT(DISTINCT j.stage) AS count,
+                    (SELECT body FROM documents WHERE analysis_id = a.id AND kind = 'prepass' AND key = '') AS prepass
+             FROM recent r JOIN analyses a ON a.id = r.id JOIN jobs j ON j.analysis_id = a.id AND j.round = a.round
+             WHERE j.state = 'succeeded' AND j.kind <> 'ask'
+               AND j.finished_at > j.claimed_at
+               AND (julianday(j.finished_at) - julianday(j.claimed_at)) * 86400 BETWEEN 1 AND 10800
+             GROUP BY a.id, j.kind")
+            .bind(tenant).bind(excluding).fetch_all(self.pool).await?;
+        history
+            .iter()
+            .map(|row| {
+                Ok(Timing {
+                    kind: parse_wire(&row.try_get::<String, _>("kind")?, "jobs.kind")?,
+                    seconds: row.try_get("seconds")?,
+                    count: row.try_get("count")?,
+                    lines: changed_lines(row.try_get::<Option<String>, _>("prepass")?.as_deref())?,
+                })
+            })
+            .collect::<Result<_, DbError>>()
+    }
+
     /// Adds waiting facts from the current round and recent successful runs in the same tenant.
     pub(crate) async fn add_progress(&self, summary: &mut AnalysisSummary) -> Result<(), DbError> {
         let id = summary.id.to_string();
         let mut tx = super::read_tx(self.pool).await?;
         let meta = sqlx::query(
-            "SELECT a.round,
+            "SELECT a.round, a.tenant_id,
              (SELECT json_extract(spec, '$.prompt') FROM jobs WHERE analysis_id = a.id AND kind = 'plan'
                AND generation = 0 ORDER BY round, created_at, rowid LIMIT 1) AS plan_prompt,
              (SELECT body FROM documents WHERE analysis_id = a.id AND kind = 'prepass' AND key = '') AS prepass,
@@ -171,32 +221,11 @@ impl Analyses<'_> {
              FROM jobs j JOIN analyses a ON a.id = j.analysis_id AND a.round = j.round
              WHERE a.id = ? AND j.kind <> 'ask' ORDER BY j.created_at, j.rowid")
             .bind(&id).fetch_all(&mut *tx).await?;
-        let history = sqlx::query(
-            "WITH recent AS (SELECT id FROM analyses WHERE state = 'finished'
-               AND tenant_id = (SELECT tenant_id FROM analyses WHERE id = ?1) AND id <> ?1
-               ORDER BY finished_at DESC LIMIT 30)
-             SELECT j.kind, SUM((julianday(j.finished_at) - julianday(j.claimed_at)) * 86400) AS seconds,
-                    COUNT(DISTINCT j.stage) AS count,
-                    (SELECT body FROM documents WHERE analysis_id = a.id AND kind = 'prepass' AND key = '') AS prepass
-             FROM recent r JOIN analyses a ON a.id = r.id JOIN jobs j ON j.analysis_id = a.id AND j.round = a.round
-             WHERE j.state = 'succeeded' AND j.kind <> 'ask'
-               AND j.finished_at > j.claimed_at
-               AND (julianday(j.finished_at) - julianday(j.claimed_at)) * 86400 BETWEEN 1 AND 10800
-             GROUP BY a.id, j.kind")
-            .bind(&id).fetch_all(&mut *tx).await?;
         tx.commit().await?;
         let lines = changed_lines(meta.try_get::<Option<String>, _>("prepass")?.as_deref())?;
-        let history: Vec<Timing> = history
-            .iter()
-            .map(|row| {
-                Ok(Timing {
-                    kind: parse_wire(&row.try_get::<String, _>("kind")?, "jobs.kind")?,
-                    seconds: row.try_get("seconds")?,
-                    count: row.try_get("count")?,
-                    lines: changed_lines(row.try_get::<Option<String>, _>("prepass")?.as_deref())?,
-                })
-            })
-            .collect::<Result<_, DbError>>()?;
+        let history = self
+            .recent_timings(&meta.try_get::<String, _>("tenant_id")?, Some(&id))
+            .await?;
         let mut completed: BTreeMap<String, Timing> = BTreeMap::new();
         let prompt: Option<String> = meta.try_get("plan_prompt")?;
         let mut total = prompt
@@ -579,6 +608,20 @@ mod tests {
             "SQLite floating-point time rounding: {eta:?}"
         );
         assert_eq!(progress.percent, Some(0));
+        assert_eq!(
+            db.analyses()
+                .estimate_for_size("default", 1000)
+                .await
+                .unwrap(),
+            Some(eta)
+        );
+        assert_eq!(
+            db.analyses()
+                .estimate_for_size("other-tenant", 1000)
+                .await
+                .unwrap(),
+            None
+        );
         // A successful agent job is not a finished part until its output is accepted.
         sqlx::query("UPDATE jobs SET state = 'succeeded', claimed_at = '2026-11-17T10:00:00Z', finished_at = '2026-11-17T10:05:00Z' WHERE analysis_id = ?")
             .bind(id.to_string()).execute(&db.pool).await.unwrap();

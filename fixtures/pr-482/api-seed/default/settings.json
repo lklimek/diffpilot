@@ -21,5 +21,9 @@
   "memcan_status": {
     "state": "not_checked",
     "last_success_at": null
+  },
+  "llm_usage": {
+    "today": null,
+    "last_7_days": null
   }
 }
