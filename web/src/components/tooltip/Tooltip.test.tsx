@@ -23,4 +23,34 @@ describe("Tooltip", () => {
     await user.unhover(button);
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
+
+  it("opens above a trigger near the bottom of the viewport so the tip stays visible", async () => {
+    const user = userEvent.setup();
+    render(
+      <Tooltip tip="Near the bottom">
+        <button type="button">Low</button>
+      </Tooltip>,
+    );
+    const button = screen.getByRole("button", { name: "Low" });
+    const wrapper = button.parentElement!;
+    const top = window.innerHeight - 30;
+    wrapper.getBoundingClientRect = () => new DOMRect(10, top, 40, 20);
+    await user.hover(button);
+    const tip = screen.getByRole("tooltip");
+    expect(tip.style.bottom).toBe(`${window.innerHeight - top + 4}px`);
+    expect(tip.style.top).toBe("");
+  });
+
+  it("opens below a trigger with room under it", async () => {
+    const user = userEvent.setup();
+    render(
+      <Tooltip tip="Room below">
+        <button type="button">High</button>
+      </Tooltip>,
+    );
+    const button = screen.getByRole("button", { name: "High" });
+    button.parentElement!.getBoundingClientRect = () => new DOMRect(10, 100, 40, 20);
+    await user.hover(button);
+    expect(screen.getByRole("tooltip").style.top).toBe("124px");
+  });
 });

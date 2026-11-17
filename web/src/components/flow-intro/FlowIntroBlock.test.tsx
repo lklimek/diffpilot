@@ -1,16 +1,17 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
-import type { Tour } from "../../api/generated/types";
-import { expectTrustWording, toursByState } from "../../__tests__/wording";
-import { seedFor } from "../../mocks/fixtures";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
+import type { ReviewState, Tour } from "../../api/generated/types";
+import { expectTrustWording } from "../../__tests__/wording";
+import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import { FlowIntroBlock } from "./FlowIntroBlock";
 
 const tour = seedFor("default", "tour") as Tour;
-const [f1, , f3, , f5] = tour.flows as [Tour["flows"][number], ...Tour["flows"]];
+const [f1, f2, f3, , f5] = tour.flows as [Tour["flows"][number], ...Tour["flows"]];
 
 describe("FlowIntroBlock", () => {
   it("shows title, LLM risk, the three introduction fields and the LLM line", () => {
-    render(<FlowIntroBlock flow={f1} dependencies={[f3!, f5!]} />);
+    render(<FlowIntroBlock flow={f1} dependencies={[f3!, f5!]} ticked={[]} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("1 Send an RPC request with retry");
     const llm = screen.getByRole("region", { name: "LLM analysis" });
     expect(within(llm).getByText("LLM analysis unless marked otherwise.")).toBeInTheDocument();
@@ -23,25 +24,71 @@ describe("FlowIntroBlock", () => {
     expect(screen.queryByText("Was wrong")).not.toBeInTheDocument();
   });
 
-  it("lists the deterministic facts apart from the LLM content", () => {
-    render(<FlowIntroBlock flow={f1} dependencies={[]} />);
-    const facts = screen.getByRole("region", { name: "Facts" });
-    expect(facts).toHaveTextContent("10 steps");
-    for (const file of f1.facts.files) expect(facts).toHaveTextContent(file);
+  it("lists the steps and files of the LLM's split under the LLM analysis, not under a no-LLM subtitle (UX-007)", () => {
+    render(<FlowIntroBlock flow={f1} dependencies={[]} ticked={[]} />);
+    expect(screen.queryByText(/no LLM/)).not.toBeInTheDocument();
+    const llm = screen.getByRole("region", { name: "LLM analysis" });
+    const dd = within(llm).getByText("Steps").nextElementSibling!;
+    expect(dd).toHaveTextContent("10 steps in");
+    for (const file of f1.facts.files) expect(dd).toHaveTextContent(file);
+  });
+
+  it("shows how many of its steps are reviewed", () => {
+    render(<FlowIntroBlock flow={f1} dependencies={[]} ticked={["f1.1", "f1.2", "f2.1"]} />);
+    expect(screen.getByText("2 of 10 steps reviewed")).toBeInTheDocument();
+  });
+
+  it("marks the whole flow reviewed and back through the callback", async () => {
+    const onSetReviewed = vi.fn();
+    const { rerender } = render(
+      <FlowIntroBlock flow={f2!} dependencies={[]} ticked={["f2.1"]} onSetReviewed={onSetReviewed} />,
+    );
+    const button = screen.getByRole("button", { name: /Mark flow reviewed/ });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(button).toHaveAccessibleDescription(/all steps of this flow/i);
+    await userEvent.click(button);
+    expect(onSetReviewed).toHaveBeenLastCalledWith(true);
+    rerender(
+      <FlowIntroBlock flow={f2!} dependencies={[]} ticked={["f2.1", "f2.2"]} onSetReviewed={onSetReviewed} />,
+    );
+    expect(screen.getByText("2 of 2 steps reviewed")).toBeInTheDocument();
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(button);
+    expect(onSetReviewed).toHaveBeenLastCalledWith(false);
+  });
+
+  it("offers no tick button without a callback", () => {
+    render(<FlowIntroBlock flow={f1} dependencies={[]} ticked={[]} />);
+    expect(screen.queryByRole("button", { name: /Mark flow reviewed/ })).not.toBeInTheDocument();
   });
 
   it("labels LLM-classified refactors and keeps them a normal flow", () => {
     const flow = structuredClone(f1);
     flow.group = "llm_classified_refactor";
     flow.llm.classification = "refactor_pure";
-    render(<FlowIntroBlock flow={flow} dependencies={[]} />);
+    render(<FlowIntroBlock flow={flow} dependencies={[]} ticked={[]} />);
     expect(screen.getByText("LLM-classified refactor")).toBeInTheDocument();
     expect(screen.getByText("Problem (before this PR)")).toBeVisible();
   });
 
-  it.each(toursByState)("keeps the wording rules in state %s", (_, stateTour) => {
+  it("labels LLM-classified tests and shows them like any flow", () => {
+    const flow = structuredClone(f1);
+    flow.group = "llm_classified_tests";
+    flow.llm.classification = "test";
+    render(<FlowIntroBlock flow={flow} dependencies={[]} ticked={[]} />);
+    expect(screen.getByText("LLM-classified tests")).toBeInTheDocument();
+    expect(screen.getByText("Change (what this PR does)")).toBeVisible();
+  });
+
+  it.each(FIXTURE_STATES)("renders every flow and keeps the wording rules in state %s", (state) => {
+    const stateTour = seedFor(state, "tour") as Tour;
+    const { ticked_steps } = seedFor(state, "review-state") as ReviewState;
     for (const flow of stateTour.flows) {
-      const { container, unmount } = render(<FlowIntroBlock flow={flow} dependencies={[]} />);
+      const { container, unmount } = render(
+        <FlowIntroBlock flow={flow} dependencies={[]} ticked={ticked_steps} onSetReviewed={() => {}} />,
+      );
+      expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(flow.llm.title);
+      expect(screen.getByText(/of \d+ steps? reviewed/)).toBeInTheDocument();
       expectTrustWording(container.textContent ?? "");
       unmount();
     }
