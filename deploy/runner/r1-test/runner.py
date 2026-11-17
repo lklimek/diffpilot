@@ -825,7 +825,8 @@ def zombie_leader_job(sup):
 def agent_reach(sup, key, path):
     """What an agent of job `key` gets when it lists `path` and reads `path/left`."""
     r = run(sup, ["/bin/sh", "-c", f"ls {path} && cat {path}/left"], key)
-    return r.status, r.out.decode(errors="replace").strip()[:80], r.err.decode(errors="replace").strip()[:120]
+    text = [v.decode(errors="replace") if isinstance(v, bytes) else str(v) for v in (r.out, r.err)]
+    return r.status, text[0].strip()[:80], text[1].strip()[:120]
 
 
 def quarantine_state(path):
