@@ -1,6 +1,6 @@
 // TanStack Query hooks over the API client; used by screens only (components get props).
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   AnalysisId,
   AnalysisSummary,
@@ -11,7 +11,6 @@ import type {
   PendingReview,
   RangeQuery,
   RepoRef,
-  ReviewState,
   StepId,
 } from "./generated/types";
 import { api } from "./client";
@@ -22,10 +21,6 @@ export const useMe = () => useQuery({ queryKey: ["me"], queryFn: api.getMe });
 /** The finished analysis's tour. */
 export const useTour = (id: AnalysisId) =>
   useQuery({ queryKey: ["tour", id], queryFn: () => api.getTour(id) });
-
-/** The user's review state of an analysis. */
-export const useReviewState = (id: AnalysisId) =>
-  useQuery({ queryKey: ["review-state", id], queryFn: () => api.getReviewState(id) });
 
 /** Lines of a range; disabled while `query` is undefined. */
 export const useLines = (id: AnalysisId, query: RangeQuery | undefined) =>
@@ -44,43 +39,6 @@ export const useDiff = (id: AnalysisId, query: RangeQuery | undefined) =>
     enabled: query !== undefined,
     staleTime: Infinity,
   });
-
-/**
- * Changes the review state: the cache changes at once; with `persist` the state is also saved, one request at a
- * time, sending only the newest state waiting (latest wins). `error` is the last failure, cleared by a success.
- */
-export function useSaveReviewState(id: AnalysisId, persist: boolean) {
-  const client = useQueryClient();
-  const queue = useRef<{ running: boolean; next: ReviewState | null }>({ running: false, next: null });
-  const [error, setError] = useState<unknown>(null);
-  const save = useCallback(
-    (change: (state: ReviewState) => ReviewState) => {
-      const key = ["review-state", id];
-      const state = change(client.getQueryData<ReviewState>(key) ?? { ticked_steps: [], last_viewed: null });
-      client.setQueryData(key, state);
-      if (!persist) return;
-      const q = queue.current;
-      q.next = state;
-      if (q.running) return;
-      q.running = true;
-      void (async () => {
-        while (q.next) {
-          const next = q.next;
-          q.next = null;
-          try {
-            await api.putReviewState(id, next);
-            setError(null);
-          } catch (e) {
-            setError(e);
-          }
-        }
-        q.running = false;
-      })();
-    },
-    [client, id, persist],
-  );
-  return { save, error };
-}
 
 /** Questions asked about the analysis's steps, with their LLM answers. */
 export const useQuestions = (id: AnalysisId) =>

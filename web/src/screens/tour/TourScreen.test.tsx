@@ -1,11 +1,11 @@
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { HttpResponse, http } from "msw";
+import { HttpResponse, delay, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisSummary, AskQuestion } from "../../api/generated/types";
+import type { AnalysisSummary, AskQuestion, ReviewState } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { readStore } from "../../mocks/review-store";
 import { setScenario } from "../../mocks/scenarios";
@@ -236,6 +236,51 @@ describe("Tour screen (brief §4.3)", () => {
     );
     await user().keyboard("j");
     expect(readStore("reviewState").last_viewed).toEqual({ block: "step", step_id: "f1.5" });
+  });
+
+  it("leaving and reopening while a save is slow keeps one queue: the newest block is stored last (QA-004)", async () => {
+    const finished: ReviewState[] = [];
+    server.use(
+      http.put("/api/v1/analyses/:id/review-state", async ({ request }) => {
+        const body = (await request.json()) as ReviewState;
+        if (body.last_viewed?.block === "flow_intro") await delay(150);
+        finished.push(body);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const router = await open();
+    await user().keyboard("j");
+    await act(() => router.navigate("/"));
+    await act(() => router.navigate(`/analyses/${ID}`));
+    await waitFor(() => expect(blockHeading()).toHaveTextContent("Send an RPC request with retry"));
+    await user().keyboard("j");
+    await waitFor(() => expect(finished.at(-1)?.last_viewed).toEqual({ block: "step", step_id: "f1.1" }));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(finished.map((b) => b.last_viewed?.block)).toEqual(["pr_context", "flow_intro", "step"]);
+  });
+
+  it("after a failed read, reopening never writes before the stored ticks were read (QA-002)", async () => {
+    const written: ReviewState[] = [];
+    server.use(
+      http.get(
+        "/api/v1/analyses/:id/review-state",
+        () => HttpResponse.json({ code: "internal", message: "Down." }, { status: 500 }),
+        { once: true },
+      ),
+      http.put("/api/v1/analyses/:id/review-state", async ({ request }) => {
+        written.push((await request.json()) as ReviewState);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    const router = await open("resume");
+    await user().keyboard("j");
+    await act(() => router.navigate("/"));
+    await act(() => router.navigate(`/analyses/${ID}`));
+    await waitFor(() => expect(blockHeading()).toHaveTextContent("5 Retry allowed?"));
+    expect(within(main()).queryByRole("alert")).toBeNull();
+    await user().keyboard("x");
+    await waitFor(() => expect(written.length).toBeGreaterThan(0));
+    expect(written.every((w) => w.ticked_steps.includes("f2.1"))).toBe(true);
   });
 
   it("keeps the trust wording in every fixture state", async () => {

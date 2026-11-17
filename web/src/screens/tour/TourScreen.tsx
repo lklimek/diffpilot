@@ -8,7 +8,6 @@ import type {
   CommentTarget,
   LinesResponse,
   PendingComment,
-  ReviewState,
   Step,
   StepId,
   Tour,
@@ -18,10 +17,9 @@ import {
   useLines,
   useMe,
   usePendingReview,
-  useReviewState,
-  useSaveReviewState,
   useTour,
 } from "../../api/queries";
+import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
 import type { LineRef } from "../../components/code-view/CodeView";
 import type { UnresolvedPosts } from "../../components/comment/CommentComposer";
@@ -75,7 +73,7 @@ export function TourScreen() {
   const { analysisId = "" } = useParams();
   const me = useMe();
   const tour = useTour(analysisId);
-  const reviewState = useReviewState(analysisId);
+  const review = useReviewStateStore(analysisId);
   const login = me.data?.user?.login ?? null;
 
   if (tour.error instanceof ApiError && tour.error.code === "analysis_not_finished") {
@@ -89,7 +87,7 @@ export function TourScreen() {
       </Shell>
     );
   }
-  if (tour.isPending || reviewState.isPending) {
+  if (tour.isPending || review.status === "loading") {
     return (
       <Shell login={login}>
         <StatusMessage kind="loading">Loading the review…</StatusMessage>
@@ -102,8 +100,7 @@ export function TourScreen() {
       key={analysisId}
       analysisId={analysisId}
       tour={tour.data}
-      stored={reviewState.data}
-      storedError={reviewState.error}
+      review={review}
       login={login}
     />
   );
@@ -112,25 +109,20 @@ export function TourScreen() {
 interface TourViewProps {
   analysisId: AnalysisId;
   tour: Tour;
-  /** The review state (cache; changes with every save); undefined when it could not be read. */
-  stored: ReviewState | undefined;
-  /** Why the review state could not be read. */
-  storedError: unknown;
+  /** Ticks and last viewed block of this analysis. */
+  review: ReturnType<typeof useReviewStateStore>;
   login: string | null;
 }
 
-function TourView({ analysisId, tour, stored, storedError, login }: TourViewProps) {
-  // A state that could not be read is never overwritten: changes then stay on this page.
-  const [loadError] = useState(storedError);
-  const { save, error: saveError } = useSaveReviewState(analysisId, loadError === null);
+function TourView({ analysisId, tour, review, login }: TourViewProps) {
+  const { state, change: save, loadError, saveError } = review;
   const pending = usePendingReview(analysisId);
   const comments = useCommentActions(analysisId);
-  const state = stored ?? { ticked_steps: [], last_viewed: null };
   const ticked = state.ticked_steps;
 
   const sequence = useMemo(() => buildSequence(tour), [tour]);
   const [current, setCurrent] = useState<BlockRef>(() => {
-    const last = stored?.last_viewed;
+    const last = state.last_viewed;
     const known =
       last &&
       (sequence.some((b) => sameBlock(b, last)) || last.block === "quiet" || last.block === "pending_review");
@@ -398,7 +390,7 @@ function TourView({ analysisId, tour, stored, storedError, login }: TourViewProp
   }
 
   const progressAlert =
-    loadError !== null
+    review.status === "unreadable"
       ? `Your ticks and last viewed block could not be read, so changes are not saved: ${errorText(loadError)}`
       : saveError !== null
         ? `Your ticks and last viewed block are not saved: ${errorText(saveError)}`
