@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { ANALYSIS_ID, expectTrustWording, openTour } from "./support";
 
 const heading = (page: import("@playwright/test").Page) =>
-  page.getByRole("main").getByRole("heading", { level: 2 }).first();
+  page.locator("main h2:not([data-column-title])").first();
 
 test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ page }) => {
   await page.goto("/");
@@ -304,5 +304,44 @@ test("widths stored on a 21:9 screen leave the centre usable at 1440 px and afte
   await expect
     .poll(async () => (await page.getByRole("main").boundingBox())!.width)
     .toBeGreaterThanOrEqual(320);
-  await expect(page.getByRole("main").getByRole("heading", { level: 2 }).first()).toBeVisible();
+  await expect(page.locator("main h2:not([data-column-title])").first()).toBeVisible();
+});
+
+test("1440: the inspector's classic diff stays inside the column and scrolls on its own (UX-108)", async ({
+  page,
+}) => {
+  await openTour(page, "wrong");
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Flow 3:/ })
+    .click();
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Step 1:/ })
+    .click();
+  const column = page.getByRole("complementary", { name: "Inspector" });
+  const diff = column.getByRole("region", { name: /^Classic diff of / });
+  await expect(diff).toBeVisible();
+  const [box, columnBox] = [await diff.boundingBox(), await column.boundingBox()];
+  expect(box!.x + box!.width).toBeLessThanOrEqual(columnBox!.x + columnBox!.width);
+  const overflow = await diff.evaluate((el) => el.scrollWidth > el.clientWidth);
+  expect(overflow).toBe(true);
+});
+
+test("1440: while a comment is written its line reference stays in view (UX-109)", async ({ page }) => {
+  await openTour(page, "missed");
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Flow 1:/ })
+    .click();
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Step 2:/ })
+    .click();
+  await page.getByRole("button", { name: "Comment on line 96" }).click();
+  const dock = page.getByRole("group", { name: "Ask, feedback and comment" });
+  await dock.evaluate((el) => el.scrollTo({ top: el.scrollHeight }));
+  await expect(dock.getByText("On src/rpc/client.rs:96")).toBeInViewport({ ratio: 1 });
+  await dock.evaluate((el) => el.scrollTo({ top: 0 }));
+  await expect(dock.getByText("On src/rpc/client.rs:96")).toBeInViewport({ ratio: 1 });
 });

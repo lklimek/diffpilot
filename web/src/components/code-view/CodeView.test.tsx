@@ -112,17 +112,17 @@ describe("CodeView", () => {
     }
   });
 
-  it.each<[RiskBand | null, string, string]>([
+  it.each<[RiskBand, string, string]>([
     ["high", "solid", "▲ HIGH"],
     ["medium", "dashed", "◆ MEDIUM"],
     ["low", "dotted", "● LOW"],
-    [null, "dotted", "◇ not rated"],
   ])(
     "styles the bar by the step band %s (%s) with a label strip, never in the accent colour",
     (band, style, text) => {
       render(<CodeView lines={plain(1, ["a", "b"])} annotations={[note("x.a1", 2, 2)]} band={band} />);
       const highlight = document.querySelector("[data-highlight]")!;
-      expect(highlight).toHaveAttribute("data-band", band ?? "none");
+      expect(highlight).toHaveAttribute("data-band", band);
+      expect(highlight).toHaveAttribute("data-bar", style);
       expect(highlight.className).toContain(`border-${style}`);
       expect(highlight.className).not.toMatch(/accent/);
       expect(
@@ -130,6 +130,18 @@ describe("CodeView", () => {
       ).toBeInTheDocument();
     },
   );
+
+  it("draws an unrated remark with a thin neutral line, not the LOW pattern, and says so in the tooltip (UX-102)", () => {
+    render(<CodeView lines={plain(1, ["a", "b"])} annotations={[note("x.a1", 2, 2)]} band={null} />);
+    const highlight = document.querySelector("[data-highlight]")!;
+    expect(highlight).toHaveAttribute("data-band", "none");
+    expect(highlight).toHaveAttribute("data-bar", "thin");
+    expect(highlight.className).not.toMatch(/border-(dotted|dashed|double)|accent/);
+    const label = within(highlight as HTMLElement).getByText("LLM remark: question");
+    expect(label).toHaveTextContent(/^LLM remark: question$/);
+    expect(highlight).not.toHaveTextContent("◇");
+    expect(label).toHaveAccessibleDescription(/Risk not rated by the LLM/);
+  });
 
   it("keeps line numbers and code in the same columns inside and outside a highlight (UX-002)", () => {
     render(<CodeView {...stepProps("f1.2")} />);
@@ -144,7 +156,7 @@ describe("CodeView", () => {
     const marks = screen.getAllByRole("mark");
     expect(marks).toHaveLength(1);
     expect(marks[0]).toHaveAttribute("data-highlight");
-    expect(marks[0]).toHaveAccessibleDescription(/^Was: /);
+    expect(marks[0]).toHaveAccessibleDescription(/Was: /);
   });
 
   it("states only was → is in the hover tooltip of a highlight", async () => {

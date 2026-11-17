@@ -89,11 +89,19 @@ describe("CommentComposer", () => {
     expect(addButton()).toBeInTheDocument();
   });
 
-  it("offers the GitHub link instead of a field for a file outside the PR diff", () => {
-    setup({ line: { ...line96, placement: "not_in_diff" } });
+  it("offers the GitHub link instead of a field for a file outside the PR diff, without the raw URL (UX-112)", () => {
+    const permalink = "https://github.com/acme/node-client/blob/52d2da1/src/sync/peers.rs#L20";
+    setup({
+      line: {
+        target: { path: "src/sync/peers.rs", side: "head", start_line: null, line: 20 },
+        placement: "not_in_diff",
+        permalink,
+      },
+    });
     expect(screen.queryByRole("textbox")).toBeNull();
-    expect(document.body).toHaveTextContent("This file is not part of the PR diff");
-    expect(screen.getByRole("link", { name: /Open the line on GitHub/ })).toHaveAttribute("href", PERMALINK);
+    expect(document.body).toHaveTextContent("On src/sync/peers.rs:20. This file is not part of the PR diff");
+    expect(screen.getByRole("link", { name: "line 20 on GitHub ↗" })).toHaveAttribute("href", permalink);
+    expect(document.body).not.toHaveTextContent("https://");
   });
 
   it("asks for text instead of posting an empty comment", async () => {

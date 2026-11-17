@@ -47,6 +47,29 @@ describe("msw handlers from fixtures/pr-482", () => {
     }
   });
 
+  it("remove one feedback value of the analysis; an unknown id is not_found", async () => {
+    const api = createApiClient(BASE);
+    const created = await api.postFeedback(ID, {
+      target: { target: "step", step_id: "f1.5" },
+      value: "wrong",
+      note: null,
+    });
+    await api.postFeedback(ID, {
+      target: { target: "step", step_id: "f1.5" },
+      value: "irrelevant",
+      note: null,
+    });
+    await api.deleteFeedback(ID, created.id);
+    const left = (await api.listFeedback(ID)).filter(
+      (f) => JSON.stringify(f.target) === '{"target":"step","step_id":"f1.5"}',
+    );
+    expect(left.map((f) => f.value)).toEqual(["irrelevant"]);
+    await expect(api.deleteFeedback(ID, created.id)).rejects.toMatchObject({
+      status: 404,
+      code: "not_found",
+    });
+  });
+
   it("answer the slice flow: resolve, create, tour", async () => {
     const api = createApiClient(BASE);
     const resolved = await api.resolvePr({ url: "https://github.com/acme/node-client/pull/482" });

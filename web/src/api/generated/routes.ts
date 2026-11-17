@@ -22,6 +22,7 @@ export const routes = {
   askQuestion: { method: "POST", path: "/api/v1/analyses/{id}/steps/{step_id}/questions", auth: "session_csrf" },
   listFeedback: { method: "GET", path: "/api/v1/analyses/{id}/feedback", auth: "session" },
   postFeedback: { method: "POST", path: "/api/v1/analyses/{id}/feedback", auth: "session_csrf" },
+  deleteFeedback: { method: "DELETE", path: "/api/v1/analyses/{id}/feedback/{feedback_id}", auth: "session_csrf" },
   getPendingReview: { method: "GET", path: "/api/v1/analyses/{id}/pending-review", auth: "session" },
   createComment: { method: "POST", path: "/api/v1/analyses/{id}/pending-review/comments", auth: "session_csrf" },
   updateComment: { method: "PATCH", path: "/api/v1/analyses/{id}/pending-review/comments/{comment_id}", auth: "session_csrf" },

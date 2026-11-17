@@ -1,5 +1,11 @@
 import { useId, useState } from "react";
-import type { Feedback, FeedbackRequest, FeedbackTarget, UserFeedbackValue } from "../../api/generated/types";
+import type {
+  Feedback,
+  FeedbackId,
+  FeedbackRequest,
+  FeedbackTarget,
+  UserFeedbackValue,
+} from "../../api/generated/types";
 import { growField, useAction } from "../inspector/action";
 import { Tooltip } from "../tooltip/Tooltip";
 
@@ -13,14 +19,22 @@ export interface FeedbackButtonsProps {
   feedback: readonly Feedback[];
   /** Stores a value with the optional note (POST …/feedback); a rejection shows its message. */
   onSubmit: (request: FeedbackRequest) => Promise<unknown> | void;
+  /** Removes a stored value (DELETE …/feedback/{feedback_id}): pressing a pressed value again. */
+  onRemove: (id: FeedbackId) => Promise<unknown> | void;
 }
 
 const VALUES: [UserFeedbackValue, string][] = [
   ["correct", "The remark or rating is right."],
   ["wrong", "The remark is factually wrong."],
   ["irrelevant", "True, but not worth a reviewer's attention."],
-  ["overrated", "The risk level is too high. Also saved as a severity calibration example."],
-  ["underrated", "The risk level is too low. Also saved as a severity calibration example."],
+  [
+    "overrated",
+    "The risk level is too high. Kept with your feedback; when MemCan is reachable, also stored there as a severity calibration example.",
+  ],
+  [
+    "underrated",
+    "The risk level is too low. Kept with your feedback; when MemCan is reachable, also stored there as a severity calibration example.",
+  ],
 ];
 
 function sameTarget(a: FeedbackTarget, b: FeedbackTarget): boolean {
@@ -35,7 +49,7 @@ const BUTTON =
   "cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold text-text hover:border-accent aria-pressed:border-accent aria-pressed:bg-accent-bg disabled:cursor-wait disabled:opacity-60";
 
 /** correct / wrong / irrelevant / overrated / underrated with an optional note (brief §3 Feedback). */
-export function FeedbackButtons({ target, subject, feedback, onSubmit }: FeedbackButtonsProps) {
+export function FeedbackButtons({ target, subject, feedback, onSubmit, onRemove }: FeedbackButtonsProps) {
   const id = useId();
   const heading = (
     <h3 id={`${id}-h`} className="text-[10.5px] font-bold tracking-wide text-muted uppercase">
@@ -62,6 +76,7 @@ export function FeedbackButtons({ target, subject, feedback, onSubmit }: Feedbac
         subject={subject}
         feedback={feedback}
         onSubmit={onSubmit}
+        onRemove={onRemove}
       />
     </section>
   );
@@ -72,10 +87,12 @@ function FeedbackForm({
   subject,
   feedback,
   onSubmit,
+  onRemove,
 }: FeedbackButtonsProps & { target: FeedbackTarget }) {
   const action = useAction();
   const [draft, setDraft] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [removed, setRemoved] = useState<string | null>(null);
   const mine = feedback.filter((f) => sameTarget(f.target, target));
   const chosen = mine.filter(
     (f): f is Feedback & { value: UserFeedbackValue } => f.value !== "missed_by_llm",
@@ -86,26 +103,37 @@ function FeedbackForm({
   const note = draft ?? storedNote;
   const submit = async (value: UserFeedbackValue) => {
     setSaved(null);
+    setRemoved(null);
     const request: FeedbackRequest = { target, value, note: note.trim() || null };
     if (await action.run(() => onSubmit(request))) setSaved(value);
+  };
+  const remove = async (entry: Feedback & { value: UserFeedbackValue }) => {
+    setSaved(null);
+    setRemoved(null);
+    if (await action.run(() => onRemove(entry.id))) setRemoved(entry.value);
   };
 
   return (
     <>
       <div role="group" aria-label={`Feedback on ${subject}`} className="flex flex-wrap gap-1.5">
-        {VALUES.map(([value, tip]) => (
-          <Tooltip key={value} tip={tip}>
-            <button
-              type="button"
-              aria-pressed={chosen.some((f) => f.value === value)}
-              disabled={action.busy}
-              onClick={() => void submit(value)}
-              className={BUTTON}
-            >
-              {value}
-            </button>
-          </Tooltip>
-        ))}
+        {VALUES.map(([value, tip]) => {
+          const stored = chosen.find((f) => f.value === value);
+          // TODO(WP3-MEMCAN merge): show the entry's MemCan sync state (`Feedback.memory`: not_applicable |
+          // pending | written | failed) on a pressed button instead of the conditional wording of the tooltip.
+          return (
+            <Tooltip key={value} tip={stored ? `${tip} Pressed: press again to remove it.` : tip}>
+              <button
+                type="button"
+                aria-pressed={stored !== undefined}
+                disabled={action.busy}
+                onClick={() => void (stored ? remove(stored) : submit(value))}
+                className={BUTTON}
+              >
+                {value}
+              </button>
+            </Tooltip>
+          );
+        })}
       </div>
       {mine.some((f) => f.value === "missed_by_llm") && (
         <p className="mt-1 text-[12px] text-muted">
@@ -144,6 +172,11 @@ function FeedbackForm({
       {saved && (
         <p role="status" className="mt-1 text-[12px] text-muted">
           Feedback saved: {saved}.
+        </p>
+      )}
+      {removed && (
+        <p role="status" className="mt-1 text-[12px] text-muted">
+          Feedback removed: {removed}.
         </p>
       )}
     </>

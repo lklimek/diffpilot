@@ -23,6 +23,7 @@ export const postFeedback = route(
       value: body.value,
       note: body.note,
       created_at: new Date().toISOString(),
+      memory: "pending",
     };
     updateStore((store) => {
       store.feedback = [
