@@ -20,8 +20,8 @@ address, so the runner reaches only the server's runner listener and the proxy),
 
 ## First deploy
 
-Requirements: Docker Engine 28.0 or newer (bridge gateway mode `isolated` of the runner network; the stack does
-not start on older engines), Docker Compose 2.24.4 or newer (`!override` in the local variant), about 15 GB free
+Requirements: Docker Engine 28.0 or newer (bridge gateway mode `isolated` of the runner network; older engines
+ignore the option, and the runner's preflight then refuses to start with exit 78), Docker Compose 2.24.4 or newer (`!override` in the local variant), about 15 GB free
 disk for images and build cache, plus the codex-homes image. Check: `docker version -f '{{.Server.Version}}'`.
 
 1. Checkout (any user with access to `/srv/smart-review`):
@@ -214,9 +214,13 @@ smart-review-runner-1` show the last exit.
 |---|---|---|---|
 | 70 | runner | The supervisor's job-end sweep could not prove every agent process gone within `SR_SUPERVISOR_SWEEP_DEADLINE_MS`; it ended the container (fail closed, ADR-013). The restart starts clean. | Repeated exits (`docker inspect -f '{{.RestartCount}}'`): read the runner log before the exit; an agent may be resisting the sweep. Stop the runner (`sr stop runner`) if it loops. |
 | 71 | runner | The supervisor could not set itself up (capabilities, uids, control socket). | Check that the compose file's `cap_add`, `init` and `ipc` are unchanged and the image is the production image. |
-| 78 | runner | Preflight refused: codex-homes is missing, not ext4, mounted without `nosuid,nodev,noexec`, or larger than the limits (or, local stack only, a tmpfs with a non-localhost `SR_PUBLIC_URL`). The log line says which. | Run `prepare-codex-homes.sh` again; check `findmnt /srv/smart-review/codex-homes` and `SR_CODEX_HOMES_DIR`. |
+| 78 | runner | Preflight refused. Either codex-homes is missing, not ext4, mounted without `nosuid,nodev,noexec`, or larger than the limits (or, local stack only, a tmpfs with a non-localhost `SR_PUBLIC_URL`); or the runner network is not isolated (a default route, or a gateway address answers). The log line says which. | Filesystem: run `prepare-codex-homes.sh` again; check `findmnt /srv/smart-review/codex-homes` and `SR_CODEX_HOMES_DIR`. Network: upgrade Docker Engine to 28.0 or newer, keep the runner network's `gateway_mode_*: isolated` options, then `sr down && sr up -d` (networks are created anew). |
 | 64 | egress-proxy | `SR_MEMCAN_URL` is not `http(s)://host[:port][/path]`. | Fix `.env`, `sr up -d`. |
 | 65 | egress-proxy | The MemCan host name of `SR_MEMCAN_URL` does not resolve (the proxy pins its address at start). | Check DNS from the host (`getent hosts HOST`); the proxy retries with every restart. |
+
+**MemCan moved to another address:** the proxy keeps the address it resolved at its start, so agents keep
+connecting to the old one (and get nothing) until `sr restart egress-proxy`. The server resolves on every
+connection. Update MemCan's allow-list if the source addresses change (First deploy, step 5).
 | 1 | server, runner | Configuration or start-up error; the log's last line names the variable. | Fix `.env`, `sr up -d`. |
 
 ## Rotating the runner secret

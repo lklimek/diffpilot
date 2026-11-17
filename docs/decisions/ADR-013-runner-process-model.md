@@ -136,7 +136,14 @@ Network (T4): the runner is only on the `runner` network, `internal: true` **and
 (IPv4 and IPv6; Docker Engine 28.0+). `internal` alone removes the route out but keeps a host address on the
 bridge, through which host services listening on that address or `0.0.0.0` stay reachable without the proxy;
 `isolated` assigns no host address. The runner reaches only the server's runner listener and the egress proxy
-(`deploy/test-stack.sh`, `runner_reaches_no_host_service`).
+(`deploy/test-stack.sh`, `runner_reaches_no_host_service`). An Engine older than 28.0 ignores the unknown option
+without an error, so the preflight also proves isolation from inside the container before the runner starts:
+no IPv4 or IPv6 default route, and no gateway candidate (the first address of every attached subnet and every
+route's next hop, own addresses excluded) answers a TCP connect on a few common ports within 1 s; a connection or
+a refusal means an IP stack answers there and ends the start with exit 78, naming Engine 28.0 and the option
+(`runner_preflight_refuses_unisolated_network`). A container added to the runner network by hand at the subnet's
+first address also trips the check; compose pins every address. `SR_RUNNER_DEV_HOST_GATEWAY=1` skips it for the
+development smoke only (rejected by `check-production-config.sh` and the image check).
 
 ## Rust implementation (WP3-RUN)
 `smart-review-supervisor` in `crates/runner` (`src/supervisor/`, `src/supervisor_main.rs`); the crate forbids
