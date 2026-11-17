@@ -3,5 +3,6 @@
 
 pub mod claim;
 pub mod executor;
+pub mod github_tokens;
 pub mod progress;
 pub mod queue;
