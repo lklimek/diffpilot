@@ -12,6 +12,7 @@ use axum::response::Response;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{TimeDelta, Utc};
+use contracts::routes::{HttpMethod, Listener, ROUTES, RouteAuth};
 use db::repo::DEFAULT_TENANT;
 use db::repo::Db;
 use db::repo::sessions::NewSession;
@@ -590,6 +591,72 @@ async fn csrf_required_for_cookie_mutations() {
         ))
         .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+/// `path` with every `{param}` replaced by a well-formed id.
+fn with_placeholder_ids(path: &str) -> String {
+    let mut uri = String::new();
+    let mut rest = path;
+    while let Some((head, tail)) = rest.split_once('{') {
+        uri.push_str(head);
+        uri.push_str("00000000-0000-4000-8000-000000000000");
+        rest = tail.split_once('}').map_or("", |(_, after)| after);
+    }
+    uri + rest
+}
+
+/// Every state-changing public route of the generated route table rejects a missing or wrong CSRF token before it
+/// acts, so a route added later cannot skip the check (threat model T7a). A route the router does not serve yet
+/// (bare 404, no API error body) cannot change state and is skipped.
+#[tokio::test]
+async fn csrf_required_on_mutations() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let mut checked = 0;
+    for route in ROUTES
+        .iter()
+        .filter(|route| route.listener == Listener::Public && route.method != HttpMethod::Get)
+    {
+        assert_eq!(route.auth, RouteAuth::SessionCsrf, "{}", route.path);
+        let uri = with_placeholder_ids(route.path);
+        for csrf in [None, Some("wrong-token"), Some("")] {
+            let mut request = Request::builder()
+                .method(route.method.as_str())
+                .uri(&uri)
+                .header(COOKIE, &signed_in.cookie)
+                .header("content-type", "application/json");
+            if let Some(csrf) = csrf {
+                request = request.header(CSRF_HEADER, csrf);
+            }
+            let response = h
+                .send(request.body(Body::from("{}")).expect("request"))
+                .await;
+            let status = response.status();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            if status == StatusCode::NOT_FOUND && body.is_empty() {
+                continue;
+            }
+            let case = format!("{} {uri} with {csrf:?}: {body:?}", route.method.as_str());
+            assert_eq!(status, StatusCode::FORBIDDEN, "{case}");
+            let error: Value = serde_json::from_slice(&body).expect("API error");
+            assert_eq!(error["code"], "csrf_rejected", "{case}");
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 3 * 10,
+        "too few served mutations checked: {checked}"
+    );
+    assert_eq!(
+        me_login(&h, &signed_in.cookie).await.as_deref(),
+        Some("lklimek"),
+        "rejected requests changed nothing"
+    );
 }
 
 #[tokio::test]
