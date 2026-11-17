@@ -17,9 +17,21 @@ const FIXTURE_SECRETS: [string, string][] = [
   ["installation token", "fixture-installation-token-482"],
 ];
 const LOGS = ["server.log", "runner.log", "fake-github.log", "fake-memcan.log"];
-/** 43 base64url characters on their own, with upper case, lower case and a digit: a random 32-byte token. */
-const RANDOM_TOKEN =
-  /(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
+/** 43 base64url characters on their own: the shape of a random 32-byte token, whatever characters it drew. */
+const RANDOM_TOKEN = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
+/**
+ * Known non-secrets of that shape, excluded explicitly: hex digests (hex only; a random token is all hex with
+ * probability (22/64)^43). Other long ids in the logs cannot match the shape: commit SHAs (40 hex), UUIDs (36,
+ * with hyphens), ULIDs (26), SHA-256 digests (64), paths and module names (`/`, `.`, `:`).
+ */
+const NOT_SECRETS: RegExp[] = [/^[0-9a-fA-F]+$/];
+
+/** Runs of `text` shaped like a random 32-byte token in base64url, known non-secrets excluded. */
+export function randomTokens(text: string): string[] {
+  return [...text.matchAll(RANDOM_TOKEN)]
+    .map((match) => match[0])
+    .filter((run) => !NOT_SECRETS.some((known) => known.test(run)));
+}
 
 /** What fake GitHub issued (`GET /_fake/app-credentials`). */
 export interface GithubCredentials {
@@ -65,8 +77,8 @@ export function logLeaks(stack: Stack, secrets: [string, string][]): string[] {
     for (const [name, value] of [...secrets, ...stack.secrets]) {
       if (value.length >= 8 && text.includes(value)) leaks.push(`${log}: the value of ${name}`);
     }
-    for (const match of text.matchAll(RANDOM_TOKEN)) {
-      leaks.push(`${log}: a random token (job or session token shape) "${match[0].slice(0, 6)}…"`);
+    for (const token of randomTokens(text)) {
+      leaks.push(`${log}: a random token (job or session token shape) "${token.slice(0, 6)}…"`);
     }
   }
   return leaks;
