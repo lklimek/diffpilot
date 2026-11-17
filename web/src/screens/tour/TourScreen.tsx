@@ -107,6 +107,7 @@ export function TourScreen() {
       <FlowIntroBlock
         flow={flow}
         dependencies={data.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
+        ticked={reviewState.data?.ticked_steps ?? []}
       />
     );
   } else if (current.block === "step") {
@@ -133,7 +134,13 @@ export function TourScreen() {
       <TopBar pr={data.analysis.pr} ci={data.pr_context.facts.ci} login={login} />
       <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[var(--width-nav)_minmax(0,1fr)]">
         <nav aria-label="Flows and steps" className="overflow-auto border-r border-border bg-surface p-3.5">
-          <NavList flows={data.flows} current={current} onSelect={go} />
+          <NavList
+            flows={data.flows}
+            quiet={data.quiet}
+            ticked={reviewState.data?.ticked_steps ?? []}
+            current={current}
+            onSelect={go}
+          />
         </nav>
         <main id="main" ref={main} tabIndex={-1} className="overflow-auto px-6 pt-4 pb-10">
           {block ?? <StatusMessage kind="empty">This block is not part of the analysis.</StatusMessage>}

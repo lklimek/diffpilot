@@ -1,16 +1,31 @@
 import { useId, type ReactNode } from "react";
-import type { Assessment, Step } from "../../api/generated/types";
+import type { Assessment, ImpactRef, PatternRepetition, Step, StepId } from "../../api/generated/types";
 import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
 import { KindLabel, RiskLabel } from "../badge/LlmLabel";
 import { evidenceText, rangeText } from "../section/format";
 import { LlmLine, Section, Subhead } from "../section/Section";
 import { Tooltip } from "../tooltip/Tooltip";
+import { ReviewToggle } from "./ReviewToggle";
 
 interface StepBlockProps {
   /** The step. */
   step: Step;
   /** The code of the step (code view, or its loading / error state). */
   code: ReactNode;
+  /** The flow's pattern repetitions; those explained in this step show as "Same pattern × N". */
+  patterns?: PatternRepetition[];
+  /** Code of an impact reference outside the diff, shown under it; text only without it. */
+  impactCode?: (impact: ImpactRef) => ReactNode;
+  /** Whether the user ticked this step. */
+  reviewed?: boolean;
+  /** Ticks (`true`) or unticks (`false`) the step; no button without it. */
+  onSetReviewed?: (reviewed: boolean) => void;
+  /** Number of the user's pending comments on this step's lines. */
+  ownComments?: number;
+  /** "Show old code" toggle (the old code itself is drawn in the code slot); no button without it. */
+  oldCode?: { shown: boolean; onToggle: () => void };
+  /** Opens another step (pattern sites that lie in a step). */
+  onSelectStep?: (step: StepId) => void;
 }
 
 const ORIGIN = {
@@ -19,6 +34,23 @@ const ORIGIN = {
   unclear: "unclear",
 } as const;
 const BLOCKING = { blocks_this_pr: "blocks this PR", follow_up: "follow-up" } as const;
+const HATCH = "bg-[image:repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]";
+const BUTTON =
+  "cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold whitespace-nowrap text-text hover:border-accent aria-pressed:border-accent aria-pressed:bg-accent-bg";
+
+// Only server-built GitHub links become links (threat model T12); anything else stays text.
+const isGithubUrl = (url: string) => url.startsWith("https://github.com/");
+
+function GithubLink({ url, tip, children }: { url: string; tip: string; children: ReactNode }) {
+  if (!isGithubUrl(url)) return <span className="font-mono text-xs">{children}</span>;
+  return (
+    <Tooltip tip={tip}>
+      <a href={url} target="_blank" rel="noopener noreferrer" className="font-mono text-xs">
+        {children} ↗
+      </a>
+    </Tooltip>
+  );
+}
 
 function AssessmentBody({ assessment }: { assessment: Assessment }) {
   const rows: [string, ReactNode][] = [
@@ -47,13 +79,156 @@ function AssessmentBody({ assessment }: { assessment: Assessment }) {
   );
 }
 
-/** Step block: header, deterministic facts, the four LLM facts, code slot, questions, collapsed assessment. */
-export function StepBlock({ step, code }: StepBlockProps) {
+function Markers({ step, ownComments }: { step: Step; ownComments: number }) {
+  const remarks = step.llm.annotations.length;
+  const threads = step.facts.thread_ids.length;
+  const items: [string, string][] = [];
+  if (remarks > 0) {
+    items.push([
+      `◆ ${remarks} LLM ${remarks === 1 ? "remark" : "remarks"}`,
+      "LLM annotations in this step; their lines are highlighted in the code. LLM analysis.",
+    ]);
+  }
+  if (threads > 0) {
+    items.push([
+      `${threads} GitHub ${threads === 1 ? "thread" : "threads"}`,
+      "Existing GitHub review threads on lines of this step (from GitHub); listed in the inspector.",
+    ]);
+  }
+  if (ownComments > 0) {
+    items.push([
+      `▣ ${ownComments} your ${ownComments === 1 ? "comment" : "comments"}`,
+      "Your comments in the GitHub pending review on lines of this step.",
+    ]);
+  }
+  if (items.length === 0) return null;
+  return (
+    <ul
+      aria-label="Markers in this step"
+      className="m-0 flex list-none flex-wrap gap-2 p-0 text-xs text-muted"
+    >
+      {items.map(([text, tip]) => (
+        <li key={text}>
+          <Tooltip tip={tip}>
+            <span tabIndex={0} className="cursor-help">
+              {text}
+            </span>
+          </Tooltip>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function CodeSlot({ step, changed, children }: { step: Step; changed: number; children: ReactNode }) {
+  if (step.llm.kind !== "context") return <div data-code-slot>{children}</div>;
+  return (
+    <div
+      data-code-slot
+      data-context
+      className={`rounded-md border-l-[5px] border-dotted border-mv-bd ${HATCH}`}
+    >
+      <p className="px-2 py-0.5 text-[11px] font-semibold text-muted">
+        Context: unchanged code that connects the flow;{" "}
+        {changed === 0 ? "no changed lines" : `${changed} changed ${changed === 1 ? "line" : "lines"}`} (from
+        the diff)
+      </p>
+      {children}
+    </div>
+  );
+}
+
+function Impact({
+  impacts,
+  impactCode,
+}: {
+  impacts: ImpactRef[];
+  impactCode?: StepBlockProps["impactCode"];
+}) {
+  return (
+    <Section title="Impact outside the diff" tone="llm">
+      <LlmLine />
+      <ul className="m-0 grid list-none gap-2.5 p-0 text-[12.5px]">
+        {impacts.map((impact) => (
+          <li key={`${impact.file}:${impact.range.start_line}`}>
+            <p className="flex flex-wrap items-center gap-2">
+              <code className="font-semibold">{impact.file}</code>
+              {impact.symbol && <span className="text-muted">{impact.symbol}</span>}
+              <GithubLink
+                url={impact.github_url}
+                tip="Open these lines on GitHub at the head commit (new tab)"
+              >
+                L{rangeText(impact.range)}
+              </GithubLink>
+            </p>
+            <p>
+              {impact.reason} <span className="text-muted">({impact.basis})</span>
+            </p>
+            {impactCode?.(impact)}
+          </li>
+        ))}
+      </ul>
+    </Section>
+  );
+}
+
+function Pattern({
+  pattern,
+  onSelectStep,
+}: {
+  pattern: PatternRepetition;
+  onSelectStep?: (s: StepId) => void;
+}) {
+  return (
+    <details className="rounded-lg border border-border bg-surface px-4 py-2 text-[12.5px]">
+      <summary className="cursor-pointer font-semibold">Same pattern × {pattern.sites.length}</summary>
+      <p className="mt-1.5 text-[11.5px] text-llm">LLM analysis unless marked otherwise.</p>
+      <p className="mt-1">{pattern.description}</p>
+      <ul className="m-0 mt-1 list-disc pl-5">
+        {pattern.sites.map((site) => {
+          const where = `${site.file}:${rangeText(site.range)}`;
+          return (
+            <li key={`${where}:${site.side}`}>
+              <GithubLink url={site.github_url} tip="Open these lines on GitHub (new tab)">
+                {where}
+                {site.side === "base" && " (base)"}
+              </GithubLink>
+              {site.step_id && onSelectStep && (
+                <button
+                  type="button"
+                  aria-label={`Open step for ${where}`}
+                  onClick={() => onSelectStep(site.step_id!)}
+                  className="ml-2 cursor-pointer text-accent underline"
+                >
+                  Open step
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </details>
+  );
+}
+
+/** Step block: header with ticks and markers, facts, the four LLM facts, code slot, impact, patterns, assessment. */
+export function StepBlock({
+  step,
+  code,
+  patterns = [],
+  impactCode,
+  reviewed = false,
+  onSetReviewed,
+  ownComments = 0,
+  oldCode,
+  onSelectStep,
+}: StepBlockProps) {
   const headingId = useId();
   const questionsId = useId();
   const { facts, llm } = step;
   const changed = facts.changed_lines.reduce((n, r) => n + r.end_line - r.start_line + 1, 0);
   const questions = llm.annotations.filter((a) => a.type === "question");
+  const repeated = patterns.filter((p) => p.explained_in === step.id);
   const fourFacts: [string, string][] = [
     ["Called by", llm.called_by],
     ["Decides or changes", llm.decides],
@@ -72,11 +247,29 @@ export function StepBlock({ step, code }: StepBlockProps) {
         <KindLabel kind={llm.kind} />
         <code className="font-semibold">{facts.file}</code>
         {llm.symbol && <span className="text-muted">{llm.symbol}</span>}
-        <Tooltip tip={`Open these lines on GitHub at the ${facts.side} commit (new tab)`}>
-          <a href={facts.github_url} target="_blank" rel="noopener noreferrer" className="font-mono text-xs">
-            L{rangeText(facts.range)} ↗
-          </a>
-        </Tooltip>
+        <GithubLink
+          url={facts.github_url}
+          tip={`Open these lines on GitHub at the ${facts.side} commit (new tab)`}
+        >
+          L{rangeText(facts.range)}
+        </GithubLink>
+        <Markers step={step} ownComments={ownComments} />
+        <span className="flex-1" />
+        {oldCode && (
+          <Tooltip tip="Show or hide the classic diff of this step (d)">
+            <button type="button" aria-pressed={oldCode.shown} onClick={oldCode.onToggle} className={BUTTON}>
+              Show old code
+            </button>
+          </Tooltip>
+        )}
+        {onSetReviewed && (
+          <ReviewToggle
+            label="Mark reviewed"
+            tip="Tick this step as reviewed by you (x); a flow is reviewed when all its steps are ticked."
+            pressed={reviewed}
+            onChange={onSetReviewed}
+          />
+        )}
       </header>
       {/* Wide (21:9): facts and LLM text on the left, the code beside them (mockup .stepgrid). */}
       <div className="grid content-start gap-3 p-3 @[1300px]:grid-cols-[minmax(380px,560px)_minmax(0,1fr)]">
@@ -114,7 +307,11 @@ export function StepBlock({ step, code }: StepBlockProps) {
             ))}
           </dl>
         </Section>
-        <div className="min-w-0 @[1300px]:col-start-2 @[1300px]:row-span-3 @[1300px]:row-start-1">{code}</div>
+        <div className="min-w-0 @[1300px]:col-start-2 @[1300px]:row-span-3 @[1300px]:row-start-1">
+          <CodeSlot step={step} changed={changed}>
+            {code}
+          </CodeSlot>
+        </div>
         <Section title="Questions and assessment" tone="llm">
           <LlmLine />
           <Subhead>
@@ -144,6 +341,14 @@ export function StepBlock({ step, code }: StepBlockProps) {
             )}
           </details>
         </Section>
+        {(llm.impact.length > 0 || repeated.length > 0) && (
+          <div className="grid min-w-0 gap-3 @[1300px]:col-span-2">
+            {llm.impact.length > 0 && <Impact impacts={llm.impact} impactCode={impactCode} />}
+            {repeated.map((p) => (
+              <Pattern key={p.description} pattern={p} onSelectStep={onSelectStep} />
+            ))}
+          </div>
+        )}
       </div>
     </article>
   );
