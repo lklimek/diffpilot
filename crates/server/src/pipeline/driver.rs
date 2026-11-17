@@ -35,8 +35,8 @@ use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::model::{ModelContext, select_model};
 use crate::prompts::{
-    self, FlowInput, JobContext, PlanBatch, PlanInput, PrContextInput, Profile, PromptThread,
-    RepairInput, RepairOf,
+    self, FlowInput, JobContext, PlanBatch, PlanInput, PrContextInput, Profile, PromptError,
+    PromptThread, RepairInput, RepairOf,
 };
 use crate::review::{self, GithubSnapshot};
 use crate::state::AppState;
@@ -157,7 +157,7 @@ impl Driver<'_> {
                         self.batch_plans.insert(batch, plan);
                     }
                     _ => {
-                        self.submit(&mut updates, JobStage::Plan { batch }, 0, None)
+                        self.submit_first(&mut updates, JobStage::Plan { batch })
                             .await?
                     }
                 }
@@ -165,8 +165,7 @@ impl Driver<'_> {
             self.merge_when_planned(&mut updates).await?;
         }
         if self.results.pr_context.is_none() {
-            self.submit(&mut updates, JobStage::PrContext, 0, None)
-                .await?;
+            self.submit_first(&mut updates, JobStage::PrContext).await?;
         }
         while let Some((stage, generation, item)) = updates.next().await {
             // Any update after a pause means the job runs (or ended) again.
@@ -290,7 +289,7 @@ impl Driver<'_> {
         self.set_progress().await?;
         for id in ids {
             if !self.ended.contains_key(&id) {
-                self.submit(updates, JobStage::Flow(id), 0, None).await?;
+                self.submit_first(updates, JobStage::Flow(id)).await?;
             }
         }
         Ok(())
@@ -401,12 +400,23 @@ impl Driver<'_> {
                 rejected: &output,
                 attempt: generation + 1,
             };
-            return self
-                .submit(updates, stage, generation + 1, Some(repair))
-                .await;
+            match self.prompt(&stage, Some(&repair)) {
+                Ok(prompt) => return self.submit(updates, stage, generation + 1, prompt).await,
+                // A rejected output too large to quote cannot be repaired: the stage ends as if exhausted.
+                Err(PipelineError::Prompt(PromptError::OverBudget {
+                    kind: "repair",
+                    bytes,
+                    ..
+                })) => {
+                    tracing::warn!(analysis = %self.analysis, stage = %stage.key(), bytes,
+                        "rejected agent output too large for a repair run");
+                }
+                Err(error) => return Err(error),
+            }
+        } else {
+            tracing::warn!(analysis = %self.analysis, stage = %stage.key(), issues = ?codes,
+                "agent output still rejected after every repair run");
         }
-        tracing::warn!(analysis = %self.analysis, stage = %stage.key(), issues = ?codes,
-            "agent output still rejected after every repair run");
         match stage {
             JobStage::Flow(id) => {
                 self.ended.insert(id, FlowEnd::Unexplained);
@@ -551,6 +561,16 @@ impl Driver<'_> {
         Ok(prompt)
     }
 
+    /// Submits the stage's first run (generation 0).
+    async fn submit_first(
+        &mut self,
+        updates: &mut Updates,
+        stage: JobStage,
+    ) -> Result<(), PipelineError> {
+        let prompt = self.prompt(&stage, None)?;
+        self.submit(updates, stage, 0, prompt).await
+    }
+
     /// Submits the stage's job at `generation` (idempotent per stage and generation) and follows its updates.
     /// Jobs carry a context pack of the stored results; the analysis's session is set when a runner claims it.
     async fn submit(
@@ -558,10 +578,9 @@ impl Driver<'_> {
         updates: &mut Updates,
         stage: JobStage,
         generation: u32,
-        repair: Option<Repair<'_>>,
+        prompt: String,
     ) -> Result<(), PipelineError> {
         let kind = stage.kind();
-        let prompt = self.prompt(&stage, repair.as_ref())?;
         let pr = &self.summary.pr;
         let changed_lines = changed_line_count(&self.facts.files);
         let spec = JobSpec {

@@ -19,6 +19,8 @@ use contracts::api::tour::GithubThread;
 use contracts::common::LineSide;
 use contracts::ids::{CommitSha, FlowId};
 
+use crate::prompts::{self, PromptThread};
+
 /// Verification could not run (a rejection is not an error: it comes back as issues).
 #[derive(Debug, thiserror::Error)]
 pub enum VerdictError {
@@ -104,17 +106,19 @@ pub fn flow_threads<'t>(
     out
 }
 
-/// Only the aliases of [`flow_threads`].
+/// The aliases each flow's prompt lists (`prompts::listed_thread_aliases`): threads past `prompts::MAX_THREADS`
+/// are not in the prompt, so verification must not require a status for them.
 pub fn alias_map(
     threads: &BTreeMap<FlowId, Vec<(String, &GithubThread)>>,
 ) -> BTreeMap<FlowId, Vec<String>> {
     threads
         .iter()
         .map(|(id, listed)| {
-            (
-                id.clone(),
-                listed.iter().map(|(alias, _)| alias.clone()).collect(),
-            )
+            let prompt_threads: Vec<PromptThread<'_>> = listed
+                .iter()
+                .map(|(alias, thread)| PromptThread { alias, thread })
+                .collect();
+            (id.clone(), prompts::listed_thread_aliases(&prompt_threads))
         })
         .collect()
 }
@@ -319,5 +323,21 @@ mod tests {
             "base line of the hunk"
         );
         assert_eq!(listed[&FlowId("f2".to_owned())], ["t1", "t2"]);
+    }
+
+    #[test]
+    fn verification_requires_only_the_threads_in_the_prompt() {
+        let many: Vec<GithubThread> = (0..prompts::MAX_THREADS + 5)
+            .map(|_| thread("src/a.rs", Some(10), LineSide::Head))
+            .collect();
+        let listed: Vec<(String, &GithubThread)> = many
+            .iter()
+            .enumerate()
+            .map(|(index, thread)| (thread_alias(index), thread))
+            .collect();
+        let aliases = alias_map(&BTreeMap::from([(FlowId("f1".to_owned()), listed)]));
+        let aliases = &aliases[&FlowId("f1".to_owned())];
+        assert_eq!(aliases.len(), prompts::MAX_THREADS);
+        assert_eq!(aliases.last().map(String::as_str), Some("t50"));
     }
 }
