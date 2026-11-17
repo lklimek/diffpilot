@@ -84,15 +84,19 @@ pub(super) fn check(text: &str) -> Option<Unplain> {
     None
 }
 
-/// `https://github.com/…` without user info or port.
+/// `https://github.com/…` without user info or an explicit port (not even the default `:443`).
 fn github(link: &str) -> bool {
-    Url::parse(link).is_ok_and(|url| {
-        url.scheme() == "https"
-            && url.host_str() == Some("github.com")
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.port().is_none()
-    })
+    let authority = link.split_once("://").map_or("", |(_, rest)| {
+        rest.split(['/', '?', '#']).next().unwrap_or("")
+    });
+    !authority.contains([':', '@'])
+        && Url::parse(link).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str() == Some("github.com")
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.port().is_none()
+        })
 }
 
 /// `text` with closed fenced code blocks and inline code spans replaced by a space; an unclosed fence is prose.
@@ -107,8 +111,9 @@ fn without_code(text: &str) -> String {
         });
         match (&mut fenced, opener) {
             (None, Some(opened)) => fenced = Some((opened, vec![line])),
+            // A closing fence holds only fence characters (ASCII, so `length` bytes) and whitespace.
             (Some(((mark, count), _)), Some((found, length)))
-                if found == *mark && length >= *count =>
+                if found == *mark && length >= *count && trimmed[length..].trim().is_empty() =>
             {
                 fenced = None;
                 prose.push(' ');

@@ -510,6 +510,9 @@ fn ask_rejects_markup_and_links_outside_github() {
         "In code `curl https://evil.example/x`?",
         "[x]: https://evil.example/x",
         "Unclosed fence?\n```\nA<br>B",
+        "Fake close?\n```rust\nlet x = 1;\n``` <br>",
+        "Fake close?\n```\nlet x = 1;\n```[x](//evil.example/a)",
+        "Read https://github.com:443/acme/x?",
     ];
     for answer in rejected {
         assert_eq!(
@@ -529,6 +532,7 @@ fn ask_rejects_markup_and_links_outside_github() {
         "Does ``Vec<`u8`>`` change?",
         "Is std::fmt::Display used, or a // comment in `// keep <b>`?",
         "Is 3 < 4 and a <= b?",
+        "Closed with spaces?\n```rust\nlet v: Vec<u8> = vec![];\n```   \nDone?",
     ];
     for answer in allowed {
         assert_eq!(
