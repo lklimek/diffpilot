@@ -32,7 +32,7 @@ export function Collapsible({ sectionKey, title, tone, source, sections, childre
           aria-expanded={open}
           aria-controls={`${id}-b`}
           onClick={() => sections.toggle(sectionKey)}
-          className={`flex w-full cursor-pointer items-baseline gap-1.5 rounded py-0.5 text-left font-bold before:inline-block before:w-3 before:text-muted ${open ? "before:content-['▾']" : "before:content-['▸']"} ${tone === "llm" ? "text-llm" : "text-text"}`}
+          className={`flex min-h-6 w-full cursor-pointer items-baseline gap-1.5 rounded py-0.5 text-left font-bold before:inline-block before:w-3 before:text-muted ${open ? "before:content-['▾']" : "before:content-['▸']"} ${tone === "llm" ? "text-llm" : "text-text"}`}
         >
           {title}
         </button>

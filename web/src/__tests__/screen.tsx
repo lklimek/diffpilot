@@ -4,11 +4,13 @@ import { render } from "@testing-library/react";
 import { setupServer } from "msw/node";
 import { createMemoryRouter, RouterProvider, type InitialEntry } from "react-router";
 import { afterAll, afterEach, beforeAll } from "vitest";
+import { reviewStates } from "../api/review-state";
 import { appRoutes } from "../app/routes";
 import { setFixtureState } from "../mocks/fixtures";
 import { handlers } from "../mocks/handlers";
 import { setMockLanguage } from "../mocks/handlers/get-settings";
 import { resetLive } from "../mocks/live-analysis";
+import { resetStore } from "../mocks/review-store";
 import { setScenario } from "../mocks/scenarios";
 
 /** Starts the msw server for the file's tests and resets every mock state after each test. */
@@ -21,6 +23,8 @@ export function startMockServer() {
     setScenario(null);
     setMockLanguage(null);
     resetLive();
+    resetStore();
+    reviewStates.reset();
   });
   afterAll(() => server.close());
   return server;
