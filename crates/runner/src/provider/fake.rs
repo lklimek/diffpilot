@@ -75,6 +75,7 @@ pub const SCRIPT_ENV: &str = "SR_RUNNER_FAKE_SCRIPT";
 #[derive(Debug, Default)]
 pub struct FakeProvider {
     step_delay: Duration,
+    archive_turns: bool,
     running: Mutex<HashMap<JobId, Arc<Notify>>>,
     script: Option<PathBuf>,
     /// Applications per script rule id.
@@ -124,6 +125,38 @@ impl FakeProvider {
     pub fn with_script(mut self, path: PathBuf) -> Self {
         self.script = Some(path);
         self
+    }
+
+    /// Records fake prompt rollouts to exercise real runner archive routing in isolation tests.
+    pub fn with_archives(mut self) -> Self {
+        self.archive_turns = true;
+        self
+    }
+
+    async fn turn(
+        &self,
+        call: &ProviderCall,
+        events: &mpsc::Sender<ProviderEvent>,
+        resume: bool,
+    ) -> Result<ProviderOutcome, ProviderError> {
+        let prior = if self.archive_turns && resume {
+            std::fs::read_to_string(call.restore_dir.join("fake-rollout.txt"))
+                .map_err(|_| ProviderError::SessionUnavailable)?
+        } else {
+            String::new()
+        };
+        let mut outcome = self.replay(call, events).await?;
+        if self.archive_turns {
+            std::fs::create_dir_all(&call.session_dir)?;
+            std::fs::write(
+                call.session_dir.join("fake-rollout.txt"),
+                format!("{prior}\n{}", call.prompt),
+            )?;
+            if outcome.session_id.is_none() {
+                outcome.session_id = Some("fake-thread".to_owned());
+            }
+        }
+        Ok(outcome)
     }
 
     /// The action of the first script rule matching the call that has uses left; counts the use.
@@ -232,7 +265,7 @@ impl LlmProvider for FakeProvider {
         call: &'a ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        Box::pin(async move { self.replay(call, &events).await })
+        Box::pin(async move { self.turn(call, &events, false).await })
     }
 
     fn resume<'a>(
@@ -241,7 +274,7 @@ impl LlmProvider for FakeProvider {
         call: &'a ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        Box::pin(async move { self.replay(call, &events).await })
+        Box::pin(async move { self.turn(call, &events, true).await })
     }
 
     fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
@@ -378,6 +411,7 @@ mod tests {
             job_dir: PathBuf::new(),
             codex_home: PathBuf::new(),
             session_dir: PathBuf::new(),
+            restore_dir: PathBuf::new(),
             prompt: prompt.to_owned(),
             output_schema: spec.output_schema,
             model: spec.model,

@@ -1,5 +1,5 @@
 //! Analysis state changes that race with a running driver: guarded state writes, cancel (partial results and the
-//! agent session discarded) and retry. Every write goes through `ProgressHub::update`, so a guard and its write
+//! PR sessions retained) and retry. Every write goes through `ProgressHub::update`, so a guard and its write
 //! are one step for every writer of the analysis.
 
 use chrono::Utc;
@@ -174,7 +174,7 @@ async fn user_pause(
 }
 
 /// Cancels a live or failed analysis: state `cancelled`, then every unfinished job cancelled, the stored results
-/// deleted and the agent session dropped. A running driver ends when its jobs report `cancelled`.
+/// deleted and both PR sessions retained. A running driver ends when its jobs report `cancelled`.
 pub async fn cancel(
     state: &AppState,
     analysis: AnalysisId,
@@ -192,11 +192,11 @@ pub async fn cancel(
     Ok(summary)
 }
 
-/// Cancels the analysis's jobs, requests deletion of the PR session and deletes its stored documents.
+/// Cancels the analysis's jobs and deletes its stored documents, retaining both PR sessions.
 /// Idempotent: the driver repeats it when it sees the cancellation, so a document it stored meanwhile goes too.
 pub async fn discard(state: &AppState, analysis: AnalysisId) -> Result<(), ControlError> {
     state.executor.cancel_analysis(analysis).await?;
-    let deleted = state.db.analyses().discard_cancelled(analysis).await?;
+    let deleted = state.db.documents().delete_for_analysis(analysis).await?;
     tracing::debug!(%analysis, documents = deleted, "partial analysis results discarded");
     Ok(())
 }
@@ -225,7 +225,7 @@ pub async fn retry(
     Ok(summary)
 }
 
-/// Finishes the clean-up of cancellations a crash interrupted (state stored, jobs, documents or session left);
+/// Finishes the clean-up of cancellations a crash interrupted (state stored, jobs or documents left);
 /// idempotent. Runs at start-up before runner claims are served; claims skip jobs of cancelled analyses meanwhile.
 pub async fn recover_cancellations(state: &AppState) -> Result<usize, ControlError> {
     let pending = state.db.analyses().cancellations_to_finish().await?;
@@ -319,11 +319,11 @@ mod tests {
             .expect("documents");
         assert!(documents.is_empty(), "documents left: {documents:?}");
         let record = db.analyses().get(analysis).await.expect("analysis");
-        assert_eq!(record.session_state, SessionState::DropRequested);
+        assert_eq!(record.session_state, SessionState::Active);
         assert_eq!(record.agent_thread_id.as_deref(), Some("thread-1"));
     }
 
-    /// A crash after any durable step of a cancel (state, jobs, documents, session) is completed at start-up.
+    /// A crash after any durable step of a cancel (state, jobs, documents) is completed at start-up.
     #[tokio::test]
     async fn restart_after_each_cancel_step_finishes_the_clean_up() {
         for done in 1..=3 {
@@ -342,8 +342,8 @@ mod tests {
                     .expect("jobs");
             }
             if done >= 3 {
-                db.analyses()
-                    .discard_cancelled(analysis)
+                db.documents()
+                    .delete_for_analysis(analysis)
                     .await
                     .expect("discard");
             }
@@ -359,16 +359,142 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn cancel_keeps_analytic_and_private_working_sessions() {
+        use contracts::job::result::{JobOutcome, JobResult, SessionOutcome, SessionReport};
+        let db = Db::in_memory().await.unwrap();
+        let state = AppState::with_queue(test_config(), db.clone());
+        let (id, jobs) = live(&db).await;
+        let q = contracts::ids::QuestionId::new_random();
+        db.questions()
+            .create(
+                db::repo::questions::NewQuestion {
+                    id: q,
+                    analysis_id: id,
+                    step_id: contracts::ids::StepId("f1.1".into()),
+                    user_id: "u1".into(),
+                    text: "why?".into(),
+                },
+                db::repo::questions::QuestionLimits {
+                    per_analysis: 10,
+                    per_user: 10,
+                    user_window_start: Utc::now() - TimeDelta::days(1),
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let spec = job_spec(id, JobKind::Ask);
+        let ask = db
+            .jobs()
+            .enqueue(
+                NewJob {
+                    spec,
+                    stage: JobStage::Ask(q),
+                    generation: 0,
+                    priority: JobPriority::Interactive,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        db.jobs()
+            .complete(
+                &JobResult {
+                    job_id: jobs[0],
+                    attempt: 1,
+                    outcome: JobOutcome::Succeeded { output: json!({}) },
+                    session: Some(SessionReport {
+                        outcome: SessionOutcome::Started,
+                        thread_id: "analytic-thread".into(),
+                    }),
+                    usage: None,
+                    skills_commit: None,
+                    llm_call: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        db.jobs()
+            .claim(ClaimParams {
+                credential_ids: &[CREDENTIAL.into()],
+                job_token_hash: b"ask",
+                lease_until: Utc::now() + TimeDelta::seconds(60),
+                now: Utc::now(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        db.jobs()
+            .complete(
+                &JobResult {
+                    job_id: ask.id,
+                    attempt: 1,
+                    outcome: JobOutcome::Succeeded { output: json!({}) },
+                    session: Some(SessionReport {
+                        outcome: SessionOutcome::Started,
+                        thread_id: "working-thread".into(),
+                    }),
+                    usage: None,
+                    skills_commit: None,
+                    llm_call: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            db.agent_sessions()
+                .working(1, "u1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("working-thread")
+        );
+        let generation = db.agent_sessions().generation(1).await.unwrap();
+        cancel(&state, id).await.unwrap();
+        discard(&state, id).await.unwrap();
+        assert_eq!(
+            db.analyses()
+                .get(id)
+                .await
+                .unwrap()
+                .agent_thread_id
+                .as_deref(),
+            Some("analytic-thread")
+        );
+        assert_eq!(db.agent_sessions().generation(1).await.unwrap(), generation);
+        assert_eq!(
+            db.agent_sessions()
+                .working(1, "u1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("working-thread")
+        );
+        assert!(
+            db.analyses()
+                .pending_session_drops()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.documents()
+                .list::<serde_json::Value>(id, DocumentKind::Flow)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn late_cancel_cleanup_keeps_the_next_analysis_session() {
         let db = Db::in_memory().await.unwrap();
         let state = AppState::with_queue(test_config(), db.clone());
         let (old, _) = live(&db).await;
         cancel(&state, old).await.unwrap();
         let record = db.analyses().get(old).await.unwrap();
-        db.analyses()
-            .ack_session_drops(&[record.pull_request_id])
-            .await
-            .unwrap();
         let fresh = db
             .analyses()
             .create(

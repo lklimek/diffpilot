@@ -73,7 +73,7 @@ impl ApiErrorSource for QuestionsApiError {
                 Cow::Borrowed("The step is not part of this analysis. Reload the review.")
             }
             Self::Ask(AskError::AnalysisLimit) => Cow::Owned(format!(
-                "This analysis holds {MAX_QUESTIONS_PER_ANALYSIS} questions, the most allowed."
+                "You have {MAX_QUESTIONS_PER_ANALYSIS} questions on this analysis, the most allowed."
             )),
             Self::Ask(AskError::UserLimit) => Cow::Owned(format!(
                 "You asked {MAX_QUESTIONS_PER_USER_PER_HOUR} questions in the last hour, the most allowed. \

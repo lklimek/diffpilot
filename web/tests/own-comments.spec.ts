@@ -101,3 +101,36 @@ for (const colorScheme of ["light", "dark"] as const) {
     await page.close();
   });
 }
+
+test("two readers of a shared analysis keep questions and comment drafts private", async ({ browser }) => {
+  const contextA = await browser.newContext();
+  const contextB = await browser.newContext();
+  try {
+    const a = await contextA.newPage();
+    const b = await contextB.newPage();
+    await openTour(a);
+    await openStep(a, 1, 2);
+    const question = "PRIVATE_READER_A_QUESTION";
+    await a.getByRole("textbox", { name: /^Ask the LLM about / }).fill(question);
+    await a.getByRole("button", { name: "Ask", exact: true }).click();
+    await expect(
+      a.getByRole("list", { name: "Questions asked about this step" }).getByText(question),
+    ).toBeVisible();
+    await a.getByRole("button", { name: "Comment on line 96" }).click();
+    await a
+      .getByRole("textbox", { name: /^Comment on src\/rpc\/client\.rs:96/ })
+      .fill("PRIVATE_READER_A_DRAFT");
+    await openTour(b);
+    await openStep(b, 1, 2);
+    await expect(b.getByText(question)).toHaveCount(0);
+    await expect(b.getByText("PRIVATE_READER_A_DRAFT", { exact: true })).toHaveCount(0);
+    await expect(b.getByRole("textbox", { name: /^Comment on / })).toHaveCount(0);
+    await expect(b.getByText(/asked by colleague/)).toHaveCount(0);
+    await expect(a.getByRole("textbox", { name: /^Comment on src\/rpc\/client\.rs:96/ })).toHaveValue(
+      "PRIVATE_READER_A_DRAFT",
+    );
+  } finally {
+    await contextA.close();
+    await contextB.close();
+  }
+});

@@ -210,7 +210,7 @@ export function AnalysisProgress({
   const userPaused = state.state === "paused" && state.reason === "user";
   const done =
     state.state === "running" || state.state === "paused" ? state.done : (progress?.flows.done ?? 0);
-  const cancelText = `Cancel discards the plan, the ${done} analysed flows and the agent session. Pause keeps them.`;
+  const cancelText = `Cancel discards the plan and the ${done} analysed flows. The agent's session for this pull request is kept. Pause keeps everything.`;
   const live = state.state !== "finished" && state.state !== "cancelled";
   const stage = stageText(state);
   const started =

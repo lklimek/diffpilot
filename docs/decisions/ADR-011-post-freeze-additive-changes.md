@@ -98,9 +98,10 @@ not that every tool or profile lookup succeeded.
 | `Blocking::NoActionProposed` (`no_action_proposed`) | Rate bounded exposure without inventing a defect, blocking action or follow-up; never suppress the assessment to represent absence of an action. |
 
 ### Owner-approved PR session lifecycle (2026-11-17)
+
 | Change | Reason |
 |---|---|
-| `JobSpec.pull_request_id`; `SessionRef { pull_request_id, thread_id }`; numeric PR keys in `drop_sessions` / `dropped_sessions` | One agent session across every head, language, Retry and Ask of a PR (ADR-004). |
+| `JobSpec.pull_request_id`; `SessionRef { pull_request_id, thread_id }`; numeric PR keys in `drop_sessions` / `dropped_sessions` | One analytic session across every head, language and Retry of a PR; Ask uses private forks as specified below (ADR-004). |
 | Move `agent_thread_id`, `session_state` to `pull_requests`; AUTOINCREMENT PR ids; running-job exclusion per PR | Stable, non-reused archive key; serialize shared-session jobs even with different credentials. Single rewritable migration, no compatibility. |
 | Codex auto-compaction at 400000; archive each successful useful turn | Remove the extra compaction turn and its latency; usage remains the useful turn's delta. |
 
@@ -128,7 +129,7 @@ not that every tool or profile lookup succeeded.
 | Optional `Settings.llm_selection {models, efforts, current, changed_by, changed_at}`; `PUT /api/v1/settings/llm` with `ModelChoice` | One installation-wide choice, CSRF protected, fixed server catalog, auditable editor and time. |
 | Optional `AnalysisSummary.models_used: ModelChoice[]` | Facts from distinct claimed job specs across all rounds, including Ask. |
 | Optional paused-state `reason: user \| usage_limit`, `paused_by`, `paused_at`; POST `/api/v1/analyses/{id}/pause` and `/resume` | Persistent user pause, independent of provider limits; current job may finish, further submissions and claims wait. Missing reason means usage limit for older clients. |
-| Singleton `llm_selection` table; `analyses.user_paused_by`, `analyses.user_paused_at`, `analyses.cancel_cleanup_done` | Owner-approved rewrite of the single pre-deployment migration; local database must be recreated by the coordinator. Stored documents and runner protocol unchanged. |
+| Singleton `llm_selection` table; `analyses.user_paused_by`, `analyses.user_paused_at` | Owner-approved rewrite of the single pre-deployment migration; local database must be recreated by the coordinator. Stored documents and runner protocol unchanged. |
 
 ## Consequences
 - The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.
@@ -141,5 +142,14 @@ These remaining statements in `docs/design-brief.md` are superseded:
 |---|---|---|
 | §5 "GitHub access for the agent": token "restricted to the PR's repository and its related repositories" | `repositories` = PR repository only; related repositories are read as public data | ADR-005, threat model T3a |
 | §5 "Job execution interface": `JobExecutor` = `submit`, `events`, `cancel` | adds `cancel_analysis` | this ADR, plan rule A3 |
-| §2 "Agent access": "Read-only checkout, no code execution"; §5 "Security": "only the LLM credential and the job's read-only installation token in the runner", §5: "the agent holds only the job's short-lived read-only installation token" | Codex sandbox off: no code execution is a prompt rule only; the agent uid can read its per-job Codex credential, installation token and MemCan bearer | ADR-002, threat model AR-4, AR-6, §9 |
-| §5 Agent sessions: one per analysis, compact at each job end, new session on moved head; session files persist across one analysis only | One per PR, shared across analyses and Ask; automatic compaction at 400k only; Pause preserves archives; Cancel/Re-analyze request their deletion; retention defaults to 14 days | owner decision 2026-11-17, ADR-004 |
+| §2 "Agent access": "Read-only checkout, no code execution"; §5 "Security": "only the LLM credential and the job's read-only installation token in the runner", §5: "the agent holds only the job's short-lived read-only installation token" | Codex sandbox off: no code execution is a prompt rule only; the agent uid can read its per-job Codex credential, installation token; MemCan stays server-side under ADR-004 | ADR-002, threat model AR-4, AR-6, §9 |
+| §5 Agent sessions: one per analysis, compact at each job end, new session on moved head; session files persist across one analysis only | One analytic session per PR across analyses, private working forks per PR/user for Ask; automatic compaction at 400k only; Cancel/Re-analyze preserve archives, retention defaults to 14 days | owner decision 2026-11-17, ADR-004 |
+
+## Private Ask session forks (owner approval, 2026-11-17)
+
+| Change | Reason |
+|---|---|
+| `JobSpec.working_session?: {user_key, analytic_generation, thread_id?}` | Self-contained archive routing: Ask restores its valid working fork, else analytic; saves only its private fork (ADR-004). |
+| `pull_requests.analytic_generation`; `working_sessions` keyed by PR/user | Re-fork after analytic advancement without allowing user instructions into analysis. |
+| Questions HTTP/SSE filtered to asker; private quotas/history | Shared analyses never expose foreign Q&A, counts or ownership markers. Existing `asked_by`/`mine` retained for compatibility, always caller-owned. |
+| MemCan feedback `private_text_excluded: true`; no agent MemCan access | Prevent private feedback notes or Ask-written memories from reaching shared analytical context. Legacy calibration text is not read. |

@@ -1,4 +1,4 @@
-//! Ask: questions about a step answered by an agent job that resumes the analysis's session.
+//! Ask: private questions about a step, answered in the asker's working session for this PR.
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
@@ -20,7 +20,7 @@ impl AskRequest {
     pub const MAX_TEXT_CHARS: usize = 2000;
 }
 
-/// A question and its LLM answer, pinned to the step.
+/// A private question and its LLM answer, pinned to the step; returned only to its asker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AskQuestion {
     /// Question id.
@@ -29,7 +29,7 @@ pub struct AskQuestion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub asked_by: Option<String>,
-    /// Whether the current reader asked this question.
+    /// Always true in current HTTP/SSE responses; absent only in older payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub mine: Option<bool>,

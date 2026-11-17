@@ -19,6 +19,35 @@ only**. S6 part 2 resolved in §10.
 | B8 | browser ↔ server | CSRF; login CSRF on the OAuth callback; forged `X-Forwarded-*` from a LAN peer; renamed-login takeover; traversal in `lines`/`diff` | T7a, T7b | — |
 | B9 | server ↔ GitHub | token minted **without `permissions`** (App write: issues, pull requests) or **without `repositories`** (all 49 repos of the `lklimek` installation, private included); a review submitted; duplicate pending reviews; `thread: null` taken as success | T3, T11 | — |
 
+## Private Ask isolation (owner decision, 2026-11-17; supersedes T6/T8 and AR-1/AR-2 below)
+
+ADR-004 defines one analytic session per PR and one working fork per PR/user. Analytic jobs and repairs never
+restore a working archive or receive local user text. Ask writes only its own working archive; stale generation
+or missing working archive re-forks the analytic checkpoint, with bounded own Q&A as untrusted data. The
+runner validates the archive key and job kind and scrubs only the destination archive. PR/credential claim
+serialization prevents concurrent writes. Archive-copy hardening T8b remains mandatory.
+
+User input flows:
+- Ask text and its answer: private database row → own HTTP/SSE → own Ask prompt/history/working archive.
+  A marker injection cannot enter later analytic restore sets or another user's archive.
+- Feedback note (including comment-derived feedback): private user-scoped row only. Shared MemCan records
+  contain the fixed enum value and public target facts, never the note. Legacy calibration records without
+  `private_text_excluded` are rejected. Agents receive no MemCan bearer or MCP endpoint, closing the indirect
+  Ask-write → analytic-read path. AR-1 is no longer accepted for smart-review jobs.
+- Unsent comment body: local component state. Submitted/edited pending comment: own user-token GitHub
+  request, own pending-review list only; `viewerDidAuthor` required, foreign ids return 404. Pending threads
+  are excluded from the shared PR snapshot. Published review comments are public PR data.
+- Review ticks and last viewed block: validated ids → own `review_states` row; never an agent prompt.
+- PR URL/repo/number and language: validated identifiers/enums select the public analysis; raw URL text is not
+  forwarded as instructions. Repository configuration, public PR descriptions/comments, and administrator
+  project profiles remain untrusted public/external inputs under T5; they are distinct from private app text.
+
+Questions, answers, counts, feedback notes and review-state are filtered before HTTP/SSE emission, never by
+browser convention. Q&A list/history tests, SSE snapshot/live filtering, foreign-feedback-id API tests and
+pending-review ownership tests cover these paths. Fake-provider marker tests and Codex archive-copy tests
+cover source/destination isolation and re-fork/loss. User removal/allowlist cleanup of archive files is deferred;
+PR deletion and PR-wide retention still remove every descendant archive.
+
 ## 2. Assets
 
 | Asset | Lives in | Agent uid reads it? | Loss means |
@@ -73,8 +102,8 @@ only**. S6 part 2 resolved in §10.
 | T6 | MemCan via proxy at its Traefik entrypoint (allowlist + bearer); feedback and calibration written only by the server. **Accepted** (AR-1): the agent has the token's full permissions. Defence in depth only: Codex MCP `enabled_tools` = MemCan search tools + `add_memory` (the model is not offered update, delete or TODO tools; a shell command with the bearer still can call them) | WP3-RUN, WP3-MEMCAN | `generated_config_memcan_tools_allow_list` (snapshot); fake-MemCan test: only allow-listed tools offered to the model |
 | T7a | Auth: cookie Secure (from `SR_PUBLIC_URL` scheme), HttpOnly, SameSite; session ids stored hashed; CSRF header on every cookie-authenticated mutating route; OAuth `state` bound to a pre-auth cookie, single use, short TTL, PKCE S256, exact `redirect_uri`, App wildcard callback matching off; allowlist checked before a session exists and bound to the numeric GitHub user id at the first successful login (later logins must match the id); refresh serialised per user, rotated pair stored before use; AES-GCM random nonce, AAD = table + column + row id; `secrecy` types | WP2-AUTH, WP3-AUTH | `allowlist_rejects_unlisted_login`, `allowlist_binds_github_user_id` (same login, other id → rejected), `secure_cookie_behind_trusted_proxy`, `oauth_state_single_use`, `csrf_required_on_mutations` (sweep of cookie-authenticated routes), `session_id_stored_hashed`, `token_ciphertext_bound_to_row` |
 | T7b | Server surface: `/runner/*` only on a separate listener `SR_RUNNER_LISTEN_ADDR`, attached only to the internal Docker network; the public listener never serves `/runner/*`; runner routes use no cookie and no CSRF: `claim` needs the runner secret; `events`, `output` and `result` need that job's token (bound to job id + attempt, rejected for a stale attempt, after lease expiry or for another job), compared in constant time; body size caps on all three; public port published only to the reverse proxy (local stack: `127.0.0.1`); `X-Forwarded-*` only from `SR_TRUSTED_PROXIES`; headers: CSP `default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`, `nosniff`, `Referrer-Policy: same-origin`; `ApiError.message` never internal text; tenant check on every analysis route; `lines`/`diff`/agent paths resolved only in the selected pinned tree — base or head SHA of the analysis per `side` (`side=base` is legal for deleted code), no filesystem join — ranges capped; PR URL parsed to owner/repo/number (strict charset), no user-supplied URL fetched; SSE needs a session | WP2-JOBS, WP2-INGEST, WP3-STATE, WP3-OPS | `public_listener_rejects_runner_routes`, `runner_routes_require_secret_or_own_job_token` (claim, events, output, result), `output_rejected_for_stale_attempt`, `security_headers_present`, `forwarded_headers_ignored_from_untrusted_peer`, `lines_rejects_path_traversal` (both sides), `lines_side_base_serves_deleted_code`, `sse_requires_session`, `no_secret_in_logs` (log capture); compose test: runner network reaches only proxy and runner listener |
-| T8a | Session files per analysis id under `runner`; only that analysis's files copied in; `auth.json` never among them; deleted on cancel, supersede, retention. **Accepted** (AR-2) | WP3-RUN | `session_files_only_own_analysis`, `session_files_exclude_auth`, `session_deleted_on_cancel_supersede_retention` |
-| T8b | Copy-back hardened: regular files only (`lstat`, `O_NOFOLLOW`), path pattern `sessions/YYYY/MM/DD/rollout-*-<thread_id>.jsonl` with this analysis's thread id, size cap; store on another filesystem than job dirs | WP3-RUN | `copy_back_rejects_symlink_and_foreign_thread`, `copy_back_size_capped` |
+| T8a | Analytic session files per PR and private working files per PR/user under `runner`; `auth.json` excluded; Cancel and Re-analyze retain both, explicit PR removal and retention delete them. **Accepted** (AR-2) | WP3-RUN | `session_of_another_pull_request_is_never_resumed`, `ask_never_saves_into_the_analytic_archive`, `session_files_exclude_auth`, `session_deleted_on_explicit_removal_or_retention` |
+| T8b | Copy-back hardened: regular files only (`lstat`, `O_NOFOLLOW`), path pattern `sessions/YYYY/MM/DD/rollout-*-<thread_id>.jsonl` with the selected analytic or private working thread id, size cap; store on another filesystem than job dirs | WP3-RUN | `copy_back_rejects_symlink_and_foreign_thread`, `copy_back_size_capped` |
 | T9 | Allow-all egress with host-name log. **Accepted** (AR-3) | WP3-OPS | logging tests (CONNECT host:port, bytes) |
 | T10 | Secret hygiene: runner removes every known secret value (job token, installation token, MemCan bearer, `auth.json` tokens) from events, ready outputs (`/output`), results and rollouts before posting or storing; events carry command line and exit code, not command output; server repeats the scrub for the values it knows; `JobSpec`/claim `Debug` redacts | WP3-RUN, WP2-JOBS | `no_secret_in_events_outputs_results_sessions` (agent prints canaries, also into its final output) |
 | T11 | Pending review: user token server-side only; only `addPullRequestReviewThread`/`updatePullRequestReviewComment`/`deletePullRequestReviewComment`; never submit; writes serialised per (user, PR); head check before each write; `thread: null` = error; idempotency key | WP3-REVIEW | WP3-REVIEW tests; `check-architecture.sh` greps for `submitPullRequestReview` and REST review `event` |

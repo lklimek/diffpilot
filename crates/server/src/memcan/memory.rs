@@ -11,8 +11,6 @@ use serde_json::{Value, json};
 
 /// Longest LLM, pull-request or path text copied into a memory, in characters.
 const MAX_FIELD_CHARS: usize = 300;
-/// Longest note copied into a memory, in characters (the API accepts no longer note).
-const MAX_NOTE_CHARS: usize = contracts::api::feedback::FeedbackRequest::MAX_NOTE_CHARS;
 /// Metadata `type` of a severity calibration example (`overrated` / `underrated`).
 pub(crate) const CALIBRATION_TYPE: &str = "severity-calibration";
 /// Metadata `type` of any other feedback.
@@ -94,6 +92,7 @@ pub(crate) fn import_record(
         "value": value_name(feedback.value),
         "feedback_id": feedback.id.to_string(),
         "revision": entry.revision,
+        "private_text_excluded": true,
         "repo": format!("{}/{}", pr.repo.owner, pr.repo.name),
         "pr": pr.number,
     })
@@ -155,23 +154,13 @@ fn text(entry: &PendingFeedback, pr: &PrSummary, flows: &[FlowAnalysisOutput]) -
             }
         },
     };
-    let mut text = format!(
+    let text = format!(
         "smart-review feedback on the LLM review of {}/{} pull request #{} \"{}\": {verdict}. {subject}.",
         clip(&pr.repo.owner, MAX_FIELD_CHARS),
         clip(&pr.repo.name, MAX_FIELD_CHARS),
         pr.number,
         clip(&pr.title, MAX_FIELD_CHARS),
     );
-    if let Some(note) = feedback
-        .note
-        .as_deref()
-        .filter(|note| !note.trim().is_empty())
-    {
-        text.push_str(&format!(
-            " Reviewer note: \"{}\"",
-            clip(note, MAX_NOTE_CHARS)
-        ));
-    }
     text
 }
 
@@ -303,6 +292,21 @@ mod tests {
     }
 
     #[test]
+    fn private_feedback_notes_never_enter_shared_calibration() {
+        let record = import_record(
+            &entry(
+                annotation_target("f3.1.a2"),
+                FeedbackValue::Overrated,
+                Some("PRIVATE_INSTRUCTION_MARKER"),
+            ),
+            &pr(),
+            &flows(),
+            Utc::now(),
+        );
+        assert!(!record.to_string().contains("PRIVATE_INSTRUCTION_MARKER"));
+    }
+
+    #[test]
     fn server_step_and_annotation_ids_resolve_like_the_tour() {
         let flows = flows();
         assert!(matches!(
@@ -362,6 +366,7 @@ mod tests {
                 "value",
                 "feedback_id",
                 "revision",
+                "private_text_excluded",
                 "repo",
                 "pr",
             ])
@@ -389,10 +394,7 @@ mod tests {
         assert!(!text.chars().any(char::is_control), "{text}");
         assert!(text.contains("\"Retry RPC calls\""), "{text}");
         assert!(text.contains("Consequence annotation at lines"), "{text}");
-        assert!(
-            text.contains("Reviewer note: \"line one line two\""),
-            "{text}"
-        );
+        assert!(!text.contains("line one"), "{text}");
         assert_eq!(record["type"], "review-feedback");
 
         let missed = import_record(

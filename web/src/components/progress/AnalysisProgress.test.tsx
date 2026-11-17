@@ -441,7 +441,7 @@ it("user pause resumes without a usage-limit claim and Cancel needs inline confi
   await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
   expect(cancel).not.toHaveBeenCalled();
   expect(screen.getByRole("group", { name: "Confirm cancellation" })).toHaveTextContent(
-    "Cancel discards the plan, the 3 analysed flows and the agent session. Pause keeps them.",
+    "Cancel discards the plan and the 3 analysed flows. The agent's session for this pull request is kept. Pause keeps everything.",
   );
   await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
   expect(cancel).toHaveBeenCalledOnce();

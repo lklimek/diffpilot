@@ -1,5 +1,5 @@
 //! The agent-session store on the runner's private volume (ADR-004, threat model T8a): one directory per
-//! pull request, filled and read only by the provider for that pull request's jobs, deleted when the server drops the
+//! pull request with separate analytic and per-user working archives, deleted when the server drops the
 //! session (explicit removal) or after the retention period.
 
 use std::io::{self, BufRead, BufReader, Write};
@@ -22,12 +22,25 @@ impl SessionStore {
 
     /// The directory of `pull_request`'s session.
     pub fn dir(&self, pull_request: i64) -> PathBuf {
-        self.root.join(pull_request.to_string())
+        self.root.join(pull_request.to_string()).join("analytic")
+    }
+
+    /// A private working archive. Callers validate the key before using it.
+    pub fn working_dir(&self, pull_request: i64, user_key: &str) -> PathBuf {
+        self.root
+            .join(pull_request.to_string())
+            .join("users")
+            .join(user_key)
+    }
+
+    /// Scrubs just the archive written by this job; never a sibling archive.
+    pub fn scrub_archive(path: &Path, scrubber: &Scrubber) -> io::Result<()> {
+        scrub_tree(path, scrubber)
     }
 
     /// Deletes `pull_request`'s session; an absent one counts as deleted.
     pub fn remove(&self, pull_request: i64) -> io::Result<()> {
-        match std::fs::remove_dir_all(self.dir(pull_request)) {
+        match std::fs::remove_dir_all(self.root.join(pull_request.to_string())) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             other => other,
         }

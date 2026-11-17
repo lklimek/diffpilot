@@ -397,6 +397,7 @@ async fn submit(
             kind: CredentialKind::CodexChatgpt,
         },
         session: None,
+        working_session: None,
         context_pack: None,
         skills: prompts::required_skills(),
         access: AgentAccess::default(),
@@ -416,7 +417,7 @@ async fn submit(
 }
 
 /// The context pack of an `ask` job, built at claim: the stored results with the asked step in full, the rest of
-/// its flow analysis and the step's questions answered before this one. Without the stored step (never for a
+/// its flow analysis and this user's questions answered earlier across the PR. Without the stored step (never for a
 /// finished analysis) the pack holds the stored results only, so the claim is never blocked.
 pub async fn context_pack(
     db: &Db,
@@ -435,10 +436,7 @@ pub async fn context_pack(
         tracing::warn!(%analysis, %question, "the asked step is not stored; the context pack holds the analysis only");
         return Ok(pack(&summary.pr, &results, None)?);
     };
-    let answered = db
-        .questions()
-        .answered_before(analysis, step_id, question)
-        .await?;
+    let answered = db.questions().history_before(question).await?;
     let earlier: Vec<AnsweredQuestion<'_>> = answered
         .iter()
         .map(|(question, output)| AnsweredQuestion {

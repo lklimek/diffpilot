@@ -1910,7 +1910,7 @@ async fn cancel_discards_partial_results() {
         assert!(stored.is_empty(), "{kind:?} kept: {stored:?}");
     }
     let record = h.state.db.analyses().get(analysis).await.expect("analysis");
-    assert_eq!(record.session_state, SessionState::DropRequested);
+    assert_eq!(record.session_state, SessionState::Active);
     let (status, _) = h.post_empty(&format!("/api/v1/analyses/{id}/cancel")).await;
     assert_eq!(
         status,

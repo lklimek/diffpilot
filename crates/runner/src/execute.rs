@@ -194,6 +194,30 @@ impl Executor {
             }
         }
 
+        // Fail closed: user text must never run without a private save target. Keys are opaque,
+        // server-derived hex, never path fragments supplied by a user.
+        let valid_route = match (&spec.working_session, spec.kind) {
+            (Some(route), contracts::agent::JobKind::Ask) => {
+                route.user_key.len() == 64 && route.user_key.bytes().all(|b| b.is_ascii_hexdigit())
+            }
+            (None, kind) => kind != contracts::agent::JobKind::Ask,
+            _ => false,
+        };
+        if !valid_route {
+            return failed(
+                spec,
+                JobFailureKind::Internal,
+                "invalid private session routing",
+            );
+        }
+        let analytic_dir = self.sessions().dir(spec.pull_request_id);
+        let save_dir = spec.working_session.as_ref().map_or_else(
+            || analytic_dir.clone(),
+            |route| {
+                self.sessions()
+                    .working_dir(spec.pull_request_id, &route.user_key)
+            },
+        );
         let scrubber = sink.secrets.with(&Scrubber::new(
             spec.access
                 .github
@@ -211,7 +235,8 @@ impl Executor {
             job_id: spec.job_id,
             job_dir: job_dir.to_path_buf(),
             codex_home: codex_home.to_path_buf(),
-            session_dir: self.sessions().dir(spec.pull_request_id),
+            session_dir: save_dir.clone(),
+            restore_dir: analytic_dir,
             prompt: spec.prompt.clone(),
             output_schema: spec.output_schema.clone(),
             model: spec.model.clone(),
@@ -242,9 +267,11 @@ impl Executor {
         let ((outcome, session_outcome), ()) = tokio::join!(run, pump(rx, sink, &scrubber));
         let outcome = match outcome {
             Ok(mut done) if done.session_id.is_some() && !sink.secrets.is_empty() => {
-                if let Err(error) = self.sessions().scrub(spec.pull_request_id, &sink.secrets) {
+                if let Err(error) =
+                    crate::sessions::SessionStore::scrub_archive(&save_dir, &sink.secrets)
+                {
                     tracing::warn!(job = %spec.job_id, %error, "cannot scrub the stored agent session; it is discarded");
-                    if let Err(error) = self.sessions().remove(spec.pull_request_id) {
+                    if let Err(error) = std::fs::remove_dir_all(&save_dir) {
                         tracing::warn!(job = %spec.job_id, %error, "cannot remove an unscrubbed agent session");
                     }
                     done.session_id = None;
@@ -277,6 +304,21 @@ impl Executor {
         mut call: ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> (Result<ProviderOutcome, ProviderError>, SessionOutcome) {
+        if let Some(route) = &spec.working_session {
+            if let Some(thread) = &route.thread_id {
+                call.restore_dir = call.session_dir.clone();
+                match self.provider.resume(thread, &call, events.clone()).await {
+                    Err(ProviderError::SessionUnavailable) => {}
+                    other => return (other, SessionOutcome::Resumed),
+                }
+            }
+            // Lazy fork, stale fork, or lost working archive: seed the fork with only the
+            // asker's earlier answers, fenced as data, even when the analytic restore succeeds.
+            call.restore_dir = self.sessions().dir(spec.pull_request_id);
+            if let Some(pack) = &spec.context_pack {
+                call.prompt = format!("{pack}\n\n{}", spec.prompt);
+            }
+        }
         if let Some(session) = &spec.session {
             if session.pull_request_id == spec.pull_request_id {
                 match self

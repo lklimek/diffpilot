@@ -119,6 +119,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
         job_dir,
         codex_home,
         session_dir: dir.path().join("sessions").join("analysis-a"),
+        restore_dir: dir.path().join("sessions").join("analysis-a"),
         prompt: format!("Job: plan. {PROMPT_CANARY}"),
         output_schema: json!({"type": "object", "additionalProperties": false, "properties": {}, "required": []}),
         model: ModelChoice {
@@ -1559,4 +1560,17 @@ async fn agent_plain_git_accepts_the_runner_owned_checkout() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[tokio::test]
+async fn private_archive_fork_restores_analytic_but_never_changes_it() {
+    let mut h = harness("pr-context.jsonl", 0);
+    let analytic_file = store_session(&h, 50_000);
+    let original = fs::read(&analytic_file).unwrap();
+    h.call.session_dir = h.call.session_dir.parent().unwrap().join("users/user-a");
+    let outcome = resume(&h).await.0.expect("fork");
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    assert_eq!(fs::read(&analytic_file).unwrap(), original);
+    assert!(h.call.session_dir.join(rollout_rel(THREAD)).exists());
+    assert_eq!(outcome.usage.input_tokens, 180_776 - 50_000);
 }

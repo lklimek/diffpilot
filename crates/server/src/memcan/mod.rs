@@ -4,9 +4,9 @@
 //! reported as saved to MemCan unless MemCan confirmed it.
 //!
 //! Leaves the server (AR-1, threat model T6), per feedback entry, as one memory keyed by the feedback id: the
-//! repository `owner/name`, pull request number and title, the value, the reviewer's note, the target (step
+//! repository `owner/name`, pull request number and title, the fixed value, the public target (step
 //! title, file and lines, the LLM's risk band and headline; annotation type, lines and text; or path, side and
-//! line), and the opaque feedback id and revision. Never the user's identity, tokens or other analysis content.
+//! line), and the opaque feedback id and revision. Never private notes, the user's identity, tokens or other analysis content.
 
 pub mod calibration;
 mod client;

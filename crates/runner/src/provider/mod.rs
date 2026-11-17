@@ -60,8 +60,10 @@ pub struct ProviderCall {
     /// Per-job `CODEX_HOME` (credential copy, config, session files) on the runner's persistent private
     /// volume (0700, never tmpfs or `/tmp`), so a rotated credential survives a crash before copy-back.
     pub codex_home: PathBuf,
-    /// This pull request's session store (runner uid); only its files are copied into the call.
+    /// Destination archive (runner uid): analytic or the asking user's working archive.
     pub session_dir: PathBuf,
+    /// Archive to restore; may be the analytic archive when saving a private Ask fork.
+    pub restore_dir: PathBuf,
     /// The full prompt.
     pub prompt: String,
     /// Output JSON Schema (Codex strict subset).

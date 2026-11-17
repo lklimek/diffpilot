@@ -56,7 +56,9 @@ test("pause and resume retain progress; cancellation explains loss before confir
   await page.clock.fastForward(60_000);
   await expect(page.getByRole("button", { name: "Resume", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Cancel analysis", exact: true }).click();
-  await expect(page.getByRole("group", { name: "Confirm cancellation" })).toContainText("Pause keeps them.");
+  await expect(page.getByRole("group", { name: "Confirm cancellation" })).toContainText(
+    "Pause keeps everything.",
+  );
   await page.getByRole("button", { name: "Keep analysis" }).click();
   await page.getByRole("button", { name: "Resume", exact: true }).click();
   await expect(page.getByText(/Paused by alice/)).toHaveCount(0);

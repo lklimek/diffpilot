@@ -232,7 +232,7 @@ The review opens only when the analysis has finished. Pause analysis lets the ru
 its result and session, and submits no further job until Resume, including after restarts. A user pause
 is independent of a provider limit and never resumes automatically. Resume checks that the PR head has
 not moved. Home also offers Resume. Cancel has an inline confirmation explaining that it discards the
-plan, completed flows and agent session; Pause keeps them. Confirmed cancellation returns to Home.
+plan and completed flows while retaining both PR sessions; Pause keeps everything. Confirmed cancellation returns to Home.
 
 ### 4.3 Tour (the review screen)
 

@@ -517,8 +517,7 @@ impl Analyses<'_> {
     /// job not yet flagged for cancellation, or a stored document.
     pub async fn cancellations_to_finish(&self) -> Result<Vec<AnalysisId>, DbError> {
         let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT a.id FROM analyses a WHERE a.state = 'cancelled' AND (a.cancel_cleanup_done=0 OR
-                 EXISTS (SELECT 1 FROM documents d WHERE d.analysis_id = a.id)
+            "SELECT a.id FROM analyses a WHERE a.state = 'cancelled' AND (EXISTS (SELECT 1 FROM documents d WHERE d.analysis_id = a.id)
                  OR EXISTS (SELECT 1 FROM jobs j WHERE j.analysis_id = a.id AND j.cancel_requested = 0
                      AND j.state IN ('queued', 'claimed', 'running', 'paused')))
              ORDER BY a.created_at, a.rowid",
@@ -526,22 +525,6 @@ impl Analyses<'_> {
         .fetch_all(self.pool)
         .await?;
         ids.iter().map(|id| parse_wire(id, "analyses.id")).collect()
-    }
-
-    /// Discards cancelled documents and requests PR-session deletion only once, atomically.
-    pub async fn discard_cancelled(&self, id: AnalysisId) -> Result<u64, DbError> {
-        let mut tx = super::write_tx(self.pool).await?;
-        let pr: Option<i64> = sqlx::query_scalar("UPDATE analyses SET cancel_cleanup_done=1 WHERE id=? AND state='cancelled' AND cancel_cleanup_done=0 RETURNING pull_request_id")
-            .bind(id.to_string()).fetch_optional(&mut *tx).await?;
-        if let Some(pr) = pr {
-            sqlx::query("UPDATE pull_requests SET session_state=CASE WHEN session_state='dropped' THEN 'dropped' ELSE 'drop_requested' END WHERE id=?")
-                .bind(pr).execute(&mut *tx).await?;
-        }
-        // A driver can have stored one last document while cancellation was being published.
-        let deleted = sqlx::query("DELETE FROM documents WHERE analysis_id=? AND EXISTS (SELECT 1 FROM analyses WHERE id=? AND state='cancelled')")
-            .bind(id.to_string()).bind(id.to_string()).execute(&mut *tx).await?.rows_affected();
-        tx.commit().await?;
-        Ok(deleted)
     }
 
     /// User pause is persistent and does not cancel or change an in-flight job.
@@ -638,9 +621,9 @@ impl Analyses<'_> {
     ) -> Result<(), DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let updated = sqlx::query(
-            "UPDATE pull_requests SET agent_thread_id = ?,
-                 session_state = CASE WHEN session_state IN ('none', 'active', 'dropped') THEN 'active' ELSE session_state END
-             WHERE id = (SELECT pull_request_id FROM analyses WHERE id = ? AND state <> 'cancelled')",
+            "UPDATE pull_requests SET agent_thread_id = ?, analytic_generation = analytic_generation + 1,
+                 session_state = CASE WHEN session_state IN ('none', 'active') THEN 'active' ELSE session_state END
+             WHERE id = (SELECT pull_request_id FROM analyses WHERE id = ?)",
         ).bind(thread_id).bind(id.to_string()).execute(&mut *tx).await?;
         if updated.rows_affected() == 0 {
             return Err(DbError::NotFound);
@@ -792,6 +775,7 @@ pub mod testing {
                 kind: CredentialKind::CodexChatgpt,
             },
             session: None,
+            working_session: None,
             context_pack: None,
             skills: Vec::new(),
             access: AgentAccess::default(),

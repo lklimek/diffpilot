@@ -22,6 +22,10 @@ test("cancel while planning: Home says the analysis was cancelled, with the URL 
   await checkScreen(page);
 
   await page.getByRole("button", { name: "Cancel analysis" }).click();
+  await expect(page.getByRole("group", { name: "Confirm cancellation" })).toContainText(
+    "The agent's session for this pull request is kept. Pause keeps everything.",
+  );
+  await page.getByRole("button", { name: "Confirm cancel", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
     page.getByRole("status").filter({ hasText: "Analysis cancelled — analyze again." }),

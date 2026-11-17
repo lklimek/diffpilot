@@ -66,6 +66,8 @@ struct SearchAnswer {
 #[derive(Deserialize)]
 struct Memory {
     memory: String,
+    #[serde(default)]
+    private_text_excluded: bool,
     #[serde(rename = "type")]
     kind: String,
     source: String,
@@ -81,7 +83,11 @@ fn parse_examples(answer: &str) -> Option<Vec<CalibrationExample>> {
             .memories
             .into_iter()
             .filter_map(|memory| serde_json::from_value::<Memory>(memory).ok())
-            .filter(|memory| memory.kind == CALIBRATION_TYPE && memory.source == SOURCE)
+            .filter(|memory| {
+                memory.kind == CALIBRATION_TYPE
+                    && memory.source == SOURCE
+                    && memory.private_text_excluded
+            })
             .filter_map(|memory| {
                 let direction = match memory.value.as_str() {
                     "overrated" => CalibrationDirection::Overrated,

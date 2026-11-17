@@ -61,6 +61,7 @@ fn spec() -> JobSpec {
             pull_request_id: 1,
             thread_id: "019a0000-0000-7000-8000-000000000001".to_owned(),
         }),
+        working_session: None,
         context_pack: Some("PR context and plan.".to_owned()),
         skills: vec!["severity".to_owned()],
         access: AgentAccess {

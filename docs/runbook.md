@@ -358,4 +358,4 @@ stack. Do not apply this migration to a database containing a running analysis.
 Pause analysis lets the current job finish, retains its result and the PR session, and prevents further
 submissions/claims until Resume. This survives server/runner restarts. A provider limit cannot automatically
 resume a user pause; Resume may still leave the analysis waiting for the provider. The current PR head is
-checked before resume. Cancel instead discards results and requests deletion of the shared PR session.
+checked before resume. Cancel instead discards results and cancels unfinished jobs, keeping analytic and private working PR sessions.

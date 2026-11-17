@@ -231,14 +231,13 @@ tooling breaks: penny's 5.9 line, recorded in an ADR). `github-mcp-server`: vers
 - Every annotation and observation carries `basis: fact | inference`; `fact` requires ≥1 evidence reference
   (`file`, `line`); verify rejects a fact without evidence (brief §1 "observed facts carry a line reference").
 - Lines are 1-based inclusive at the head SHA; ids are strings stable within one analysis.
-- **Agent sessions** (brief §5): `JobSpec` carries `ModelChoice` and `session: Option<SessionRef>` (analysis id
-  + provider session id) plus a `context_pack` used only when a new session must be started; `JobResult`
-  returns the session id and `session_outcome: resumed | started | started_after_loss`. `LlmProvider` =
-  `run`, `resume`, `cancel`; `run` and `resume` end by compacting the session (provider-specific, S1b). The
-  server allows one running job per session; a re-analysis starts a new session.
-- **Agent credentials in `JobSpec`**: `github: InstallationToken { token, expires_at }` (read-only, PR
-  repository only per ADR-005, 1 h) and `memcan: { url, token }`; the runner turns them into the per-job Codex config
-  (github-mcp-server read-only; MemCan MCP). No other credential reaches the agent.
+- **Agent sessions** (ADR-004): `JobSpec` carries `ModelChoice`, a PR session reference and a context pack
+  for session loss. Plan, PR context, flows and repairs share the PR's analytic session; Ask uses a private
+  working session per PR/user, refreshed when `analytic_generation` changes. Jobs are serialised per PR.
+  No forced compaction. Cancel and Re-analyze keep both session kinds; explicit PR removal and retention
+  delete them. User pause keeps results and sessions and submits no further job until Resume.
+- **Agent credentials in `JobSpec`**: a read-only, PR-scoped GitHub installation token (ADR-005). MemCan
+  remains server-side; the agent receives neither its endpoint nor its bearer.
 - Agent schemas use the Codex structured-output subset found in S1a/S7; the server re-validates with
   `jsonschema`.
 - Call hierarchy is in no agent schema. API `Step.call_hierarchy: Option<CallHierarchy>` is filled by the
@@ -269,6 +268,10 @@ for the LLM status). An expired lease is the liveness signal. Job states `queued
 succeeded | failed | cancelled | paused{resumes_at}`; expired lease → `queued`, attempt + 1, bounded.
 
 ### 5.4 Security design (WP1-T, reviewed with the contracts; audited again in stage 4)
+
+Current session/privacy policy: ADR-004 and `docs/contracts/threat-model.md`, “Private Ask isolation”
+(owner decision 2026-11-17), supersede the original shared-session and agent-MemCan assumptions below.
+Analytic PR sessions never receive local user text; Ask uses private PR/user archive forks.
 The process model behind T1 (supervisor, uids, private socket) is decided in ADR-013.
 
 | # | Requirement | Tested in |
@@ -280,7 +283,7 @@ The process model behind T1 (supervisor, uids, private socket) is decided in ADR
 | T5 | Repository-provided agent config (AGENTS.md, `.codex/`, hooks, MCP config) never loaded (S1b mechanism). | WP3-RUN |
 | T6 | MemCan: reached at its Traefik entrypoint (IP allowlist + bearer token). **Accepted risk** (owner): the agent has full MemCan MCP (read and write) with the single shared `MEMCAN_API_KEY`; an injected PR may write misleading memories. Per-client tokens and agent-written-memory separation are future MemCan work. Feedback and calibration examples are written by the server. | WP3-RUN, WP3-MEMCAN |
 | T7 | Server: cookie session (Secure, HttpOnly, SameSite) behind the trusted reverse proxy, CSRF, tokens encrypted with AES-GCM, sign-in only for logins the tenant allows, nothing secret in logs, errors or the browser. | WP2-AUTH, WP3-AUTH |
-| T8 | Agent-session files are agent-writable data that persists across the jobs of ONE analysis: stored per analysis id under the `runner` uid; only that analysis's files are copied into the per-job `CODEX_HOME`; `auth.json` is never part of the session files; deleted when the analysis is cancelled, superseded by a re-analysis, or past a retention period. A poisoned session affects only later jobs of the same PR analysis (same untrusted input). | WP3-RUN |
+| T8 | Agent-session files are agent-writable: analytic archives are keyed by PR, private working archives by PR/user. Only the selected archive enters per-job `CODEX_HOME`; `auth.json` is excluded. Cancel/Re-analyze retain archives; explicit PR removal and retention delete them (ADR-004). Private Ask never writes the analytic archive. | WP3-RUN |
 | T9 | **Accepted risk** (owner): v1 egress policy is allow-all with logging, so agent commands have open network access through the proxy; an injected PR could exfiltrate MemCan content, the shared MemCan token, the per-job Codex credential or the 1-hour read-only installation token. Mitigation in v1: the proxy logs every destination host (CONNECT host:port, bytes); TLS interception with full-URL logs and a host allowlist come later as configuration of the same Squid. | WP3-OPS (logging tests) |
 
 ## 6. Stage 0 — spikes (time-boxed, throwaway code)
@@ -421,10 +424,10 @@ agents fill the gaps. Every WP's acceptance items are named tests; trust tests p
 | WP3-REVIEW | Threads + checks ingest; pending review via GraphQL (create, reuse, add, edit, delete, count, list) per S3; comments API with idempotency key; a comment on a line outside the diff becomes a file-level comment whose body links to the line; feedback `missed_by_llm` when the comment is on a **changed line without annotation** (§3 Feedback, §5 Comments) | `server/src/github/{threads,checks,review}.rs`, `server/src/api/comments.rs`, `db/src/repo/{comments,threads}.rs` | S3 | yes | ~900 |
 | WP3-PREPASS | `generic` plugin (path globs, line regexes, generated headers; `call_hierarchy → None`), moved blocks (`--color-moved` + token-normalised hashes + `similar`), whitespace-only, counters, related repos from Cargo files, same org (§5 Pipeline 2, Tech plugin, §7) | `analysis/src/{tech,moves,counters,related}/**` | — | — | ~900 |
 | WP3-VERIFY | Verification (schema, ranges, coverage → Unexplained, move claims, graph consistency, fact-needs-evidence, banned phrases in LLM text), repair feedback, tour ordering (behaviour by importance → LLM-classified refactors → LLM-classified tests → quiet rows; Unexplained first among quiet rows) (§1, §5 Pipeline 6, §4.3) | `analysis/src/{verify,coverage,order}/**` | — | — | ~800 |
-| WP3-RUN | Codex provider complete per S1b/S2/S5: `resume` and end-of-job compaction, session store per analysis (copy in/out, deletion, retention), typed `SessionUnavailable`, per-job `CODEX_HOME` with `github-mcp-server` (read-only, installation token) and MemCan MCP, repo-config neutralisation, sub-agent setting per S1b, proxy env per research table, normalised events, typed usage-limit error with `resumes_at`, `cancel`, claudius refresh (interval, ref), T1–T6, T8 | `crates/runner/**` | S1b, S2, S5, WP1-T | yes | ~1,000 |
-| WP3-PIPE | Orchestration: pre-pass + verify integration, one agent session per analysis (session ref on every job, `started_after_loss` → context pack from stored results, new session on re-analysis), installation token per job (via WP3-APPTOKEN), huge-PR plan, `pr_context`, one `analyse_flow` per flow, ≤2 repairs, progress `k of n`, pause/resume, cancel (partial results and session discarded), retry, failure before any flow (plain description + Retry), resume of an existing analysis, LLM status of threads located in a flow's steps (others: none); context-pack builder shared with Ask (§5 Agent sessions, Pipeline, §2 Resume, §4.2) | `server/src/pipeline/**`, `server/src/api/analyses.rs` | PREPASS, VERIFY, APPTOKEN merged first | — | ~1,000 |
+| WP3-RUN | Codex provider complete per S1b/S2/S5: `resume` without forced compaction, analytic session store per PR and working forks per PR/user (copy in/out, explicit removal, retention), typed `SessionUnavailable`, per-job `CODEX_HOME` with `github-mcp-server` (read-only, installation token), server-only MemCan, repo-config neutralisation, sub-agent setting per S1b, proxy env per research table, normalised events, typed usage-limit error with `resumes_at`, `cancel`, claudius refresh (interval, ref), T1–T6, T8 | `crates/runner/**` | S1b, S2, S5, WP1-T | yes | ~1,000 |
+| WP3-PIPE | Orchestration: pre-pass + verify integration, one analytic session per PR and private working sessions per PR/user (ADR-004; context-pack fallback after loss, retained on re-analysis), installation token per job (via WP3-APPTOKEN), huge-PR plan, `pr_context`, one `analyse_flow` per flow, ≤2 repairs, progress `k of n`, pause/resume, cancel (partial results discarded, PR sessions retained), retry, failure before any flow (plain description + Retry), resume of an existing analysis, LLM status of threads located in a flow's steps (others: none); context-pack builder shared with Ask (§5 Agent sessions, Pipeline, §2 Resume, §4.2) | `server/src/pipeline/**`, `server/src/api/analyses.rs` | PREPASS, VERIFY, APPTOKEN merged first | — | ~1,000 |
 | WP3-PROMPTS | Prompt per job kind: review lenses, project profile union (file wins), LLM-text language, trust wording, "read ranges, never whole large files", generated files never given; no numeric likelihoods; test code inside production files classified `test`; related work via `github-mcp-server`; sub-agents permitted for large PRs at the agent's discretion (if S1b supports them) (§5 Agent context, Agent sessions, §3, §7) | `prompts/**`, `server/src/prompts.rs` | S5, S7 | — | ~500 |
-| WP3-ASK | Ask job on `JobExecutor` resuming the analysis's session (context pack on loss); questions API; answer streamed via SSE and stored as `Question`; `ask` claimed before the next batch job, no pre-emption (§5 Ask) | `server/src/ask/**`, `server/src/api/questions.rs`, `server/src/jobs/claim.rs`, `db/src/repo/questions.rs` | WP3-PIPE (context-pack builder) | — | ~500 |
+| WP3-ASK | Ask job on `JobExecutor` using a private working session per PR/user (analytic fork, then own-history context pack on loss); questions API; answer streamed via SSE and stored as `Question`; `ask` claimed before the next batch job, no pre-emption (§5 Ask) | `server/src/ask/**`, `server/src/api/questions.rs`, `server/src/jobs/claim.rs`, `db/src/repo/questions.rs` | WP3-PIPE (context-pack builder) | — | ~500 |
 | WP3-MEMCAN | MemCan rmcp client with bearer token (feedback; calibration examples for overrated/underrated; `project` = analysed repository short name), feedback API (§5 Calibration memory) | `server/src/memcan/**`, `server/src/api/feedback.rs`, `db/src/repo/feedback.rs` | — | — | ~500 |
 | WP3-STATE | Review-state API (ticks, last viewed block), settings API (language, LLM status from the most recent LLM call, per-repo read-only rules, related repos, profile source), `diff` endpoint (§2 Progress, §4.4) | `server/src/api/{review_state,settings,diff}.rs`, `db/src/repo/{review_state,settings}.rs` | — | — | ~600 |
 | WP3-CODEVIEW | Line renderer: Shiki on displayed lines only; neutral mark on every changed line; LLM bar solid/dashed/dotted only on annotated ranges; `≠` moved; markers (remark, deleted site, thread, own comment); hover was → is only; comment-line highlight; inline old code (§4.3 Code view) | `web/src/components/code-view/**` | — | — | ~800 |
@@ -446,13 +449,13 @@ Key acceptance tests (in addition to the brief items in §11):
 - WP3-PREPASS/VERIFY: proptest coverage invariant (every changed line in exactly one flow, Not analysed item or
   Unexplained); identical vs differing moves; generated file never in agent input; dangling edges, unmapped
   nodes, out-of-range lines and facts without evidence rejected; quiet rows never above a rated flow.
-- WP3-RUN: golden JSONL incl. unknown events and a resumed session; compaction issued at job end; usage limit →
-  typed error; cancel kills and cleans; `session_files_only_own_analysis`; `session_files_exclude_auth`; lost
-  session → `SessionUnavailable`; session files deleted on cancel/supersede/retention; generated config has
-  only `github-mcp-server` (read-only flag, installation token) and MemCan; agent uid cannot read runner
-  secret, master `CODEX_HOME`, mirror or other analyses' sessions (container test); agent env has no job token.
+- WP3-RUN: golden JSONL incl. unknown events and resumed sessions; no forced compaction; usage limit →
+  typed error; cancel stops the job and keeps PR archives. `session_of_another_pull_request_is_never_resumed`,
+  `ask_never_saves_into_the_analytic_archive`, `session_deleted_on_explicit_removal_or_retention`;
+  lost session → analytic fork or context-pack fallback. Per-job config exposes read-only GitHub only;
+  agent uid cannot read runner secrets, master `CODEX_HOME`, mirror or other PR/user archives (container test).
 - WP3-PIPE: scripted-executor tests for happy path, `jobs_carry_analysis_session`, `jobs_carry_installation_token`,
-  `lost_session_uses_context_pack`, `reanalysis_starts_new_session`, repair success, repair exhausted → failed
+  `lost_session_uses_context_pack`, `reanalysis_keeps_the_pull_request_session`, repair success, repair exhausted → failed
   flow + Retry, usage limit → paused → resumed, cancel, failure before flows, head moved → new analysis without
   ticks, resume keeps ticks/answers/last block. WP3-PROMPTS: insta snapshots per job kind and language.
 - WP3-MEMCAN (fake MemCan): bearer token sent; calibration example with `project` = repo short name.
@@ -599,7 +602,7 @@ with a reason under "For the owner".
 - All rows of §11 have a passing test; the six mockup states pass in Playwright; visual conformance deviations
   fixed or recorded; WP4-GUI has no open blocking finding.
 - The stack runs at `https://review.klimek.ws`; a real public PR (P-CAP) analysed end to end with Codex Pro
-  through one agent session; Ask resumes it; pause/resume, cancel, retry, resume, re-analyze work.
+  through one analytic PR session; Ask uses a private working fork; pause/resume, cancel, retry, resume, re-analyze work.
 - Comments land in the user's pending review (create, reuse, edit, delete, outside-diff file-level); feedback
   stored locally and in MemCan; Ask answers pinned and labelled.
 - A1–A12 checks green in CI; WP4-SEC and the final full review have no open blocking finding; drift test green.
@@ -676,8 +679,8 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | Egress proxy | Squid, chosen because it can later intercept TLS and cache. v1: explicit proxy, allow-all, log of host names (CONNECT host:port, bytes); no TLS interception, no CA, no cache. Later, as configuration of the same Squid (`research/egress-proxy.md`): interception with full-URL logs, splice list (`chatgpt.com`, `openai.com`), CA in the runner image, cache, host allowlist. Open egress is an accepted risk | §5.4 T4/T9, S6, WP3-OPS, §13 |
 | Repository | `lklimek/smart-review` public; GitHub Actions enabled; the owner pushes `main` | §6.1 O1, WP1-C |
 | Codex model | Installation-wide model/effort in Settings; `select_model` stays a plain Rust function, default Sol/high; catalog from S1a (ADR-002) | §5.2, S1a, WP2-INGEST |
-| Agent sessions | One Codex session per PR analysis; batch and Ask jobs resume it; compaction at the end of every job; sub-agents at the agent's discretion for large PRs; loss → new session with a context pack; re-analysis → new session; if `exec` lacks resume or compaction → new session per job with a context pack | §5.3, §5.4 T8, S1b, S7, WP3-RUN, WP3-PIPE, WP3-ASK, WP3-PROMPTS |
-| MemCan | Traefik entrypoint (port 8190) with IP allowlist + shared bearer token; `SR_MEMCAN_URL`/`SR_MEMCAN_TOKEN` as pure configuration (MemCan moves before deployment); the token reaches the agent through the per-job config; full read and write for the agent (accepted risk); server writes feedback and calibration; scope = analysed repository short name; the owner adds the proxy's source address (from S6) to the allowlist himself | §5.2, §5.4 T6, §6.1 O5, WP3-MEMCAN, WP3-RUN |
+| Agent sessions | One analytic Codex session per PR; private working fork per PR/user for Ask; automatic compaction at 400k, no forced turn; generation-aware re-fork and own-history context pack on loss (ADR-004) | §5.3, §5.4 T8, S1b, S7, WP3-RUN, WP3-PIPE, WP3-ASK, WP3-PROMPTS |
+| MemCan | Traefik entrypoint (port 8190) with IP allowlist + shared bearer token; `SR_MEMCAN_URL`/`SR_MEMCAN_TOKEN` as pure configuration (MemCan moves before deployment); the token stays server-side; no agent MemCan access; server writes fixed feedback values and public calibration facts, never private notes; scope = analysed repository short name; the owner adds the proxy's source address (from S6) to the allowlist himself | §5.2, §5.4 T6, §6.1 O5, WP3-MEMCAN, WP3-RUN |
 | Deployment and URL | `SR_PUBLIC_URL` is configuration; owner's instance `https://review.klimek.ws` (callback `…/auth/github/callback`); TLS at the owner's reverse proxy; server HTTP behind it with trusted-proxy setting and Secure cookies; no built-in TLS/ACME | §5.2, §6.1 O2/O6, WP4-DEPLOY |
 | Quota | No cap on the Pro plan; real runs purposeful | §6.1 |
 | Test targets | `dashpay/dash-evo-tool` and `dashpay/platform` PRs by `lklimek` / `Claudius-Maginificent` (P-CAP, P-CAP2, P-REV, P-REF, P-LARGE, P-XREPO); on real PRs only pending comments, deleted afterwards, never submitted | §6.1, S3, S7, M2, M3b, WP4-REAL, WP4-GUI |
