@@ -159,6 +159,11 @@ setuid/setgid bits stripped).
   `nosuid,nodev,noexec`, with a finite capacity and inode count of at most `SR_CODEX_HOMES_MAX_BYTES` (default
   16 GiB) and `SR_CODEX_HOMES_MAX_INODES` (default 1048576). Its root-owned `lost+found` is never treated as a job
   home nor removed.
+- **Runner secret file:** under the supervisor the runner refuses to start (exit 78) when the agent could read
+  `SR_RUNNER_SECRET_FILE`: the file is owned by the agent uid, has any `other` bit, or has any group bit with the
+  agent's gid as its group (the agent has gid = uid and no supplementary group). Only the file itself is checked;
+  the directories leading to it are the operator's. The supervisor tells the runner the agent uid in
+  `SR_AGENT_UID`. Without the supervisor a world-readable file is only a warning.
 - **Runner without a supervisor:** refuses to start unless `SR_RUNNER_DEV_NO_ISOLATION=1` (dev stack, smoke),
   then warns on every job; the image never sets it.
 - **Runner layout:** the provider works on a runner-private staging `CODEX_HOME` (`<state>/codex-staging/<key>`,

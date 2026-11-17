@@ -22,6 +22,7 @@ use tokio::signal::unix::{SignalKind, signal};
 
 use super::procs::{self, Scope, Target};
 use super::protocol::{self, Op, Reply, Request, SUPERVISOR_BIN, SUPERVISOR_FD};
+use crate::config::AGENT_UID;
 
 /// Exit code of the supervisor when a sweep left an agent process alive.
 pub const EXIT_SWEEP_FAILED: i32 = 70;
@@ -612,7 +613,8 @@ async fn serve_inner(config: ServeConfig, runner_argv: &[OsString]) -> i32 {
         .args(args)
         .stdin(Stdio::from(runner_end))
         .env(SUPERVISOR_FD, "0")
-        .env(SUPERVISOR_BIN, &config.binary);
+        .env(SUPERVISOR_BIN, &config.binary)
+        .env(AGENT_UID, config.agent.uid.to_string());
     if config.privileged {
         command.uid(config.runner.uid).gid(config.runner.gid);
     } else {

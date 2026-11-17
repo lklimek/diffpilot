@@ -47,6 +47,8 @@ enum StartError {
     Recover(#[source] ProviderError),
     #[error("the per-job CODEX_HOME root is not a bounded filesystem of its own")]
     CodexHomes(#[from] CodexHomesError),
+    #[error("the runner secret file is not hidden from the agent")]
+    SecretFile(#[source] ConfigError),
 }
 
 fn main() -> ExitCode {
@@ -61,7 +63,9 @@ fn main() -> ExitCode {
         Err(error) => {
             tracing::error!("runner stopped: {}", error_chain(&error));
             match error {
-                StartError::CodexHomes(_) => ExitCode::from(codex_homes::EXIT_CODE),
+                StartError::CodexHomes(_) | StartError::SecretFile(_) => {
+                    ExitCode::from(codex_homes::EXIT_CODE)
+                }
                 _ => ExitCode::FAILURE,
             }
         }
@@ -88,6 +92,8 @@ async fn run() -> Result<(), StartError> {
     }
     match &isolation {
         Some(isolation) => {
+            runner::config::check_secret_file_hidden_from_agent(|key| std::env::var(key).ok())
+                .map_err(StartError::SecretFile)?;
             let limits = codex_homes::Limits::from_env()?;
             let facts = codex_homes::verify(&isolation.codex_homes, &config.state_dir, &limits)?;
             tracing::info!(
