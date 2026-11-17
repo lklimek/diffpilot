@@ -13,6 +13,8 @@ const OUTCOME_MS = 10_000;
 // A failed entry is retried 30 s later; the writer's next unnudged sweep comes at most 60 s after the last one
 // (crates/server/src/memcan/writer.rs FIRST_RETRY, SWEEP_INTERVAL).
 const RETRY_MS = 75_000;
+// The open page re-reads a failed entry every 15 s (web/src/api/queries.ts FEEDBACK_RETRY_POLL_MS).
+const SHOWN_MS = RETRY_MS + 15_000;
 
 const memory = (page: Page) => inspector(page).getByRole("list", { name: "Calibration memory" });
 
@@ -151,9 +153,9 @@ test("once MemCan answers again, the rejected write is retried and reads saved",
   await checkScreen(page);
 });
 
-// Product defect: the open page re-reads feedback only while a write is pending (web/src/api/queries.ts
-// useFeedback refetchInterval), so a "(retrying)" value that MemCan later saves keeps saying retrying until reload.
-test.fixme("the open page shows a retried write as saved without a reload", async ({ page, stack }) => {
+test("the open page shows a retried write as saved without a reload", async ({ page, stack }) => {
+  // Analysis (≤ 90 s) plus the retry as the page shows it (≤ 90 s).
+  test.setTimeout(240_000);
   const fake = memcan(page, stack);
   await finishedReview(page);
   await openStep(page, 1, 3);
@@ -161,5 +163,6 @@ test.fixme("the open page shows a retried write as saved without a reload", asyn
   await buttons(page).getByRole("button", { name: "correct" }).click();
   await expect(memory(page)).toContainText("correct: Recorded here; not yet saved", { timeout: OUTCOME_MS });
   await fake.mode({ mode: "normal" });
-  await expect(memory(page)).toContainText("correct: Saved to calibration memory", { timeout: RETRY_MS });
+  await expect(memory(page)).toContainText("correct: Saved to calibration memory", { timeout: SHOWN_MS });
+  await checkScreen(page);
 });
