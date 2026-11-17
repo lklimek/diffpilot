@@ -162,7 +162,7 @@ pub async fn create(
     if let Some(old) = superseded {
         state.db.analyses().request_session_drop(old.id).await?;
         tracing::debug!(analysis = %record.id, superseded = %old.id, "agent session of the superseded analysis dropped");
-        // Its open questions end as cancelled (Ask); a failure here is caught again when they are followed.
+        // Its open Ask jobs are cancelled; their questions fail with a plain sentence.
         if let Err(error) = state.executor.cancel_analysis(old.id).await {
             tracing::error!(superseded = %old.id, ?error, "could not cancel the jobs of the superseded analysis");
         }
