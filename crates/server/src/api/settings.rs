@@ -276,7 +276,6 @@ mod tests {
     use crate::auth::{lock_user, store_sign_in_tokens};
     use crate::config::tests::test_config;
     use crate::github::oauth::TokenGrant;
-    use crate::jobs::queue::QueueExecutor;
     use crate::state::AppState;
     use crate::test_support::logs::LogCapture;
     use crate::test_support::session_cookie;
@@ -311,8 +310,7 @@ mod tests {
         let mut config = test_config();
         config.github.api_url = Url::parse(&format!("{}/api", github.uri())).expect("url");
         let db = Db::in_memory().await.expect("db");
-        let executor = std::sync::Arc::new(QueueExecutor::new(db.clone()));
-        let state = AppState::new(config, db, executor);
+        let state = AppState::with_queue(config, db);
         seed_analysis(&state.db).await.expect("analysis");
         let lock = lock_user("u1").await;
         let grant = TokenGrant {

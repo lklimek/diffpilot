@@ -28,8 +28,9 @@ pub struct ProgressHub {
 #[derive(Debug)]
 struct Channel {
     sender: broadcast::Sender<AnalysisEvent>,
-    // Serialises write + publish of every entity of the analysis (a coarser lock than one per entity).
-    lock: tokio::sync::Mutex<()>,
+    // Serialises write + publish of every entity of the analysis (a coarser lock than one per entity); holds the
+    // analysis summary published last, so a re-publish of the same summary is skipped.
+    lock: tokio::sync::Mutex<Option<AnalysisSummary>>,
 }
 
 impl ProgressHub {
@@ -50,8 +51,11 @@ impl ProgressHub {
         Fut: Future<Output = Result<AnalysisEvent, E>>,
     {
         let channel = self.channel(analysis);
-        let _guard = channel.lock.lock().await;
+        let mut last = channel.lock.lock().await;
         let event = write().await?;
+        if let AnalysisEvent::Analysis { summary } = &event {
+            *last = Some(summary.clone());
+        }
         // No subscriber is not an error: the next connection reads the stored state.
         let _ = channel.sender.send(event.clone());
         Ok(event)
@@ -82,13 +86,17 @@ impl ProgressHub {
         }
     }
 
-    /// Publishes the analysis's current summary (e.g. its stage changed with a job claim; nothing is written).
+    /// Publishes the analysis's current summary when it differs from the one published last (e.g. its stage
+    /// changed with a job's claim, end, submit, requeue or pause; nothing is written).
     pub async fn publish_analysis(&self, db: &Db, analysis: AnalysisId) -> Result<(), DbError> {
-        self.update(analysis, || async {
-            let summary = db.analyses().summary(analysis).await?;
-            Ok::<_, DbError>(AnalysisEvent::Analysis { summary })
-        })
-        .await?;
+        let channel = self.channel(analysis);
+        let mut last = channel.lock.lock().await;
+        let summary = db.analyses().summary(analysis).await?;
+        if last.as_ref() == Some(&summary) {
+            return Ok(());
+        }
+        *last = Some(summary.clone());
+        let _ = channel.sender.send(AnalysisEvent::Analysis { summary });
         Ok(())
     }
 
@@ -101,7 +109,7 @@ impl ProgressHub {
         Arc::clone(channels.entry(analysis).or_insert_with(|| {
             Arc::new(Channel {
                 sender: broadcast::channel(BUFFER).0,
-                lock: tokio::sync::Mutex::new(()),
+                lock: tokio::sync::Mutex::new(None),
             })
         }))
     }

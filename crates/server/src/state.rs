@@ -8,6 +8,7 @@ use crate::auth::PendingPairs;
 use crate::config::Config;
 use crate::jobs::executor::JobExecutor;
 use crate::jobs::progress::ProgressHub;
+use crate::jobs::queue::QueueExecutor;
 
 /// State shared by all handlers; cheap to clone.
 #[derive(Clone, Debug)]
@@ -25,6 +26,16 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// The state with the database queue as executor, its followers publishing to the state's progress hub.
+    pub fn with_queue(config: Config, db: Db) -> Self {
+        let progress = ProgressHub::default();
+        let executor = Arc::new(QueueExecutor::new(db.clone(), progress.clone()));
+        Self {
+            progress,
+            ..Self::new(config, db, executor)
+        }
+    }
+
     /// Builds the state from a loaded configuration, the opened database and the job executor.
     pub fn new(config: Config, db: Db, executor: Arc<dyn JobExecutor>) -> Self {
         Self {
@@ -41,13 +52,11 @@ impl AppState {
 pub(crate) mod tests {
     use super::*;
     use crate::config::tests::test_config;
-    use crate::jobs::queue::QueueExecutor;
 
     /// State over an in-memory database and the queue executor, for handler tests.
     pub(crate) async fn test_state() -> AppState {
         let db = Db::in_memory().await.expect("in-memory database");
-        let executor = Arc::new(QueueExecutor::new(db.clone()));
-        AppState::new(test_config(), db, executor)
+        AppState::with_queue(test_config(), db)
     }
 
     #[tokio::test]
