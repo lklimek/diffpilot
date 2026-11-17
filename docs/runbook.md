@@ -40,7 +40,8 @@ disk for images and build cache, plus the codex-homes image. Check: `docker vers
 
    The runner's start-up check (`deploy/runner/preflight.sh`, exit 78) refuses to start unless
    `/var/lib/smart-review-runner/codex-homes` is a separate ext4 filesystem mounted `nosuid,nodev,noexec`, no
-   larger than `SR_CODEX_HOMES_MAX_BYTES` (default 16 GiB) and `SR_CODEX_HOMES_MAX_INODES`.
+   larger than `SR_CODEX_HOMES_MAX_BYTES` (default 16 GiB) and `SR_CODEX_HOMES_MAX_INODES`. The runner binary
+   repeats the same check at its own start (exit 78 too), so it holds even when the container's command is changed.
 
 3. GitHub App (github.com → Settings → Developer settings → GitHub Apps → the App):
    - Callback URL, exactly: `https://review.klimek.ws/auth/github/callback` (no wildcard); "Expire user
@@ -214,7 +215,7 @@ smart-review-runner-1` show the last exit.
 |---|---|---|---|
 | 70 | runner | The supervisor's job-end sweep could not prove every agent process gone within `SR_SUPERVISOR_SWEEP_DEADLINE_MS`; it ended the container (fail closed, ADR-013). The restart starts clean. | Repeated exits (`docker inspect -f '{{.RestartCount}}'`): read the runner log before the exit; an agent may be resisting the sweep. Stop the runner (`sr stop runner`) if it loops. |
 | 71 | runner | The supervisor could not set itself up (capabilities, uids, control socket). | Check that the compose file's `cap_add`, `init` and `ipc` are unchanged and the image is the production image. |
-| 78 | runner | Preflight refused. Either codex-homes is missing, not ext4, mounted without `nosuid,nodev,noexec`, or larger than the limits (or, local stack only, a tmpfs with a non-localhost `SR_PUBLIC_URL`); or the runner network is not isolated (a default route, or a gateway address answers). The log line says which. | Filesystem: run `prepare-codex-homes.sh` again; check `findmnt /srv/smart-review/codex-homes` and `SR_CODEX_HOMES_DIR`. Network: upgrade Docker Engine to 28.0 or newer, keep the runner network's `gateway_mode_*: isolated` options, then `sr down && sr up -d` (networks are created anew). |
+| 78 | runner | Preflight or the runner's own start-up check refused. Either codex-homes is missing, not ext4, mounted without `nosuid,nodev,noexec`, or larger than the limits (or, local stack only, a tmpfs with a non-localhost `SR_PUBLIC_URL`); or the runner network is not isolated (a default route, or a gateway address answers); or `SR_RUNNER_SECRET_FILE` is readable by the agent uid 10002 (owned by it, any `other` bit, or a group bit with group 10002). The log line says which. | Filesystem: run `prepare-codex-homes.sh` again; check `findmnt /srv/smart-review/codex-homes` and `SR_CODEX_HOMES_DIR`. Network: upgrade Docker Engine to 28.0 or newer, keep the runner network's `gateway_mode_*: isolated` options, then `sr down && sr up -d` (networks are created anew). |
 | 64 | egress-proxy | `SR_MEMCAN_URL` is not `http(s)://host[:port][/path]`. | Fix `.env`, `sr up -d`. |
 | 65 | egress-proxy | The MemCan host name of `SR_MEMCAN_URL` does not resolve (the proxy pins its address at start). | Check DNS from the host (`getent hosts HOST`); the proxy retries with every restart. |
 

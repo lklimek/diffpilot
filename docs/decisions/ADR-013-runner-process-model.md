@@ -113,8 +113,8 @@ this is host preparation: `deploy/host/prepare-codex-homes.sh` (ext4 image, fsta
 policy retries, the log names the reason) unless `codex-homes` is a mount point on its own filesystem, ext4,
 mounted `nosuid,nodev,noexec`, within `SR_CODEX_HOMES_MAX_BYTES`/`_MAX_INODES`. A tmpfs passes only with
 `SR_CODEX_HOMES_ALLOW_TMPFS=1` and a localhost public URL (`deploy/compose.local.yaml`). `noexec` holds for Codex:
-it only places symlinks to its own binary there (`tmp/arg0-linux/*`), and exec resolves to `/opt/codex`. The check
-moves into the runner binary later (approved follow-up); until then a changed CMD would skip it. The test uses a `size=16m,nr_inodes=2048` tmpfs as a stand-in for the bound
+it only places symlinks to its own binary there (`tmp/arg0-linux/*`), and exec resolves to `/opt/codex`. The runner
+binary repeats the check at its start ("Rust implementation"), so a changed CMD does not skip it. The test uses a `size=16m,nr_inodes=2048` tmpfs as a stand-in for the bound
 (`codex_home_exhaustion_fails_job_cleanly`: the agent hits `ENOSPC` for bytes and inodes, the runner still writes
 its state, copies `auth.json` back and cleans up).
 
@@ -250,7 +250,5 @@ token without such a prefix, or one the agent encodes, can appear in live progre
   kill within the deadline) and so force the fail-closed exit 70 and a container restart, once per attempt; the
   job's attempt limit (`max_attempts` = 3, `runner-protocol.md`) bounds the repetitions per job, other jobs of the
   queue are delayed meanwhile.
-- The bounded `codex-homes` check is a shell preflight in the image's CMD, not part of the runner binary: an
-  operator who overrides the command skips it (runner-side check approved as follow-up work).
 - The development smoke (`deploy/dev/real-codex-smoke.sh`, `SR_SMOKE_ISOLATION=supervisor`) keeps a host address
   on its internal network, because the dev server runs on the host; never a deployment.
