@@ -4,50 +4,14 @@
 pub(crate) mod cargo;
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
 use contracts::api::tour::Counters;
 use contracts::common::{Evidence, FileRanges, LineSide, NotAnalysedCategory};
-use contracts::ids::CommitSha;
 use serde::{Deserialize, Serialize};
 
 use crate::diff::FileDiff;
 use crate::lines::ranges;
 use crate::tech::{Classified, DependencyFile, dependency_file};
-
-/// Counting failed.
-#[derive(Debug, thiserror::Error)]
-pub enum CountersError {
-    /// `git` failed.
-    #[error("git failed while counting: {message}")]
-    Git {
-        /// Plain git error output.
-        message: String,
-    },
-    /// Running `git` failed.
-    #[error("could not run git")]
-    Io(#[from] std::io::Error),
-    /// Declared but not implemented yet.
-    #[error("the analysis operation {operation} is not implemented yet")]
-    NotImplemented {
-        /// The operation.
-        operation: &'static str,
-    },
-}
-
-/// Deterministic counters for the PR context.
-pub fn count(
-    repo: &Path,
-    base: &CommitSha,
-    head: &CommitSha,
-    files: &[FileDiff],
-    classified: &[Classified],
-) -> Result<Counters, CountersError> {
-    let _ = (repo, base, head, files, classified);
-    Err(CountersError::NotImplemented {
-        operation: "counters::count",
-    })
-}
 
 /// The counters with their evidence.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,7 +22,8 @@ pub struct CounterFacts {
     pub removed_test_lines: Vec<FileRanges>,
     /// Changed dependencies with the changed lines naming them (evidence of `dependencies_changed`).
     pub dependencies: Vec<DependencyChange>,
-    /// Changed dependency files of ecosystems the pre-pass does not read: their dependencies are not checked.
+    /// Changed dependency files whose dependencies are not checked: other ecosystems, files without text, Cargo
+    /// files that are too large or do not parse (never counted as "0 changed").
     pub dependency_files_not_checked: Vec<String>,
 }
 
@@ -111,7 +76,7 @@ pub fn compute<'t>(
             else {
                 continue;
             };
-            let changed: Vec<u32> = file
+            let mut changed: Vec<u32> = file
                 .hunks
                 .iter()
                 .flat_map(|hunk| match side {
@@ -123,13 +88,15 @@ pub fn compute<'t>(
             if changed.is_empty() {
                 continue;
             }
+            changed.sort_unstable();
             let names = match (kind, text(side, path)) {
                 (DependencyFile::CargoToml, Some(text)) => manifest_changes(text, &changed),
                 (DependencyFile::CargoLock, Some(text)) => lock_changes(text, &changed),
-                (DependencyFile::Other, _) | (_, None) => {
-                    not_checked.push(path.to_owned());
-                    continue;
-                }
+                (DependencyFile::Other, _) | (_, None) => None,
+            };
+            let Some(names) = names else {
+                not_checked.push(path.to_owned());
+                continue;
             };
             for (name, line) in names {
                 dependencies.entry(name).or_default().push(Evidence {
@@ -161,35 +128,57 @@ pub fn compute<'t>(
     }
 }
 
-/// Dependencies named by the changed lines of a `Cargo.toml`.
-fn manifest_changes(text: &str, changed: &[u32]) -> Vec<(String, u32)> {
-    cargo::toml_lines(text)
-        .iter()
-        .filter(|line| changed.contains(&line.number) && !line.text.trim().is_empty())
-        .filter_map(|line| Some((cargo::dependency_name(line)?.to_owned(), line.number)))
-        .collect()
+/// Dependencies named by the sorted `changed` lines of a `Cargo.toml` (O((D + C) log C) for D declaration
+/// spans); `None` when it is not checked.
+fn manifest_changes(text: &str, changed: &[u32]) -> Option<Vec<(String, u32)>> {
+    let declarations = cargo::manifest(text)?;
+    Some(named_lines(
+        text,
+        changed,
+        declarations
+            .into_iter()
+            .map(|declaration| (declaration.name, declaration.lines)),
+    ))
 }
 
-/// Packages from a registry or git source whose own lines (name, version, source, checksum) changed in a
-/// `Cargo.lock`; workspace packages and changes of a package's dependency list do not count.
-fn lock_changes(text: &str, changed: &[u32]) -> Vec<(String, u32)> {
-    let packages = cargo::lock_packages(text);
+/// Packages from a registry or git source whose own lines (name, version, source, checksum) are among the sorted
+/// `changed` lines of a `Cargo.lock`; workspace packages and changes of a package's dependency list do not count.
+/// `None` when it is not checked.
+fn lock_changes(text: &str, changed: &[u32]) -> Option<Vec<(String, u32)>> {
+    let packages = cargo::lock(text)?;
+    Some(named_lines(
+        text,
+        changed,
+        packages
+            .into_iter()
+            .filter(|package| package.source.is_some())
+            .map(|package| (package.name, package.lines)),
+    ))
+}
+
+/// The non-blank changed lines inside each named set of line ranges, once per name and line.
+fn named_lines(
+    text: &str,
+    changed: &[u32],
+    named: impl Iterator<Item = (String, Vec<(u32, u32)>)>,
+) -> Vec<(String, u32)> {
     let lines: Vec<&str> = text.lines().collect();
-    let mut out = Vec::new();
-    for &number in changed {
-        let blank = usize::try_from(number)
+    let blank = |number: u32| {
+        usize::try_from(number)
             .ok()
             .and_then(|n| lines.get(n.checked_sub(1)?))
-            .is_none_or(|line| line.trim().is_empty());
-        let package = packages
-            .iter()
-            .find(|package| (package.lines.0..=package.lines.1).contains(&number));
-        if let Some(package) = package.filter(|package| {
-            !blank && package.source.is_some() && !package.dependency_list.contains(&number)
-        }) && let Some(name) = package.name
-        {
-            out.push((name.to_owned(), number));
-        }
+            .is_none_or(|line| line.trim().is_empty())
+    };
+    let mut out = Vec::new();
+    for (name, ranges) in named {
+        let mut hits: Vec<u32> = ranges
+            .into_iter()
+            .flat_map(|range| cargo::changed_within(changed, range).iter().copied())
+            .filter(|&number| !blank(number))
+            .collect();
+        hits.sort_unstable();
+        hits.dedup();
+        out.extend(hits.into_iter().map(|number| (name.clone(), number)));
     }
     out
 }
@@ -340,5 +329,85 @@ mod tests {
             evidence("app").is_empty(),
             "the package version is not a dependency"
         );
+    }
+
+    #[test]
+    fn unreadable_cargo_files_are_not_checked_never_zero() {
+        let files = [
+            file(
+                "Cargo.toml",
+                FileStatus::Modified,
+                vec![hunk((2, 1), (2, 1))],
+            ),
+            file(
+                "crates/a/Cargo.toml",
+                FileStatus::Modified,
+                vec![hunk((2, 1), (2, 1))],
+            ),
+            file(
+                "Cargo.lock",
+                FileStatus::Modified,
+                vec![hunk((2, 1), (2, 1))],
+            ),
+        ];
+        let broken = "[dependencies\ntokio = \"1\"\n";
+        let text = |_: LineSide, path: &str| match path {
+            "Cargo.toml" => Some(broken),
+            _ => None,
+        };
+        let facts = compute(&files, &[], &text);
+        assert!(facts.counters.dependencies_changed.is_empty());
+        assert_eq!(
+            facts.dependency_files_not_checked,
+            ["Cargo.lock", "Cargo.toml", "crates/a/Cargo.toml"],
+            "a parse failure and missing text are listed, not counted as 0"
+        );
+    }
+
+    #[test]
+    fn only_dependency_tables_name_dependencies() {
+        let base = "[package]\nname = \"app\"\n\n[package.metadata.dependencies]\nfake = \"1\"\n\n[target.'cfg(unix)'.dependencies]\nnix = \"0.28\"\n\n[dependencies]\njson = { package = \"serde_json\", version = \"1.0\" }\n";
+        let head = "[package]\nname = \"app\"\n\n[package.metadata.dependencies]\nfake = \"2\"\n\n[target.'cfg(unix)'.dependencies]\nnix = \"0.29\"\n\n[dependencies]\njson = { package = \"serde_json\", version = \"1.1\" }\n";
+        let files = [file(
+            "Cargo.toml",
+            FileStatus::Modified,
+            vec![
+                hunk((5, 1), (5, 1)),
+                hunk((8, 1), (8, 1)),
+                hunk((11, 1), (11, 1)),
+            ],
+        )];
+        let text = |side: LineSide, _: &str| Some(if side == LineSide::Base { base } else { head });
+        let facts = compute(&files, &[], &text);
+        assert_eq!(facts.counters.dependencies_changed, ["nix", "serde_json"]);
+        assert!(facts.dependency_files_not_checked.is_empty());
+    }
+
+    #[test]
+    fn large_manifest_is_counted_in_bounded_time() {
+        let count: u32 = 100_000;
+        let mut base = String::from("[dependencies]\n");
+        let mut head = String::from("[dependencies]\n");
+        for n in 0..count {
+            base.push_str(&format!("crate_{n} = \"1.0\"\n"));
+            head.push_str(&format!("crate_{n} = \"1.1\"\n"));
+        }
+        let files = [file(
+            "Cargo.toml",
+            FileStatus::Modified,
+            vec![hunk((2, count), (2, count))],
+        )];
+        let text = |side: LineSide, _: &str| {
+            Some(if side == LineSide::Base {
+                base.as_str()
+            } else {
+                head.as_str()
+            })
+        };
+        let started = std::time::Instant::now();
+        let facts = compute(&files, &[], &text);
+        let elapsed = started.elapsed();
+        assert_eq!(facts.counters.dependencies_changed.len(), 100_000);
+        assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
     }
 }

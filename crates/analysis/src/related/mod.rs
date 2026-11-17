@@ -1,87 +1,61 @@
 //! Related-repository detection from Cargo files, limited to the same organisation (brief §5).
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
 use contracts::common::{LineSide, RepoRef};
-use contracts::ids::CommitSha;
 
 use crate::counters::cargo;
 use crate::tech::{DependencyFile, dependency_file};
 
-/// Detection failed.
-#[derive(Debug, thiserror::Error)]
-pub enum RelatedError {
-    /// `git` failed.
-    #[error("git failed while reading Cargo files: {message}")]
-    Git {
-        /// Plain git error output.
-        message: String,
-    },
-    /// Running `git` failed.
-    #[error("could not run git")]
-    Io(#[from] std::io::Error),
-    /// Declared but not implemented yet.
-    #[error("the analysis operation {operation} is not implemented yet")]
-    NotImplemented {
-        /// The operation.
-        operation: &'static str,
-    },
-}
-
-/// Repositories of `pr_repo`'s organisation referenced by git or path dependencies in `Cargo.toml` /
-/// `Cargo.lock` at `base`.
-pub fn detect(
-    checkout: &Path,
-    base: &CommitSha,
-    pr_repo: &RepoRef,
-) -> Result<Vec<RepoRef>, RelatedError> {
-    let _ = (checkout, base, pr_repo);
-    Err(RelatedError::NotImplemented {
-        operation: "related::detect",
-    })
-}
-
 /// Repositories of `pr_repo`'s organisation referenced by git dependencies (`Cargo.toml` `git = …`, `Cargo.lock`
 /// `source = "git+…"`) or by path dependencies one level outside the repository (`path = "../<repo>/…"`), read
-/// from the Cargo files among `base_paths` through `text` (base side). Sorted, without the PR repository.
+/// from the dependency declarations and package records of the Cargo files among `base_paths` through `text`
+/// (base side; a file that does not parse adds nothing). Sorted, without the PR repository.
 pub fn from_cargo<'t>(
     pr_repo: &RepoRef,
     base_paths: &[String],
     text: &dyn Fn(LineSide, &str) -> Option<&'t str>,
 ) -> Vec<RepoRef> {
+    let mut local_names = BTreeSet::new();
     let mut names = BTreeSet::new();
+    let mut add = |url: &str| {
+        let repo = github_repo(url).filter(|(owner, _)| owner.eq_ignore_ascii_case(&pr_repo.owner));
+        names.extend(repo.map(|(_, name)| name));
+    };
     for path in base_paths {
         let (Some(kind), Some(text)) = (dependency_file(path), text(LineSide::Base, path)) else {
             continue;
         };
         match kind {
             DependencyFile::CargoToml => {
-                for line in cargo::toml_lines(text) {
-                    let git = cargo::string_value(line.text, "git").and_then(github_repo);
-                    names.extend(
-                        git.filter(|(owner, _)| owner.eq_ignore_ascii_case(&pr_repo.owner))
-                            .map(|(_, name)| name),
-                    );
-                    let local = cargo::dependency_name(&line)
-                        .and(cargo::string_value(line.text, "path"))
+                for declaration in cargo::manifest(text).unwrap_or_default() {
+                    if let Some(git) = &declaration.git {
+                        add(git);
+                    }
+                    let local = declaration
+                        .path
+                        .as_deref()
                         .and_then(|dependency| sibling(path, dependency));
-                    names.extend(local);
+                    if let Some(name) = local {
+                        local_names.insert(name);
+                    }
                 }
             }
             DependencyFile::CargoLock => {
-                let sources = text
-                    .lines()
-                    .filter_map(|line| cargo::string_value(line, "source"));
-                for source in sources.filter_map(|source| source.strip_prefix("git+")) {
-                    let repo = github_repo(source)
-                        .filter(|(owner, _)| owner.eq_ignore_ascii_case(&pr_repo.owner));
-                    names.extend(repo.map(|(_, name)| name));
+                let sources = cargo::lock(text)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|package| package.source);
+                for source in sources {
+                    if let Some(url) = source.strip_prefix("git+") {
+                        add(url);
+                    }
                 }
             }
             DependencyFile::Other => {}
         }
     }
+    names.append(&mut local_names);
     let mut seen = BTreeSet::new();
     names
         .into_iter()
@@ -114,25 +88,29 @@ fn github_repo(url: &str) -> Option<(String, String)> {
     (valid_owner(owner) && valid_name(name)).then(|| (owner.to_owned(), name.to_owned()))
 }
 
-/// The sibling repository a path dependency of the manifest at `manifest` points into (exactly one level above
-/// the repository root), if any.
+/// The sibling repository a path dependency of the manifest at `manifest` points into: the path is normalised
+/// relative to the repository root, and only a target exactly one level above the root names a sibling.
 fn sibling(manifest: &str, dependency: &str) -> Option<String> {
-    if dependency.starts_with('/') {
+    if dependency.starts_with('/') || dependency.contains('\\') {
         return None;
     }
-    let mut depth = manifest.split('/').count().saturating_sub(1);
-    let mut escaped = 0usize;
-    for segment in dependency.split('/') {
+    let directory = manifest
+        .rsplit_once('/')
+        .map_or("", |(directory, _)| directory);
+    let mut stack: Vec<&str> = Vec::new();
+    for segment in directory.split('/').chain(dependency.split('/')) {
         match segment {
             "" | "." => {}
-            ".." if depth > 0 => depth -= 1,
-            ".." => escaped += 1,
-            name if escaped == 1 => return valid_name(name).then(|| name.to_owned()),
-            _ if escaped > 1 => return None,
-            _ => depth += 1,
+            ".." if stack.last().is_some_and(|top| *top != "..") => {
+                stack.pop();
+            }
+            other => stack.push(other),
         }
     }
-    None
+    match stack.as_slice() {
+        ["..", name, ..] if *name != ".." && valid_name(name) => Some((*name).to_owned()),
+        _ => None,
+    }
 }
 
 fn valid_owner(owner: &str) -> bool {
@@ -175,6 +153,9 @@ lookalike = { git = "https://github.com.evil.example/dashpay/fake" }
 
 [package]
 documentation = "https://github.com/dashpay/not-a-dependency"
+
+[package.metadata.release]
+git = "https://github.com/dashpay/release-metadata"
 "#;
         let member = r#"[package]
 name = "a"
@@ -187,7 +168,8 @@ tenderdash-abci = { path = "../../../tenderdash-abci/abci" }
 inner = { path = "../b" }
 far = { path = "../../../../far/x" }
 "#;
-        let lock = r#"[[package]]
+        let lock = r#"# source = "git+https://github.com/dashpay/in-a-comment"
+[[package]]
 name = "bls"
 source = "git+https://github.com/dashpay/bls-signatures?rev=1#abc"
 
@@ -256,5 +238,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         assert_eq!(sibling("Cargo.toml", "../../x/y"), None);
         assert_eq!(sibling("Cargo.toml", "/abs/x"), None);
         assert_eq!(sibling("Cargo.toml", "../.."), None);
+        assert_eq!(
+            sibling("Cargo.toml", "../foo/../bar"),
+            Some("bar".to_owned())
+        );
+        assert_eq!(sibling("Cargo.toml", "../foo/../../outside"), None);
+        assert_eq!(
+            sibling("Cargo.toml", "../foo/.."),
+            None,
+            "the parent of the root itself"
+        );
+        assert_eq!(
+            sibling("crates/a/Cargo.toml", "../../x/../../core/y"),
+            Some("core".to_owned())
+        );
+        assert_eq!(
+            sibling("Cargo.toml", "inner/../../sib"),
+            Some("sib".to_owned())
+        );
     }
 }

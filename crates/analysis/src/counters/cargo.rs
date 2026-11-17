@@ -1,158 +1,177 @@
-//! Line scanners for `Cargo.toml` and `Cargo.lock` (no TOML parser: facts are tied to the changed lines).
+//! `Cargo.toml` and `Cargo.lock` parsed with `toml_edit` (positions kept): dependency declarations and package
+//! records with the lines they occupy. A file that is too large or does not parse gives `None`: not checked.
 
-/// One line of a `Cargo.toml` with the table and entry it belongs to.
+use std::ops::Range;
+
+use toml_edit::{Document, Item, TableLike};
+
+/// Largest Cargo file read; a larger one is not checked.
+pub(crate) const MAX_CARGO_BYTES: usize = 4 * 1024 * 1024;
+
+/// One dependency declaration of a `Cargo.toml`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct TomlLine<'t> {
-    /// 1-based line number.
-    pub number: u32,
-    /// Header of the enclosing table, without brackets (`dependencies`, `target.'cfg(unix)'.dependencies`).
-    pub table: &'t str,
-    /// Key of the entry the line belongs to; a continuation line of a multi-line value keeps it.
-    pub key: Option<&'t str>,
-    /// The line without its comment.
-    pub text: &'t str,
+pub(crate) struct Declaration {
+    /// Package name (`package = …` of a renamed dependency, else the key).
+    pub name: String,
+    /// `git = …`, if any.
+    pub git: Option<String>,
+    /// `path = …`, if any.
+    pub path: Option<String>,
+    /// Line ranges (1-based, inclusive) of its key and values.
+    pub lines: Vec<(u32, u32)>,
 }
 
-/// The lines of a `Cargo.toml`.
-pub(crate) fn toml_lines(text: &str) -> Vec<TomlLine<'_>> {
-    let mut out = Vec::new();
-    let (mut table, mut key, mut depth) = ("", None, 0usize);
-    for (number, raw) in (1u32..).zip(text.lines()) {
-        let line = strip_comment(raw);
-        let trimmed = line.trim();
-        if depth == 0 && trimmed.starts_with('[') {
-            table = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
-            key = None;
-        } else if depth == 0 {
-            key = trimmed
-                .split_once('=')
-                .map(|(name, _)| name.trim())
-                .filter(|name| !name.is_empty());
-        }
-        out.push(TomlLine {
-            number,
-            table,
-            key,
-            text: line,
-        });
-        depth = brackets(line, depth);
-    }
-    out
-}
-
-/// The dependency a line of a dependency table names, if the line is in one.
-pub(crate) fn dependency_name<'t>(line: &TomlLine<'t>) -> Option<&'t str> {
-    const KINDS: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
-    let table = line.table;
-    let entries = table.starts_with("patch.")
-        || table == "replace"
-        || KINDS
-            .iter()
-            .any(|kind| table == *kind || table.ends_with(&format!(".{kind}")));
-    if entries {
-        let key = line.key?;
-        let first = key.split('.').next().unwrap_or(key);
-        return Some(unquote(first.trim()));
-    }
-    // `[dependencies.foo]`, `[target.'cfg(unix)'.dev-dependencies.foo]`: one dependency per table.
-    KINDS.iter().find_map(|kind| {
-        let marker = format!("{kind}.");
-        let at = table.rfind(&marker)?;
-        let starts_segment = at == 0 || table[..at].ends_with('.');
-        starts_segment.then(|| unquote(table[at + marker.len()..].trim()))
-    })
-}
-
-/// The quoted string value of `key` on the line (`git = "…"` alone or inside an inline table).
-pub(crate) fn string_value<'t>(text: &'t str, key: &str) -> Option<&'t str> {
-    let mut rest = text;
-    while let Some(at) = rest.find(key) {
-        let before = rest[..at].chars().next_back();
-        let after = rest[at + key.len()..].trim_start();
-        let boundary = before.is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '-'));
-        if boundary && let Some(value) = after.strip_prefix('=') {
-            let value = value.trim_start().strip_prefix('"')?;
-            return value.split_once('"').map(|(value, _)| value);
-        }
-        rest = &rest[at + key.len()..];
-    }
-    None
-}
-
-/// A `[[package]]` block of a `Cargo.lock`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LockPackage<'t> {
+/// One `[[package]]` record of a `Cargo.lock`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LockPackage {
     /// Package name.
-    pub name: Option<&'t str>,
-    /// `source` value; `None` for packages of the workspace.
-    pub source: Option<&'t str>,
-    /// First and last line of the block.
-    pub lines: (u32, u32),
-    /// Lines of the `dependencies = [...]` list (the package's own dependencies, not the package itself).
-    pub dependency_list: Vec<u32>,
+    pub name: String,
+    /// `source`; `None` for packages of the workspace or path dependencies.
+    pub source: Option<String>,
+    /// Line ranges of the header and of every field except the package's own `dependencies` list.
+    pub lines: Vec<(u32, u32)>,
 }
 
-/// The packages of a `Cargo.lock`.
-pub(crate) fn lock_packages(text: &str) -> Vec<LockPackage<'_>> {
-    let mut out: Vec<LockPackage<'_>> = Vec::new();
-    let mut in_list = false;
-    for (number, line) in (1u32..).zip(text.lines()) {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && !in_list {
-            if trimmed == "[[package]]" {
-                out.push(LockPackage {
-                    lines: (number, number),
-                    ..LockPackage::default()
-                });
-            }
-            continue;
+/// Dependency tables of a manifest or a `target.<cfg>` table (`_` spellings are Cargo's legacy aliases).
+const KINDS: [&str; 5] = [
+    "dependencies",
+    "dev-dependencies",
+    "dev_dependencies",
+    "build-dependencies",
+    "build_dependencies",
+];
+
+/// The dependency declarations of a `Cargo.toml`: the tables of `KINDS`, their `target.*` forms,
+/// `[workspace.dependencies]`, and the source overrides `[patch.*]` and `[replace]`. `None` when the file is too
+/// large or does not parse.
+pub(crate) fn manifest(text: &str) -> Option<Vec<Declaration>> {
+    let document = parse(text)?;
+    let lines = LineIndex::new(text);
+    let mut tables = kinds(document.as_table());
+    if let Some(targets) = document.get("target").and_then(Item::as_table_like) {
+        for (_, target) in targets.iter() {
+            tables.extend(target.as_table_like().map(kinds).unwrap_or_default());
         }
-        let Some(package) = out.last_mut() else {
+    }
+    let workspace = document.get("workspace").and_then(Item::as_table_like);
+    tables.extend(workspace.and_then(|workspace| workspace.get("dependencies")));
+    if let Some(patches) = document.get("patch").and_then(Item::as_table_like) {
+        tables.extend(patches.iter().map(|(_, item)| item));
+    }
+    tables.extend(document.get("replace"));
+    let mut out = Vec::new();
+    for table in tables.into_iter().filter_map(Item::as_table_like) {
+        for (key, item) in table.iter() {
+            let mut spans = Vec::new();
+            if let Some((key, _)) = table.get_key_value(key) {
+                spans.extend(key.span());
+            }
+            collect_spans(item, &mut spans);
+            let field = |name: &str| {
+                item.as_table_like()
+                    .and_then(|fields| fields.get(name))
+                    .and_then(Item::as_str)
+                    .map(str::to_owned)
+            };
+            // `[replace]` keys are package ids (`name:version`).
+            let key = key.split_once(':').map_or(key, |(name, _)| name);
+            out.push(Declaration {
+                name: field("package").unwrap_or_else(|| key.to_owned()),
+                git: field("git"),
+                path: field("path"),
+                lines: spans.into_iter().map(|span| lines.range(span)).collect(),
+            });
+        }
+    }
+    Some(out)
+}
+
+/// The package records of a `Cargo.lock`; `None` when it is too large or does not parse.
+pub(crate) fn lock(text: &str) -> Option<Vec<LockPackage>> {
+    let document = parse(text)?;
+    let lines = LineIndex::new(text);
+    let Some(packages) = document.get("package").and_then(Item::as_array_of_tables) else {
+        return Some(Vec::new());
+    };
+    let mut out = Vec::new();
+    for package in packages.iter() {
+        let Some(name) = package.get("name").and_then(Item::as_str) else {
             continue;
         };
-        package.lines.1 = number;
-        if in_list || trimmed.starts_with("dependencies") {
-            package.dependency_list.push(number);
-            in_list = !trimmed.ends_with(']');
-        } else if let Some(name) = string_value(trimmed, "name") {
-            package.name = Some(name);
-        } else if let Some(source) = string_value(trimmed, "source") {
-            package.source = Some(source);
+        // The record's span covers its body too: only its first line, the `[[package]]` header.
+        let header = package.span().map(|span| span.start..span.start + 1);
+        let mut spans: Vec<Range<usize>> = header.into_iter().collect();
+        for (key, item) in package.iter().filter(|(key, _)| *key != "dependencies") {
+            if let Some((key, _)) = package.get_key_value(key) {
+                spans.extend(key.span());
+            }
+            collect_spans(item, &mut spans);
         }
+        out.push(LockPackage {
+            name: name.to_owned(),
+            source: package
+                .get("source")
+                .and_then(Item::as_str)
+                .map(str::to_owned),
+            lines: spans.into_iter().map(|span| lines.range(span)).collect(),
+        });
     }
-    out
+    Some(out)
 }
 
-fn strip_comment(line: &str) -> &str {
-    let mut quoted = None;
-    for (at, c) in line.char_indices() {
-        match (quoted, c) {
-            (None, '"' | '\'') => quoted = Some(c),
-            (Some(open), _) if c == open => quoted = None,
-            (None, '#') => return &line[..at],
-            _ => {}
-        }
-    }
-    line
+/// The dependency tables of a manifest or `target.<cfg>` table.
+fn kinds(table: &dyn TableLike) -> Vec<&Item> {
+    KINDS.iter().filter_map(|kind| table.get(kind)).collect()
 }
 
-/// Bracket depth after `line` (multi-line arrays and inline tables), quotes skipped.
-fn brackets(line: &str, mut depth: usize) -> usize {
-    let mut quoted = None;
-    for c in line.chars() {
-        match (quoted, c) {
-            (None, '"' | '\'') => quoted = Some(c),
-            (Some(open), _) if c == open => quoted = None,
-            (None, '[' | '{') => depth += 1,
-            (None, ']' | '}') => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    depth
+fn parse(text: &str) -> Option<Document<&str>> {
+    (text.len() <= MAX_CARGO_BYTES)
+        .then(|| Document::parse(text).ok())
+        .flatten()
 }
 
-fn unquote(text: &str) -> &str {
-    text.trim_matches(|c| c == '"' || c == '\'')
+/// Spans of an item and, for tables, of every key and value inside.
+fn collect_spans(item: &Item, out: &mut Vec<Range<usize>>) {
+    out.extend(item.span());
+    if let Some(table) = item.as_table_like() {
+        for (key, child) in table.iter() {
+            if let Some((key, _)) = table.get_key_value(key) {
+                out.extend(key.span());
+            }
+            collect_spans(child, out);
+        }
+    }
+}
+
+/// Byte offset → 1-based line number.
+struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    fn new(text: &str) -> Self {
+        let starts = std::iter::once(0)
+            .chain(text.match_indices('\n').map(|(at, _)| at + 1))
+            .collect();
+        Self { starts }
+    }
+
+    fn line(&self, offset: usize) -> u32 {
+        u32::try_from(self.starts.partition_point(|&start| start <= offset)).unwrap_or(u32::MAX)
+    }
+
+    /// First and last line of a byte span.
+    fn range(&self, span: Range<usize>) -> (u32, u32) {
+        let last = span.end.saturating_sub(1).max(span.start);
+        (self.line(span.start), self.line(last))
+    }
+}
+
+/// The sorted `changed` lines within `first..=last`.
+pub(crate) fn changed_within(changed: &[u32], (first, last): (u32, u32)) -> &[u32] {
+    let from = changed.partition_point(|&line| line < first);
+    let to = changed.partition_point(|&line| line <= last).max(from);
+    changed.get(from..to).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -161,14 +180,24 @@ mod tests {
 
     const MANIFEST: &str = r#"[package]
 name = "node"
-version = "0.7.0" # not a dependency
+version = "0.7.0"
+description = """
+[
+dependencies = "not a table"
+"""
+
+[package.metadata.dependencies]
+fake = "1"
+
+[package.metadata.release]
+git = "https://github.com/acme/marketing"
 
 [dependencies]
 tokio = { version = "1", features = [
     "macros",
 ] }
 serde.workspace = true
-"quoted-name" = "1"
+json = { package = "serde_json", version = "1" } # renamed
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = "0.29"
@@ -177,48 +206,84 @@ nix = "0.29"
 version = "2"
 git = "https://github.com/acme/url"
 
+[workspace.dependencies]
+shared = { path = "../shared" }
+
 [patch.crates-io]
 rand = { git = "https://github.com/acme/rand", branch = "fix" }
 "#;
 
-    #[test]
-    fn manifest_lines_name_their_dependency() {
-        let names: Vec<(u32, Option<&str>)> = toml_lines(MANIFEST)
-            .iter()
-            .map(|line| (line.number, dependency_name(line)))
-            .collect();
-        let name = |number: u32| names[usize::try_from(number - 1).expect("index")].1;
-        assert_eq!(name(3), None, "package version");
-        assert_eq!(name(6), Some("tokio"));
-        assert_eq!(name(7), Some("tokio"), "continuation of a multi-line value");
-        assert_eq!(name(8), Some("tokio"));
-        assert_eq!(name(9), Some("serde"));
-        assert_eq!(name(10), Some("quoted-name"));
-        assert_eq!(name(13), Some("nix"));
-        assert_eq!(name(15), Some("url"), "table header of one dependency");
-        assert_eq!(name(16), Some("url"));
-        assert_eq!(name(20), Some("rand"));
-        let lines = toml_lines(MANIFEST);
-        assert_eq!(
-            string_value(lines[16].text, "git"),
-            Some("https://github.com/acme/url")
-        );
-        assert_eq!(
-            string_value(lines[19].text, "git"),
-            Some("https://github.com/acme/rand")
-        );
-        assert_eq!(string_value("digest = \"x\"", "git"), None);
+    /// First and last line of a declaration.
+    fn extent(declaration: &Declaration) -> (u32, u32) {
+        let first = declaration.lines.iter().map(|l| l.0).min().unwrap_or(0);
+        let last = declaration.lines.iter().map(|l| l.1).max().unwrap_or(0);
+        (first, last)
     }
 
     #[test]
-    fn lock_packages_keep_name_source_and_dependency_list() {
-        let lock = "version = 4\n\n[[package]]\nname = \"node\"\nversion = \"0.7.0\"\ndependencies = [\n \"tokio\",\n]\n\n[[package]]\nname = \"tokio\"\nversion = \"1.47.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
-        let packages = lock_packages(lock);
+    fn manifest_declarations_with_their_lines() {
+        let declarations = manifest(MANIFEST).expect("parses");
+        let names: Vec<&str> = declarations.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "tokio",
+                "serde",
+                "serde_json",
+                "url",
+                "nix",
+                "shared",
+                "rand"
+            ],
+            "no metadata tables, no text inside multi-line strings, renamed by `package`"
+        );
+        let get = |name: &str| {
+            declarations
+                .iter()
+                .find(|d| d.name == name)
+                .expect("declared")
+        };
+        assert_eq!(extent(get("tokio")), (16, 18), "a multi-line inline table");
+        assert_eq!(extent(get("serde")), (19, 19));
+        assert_eq!(
+            extent(get("url")),
+            (25, 27),
+            "a table of one dependency with its header"
+        );
+        assert_eq!(
+            get("url").git.as_deref(),
+            Some("https://github.com/acme/url")
+        );
+        assert_eq!(get("shared").path.as_deref(), Some("../shared"));
+        assert_eq!(manifest("[dependencies\nx = 1"), None, "does not parse");
+        assert_eq!(
+            manifest(&"#".repeat(MAX_CARGO_BYTES + 1)),
+            None,
+            "too large"
+        );
+    }
+
+    #[test]
+    fn lock_packages_without_their_dependency_list() {
+        let lock_text = "version = 4\n\n# source = \"git+https://github.com/acme/comment\"\n[[package]]\nname = \"node\"\nversion = \"0.7.0\"\ndependencies = [\n \"tokio\",\n]\n\n[[package]]\nname = \"tokio\"\nversion = \"1.47.1\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n";
+        let packages = lock(lock_text).expect("parses");
         assert_eq!(packages.len(), 2);
-        assert_eq!((packages[0].name, packages[0].source), (Some("node"), None));
-        assert_eq!(packages[0].dependency_list, [6, 7, 8]);
-        assert_eq!(packages[1].name, Some("tokio"));
+        assert_eq!(
+            (packages[0].name.as_str(), packages[0].source.as_deref()),
+            ("node", None)
+        );
+        let node: Vec<u32> = packages[0].lines.iter().flat_map(|&(a, b)| a..=b).collect();
+        assert!([4, 5, 6].iter().all(|line| node.contains(line)), "{node:?}");
+        assert!(!node.contains(&7) && !node.contains(&8), "{node:?}");
         assert!(packages[1].source.is_some());
-        assert_eq!(packages[1].lines, (10, 13));
+        assert_eq!(lock("[[package]\n"), None);
+    }
+
+    #[test]
+    fn changed_lines_are_found_by_range() {
+        let changed = [2, 5, 6, 9];
+        assert_eq!(changed_within(&changed, (5, 8)), [5, 6]);
+        assert!(changed_within(&changed, (10, 12)).is_empty());
+        assert_eq!(changed_within(&changed, (1, 2)), [2]);
     }
 }
