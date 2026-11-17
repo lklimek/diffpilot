@@ -31,7 +31,8 @@ pub enum DocumentKind {
     GithubSnapshot,
     /// Lines the server did not send to the LLM, with the reason (key `plan`, or a flow id).
     Unsent,
-    /// The MemCan project profile lookup of the analysis, made once (key `""`).
+    /// The MemCan project profile lookup of the analysis, made once per round (key `""`; body `{"memcan":
+    /// "not_checked"}` or `{"memcan": "checked", "text": …}`; a Retry deletes a `not_checked` one).
     MemcanProfile,
 }
 

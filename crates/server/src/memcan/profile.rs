@@ -138,17 +138,6 @@ pub async fn ensure(
     })
 }
 
-/// Before an explicit Retry: forgets a `not_checked` lookup so the new round looks the profile up again; a
-/// `checked` one is kept for the analysis.
-pub async fn forget_not_checked(db: &Db, analysis: AnalysisId) -> Result<(), DbError> {
-    if stored(db, analysis).await? == ProfileLookup::NotChecked {
-        db.documents()
-            .delete(analysis, DocumentKind::MemcanProfile, "")
-            .await?;
-    }
-    Ok(())
-}
-
 #[derive(Deserialize)]
 struct SearchAnswer {
     memories: Vec<serde_json::Value>,
