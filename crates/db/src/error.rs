@@ -43,6 +43,14 @@ impl DbError {
             _ => None,
         }
     }
+
+    /// Whether the database was busy or locked (`SQLITE_BUSY`, `SQLITE_LOCKED` or an extended code of either):
+    /// a transient failure the caller may retry.
+    pub fn is_busy(&self) -> bool {
+        self.sqlite_code()
+            .and_then(|code| code.parse::<i32>().ok())
+            .is_some_and(|code| matches!(code & 0xff, 5 | 6))
+    }
 }
 
 /// Opaque database failure; no sqlx type is reachable through the public API (plan A2).

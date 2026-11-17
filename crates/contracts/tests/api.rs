@@ -222,6 +222,7 @@ fn error_codes_map_to_statuses() {
         ("not_rendered", 422),
         ("github_unavailable", 502),
         ("internal", 500),
+        ("unavailable", 503),
     ];
     assert_eq!(ApiErrorCode::ALL.len(), expected.len());
     for (code, (name, status)) in ApiErrorCode::ALL.into_iter().zip(expected) {

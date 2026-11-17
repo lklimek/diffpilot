@@ -39,16 +39,42 @@ mod schema_tests;
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing {
     use std::path::Path;
+    use std::time::Duration;
 
-    use super::Db;
+    use sqlx::{Sqlite, Transaction};
+
+    use super::{BUSY_TIMEOUT, Db};
     use crate::error::DbError;
 
     /// A file-backed WAL database in `dir` with the production pool (several connections), for tests where
     /// connections run concurrently; [`Db::in_memory`] has a single connection and never sees lock contention.
     pub async fn file_backed(dir: &Path) -> Result<Db, DbError> {
-        Db::open(&dir.join("smart-review.sqlite")).await
+        file_backed_with_busy_timeout(dir, BUSY_TIMEOUT).await
+    }
+
+    /// [`file_backed`] with a shorter busy timeout, so tests of a held write lock fail fast.
+    pub async fn file_backed_with_busy_timeout(
+        dir: &Path,
+        busy_timeout: Duration,
+    ) -> Result<Db, DbError> {
+        Db::open_with(&dir.join("smart-review.sqlite"), busy_timeout).await
+    }
+
+    /// The write lock held on its own connection until dropped (rolled back), as by a concurrent writer.
+    #[derive(Debug)]
+    pub struct WriteLock(
+        #[expect(dead_code, reason = "held for its drop")] Transaction<'static, Sqlite>,
+    );
+
+    /// Takes the write lock of `db` on a connection of its own; waits on the busy timeout like any writer.
+    pub async fn hold_write_lock(db: &Db) -> Result<WriteLock, DbError> {
+        // `BEGIN IMMEDIATE` takes the write lock itself.
+        Ok(WriteLock(super::write_tx(&db.pool).await?))
     }
 }
+
+/// How long a writer waits for the write lock before failing with `SQLITE_BUSY`.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The single schema file, rewritten in place until deployment.
 const INIT_SQL: &str = include_str!("../../migrations/0001_init.sql");
@@ -93,12 +119,16 @@ impl fmt::Debug for Db {
 impl Db {
     /// Opens (creating if missing) the database file in WAL mode and applies the schema.
     pub async fn open(path: &Path) -> Result<Self, DbError> {
+        Self::open_with(path, BUSY_TIMEOUT).await
+    }
+
+    async fn open_with(path: &Path, busy_timeout: Duration) -> Result<Self, DbError> {
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .foreign_keys(true)
-            .busy_timeout(Duration::from_secs(5));
+            .busy_timeout(busy_timeout);
         let pool = SqlitePoolOptions::new().connect_with(options).await?;
         Self::migrated(pool).await
     }

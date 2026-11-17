@@ -1266,35 +1266,47 @@ fn api_seed_projects_the_agent_output_and_the_repository() {
     }
 }
 
-/// The banned phrases of brief §1, taken from `scripts/check-wording.mjs` (`WORDS`): alternatives of words
-/// separated by `\s+`, with optional `\b` at either end.
-fn banned_phrases() -> Vec<(Vec<String>, bool, bool)> {
-    let script = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/check-wording.mjs"),
-    )
-    .expect("wording script");
-    let line = script
-        .lines()
-        .find(|l| l.starts_with("const WORDS = /"))
-        .expect("WORDS regex");
-    let body = line
-        .trim_start_matches("const WORDS = /")
-        .rsplit_once('/')
-        .expect("regex end")
-        .0;
-    body.split('|')
+/// The percentage rule `wording_violation` implements: digits or the `{}` slot, one optional whitespace, `%`.
+const PERCENT_RULE: &str = r"(?:\d+|\{\})\s?%";
+
+/// The wording rules of brief §1 (`words`, `percent`) from `scripts/wording-rules.json`, the file
+/// `scripts/check-wording.mjs` and the e2e checks read; panics if the file or a key is missing.
+fn wording_rules() -> (String, String) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/wording-rules.json");
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let rules: Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let rule = |key: &str| {
+        rules[key]
+            .as_str()
+            .filter(|rule| !rule.is_empty())
+            .unwrap_or_else(|| panic!("{}: no non-empty string `{key}`", path.display()))
+            .to_owned()
+    };
+    (rule("words"), rule("percent"))
+}
+
+/// The banned phrases of the `words` rule (matched case-insensitively, as the `i` flag of the script):
+/// alternatives of words separated by `\s+`, with optional `\b` at either end.
+fn banned_phrases(words: &str) -> Vec<(Vec<String>, bool, bool)> {
+    let phrases: Vec<_> = words
+        .split('|')
         .map(|alt| {
             let start = alt.starts_with("\\b");
             let end = alt.ends_with("\\b");
             let core = alt.trim_start_matches("\\b").trim_end_matches("\\b");
             assert!(
-                core.chars()
-                    .all(|c| c.is_ascii_alphabetic() || "\\s+".contains(c)),
+                !core.is_empty()
+                    && core
+                        .chars()
+                        .all(|c| c.is_ascii_alphabetic() || "\\s+".contains(c)),
                 "unsupported regex part {alt}"
             );
             (core.split("\\s+").map(str::to_owned).collect(), start, end)
         })
-        .collect()
+        .collect();
+    assert!(!phrases.is_empty(), "no banned phrases");
+    phrases
 }
 
 fn word_char(c: Option<char>) -> bool {
@@ -1304,10 +1316,14 @@ fn word_char(c: Option<char>) -> bool {
 /// Banned wording or a percentage in `text`.
 fn wording_violation(text: &str, phrases: &[(Vec<String>, bool, bool)]) -> Option<String> {
     let lower: Vec<char> = text.to_lowercase().chars().collect();
+    // PERCENT_RULE: a digit or `{}` right before `%`, or before one whitespace and `%`.
+    let number_ends_at = |end: usize| {
+        lower[..end].last().is_some_and(char::is_ascii_digit) || lower[..end].ends_with(&['{', '}'])
+    };
     for (i, c) in lower.iter().enumerate() {
         if *c == '%'
-            && (lower[..i].last().is_some_and(char::is_ascii_digit)
-                || (i >= 2 && lower[i - 1] == ' ' && lower[i - 2].is_ascii_digit()))
+            && (number_ends_at(i)
+                || (i >= 1 && lower[i - 1].is_whitespace() && number_ends_at(i - 1)))
         {
             return Some("percentage".to_owned());
         }
@@ -1358,10 +1374,25 @@ fn strings(value: &Value, out: &mut Vec<String>) {
 
 #[test]
 fn fixture_text_follows_the_wording_rules_and_holds_no_secrets() {
-    let phrases = banned_phrases();
-    assert!(
-        wording_violation("No  risk here", &phrases).is_some()
-            && wording_violation("up to 50 % more", &phrases).is_some()
+    let (words, percent) = wording_rules();
+    assert_eq!(
+        percent, PERCENT_RULE,
+        "the percentage rule changed; update wording_violation"
+    );
+    let phrases = banned_phrases(&words);
+    for caught in [
+        "No  risk here",
+        "Nothing to review.",
+        "This was Verified.",
+        "up to 50 % more",
+        "up to 50% more",
+        "{}% of lines",
+    ] {
+        assert!(wording_violation(caught, &phrases).is_some(), "{caught}");
+    }
+    assert_eq!(
+        wording_violation("noisy, unverified retries", &phrases),
+        None
     );
     assert!(
         wording_violation("noisy, unverified, no risks", &phrases).as_deref() == Some("no risk")

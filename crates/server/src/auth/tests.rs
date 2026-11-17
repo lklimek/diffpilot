@@ -17,6 +17,7 @@ use db::repo::DEFAULT_TENANT;
 use db::repo::Db;
 use db::repo::sessions::NewSession;
 use db::repo::tenants::testing::{allow_login, remove_login};
+use db::repo::testing::{file_backed_with_busy_timeout, hold_write_lock};
 use db::repo::tokens::testing::{allow_token_writes, fail_token_writes};
 use db::repo::users::GithubProfile;
 use http_body_util::BodyExt;
@@ -59,6 +60,15 @@ struct SignedIn {
 }
 
 async fn harness_with(public_url: &str, trusted_proxies: &[&str]) -> Harness {
+    harness_on(
+        Db::in_memory().await.expect("db"),
+        public_url,
+        trusted_proxies,
+    )
+    .await
+}
+
+async fn harness_on(db: Db, public_url: &str, trusted_proxies: &[&str]) -> Harness {
     let github = MockServer::start().await;
     let mut config = test_config();
     config.public_url = Url::parse(public_url).expect("public url");
@@ -68,7 +78,6 @@ async fn harness_with(public_url: &str, trusted_proxies: &[&str]) -> Harness {
         .collect();
     config.github.oauth_url = Url::parse(&github.uri()).expect("oauth url");
     config.github.api_url = Url::parse(&format!("{}/api", github.uri())).expect("api url");
-    let db = Db::in_memory().await.expect("db");
     let executor = Arc::new(QueueExecutor::new(db.clone()));
     Harness {
         github,
@@ -767,14 +776,14 @@ async fn session_id_stored_hashed() {
     let sessions = h.state.db.sessions();
     assert_eq!(
         sessions
-            .touch(token.as_bytes(), super::liveness(Utc::now()))
+            .live(token.as_bytes(), super::liveness(Utc::now()))
             .await
             .expect("lookup"),
         None,
         "the raw token is not stored"
     );
     let stored = sessions
-        .touch(&sha256(token.as_bytes()), super::liveness(Utc::now()))
+        .live(&sha256(token.as_bytes()), super::liveness(Utc::now()))
         .await
         .expect("lookup")
         .expect("session found by hash");
@@ -875,6 +884,67 @@ async fn idle_session_ends() {
         "each use restarts the idle window"
     );
     assert_eq!(me_login(&h, &idle).await, None, "idle past the timeout");
+}
+
+/// Another connection holds the write lock past the busy timeout: a session validated by its read still serves
+/// the request, and the failed record of its use is logged without the session token.
+#[tokio::test]
+async fn busy_database_keeps_a_validated_session_signed_in() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db = file_backed_with_busy_timeout(dir.path(), Duration::from_millis(100))
+        .await
+        .expect("db");
+    let h = harness_on(db, "https://review.example.test", &[]).await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let stale = backdated_session(&h, &signed_in.user_id, "stale", TimeDelta::minutes(5)).await;
+    let capture = LogCapture::start();
+    let lock = hold_write_lock(&h.state.db).await.expect("write lock");
+    assert_eq!(
+        me_login(&h, &signed_in.cookie).await.as_deref(),
+        Some("lklimek"),
+        "a session seen moments ago is not written again"
+    );
+    assert_eq!(
+        me_login(&h, &stale).await.as_deref(),
+        Some("lklimek"),
+        "a failed record of the use does not fail the request"
+    );
+    drop(lock);
+    let logs = capture.text();
+    assert!(
+        logs.contains("WARN") && logs.contains("sqlite_code=Some(\"5\")"),
+        "{logs}"
+    );
+    assert!(!logs.contains("stale-session-token"), "{logs}");
+    let before = last_seen(&h, "stale").await;
+    assert!(Utc::now() - before > super::SESSION_TOUCH_INTERVAL);
+    assert!(me_login(&h, &stale).await.is_some());
+    let recorded = last_seen(&h, "stale").await;
+    assert!(
+        Utc::now() - recorded < super::SESSION_TOUCH_INTERVAL,
+        "the next use records it"
+    );
+    assert!(me_login(&h, &stale).await.is_some());
+    assert_eq!(
+        last_seen(&h, "stale").await,
+        recorded,
+        "a use within the interval is not written"
+    );
+}
+
+/// The recorded last use of the session `backdated_session` created under `name`.
+async fn last_seen(h: &Harness, name: &str) -> chrono::DateTime<Utc> {
+    h.state
+        .db
+        .sessions()
+        .live(
+            &sha256(format!("{name}-session-token").as_bytes()),
+            super::liveness(Utc::now()),
+        )
+        .await
+        .expect("read")
+        .expect("live session")
+        .last_seen_at
 }
 
 #[tokio::test]
@@ -1198,6 +1268,81 @@ async fn refresh_survives_a_cancelled_request() {
         "ghu_rotated",
         "no second refresh"
     );
+}
+
+/// GitHub rotates the pair while another connection holds the write lock past the busy timeout: the new pair is
+/// used at once, never rotated again, and stored once the lock is released.
+#[tokio::test]
+async fn refresh_keeps_the_rotated_pair_while_the_database_is_busy() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db = file_backed_with_busy_timeout(dir.path(), Duration::from_millis(100))
+        .await
+        .expect("db");
+    let h = harness_on(db, "https://review.example.test", &[]).await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    store_pair(
+        &h,
+        &signed_in.user_id,
+        grant("ghu_expiring", 60, "ghr_current"),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_current"))
+        .respond_with(token_response("ghu_rotated", "ghr_rotated"))
+        .expect(1)
+        .mount(&h.github)
+        .await;
+    let capture = LogCapture::start();
+    let lock = hold_write_lock(&h.state.db).await.expect("write lock");
+    for attempt in ["rotated", "kept in memory"] {
+        let access = user_access_token(&h.state, &signed_in.user_id)
+            .await
+            .unwrap_or_else(|error| panic!("{attempt}: {error:?}"));
+        assert_eq!(access.expose_secret(), "ghu_rotated", "{attempt}");
+    }
+    drop(lock);
+    let stored = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let stored = h
+                .state
+                .db
+                .user_tokens()
+                .get(&signed_in.user_id)
+                .await
+                .expect("lookup")
+                .expect("pair");
+            if stored_access(&h, &stored, &signed_in.user_id) == "ghu_rotated" {
+                break stored;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the rotated pair is stored after the lock is released");
+    let cipher = TokenCipher::new(&h.state.config.secret_key);
+    let refresh = cipher
+        .decrypt(
+            Aad {
+                table: "user_tokens",
+                column: "refresh_ct",
+                row_id: &signed_in.user_id,
+            },
+            &stored.tokens.refresh_ct,
+        )
+        .expect("refresh");
+    assert_eq!(refresh.expose_secret(), "ghr_rotated");
+    assert_eq!(
+        user_access_token(&h.state, &signed_in.user_id)
+            .await
+            .expect("token")
+            .expose_secret(),
+        "ghu_rotated"
+    );
+    let logs = capture.text();
+    for secret in ["ghu_rotated", "ghr_rotated", "ghr_current"] {
+        assert!(!logs.contains(secret), "{logs}");
+    }
 }
 
 /// A pair that no longer decrypts (`SR_SECRET_KEY` replaced, ADR-001) ends the sign-in instead of failing forever.

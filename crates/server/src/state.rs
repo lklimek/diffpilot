@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use db::repo::Db;
 
+use crate::auth::PendingPairs;
 use crate::config::Config;
 use crate::jobs::executor::JobExecutor;
 use crate::jobs::progress::ProgressHub;
@@ -19,6 +20,8 @@ pub struct AppState {
     pub executor: Arc<dyn JobExecutor>,
     /// Per-analysis progress channels behind the SSE stream (CCR-J1).
     pub progress: ProgressHub,
+    /// Refreshed GitHub token pairs not stored yet because the database was busy.
+    pub pending_pairs: PendingPairs,
 }
 
 impl AppState {
@@ -29,6 +32,7 @@ impl AppState {
             db,
             executor,
             progress: ProgressHub::default(),
+            pending_pairs: PendingPairs::default(),
         }
     }
 }

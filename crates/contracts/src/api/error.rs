@@ -51,11 +51,13 @@ pub enum ApiErrorCode {
     GithubUnavailable,
     /// An internal error.
     Internal,
+    /// The server is busy (e.g. its database is locked); retry after `Retry-After`.
+    Unavailable,
 }
 
 impl ApiErrorCode {
     /// Every code.
-    pub const ALL: [ApiErrorCode; 17] = [
+    pub const ALL: [ApiErrorCode; 18] = [
         Self::Unauthenticated,
         Self::LoginNotAllowed,
         Self::CsrfRejected,
@@ -73,6 +75,7 @@ impl ApiErrorCode {
         Self::NotRendered,
         Self::GithubUnavailable,
         Self::Internal,
+        Self::Unavailable,
     ];
 
     /// The HTTP status code of a response with this code.
@@ -92,6 +95,7 @@ impl ApiErrorCode {
             | Self::NotRendered => 422,
             Self::Internal => 500,
             Self::GithubUnavailable => 502,
+            Self::Unavailable => 503,
         }
     }
 }

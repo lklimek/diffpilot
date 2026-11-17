@@ -46,6 +46,8 @@ pub struct SessionRecord {
     pub csrf_token: String,
     /// End of the session.
     pub expires_at: DateTime<Utc>,
+    /// Last recorded use (see [`Sessions::touch`]).
+    pub last_seen_at: DateTime<Utc>,
 }
 
 /// When a session counts as live: unexpired at `now`, seen after `seen_after` (idle timeout), and its user's
@@ -119,34 +121,54 @@ impl Sessions<'_> {
         Ok(())
     }
 
-    /// The live session with this token hash (see [`Liveness`]), marked as seen at `live.now`; `None` if absent or
-    /// not live.
-    pub async fn touch(
+    /// The live session with this token hash (see [`Liveness`]); `None` if absent or not live. Reads only.
+    pub async fn live(
         &self,
         token_hash: &[u8],
         live: Liveness,
     ) -> Result<Option<SessionRecord>, DbError> {
-        let now = timestamp(live.now);
         let row = sqlx::query(concat!(
-            "UPDATE sessions SET last_seen_at = ?1 WHERE token_hash = ?3 AND ",
-            live_session!(),
-            " RETURNING tenant_id, user_id, csrf_token, expires_at"
+            "SELECT tenant_id, user_id, csrf_token, expires_at, last_seen_at FROM sessions WHERE token_hash = ?3 AND ",
+            live_session!()
         ))
-        .bind(&now)
+        .bind(timestamp(live.now))
         .bind(timestamp(live.seen_after))
         .bind(token_hash)
         .fetch_optional(self.pool)
         .await?;
         row.map(|row| {
             let expires_at: String = row.try_get("expires_at")?;
+            let last_seen_at: String = row.try_get("last_seen_at")?;
             Ok(SessionRecord {
                 tenant_id: row.try_get("tenant_id")?,
                 user_id: row.try_get("user_id")?,
                 csrf_token: row.try_get("csrf_token")?,
                 expires_at: parse_timestamp(&expires_at, "sessions.expires_at")?,
+                last_seen_at: parse_timestamp(&last_seen_at, "sessions.last_seen_at")?,
             })
         })
         .transpose()
+    }
+
+    /// Records a use at `live.now` of the session if it is still live and was last seen before `seen_before`; a
+    /// deleted or ended session is never revived or extended. True if recorded.
+    pub async fn touch(
+        &self,
+        token_hash: &[u8],
+        live: Liveness,
+        seen_before: DateTime<Utc>,
+    ) -> Result<bool, DbError> {
+        let touched = sqlx::query(concat!(
+            "UPDATE sessions SET last_seen_at = ?1 WHERE token_hash = ?3 AND last_seen_at < ?4 AND ",
+            live_session!()
+        ))
+        .bind(timestamp(live.now))
+        .bind(timestamp(live.seen_after))
+        .bind(token_hash)
+        .bind(timestamp(seen_before))
+        .execute(self.pool)
+        .await?;
+        Ok(touched.rows_affected() > 0)
     }
 
     /// Deletes one session; false if it did not exist.
@@ -249,7 +271,10 @@ mod tests {
     use crate::repo::users::GithubProfile;
 
     async fn db_with_user() -> Db {
-        let db = Db::in_memory().await.expect("db");
+        with_user(Db::in_memory().await.expect("db")).await
+    }
+
+    async fn with_user(db: Db) -> Db {
         let profile = GithubProfile {
             github_id: 42,
             login: "lklimek".to_owned(),
@@ -297,21 +322,18 @@ mod tests {
             .await
             .expect("create");
         let live = sessions
-            .touch(b"live", live_at(now))
+            .live(b"live", live_at(now))
             .await
-            .expect("touch")
+            .expect("read")
             .expect("live");
         assert_eq!(live.user_id, "u-1");
         assert_eq!(live.csrf_token, "csrf");
         assert_eq!(
-            sessions.touch(b"old", live_at(now)).await.expect("touch"),
+            sessions.live(b"old", live_at(now)).await.expect("read"),
             None
         );
         assert_eq!(
-            sessions
-                .touch(b"unknown", live_at(now))
-                .await
-                .expect("touch"),
+            sessions.live(b"unknown", live_at(now)).await.expect("read"),
             None
         );
         sessions
@@ -324,7 +346,7 @@ mod tests {
         );
         assert!(sessions.delete(b"live").await.expect("delete"));
         assert_eq!(
-            sessions.touch(b"live", live_at(now)).await.expect("touch"),
+            sessions.live(b"live", live_at(now)).await.expect("read"),
             None
         );
     }
@@ -341,15 +363,15 @@ mod tests {
         let later = created + TimeDelta::minutes(30);
         assert!(
             sessions
-                .touch(b"s", live_at(later))
+                .live(b"s", live_at(later))
                 .await
-                .expect("touch")
+                .expect("read")
                 .is_some(),
             "seen within the idle window"
         );
         let idle = later + TimeDelta::hours(2);
         assert_eq!(
-            sessions.touch(b"s", live_at(idle)).await.expect("touch"),
+            sessions.live(b"s", live_at(idle)).await.expect("read"),
             None,
             "unseen for longer than the idle window"
         );
@@ -376,9 +398,9 @@ mod tests {
             let db = db.clone();
             async move {
                 db.sessions()
-                    .touch(b"s", live_at(now))
+                    .live(b"s", live_at(now))
                     .await
-                    .expect("touch")
+                    .expect("read")
                     .is_some()
             }
         };
@@ -424,11 +446,126 @@ mod tests {
             .expect("create");
         assert_eq!(
             db.sessions()
-                .touch(b"other", live_at(now))
+                .live(b"other", live_at(now))
                 .await
-                .expect("touch"),
+                .expect("read"),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn touch_records_use_only_of_a_live_session_last_seen_before_the_bound() {
+        let db = db_with_user().await;
+        let sessions = db.sessions();
+        // Stored timestamps keep microseconds.
+        let created = chrono::SubsecRound::trunc_subsecs(Utc::now(), 6) - TimeDelta::minutes(10);
+        let expires = created + TimeDelta::minutes(20);
+        sessions
+            .create(&session(b"s", expires), created)
+            .await
+            .expect("create");
+        let seen = |at| {
+            let sessions = db.sessions();
+            async move {
+                sessions
+                    .live(b"s", live_at(at))
+                    .await
+                    .expect("read")
+                    .map(|record| record.last_seen_at)
+            }
+        };
+        let now = created + TimeDelta::minutes(5);
+        assert!(
+            !sessions
+                .touch(b"s", live_at(now), created)
+                .await
+                .expect("touch"),
+            "seen at the bound: not written again"
+        );
+        assert_eq!(seen(now).await, Some(created));
+        assert!(
+            sessions
+                .touch(b"s", live_at(now), now - TimeDelta::minutes(1))
+                .await
+                .expect("touch")
+        );
+        assert_eq!(seen(now).await, Some(now));
+        let ended = expires + TimeDelta::seconds(1);
+        assert!(
+            !sessions
+                .touch(b"s", live_at(ended), ended)
+                .await
+                .expect("touch"),
+            "past its expiry"
+        );
+        let idle = now + TimeDelta::hours(1);
+        assert!(
+            !sessions
+                .touch(
+                    b"s",
+                    Liveness {
+                        now: idle,
+                        seen_after: now,
+                    },
+                    idle
+                )
+                .await
+                .expect("touch"),
+            "idle at its last recorded use"
+        );
+        crate::repo::tenants::testing::remove_login(&db, DEFAULT_TENANT, "lklimek")
+            .await
+            .expect("remove");
+        assert!(
+            !sessions
+                .touch(b"s", live_at(now), now + TimeDelta::minutes(1))
+                .await
+                .expect("touch"),
+            "login removed from the allowlist"
+        );
+        assert!(sessions.delete(b"s").await.expect("delete"));
+        assert!(
+            !sessions
+                .touch(b"s", live_at(now), now + TimeDelta::minutes(1))
+                .await
+                .expect("touch"),
+            "signed out"
+        );
+        assert!(!sessions.delete(b"s").await.expect("delete"), "not revived");
+    }
+
+    #[tokio::test]
+    async fn live_session_reads_while_another_connection_holds_the_write_lock() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let busy_timeout = std::time::Duration::from_millis(100);
+        let db = crate::repo::testing::file_backed_with_busy_timeout(dir.path(), busy_timeout)
+            .await
+            .expect("db");
+        let db = with_user(db).await;
+        let now = Utc::now();
+        let sessions = db.sessions();
+        sessions
+            .create(&session(b"s", now + TimeDelta::hours(1)), now)
+            .await
+            .expect("create");
+        let _lock = crate::repo::testing::hold_write_lock(&db)
+            .await
+            .expect("write lock");
+        let later = now + TimeDelta::minutes(5);
+        assert!(
+            sessions
+                .live(b"s", live_at(later))
+                .await
+                .expect("read under a held write lock")
+                .is_some()
+        );
+        let error = sessions
+            .touch(b"s", live_at(later), later)
+            .await
+            .expect_err("the write lock is held past the busy timeout");
+        assert_eq!(error.sqlite_code().as_deref(), Some("5"), "{error:?}");
+        assert!(error.is_busy());
+        assert!(!DbError::NotFound.is_busy());
     }
 
     #[tokio::test]

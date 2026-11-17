@@ -206,6 +206,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `not_rendered` | 422 | file classified as not rendered; diff of a binary file |
 | `internal` | 500 | anything else (no detail) |
 | `github_unavailable` | 502 | GitHub error or unexpected answer |
+| `unavailable` | 503 | the database was busy or locked past its wait; carries `Retry-After: 1`. The web client retries a GET, PUT or DELETE once after that delay, never a POST |
 
 ## Endpoint × fixture-state inventory
 Fixture PR `acme/node-client#482` (`fixtures/pr-482/`): `api-seed/default/` plus merge patches per state.

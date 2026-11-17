@@ -153,4 +153,71 @@ describe("api client", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 0, code: "internal" });
   });
+
+  describe("a busy server (503 unavailable)", () => {
+    const BUSY = "The server is busy. Try again in a moment.";
+    /** Answers `unavailable` with `retryAfter` the first `busyTimes` calls, then `ok`; counts calls. */
+    const busyThen = (busyTimes: number, retryAfter: string, ok: () => Response) => {
+      const calls: number[] = [];
+      const respond = () => {
+        calls.push(Date.now());
+        if (calls.length <= busyTimes) {
+          return HttpResponse.json(
+            { code: "unavailable", message: BUSY },
+            { status: 503, headers: { "Retry-After": retryAfter } },
+          );
+        }
+        return ok();
+      };
+      return { calls, respond };
+    };
+
+    it("retries an idempotent GET once after the Retry-After delay", async () => {
+      const busy = busyThen(1, "1", () => HttpResponse.json({ ticked_steps: [], last_viewed: null }));
+      server.use(http.get(`${BASE}/api/v1/analyses/:id/review-state`, busy.respond));
+      await expect(createApiClient(BASE).getReviewState("a1")).resolves.toEqual({
+        ticked_steps: [],
+        last_viewed: null,
+      });
+      expect(busy.calls).toHaveLength(2);
+      const [first = 0, second = 0] = busy.calls;
+      expect(second - first).toBeGreaterThanOrEqual(900);
+    });
+
+    it("retries PUT and DELETE once", async () => {
+      const put = busyThen(1, "0", () => new HttpResponse(null, { status: 204 }));
+      const del = busyThen(1, "0", () => new HttpResponse(null, { status: 204 }));
+      server.use(
+        me("tok-1"),
+        http.put(`${BASE}/api/v1/analyses/:id/review-state`, put.respond),
+        http.delete(`${BASE}/api/v1/analyses/:id/feedback/:feedback_id`, del.respond),
+      );
+      const api = createApiClient(BASE);
+      await api.putReviewState("a1", { ticked_steps: [], last_viewed: null });
+      await api.deleteFeedback("a1", "fb-1");
+      expect(put.calls).toHaveLength(2);
+      expect(del.calls).toHaveLength(2);
+    });
+
+    it("gives up after one retry with the server's sentence", async () => {
+      const busy = busyThen(2, "0", () => HttpResponse.json({}));
+      server.use(http.get(`${BASE}/api/v1/analyses/:id/tour`, busy.respond));
+      const error = await createApiClient(BASE)
+        .getTour("a1")
+        .catch((e: unknown) => e);
+      expect(error).toMatchObject({ status: 503, code: "unavailable", message: BUSY });
+      expect(busy.calls).toHaveLength(2);
+    });
+
+    it("never retries a POST and shows the server's sentence", async () => {
+      const busy = busyThen(1, "0", () => HttpResponse.json({}));
+      server.use(me("tok-1"), http.post(`${BASE}/api/v1/pr/resolve`, busy.respond));
+      const error = await createApiClient(BASE)
+        .resolvePr({ url: "https://github.com/acme/node-client/pull/482" })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ApiError);
+      expect(error).toMatchObject({ status: 503, code: "unavailable", message: BUSY });
+      expect(busy.calls).toHaveLength(1);
+    });
+  });
 });

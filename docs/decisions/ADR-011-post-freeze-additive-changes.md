@@ -35,6 +35,7 @@ All changes are additive: a new field, variant, route or column, or a stricter r
 | `DiffLine.eol: Option<LineEnding>` (`crlf`, `no_newline`; `api::code`) | The diff keeps line endings that are not LF. |
 | `Settings.app_installations` is `Option`; null = not checked (`api::settings`) | "GitHub unreachable" is not shown as "no installation". |
 | `AskQuestion.resumes_at` (optional) and `AskRequest::MAX_TEXT_CHARS` = 2000 (`api::questions`) | A pending question shows when the usage limit resets; the question length is bounded. |
+| `ApiErrorCode::Unavailable` (503, `Retry-After: 1`, `api::error`) | A database busy or locked past its wait (`DbError::is_busy`, SQLite 5/6) is a retryable condition, not an internal error; the web client retries idempotent requests once. |
 
 ### Analysis and verification (`crates/analysis`)
 | Change | Reason |

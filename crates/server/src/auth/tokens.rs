@@ -6,13 +6,18 @@
 //! access token is used, and a rejected refresh ends only the pair it was made for. The refresh runs in its own
 //! task, so a dropped request does not abandon a pair GitHub has already rotated.
 //!
+//! A rotated pair the database refuses while busy is kept in memory ([`PendingPairs`]), used by the user's
+//! requests and stored by a background retry or the user's next request, never rotated again meanwhile.
+//!
 //! Residual risk (ADR-007): a server crash, or a lost answer (timeout, connection reset), between GitHub
-//! rotating the pair and the database write loses the new pair; the next refresh then gets `bad_refresh_token`
-//! and the user signs in again. Nothing leaks: the old pair is dead.
+//! rotating the pair and the database write loses the new pair, as does a restart while it is only in memory;
+//! the next refresh then gets `bad_refresh_token` and the user signs in again. Nothing leaks: the old pair is
+//! dead.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::time::Duration;
 
 use tokio::sync::OwnedMutexGuard;
 use tracing::Instrument;
@@ -35,6 +40,42 @@ const REFRESH_MARGIN: TimeDelta = TimeDelta::minutes(5);
 const TABLE: &str = "user_tokens";
 /// OAuth error code for a refresh token that is unknown, used or expired.
 const BAD_REFRESH_TOKEN: &str = "bad_refresh_token";
+
+/// First wait before the background retry of storing a pending pair; doubles up to [`STORE_RETRY_MAX`].
+const STORE_RETRY_FIRST: Duration = Duration::from_millis(250);
+const STORE_RETRY_MAX: Duration = Duration::from_secs(30);
+/// Background attempts (about 2.5 minutes); afterwards the user's next token use tries again.
+const STORE_RETRY_ATTEMPTS: u32 = 10;
+
+/// Rotated pairs GitHub issued that the database has not stored yet (busy), per user. GitHub has already
+/// invalidated the stored pair, so a pending one is the user's only valid pair until it is stored. Read and
+/// changed only under the user's [`UserLock`].
+#[derive(Clone, Default)]
+pub struct PendingPairs(Arc<Mutex<HashMap<String, Arc<PendingPair>>>>);
+
+impl std::fmt::Debug for PendingPairs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingPairs").finish_non_exhaustive()
+    }
+}
+
+impl PendingPairs {
+    fn map(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<PendingPair>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn get(&self, user_id: &str) -> Option<Arc<PendingPair>> {
+        self.map().get(user_id).cloned()
+    }
+}
+
+/// A rotated pair waiting to be stored.
+struct PendingPair {
+    /// Version of the stored pair it replaces (compare-and-swap).
+    replaces: i64,
+    tokens: EncryptedTokens,
+    access: SecretString,
+}
 
 /// Per-user locks; one entry per user since start (a handful of users).
 static USER_LOCKS: LazyLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
@@ -272,6 +313,15 @@ async fn refresh_if_due(state: &AppState, user_id: &str) -> Result<SecretString,
     let cipher = TokenCipher::new(&state.config.secret_key);
     let tokens = state.db.user_tokens();
     let _lock = lock_user(user_id).await;
+    if let Some(pending) = state.pending_pairs.get(user_id) {
+        match store_pending(state, user_id, &pending).await {
+            Ok(stored) => log_pending_outcome(user_id, stored),
+            Err(_) if pending.tokens.access_expires_at - Utc::now() > REFRESH_MARGIN => {
+                return Ok(pending.access.clone());
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
     // Another task may have refreshed or ended the sign-in while this one waited.
     let Some(stored) = tokens.get(user_id).await? else {
         // Sessions left without tokens (e.g. by an interrupted sign-out) end here.
@@ -319,13 +369,91 @@ async fn refresh_if_due(state: &AppState, user_id: &str) -> Result<SecretString,
     };
     let now = Utc::now();
     let rotated = encrypt(&cipher, user_id, &grant, now)?;
-    // GitHub has already invalidated the old pair: store the new one before using it.
-    if !tokens
-        .replace(user_id, stored.version, &rotated, now)
-        .await?
-    {
-        return Err(UserTokenError::Superseded);
+    // GitHub has already invalidated the old pair: store the new one before using it, or keep it while busy.
+    match tokens.replace(user_id, stored.version, &rotated, now).await {
+        Ok(true) => {}
+        Ok(false) => return Err(UserTokenError::Superseded),
+        Err(error) if error.is_busy() => {
+            tracing::warn!(
+                user_id,
+                sqlite_code = ?error.sqlite_code(),
+                "the refreshed GitHub token pair could not be stored (database busy); it is used from memory and \
+                 stored in the background"
+            );
+            let pending = PendingPair {
+                replaces: stored.version,
+                tokens: rotated,
+                access: grant.access_token.clone(),
+            };
+            state
+                .pending_pairs
+                .map()
+                .insert(user_id.to_owned(), Arc::new(pending));
+            let (state, user_id) = (state.clone(), user_id.to_owned());
+            tokio::spawn(
+                async move { store_pending_in_background(&state, &user_id).await }
+                    .in_current_span(),
+            );
+            return Ok(grant.access_token);
+        }
+        Err(error) => return Err(error.into()),
     }
     tracing::debug!(user_id, "GitHub user token refreshed");
     Ok(grant.access_token)
+}
+
+/// Stores the locked user's pending pair if the stored one is still the pair it replaces; the pending pair is
+/// dropped once stored or superseded (false). Kept on a database failure.
+async fn store_pending(
+    state: &AppState,
+    user_id: &str,
+    pending: &PendingPair,
+) -> Result<bool, DbError> {
+    let stored = state
+        .db
+        .user_tokens()
+        .replace(user_id, pending.replaces, &pending.tokens, Utc::now())
+        .await?;
+    state.pending_pairs.map().remove(user_id);
+    Ok(stored)
+}
+
+fn log_pending_outcome(user_id: &str, stored: bool) {
+    if stored {
+        tracing::debug!(
+            user_id,
+            "the refreshed GitHub token pair kept in memory is stored"
+        );
+    } else {
+        tracing::warn!(
+            user_id,
+            "the refreshed GitHub token pair kept in memory was dropped: a sign-in or sign-out replaced it"
+        );
+    }
+}
+
+/// Retries storing the user's pending pair with exponential back-off, under the user's lock each time.
+async fn store_pending_in_background(state: &AppState, user_id: &str) {
+    let mut delay = STORE_RETRY_FIRST;
+    for _ in 0..STORE_RETRY_ATTEMPTS {
+        tokio::time::sleep(delay).await;
+        let _lock = lock_user(user_id).await;
+        let Some(pending) = state.pending_pairs.get(user_id) else {
+            return;
+        };
+        match store_pending(state, user_id, &pending).await {
+            Ok(stored) => return log_pending_outcome(user_id, stored),
+            Err(error) => tracing::debug!(
+                user_id,
+                sqlite_code = ?error.sqlite_code(),
+                "storing the refreshed GitHub token pair failed again; retrying"
+            ),
+        }
+        delay = (delay * 2).min(STORE_RETRY_MAX);
+    }
+    tracing::warn!(
+        user_id,
+        "the refreshed GitHub token pair is still not stored; the user's next token use tries again, and a server \
+         restart before then ends the user's GitHub sign-in"
+    );
 }

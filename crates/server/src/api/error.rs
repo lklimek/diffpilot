@@ -5,7 +5,8 @@ use std::borrow::Cow;
 
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::http::StatusCode;
+use axum::http::header::RETRY_AFTER;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use contracts::api::error::{ApiError, ApiErrorCode};
 use db::error::DbError;
@@ -14,6 +15,9 @@ use crate::jobs::executor::ExecutorError;
 
 const INTERNAL_MESSAGE: &str = "Something went wrong on the server. Try again later.";
 const INVALID_REQUEST_MESSAGE: &str = "The request is not valid.";
+const UNAVAILABLE_MESSAGE: &str = "The server is busy. Try again in a moment.";
+/// Seconds an `unavailable` response asks the client to wait before retrying.
+const RETRY_AFTER_SECONDS: &str = "1";
 
 /// The HTTP status of an API error code (single source: `ApiErrorCode::http_status`).
 pub fn status(code: ApiErrorCode) -> StatusCode {
@@ -51,12 +55,21 @@ impl<E: ApiErrorSource> IntoResponse for ApiFailure<E> {
             code,
             message: self.0.public_message().into_owned(),
         };
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if code == ApiErrorCode::Unavailable {
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from_static(RETRY_AFTER_SECONDS));
+        }
+        response
     }
 }
 
 impl ApiErrorSource for DbError {
     fn code(&self) -> ApiErrorCode {
+        if self.is_busy() {
+            return ApiErrorCode::Unavailable;
+        }
         match self {
             Self::NotFound => ApiErrorCode::NotFound,
             Self::Conflict => ApiErrorCode::Conflict,
@@ -68,6 +81,9 @@ impl ApiErrorSource for DbError {
     }
 
     fn public_message(&self) -> Cow<'static, str> {
+        if self.is_busy() {
+            return Cow::Borrowed(UNAVAILABLE_MESSAGE);
+        }
         Cow::Borrowed(match self {
             Self::NotFound => "The requested item was not found.",
             Self::Conflict => "The request conflicts with the current state. Reload and try again.",
