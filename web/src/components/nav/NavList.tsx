@@ -151,6 +151,17 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
                           <span aria-hidden className="inline-block w-3.5 font-bold text-accent">
                             {done ? "☑" : ""}
                           </span>
+                          <Tooltip
+                            tip={`Step kind: ${step.llm.kind === "context" ? "unchanged context" : step.llm.kind === "added" ? "added" : `changed (${step.llm.kind.replaceAll("_", " ")})`}. LLM classification; the diff marks changed lines.`}
+                          >
+                            <span
+                              tabIndex={0}
+                              aria-label={`Step kind: ${step.llm.kind}`}
+                              className="mr-1 font-mono"
+                            >
+                              {step.llm.kind === "context" ? "=" : step.llm.kind === "added" ? "+" : "~"}
+                            </span>
+                          </Tooltip>
                           <b>{step.number}</b> {step.llm.title}
                         </button>
                       </li>

@@ -46,9 +46,7 @@ export function PendingReviewBlock({ review, prUrl, onEdit, onDelete, placeOf }:
     <QuietCard title={`Pending review on GitHub (${review.comments.length}${review.incomplete ? "+" : ""})`}>
       <Note>Read from your GitHub pending review. Edit and delete act on GitHub; nothing is kept here.</Note>
       {review.incomplete && <p>{PENDING_INCOMPLETE}</p>}
-      {review.comments.length === 0 ? (
-        !review.incomplete && <p>Your pending review on GitHub has no comments yet.</p>
-      ) : (
+      {review.comments.length > 0 && (
         <ul className="m-0 grid list-none gap-2 p-0">
           {review.comments.map((c) => (
             <PendingCommentItem key={c.id} comment={c} onEdit={onEdit} onDelete={onDelete}>

@@ -33,11 +33,6 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
     reason: "Step row named by its destination; a tip would cover the rows below.",
   },
   {
-    file: "components/inspector/summaries.tsx",
-    match: "onSelectStep(s.id)",
-    reason: "Link-style list of the flow's steps, each named by its step title.",
-  },
-  {
     file: "screens/tour/DiagramPane.tsx",
     match: "aria-expanded",
     reason: "Disclosure header (Show/Hide flow diagram): its text says what it does, its state is announced.",

@@ -91,7 +91,14 @@ fn prepass_reproduces_fixture_pr_482() {
         .iter()
         .map(|hunk| {
             let field = |name: &str| hunk[name].as_str().expect("field").to_owned();
-            (field("id"), field("prepass"))
+            (
+                field("id"),
+                if ["h17", "h22"].contains(&field("id").as_str()) {
+                    "agent".to_owned()
+                } else {
+                    field("prepass")
+                },
+            )
         })
         .collect();
     let actual: Vec<(String, String)> = result
@@ -119,7 +126,9 @@ fn prepass_reproduces_fixture_pr_482() {
     let facts = &tour["pr_context"]["facts"];
     assert_eq!(
         result.not_analysed_with_binaries(),
-        from_value::<Vec<NotAnalysedSection>>(&tour["quiet"]["not_analysed"])
+        from_value::<Vec<NotAnalysedSection>>(
+            &json(&fixture().join("api/default/tour.json"))["quiet"]["not_analysed"]
+        )
     );
     assert_eq!(
         result.identical_moves(),
@@ -286,7 +295,10 @@ fn generated_file_never_in_agent_input() {
         .iter()
         .map(|range| range.file.as_str())
         .collect();
-    assert_eq!(agent_files, ["src/lib.rs", "src/lib.rs"]);
+    assert!(
+        agent_files.is_empty(),
+        "import declarations require no flow coverage"
+    );
     let not_rendered: Vec<(&str, LineSide, NotRenderedReason)> = result
         .not_rendered
         .iter()
@@ -392,7 +404,7 @@ fn agent_files_quiet_lines_and_binaries_split_the_diff() {
                 if lines.file == "api/service.pb.go" {
                     "pb"
                 } else {
-                    "?"
+                    "imports"
                 },
                 lines.side,
                 lines.ranges,
@@ -401,14 +413,32 @@ fn agent_files_quiet_lines_and_binaries_split_the_diff() {
         .collect();
     assert_eq!(
         quiet,
-        [(
-            "pb",
-            LineSide::Head,
-            vec![LineRange {
-                start_line: 1,
-                end_line: 2
-            }]
-        )]
+        [
+            (
+                "pb",
+                LineSide::Head,
+                vec![LineRange {
+                    start_line: 1,
+                    end_line: 2
+                }]
+            ),
+            (
+                "imports",
+                LineSide::Head,
+                vec![LineRange {
+                    start_line: 1,
+                    end_line: 1
+                }]
+            ),
+            (
+                "imports",
+                LineSide::Base,
+                vec![LineRange {
+                    start_line: 1,
+                    end_line: 1
+                }]
+            )
+        ]
     );
     assert!(result.is_not_rendered(LineSide::Head, "api/service.pb.go"));
     assert!(result.is_not_rendered(LineSide::Head, "assets/logo.png"));
@@ -776,5 +806,73 @@ proptest! {
         for (line, n) in count {
             prop_assert_eq!(n, 1, "{:?}", line);
         }
+    }
+}
+
+#[test]
+fn rust_comment_import_context_stays_with_agent_but_needs_no_coverage() {
+    let text = "// heading\nuse std::fmt;\nfn work() {}\n/* explanation */\n";
+    let files = vec![FileDiff {
+        path: "src/lib.rs".into(),
+        old_path: None,
+        status: FileStatus::Added,
+        binary: false,
+        hunks: vec![Hunk {
+            id: HunkId("h1".into()),
+            base: LineSpan { start: 0, len: 0 },
+            head: LineSpan { start: 1, len: 4 },
+            added: vec![1, 2, 3, 4],
+            removed: vec![],
+        }],
+    }];
+    let texts = HashMap::from([((LineSide::Head, "src/lib.rs".into()), text.into())]);
+    let result = run(&files, &[], &texts);
+    assert_eq!(
+        result.agent_files(&files)[0].hunks[0].head,
+        files[0].hunks[0].head
+    );
+    let quiet = result.quiet_lines(&files);
+    for line in [1, 2, 4] {
+        assert!(
+            quiet.iter().any(|f| f
+                .ranges
+                .iter()
+                .any(|r| r.start_line <= line && line <= r.end_line)),
+            "line {line} needs no flow"
+        );
+    }
+    assert_eq!(
+        result.agent_lines[0].ranges,
+        vec![LineRange {
+            start_line: 3,
+            end_line: 3
+        }]
+    );
+}
+
+#[test]
+fn fixture_and_mock_directories_are_excluded_from_agent_input() {
+    for path in [
+        "src/fixtures/data.rs",
+        "packages/client/mocks/api.ts",
+        "crates/node/test_helpers/data.rs",
+    ] {
+        let files = vec![FileDiff {
+            path: path.into(),
+            old_path: None,
+            status: FileStatus::Added,
+            binary: false,
+            hunks: vec![Hunk {
+                id: HunkId("h1".into()),
+                base: LineSpan { start: 0, len: 0 },
+                head: LineSpan { start: 1, len: 1 },
+                added: vec![1],
+                removed: vec![],
+            }],
+        }];
+        let texts = HashMap::from([((LineSide::Head, path.into()), "fn helper() {}\n".into())]);
+        let result = run(&files, &[], &texts);
+        assert!(result.agent_files(&files).is_empty(), "{path}");
+        assert_eq!(result.not_analysed[0].category, NotAnalysedCategory::Tests);
     }
 }

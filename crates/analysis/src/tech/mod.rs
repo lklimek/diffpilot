@@ -114,16 +114,19 @@ impl TechPlugin for Generic {
             )]);
         }
         let comments = comment_runs(file.path, text, file.changed_lines);
-        Ok(if comments.is_empty() {
-            Vec::new()
-        } else {
-            vec![item(
-                NotAnalysedCategory::DocsComments,
-                ProvenanceBadge::ClassifiedByLineRule,
-                LINE_COMMENT_RULE,
-                Some(comments),
-            )]
-        })
+        let imports = import_runs(file.path, text, file.changed_lines);
+        Ok([(LINE_COMMENT_RULE, comments), (IMPORT_RULE, imports)]
+            .into_iter()
+            .filter(|(_, ranges)| !ranges.is_empty())
+            .map(|(rule, ranges)| {
+                item(
+                    NotAnalysedCategory::DocsComments,
+                    ProvenanceBadge::ClassifiedByLineRule,
+                    rule,
+                    Some(ranges),
+                )
+            })
+            .collect())
     }
 
     fn call_hierarchy(&self, _symbol: &SymbolAt) -> Option<CallHierarchy> {
@@ -132,8 +135,9 @@ impl TechPlugin for Generic {
     }
 }
 
-/// Line rule of the `generic` plugin: comment-only lines (a run of changed lines whose non-blank lines all match),
-/// decided by the Rust compiler's lexer over the whole file; other languages stay with the agent.
+/// Complete single-line Rust imports and module declarations.
+pub const IMPORT_RULE: &str = "Rust use/mod/extern crate declarations (line regex)";
+/// Comment-only lines, including block and doc comments.
 pub const LINE_COMMENT_RULE: &str = "comment-only lines (Rust, by the compiler's lexer)";
 /// Rule of a generated-file header in the first lines.
 pub const GENERATED_HEADER_RULE: &str = "header: Code generated … DO NOT EDIT / @generated";
@@ -166,6 +170,15 @@ const PATH_RULES: &[(&str, NotAnalysedCategory)] = &[
     ("*.spec.jsx", NotAnalysedCategory::Tests),
     ("*.spec.ts", NotAnalysedCategory::Tests),
     ("*.spec.tsx", NotAnalysedCategory::Tests),
+    ("**/tests.rs", NotAnalysedCategory::Tests),
+    ("**/test_helpers.rs", NotAnalysedCategory::Tests),
+    ("*_test.rs", NotAnalysedCategory::Tests),
+    ("**/fixtures/**", NotAnalysedCategory::Tests),
+    ("**/mocks/**", NotAnalysedCategory::Tests),
+    ("**/test_helpers/**", NotAnalysedCategory::Tests),
+    ("**/tests/**", NotAnalysedCategory::Tests),
+    ("**/test/**", NotAnalysedCategory::Tests),
+    ("**/benches/**", NotAnalysedCategory::Tests),
     ("docs/**", NotAnalysedCategory::DocsComments),
     ("*.md", NotAnalysedCategory::DocsComments),
     ("*.mdx", NotAnalysedCategory::DocsComments),
@@ -206,6 +219,11 @@ pub fn rules() -> Vec<NotAnalysedRule> {
         category: *category,
     });
     let lines = [
+        (
+            RuleKind::LineRegex,
+            IMPORT_RULE,
+            NotAnalysedCategory::DocsComments,
+        ),
         (
             RuleKind::Header,
             GENERATED_HEADER_RULE,
@@ -320,7 +338,7 @@ pub fn is_agent_instruction_file(path: &str) -> bool {
 
 /// Whether the item is recognised by the comment line rule (not a whole-file rule).
 pub fn is_line_rule(item: &Classified) -> bool {
-    item.rule == LINE_COMMENT_RULE
+    item.rule == LINE_COMMENT_RULE || item.rule == IMPORT_RULE
 }
 
 /// Whether the item marks a generated file: never rendered, never given to the agent (brief §7).
@@ -362,29 +380,78 @@ fn comment_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
     else {
         return Vec::new();
     };
-    let lines: Vec<&str> = text.lines().collect();
-    let at = |number: u32| -> Option<usize> { usize::try_from(number).ok()?.checked_sub(1) };
-    let mut out = Vec::new();
-    for run in ranges(changed) {
-        let mut any = false;
-        let all = (run.start_line..=run.end_line).all(|number| {
-            let Some(index) = at(number) else {
-                return false;
-            };
-            match lines.get(index) {
-                Some(text) if text.trim().is_empty() => true,
-                Some(_) => {
-                    any = true;
-                    comment.get(index).copied().unwrap_or(false)
-                }
-                None => false,
-            }
-        });
-        if all && any {
-            out.push(run);
-        }
+    let selected: Vec<u32> = changed
+        .iter()
+        .copied()
+        .filter(|&line| {
+            line.checked_sub(1)
+                .and_then(|i| usize::try_from(i).ok())
+                .and_then(|i| comment.get(i))
+                .copied()
+                .unwrap_or(false)
+        })
+        .collect();
+    ranges(&selected)
+}
+
+/// Changed Rust comment/import lines; other languages have no rule.
+pub fn context_lines(path: &str, text: &str, changed: &[u32]) -> Vec<u32> {
+    let mut lines: Vec<u32> = comment_runs(path, text, changed)
+        .into_iter()
+        .chain(import_runs(path, text, changed))
+        .flat_map(|r| r.start_line..=r.end_line)
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+/// File-path test rules shared by pre-pass and plan verification.
+// TODO: delimit inline Rust #[cfg(test)] modules and #[test] functions with a syntax plugin.
+pub fn is_test_path(path: &str) -> bool {
+    PATH_RULES
+        .iter()
+        .any(|(rule, category)| *category == NotAnalysedCategory::Tests && glob(rule, path))
+}
+
+fn import_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
+    // TODO: delimit multiline use groups before treating their lines as import-only context.
+    if !path.ends_with(".rs") {
+        return Vec::new();
     }
-    out
+    let Ok(rule) = regex::Regex::new(
+        r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use\s+[^;]+|mod\s+[A-Za-z_][A-Za-z_0-9]*|extern\s+crate\s+[A-Za-z_][A-Za-z_0-9]*(?:\s+as\s+[A-Za-z_][A-Za-z_0-9]*)?)\s*;\s*$",
+    ) else {
+        return Vec::new();
+    };
+    // A raw string containing an apparent import is not an import declaration.
+    let mut offset = 0usize;
+    let mut literals = Vec::new();
+    for token in ra_ap_rustc_lexer::tokenize(text, ra_ap_rustc_lexer::FrontmatterAllowed::Yes) {
+        let end = offset + token.len as usize;
+        if matches!(
+            token.kind,
+            ra_ap_rustc_lexer::TokenKind::Literal { .. }
+                | ra_ap_rustc_lexer::TokenKind::BlockComment { .. }
+        ) {
+            literals.push(offset..end);
+        }
+        offset = end;
+    }
+    offset = 0;
+    let mut selected = Vec::new();
+    for (number, line) in (1u32..).zip(text.split_inclusive('\n')) {
+        if changed.binary_search(&number).is_ok()
+            && rule.is_match(line)
+            && !literals
+                .iter()
+                .any(|r| r.start < offset + line.len() && r.end > offset)
+        {
+            selected.push(number);
+        }
+        offset += line.len();
+    }
+    ranges(&selected)
 }
 
 /// Per line (index = line - 1): every token on the line is a comment or whitespace, and one is a comment. Tokens
@@ -581,7 +648,7 @@ mod tests {
             "binary or unread: the whole file"
         );
         assert!(classify("src/testing.rs", Some(three), &[1]).is_empty());
-        for production in [
+        for test_path in [
             "src/tests/auth.rs",
             "src/routes/tests/create.ts",
             "crates/x/src/tests/mod.rs",
@@ -594,8 +661,11 @@ mod tests {
             "crates/x/y/tests/a.rs",
         ] {
             assert!(
-                classify(production, Some(three), &[1]).is_empty(),
-                "{production}"
+                classify(test_path, Some(three), &[1])
+                    .iter()
+                    .all(|item| item.1 == NotAnalysedCategory::Tests)
+                    && !classify(test_path, Some(three), &[1]).is_empty(),
+                "{test_path}"
             );
         }
         for test in [
@@ -648,12 +718,12 @@ mod tests {
         assert_eq!(
             classify("src/a.rs", Some(text), &[2, 3, 4, 6, 7]),
             [(
-                Some(vec![range(2, 4)]),
+                Some(vec![range(2, 2), range(4, 4), range(6, 6)]),
                 NotAnalysedCategory::DocsComments,
                 ProvenanceBadge::ClassifiedByLineRule,
                 LINE_COMMENT_RULE.to_owned()
             )],
-            "2..4 is comments and a blank line; 6..7 is a doc comment with its code"
+            "comment-only lines are covered individually, even in a mixed run"
         );
         assert!(
             classify("src/a.rs", Some(text), &[3]).is_empty(),
@@ -770,8 +840,8 @@ mod tests {
         let doc = ["/// Sends a request.", "pub fn send() {}"];
         assert_eq!(
             comment_rule("src/a.rs", &doc),
-            None,
-            "a doc comment with its code stays with the agent"
+            Some(line(1)),
+            "the doc line is covered by rule; the code still needs coverage"
         );
         assert_eq!(
             comment_rule("src/a.rs", &["/// Only a doc line."]),
@@ -865,7 +935,7 @@ mod tests {
                 .iter()
                 .any(|rule| rule.kind == RuleKind::Lexer && rule.pattern == LINE_COMMENT_RULE)
         );
-        assert_eq!(listed.len(), PATH_RULES.len() + 3);
+        assert_eq!(listed.len(), PATH_RULES.len() + 4);
         assert!(!is_line_rule(&item("*.md")));
     }
 

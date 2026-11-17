@@ -4,7 +4,7 @@ import { Tooltip } from "../tooltip/Tooltip";
 import type { LineRange, Counters, NotAnalysedItem, NotAnalysedSection } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { dependencyFacts, rangeText } from "../section/format";
-import { NOT_ANALYSED_LABEL, plural, testLines } from "./labels";
+import { NOT_ANALYSED_LABEL, plural } from "./labels";
 import { Note, QuietCard } from "./QuietCard";
 
 interface NotAnalysedBlockProps {
@@ -34,9 +34,18 @@ function recognisedBy(section: NotAnalysedSection): string {
 
 function Counter({ section, counters }: NotAnalysedBlockProps) {
   if (section.category === "tests") {
-    return <p>{testLines(counters)}</p>;
+    return (
+      <p>
+        Tests: {section.file_count} files,{" "}
+        {counters.lines_added_to_tests == null
+          ? "additions not checked,"
+          : `+${counters.lines_added_to_tests}`}{" "}
+        −{counters.lines_removed_from_tests} lines — not analysed by the LLM
+      </p>
+    );
   }
   if (section.category === "generated_mechanical") {
+    if (dependencyFacts(counters).length === 0) return null;
     return <p>{dependencyFacts(counters).join(". ")}. Dependency changes are counted, not interpreted.</p>;
   }
   return null;
@@ -74,7 +83,7 @@ export function NotAnalysedBlock({ section, counters, code }: NotAnalysedBlockPr
             {code &&
               (item.renderable ?? section.category !== "generated_mechanical") &&
               item.badge !== "binary_content" &&
-              item.ranges?.map((range) => {
+              (item.ranges ?? [{ start_line: 1, end_line: 2000 }]).map((range) => {
                 const key = `${item.side}:${item.file}:${range.start_line}:${range.end_line}`;
                 return (
                   <div key={key} className="min-w-0 my-2">
@@ -91,7 +100,8 @@ export function NotAnalysedBlock({ section, counters, code }: NotAnalysedBlockPr
                           })
                         }
                       >
-                        {opened.has(key) ? "Hide" : "Show"} lines {rangeText(range)}
+                        {opened.has(key) ? "Hide" : "Show"}{" "}
+                        {section.category === "tests" ? "classic diff" : `lines ${rangeText(range)}`}
                       </button>
                     </Tooltip>
                     {opened.has(key) && code(item, range)}

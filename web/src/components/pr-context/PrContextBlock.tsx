@@ -1,3 +1,4 @@
+import { Tooltip } from "../tooltip/Tooltip";
 import { ModelsUsed } from "../usage/ModelsUsed";
 import { UsageLine } from "../usage/UsageLine";
 import type { UsageTotals } from "../../api/generated/types";
@@ -147,12 +148,10 @@ export function PrContextBlock({
             The LLM split this PR into {plural(facts.flow_count, "flow")} with{" "}
             {plural(facts.step_count, "step")}.
           </p>
-          <Subhead>Related work</Subhead>
+          {(!facts.related_work_checked || llm.related_work.length > 0) && <Subhead>Related work</Subhead>}
           {!facts.related_work_checked ? (
             <p>Related work: not checked</p>
-          ) : llm.related_work.length === 0 ? (
-            <p>The LLM found no related work.</p>
-          ) : (
+          ) : llm.related_work.length === 0 ? null : (
             <ul className="m-0 list-none p-0">
               {llm.related_work.map((item) => (
                 <Related
@@ -163,20 +162,34 @@ export function PrContextBlock({
               ))}
             </ul>
           )}
-          <Subhead>Fit questions to check</Subhead>
-          {llm.fit_questions.length === 0 ? (
-            <p>The LLM raised no fit questions. That is not evidence of a good fit.</p>
-          ) : (
+          {llm.fit_questions.length > 0 && <Subhead>Fit questions to check</Subhead>}
+          {llm.fit_questions.length === 0 ? null : (
             <ul className="m-0 list-none p-0">
               {llm.fit_questions.map((q) => (
                 <li key={q.question} className={CARD}>
                   <span className="block text-[11px] text-muted">{FIT_TOPIC[q.topic]}</span>
-                  <CodeText text={q.question} />
+                  {q.evidence[0] && onEvidence ? (
+                    <Tooltip tip="Open the PR source lines this fit question concerns.">
+                      <button
+                        type="button"
+                        className="cursor-pointer text-left text-accent underline"
+                        onClick={() => onEvidence(q.evidence[0]!)}
+                      >
+                        <CodeText text={q.question} />{" "}
+                        <span className="text-xs">
+                          {q.evidence[0].file}:{q.evidence[0].line}
+                        </span>
+                      </button>
+                    </Tooltip>
+                  ) : (
+                    // TODO: citation-free fit questions need structured evidence before linking to code.
+                    <CodeText text={q.question} />
+                  )}
                   {q.evidence.length > 0 && (
-                    <span className="text-muted">
+                    <div className="text-muted">
                       {" "}
-                      Evidence: <EvidenceLinks evidence={q.evidence} onEvidence={onEvidence} />
-                    </span>
+                      <EvidenceLinks evidence={q.evidence} onEvidence={onEvidence} />
+                    </div>
                   )}
                 </li>
               ))}

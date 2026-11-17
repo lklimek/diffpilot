@@ -39,7 +39,7 @@ No calibration examples were found for this repository.
 @@ calibration_not_checked
 Calibration examples could not be read for this job (not checked).
 @@ test_flow
-This flow is test code inside production files, classified by the plan: the reviewer sees it labelled "LLM-classified tests". Walk it like any flow; an assessment only where a production user or operator could notice something.
+Do not produce LLM-classified tests. Test-only flows are outside review scope; use tests only as evidence for a production step.
 @@ clipped
 (The server clipped the block above: {{omitted}} more characters not shown.)
 @@ omitted

@@ -67,11 +67,9 @@ describe("UnexplainedBlock", () => {
     expect(items[1]).toHaveTextContent("Not sent to the LLM: too large for one request");
   });
 
-  it("is never empty", () => {
+  it("hides an empty unexplained section", () => {
     render(<UnexplainedBlock items={[]} />);
-    expect(screen.getByRole("article")).toHaveTextContent(
-      "The analysis assigned every changed line to a flow or a Not analysed section.",
-    );
+    expect(screen.queryByRole("article")).toBeNull();
   });
 });
 
@@ -89,20 +87,27 @@ describe("MovesBlock", () => {
     expect(screen.getByText("code at 112")).toBeInTheDocument();
   });
 
-  it("is never empty", () => {
+  it("hides an empty moves section", () => {
     render(<MovesBlock moves={[]} />);
-    expect(screen.getByRole("article")).toHaveTextContent("No moved block has identical text.");
+    expect(screen.queryByRole("article")).toBeNull();
   });
 });
 
 describe("NotAnalysedBlock", () => {
+  it("does not turn an unavailable additions count into zero", () => {
+    const counters = { ...tour.pr_context.facts.counters, lines_added_to_tests: undefined };
+    render(<NotAnalysedBlock section={section(tour, "tests")} counters={counters} />);
+    expect(screen.getByRole("article")).toHaveTextContent("additions not checked");
+    expect(screen.getByRole("article")).not.toHaveTextContent("+0");
+  });
+
   it("reads 'Recognised by file path, no LLM' with the section's files, rules and test counter", () => {
     render(<NotAnalysedBlock section={section(tour, "tests")} counters={tour.pr_context.facts.counters} />);
     const block = screen.getByRole("article");
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Tests · 4 files");
     expect(within(block).getByText("classified by path")).toHaveAttribute("data-badge");
     expect(block).toHaveTextContent("Recognised by file path, no LLM.");
-    expect(block).toHaveTextContent("12 test lines changed or removed, 30 added");
+    expect(block).toHaveTextContent("Tests: 4 files, +30 −12 lines — not analysed by the LLM");
     const items = within(block).getAllByRole("listitem");
     expect(items).toHaveLength(6);
     expect(block).toHaveTextContent("tests/rpc_retry.rs");
@@ -344,14 +349,14 @@ describe("PendingReviewBlock", () => {
     expect(screen.queryByRole("button", { name: /^(Edit|Delete) comment/ })).not.toBeInTheDocument();
   });
 
-  it("says when the pending review has no comments", () => {
+  it("does not fill an empty pending review with a placeholder", () => {
     render(
       <PendingReviewBlock
         review={{ commenting_available: true, comments: [], incomplete: false }}
         prUrl={PR_URL}
       />,
     );
-    expect(screen.getByRole("article")).toHaveTextContent(
+    expect(screen.getByRole("article")).not.toHaveTextContent(
       "Your pending review on GitHub has no comments yet.",
     );
   });

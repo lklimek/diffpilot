@@ -309,8 +309,8 @@ fn failed_flows_become_unexplained_and_quiet_rows_never_above_a_rated_flow() {
             planned.classification = classification;
         }
     };
-    // f1 (rank 1, rated HIGH) becomes LLM-classified tests, f4 an LLM-classified refactor.
-    classify(&mut fixture.plan, "f1", Classification::Test);
+    // f1 and f4 become LLM-classified refactors; test-only flows are rejected separately.
+    classify(&mut fixture.plan, "f1", Classification::RefactorPure);
     classify(&mut fixture.plan, "f4", Classification::RefactorPure);
     let facts = fixture.facts();
     // f2's output names a step that does not exist; outputs for an unplanned and a repeated flow.
@@ -349,8 +349,12 @@ fn failed_flows_become_unexplained_and_quiet_rows_never_above_a_rated_flow() {
         ]
     );
     let tour = verdict.tour.expect("tour");
-    assert_eq!(flow_ids(&tour.flows), ["f3", "f5", "f4", "f1"]);
-    let f1 = tour.flows.last().expect("f1");
+    assert_eq!(flow_ids(&tour.flows), ["f3", "f5", "f1", "f4"]);
+    let f1 = tour
+        .flows
+        .iter()
+        .find(|f| f.flow_id == id("f1"))
+        .expect("f1");
     assert!(
         f1.output.steps.iter().any(|step| step.assessment.is_some()),
         "a rated flow, still listed before every quiet row"
@@ -1099,4 +1103,30 @@ fn tagged_checker_rejects_the_same_semantic_violations_as_canonical_flow_verific
                 .all(|error| error.to_string().starts_with("line "))
         );
     }
+}
+
+#[test]
+fn plan_rejects_flow_with_only_test_locations() {
+    let files = vec![FileDiff {
+        path: "tests/retry.rs".into(),
+        old_path: None,
+        status: FileStatus::Added,
+        binary: false,
+        hunks: vec![Hunk {
+            id: HunkId("h1".into()),
+            base: LineSpan { start: 0, len: 0 },
+            head: LineSpan { start: 1, len: 1 },
+            added: vec![1],
+            removed: vec![],
+        }],
+    }];
+    let mut output: PlanOutput = read("agent/plan.json");
+    output.flows.truncate(1);
+    output.flows[0].depends_on.clear();
+    output.flows[0].hunks.truncate(1);
+    output.flows[0].hunks[0].hunk_id = HunkId("h1".into());
+    output.flows[0].hunks[0].head_start = Some(1);
+    output.flows[0].hunks[0].head_end = Some(1);
+    output.unassigned.clear();
+    assert!(plan(&output, &DiffIndex::new(&files).expect("diff")).is_err());
 }

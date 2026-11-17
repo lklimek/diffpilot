@@ -920,7 +920,7 @@ fn generated_and_quiet_hunks_are_never_given_to_the_agent() {
 }
 
 #[test]
-fn test_code_in_production_files_is_classified_test() {
+fn test_code_is_evidence_only_never_a_flow() {
     let f = &*FIXTURE;
     let input = PlanInput {
         job: job(f, LlmLanguage::En),
@@ -929,10 +929,8 @@ fn test_code_in_production_files_is_classified_test() {
         batch: None,
     };
     let (instructions, _) = split(&plan(&input).expect("plan"));
-    assert!(instructions.contains(
-        "Test code inside production files (a test module, test helpers or fixtures inside a non-test file) forms \
-         its own flow with classification `test`"
-    ));
+    assert!(instructions.contains("Never create a flow whose subject is tests"));
+    assert!(instructions.contains("Test code may be read only as evidence for a production step"));
     let mut flow = f.plan.flows[0].clone();
     let render = |flow: &PlannedFlow| {
         let input = FlowInput {
@@ -945,7 +943,7 @@ fn test_code_in_production_files_is_classified_test() {
         };
         split(&analyse_flow(&input).expect("analyse_flow")).0
     };
-    let label = "the reviewer sees it labelled \"LLM-classified tests\"";
+    let label = "Do not produce LLM-classified tests.";
     assert!(!render(&flow).contains(label));
     flow.classification = Classification::Test;
     assert!(render(&flow).contains(label));
@@ -965,11 +963,8 @@ fn plan_ranks_flows_by_expected_risk_and_bounds_flow_size() {
         "`importance_rank` (1 = read first, unique) orders flows by expected risk at system scale"
     ));
     assert!(instructions.contains("The flow you expect to get the highest risk band comes first."));
-    assert!(instructions.contains("`test` flows last."));
-    assert!(
-        instructions
-            .contains("a visibility, import or signature change belongs to the flow that needs it")
-    );
+    assert!(instructions.contains("Never create a flow whose subject is tests"));
+    assert!(instructions.contains("Do not explain, annotate, assess or build steps/flows around comment-only or import-only changes"));
 }
 
 #[test]

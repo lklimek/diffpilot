@@ -9,17 +9,16 @@ import type {
   GithubThread,
   ThreadsStatus,
   ThreadLlmStatus,
+  Step,
 } from "../../api/generated/types";
 import { RiskLabel } from "../badge/LlmLabel";
-import { rangeText, threadsNote } from "../section/format";
+import { threadsNote } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Collapsible } from "./Collapsible";
 import type { SectionControl } from "./sectionState";
 import { BasisNote, Empty, GithubLink } from "./text";
 
-type Sections = { sections: SectionControl; onEvidence?: (e: Evidence) => void };
-
-const NO_QUESTIONS = "The LLM raised no questions. That is not evidence of no defects.";
+type Sections = { currentFile?: string; sections: SectionControl; onEvidence?: (e: Evidence) => void };
 
 /** Section 1: classic diff of the step or of the selected range (the screen supplies the diff view). */
 export function DiffSection({ diff, ofRange, sections }: { diff?: ReactNode; ofRange: boolean } & Sections) {
@@ -41,34 +40,34 @@ export function BehaviourSection({
   annotations,
   sections,
   onEvidence,
+  currentFile,
 }: { annotations: readonly Annotation[] } & Sections) {
-  const behaviour = annotations.filter((a) => a.type === "behaviour");
+  const behaviour = annotations.filter((a) => a.type === "behaviour" && (a.was?.trim() || a.is?.trim()));
+  if (behaviour.length === 0) return null;
   return (
     <Collapsible sectionKey="behaviour" title="Behaviour: was → is" tone="llm" sections={sections}>
-      {behaviour.length === 0 ? (
-        <Empty>The LLM described no was → is change here.</Empty>
-      ) : (
-        <ul className="m-0 grid list-none gap-2 p-0">
-          {behaviour.map((a) => (
-            <li key={a.id}>
-              <p className="text-[11px] text-muted">
-                {a.range.start_line === a.range.end_line ? "Line" : "Lines"} {rangeText(a.range)}{" "}
-                <BasisNote basis={a.basis} evidence={a.evidence} onEvidence={onEvidence} />
-              </p>
-              <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-2">
-                <dt className="font-bold text-muted">Was</dt>
-                <dd className="m-0">
-                  <CodeText text={a.was} />
-                </dd>
-                <dt className="font-bold text-muted">Is</dt>
-                <dd className="m-0">
-                  <CodeText text={a.is} />
-                </dd>
-              </dl>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ul className="m-0 grid list-none gap-2 p-0">
+        {behaviour.map((a) => (
+          <li key={a.id}>
+            <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-2">
+              <dt className="font-bold text-muted">Was</dt>
+              <dd className="m-0">
+                <CodeText text={a.was} />
+              </dd>
+              <dt className="font-bold text-muted">Is</dt>
+              <dd className="m-0">
+                <CodeText text={a.is} />
+              </dd>
+            </dl>
+            <BasisNote
+              currentFile={currentFile}
+              basis={a.basis}
+              evidence={a.evidence}
+              onEvidence={onEvidence}
+            />
+          </li>
+        ))}
+      </ul>
     </Collapsible>
   );
 }
@@ -76,16 +75,23 @@ export function BehaviourSection({
 function TextList({
   annotations,
   onEvidence,
+  currentFile,
 }: {
   annotations: readonly Annotation[];
   onEvidence?: (e: Evidence) => void;
+  currentFile?: string;
 }) {
   return (
     <ul className="m-0 list-disc pl-5">
       {annotations.map((a) => (
         <li key={a.id}>
           <CodeText text={a.text ?? ""} />{" "}
-          <BasisNote basis={a.basis} evidence={a.evidence} onEvidence={onEvidence} />
+          <BasisNote
+            currentFile={currentFile}
+            basis={a.basis}
+            evidence={a.evidence}
+            onEvidence={onEvidence}
+          />
         </li>
       ))}
     </ul>
@@ -98,13 +104,16 @@ export function WhySection({
   notes,
   sections,
   onEvidence,
+  currentFile,
 }: { why: string; notes: readonly Annotation[] } & Sections) {
+  notes = notes.filter((a) => a.text?.trim());
+  if (!why.trim() && notes.length === 0) return null;
   return (
     <Collapsible sectionKey="why" title="Why" tone="llm" sections={sections}>
       <div className="font-semibold">
         <CodeText text={why} />
       </div>
-      {notes.length > 0 && <TextList annotations={notes} onEvidence={onEvidence} />}
+      {notes.length > 0 && <TextList currentFile={currentFile} annotations={notes} onEvidence={onEvidence} />}
     </Collapsible>
   );
 }
@@ -114,14 +123,13 @@ export function ConsequencesSection({
   annotations,
   sections,
   onEvidence,
+  currentFile,
 }: { annotations: readonly Annotation[] } & Sections) {
+  annotations = annotations.filter((a) => a.text?.trim());
+  if (annotations.length === 0) return null;
   return (
     <Collapsible sectionKey="consequences" title="Consequences" tone="llm" sections={sections}>
-      {annotations.length === 0 ? (
-        <Empty>The LLM named no consequences here. That is not evidence that there are none.</Empty>
-      ) : (
-        <TextList annotations={annotations} onEvidence={onEvidence} />
-      )}
+      <TextList currentFile={currentFile} annotations={annotations} onEvidence={onEvidence} />
     </Collapsible>
   );
 }
@@ -152,6 +160,7 @@ export function CallHierarchySection({
   hierarchy,
   sections,
 }: { hierarchy: CallHierarchy | null } & Sections) {
+  if (!hierarchy || hierarchy.callers.length + hierarchy.callees.length === 0) return null;
   return (
     <Collapsible
       sectionKey="calls"
@@ -160,39 +169,52 @@ export function CallHierarchySection({
       source="From the language plugin; no LLM."
       sections={sections}
     >
-      {hierarchy === null ? (
-        <Tooltip tip="Callers and callees come from a language plugin (static analysis). The built-in generic plugin has none, so they were not checked.">
-          <span tabIndex={0} className="cursor-help text-muted">
-            n/a — needs a language plugin
-          </span>
-        </Tooltip>
-      ) : (
-        <>
-          <Sites title="Callers" sites={hierarchy.callers} />
-          <Sites title="Callees" sites={hierarchy.callees} />
-          {hierarchy.callers.length + hierarchy.callees.length === 0 && (
-            <Empty>The language plugin found no callers or callees.</Empty>
-          )}
-        </>
-      )}
+      <Sites title="Callers" sites={hierarchy.callers} />
+      <Sites title="Callees" sites={hierarchy.callees} />
     </Collapsible>
   );
 }
 
-/** Section 6: LLM suspicions phrased as questions to check. */
+/** Questions link to the step's annotated lines. */
 export function QuestionsSection({
   questions,
   sections,
   onEvidence,
-}: { questions: readonly Annotation[] } & Sections) {
-  const title = questions.length > 0 ? `Questions to check (${questions.length})` : "Questions to check";
+  step,
+  currentFile,
+}: { questions: readonly Annotation[]; step: Step } & Sections) {
+  questions = questions.filter((a) => a.text?.trim());
+  if (questions.length === 0) return null;
   return (
-    <Collapsible sectionKey="questions" title={title} tone="llm" sections={sections}>
-      {questions.length === 0 ? (
-        <p>{NO_QUESTIONS}</p>
-      ) : (
-        <TextList annotations={questions} onEvidence={onEvidence} />
-      )}
+    <Collapsible
+      sectionKey="questions"
+      title={`Questions to check (${questions.length})`}
+      tone="llm"
+      sections={sections}
+    >
+      <ul className="m-0 grid list-none gap-2 p-0">
+        {questions.map((a) => (
+          <li key={a.id}>
+            <Tooltip tip="Open the step and source lines this question concerns.">
+              <button
+                type="button"
+                className="cursor-pointer text-left text-accent underline"
+                onClick={() =>
+                  onEvidence?.({ file: step.facts.file, side: step.facts.side, line: a.range.start_line })
+                }
+              >
+                Step {step.number} · {step.llm.title}: {a.text}
+              </button>
+            </Tooltip>
+            <BasisNote
+              currentFile={currentFile}
+              basis={a.basis}
+              evidence={a.evidence}
+              onEvidence={onEvidence}
+            />
+          </li>
+        ))}
+      </ul>
     </Collapsible>
   );
 }
@@ -228,29 +250,28 @@ export function AssessmentFields({ assessment }: { assessment: Assessment }) {
     ["Not checked", assessment.not_checked],
     ["Origin", assessment.origin ? ORIGIN[assessment.origin] : null],
     ["Merge impact", assessment.blocking ? BLOCKING[assessment.blocking] : null],
-    ["Smallest correction", assessment.smallest_correction ?? "none given"],
+    ["Smallest correction", assessment.smallest_correction],
   ];
   return (
     <dl className="m-0">
-      {rows.map(([term, value]) => (
-        <div key={term}>
-          <dt className="mt-1.5 text-[10.5px] font-bold tracking-wide text-muted uppercase">{term}</dt>
-          <dd className="m-0">{typeof value === "string" ? <CodeText text={value} /> : value}</dd>
-        </div>
-      ))}
+      {rows
+        .filter(([, value]) => value != null && value !== "")
+        .map(([term, value]) => (
+          <div key={term}>
+            <dt className="mt-1.5 text-[10.5px] font-bold tracking-wide text-muted uppercase">{term}</dt>
+            <dd className="m-0">{typeof value === "string" ? <CodeText text={value} /> : value}</dd>
+          </div>
+        ))}
     </dl>
   );
 }
 
 /** Section 7: the step assessment, collapsed by default (verdict after evidence). */
 export function AssessmentSection({ assessment, sections }: { assessment: Assessment | null } & Sections) {
+  if (!assessment) return null;
   return (
     <Collapsible sectionKey="assessment" title="Assessment" tone="llm" sections={sections}>
-      {assessment ? (
-        <AssessmentFields assessment={assessment} />
-      ) : (
-        <Empty>The LLM gave no assessment for this step.</Empty>
-      )}
+      <AssessmentFields assessment={assessment} />
     </Collapsible>
   );
 }
@@ -313,6 +334,7 @@ export function ThreadsSection({
   sections,
 }: { threads: readonly GithubThread[]; status: ThreadsStatus } & Sections) {
   const note = threadsNote(status);
+  if (threads.length === 0 && !note) return null;
   return (
     <Collapsible
       sectionKey="threads"
@@ -322,9 +344,7 @@ export function ThreadsSection({
       sections={sections}
     >
       {note && <p>{note}.</p>}
-      {threads.length === 0 ? (
-        !note && <Empty>No GitHub review threads on these lines.</Empty>
-      ) : (
+      {threads.length > 0 && (
         <ul className="m-0 grid list-none gap-1.5 p-0">
           {threads.map((t) => (
             <Thread key={t.id} thread={t} />

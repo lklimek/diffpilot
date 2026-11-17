@@ -18,26 +18,20 @@ export function GithubLink({ url, tip, children }: { url: string; tip: string; c
   );
 }
 
-/** "(fact; file:line, …)" or "(inference; …)": how an LLM statement is backed (brief §1). */
+/** Evidence remains attached to the statement, disclosed on demand. */
 export function BasisNote({
   basis,
   evidence,
   onEvidence,
+  currentFile,
 }: {
   basis: Basis;
   evidence: readonly Evidence[];
   onEvidence?: (e: Evidence) => void;
+  currentFile?: string;
 }) {
   return (
-    <span className="text-muted">
-      ({basis}
-      {evidence.length > 0 && (
-        <>
-          ; <EvidenceLinks evidence={evidence} onEvidence={onEvidence} />
-        </>
-      )}
-      )
-    </span>
+    <EvidenceLinks basis={basis} evidence={evidence} onEvidence={onEvidence} currentFile={currentFile} />
   );
 }
 

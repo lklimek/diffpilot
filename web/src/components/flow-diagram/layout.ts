@@ -263,6 +263,7 @@ export function layoutFlow(
   const g = new graphlib.Graph({ multigraph: true });
   g.setGraph({
     rankdir: direction,
+    acyclicer: "greedy",
     nodesep: 16,
     ranksep: RANK_SEP,
     edgesep: 12,
@@ -283,9 +284,17 @@ export function layoutFlow(
         : direction === "TB"
           ? { w: width / 2 + reach + 4 + labelsWidth, h: Math.max(height / 2 + reach, labelsHeight / 2) }
           : { w: Math.max(width / 2, labelsWidth / 2), h: height / 2 + reach + 4 + labelsHeight };
-    g.setNode(node.step_id, { width: 2 * half.w, height: 2 * half.h });
+    g.setNode(node.step_id, { number: node.number, width: 2 * half.w, height: 2 * half.h });
     return { node, lines, prefixWidth, branching, width, height, loops, reach, labelsHeight };
   });
+  // Layout-only constraints keep the persisted walk/deep-link order in either orientation.
+  const ordered = [...graph.nodes].sort((a, b) => a.number - b.number);
+  for (let i = 1; i < ordered.length; i++) {
+    g.setEdge(
+      { v: ordered[i - 1]!.step_id, w: ordered[i]!.step_id, name: `walk-${i}` },
+      { weight: 10000, minlen: 1 },
+    );
+  }
   for (const { edge, key, size, label } of prepared) {
     if (edge.from !== edge.to) {
       g.setEdge({ v: edge.from, w: edge.to, name: key }, label === null ? size : { ...size, labelpos: "c" });
@@ -353,7 +362,7 @@ export function layoutFlow(
   return {
     direction,
     width: g.graph().width ?? 0,
-    height: g.graph().height ?? 0,
+    height: Math.max(g.graph().height ?? 0, ...laidOut.map((n) => n.y + n.height + MARGIN)),
     nodes: laidOut,
     edges: prepared.map(({ edge, key, lines, label }) => {
       const loop = routed.get(key);
@@ -381,18 +390,13 @@ export function layoutFlow(
 }
 
 /**
- * The drawing for a column `width` px wide: left to right when it fits (wide screens), else top to bottom.
- * `get` lays a direction out; left to right is only tried when the cheap estimate fits.
+ * A stable top-to-bottom walk at every viewport width; numbering and deep links never depend on resizing.
  */
 export function layoutForWidth(
-  width: number,
-  estimatedLeftToRight: number,
+  _width: number,
+  _estimatedLeftToRight: number,
   get: (direction: Direction) => DiagramLayout,
 ): DiagramLayout {
-  if (width > 0 && estimatedLeftToRight <= width) {
-    const leftToRight = get("LR");
-    if (leftToRight.width <= width) return leftToRight;
-  }
   return get("TB");
 }
 

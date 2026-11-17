@@ -5,6 +5,7 @@ import type { ReviewState, Step, Tour } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
 import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import { findStep } from "../../screens/tour/sequence";
+import { Inspector } from "../inspector/Inspector";
 import { StepBlock } from "./StepBlock";
 
 const stepOf = (tour: Tour, id: string): Step => findStep(tour, id)!.step;
@@ -25,20 +26,22 @@ describe("StepBlock", () => {
     expect(screen.getByText("code slot")).toBeInTheDocument();
   });
 
-  it("always shows the four facts: called by, decides or changes, goes next, why", () => {
+  it("puts the decision in the title and the other descriptions in the inspector", () => {
     const step = stepOf(tour, "f1.5");
-    render(<StepBlock step={step} code={null} />);
-    const llm = screen.getByRole("region", { name: "LLM analysis" });
-    expect(within(llm).getByText("LLM analysis unless marked otherwise.")).toBeInTheDocument();
-    for (const [term, value] of [
+    render(
+      <>
+        <StepBlock step={step} code={null} />
+        <Inspector tour={tour} block={{ block: "step", step_id: step.id }} />
+      </>,
+    );
+    const header = screen.getAllByRole("heading", { level: 2 })[0]!.closest("header")!;
+    expect(within(header).getByText(step.llm.decides)).toBeVisible();
+    for (const [name, value] of [
       ["Called by", step.llm.called_by],
-      ["Decides or changes", step.llm.decides],
       ["Goes next", step.llm.next],
       ["Why", step.llm.why],
-    ]) {
-      const dt = within(llm).getByText(term!);
-      expect(dt.nextElementSibling).toHaveTextContent(value!);
-    }
+    ])
+      expect(screen.getByRole("region", { name })).toHaveTextContent(value!);
   });
 
   it("leaves questions to check to the inspector (brief §4.3)", () => {
@@ -47,43 +50,46 @@ describe("StepBlock", () => {
     expect(screen.queryByText(/can broadcast_tx be sent twice/)).toBeNull();
   });
 
-  it("keeps the assessment collapsed until clicked", async () => {
-    render(<StepBlock step={stepOf(tour, "f1.5")} code={null} />);
-    const summary = screen.getByText("Assessment (LLM)");
-    const details = summary.closest("details")!;
-    expect(details).not.toHaveAttribute("open");
-    expect(within(details).getByText(/wallet user could see one payment broadcast twice/)).not.toBeVisible();
-    await userEvent.click(summary);
-    expect(details).toHaveAttribute("open");
-    expect(within(details).getByText("▲ HIGH")).toBeVisible();
-    expect(details).toHaveTextContent("Smallest correction");
+  it("keeps the assessment only in the inspector, collapsed until clicked", async () => {
+    render(
+      <>
+        <StepBlock step={stepOf(tour, "f1.5")} code={null} />
+        <Inspector tour={tour} block={{ block: "step", step_id: "f1.5" }} />
+      </>,
+    );
+    expect(screen.queryByText("Assessment (LLM)")).toBeNull();
+    const button = screen.getByRole("button", { name: "Assessment" });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(button);
+    expect(screen.getByRole("region", { name: "Assessment" })).toHaveTextContent("Smallest correction");
   });
 
   it("shows the deterministic facts of the step apart from the LLM content", () => {
-    render(<StepBlock step={stepOf(tour, "f5.1")} code={null} />);
-    const facts = screen.getByRole("region", { name: "Facts" });
-    expect(facts).toHaveTextContent("Lines 38–95");
-    expect(facts).toHaveTextContent("2 changed lines");
+    render(<Inspector tour={tour} block={{ block: "step", step_id: "f5.1" }} />);
+    const facts = screen.getByRole("region", { name: "Moved code" });
     expect(within(facts).getByText("≠ 2 lines differ")).toHaveAttribute("data-badge");
-    expect(facts).toHaveTextContent("Moved from src/util/backoff.rs:11–68");
+    expect(facts).toHaveTextContent("Moved from the base commit.");
+    expect(within(facts).getByText("Evidence · 2 places").closest("details")).not.toHaveAttribute("open");
+    expect(facts).toHaveTextContent(":11 (base)");
+    expect(facts).toHaveTextContent(":68 (base)");
   });
 
   it("names removed code of a deleted site at the base commit", () => {
     render(<StepBlock step={stepOf(tour, "f4.1")} code={null} />);
-    expect(screen.getByRole("region", { name: "Facts" })).toHaveTextContent("base commit");
+    expect(screen.getByRole("link", { name: /L/ })).toHaveAccessibleDescription(/base commit/);
     expect(screen.getByText("deleted site")).toBeInTheDocument();
   });
 
-  it("says so when the LLM gave no assessment (noq)", () => {
+  it("hides a missing assessment (noq)", () => {
     const noq = seedFor("noq", "tour") as Tour;
     render(<StepBlock step={stepOf(noq, "f1.5")} code={null} />);
-    expect(screen.getByText("The LLM gave no assessment for this step.")).toBeInTheDocument();
+    expect(screen.queryByText("Assessment (LLM)")).toBeNull();
   });
 
   it("shows the confidently wrong HIGH of state wrong only as an LLM rating", async () => {
     const wrong = seedFor("wrong", "tour") as Tour;
-    render(<StepBlock step={stepOf(wrong, "f3.1")} code={null} />);
-    await userEvent.click(screen.getByText("Assessment (LLM)"));
+    render(<Inspector tour={wrong} block={{ block: "step", step_id: "f3.1" }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Assessment" }));
     expect(screen.getByText("▲ HIGH")).toHaveAccessibleDescription(/LLM rating/);
   });
 

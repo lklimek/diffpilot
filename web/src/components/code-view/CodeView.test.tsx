@@ -636,3 +636,55 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     expect(screen.getByText("No link.")).toBeVisible();
   });
 });
+
+it("pairs replacement code and hides rule-covered changes only in the main view", () => {
+  const lines: LinesResponse = {
+    path: "a.rs",
+    side: "head",
+    from: 1,
+    to: 3,
+    total_lines: 3,
+    lines: ["use std::fmt;", "new();", "work();"],
+    changed: [1, 2, 3],
+    context_only: [1],
+    deleted: [
+      {
+        after_line: 1,
+        base_start: 2,
+        lines: ["old();"],
+        total_lines: 1,
+        replacement: { start_line: 2, end_line: 2 },
+      },
+    ],
+    moved: [],
+    comments: { scope: "not_in_diff" },
+  };
+  const { container, rerender } = render(<CodeView lines={lines} hideContextChanges />);
+  expect(screen.getByText("Changed: 1 line replaced")).toBeVisible();
+  expect(screen.queryByText(/Removed here/)).toBeNull();
+  expect(screen.getByText("1 comment/import line hidden — in the classic diff")).toBeVisible();
+  expect(container.querySelector('[data-line="1"]')).toBeNull();
+  expect(
+    container.querySelector('[data-line="2"][data-side="head"] [data-mark="changed"]'),
+  ).toHaveTextContent("+");
+  rerender(<CodeView lines={lines} hideContextChanges={false} />);
+  expect(container.querySelector('[data-line="1"]')).not.toBeNull();
+});
+
+it("hides rule-covered removed comments as well as head lines", () => {
+  const lines: LinesResponse = {
+    path: "a.rs",
+    side: "head",
+    from: 1,
+    to: 1,
+    total_lines: 1,
+    lines: ["work();"],
+    changed: [],
+    deleted: [{ after_line: 0, base_start: 1, lines: ["// old note"], total_lines: 1, context_only: [1] }],
+    moved: [],
+    comments: { scope: "not_in_diff" },
+  };
+  render(<CodeView lines={lines} />);
+  expect(screen.queryByText("// old note")).toBeNull();
+  expect(screen.getByText("1 comment/import line hidden — in the classic diff")).toBeVisible();
+});

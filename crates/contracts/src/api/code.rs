@@ -42,6 +42,10 @@ pub struct LinesResponse {
     /// Changed lines in the range (neutral gutter mark): added lines on the head side, removed lines on the
     /// base side.
     pub changed: Vec<u32>,
+    /// Rust comment/import lines covered by deterministic rules; classic diff retains them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_only: Option<Vec<u32>>,
     /// Code removed by the pull request at markers in the range (head side only).
     pub deleted: Vec<DeletedBlock>,
     /// Moved blocks in the range (head side only).
@@ -77,6 +81,14 @@ pub struct DeletedBlock {
     pub lines: Vec<String>,
     /// Number of removed lines in the block.
     pub total_lines: u32,
+    /// Head range paired with these old lines; absent for pure deletions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub replacement: Option<LineRange>,
+    /// Base-side comment/import lines covered by deterministic rules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub context_only: Option<Vec<u32>>,
 }
 
 /// A moved block in the range.

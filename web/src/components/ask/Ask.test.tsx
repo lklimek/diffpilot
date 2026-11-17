@@ -164,9 +164,9 @@ describe("AskAnswers", () => {
     expect(text).toHaveClass("[&_pre]:whitespace-pre-wrap");
   });
 
-  it("says that nothing was asked yet", () => {
+  it("hides an empty answer list", () => {
     render(<AskAnswers questions={[]} />);
-    expect(screen.getByText(/No questions asked about this step yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/No questions asked about this step yet/)).not.toBeInTheDocument();
   });
 
   it("shows the answered question of the resume state whole, labelled as an LLM answer", () => {
@@ -176,7 +176,7 @@ describe("AskAnswers", () => {
     expect(item).toHaveTextContent("Does the node deduplicate broadcast_tx by transaction id?");
     expect(item).toHaveTextContent(questions[0]!.answer!.answer);
     expect(within(item).getByText("LLM answer")).toHaveAccessibleDescription(/LLM/);
-    expect(item).toHaveTextContent("Lines read: src/mempool/mod.rs:129, src/rpc/retry.rs:24");
+    expect(item).toHaveTextContent("Evidence · 2 places");
     expect(within(item).queryByRole("link")).toBeNull();
   });
 

@@ -110,7 +110,7 @@ export function InspectorPane(props: InspectorPaneProps) {
       <StatusMessage kind="error">Cannot read the questions: {errorText(questions.error)}</StatusMessage>
     ) : questions.isPending ? (
       <StatusMessage kind="loading">Loading the questions…</StatusMessage>
-    ) : (
+    ) : !props.streamLost && !questions.data.some((q) => q.step_id === step.id) ? null : (
       <>
         {props.streamLost && (
           <p role="status" className="mb-1 text-[12px] text-high">

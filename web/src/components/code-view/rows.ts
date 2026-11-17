@@ -17,7 +17,7 @@ export interface Row {
 export type Segment =
   | { kind: "rows"; rows: Row[] }
   | { kind: "highlight"; rows: Row[]; annotations: Annotation[] }
-  | { kind: "deleted"; block: DeletedBlock };
+  | { kind: "deleted"; block: DeletedBlock; paired: Row[]; annotations: Annotation[] };
 
 const covers = (a: Annotation, line: number) => a.range.start_line <= line && line <= a.range.end_line;
 
@@ -31,7 +31,7 @@ export function buildSegments(lines: LinesResponse, annotations: readonly Annota
   const deletedAfter = (line: number) =>
     lines.deleted
       .filter((d) => d.after_line === line)
-      .forEach((block) => segments.push({ kind: "deleted", block }));
+      .forEach((block) => segments.push({ kind: "deleted", block, paired: [], annotations: [] }));
 
   deletedAfter(lines.from - 1);
   lines.lines.forEach((text, index) => {
@@ -47,6 +47,17 @@ export function buildSegments(lines: LinesResponse, annotations: readonly Annota
     };
     const covering = annotations.filter((a) => covers(a, line));
     const last = segments.at(-1);
+    if (
+      last?.kind === "deleted" &&
+      last.block.replacement &&
+      line >= last.block.replacement.start_line &&
+      line <= last.block.replacement.end_line
+    ) {
+      last.paired.push(row);
+      for (const a of covering) if (!last.annotations.includes(a)) last.annotations.push(a);
+      deletedAfter(line);
+      return;
+    }
     if (covering.length === 0) {
       if (last?.kind === "rows") last.rows.push(row);
       else segments.push({ kind: "rows", rows: [row] });

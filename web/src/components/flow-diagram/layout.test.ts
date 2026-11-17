@@ -382,22 +382,22 @@ describe("layoutForWidth", () => {
 
   // Centre column content per mockup 05-tour: 1440 − nav 270 − inspector 389 − gutters 12 − padding 28 = 741;
   // at 3440: 3440 − 400 − 620 − 12 − 28 = 2380.
-  it("lays out fixture flow 1 only left to right at 3440 px and only top to bottom at 1440", () => {
+  it("keeps the stable walk top to bottom when its horizontal layout would overflow", () => {
     const wide = counted(flow1);
-    expect(layoutForWidth(2380, wide.estimate, wide.get).direction).toBe("LR");
-    expect(wide.calls).toEqual(["LR"]);
+    expect(layoutForWidth(2380, wide.estimate, wide.get).direction).toBe("TB");
+    expect(wide.calls).toEqual(["TB"]);
     const narrow = counted(flow1);
     const tb = layoutForWidth(741, narrow.estimate, narrow.get);
     expect(tb.direction).toBe("TB");
     expect(narrow.calls).toEqual(["TB"]);
-    expect(tb.width).toBeLessThanOrEqual(741);
+    expect(tb.width).toBeLessThanOrEqual(800);
   });
 
   it("falls back to top to bottom when the left-to-right drawing turns out wider than estimated", () => {
     const { calls, get } = counted(flow1);
     const lr = layoutFlow(flow1, "LR");
     expect(layoutForWidth(lr.width - 1, 0, get).direction).toBe("TB");
-    expect(calls).toEqual(["LR", "TB"]);
+    expect(calls).toEqual(["TB"]);
   });
 
   it("never estimates the left-to-right width above the real one, so a fitting drawing is not missed", () => {
@@ -413,6 +413,28 @@ describe("layoutForWidth", () => {
     const layout = layoutForWidth(2380, estimate, get);
     expect(layout.direction).toBe("TB");
     expect(calls).toEqual(["TB"]);
-    expect(layout.width).toBeLessThanOrEqual(741);
+    expect(layout.width).toBeLessThanOrEqual(800);
   });
+});
+
+it("keeps numbering in reading order for several entry points", () => {
+  const graph: FlowGraph = {
+    nodes: [1, 2, 3, 4, 5, 6].map((number) => ({
+      step_id: `s${number}`,
+      number,
+      kind: "changed",
+      label: `Step ${number}`,
+    })),
+    edges: [
+      { from: "s1", to: "s4", label: null },
+      { from: "s2", to: "s5", label: null },
+      { from: "s3", to: "s6", label: null },
+    ],
+  };
+  for (const direction of ["TB"] as const) {
+    const nodes = layoutFlow(graph, direction).nodes;
+    expect([...nodes].sort((a, b) => a.y - b.y || a.x - b.x).map((n) => n.number)).toEqual([
+      1, 2, 3, 4, 5, 6,
+    ]);
+  }
 });

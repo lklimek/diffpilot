@@ -12,11 +12,12 @@ const step = (t: Tour, id: string): Step => t.flows.flatMap((f) => f.steps).find
 const atStep = (id: string): BlockRef => ({ block: "step", step_id: id });
 
 const STEP_SECTIONS = [
+  /^Called by/,
+  /^Goes next/,
   /^Classic diff/,
   /^Behaviour: was → is/,
   /^Why/,
   /^Consequences/,
-  /^Call hierarchy/,
   /^Questions to check/,
   /^Assessment/,
   /^GitHub threads at this location/,
@@ -37,12 +38,12 @@ describe("Inspector at a step", () => {
     expect(region(/^Assessment/)).not.toHaveTextContent("nothing executed");
   });
 
-  it("shows the eight sections in the order of the brief", () => {
+  it("shows populated sections in review order", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     const names = screen
       .getAllByRole("region")
       .map((r) => r.getAttribute("aria-label") ?? r.querySelector("h3")?.textContent ?? "");
-    expect(names).toHaveLength(8);
+    expect(names).toHaveLength(STEP_SECTIONS.length);
     STEP_SECTIONS.forEach((pattern, i) => expect(names[i]).toMatch(pattern));
   });
 
@@ -90,13 +91,9 @@ describe("Inspector at a step", () => {
     expect(consequences).toHaveTextContent("inference");
   });
 
-  it("reads n/a for the call hierarchy until a language plugin exists", () => {
+  it("hides unavailable call hierarchy", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
-    const calls = region(/^Call hierarchy/);
-    expect(calls).toHaveTextContent("n/a — needs a language plugin");
-    expect(within(calls).getByText("n/a — needs a language plugin")).toHaveAccessibleDescription(
-      /language plugin/,
-    );
+    expect(screen.queryByRole("region", { name: /Call hierarchy/ })).toBeNull();
   });
 
   it("lists callers and callees with GitHub links when the plugin returns them", () => {
@@ -135,10 +132,8 @@ describe("Inspector at a step", () => {
   it("says that no questions is not evidence of no defects (noq)", () => {
     const noq = seedFor("noq", "tour") as Tour;
     render(<Inspector tour={noq} block={atStep("f1.5")} />);
-    expect(region(/^Questions to check/)).toHaveTextContent(
-      "The LLM raised no questions. That is not evidence of no defects.",
-    );
-    expect(region(/^Assessment/)).toHaveTextContent("The LLM gave no assessment for this step.");
+    expect(screen.queryByRole("region", { name: /Questions to check/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: /Assessment/ })).toBeNull();
   });
 
   it("opens the assessment only on request, after the evidence sections", async () => {
@@ -168,7 +163,7 @@ describe("Inspector at a step", () => {
 
   it("says when no GitHub thread is at the step", () => {
     render(<Inspector tour={tour} block={atStep("f1.2")} />);
-    expect(region(/^GitHub threads/)).toHaveTextContent("No GitHub review threads on these lines.");
+    expect(screen.queryByRole("region", { name: /GitHub threads/ })).toBeNull();
   });
 
   it("toggles a section from the keyboard", async () => {
@@ -197,8 +192,7 @@ describe("Inspector at a selected annotation", () => {
     annotation.was = "";
     annotation.is = "";
     render(<Inspector tour={updated} block={atStep("f1.5")} annotationId={annotation.id} />);
-    expect(region(/^Behaviour/)).toHaveTextContent("The LLM described no was → is change here.");
-    expect(region(/^Behaviour/).querySelector("dl")).toBeNull();
+    expect(screen.queryByRole("region", { name: /Behaviour/ })).toBeNull();
   });
 
   it("narrows to the annotation and offers Back to step", async () => {
@@ -206,10 +200,9 @@ describe("Inspector at a selected annotation", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} annotationId="f1.5.a2" onBackToStep={onBack} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Consequence · line 99");
     expect(region(/^Classic diff of the selected range/)).toBeInTheDocument();
-    expect(region(/^Behaviour/)).toHaveTextContent("The LLM described no was → is change here.");
-    expect(region(/^Behaviour/)).not.toHaveTextContent("No retry decision");
+    expect(screen.queryByRole("region", { name: /Behaviour/ })).toBeNull();
     expect(region(/^Consequences/)).toHaveTextContent("may submit the same transaction twice");
-    expect(region(/^Questions to check/)).toHaveTextContent("The LLM raised no questions");
+    expect(screen.queryByRole("region", { name: /Questions to check/ })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /Back to step/ }));
     expect(onBack).toHaveBeenCalledOnce();
   });
@@ -248,7 +241,7 @@ describe("Inspector summaries", () => {
       "Flow 1 · Send an RPC request with retry",
     );
     expect(region(/^Files touched/)).toHaveTextContent("src/rpc/retry.rs");
-    expect(region(/^Questions to check/)).toHaveTextContent(/\d+ questions across the steps of this flow/);
+    expect(region(/^Questions to check/)).toHaveTextContent("Step 5 · Retry allowed?");
     expect(region(/^Depends on/)).toHaveTextContent(/Flow 3 ·/);
     await userEvent.click(screen.getByRole("button", { name: /Step 5 · Retry allowed\?/ }));
     expect(onSelectStep).toHaveBeenCalledWith("f1.5");
@@ -269,7 +262,7 @@ describe("Inspector summaries", () => {
     const glance = region(/^LLM analysis at a glance/);
     expect(glance).toHaveTextContent("The LLM split this PR into 5 flows with 17 steps.");
     expect(glance).toHaveTextContent("Flows by LLM risk: 1 HIGH, 3 MEDIUM, 1 LOW");
-    expect(glance).toHaveTextContent(/fit questions? to check/);
+    expect(glance).not.toHaveTextContent(/fit questions? to check/);
   });
 
   it("counts the unexplained ranges that were not sent to the LLM", () => {
@@ -429,7 +422,7 @@ describe("Inspector trust rules", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     expect(region(/^Why/)).toHaveAttribute("data-tone", "llm");
     expect(region(/^Classic diff/)).toHaveAttribute("data-tone", "facts");
-    expect(region(/^Call hierarchy/)).toHaveAttribute("data-tone", "facts");
+    expect(region(/^Classic diff/)).toHaveAttribute("data-tone", "facts");
   });
 
   it.each(toursByState)("keeps the wording rules and is never empty on every block in state %s", (_, t) => {

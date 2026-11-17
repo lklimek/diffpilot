@@ -1104,6 +1104,26 @@ async fn lines_match_the_seed_for_whole_files() {
         if seed["path"] == json!("src/rpc/client.rs") {
             assert_eq!(moved, seeded, "moved blocks of client.rs");
         }
+        if seed["path"] == "src/config.rs" && seed["side"] == "head" {
+            assert_eq!(
+                lines["deleted"][0]["replacement"],
+                json!({"start_line":23,"end_line":23})
+            );
+        }
+        if seed["path"] == "src/rpc/client.rs" && seed["side"] == "head" {
+            assert!(
+                lines["context_only"]
+                    .as_array()
+                    .expect("context lines")
+                    .contains(&json!(89))
+            );
+        }
+        // The historical seed still checks every original field; new metadata is asserted above.
+        lines.as_object_mut().expect("lines").remove("context_only");
+        for block in lines["deleted"].as_array_mut().expect("blocks") {
+            block.as_object_mut().expect("block").remove("context_only");
+            block.as_object_mut().expect("block").remove("replacement");
+        }
         assert_eq!(lines, seed, "{}", seed_path.display());
     }
 }
@@ -1526,7 +1546,7 @@ async fn lines_caps_deleted_blocks() {
     assert_eq!(removed[0], json!("line 2"));
     assert_eq!(
         deleted[1],
-        json!({ "after_line": 3, "base_start": 5004, "lines": [], "total_lines": 1 })
+        json!({ "after_line": 3, "base_start": 5004, "lines": [], "total_lines": 1, "context_only": [] })
     );
 }
 
@@ -3107,4 +3127,26 @@ async fn lazy_review_opens_after_context_before_any_flow() {
     );
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;
+}
+
+#[tokio::test]
+async fn test_subject_plan_is_repaired_before_flow_jobs() {
+    let h = harness().await;
+    let mut output = agent_output("plan:1");
+    output["flows"][0]["classification"] = json!("test");
+    output["flows"][0]["title"] = json!("Test retry helpers");
+    h.executor.script("plan:1#0", Script::Output(output));
+    let id = h.create_fixture_analysis().await;
+    h.wait_until_finished(&id).await;
+    let runs = h.executor.specs_of("plan:1");
+    assert_eq!(runs.len(), 2);
+    assert!(runs[1].1.prompt.contains("test-only flows"));
+    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert!(
+        tour["flows"]
+            .as_array()
+            .expect("flows")
+            .iter()
+            .all(|flow| flow["llm"]["classification"] != "test")
+    );
 }

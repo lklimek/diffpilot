@@ -41,7 +41,7 @@ import { StatusMessage } from "../../components/status/StatusMessage";
 import { StepBlock } from "../../components/step/StepBlock";
 import { TopBar } from "../../components/top-bar/TopBar";
 import { Tooltip } from "../../components/tooltip/Tooltip";
-import { ChunkedCode, DiffCode, LinesCode, errorText, type CodeContext } from "./code";
+import { ChunkedCode, DiffCode, FileDiffCode, LinesCode, errorText, type CodeContext } from "./code";
 import { DiagramPane } from "./DiagramPane";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
@@ -139,6 +139,22 @@ function resumedAt(tour: Tour, block: BlockRef): string {
 }
 
 function TourView({ analysisId, tour, review, login }: TourViewProps) {
+  const contextKey = `smart-review.hide-context-changes.${login ?? "anonymous"}`;
+  const [hideContextChanges, setHideContextChanges] = useState(() => {
+    try {
+      return localStorage.getItem(contextKey) !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const changeContextVisibility = (hide: boolean) => {
+    setHideContextChanges(hide);
+    try {
+      localStorage.setItem(contextKey, String(hide));
+    } catch {
+      /* Storage unavailable; keep this view's preference. */
+    }
+  };
   const { state, change: save, loadError, saveError } = review;
   const work = useFlowWork(analysisId);
   const stream = useQuestionEvents(analysisId);
@@ -361,6 +377,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
       ? ("loading" as const)
       : undefined;
   const ctx: CodeContext = {
+    hideContextChanges,
     analysisId,
     threads: tour.threads,
     comments: pendingComments,
@@ -434,7 +451,10 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
               key={location.key}
               ctx={ctx}
               revealLine={
-                evidence?.line ?? step.facts.changed_lines[0]?.start_line ?? step.facts.range.start_line
+                evidence?.line ??
+                stepLines.data?.changed.find(
+                  (line) => !hideContextChanges || !stepLines.data?.context_only?.includes(line),
+                )
               }
               lines={stepLines}
               annotations={step.llm.annotations}
@@ -484,7 +504,19 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
           key={section.category}
           section={section}
           counters={tour.pr_context.facts.counters}
-          code={(item, range) => <ChunkedCode ctx={ctx} path={item.file} side={item.side} ranges={[range]} />}
+          code={(item, range) =>
+            section.category === "tests" && item.ranges === null ? (
+              <FileDiffCode ctx={ctx} path={item.file} side={item.side} />
+            ) : section.category === "tests" ? (
+              <DiffCode
+                analysisId={analysisId}
+                query={{ path: item.file, side: item.side, from: range.start_line, to: range.end_line }}
+                comments={ctx}
+              />
+            ) : (
+              <ChunkedCode ctx={ctx} path={item.file} side={item.side} ranges={[range]} />
+            )
+          }
         />
       );
     }
@@ -602,6 +634,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         pr={tour.analysis.pr}
         ci={tour.pr_context.facts.ci}
         login={login}
+        hideContextChanges={hideContextChanges}
+        onHideContextChanges={changeContextVisibility}
         progress={{
           reviewed: tour.flows.filter((f) => isFlowReviewed(f, ticked)).length,
           total: tour.flows.length,
