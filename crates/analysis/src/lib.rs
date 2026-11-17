@@ -6,6 +6,7 @@ pub mod diff;
 pub mod lines;
 pub mod moves;
 pub mod order;
+pub mod prepass;
 pub mod related;
 pub mod tech;
 pub mod verify;
