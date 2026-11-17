@@ -1,7 +1,9 @@
 //! Repository for `analyses`. Frozen signatures (cross-WP); bodies are filled in by WP2-JOBS / WP2-INGEST.
 
 use chrono::{DateTime, Utc};
-use contracts::api::analyses::{AnalysisState, AnalysisSummary, FlowRef};
+use contracts::api::analyses::{
+    AnalysisStage, AnalysisState, AnalysisSummary, FlowRef, StageFlow, StageKind,
+};
 use contracts::api::pr::PrSummary;
 use contracts::common::{LlmLanguage, RepoRef};
 use contracts::ids::{AnalysisId, CommitSha, FlowId};
@@ -127,8 +129,8 @@ impl StateColumns {
             failure_message: None,
         };
         match state {
-            AnalysisState::Planning => {}
-            AnalysisState::Running { done, total } => {
+            AnalysisState::Planning { .. } => {}
+            AnalysisState::Running { done, total, .. } => {
                 columns.state = "running";
                 columns.flows_done = *done;
                 columns.flows_total = Some(*total);
@@ -137,6 +139,7 @@ impl StateColumns {
                 resumes_at,
                 done,
                 total,
+                ..
             } => {
                 columns.state = "paused";
                 columns.paused_until = resumes_at.map(ts);
@@ -170,10 +173,11 @@ fn state_from_row(row: &SqliteRow) -> Result<AnalysisState, DbError> {
         column: "analyses.flows_total",
     };
     Ok(match state.as_str() {
-        "planning" => AnalysisState::Planning,
+        "planning" => AnalysisState::Planning { stage: None },
         "running" => AnalysisState::Running {
             done: row.try_get("flows_done")?,
             total: total.ok_or(corrupt)?,
+            stage: None,
         },
         "paused" => AnalysisState::Paused {
             done: row.try_get("flows_done")?,
@@ -182,6 +186,7 @@ fn state_from_row(row: &SqliteRow) -> Result<AnalysisState, DbError> {
                 .try_get::<Option<String>, _>("paused_until")?
                 .map(|at| parse_ts(&at, "analyses.paused_until"))
                 .transpose()?,
+            stage: None,
         },
         "failed" => {
             let id: Option<String> = row.try_get("failure_flow_id")?;
@@ -283,7 +288,13 @@ impl Analyses<'_> {
         .bind(id.to_string())
         .fetch_one(self.pool)
         .await?;
-        let record = record_from_row(&row)?;
+        let mut record = record_from_row(&row)?;
+        if let AnalysisState::Planning { stage }
+        | AnalysisState::Running { stage, .. }
+        | AnalysisState::Paused { stage, .. } = &mut record.state
+        {
+            *stage = self.live_stage(id).await?;
+        }
         Ok(AnalysisSummary {
             id: record.id,
             pr: PrSummary {
@@ -303,6 +314,58 @@ impl Analyses<'_> {
             created_at: record.created_at,
             finished_at: record.finished_at,
         })
+    }
+
+    /// The stage of the analysis's live job: the claimed or running pipeline job of its current round, else the
+    /// next queued or paused one in claim order (then not with the runner: no `started_at`). Ask jobs are no
+    /// stage. A flow's index and title come from the stored plan.
+    async fn live_stage(&self, id: AnalysisId) -> Result<Option<AnalysisStage>, DbError> {
+        let row = sqlx::query(
+            "SELECT j.kind, j.state, j.claimed_at, plan_flow.position, plan_flow.title
+             FROM jobs j JOIN analyses a ON a.id = j.analysis_id AND a.round = j.round
+             LEFT JOIN (SELECT CAST(f.key AS INTEGER) + 1 AS position, json_extract(f.value, '$.id') AS flow_id,
+                               json_extract(f.value, '$.title') AS title
+                        FROM documents d, json_each(d.body, '$.flows') f
+                        WHERE d.analysis_id = ?1 AND d.kind = 'plan' AND d.key = '') plan_flow
+                 ON plan_flow.flow_id = j.flow_id
+             WHERE j.analysis_id = ?1 AND j.kind <> 'ask' AND j.state IN ('queued', 'claimed', 'running', 'paused')
+             ORDER BY j.state IN ('claimed', 'running') DESC, j.priority, j.created_at, j.rowid
+             LIMIT 1",
+        )
+        .bind(id.to_string())
+        .fetch_optional(self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let kind = match row.try_get::<String, _>("kind")?.as_str() {
+            "plan" => StageKind::Plan,
+            "pr_context" => StageKind::PrContext,
+            "analyse_flow" => StageKind::Flow,
+            _ => {
+                return Err(DbError::Corrupt {
+                    column: "jobs.kind",
+                });
+            }
+        };
+        let with_runner = matches!(
+            row.try_get::<String, _>("state")?.as_str(),
+            "claimed" | "running"
+        );
+        let started_at = match row.try_get::<Option<String>, _>("claimed_at")? {
+            Some(at) if with_runner => Some(parse_ts(&at, "jobs.claimed_at")?),
+            _ => None,
+        };
+        let position: Option<u32> = row.try_get("position")?;
+        let title: Option<String> = row.try_get("title")?;
+        Ok(Some(AnalysisStage {
+            kind,
+            flow: position
+                .zip(title)
+                .filter(|_| kind == StageKind::Flow)
+                .map(|(index, title)| StageFlow { index, title }),
+            started_at,
+        }))
     }
 
     /// The newest analysis of a pull request in a language, any head and state.
@@ -680,7 +743,7 @@ mod tests {
             .create(new_analysis("a"), at(1))
             .await
             .expect("create");
-        assert_eq!(created.state, AnalysisState::Planning);
+        assert_eq!(created.state, AnalysisState::Planning { stage: None });
         assert_eq!(created.language, LlmLanguage::Pl);
         assert_eq!(created.session_state, SessionState::None);
         assert_eq!(created.created_at, at(1));
@@ -822,13 +885,21 @@ mod tests {
         let db = db().await;
         let id = seed_analysis(&db).await.expect("seed");
         let states = [
-            (AnalysisState::Planning, false),
-            (AnalysisState::Running { done: 2, total: 5 }, false),
+            (AnalysisState::Planning { stage: None }, false),
+            (
+                AnalysisState::Running {
+                    done: 2,
+                    total: 5,
+                    stage: None,
+                },
+                false,
+            ),
             (
                 AnalysisState::Paused {
                     resumes_at: Some(at(30)),
                     done: 2,
                     total: Some(5),
+                    stage: None,
                 },
                 false,
             ),
@@ -837,6 +908,7 @@ mod tests {
                     resumes_at: None,
                     done: 0,
                     total: None,
+                    stage: None,
                 },
                 false,
             ),
@@ -871,7 +943,11 @@ mod tests {
         }
         assert!(matches!(
             db.analyses()
-                .set_state(AnalysisId::new_random(), &AnalysisState::Planning, at(5))
+                .set_state(
+                    AnalysisId::new_random(),
+                    &AnalysisState::Planning { stage: None },
+                    at(5)
+                )
                 .await,
             Err(DbError::NotFound)
         ));
@@ -977,18 +1053,233 @@ mod tests {
         );
     }
 
+    /// The stage of `summary`'s state, if the state carries one.
+    fn stage_of(state: &AnalysisState) -> Option<&AnalysisStage> {
+        match state {
+            AnalysisState::Planning { stage }
+            | AnalysisState::Running { stage, .. }
+            | AnalysisState::Paused { stage, .. } => stage.as_ref(),
+            _ => None,
+        }
+    }
+
+    async fn stage(db: &Db, id: AnalysisId) -> Option<AnalysisStage> {
+        let summary = db.analyses().summary(id).await.expect("summary");
+        stage_of(&summary.state).cloned()
+    }
+
+    async fn enqueue(db: &Db, id: AnalysisId, stage: JobStage, kind: JobKind, minute: u32) {
+        db.jobs()
+            .enqueue(
+                NewJob {
+                    spec: testing::job_spec(id, kind),
+                    priority: JobPriority::Batch,
+                    stage,
+                    generation: 0,
+                },
+                at(minute),
+            )
+            .await
+            .expect("enqueue");
+    }
+
+    async fn claim(db: &Db, minute: u32) {
+        db.jobs()
+            .claim(crate::repo::jobs::ClaimParams {
+                credential_ids: &[testing::CREDENTIAL.to_owned()],
+                job_token_hash: b"hash",
+                lease_until: at(minute + 30),
+                now: at(minute),
+            })
+            .await
+            .expect("claim")
+            .expect("a job to claim");
+    }
+
+    /// Ends the claimed job as succeeded, as the runner's result would.
+    async fn end_claimed(db: &Db, id: AnalysisId) {
+        sqlx::query(
+            "UPDATE jobs SET state = 'succeeded' WHERE analysis_id = ? AND state = 'claimed'",
+        )
+        .bind(id.to_string())
+        .execute(&db.pool)
+        .await
+        .expect("end job");
+    }
+
+    fn waiting(kind: StageKind, flow: Option<(u32, &str)>) -> AnalysisStage {
+        AnalysisStage {
+            kind,
+            flow: flow.map(|(index, title)| StageFlow {
+                index,
+                title: title.to_owned(),
+            }),
+            started_at: None,
+        }
+    }
+
+    fn started(kind: StageKind, flow: Option<(u32, &str)>, minute: u32) -> AnalysisStage {
+        AnalysisStage {
+            started_at: Some(at(minute)),
+            ..waiting(kind, flow)
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_reports_the_stage_of_the_live_job() {
+        let db = db().await;
+        let id = seed_analysis(&db).await.expect("seed");
+        assert_eq!(stage(&db, id).await, None, "no job yet");
+        enqueue(&db, id, JobStage::Plan { batch: 1 }, JobKind::Plan, 1).await;
+        assert_eq!(
+            stage(&db, id).await,
+            Some(waiting(StageKind::Plan, None)),
+            "queued: waiting for the runner"
+        );
+        claim(&db, 2).await;
+        assert_eq!(
+            stage(&db, id).await,
+            Some(started(StageKind::Plan, None, 2))
+        );
+        end_claimed(&db, id).await;
+        let plan = serde_json::json!({"flows": [
+            {"id": "f1", "title": "Parse the input"},
+            {"id": "f2", "title": "Retry the send"},
+        ], "unassigned": []});
+        db.documents()
+            .put(id, DocumentKind::Plan, "", &plan, at(3))
+            .await
+            .expect("plan");
+        db.analyses()
+            .set_state(
+                id,
+                &AnalysisState::Running {
+                    done: 0,
+                    total: 2,
+                    stage: None,
+                },
+                at(3),
+            )
+            .await
+            .expect("running");
+        enqueue(&db, id, JobStage::PrContext, JobKind::PrContext, 4).await;
+        for (minute, flow) in [(5, "f1"), (6, "f2")] {
+            let flow = JobStage::Flow(FlowId(flow.to_owned()));
+            enqueue(&db, id, flow, JobKind::AnalyseFlow, minute).await;
+        }
+        assert_eq!(
+            stage(&db, id).await,
+            Some(waiting(StageKind::PrContext, None))
+        );
+        claim(&db, 7).await;
+        assert_eq!(
+            stage(&db, id).await,
+            Some(started(StageKind::PrContext, None, 7))
+        );
+        end_claimed(&db, id).await;
+        claim(&db, 8).await;
+        end_claimed(&db, id).await;
+        claim(&db, 9).await;
+        let flow_2 = started(StageKind::Flow, Some((2, "Retry the send")), 9);
+        assert_eq!(stage(&db, id).await, Some(flow_2.clone()));
+        let summary = db.analyses().summary(id).await.expect("summary");
+        assert!(matches!(
+            summary.state,
+            AnalysisState::Running {
+                done: 0,
+                total: 2,
+                ..
+            }
+        ));
+        sqlx::query("UPDATE jobs SET state = 'paused' WHERE analysis_id = ? AND state = 'claimed'")
+            .bind(id.to_string())
+            .execute(&db.pool)
+            .await
+            .expect("pause");
+        db.analyses()
+            .set_state(
+                id,
+                &AnalysisState::Paused {
+                    resumes_at: None,
+                    done: 0,
+                    total: Some(2),
+                    stage: None,
+                },
+                at(10),
+            )
+            .await
+            .expect("paused");
+        assert_eq!(
+            stage(&db, id).await,
+            Some(waiting(StageKind::Flow, Some((2, "Retry the send")))),
+            "a paused job is not with the runner"
+        );
+        sqlx::query("UPDATE analyses SET round = round + 1 WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&db.pool)
+            .await
+            .expect("next round");
+        assert_eq!(
+            stage(&db, id).await,
+            None,
+            "jobs of an earlier round are not the stage"
+        );
+    }
+
+    #[tokio::test]
+    async fn finished_analysis_has_no_stage_and_unplanned_flow_has_no_title() {
+        let db = db().await;
+        let id = seed_analysis(&db).await.expect("seed");
+        let flow = JobStage::Flow(FlowId("f9".to_owned()));
+        enqueue(&db, id, flow, JobKind::AnalyseFlow, 1).await;
+        db.analyses()
+            .set_state(
+                id,
+                &AnalysisState::Running {
+                    done: 0,
+                    total: 1,
+                    stage: None,
+                },
+                at(2),
+            )
+            .await
+            .expect("running");
+        assert_eq!(stage(&db, id).await, Some(waiting(StageKind::Flow, None)));
+        db.analyses()
+            .set_state(id, &AnalysisState::Finished { total: 1 }, at(3))
+            .await
+            .expect("finished");
+        let summary = db.analyses().summary(id).await.expect("summary");
+        assert_eq!(summary.state, AnalysisState::Finished { total: 1 });
+    }
+
     #[tokio::test]
     async fn summary_joins_the_pull_request_at_the_analysed_head() {
         let db = db().await;
         let id = seed_analysis(&db).await.expect("seed");
         db.analyses()
-            .set_state(id, &AnalysisState::Running { done: 1, total: 3 }, at(2))
+            .set_state(
+                id,
+                &AnalysisState::Running {
+                    done: 1,
+                    total: 3,
+                    stage: None,
+                },
+                at(2),
+            )
             .await
             .expect("state");
         let summary = db.analyses().summary(id).await.expect("summary");
         let record = db.analyses().get(id).await.expect("get");
         assert_eq!(summary.id, id);
-        assert_eq!(summary.state, AnalysisState::Running { done: 1, total: 3 });
+        assert_eq!(
+            summary.state,
+            AnalysisState::Running {
+                done: 1,
+                total: 3,
+                stage: None
+            }
+        );
         assert_eq!(summary.pr.repo.owner, "acme");
         assert_eq!(summary.pr.repo.name, "node-client");
         assert_eq!(summary.pr.number, 482);

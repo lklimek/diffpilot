@@ -11,7 +11,11 @@ summary: AnalysisSummary, } | { "event": "question",
 /**
  * The question.
  */
-question: AskQuestion, };
+question: AskQuestion, } | { "event": "heartbeat",
+/**
+ * Server time of sending.
+ */
+at: string, };
 
 /**
  * Identifier of an analysis (one per pull request, head commit and LLM language).
@@ -19,9 +23,31 @@ question: AskQuestion, };
 export type AnalysisId = string;
 
 /**
+ * The stage of the analysis's live job (the queued, running or paused job of its current round); only facts the
+ * server knows, no estimate.
+ */
+export type AnalysisStage = {
+/**
+ * What the job does.
+ */
+kind: StageKind,
+/**
+ * The flow analysed (`flow` only); absent when the stored plan does not list it.
+ */
+flow?: StageFlow,
+/**
+ * When the server handed the job to the runner; null while the job waits for the runner.
+ */
+started_at: string | null, };
+
+/**
  * State of an analysis (brief §4.2).
  */
-export type AnalysisState = { "state": "planning" } | { "state": "running",
+export type AnalysisState = { "state": "planning",
+/**
+ * The current stage; absent when no job of the analysis is queued, running or paused.
+ */
+stage?: AnalysisStage, } | { "state": "running",
 /**
  * Flows analysed.
  */
@@ -29,7 +55,11 @@ done: number,
 /**
  * Flows in total.
  */
-total: number, } | { "state": "paused",
+total: number,
+/**
+ * The current stage; absent when no job of the analysis is queued, running or paused.
+ */
+stage?: AnalysisStage, } | { "state": "paused",
 /**
  * When it resumes, if known.
  */
@@ -41,7 +71,11 @@ done: number,
 /**
  * Flows in total; null while planning (the number of flows is not known yet).
  */
-total: number | null, } | { "state": "failed",
+total: number | null,
+/**
+ * The stage that resumes; absent when no job of the analysis is queued, running or paused.
+ */
+stage?: AnalysisStage, } | { "state": "failed",
 /**
  * The flow that failed, or null when it failed before any flow existed.
  */
@@ -1683,6 +1717,24 @@ repos: Array<RepoRef>, };
  * Whether a source was checked.
  */
 export type SourceCheck = "checked" | "not_checked";
+
+/**
+ * The flow of a `flow` stage.
+ */
+export type StageFlow = {
+/**
+ * 1-based position of the flow in the stored plan (the order flows are analysed in).
+ */
+index: number,
+/**
+ * Flow title.
+ */
+title: string, };
+
+/**
+ * Kind of an analysis stage.
+ */
+export type StageKind = "plan" | "pr_context" | "flow";
 
 /**
  * One step of a flow.

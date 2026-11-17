@@ -59,6 +59,10 @@ mapping, query rules and the endpoint × fixture-state inventory.
   server did not send to the LLM, a deterministic fact; v1 value `too_large_for_prompt` (a file too large for any
   plan prompt, or a flow whose prompt is over budget). A file's ranges with and without a reason are separate
   entries. Lines the LLM was asked about but did not explain carry no reason.
+- **Analysis stage**: `AnalysisSummary.state` of a `planning`, `running` or `paused` analysis carries an optional
+  `stage {kind, flow?, started_at}` (the live job's stage; `started_at` null = waiting for the runner, absent =
+  no live job); rules in `sse-events.md`. Example: `{"state": "running", "done": 1, "total": 5, "stage": {"kind":
+  "flow", "flow": {"index": 2, "title": "Default timeout 30 s → 5 s"}, "started_at": "2026-11-17T09:30:00Z"}}`.
 - **Cancel and retry**: cancel applies to a planning, running, paused or failed analysis (else `conflict`): state
   `cancelled`, unfinished jobs cancelled, stored results and the agent session discarded. Retry applies to a
   failed analysis only (else `conflict`): state `planning`, stored results kept, failed stages submitted again.

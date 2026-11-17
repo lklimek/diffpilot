@@ -178,12 +178,17 @@ async fn tenant_id_on_every_table() {
 async fn check_lists_match_contract_enums() {
     let db = db().await;
     let analysis_states = [
-        AnalysisState::Planning,
-        AnalysisState::Running { done: 0, total: 0 },
+        AnalysisState::Planning { stage: None },
+        AnalysisState::Running {
+            done: 0,
+            total: 0,
+            stage: None,
+        },
         AnalysisState::Paused {
             resumes_at: None,
             done: 0,
             total: None,
+            stage: None,
         },
         AnalysisState::Failed {
             flow: None,

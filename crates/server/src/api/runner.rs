@@ -337,6 +337,13 @@ async fn claim_job(
     let response = claim::claim(&state.db, &state.config, &packs, &request, Utc::now())
         .await
         .map_err(RunnerError::from)?;
+    if let Some(claimed) = &response.claim {
+        let analysis = claimed.spec.analysis_id;
+        // The claim is done; a failed publish only delays the new stage until the next event or reconnect.
+        if let Err(error) = state.progress.publish_analysis(&state.db, analysis).await {
+            tracing::warn!(%analysis, ?error, "the stage of a claimed job could not be published to the progress stream");
+        }
+    }
     Ok(Json(response))
 }
 
@@ -470,6 +477,8 @@ mod tests {
     use axum::http::Request;
     use chrono::{DateTime, TimeDelta};
     use contracts::agent::JobKind;
+    use contracts::api::analyses::{AnalysisState, StageFlow, StageKind};
+    use contracts::api::events::AnalysisEvent;
     use contracts::ids::{AnalysisId, FlowId};
     use contracts::job::access::AgentAccess;
     use contracts::job::event::ActivityKind;
@@ -478,6 +487,7 @@ mod tests {
     use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
     use db::repo::analyses::SessionState;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
+    use db::repo::documents::DocumentKind;
     use db::repo::jobs::{JobStage, NewJob};
     use http_body_util::BodyExt;
     use serde::Serialize;
@@ -691,6 +701,66 @@ mod tests {
             )
             .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// A claim publishes the analysis with its new stage; the stage starts at the claim and a reconnect
+    /// snapshot reads the same.
+    #[tokio::test]
+    async fn claim_publishes_the_stage_it_starts() {
+        let harness = Harness::new().await;
+        let (analysis, _) = harness.enqueue(CREDENTIAL).await;
+        let db = &harness.state.db;
+        let plan: Value =
+            serde_json::from_str(include_str!("../../../../fixtures/pr-482/agent/plan.json"))
+                .expect("fixture plan");
+        db.documents()
+            .put(analysis, DocumentKind::Plan, "", &plan, Utc::now())
+            .await
+            .expect("plan");
+        db.analyses()
+            .set_state(
+                analysis,
+                &AnalysisState::Running {
+                    done: 0,
+                    total: 5,
+                    stage: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("running");
+        let mut live = harness.state.progress.subscribe(analysis);
+        let before = Utc::now();
+        harness.claim(CREDENTIAL).await;
+        let after = Utc::now();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), live.recv())
+            .await
+            .expect("an event on claim")
+            .expect("event");
+        let AnalysisEvent::Analysis { summary } = event else {
+            panic!("an analysis event: {event:?}");
+        };
+        let AnalysisState::Running {
+            stage: Some(stage), ..
+        } = &summary.state
+        else {
+            panic!("a running stage: {:?}", summary.state);
+        };
+        assert_eq!(stage.kind, StageKind::Flow);
+        assert_eq!(
+            stage.flow,
+            Some(StageFlow {
+                index: 1,
+                title: "Send an RPC request with retry".to_owned(),
+            })
+        );
+        let started = stage.started_at.expect("started");
+        assert!(before <= started && started <= after, "{started}");
+        let snapshot = db.analyses().summary(analysis).await.expect("summary");
+        assert_eq!(
+            snapshot, summary,
+            "a reconnect snapshot shows the same stage"
+        );
     }
 
     #[tokio::test]

@@ -195,7 +195,7 @@ async fn set(
         .await?;
     match event {
         AnalysisEvent::Question { question } => Ok(question),
-        AnalysisEvent::Analysis { .. } => Err(DbError::Corrupt {
+        AnalysisEvent::Analysis { .. } | AnalysisEvent::Heartbeat { .. } => Err(DbError::Corrupt {
             column: "question event",
         }),
     }

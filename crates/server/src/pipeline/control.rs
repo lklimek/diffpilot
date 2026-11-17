@@ -32,7 +32,9 @@ pub enum ControlError {
 pub fn is_live(state: &AnalysisState) -> bool {
     matches!(
         state,
-        AnalysisState::Planning | AnalysisState::Running { .. } | AnalysisState::Paused { .. }
+        AnalysisState::Planning { .. }
+            | AnalysisState::Running { .. }
+            | AnalysisState::Paused { .. }
     )
 }
 
@@ -74,9 +76,11 @@ pub async fn set_state_if(
 fn published(written: Result<AnalysisEvent, Guarded>) -> Result<Option<AnalysisSummary>, DbError> {
     match written {
         Ok(AnalysisEvent::Analysis { summary }) => Ok(Some(summary)),
-        Ok(AnalysisEvent::Question { .. }) => Err(DbError::Corrupt {
-            column: "analysis event",
-        }),
+        Ok(AnalysisEvent::Question { .. } | AnalysisEvent::Heartbeat { .. }) => {
+            Err(DbError::Corrupt {
+                column: "analysis event",
+            })
+        }
         Err(Guarded::Refused) => Ok(None),
         Err(Guarded::Db(error)) => Err(error),
     }

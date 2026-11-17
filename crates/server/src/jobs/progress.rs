@@ -74,10 +74,22 @@ impl ProgressHub {
             .await?;
         match event {
             AnalysisEvent::Analysis { summary } => Ok(summary),
-            AnalysisEvent::Question { .. } => Err(DbError::Corrupt {
-                column: "analysis event",
-            }),
+            AnalysisEvent::Question { .. } | AnalysisEvent::Heartbeat { .. } => {
+                Err(DbError::Corrupt {
+                    column: "analysis event",
+                })
+            }
         }
+    }
+
+    /// Publishes the analysis's current summary (e.g. its stage changed with a job claim; nothing is written).
+    pub async fn publish_analysis(&self, db: &Db, analysis: AnalysisId) -> Result<(), DbError> {
+        self.update(analysis, || async {
+            let summary = db.analyses().summary(analysis).await?;
+            Ok::<_, DbError>(AnalysisEvent::Analysis { summary })
+        })
+        .await?;
+        Ok(())
     }
 
     fn channel(&self, analysis: AnalysisId) -> Arc<Channel> {
@@ -113,7 +125,7 @@ mod tests {
     fn state_of(event: &AnalysisEvent) -> Option<AnalysisState> {
         match event {
             AnalysisEvent::Analysis { summary } => Some(summary.state.clone()),
-            AnalysisEvent::Question { .. } => None,
+            AnalysisEvent::Question { .. } | AnalysisEvent::Heartbeat { .. } => None,
         }
     }
 
@@ -131,7 +143,11 @@ mod tests {
         let a = tokio::spawn(async move {
             hub_a
                 .update(analysis, || async {
-                    let state = AnalysisState::Running { done: 1, total: 3 };
+                    let state = AnalysisState::Running {
+                        done: 1,
+                        total: 3,
+                        stage: None,
+                    };
                     db_a.analyses().set_state(analysis, &state, at(1)).await?;
                     let _ = a_written.send(());
                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -144,7 +160,11 @@ mod tests {
         let b = hub.set_analysis_state(
             &db,
             analysis,
-            &AnalysisState::Running { done: 2, total: 3 },
+            &AnalysisState::Running {
+                done: 2,
+                total: 3,
+                stage: None,
+            },
             at(2),
         );
         let (a, b) = tokio::join!(a, b);
@@ -155,7 +175,11 @@ mod tests {
         let second = events.recv().await.expect("second");
         assert_eq!(
             state_of(&first),
-            Some(AnalysisState::Running { done: 1, total: 3 })
+            Some(AnalysisState::Running {
+                done: 1,
+                total: 3,
+                stage: None
+            })
         );
         let stored = db.analyses().get(analysis).await.expect("get").state;
         assert_eq!(state_of(&second), Some(stored));
