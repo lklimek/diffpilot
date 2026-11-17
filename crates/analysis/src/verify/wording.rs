@@ -4,6 +4,7 @@
 use std::sync::LazyLock;
 
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
+use contracts::agent::ask::AskOutput;
 use contracts::agent::plan::PlanOutput;
 use contracts::agent::pr_context::PrContextOutput;
 use regex::{Regex, RegexBuilder};
@@ -134,6 +135,13 @@ pub fn flow(output: &FlowAnalysisOutput) -> Vec<WordingWarning> {
     found
 }
 
+/// Wording warnings in an `ask` answer.
+pub fn ask(output: &AskOutput) -> Vec<WordingWarning> {
+    let mut found = Vec::new();
+    scan(&mut found, "answer", &output.answer);
+    found
+}
+
 /// Adds a warning per rule hit in `text`; the phrase is the match with its whitespace collapsed.
 fn scan(found: &mut Vec<WordingWarning>, location: &str, text: &str) {
     for rule in RULES.iter() {
@@ -196,6 +204,27 @@ mod tests {
                 ("noise", "fit_questions[0].question"),
             ]
         );
+    }
+
+    #[test]
+    fn ask_answer_wording_is_scanned() {
+        let output = AskOutput {
+            answer: "This was verified; no risk at 90% here?".to_owned(),
+            evidence: Vec::new(),
+        };
+        assert_eq!(
+            phrases(&ask(&output)),
+            [
+                ("verified", "answer"),
+                ("no risk", "answer"),
+                ("90%", "answer")
+            ]
+        );
+        let clean = AskOutput {
+            answer: "Can the reply arrive twice?".to_owned(),
+            evidence: Vec::new(),
+        };
+        assert!(ask(&clean).is_empty());
     }
 
     #[test]
