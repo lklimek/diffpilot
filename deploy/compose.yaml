@@ -5,9 +5,10 @@
 #
 # Networks (pinned subnets, so MemCan's allowlist and the server's bind addresses are fixed):
 #   public  server only: GitHub API, the published HTTP port (reverse proxy in front).
-#   runner  internal (no route out): runner, the server's runner listener, the proxy. The server's public
-#           listener is bound to its public address only, so the runner reaches nothing but the runner
-#           listener and the proxy.
+#   runner  internal and isolated (no route out, and no host address on its bridge, so no host service is
+#           reachable; Docker Engine 28.0 or newer): runner, the server's runner listener, the proxy. The
+#           server's public listener is bound to its public address only, so the runner reaches nothing but
+#           the runner listener and the proxy.
 #   egress  proxy only: its way out; the proxy's address is MemCan's allowlist entry.
 name: smart-review
 
@@ -75,6 +76,7 @@ services:
     cap_add: [CHOWN, SETUID, SETGID, KILL]
     ipc: none
     pids_limit: ${SR_RUNNER_PIDS_LIMIT:-1024}
+    cpus: ${SR_RUNNER_CPUS:-2}
     mem_limit: ${SR_RUNNER_MEM_LIMIT:-6g}
     memswap_limit: ${SR_RUNNER_MEM_LIMIT:-6g}
     # Exit 70 (sweep failed) and 71 (supervisor setup failed) end the container; it restarts clean.
@@ -155,6 +157,9 @@ networks:
     ipam: { config: [{ subnet: "${SR_PUBLIC_SUBNET:-172.29.73.0/24}" }] }
   runner:
     internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
+      com.docker.network.bridge.gateway_mode_ipv6: isolated
     ipam: { config: [{ subnet: "${SR_RUNNER_SUBNET:-172.29.71.0/24}" }] }
   egress:
     ipam: { config: [{ subnet: "${SR_EGRESS_SUBNET:-172.29.72.0/24}" }] }
