@@ -494,8 +494,11 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
+    use futures::StreamExt;
+
     use super::*;
     use crate::api::runner_router;
+    use crate::jobs::executor::JobRequest;
     use crate::state::tests::test_state;
     use crate::test_support::logs::LogCapture;
 
@@ -760,6 +763,127 @@ mod tests {
         assert_eq!(
             snapshot, summary,
             "a reconnect snapshot shows the same stage"
+        );
+    }
+
+    /// Submits a job like the driver does and follows its updates in the background.
+    async fn submit_followed(
+        harness: &Harness,
+        analysis: AnalysisId,
+        stage: JobStage,
+        kind: JobKind,
+    ) {
+        let request = JobRequest {
+            spec: job_spec(analysis, kind),
+            priority: JobPriority::Batch,
+            stage,
+            generation: 0,
+            pr_repo: contracts::common::RepoRef {
+                owner: "acme".to_owned(),
+                name: "node-client".to_owned(),
+            },
+        };
+        let handle = harness
+            .state
+            .executor
+            .submit(request)
+            .await
+            .expect("submit");
+        let mut updates = harness.state.executor.events(&handle);
+        tokio::spawn(async move { while updates.next().await.is_some() {} });
+    }
+
+    /// Waits for an analysis event whose stage (JSON, `null` when absent) passes `wanted`; returns its summary.
+    async fn stage_where(
+        live: &mut tokio::sync::broadcast::Receiver<AnalysisEvent>,
+        wanted: impl Fn(&Value) -> bool,
+    ) -> contracts::api::analyses::AnalysisSummary {
+        let mut seen = Vec::new();
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), live.recv())
+                .await
+                .unwrap_or_else(|_| panic!("the stage was not published; seen {seen:?}"))
+                .expect("event");
+            if let AnalysisEvent::Analysis { summary } = event {
+                let stage = serde_json::to_value(&summary.state).expect("json")["stage"].clone();
+                if wanted(&stage) {
+                    return summary;
+                }
+                seen.push(stage);
+            }
+        }
+    }
+
+    /// Waits for an analysis event whose stage is `expected`.
+    async fn stage_event(
+        live: &mut tokio::sync::broadcast::Receiver<AnalysisEvent>,
+        expected: Value,
+    ) -> contracts::api::analyses::AnalysisSummary {
+        stage_where(live, |stage| *stage == expected).await
+    }
+
+    /// The stream follows every stage change, not only claims: a job's end, the next submit (waiting for the
+    /// runner) and a lease expiry without a new claim; the last event equals the REST read.
+    #[tokio::test]
+    async fn stage_changes_are_published_when_jobs_end_are_submitted_or_expire() {
+        let harness = Harness::new().await;
+        let db = &harness.state.db;
+        let analysis = seed_analysis(db).await.expect("seed");
+        let plan: Value =
+            serde_json::from_str(include_str!("../../../../fixtures/pr-482/agent/plan.json"))
+                .expect("fixture plan");
+        db.documents()
+            .put(analysis, DocumentKind::Plan, "", &plan, Utc::now())
+            .await
+            .expect("plan");
+        db.analyses()
+            .set_state(
+                analysis,
+                &AnalysisState::Running {
+                    done: 0,
+                    total: 5,
+                    stage: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("running");
+        let mut live = harness.state.progress.subscribe(analysis);
+        submit_followed(&harness, analysis, JobStage::PrContext, JobKind::PrContext).await;
+        stage_event(&mut live, json!({"kind": "pr_context", "started_at": null})).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        let target = path(RUNNER_RESULT.path, claimed.job);
+        let (status, body) = harness
+            .send(&target, Some(&claimed.token), succeeded(claimed.job, 1))
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        stage_event(&mut live, Value::Null).await;
+        let flow_1 = JobStage::Flow(FlowId("f1".to_owned()));
+        submit_followed(&harness, analysis, flow_1, JobKind::AnalyseFlow).await;
+        let waiting = json!({"kind": "flow", "flow": {"index": 1, "title": "Send an RPC request with retry"},
+            "started_at": null});
+        stage_event(&mut live, waiting.clone()).await;
+        // A claim whose lease ends at once: the follower requeues the job, no new claim follows.
+        let now = Utc::now();
+        db.jobs()
+            .claim(db::repo::jobs::ClaimParams {
+                credential_ids: &[CREDENTIAL.to_owned()],
+                job_token_hash: b"hash",
+                lease_until: now + TimeDelta::milliseconds(600),
+                now,
+            })
+            .await
+            .expect("claim")
+            .expect("claimed");
+        stage_where(&mut live, |stage| {
+            stage["kind"] == "flow" && stage["started_at"].is_string()
+        })
+        .await;
+        let last = stage_event(&mut live, waiting).await;
+        assert_eq!(
+            last,
+            db.analyses().summary(analysis).await.expect("summary"),
+            "the last event equals the REST read"
         );
     }
 

@@ -38,6 +38,7 @@ use server::auth::{lock_user, store_sign_in_tokens};
 use server::config::Config;
 use server::github::oauth::TokenGrant;
 use server::jobs::executor::{ExecutorError, JobExecutor, JobHandle, JobRequest, JobUpdate};
+use server::jobs::progress::ProgressHub;
 use server::jobs::queue::QueueExecutor;
 use server::secrets::sha256;
 use server::state::AppState;
@@ -524,11 +525,9 @@ impl Harness {
 
     /// The harness with the real job queue as executor; runner calls go through [`Harness::runner`].
     fn with_queue(self) -> Self {
-        let queue = Arc::new(QueueExecutor::new(self.state.db.clone()));
-        let state = AppState::new(
+        let state = AppState::with_queue(
             config(self._dir.path(), &self.github, None),
             self.state.db.clone(),
-            queue,
         );
         Self { state, ..self }
     }
@@ -1452,12 +1451,17 @@ async fn restart_with_failing_preparation_cancels_live_jobs() {
     let h = harness().await;
     // The head commit is not on the remote: preparing the analysis (fetch) fails at restart.
     let id = h.seed_analysis_at(Some("f".repeat(40))).await;
-    let queue: Arc<QueueExecutor> = Arc::new(QueueExecutor::new(h.state.db.clone()));
-    let state = AppState::new(
-        config(h._dir.path(), &h.github, None),
-        h.state.db.clone(),
-        queue.clone(),
-    );
+    let progress = ProgressHub::default();
+    let queue: Arc<QueueExecutor> =
+        Arc::new(QueueExecutor::new(h.state.db.clone(), progress.clone()));
+    let state = AppState {
+        progress,
+        ..AppState::new(
+            config(h._dir.path(), &h.github, None),
+            h.state.db.clone(),
+            queue.clone(),
+        )
+    };
     let pending = queue
         .submit(JobRequest {
             spec: db::repo::analyses::testing::job_spec(id, JobKind::Plan),

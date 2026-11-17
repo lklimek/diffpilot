@@ -14,6 +14,7 @@ use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 
 use crate::jobs::executor::{ExecutorError, JobExecutor, JobHandle, JobRequest, JobUpdate};
+use crate::jobs::progress::ProgressHub;
 
 /// How often a follower reads the job's state and new events.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -22,12 +23,13 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Clone, Debug)]
 pub struct QueueExecutor {
     db: Db,
+    progress: ProgressHub,
 }
 
 impl QueueExecutor {
-    /// An executor over the database queue.
-    pub fn new(db: Db) -> Self {
-        Self { db }
+    /// An executor over the database queue; its followers publish stage changes to `progress`.
+    pub fn new(db: Db, progress: ProgressHub) -> Self {
+        Self { db, progress }
     }
 }
 
@@ -74,7 +76,7 @@ impl JobExecutor for QueueExecutor {
 
     fn events(&self, handle: &JobHandle) -> BoxStream<'static, Result<JobUpdate, ExecutorError>> {
         stream::unfold(
-            Follower::new(self.db.clone(), handle.job_id),
+            Follower::new(self.db.clone(), self.progress.clone(), handle.job_id),
             Follower::next,
         )
         .boxed()
@@ -121,6 +123,7 @@ impl JobExecutor for QueueExecutor {
 /// Turns successive reads of one job into [`JobUpdate`]s.
 struct Follower {
     db: Db,
+    progress: ProgressHub,
     job: JobId,
     attempt: u32,
     seq: u32,
@@ -140,9 +143,10 @@ fn is_active(state: Option<JobState>) -> bool {
 }
 
 impl Follower {
-    fn new(db: Db, job: JobId) -> Self {
+    fn new(db: Db, progress: ProgressHub, job: JobId) -> Self {
         Self {
             db,
+            progress,
             job,
             attempt: 0,
             seq: 0,
@@ -197,6 +201,11 @@ impl Follower {
             events,
             credential_paused_until,
         } = snapshot;
+        // Every state change of the job (submit, claim, requeue, pause, resume, end) can change the analysis's
+        // stage: the one place it is published for all of them.
+        if self.last_state != Some(job.state) || job.attempt != self.attempt {
+            self.publish_stage(job.analysis_id).await;
+        }
         if self.last_state.is_none() && job.state.is_terminal() {
             return self.finish(job.result, job.github_access_granted);
         }
@@ -258,6 +267,14 @@ impl Follower {
             return self.finish(job.result, job.github_access_granted);
         }
         Ok(())
+    }
+
+    /// Publishes the analysis's summary with its current stage; a failure only delays it to the next event.
+    async fn publish_stage(&self, analysis: AnalysisId) {
+        if let Err(error) = self.progress.publish_analysis(&self.db, analysis).await {
+            tracing::warn!(%analysis, job = %self.job, ?error,
+                "the stage change of a job could not be published to the progress stream");
+        }
     }
 
     async fn snapshot(&self) -> Result<JobSnapshot, ExecutorError> {
@@ -323,7 +340,11 @@ mod tests {
     async fn setup() -> (Db, QueueExecutor, contracts::ids::AnalysisId) {
         let db = Db::in_memory().await.expect("db");
         let analysis = seed_analysis(&db).await.expect("seed");
-        (db.clone(), QueueExecutor::new(db), analysis)
+        (
+            db.clone(),
+            QueueExecutor::new(db, ProgressHub::default()),
+            analysis,
+        )
     }
 
     async fn claim(db: &Db, lease_secs: i64) {
@@ -783,7 +804,7 @@ mod tests {
                 }
             }
         });
-        let mut follower = Follower::new(db.clone(), job);
+        let mut follower = Follower::new(db.clone(), ProgressHub::default(), job);
         follower.between_reads = Some(hook);
         let mut updates = stream::unfold(follower, Follower::next).boxed();
         let mut seen = vec![next(&mut updates).await, next(&mut updates).await];
@@ -859,7 +880,7 @@ mod tests {
                 }
             }
         });
-        let mut follower = Follower::new(db.clone(), job);
+        let mut follower = Follower::new(db.clone(), ProgressHub::default(), job);
         follower.between_reads = Some(hook);
         let mut updates = stream::unfold(follower, Follower::next).boxed();
         assert!(matches!(next(&mut updates).await, JobUpdate::Event(e) if e.seq == 1));

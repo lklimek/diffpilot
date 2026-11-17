@@ -1,4 +1,6 @@
 import {
+  useEffect,
+  useRef,
   useId,
   useMemo,
   useState,
@@ -35,6 +37,8 @@ export interface LineRef {
 export interface CodeViewProps {
   /** Lines of the range with their deterministic gutter facts (changed, deleted, moved). */
   lines: LinesResponse;
+  /** Reveal this line when this range opens, without stealing keyboard focus. */
+  revealLine?: number;
   /** LLM annotations on these lines; only their ranges get the LLM bar. */
   annotations?: readonly Annotation[];
   /** The step's LLM risk band (`assessment.risk`), styling the bar (ADR-008); null = not rated. */
@@ -419,6 +423,7 @@ function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
  */
 export function CodeView({
   lines,
+  revealLine,
   annotations = [],
   band = null,
   kind,
@@ -435,6 +440,16 @@ export function CodeView({
   onDeleteComment,
 }: CodeViewProps) {
   const id = useId();
+  const view = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (revealLine === undefined) return;
+    const frame = requestAnimationFrame(() => {
+      view.current
+        ?.querySelector<HTMLElement>(`[data-line="${revealLine}"][data-side="${lines.side}"]`)
+        ?.scrollIntoView?.({ block: "center", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [revealLine, lines.path, lines.side, lines.from, lines.to]);
   // Lines (and `file`) the reader opened or closed; the rest follow `revealComment`.
   const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(new Map());
   // One highlight call (one budget) for the range and its removed blocks, the range first.
@@ -501,13 +516,14 @@ export function CodeView({
 
   return (
     <div
+      ref={view}
       role="region"
       aria-label={label}
       tabIndex={0}
       data-kind={kind}
       onKeyDown={moveLineFocus}
       style={{ "--ln": `${String(maxLine).length + 2}ch`, "--gutter": "46px" } as CSSProperties}
-      className={`overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${
+      className={`min-w-0 max-w-full overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${
         unchangedContext
           ? "bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]"
           : ""

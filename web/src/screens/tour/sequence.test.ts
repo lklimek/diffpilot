@@ -21,7 +21,10 @@ describe("tour sequence (brief §4.3)", () => {
 
   it("has one block per introduction and step", () => {
     const steps = tour.flows.reduce((n, f) => n + f.steps.length, 0);
-    expect(sequence).toHaveLength(1 + tour.flows.length + steps);
+    expect(sequence.filter((b) => b.block !== "quiet" && b.block !== "pending_review")).toHaveLength(
+      1 + tour.flows.length + steps,
+    );
+    expect(sequence.at(-1)).toEqual({ block: "pending_review" });
   });
 
   it("titles blocks for Previous / Next", () => {
@@ -50,8 +53,11 @@ describe("tour sequence (brief §4.3)", () => {
     expect(flowJump(tour, { block: "step", step_id: "f2.1" }, 1)).toEqual(intro("f3"));
     expect(flowJump(tour, { block: "step", step_id: "f2.1" }, -1)).toEqual(intro("f1"));
     expect(flowJump(tour, intro("f1"), -1)).toEqual(intro("f1"));
-    expect(flowJump(tour, intro("f5"), 1)).toEqual(intro("f5"));
+    expect(flowJump(tour, intro("f5"), 1)).toEqual({ block: "quiet", row: { row: "unexplained" } });
     expect(flowJump(tour, { block: "pending_review" }, -1)).toEqual(intro("f5"));
-    expect(flowJump(tour, { block: "quiet", row: { row: "moves" } }, 1)).toEqual(intro("f1"));
+    expect(flowJump(tour, { block: "quiet", row: { row: "moves" } }, 1)).toEqual({
+      block: "quiet",
+      row: { row: "not_analysed", category: tour.quiet.not_analysed[0]!.category },
+    });
   });
 });

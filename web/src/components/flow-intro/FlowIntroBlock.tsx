@@ -1,3 +1,4 @@
+import { CodeText } from "../section/CodeText";
 import { useId } from "react";
 import type { Flow, StepId } from "../../api/generated/types";
 import { ClassificationLabel, GroupLabel, RiskLabel } from "../badge/LlmLabel";
@@ -72,7 +73,9 @@ export function FlowIntroBlock({ flow, dependencies, ticked, onSetReviewed }: Fl
           {rows.map(([term, value]) => (
             <div key={term} className="contents">
               <dt className={TERM}>{term}</dt>
-              <dd className="m-0 max-w-[100ch]">{value}</dd>
+              <dd className="m-0 max-w-[100ch]">
+                <CodeText text={value} />
+              </dd>
             </div>
           ))}
         </dl>

@@ -75,7 +75,7 @@ describe("Tour layout (brief §4.3 columns)", () => {
   it("keeps a dragged width within the side minimum and the room of the centre", () => {
     expect(clampWidth("nav", 50, 1440, 400)).toBe(200);
     expect(clampWidth("inspector", 100, 1440, 300)).toBe(300);
-    expect(clampWidth("nav", 1200, 1440, 400)).toBe(1440 - 400 - 12 - 320);
+    expect(clampWidth("nav", 1200, 1440, 400)).toBe(1440 - 400 - 12 - 480);
   });
 
   it("drops stored widths that are not plausible (hostile or broken storage)", () => {
@@ -101,13 +101,18 @@ describe("Tour layout (brief §4.3 columns)", () => {
 
   it("restoring a hidden column after the other grew still leaves the centre its room", () => {
     const grown = { ...hideColumn(DEFAULT_LAYOUT, "inspector"), widths: { nav: 1000, inspector: null } };
-    expect(sideWidths(grown, 1440)).toEqual({ nav: 1000, inspector: STRIP_PX });
+    expect(sideWidths(grown, 1440)).toEqual({ nav: 1440 - 6 - MIN_MAIN_PX - STRIP_PX, inspector: STRIP_PX });
     const restored = sideWidths(showColumn(grown, "inspector"), 1440);
     expect(1440 - 12 - restored.nav - restored.inspector).toBeGreaterThanOrEqual(MIN_MAIN_PX);
   });
 
   it("uses the default widths when nothing is stored", () => {
-    expect(sideWidths(DEFAULT_LAYOUT, 1440)).toEqual({ nav: 270, inspector: 389 });
+    expect(sideWidths(DEFAULT_LAYOUT, 1440)).toEqual({ nav: 245, inspector: 400 });
     expect(sideWidths(DEFAULT_LAYOUT, 3440)).toEqual({ nav: 400, inspector: 620 });
   });
+});
+
+it("reserves readable code space and a wider inspector at 1280px", () => {
+  expect(sideWidths(DEFAULT_LAYOUT, 1280)).toEqual({ nav: 240, inspector: 400 });
+  expect(clampWidth("nav", 1200, 1280, 400)).toBe(1280 - 400 - 12 - 480);
 });

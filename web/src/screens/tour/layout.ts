@@ -35,7 +35,7 @@ export const STRIP_PX = 34;
 /** Smallest widths in px while resizing (the centre keeps `MIN_MAIN_PX`). */
 export const MIN_WIDTH_PX = { nav: 200, inspector: 300 } as const;
 /** Room the centre keeps whenever the window allows it. */
-export const MIN_MAIN_PX = 320;
+export const MIN_MAIN_PX = 480;
 const GUTTER_PX = 6;
 const GUTTERS_PX = 2 * GUTTER_PX;
 // Larger stored widths are not a preference but damage (no screen is that wide).
@@ -121,8 +121,8 @@ export function clampWidth(column: "nav" | "inspector", value: number, total: nu
 /** Default width of a side column in a workspace `total` px wide (mockup: 17 % and 27 %, clamped). */
 export function defaultWidth(column: "nav" | "inspector", total: number): number {
   return column === "nav"
-    ? Math.max(270, Math.min(400, Math.round(total * 0.17)))
-    : Math.max(370, Math.min(620, Math.round(total * 0.27)));
+    ? Math.max(240, Math.min(400, Math.round(total * 0.17)))
+    : Math.max(400, Math.min(620, Math.round(total * 0.27)));
 }
 
 /**

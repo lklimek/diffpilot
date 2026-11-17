@@ -397,3 +397,24 @@ describe.each(FIXTURE_STATES)("quiet blocks in state %s", (state) => {
     }
   });
 });
+
+it("does not offer code for generated ranges rejected by the lines endpoint", () => {
+  const generated = structuredClone(section(tour, "generated_mechanical"));
+  generated.items = [
+    {
+      file: "api/generated.pb.go",
+      side: "head",
+      ranges: [{ start_line: 1, end_line: 5 }],
+      rule: "generated file",
+      badge: "classified_by_path",
+    },
+  ];
+  render(
+    <NotAnalysedBlock
+      section={generated}
+      counters={tour.pr_context.facts.counters}
+      code={() => <div>code</div>}
+    />,
+  );
+  expect(screen.queryByRole("button", { name: /Show lines/ })).toBeNull();
+});

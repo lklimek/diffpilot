@@ -60,6 +60,7 @@ export interface CodeContext {
 
 interface LinesCodeProps {
   ctx: CodeContext;
+  revealLine?: number;
   lines: UseQueryResult<LinesResponse>;
   annotations?: readonly Annotation[];
   band?: RiskBand | null;

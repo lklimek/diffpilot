@@ -1,7 +1,6 @@
 //! Sign-in, session, CSRF and token tests through the public router against a wiremock GitHub.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -32,7 +31,6 @@ use super::{CSRF_HEADER, UserTokenError, lock_user, store_sign_in_tokens, user_a
 use crate::api;
 use crate::config::tests::test_config;
 use crate::github::oauth::TokenGrant;
-use crate::jobs::queue::QueueExecutor;
 use crate::secrets::{Aad, TokenCipher, sha256};
 use crate::state::AppState;
 use crate::test_support::logs::LogCapture;
@@ -78,10 +76,9 @@ async fn harness_on(db: Db, public_url: &str, trusted_proxies: &[&str]) -> Harne
         .collect();
     config.github.oauth_url = Url::parse(&github.uri()).expect("oauth url");
     config.github.api_url = Url::parse(&format!("{}/api", github.uri())).expect("api url");
-    let executor = Arc::new(QueueExecutor::new(db.clone()));
     Harness {
         github,
-        state: AppState::new(config, db, executor),
+        state: AppState::with_queue(config, db),
     }
 }
 
@@ -1354,11 +1351,7 @@ async fn unreadable_tokens_ask_to_sign_in_again() {
     config.github.oauth_url = h.state.config.github.oauth_url.clone();
     config.github.api_url = h.state.config.github.api_url.clone();
     config.secret_key = secrecy::SecretBox::new(Box::new([9u8; 32]));
-    let rekeyed = AppState::new(
-        config,
-        h.state.db.clone(),
-        Arc::new(QueueExecutor::new(h.state.db.clone())),
-    );
+    let rekeyed = AppState::with_queue(config, h.state.db.clone());
     let result = user_access_token(&rekeyed, &signed_in.user_id).await;
     assert!(
         matches!(result, Err(UserTokenError::SignInRequired)),

@@ -1,5 +1,6 @@
 // The Tour sequence (brief §4.3): PR context, then per flow its introduction and its steps.
-import type { BlockRef, Flow, RangeQuery, Step, StepId, Tour } from "../../api/generated/types";
+import { quietTitle } from "../../components/inspector/summaries";
+import type { BlockRef, Evidence, Flow, RangeQuery, Step, StepId, Tour } from "../../api/generated/types";
 
 /** Blocks walked by Previous / Next and `j` / `k`, in order. */
 export function buildSequence(tour: Tour): BlockRef[] {
@@ -9,6 +10,15 @@ export function buildSequence(tour: Tour): BlockRef[] {
       { block: "flow_intro", flow_id: flow.id },
       ...flow.steps.map((step): BlockRef => ({ block: "step", step_id: step.id })),
     ]),
+    ...(tour.quiet.unexplained.length ? [{ block: "quiet", row: { row: "unexplained" } } as const] : []),
+    ...(tour.quiet.moves.length ? [{ block: "quiet", row: { row: "moves" } } as const] : []),
+    ...tour.quiet.not_analysed
+      .filter((s) => s.items.length > 0)
+      .map((s): BlockRef => ({
+        block: "quiet",
+        row: { row: "not_analysed", category: s.category },
+      })),
+    { block: "pending_review" },
   ];
 }
 
@@ -40,7 +50,7 @@ export function blockTitle(tour: Tour, ref: BlockRef): string {
     case "pr_context":
       return "PR context";
     case "quiet":
-      return "Quiet row";
+      return quietTitle(ref.row);
     case "pending_review":
       return "Pending review";
   }
@@ -59,6 +69,15 @@ export function flowJump(tour: Tour, current: BlockRef, direction: 1 | -1): Bloc
         ? findStep(tour, current.step_id)?.flow.id
         : undefined;
   const at = tour.flows.findIndex((f) => f.id === flowId);
+  if (
+    direction > 0 &&
+    (at === tour.flows.length - 1 || current.block === "quiet" || current.block === "pending_review")
+  ) {
+    const sequence = buildSequence(tour);
+    const here = sequence.findIndex((b) => sameBlock(b, current));
+    if (current.block === "quiet" || current.block === "pending_review") return sequence[here + 1];
+    return sequence.find((b) => b.block === "quiet" || b.block === "pending_review");
+  }
   const index =
     at < 0
       ? direction > 0
@@ -76,3 +95,34 @@ export const stepQuery = (step: Step): RangeQuery => ({
   from: step.facts.range.start_line,
   to: step.facts.range.end_line,
 });
+
+/** Stable fragment for a block, independent of its displayed title. */
+export function blockFragment(block: BlockRef): string {
+  switch (block.block) {
+    case "step":
+      return encodeURIComponent(block.step_id);
+    case "flow_intro":
+      return encodeURIComponent(block.flow_id);
+    case "quiet":
+      return block.row.row === "not_analysed" ? block.row.category : block.row.row;
+    default:
+      return block.block;
+  }
+}
+
+/** Resolves only blocks present in this tour; malformed or stale fragments are ignored. */
+export function blockFromHash(tour: Tour, hash: string): BlockRef | undefined {
+  const name = hash.replace(/^#/, "").split("?")[0];
+  return buildSequence(tour).find((block) => blockFragment(block) === name);
+}
+
+/** Structured line destination in the fragment, never parsed from LLM prose. */
+export function evidenceFromHash(hash: string): Evidence | undefined {
+  const query = new URLSearchParams(hash.split("?")[1]);
+  const file = query.get("file");
+  const side = query.get("side");
+  const line = Number(query.get("line"));
+  return file && (side === "base" || side === "head") && Number.isSafeInteger(line) && line > 0
+    ? { file, side, line }
+    : undefined;
+}

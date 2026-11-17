@@ -35,7 +35,7 @@ interface WorkspaceProps {
 }
 
 const TITLE: Record<Column, string> = { nav: "Flows", main: "Review", inspector: "Inspector" };
-const DEFAULT_WIDTH = { nav: "var(--width-nav)", inspector: "clamp(370px, 27vw, 620px)" } as const;
+const DEFAULT_WIDTH = { nav: "clamp(240px, 17vw, 400px)", inspector: "clamp(400px, 27vw, 620px)" } as const;
 
 /** Width of the element in px, kept current on resize; 0 until measured. */
 function useWidth(ref: RefObject<HTMLElement | null>): number {
@@ -201,24 +201,38 @@ export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: W
       <Strip column={column} layout={layout} onChange={onChange} />
     );
   return (
-    <div ref={grid} className="grid min-h-0 flex-1" style={{ gridTemplateColumns: template }}>
+    <div
+      ref={grid}
+      className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] overflow-hidden"
+      style={{ gridTemplateColumns: template }}
+    >
       <nav
         data-column="nav"
         aria-label="Flows and steps"
-        className="relative flex min-h-0 min-w-0 flex-col border-r border-border bg-surface"
+        className="relative flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-border bg-surface"
       >
-        {body("nav", <div className="min-h-0 flex-1 overflow-auto p-3">{nav}</div>)}
+        {body(
+          "nav",
+          <div tabIndex={0} className="relative min-h-0 flex-1 overflow-auto overscroll-contain p-3">
+            {nav}
+          </div>,
+        )}
       </nav>
       {gutter("nav")}
       <main
         id="main"
         data-column="main"
         tabIndex={-1}
-        className="relative flex min-h-0 min-w-0 flex-col bg-bg"
+        className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-bg"
       >
         {body(
           "main",
-          <div ref={mainRef} className="min-h-0 flex-1 overflow-auto px-5 pt-3 pb-10">
+          <div
+            ref={mainRef}
+            tabIndex={0}
+            data-scroll-column
+            className="relative min-h-0 flex-1 overflow-auto overscroll-contain px-5 pt-3 pb-10"
+          >
             {main}
           </div>,
         )}
@@ -227,9 +241,9 @@ export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: W
       <aside
         data-column="inspector"
         aria-label="Inspector"
-        className="relative flex min-h-0 min-w-0 flex-col border-l border-border bg-surface"
+        className="relative flex min-h-0 min-w-0 flex-col overflow-hidden border-l border-border bg-surface"
       >
-        {body("inspector", <div className="min-h-0 flex-1">{inspector}</div>)}
+        {body("inspector", <div className="relative min-h-0 flex-1">{inspector}</div>)}
       </aside>
     </div>
   );

@@ -1,6 +1,8 @@
+import { CodeText } from "../section/CodeText";
 import type { ReactNode } from "react";
 import type {
   Annotation,
+  Evidence,
   Assessment,
   CallHierarchy,
   CallSite,
@@ -15,7 +17,7 @@ import { Collapsible } from "./Collapsible";
 import type { SectionControl } from "./sectionState";
 import { BasisNote, Empty, GithubLink } from "./text";
 
-type Sections = { sections: SectionControl };
+type Sections = { sections: SectionControl; onEvidence?: (e: Evidence) => void };
 
 const NO_QUESTIONS = "The LLM raised no questions. That is not evidence of no defects.";
 
@@ -38,6 +40,7 @@ export function DiffSection({ diff, ofRange, sections }: { diff?: ReactNode; ofR
 export function BehaviourSection({
   annotations,
   sections,
+  onEvidence,
 }: { annotations: readonly Annotation[] } & Sections) {
   const behaviour = annotations.filter((a) => a.type === "behaviour");
   return (
@@ -50,13 +53,17 @@ export function BehaviourSection({
             <li key={a.id}>
               <p className="text-[11px] text-muted">
                 {a.range.start_line === a.range.end_line ? "Line" : "Lines"} {rangeText(a.range)}{" "}
-                <BasisNote basis={a.basis} evidence={a.evidence} />
+                <BasisNote basis={a.basis} evidence={a.evidence} onEvidence={onEvidence} />
               </p>
               <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-2">
                 <dt className="font-bold text-muted">Was</dt>
-                <dd className="m-0">{a.was}</dd>
+                <dd className="m-0">
+                  <CodeText text={a.was} />
+                </dd>
                 <dt className="font-bold text-muted">Is</dt>
-                <dd className="m-0">{a.is}</dd>
+                <dd className="m-0">
+                  <CodeText text={a.is} />
+                </dd>
               </dl>
             </li>
           ))}
@@ -66,12 +73,19 @@ export function BehaviourSection({
   );
 }
 
-function TextList({ annotations }: { annotations: readonly Annotation[] }) {
+function TextList({
+  annotations,
+  onEvidence,
+}: {
+  annotations: readonly Annotation[];
+  onEvidence?: (e: Evidence) => void;
+}) {
   return (
     <ul className="m-0 list-disc pl-5">
       {annotations.map((a) => (
         <li key={a.id}>
-          {a.text} <BasisNote basis={a.basis} evidence={a.evidence} />
+          <CodeText text={a.text ?? ""} />{" "}
+          <BasisNote basis={a.basis} evidence={a.evidence} onEvidence={onEvidence} />
         </li>
       ))}
     </ul>
@@ -83,11 +97,14 @@ export function WhySection({
   why,
   notes,
   sections,
+  onEvidence,
 }: { why: string; notes: readonly Annotation[] } & Sections) {
   return (
     <Collapsible sectionKey="why" title="Why" tone="llm" sections={sections}>
-      <p className="font-semibold">{why}</p>
-      {notes.length > 0 && <TextList annotations={notes} />}
+      <div className="font-semibold">
+        <CodeText text={why} />
+      </div>
+      {notes.length > 0 && <TextList annotations={notes} onEvidence={onEvidence} />}
     </Collapsible>
   );
 }
@@ -96,13 +113,14 @@ export function WhySection({
 export function ConsequencesSection({
   annotations,
   sections,
+  onEvidence,
 }: { annotations: readonly Annotation[] } & Sections) {
   return (
     <Collapsible sectionKey="consequences" title="Consequences" tone="llm" sections={sections}>
       {annotations.length === 0 ? (
         <Empty>The LLM named no consequences here. That is not evidence that there are none.</Empty>
       ) : (
-        <TextList annotations={annotations} />
+        <TextList annotations={annotations} onEvidence={onEvidence} />
       )}
     </Collapsible>
   );
@@ -162,11 +180,19 @@ export function CallHierarchySection({
 }
 
 /** Section 6: LLM suspicions phrased as questions to check. */
-export function QuestionsSection({ questions, sections }: { questions: readonly Annotation[] } & Sections) {
+export function QuestionsSection({
+  questions,
+  sections,
+  onEvidence,
+}: { questions: readonly Annotation[] } & Sections) {
   const title = questions.length > 0 ? `Questions to check (${questions.length})` : "Questions to check";
   return (
     <Collapsible sectionKey="questions" title={title} tone="llm" sections={sections}>
-      {questions.length === 0 ? <p>{NO_QUESTIONS}</p> : <TextList annotations={questions} />}
+      {questions.length === 0 ? (
+        <p>{NO_QUESTIONS}</p>
+      ) : (
+        <TextList annotations={questions} onEvidence={onEvidence} />
+      )}
     </Collapsible>
   );
 }
@@ -185,7 +211,7 @@ export function AssessmentFields({ assessment }: { assessment: Assessment }) {
     [
       "Risk at system scale",
       <>
-        <RiskLabel risk={assessment.risk} /> {assessment.reason}
+        <RiskLabel risk={assessment.risk} /> <CodeText text={assessment.reason} />
       </>,
     ],
     ["Basis", assessment.basis_note],
@@ -199,7 +225,7 @@ export function AssessmentFields({ assessment }: { assessment: Assessment }) {
       {rows.map(([term, value]) => (
         <div key={term}>
           <dt className="mt-1.5 text-[10.5px] font-bold tracking-wide text-muted uppercase">{term}</dt>
-          <dd className="m-0">{value}</dd>
+          <dd className="m-0">{typeof value === "string" ? <CodeText text={value} /> : value}</dd>
         </div>
       ))}
     </dl>
@@ -248,7 +274,7 @@ function Thread({ thread }: { thread: GithubThread }) {
       </p>
       <p className="whitespace-pre-wrap">{thread.excerpt}</p>
       {thread.llm_status && (
-        <p>
+        <div>
           <Tooltip tip="LLM status from the analysis of this flow: whether the thread still applies to the final code. LLM analysis, not a GitHub state.">
             <span
               data-llm-label
@@ -258,8 +284,8 @@ function Thread({ thread }: { thread: GithubThread }) {
               {STATUS[thread.llm_status]}
             </span>
           </Tooltip>{" "}
-          {thread.llm_reason}
-        </p>
+          <CodeText text={thread.llm_reason ?? ""} />
+        </div>
       )}
       <p>
         <GithubLink url={thread.url} tip="Open the thread on GitHub (new tab)">
