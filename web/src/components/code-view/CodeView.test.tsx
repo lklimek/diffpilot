@@ -212,7 +212,7 @@ describe("CodeView", () => {
     render(<CodeView {...stepProps("f1.2", "missed")} />);
     const own = document.querySelectorAll("[data-mark=comment]");
     expect([...own].map(rowOf)).toEqual([96]);
-    expect(own[0]).toHaveTextContent("your comment");
+    expect(screen.getByRole("button", { name: "Your pending comment at line 96" })).toBe(own[0]);
   });
 
   it("ignores threads and comments of other files, sides or without a line", () => {
@@ -501,5 +501,123 @@ describe("CodeView", () => {
         unmount();
       }
     }
+  });
+});
+
+describe("CodeView: the reviewer's pending comments (owner: a comment must be findable again)", () => {
+  const mine = (over: Partial<PendingComment> = {}): PendingComment => ({
+    id: "c1",
+    thread_id: "t1",
+    path: "src/a.rs",
+    kind: "line",
+    side: "head",
+    start_line: null,
+    line: 2,
+    body: "Is the retry bounded?",
+    ...over,
+  });
+  const view = (comments: PendingComment[], extra: Partial<CodeViewProps> = {}) =>
+    render(<CodeView lines={plain(1, ["a", "b", "c"])} comments={comments} {...extra} />);
+
+  it("marks the line with a speech-bubble button named by the line, with a tooltip on what it does", () => {
+    view([mine()]);
+    const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
+    expect(rowOf(marker)).toBe(2);
+    expect(marker.querySelector("svg")).not.toBeNull();
+    expect(marker).toHaveAccessibleDescription(
+      "Your comment in your GitHub pending review; nothing is published. Opens its text here.",
+    );
+    expect(marker).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+  });
+
+  it("opens the comment's text right at the line by click, and closes it again", async () => {
+    const user = userEvent.setup();
+    view([mine()]);
+    const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
+    await user.click(marker);
+    expect(marker).toHaveAttribute("aria-expanded", "true");
+    const panel = screen.getByRole("list", { name: "Your pending comments at line 2" });
+    expect(marker).toHaveAttribute("aria-controls", panel.id);
+    expect(within(panel).getByText("Is the retry bounded?")).toBeVisible();
+    // Readable without edit mode; Edit and Delete only with their callbacks.
+    expect(within(panel).queryByRole("textbox")).toBeNull();
+    expect(within(panel).queryByRole("button")).toBeNull();
+    expectTrustWording(panel.textContent ?? "");
+    await user.click(marker);
+    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+  });
+
+  it("opens by keyboard: Enter and Space", async () => {
+    const user = userEvent.setup();
+    view([mine()]);
+    const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
+    marker.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByText("Is the retry bounded?")).toBeVisible();
+    await user.keyboard(" ");
+    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+  });
+
+  it("shows every comment of a line, with Edit and Delete acting on GitHub", async () => {
+    const user = userEvent.setup();
+    const onEditComment = vi.fn().mockResolvedValue(undefined);
+    const onDeleteComment = vi.fn().mockResolvedValue(undefined);
+    view([mine(), mine({ id: "c2", body: "And the backoff?" })], { onEditComment, onDeleteComment });
+    await user.click(screen.getByRole("button", { name: "Your 2 pending comments at line 2" }));
+    const panel = screen.getByRole("list", { name: "Your pending comments at line 2" });
+    expect(
+      within(panel)
+        .getAllByRole("listitem")
+        .map((li) => li.querySelector("p")?.textContent),
+    ).toEqual(["Is the retry bounded?", "And the backoff?"]);
+    await user.click(within(panel).getAllByRole("button", { name: /^Delete comment on/ })[1]!);
+    expect(onDeleteComment).toHaveBeenCalledWith("c2");
+    await user.click(within(panel).getAllByRole("button", { name: /^Edit comment on/ })[0]!);
+    await user.type(within(panel).getByRole("textbox"), "!");
+    await user.click(within(panel).getByRole("button", { name: "Save" }));
+    expect(onEditComment).toHaveBeenCalledWith("c1", "Is the retry bounded?!");
+  });
+
+  it("names a removed line and a multi-line comment by its last line", () => {
+    const { unmount } = render(
+      <CodeView
+        lines={plain(1, ["a", "b", "c"], { side: "base", changed: [3] })}
+        comments={[mine({ side: "base", line: 3 })]}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Your pending comment at removed line 3" }),
+    ).toBeInTheDocument();
+    unmount();
+    view([mine({ start_line: 1, line: 3 })]);
+    expect(rowOf(screen.getByRole("button", { name: "Your pending comment at lines 1–3" }))).toBe(3);
+  });
+
+  it("opens the comment asked for (from the pending-review list) without a click", () => {
+    view([mine(), mine({ id: "c9", line: 3, body: "Other" })], { revealComment: "c9" });
+    expect(screen.getByRole("button", { name: "Your pending comment at line 3" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByText("Other")).toBeVisible();
+    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+  });
+
+  it("puts a file comment on its linked line, or at the top of the file's code when that line is not shown", async () => {
+    const user = userEvent.setup();
+    const file = mine({ kind: "file", side: null, line: 2, body: "File-level note." });
+    const { unmount } = view([file]);
+    expect(rowOf(screen.getByRole("button", { name: "Your pending comment at line 2" }))).toBe(2);
+    unmount();
+    view([
+      { ...file, line: 40 },
+      { ...file, id: "f2", line: null, body: "No link." },
+    ]);
+    const top = screen.getByRole("button", { name: "Your 2 pending file comments on src/a.rs" });
+    expect(top.closest("[data-line]")).toBeNull();
+    await user.click(top);
+    expect(screen.getByText("File-level note.")).toBeVisible();
+    expect(screen.getByText("No link.")).toBeVisible();
   });
 });

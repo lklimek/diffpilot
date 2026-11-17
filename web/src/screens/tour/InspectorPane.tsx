@@ -90,6 +90,11 @@ export function InspectorPane(props: InspectorPaneProps) {
   const diff = step && (
     <DiffCode
       analysisId={analysisId}
+      comments={{
+        comments: pending.data?.comments ?? [],
+        onEditComment: comments.edit,
+        onDeleteComment: comments.remove,
+      }}
       query={
         annotation
           ? { ...stepQuery(step), from: annotation.range.start_line, to: annotation.range.end_line }

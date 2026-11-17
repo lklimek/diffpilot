@@ -1,6 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { DiffResponse } from "../../api/generated/types";
+import type { DiffResponse, PendingComment } from "../../api/generated/types";
 import { ClassicDiff } from "./ClassicDiff";
 import { createShikiHighlight, MAX_TOKENS, type Highlight, type ShikiModules } from "./highlight";
 
@@ -116,4 +117,26 @@ describe("ClassicDiff", () => {
     await act(async () => {});
     expect(document.querySelectorAll("[data-token]").length).toBeLessThanOrEqual(MAX_TOKENS);
   }, 30_000);
+
+  it("marks the reviewer's pending comments on their side's line number and opens them in place", async () => {
+    const comment: PendingComment = {
+      id: "c1",
+      thread_id: "t1",
+      path: "src/rpc/client.rs",
+      kind: "line",
+      side: "head",
+      start_line: null,
+      line: 96,
+      body: "Bounded?",
+    };
+    render(
+      <ClassicDiff diff={diff} comments={[comment, { ...comment, id: "c2", side: "base", line: 54 }]} />,
+    );
+    const head = screen.getByRole("button", { name: "Your pending comment at line 96" });
+    expect(head.closest("[data-diff-line]")).toHaveAttribute("data-diff-line", "context");
+    const base = screen.getByRole("button", { name: "Your pending comment at removed line 54" });
+    expect(base.closest("[data-diff-line]")).toHaveAttribute("data-diff-line", "removed");
+    await userEvent.click(head);
+    expect(screen.getByText("Bounded?")).toBeVisible();
+  });
 });
