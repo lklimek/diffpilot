@@ -1,5 +1,5 @@
 //! Wording rules of brief §1 over LLM text: banned phrases and percentages. Hits are warnings, never rejections
-//! (plan §12.4). The patterns mirror `scripts/check-wording.mjs` (UI text); a test keeps both in sync.
+//! (plan §12.4). The patterns mirror `scripts/wording-rules.json` (UI text checks); a test keeps both in sync.
 
 use std::sync::LazyLock;
 
@@ -11,9 +11,9 @@ use regex::{Regex, RegexBuilder};
 
 use super::WordingWarning;
 
-/// Banned phrases, matched case-insensitively (`WORDS` of `scripts/check-wording.mjs`).
+/// Banned phrases, matched case-insensitively (`words` of `scripts/wording-rules.json`).
 pub const BANNED_PHRASES: &str = r"\bno\s+risk|\bnothing\s+to\s+review\b|\bno\s+review\s+needed\b|\bnoise\b|\bverified\b|\bwas\s+wrong\b|\bconfidence\b";
-/// Percentages (`PERCENT` of `scripts/check-wording.mjs`; `{}` stands for an interpolated value there).
+/// Percentages (`percent` of `scripts/wording-rules.json`; `{}` stands for an interpolated value in sources).
 pub const PERCENTAGE: &str = r"(?:\d+|\{\})\s?%";
 
 static RULES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -236,25 +236,27 @@ mod tests {
         assert!(pr_context(&output).is_empty());
     }
 
-    /// Reads the regex literal `const NAME = /…/flags;` from `scripts/check-wording.mjs`.
-    fn mjs_pattern(source: &str, name: &str, flags: &str) -> String {
-        let start = format!("const {name} = /");
-        let line = source
-            .lines()
-            .find(|line| line.starts_with(&start))
-            .unwrap_or_else(|| panic!("{name} not found in check-wording.mjs"));
-        line.strip_prefix(&start)
-            .and_then(|rest| rest.strip_suffix(&format!("/{flags};")))
-            .unwrap_or_else(|| panic!("{name} is not a /…/{flags} literal: {line}"))
-            .to_owned()
-    }
-
     #[test]
-    fn wording_rules_match_check_wording_mjs() {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/check-wording.mjs");
-        let source = std::fs::read_to_string(script).expect("check-wording.mjs");
-        assert_eq!(mjs_pattern(&source, "WORDS", "giu"), BANNED_PHRASES);
-        assert_eq!(mjs_pattern(&source, "PERCENT", "gu"), PERCENTAGE);
+    fn wording_rules_match_the_shared_rules_file() {
+        let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+        let rules: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(scripts.join("wording-rules.json"))
+                .expect("wording-rules.json"),
+        )
+        .expect("wording-rules.json is JSON");
+        assert_eq!(rules["words"].as_str(), Some(BANNED_PHRASES), "`words`");
+        assert_eq!(rules["percent"].as_str(), Some(PERCENTAGE), "`percent`");
+        // Same flags as the source check: banned phrases case-insensitive, percentages as written.
+        let script =
+            std::fs::read_to_string(scripts.join("check-wording.mjs")).expect("check-wording.mjs");
+        assert!(
+            script.contains(r#"new RegExp(RULES.words, "giu")"#),
+            "WORDS flags"
+        );
+        assert!(
+            script.contains(r#"new RegExp(RULES.percent, "gu")"#),
+            "PERCENT flags"
+        );
         assert_eq!(RULES.len(), 2, "both patterns compile");
     }
 }
