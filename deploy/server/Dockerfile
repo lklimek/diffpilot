@@ -1,5 +1,5 @@
-# smart-review server image: web UI built with npm, embedded into the release binary (feature embed-ui; never
-# fake-provider). Runtime: Ubuntu with git (bare mirrors) and CA certificates, non-root uid 10010.
+# smart-review server image: web UI built with npm, embedded into the release binary (feature embed-ui only;
+# no test features). Runtime: Ubuntu with git (bare mirrors) and CA certificates, non-root uid 10010.
 #
 # Build (from the repository root): docker build -f deploy/server/Dockerfile -t smart-review-server .
 

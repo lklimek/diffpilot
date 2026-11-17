@@ -17,7 +17,7 @@ COPY --from=workspace rust-toolchain.toml ./
 RUN rustup show active-toolchain || rustup toolchain install
 COPY --from=workspace . /src
 # Jobs capped for the shared build host; the target cache is shared with the server image build. Release build
-# without features: never fake-provider.
+# without features: no test provider.
 ENV CARGO_BUILD_JOBS=2 \
     CARGO_TARGET_DIR=/build
 RUN --mount=type=cache,id=smart-review-cargo-registry,target=/root/.cargo/registry \

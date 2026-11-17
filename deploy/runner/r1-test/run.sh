@@ -7,6 +7,7 @@
 # Env:   R1_SKIP_BUILD=1          reuse the images built earlier
 #        R1_SKIP_CODEX=1          skip the real-Codex job
 #        R1_SUPERVISOR=rust       run the checks against the Rust smart-review-supervisor (default: python prototype)
+#        R1_TMP                   host scratch dir for the preflight's unbounded bind mount (default /data/tmp)
 # A second container (fault injection R1_FAULT_SWEEP_FAILS=1) proves that a failing sweep ends the container.
 # codex-homes is a size- and inode-capped tmpfs here: a stand-in for the bounded persistent filesystem of ADR-013.
 # The production image (target `runner`) is checked for toolchains and for its preflight, which must refuse an
@@ -26,7 +27,8 @@ failing="sr-r1-fail-${run_id}"
 state="sr-r1-state-${run_id}"
 preflight="sr-r1-preflight-${run_id}"
 pf_state="sr-r1-pfstate-${run_id}"
-host_dir="$(mktemp -d /data/tmp/sr-r1-ext4.XXXXXX)"
+mkdir -p "${R1_TMP:-/data/tmp}"
+host_dir="$(mktemp -d "${R1_TMP:-/data/tmp}/sr-r1-hostfs.XXXXXX")"
 
 cleanup() {
   docker rm -f "$container" "$failing" "$preflight" > /dev/null 2>&1 || true
@@ -98,13 +100,13 @@ run_preflight() {
 mkdir -m 0755 "$host_dir/homes"
 no_mount="$(run_preflight)"
 tmpfs_refused="$(run_preflight --tmpfs /var/lib/smart-review-runner/codex-homes:size=16m,uid=10001,mode=0711)"
-ext4_big="$(run_preflight --mount "type=bind,source=$host_dir/homes,target=/var/lib/smart-review-runner/codex-homes")"
+host_bind="$(run_preflight --mount "type=bind,source=$host_dir/homes,target=/var/lib/smart-review-runner/codex-homes")"
 tmpfs_allowed="$(run_preflight --tmpfs /var/lib/smart-review-runner/codex-homes:size=16m,nr_inodes=2048,uid=10001,mode=0711 \
   -e SR_CODEX_HOMES_ALLOW_TMPFS=1)"
 if [[ "$no_mount" == "78|"*"not a mount point"* && "$tmpfs_refused" == "78|"*"is a tmpfs"* \
-      && "$ext4_big" == "78|"*"more than SR_CODEX_HOMES_MAX_BYTES"* \
+      && "$host_bind" =~ ^78\|.*(more\ than\ SR_CODEX_HOMES_MAX_BYTES|on\ the\ state\ volume\'s\ filesystem|not\ the\ bounded) \
       && "$tmpfs_allowed" != 78"|"* && "$tmpfs_allowed" == *"is a bounded tmpfs filesystem"* ]]; then r=PASS; else r=FAIL; fi
-echo "CHECK runner_preflight_refuses_unbounded_codex_homes $r no mount: $no_mount; tmpfs: $tmpfs_refused; host ext4 bind: $ext4_big; tmpfs with the local-test switch (runner then stops on its config): $tmpfs_allowed" | tee -a "$ledger"
+echo "CHECK runner_preflight_refuses_unbounded_codex_homes $r no mount: $no_mount; tmpfs: $tmpfs_refused; host directory bind: $host_bind; tmpfs with the local-test switch (runner then stops on its config): $tmpfs_allowed" | tee -a "$ledger"
 docker rm -f "$preflight" > /dev/null 2>&1 || true
 
 docker volume create "$state" > /dev/null
