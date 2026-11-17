@@ -8,10 +8,10 @@ interface PendingReviewBlockProps {
   review: PendingReview;
   /** The pull request page on GitHub (`PrSummary.html_url`). */
   prUrl: string;
-  /** Replaces a comment's text on GitHub; no Edit button without it. */
-  onEdit?: (commentId: string, body: string) => void;
-  /** Deletes a comment on GitHub; no Delete button without it. */
-  onDelete?: (commentId: string) => void;
+  /** Replaces a comment's text on GitHub; resolves when saved, rejects with an `Error` to keep the draft. */
+  onEdit?: (commentId: string, body: string) => Promise<void>;
+  /** Deletes a comment on GitHub; resolves when deleted, rejects with an `Error` to show the failure. */
+  onDelete?: (commentId: string) => Promise<void>;
 }
 
 const BUTTON =
@@ -27,13 +27,32 @@ function location(c: PendingComment): string {
   return `${c.path}:${lines}${c.side === "base" ? " (removed line)" : ""}`;
 }
 
+const reason = (error: unknown) => (error instanceof Error ? error.message : "Something went wrong.");
+
 function Comment({
   comment,
   onEdit,
   onDelete,
 }: { comment: PendingComment } & Partial<PendingReviewBlockProps>) {
   const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"saving" | "deleting" | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const where = location(comment);
+
+  // One request at a time; the editor closes only after GitHub confirmed the save.
+  const run = async (kind: "saving" | "deleting", request: () => Promise<void>, failed: string) => {
+    setBusy(kind);
+    setError(null);
+    try {
+      await request();
+      if (kind === "saving") setDraft(null);
+    } catch (e) {
+      setError(`${failed}: ${reason(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <li className="grid gap-1 rounded-md border border-border bg-surface-2 px-2.5 py-2">
       <code className="text-xs font-semibold">{where}</code>
@@ -44,9 +63,15 @@ function Comment({
           aria-label={`Edit comment on ${where}`}
           value={draft}
           rows={3}
+          readOnly={busy !== null}
           onChange={(e) => setDraft(e.target.value)}
           className="w-full rounded-md border border-border bg-surface px-2 py-1 font-sans"
         />
+      )}
+      {error && (
+        <p role="alert" className="text-xs text-high">
+          {error}
+        </p>
       )}
       <div className="flex gap-2">
         {draft === null ? (
@@ -56,7 +81,11 @@ function Comment({
                 type="button"
                 className={BUTTON}
                 aria-label={`Edit comment on ${where}`}
-                onClick={() => setDraft(comment.body)}
+                disabled={busy !== null}
+                onClick={() => {
+                  setError(null);
+                  setDraft(comment.body);
+                }}
               >
                 Edit
               </button>
@@ -66,9 +95,10 @@ function Comment({
                 type="button"
                 className={BUTTON}
                 aria-label={`Delete comment on ${where}`}
-                onClick={() => onDelete(comment.id)}
+                disabled={busy !== null}
+                onClick={() => void run("deleting", () => onDelete(comment.id), "Not deleted")}
               >
-                Delete
+                {busy === "deleting" ? "Deleting…" : "Delete"}
               </button>
             )}
           </>
@@ -77,15 +107,20 @@ function Comment({
             <button
               type="button"
               className={BUTTON}
-              disabled={draft.trim() === ""}
+              disabled={busy !== null || draft.trim() === ""}
+              onClick={() => onEdit && void run("saving", () => onEdit(comment.id, draft), "Not saved")}
+            >
+              {busy === "saving" ? "Saving…" : "Save"}
+            </button>
+            <button
+              type="button"
+              className={BUTTON}
+              disabled={busy !== null}
               onClick={() => {
-                onEdit?.(comment.id, draft);
+                setError(null);
                 setDraft(null);
               }}
             >
-              Save
-            </button>
-            <button type="button" className={BUTTON} onClick={() => setDraft(null)}>
               Cancel
             </button>
           </>

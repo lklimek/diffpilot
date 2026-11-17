@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { PendingReview, Tour } from "../../api/generated/types";
@@ -32,6 +32,18 @@ describe("UnexplainedBlock", () => {
       />,
     );
     expect(screen.getByText("removed line 3 (base commit)")).toBeInTheDocument();
+  });
+
+  it("counts a file with base and head entries once", () => {
+    render(
+      <UnexplainedBlock
+        items={[
+          { file: "src/a.rs", side: "base", ranges: [{ start_line: 3, end_line: 3 }] },
+          { file: "src/a.rs", side: "head", ranges: [{ start_line: 4, end_line: 5 }] },
+        ]}
+      />,
+    );
+    expect(screen.getByRole("article")).toHaveTextContent("3 changed lines in 1 file were not assigned");
   });
 
   it("is never empty", () => {
@@ -131,30 +143,63 @@ describe("PendingReviewBlock", () => {
     expect(screen.getByRole("link", { name: /Finish on GitHub/ })).toHaveAttribute("href", `${PR_URL}/files`);
   });
 
-  it("edits and deletes through callbacks", async () => {
-    const onEdit = vi.fn();
-    const onDelete = vi.fn();
-    render(<PendingReviewBlock review={missed} prUrl={PR_URL} onEdit={onEdit} onDelete={onDelete} />);
-    await userEvent.click(screen.getByRole("button", { name: "Edit comment on src/rpc/client.rs:96" }));
-    const field = screen.getByRole("textbox", { name: "Edit comment on src/rpc/client.rs:96" });
+  const deferred = () => {
+    let resolve!: () => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<void>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+  const WHERE = "src/rpc/client.rs:96";
+
+  it("closes the editor only after the save succeeded and blocks a second save meanwhile", async () => {
+    const save = deferred();
+    const onEdit = vi.fn(() => save.promise);
+    render(<PendingReviewBlock review={missed} prUrl={PR_URL} onEdit={onEdit} />);
+    await userEvent.click(screen.getByRole("button", { name: `Edit comment on ${WHERE}` }));
+    const field = screen.getByRole("textbox", { name: `Edit comment on ${WHERE}` });
     expect(field).toHaveValue(missed.comments[0]!.body);
     await userEvent.clear(field);
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     await userEvent.type(field, "Shorter.");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onEdit).toHaveBeenCalledWith("PRRC_fixture482_c1", "Shorter.");
-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Delete comment on src/rpc/client.rs:96" }));
-    expect(onDelete).toHaveBeenCalledWith("PRRC_fixture482_c1");
+    expect(screen.getByRole("textbox")).toHaveValue("Shorter.");
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Saving…" }));
+    expect(onEdit).toHaveBeenCalledOnce();
+    save.resolve();
+    await waitFor(() => expect(screen.queryByRole("textbox")).not.toBeInTheDocument());
   });
 
-  it("cancels an edit without calling back", async () => {
-    const onEdit = vi.fn();
+  it("keeps the typed text and shows the error when the save fails", async () => {
+    const onEdit = vi.fn(() => Promise.reject(new Error("The pull request head changed.")));
     render(<PendingReviewBlock review={missed} prUrl={PR_URL} onEdit={onEdit} />);
-    await userEvent.click(screen.getByRole("button", { name: /^Edit comment/ }));
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(onEdit).not.toHaveBeenCalled();
-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: `Edit comment on ${WHERE}` }));
+    const field = screen.getByRole("textbox");
+    await userEvent.clear(field);
+    await userEvent.type(field, "My new text.");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Not saved: The pull request head changed.");
+    expect(screen.getByRole("textbox")).toHaveValue("My new text.");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("deletes through the callback, blocks a second delete and shows a failure", async () => {
+    const del = deferred();
+    const onDelete = vi.fn(() => del.promise);
+    render(<PendingReviewBlock review={missed} prUrl={PR_URL} onDelete={onDelete} />);
+    const button = screen.getByRole("button", { name: `Delete comment on ${WHERE}` });
+    await userEvent.click(button);
+    expect(onDelete).toHaveBeenCalledWith("PRRC_fixture482_c1");
+    expect(button).toBeDisabled();
+    await userEvent.click(button);
+    expect(onDelete).toHaveBeenCalledOnce();
+    del.reject(new Error("GitHub is not reachable."));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Not deleted: GitHub is not reachable.");
+    expect(button).toBeEnabled();
   });
 
   it("is read-only without callbacks", () => {

@@ -108,6 +108,21 @@ describe("NavList", () => {
     ]);
   });
 
+  it("counts an unexplained file with base and head entries once", () => {
+    renderNav({
+      quiet: {
+        ...tour.quiet,
+        unexplained: [
+          { file: "src/a.rs", side: "base", ranges: [{ start_line: 3, end_line: 3 }] },
+          { file: "src/a.rs", side: "head", ranges: [{ start_line: 4, end_line: 4 }] },
+        ],
+      },
+    });
+    expect(screen.getByRole("button", { name: /^Unexplained/ })).toHaveTextContent(
+      "2 changed lines in 1 file",
+    );
+  });
+
   it("omits quiet rows that have no material", () => {
     renderNav({ quiet: { unexplained: [], moves: [], not_analysed: [] } });
     expect(screen.queryByRole("list", { name: "Quiet rows" })).not.toBeInTheDocument();

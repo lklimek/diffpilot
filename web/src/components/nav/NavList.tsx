@@ -2,7 +2,7 @@ import { useId, type ReactNode } from "react";
 import type { BlockRef, Flow, QuietRowRef, QuietRows, StepId } from "../../api/generated/types";
 import { GroupLabel, RiskLabel } from "../badge/LlmLabel";
 import { isFlowReviewed } from "../flow-intro/progress";
-import { NOT_ANALYSED_LABEL, lineCount, plural } from "../quiet/labels";
+import { NOT_ANALYSED_LABEL, fileCount, lineCount, plural } from "../quiet/labels";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface NavListProps {
@@ -161,7 +161,7 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
               >
                 <strong>Unexplained — read these yourself</strong>
                 <small className={SMALL}>
-                  {plural(unexplainedLines, "changed line")} in {plural(quiet.unexplained.length, "file")}
+                  {plural(unexplainedLines, "changed line")} in {plural(fileCount(quiet.unexplained), "file")}
                 </small>
               </QuietRow>
             )}

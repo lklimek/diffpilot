@@ -112,17 +112,30 @@ describe("StepBlock", () => {
     expect(screen.queryByRole("button", { name: /Mark reviewed/ })).not.toBeInTheDocument();
   });
 
-  it("draws a context step's code with a distinct border style and says it is unchanged (UX-003)", () => {
+  it("draws a context step's code with a distinct border style, as the LLM's classification (UX-003)", () => {
     const { unmount } = render(<StepBlock step={stepOf(tour, "f1.1")} code={<p>ctx code</p>} />);
     const wrap = screen.getByText("ctx code").closest("[data-code-slot]")!;
     expect(wrap).toHaveAttribute("data-context");
     expect(wrap).toHaveClass("border-dotted");
-    expect(wrap).toHaveTextContent("Context: unchanged code that connects the flow; no changed lines");
+    expect(wrap).toHaveTextContent(
+      "Context (LLM classification): connects the flow. No changed lines in this range (from the diff).",
+    );
     unmount();
     render(<StepBlock step={stepOf(tour, "f1.5")} code={<p>code</p>} />);
     const plain = screen.getByText("code").closest("[data-code-slot]")!;
     expect(plain).not.toHaveAttribute("data-context");
-    expect(plain).not.toHaveTextContent("Context:");
+    expect(plain).not.toHaveTextContent("Context");
+  });
+
+  it("never calls a context step unchanged when the diff changed lines in it", () => {
+    const step = structuredClone(stepOf(tour, "f1.1"));
+    step.facts.changed_lines = [{ start_line: 129, end_line: 129 }];
+    render(<StepBlock step={step} code={<p>ctx code</p>} />);
+    const wrap = screen.getByText("ctx code").closest("[data-code-slot]")!;
+    expect(wrap).not.toHaveTextContent(/unchanged|No changed lines/i);
+    expect(wrap).toHaveTextContent(
+      "Context (LLM classification): connects the flow. 1 changed line in this range (from the diff).",
+    );
   });
 
   it("summarises its remark markers: LLM remarks, GitHub threads, own comments", () => {

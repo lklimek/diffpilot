@@ -6,6 +6,7 @@ import { useLines, useMe, useReviewState, useTour } from "../../api/queries";
 import { BlockNav } from "../../components/block-nav/BlockNav";
 import { CodeView } from "../../components/code-view/CodeView";
 import { FlowIntroBlock } from "../../components/flow-intro/FlowIntroBlock";
+import { shortcutAction } from "../../components/help/shortcuts";
 import { NavList } from "../../components/nav/NavList";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
 import { StatusMessage } from "../../components/status/StatusMessage";
@@ -75,8 +76,9 @@ export function TourScreen() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isTyping(event)) return;
-      if (event.key === "j") go(next);
-      else if (event.key === "k") go(previous);
+      const action = shortcutAction(event.key);
+      if (action === "next_block") go(next);
+      else if (action === "previous_block") go(previous);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);

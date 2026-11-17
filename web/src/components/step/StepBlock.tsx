@@ -129,9 +129,9 @@ function CodeSlot({ step, changed, children }: { step: Step; changed: number; ch
       className={`rounded-md border-l-[5px] border-dotted border-mv-bd ${HATCH}`}
     >
       <p className="px-2 py-0.5 text-[11px] font-semibold text-muted">
-        Context: unchanged code that connects the flow;{" "}
-        {changed === 0 ? "no changed lines" : `${changed} changed ${changed === 1 ? "line" : "lines"}`} (from
-        the diff)
+        Context (LLM classification): connects the flow.{" "}
+        {changed === 0 ? "No changed lines" : `${changed} changed ${changed === 1 ? "line" : "lines"}`} in
+        this range (from the diff).
       </p>
       {children}
     </div>

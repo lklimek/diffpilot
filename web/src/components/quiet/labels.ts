@@ -11,5 +11,9 @@ export const NOT_ANALYSED_LABEL: Record<NotAnalysedCategory, string> = {
 export const lineCount = (ranges: readonly LineRange[]): number =>
   ranges.reduce((n, r) => n + r.end_line - r.start_line + 1, 0);
 
+/** Number of distinct paths (a file can have a base and a head entry). */
+export const fileCount = (items: readonly { file: string }[]): number =>
+  new Set(items.map((i) => i.file)).size;
+
 /** `n thing` or `n things`. */
 export const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;

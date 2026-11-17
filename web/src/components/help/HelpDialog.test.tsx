@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
 import { HelpDialog } from "./HelpDialog";
+import { SHORTCUTS, shortcutAction } from "./shortcuts";
 
 describe("HelpDialog", () => {
   it("renders nothing while closed", () => {
@@ -19,8 +20,10 @@ describe("HelpDialog", () => {
       .getAllByRole("row")
       .map((row) => row.textContent);
     expect(keys).toEqual([
-      "j kprevious / next block (flow introduction or step)",
-      "n pnext / previous flow",
+      "jnext block (flow introduction or step)",
+      "kprevious block",
+      "nnext flow",
+      "pprevious flow",
       "xtick the current step as reviewed",
       "dshow / hide old code of the current step",
       "ccomment on the current line",
@@ -91,6 +94,13 @@ describe("HelpDialog", () => {
       </>,
     );
     expect(trigger).toHaveFocus();
+  });
+
+  it("describes each key with the action the tour's key map runs for it", () => {
+    for (const { key, action } of SHORTCUTS) expect(shortcutAction(key)).toBe(action);
+    expect(shortcutAction("j")).toBe("next_block");
+    expect(shortcutAction("k")).toBe("previous_block");
+    expect(shortcutAction("q")).toBeUndefined();
   });
 
   it("keeps the wording rules", () => {

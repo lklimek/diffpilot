@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { FileRanges } from "../../api/generated/types";
 import { rangeText } from "../section/format";
-import { lineCount, plural } from "./labels";
+import { fileCount, lineCount, plural } from "./labels";
 import { QuietCard } from "./QuietCard";
 
 interface UnexplainedBlockProps {
@@ -29,7 +29,7 @@ export function UnexplainedBlock({ items, code }: UnexplainedBlockProps) {
         <>
           <p>
             The analysis did not explain these lines: {plural(lines, "changed line")} in{" "}
-            {plural(items.length, "file")} were not assigned to any flow. Read them yourself.
+            {plural(fileCount(items), "file")} were not assigned to any flow. Read them yourself.
           </p>
           <ul className="m-0 grid list-none gap-3 p-0">
             {items.map((item) => (

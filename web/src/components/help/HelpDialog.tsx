@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { SHORTCUTS } from "./shortcuts";
 
 interface HelpDialogProps {
   /** Whether the dialog is shown. */
@@ -6,17 +7,6 @@ interface HelpDialogProps {
   /** Called on Close, Escape or a click outside. */
   onClose: () => void;
 }
-
-const SHORTCUTS: [string[], string][] = [
-  [["j", "k"], "previous / next block (flow introduction or step)"],
-  [["n", "p"], "next / previous flow"],
-  [["x"], "tick the current step as reviewed"],
-  [["d"], "show / hide old code of the current step"],
-  [["c"], "comment on the current line"],
-  [["a"], "ask about the current step"],
-  [["?"], "this help"],
-  [["Esc"], "close"],
-];
 
 const SWATCH = "mr-1.5 inline-block h-3.5 w-4 align-middle";
 
@@ -107,19 +97,14 @@ export function HelpDialog({ open, onClose }: HelpDialogProps) {
         </h2>
         <table aria-labelledby={titleId} className="w-full border-collapse">
           <tbody>
-            {SHORTCUTS.map(([keys, what]) => (
-              <tr key={what} className="border-b border-border last:border-0">
+            {SHORTCUTS.map(({ label, text }) => (
+              <tr key={label} className="border-b border-border last:border-0">
                 <td className="py-1 pr-3 whitespace-nowrap">
-                  {keys.map((k, i) => (
-                    <span key={k}>
-                      {i > 0 && " "}
-                      <kbd className="rounded border border-b-2 border-border px-1 font-mono text-xs">
-                        {k}
-                      </kbd>
-                    </span>
-                  ))}
+                  <kbd className="rounded border border-b-2 border-border px-1 font-mono text-xs">
+                    {label}
+                  </kbd>
                 </td>
-                <td className="py-1">{what}</td>
+                <td className="py-1">{text}</td>
               </tr>
             ))}
           </tbody>
