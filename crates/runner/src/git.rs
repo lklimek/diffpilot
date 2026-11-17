@@ -178,6 +178,10 @@ pub async fn sync_ref(checkout: &Path, url: &str, reference: &str) -> Result<Str
             status: output.status,
         });
     }
+    // A ref given as a commit id is a pin: the checkout must be exactly that commit.
+    if is_object_id(reference) && !commit.eq_ignore_ascii_case(reference) {
+        return Err(GitError::InvalidCommit(reference.to_owned()));
+    }
     Ok(commit)
 }
 

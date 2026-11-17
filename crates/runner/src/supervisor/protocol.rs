@@ -56,6 +56,11 @@ pub enum Op {
         /// `<state>/codex-homes/<key>` or `<work>/<key>/{home,tmp}`.
         path: String,
     },
+    /// Take a per-job directory the agent could not empty away from it: chown to the runner (fail closed).
+    Quarantine {
+        /// The directory, same forms as `handover`.
+        path: String,
+    },
     /// SIGKILL every agent-uid process; the supervisor exits non-zero if any survives the deadline.
     Sweep,
     /// A signal to the agent members of a spawned process's group (each through a pidfd).
@@ -77,7 +82,7 @@ pub struct Reply {
     /// `spawn`: the new pid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<i32>,
-    /// `wait`: exit code, or 128 + signal.
+    /// `wait`: exit code, or the negated signal number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<i32>,
     /// `sweep`: rounds needed.

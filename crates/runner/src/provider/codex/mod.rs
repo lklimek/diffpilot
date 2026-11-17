@@ -134,7 +134,19 @@ impl CodexProvider {
         call: &ProviderCall,
         events: &mpsc::Sender<ProviderEvent>,
     ) -> Result<ProviderOutcome, ProviderError> {
-        let result = self.call_steps(resume, call, events).await;
+        let result = match &self.settings.isolation {
+            Some(isolation) if !isolation.healthy() => {
+                tracing::error!(job = %call.job_id, "an earlier agent directory stays reachable by the agent; the job is refused");
+                return Err(ProviderError::Io(io::Error::other(
+                    "process isolation is compromised by a leftover agent directory",
+                )));
+            }
+            Some(_) => self.call_steps(resume, call, events).await,
+            None => {
+                tracing::warn!(job = %call.job_id, "process isolation off (development): Codex runs as the runner's uid");
+                self.call_steps(resume, call, events).await
+            }
+        };
         if let Some(isolation) = &self.settings.isolation {
             isolation.leave(call).await;
         }
@@ -236,9 +248,19 @@ impl CodexProvider {
                 .await
                 .map_err(|error| {
                     tracing::warn!(job = %call.job_id, %error, "the compaction turn failed; the session counts as lost");
+                    error
                 })
-                .ok(),
-            None => None,
+                .map(Some),
+            None => Ok(None),
+        };
+        // A credential the compaction turn left in an unknown state is never trusted.
+        let compacted = match compacted {
+            Err(ProviderError::CredentialUnusable) => {
+                credential.settle(true);
+                return Err(ProviderError::CredentialUnusable);
+            }
+            Ok(usage) => usage,
+            Err(_) => None,
         };
         let certain = credential.settle(false);
         let session_id = match (compacted, &thread) {
@@ -289,6 +311,19 @@ impl CodexProvider {
         self.write_config(call, Purpose::Compaction)?;
         if let Some(isolation) = &self.settings.isolation {
             isolation.push_config(call).await?;
+            // The supervised run stops itself at its deadline (SIGTERM, grace, sweep, copy-back); dropping
+            // it would leave the agent running.
+            let (stream, exit) = self
+                .exec(
+                    call,
+                    Invocation::Compaction(thread),
+                    COMPACTION_PROMPT,
+                    credential,
+                    None,
+                    Instant::now() + budget,
+                )
+                .await?;
+            return stream.finish_turn(exit);
         }
         let (stream, exit) = timeout(
             budget,
@@ -480,7 +515,7 @@ impl CodexProvider {
             && !tail.is_empty()
             && credential.watch()
         {
-            tracing::debug!(job = %call.job_id, stderr = %credential.scrubber().text(&tail), "Codex stderr tail");
+            tracing::debug!(job = %call.job_id, stderr = %credential.scrubber().text_and_token_shapes(&tail), "Codex stderr tail");
         }
         if parsed.unparsed_lines() > 0 || lines.skipped > 0 {
             tracing::warn!(
@@ -792,7 +827,7 @@ async fn forward(
             seq: 0,
             at: Utc::now(),
             activity,
-            summary: credential.scrubber().text(&summary),
+            summary: credential.scrubber().text_and_token_shapes(&summary),
         };
         // A closed receiver means execute stopped listening; Codex keeps running until it is stopped.
         if let Some(events) = events {

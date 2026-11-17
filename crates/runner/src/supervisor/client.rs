@@ -192,7 +192,7 @@ impl Supervisor {
         })
     }
 
-    /// Waits for the spawned `pid` to exit: its exit code, or 128 + signal.
+    /// Waits for the spawned `pid` to exit: its exit code, or the negated signal number.
     pub async fn wait(&self, pid: i32) -> Result<i32, SupervisorError> {
         let reply = self
             .request("wait", Op::Wait { pid }, Vec::new(), Duration::MAX)
@@ -212,6 +212,23 @@ impl Supervisor {
         )
         .await
         .map(drop)
+    }
+
+    /// Takes the leftover per-job directory `path` away from the agent: the supervisor makes the runner its
+    /// owner, then the runner sets mode 0700 so the agent uid can no longer enter it.
+    pub async fn quarantine(&self, path: &Path) -> Result<(), SupervisorError> {
+        self.request(
+            "quarantine",
+            Op::Quarantine {
+                path: path.to_string_lossy().into_owned(),
+            },
+            Vec::new(),
+            REQUEST_DEADLINE,
+        )
+        .await?;
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        Ok(())
     }
 
     /// Kills every agent process; the supervisor exits (failing closed) if any survives.

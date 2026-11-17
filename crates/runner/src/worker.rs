@@ -253,6 +253,8 @@ impl Worker {
 
     /// One claim; runs the claimed job to its end. `None` when nothing was runnable.
     pub async fn poll_once(&mut self) -> Result<Option<JobEnd>, ClientError> {
+        // The previous attempt (and its credential copy-back) is over before the next claim.
+        self.executor.settled().await;
         let request = ClaimRequest {
             runner_id: self.runner_id.clone(),
             credentials: vec![CredentialStatus {
@@ -396,6 +398,8 @@ impl Worker {
                 internal_result(job, attempt)
             }
         };
+        // A detached attempt finishes its stop, copy-back and cleanup before anything terminal is posted.
+        self.executor.settled().await;
         // Every event before the result; a stale attempt or the fence here still suppresses the result.
         if let Err(stop) = run.flush_events().await {
             return stopped_end(stop, job, attempt);

@@ -100,9 +100,31 @@ fn sweep_failure_terminates_container() {
     let code = supervise(
         "sweep_fails",
         dir.path(),
-        &[("SR_SUPERVISOR_SWEEP_DEADLINE_MS", "0")],
+        &[
+            ("R1_FAULT_SWEEP_FAILS", "1"),
+            ("SR_SUPERVISOR_TEST_FAULTS", "1"),
+        ],
     );
     assert_eq!(code, 70);
+}
+
+#[test]
+fn fault_injection_and_tiny_sweep_deadlines_are_refused() {
+    let dir = state();
+    for env in [
+        &[("R1_FAULT_SWEEP_FAILS", "1")][..],
+        &[("SR_SUPERVISOR_SWEEP_DEADLINE_MS", "0")],
+    ] {
+        let mut command = Command::new(SUPERVISOR);
+        command
+            .args(["serve", "--", "/bin/true"])
+            .env("SR_SUPERVISOR_UNPRIVILEGED", "1")
+            .env("SR_RUNNER_STATE_DIR", dir.path());
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        assert_eq!(command.status().unwrap().code(), Some(71), "{env:?}");
+    }
 }
 
 #[test]
@@ -225,7 +247,7 @@ fn scenario_runner() {
                     Err(SupervisorError::Refused { .. })
                 ));
                 supervisor.sweep().await.unwrap();
-                assert_eq!(supervisor.wait(agent.pid).await.unwrap(), 128 + 9);
+                assert_eq!(supervisor.wait(agent.pid).await.unwrap(), -9);
                 assert!(supervisor.list(&home).await.unwrap().is_empty());
             }
             "hostile" => {
@@ -407,7 +429,7 @@ async fn signal(supervisor: &Supervisor) {
         Err(SupervisorError::Refused { .. })
     ));
     supervisor.signal(agent.pid, 15).await.expect("own agent");
-    assert_eq!(supervisor.wait(agent.pid).await.unwrap(), 128 + 15);
+    assert_eq!(supervisor.wait(agent.pid).await.unwrap(), -15);
 }
 
 /// The helper deadline is short here; the run must end in `Deadline` after a sweep, not hang.

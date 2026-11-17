@@ -32,7 +32,7 @@
 # analysis ends, fails, hits the cap or the script exits. Environment of the runner:
 #   SR_RUNNER_SERVER_URL=http://172.31.250.1:<port>  SR_RUNNER_SECRET (this run's, via the docker CLI environment)
 #   SR_RUNNER_ID=smoke-runner  SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner  SR_RUNNER_PROVIDER=<provider>
-#   SR_RUNNER_CODEX_BIN=/usr/local/bin/codex  RUST_LOG=info  NO_COLOR=1
+#   SR_RUNNER_CODEX_BIN=/usr/local/bin/codex  RUST_LOG=info  NO_COLOR=1  SR_RUNNER_DEV_NO_ISOLATION=1 (no supervisor)
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -131,7 +131,7 @@ docker run -d --name "$container" --init --restart no \
   --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" \
   -e SR_RUNNER_SERVER_URL="http://$gateway:$runner_port" -e SR_RUNNER_SECRET -e SR_RUNNER_ID=smoke-runner \
   -e SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner -e SR_RUNNER_PROVIDER="$provider" \
-  -e SR_RUNNER_CODEX_BIN=/usr/local/bin/codex -e RUST_LOG=info -e NO_COLOR=1 \
+  -e SR_RUNNER_CODEX_BIN=/usr/local/bin/codex -e RUST_LOG=info -e NO_COLOR=1 -e SR_RUNNER_DEV_NO_ISOLATION=1 \
   "$image" smart-review-runner > /dev/null
 unset SR_RUNNER_SECRET
 say "runner container $container started (provider $provider)"

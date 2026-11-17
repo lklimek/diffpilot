@@ -84,9 +84,8 @@ echo "# container exit: $exit_code" | tee -a "$ledger"
 # Fail closed: a sweep that fails (injected) must end the container within the deadline, never hang.
 docker rm -f "$container" > /dev/null
 started=$SECONDS
-# The Rust supervisor has no fault switch: a zero sweep deadline fails every sweep that finds an agent alive.
-if [[ "${R1_SUPERVISOR:-python}" == rust ]]; then sweep_ms=0; else sweep_ms=1000; fi
-start "$failing" -e R1_SCENARIO=sweep-failure -e R1_FAULT_SWEEP_FAILS=1 -e "SR_SUPERVISOR_SWEEP_DEADLINE_MS=$sweep_ms"
+# The Rust supervisor honours the fault switch only with its explicit test flag.
+start "$failing" -e R1_SCENARIO=sweep-failure -e R1_FAULT_SWEEP_FAILS=1 -e SR_SUPERVISOR_TEST_FAULTS=1 -e SR_SUPERVISOR_SWEEP_DEADLINE_MS=1000
 fail_exit="$(timeout 60 docker wait "$failing" || echo timeout)"
 elapsed=$((SECONDS - started))
 fail_log="$(docker logs "$failing" 2>&1)"

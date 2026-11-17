@@ -6,7 +6,7 @@
 
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
@@ -77,33 +77,115 @@ pub fn copy_in(root: &Path, rel: &Path, input: &mut impl Read) -> io::Result<()>
     Ok(renameat(&dir, temp.as_os_str(), &dir, *last)?)
 }
 
+/// Why `copy_out` refused; each refusal has its own helper exit code (ADR-013).
+#[derive(Debug, thiserror::Error)]
+pub enum CopyOutError {
+    /// The path could not be opened within the root (link, mount, missing): exit code 2.
+    #[error("copy-out: open refused: {}", errno_name(.0))]
+    Open(#[source] io::Error),
+    /// Not a regular file with one link: exit code 3.
+    #[error("copy-out: not a regular file with one link")]
+    NotRegular,
+    /// Larger than the limit: exit code 4.
+    #[error("copy-out: larger than the limit")]
+    TooLarge,
+    /// Anything else: exit code 1.
+    #[error("copy-out: {0}")]
+    Io(#[from] io::Error),
+}
+
+impl CopyOutError {
+    /// The helper's exit code.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Self::Open(_) => 2,
+            Self::NotRegular => 3,
+            Self::TooLarge => 4,
+            Self::Io(_) => 1,
+        }
+    }
+}
+
 /// The contents of `root/rel`: a regular file with one link and at most `max` bytes, never through a link.
-pub fn copy_out(root: &Path, rel: &Path, max: u64) -> io::Result<Vec<u8>> {
-    let names = parts(rel)?;
+/// A file the agent made unreadable (its own, mode 000) is made owner-readable first.
+pub fn copy_out(root: &Path, rel: &Path, max: u64) -> Result<Vec<u8>, CopyOutError> {
+    let names = parts(rel).map_err(CopyOutError::Open)?;
     let dir = open_root(root)?;
     let joined: PathBuf = names.iter().collect();
-    let file = openat2(
-        &dir,
-        &joined,
-        OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-        STRICT,
-    )?;
-    let stat = fstat(&file)?;
+    let open = || {
+        openat2(
+            &dir,
+            &joined,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+            STRICT,
+        )
+    };
+    let file = match open() {
+        Err(rustix::io::Errno::ACCESS) => {
+            unlock(&dir, &joined, 0o600).map_err(CopyOutError::Open)?;
+            open()
+        }
+        other => other,
+    }
+    .map_err(|error| CopyOutError::Open(error.into()))?;
+    let stat = fstat(&file).map_err(io::Error::from)?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile || stat.st_nlink != 1 {
-        return Err(invalid("not a regular file with one link"));
+        return Err(CopyOutError::NotRegular);
     }
     if u64::try_from(stat.st_size).unwrap_or(u64::MAX) > max {
-        return Err(invalid("larger than the limit"));
+        return Err(CopyOutError::TooLarge);
     }
     let mut bytes = Vec::new();
     std::fs::File::from(file)
         .take(max + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > max {
-        return Err(invalid("larger than the limit"));
+        return Err(CopyOutError::TooLarge);
     }
     Ok(bytes)
+}
+
+/// The symbolic name of an errno (as the prototype printed it), or its number.
+fn errno_name(error: &io::Error) -> String {
+    let name = match error.raw_os_error() {
+        Some(2) => "ENOENT",
+        Some(13) => "EACCES",
+        Some(18) => "EXDEV",
+        Some(20) => "ENOTDIR",
+        Some(21) => "EISDIR",
+        Some(40) => "ELOOP",
+        Some(other) => return other.to_string(),
+        None => return error.to_string(),
+    };
+    name.to_owned()
+}
+
+/// Gives `dir/rel` (a file or directory this uid owns, never a link) the owner mode `mode`: the owner may
+/// always chmod its own entries, so an entry the agent locked (mode 000) can be read or removed again.
+fn unlock(dir: &OwnedFd, rel: &Path, mode: u32) -> io::Result<()> {
+    let target = openat2(
+        dir,
+        rel,
+        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+        STRICT,
+    )?;
+    chmod_fd(&target, mode)
+}
+
+/// chmod of the inode behind an `O_PATH` descriptor (which cannot `fchmod`) through its `/proc/self/fd` entry;
+/// only files and directories.
+fn chmod_fd(target: &OwnedFd, mode: u32) -> io::Result<()> {
+    let kind = FileType::from_raw_mode(fstat(target)?.st_mode);
+    if !matches!(kind, FileType::RegularFile | FileType::Directory) {
+        return Err(invalid("not a file or directory"));
+    }
+    let by_fd = format!("/proc/self/fd/{}", target.as_raw_fd());
+    Ok(rustix::fs::chmod(
+        by_fd.as_str(),
+        Mode::from_raw_mode(mode),
+    )?)
 }
 
 /// Every entry below `root`, depth first, without following links.
@@ -166,6 +248,8 @@ fn clear_dir(dir: &OwnedFd) -> io::Result<()> {
     for name in names(dir)? {
         let stat = statat(dir, name.as_path(), AtFlags::SYMLINK_NOFOLLOW)?;
         if FileType::from_raw_mode(stat.st_mode) == FileType::Directory {
+            // The agent may have locked it (mode 000); restore the owner's access before descending.
+            unlock(dir, name.as_path(), 0o700)?;
             let sub = openat2(
                 dir,
                 name.as_path(),
@@ -200,11 +284,26 @@ fn open_root(root: &Path) -> io::Result<OwnedFd> {
     if !root.is_absolute() {
         return Err(invalid("the root must be absolute"));
     }
-    Ok(rustix::fs::open(
-        root,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?)
+    let open = || {
+        rustix::fs::open(
+            root,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+    };
+    match open() {
+        Err(rustix::io::Errno::ACCESS) => {
+            // A root the agent locked: restore the owner's access through a no-follow descriptor.
+            let target = rustix::fs::open(
+                root,
+                OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?;
+            chmod_fd(&target, 0o700)?;
+            Ok(open()?)
+        }
+        other => Ok(other?),
+    }
 }
 
 /// The normal components of a relative path; `..`, `.`, roots and empty names are refused.
@@ -336,7 +435,20 @@ mod tests {
             copy_out(root.path(), Path::new("auth.json"), 2).unwrap(),
             b"{}"
         );
-        assert!(copy_out(root.path(), Path::new("auth.json"), 1).is_err());
+        assert!(matches!(
+            copy_out(root.path(), Path::new("auth.json"), 1),
+            Err(CopyOutError::TooLarge)
+        ));
+        std::fs::set_permissions(
+            root.path().join("auth.json"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        assert_eq!(
+            copy_out(root.path(), Path::new("auth.json"), 2).unwrap(),
+            b"{}",
+            "a file the agent locked is unlocked by its owner"
+        );
         let status = std::process::Command::new("mkfifo")
             .arg(root.path().join("fifo"))
             .status()
@@ -374,5 +486,23 @@ mod tests {
             outside.path().join("keep").exists(),
             "the link target survives"
         );
+    }
+
+    #[test]
+    fn clear_restores_owner_access_to_locked_directories() {
+        let root = TempDir::new().unwrap();
+        let locked = root.path().join("locked");
+        std::fs::create_dir_all(locked.join("deeper")).unwrap();
+        std::fs::write(locked.join("deeper/secret"), "left over").unwrap();
+        std::fs::set_permissions(
+            locked.join("deeper"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        clear(root.path()).unwrap();
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        clear(root.path()).expect("a locked root is unlocked too");
     }
 }

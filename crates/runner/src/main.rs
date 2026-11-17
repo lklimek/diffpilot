@@ -36,6 +36,10 @@ enum StartError {
     },
     #[error("could not create the server client")]
     Client(#[from] ClientError),
+    #[error(
+        "no supervisor: start the runner under smart-review-supervisor, or set SR_RUNNER_DEV_NO_ISOLATION=1 for development only"
+    )]
+    NoIsolation,
     #[error("cannot use the supervisor (SR_SUPERVISOR_FD)")]
     Supervisor(#[from] SupervisorError),
     #[error("cannot recover the agent directories of a previous run")]
@@ -61,10 +65,12 @@ fn main() -> ExitCode {
 async fn run() -> Result<(), StartError> {
     let config = Config::from_env()?;
     let mut dirs = config.dirs();
-    let isolation = Supervisor::from_env()?.map(|supervisor| Isolation {
-        supervisor,
-        codex_homes: dirs.codex_homes.clone(),
-    });
+    let isolation = Supervisor::from_env()?
+        .map(|supervisor| Isolation::new(supervisor, dirs.codex_homes.clone()));
+    let dev_no_isolation = std::env::var_os(DEV_NO_ISOLATION).is_some_and(|value| value == "1");
+    if isolation.is_none() && !dev_no_isolation {
+        return Err(StartError::NoIsolation);
+    }
     for dir in [
         &config.state_dir,
         &dirs.codex_homes,
@@ -118,7 +124,13 @@ async fn run() -> Result<(), StartError> {
                     skills: Some(Arc::clone(&skills)),
                     isolation: isolation.clone(),
                 });
-                (Arc::new(provider), Arc::new(move || credential.usable()))
+                let isolation = isolation.clone();
+                (
+                    Arc::new(provider),
+                    Arc::new(move || {
+                        credential.usable() && isolation.as_ref().is_none_or(Isolation::healthy)
+                    }),
+                )
             }
             #[cfg(feature = "fake-provider")]
             ProviderKind::Fake => {
@@ -158,6 +170,10 @@ async fn run() -> Result<(), StartError> {
     tracing::info!("runner stopped");
     Ok(())
 }
+
+/// Runs agents as the runner's own uid when no supervisor is present (development only; never set in the
+/// image).
+const DEV_NO_ISOLATION: &str = "SR_RUNNER_DEV_NO_ISOLATION";
 
 /// The runner-private staging `CODEX_HOME`s under the supervisor, below the state directory.
 const CODEX_STAGING: &str = "codex-staging";

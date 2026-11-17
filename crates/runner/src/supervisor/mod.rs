@@ -32,8 +32,13 @@ pub fn helper(args: &[OsString]) -> i32 {
                 .get(3)
                 .and_then(|max| max.to_str()?.parse::<u64>().ok())
                 .unwrap_or(0);
-            fsops::copy_out(root, rel, max)
-                .and_then(|bytes| std::io::stdout().lock().write_all(&bytes))
+            match fsops::copy_out(root, rel, max) {
+                Ok(bytes) => std::io::stdout().lock().write_all(&bytes),
+                Err(error) => {
+                    eprintln!("{error}");
+                    return error.exit_code();
+                }
+            }
         }
         (Some("list"), Some(root), None) => fsops::list(root).and_then(|entries| {
             serde_json::to_writer(std::io::stdout().lock(), &entries).map_err(std::io::Error::other)

@@ -8,8 +8,10 @@
 
 use std::ffi::OsString;
 use std::io;
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError};
 
 use rustix::process::Pid;
@@ -33,6 +35,17 @@ pub struct Isolation {
     pub supervisor: Arc<Supervisor>,
     /// `<state>/codex-homes`: the bounded filesystem holding the per-job agent `CODEX_HOME`s.
     pub codex_homes: PathBuf,
+    /// Set when an agent directory could be neither removed nor quarantined: no further job may run.
+    poisoned: Arc<AtomicBool>,
+}
+
+/// An agent directory could be neither emptied nor taken away from the agent.
+#[derive(Debug, thiserror::Error)]
+#[error("the agent directory {} could be neither removed nor quarantined", dir.display())]
+pub struct LeftoverError {
+    dir: PathBuf,
+    #[source]
+    source: SupervisorError,
 }
 
 const AUTH_FILE: &str = "auth.json";
@@ -47,7 +60,26 @@ fn io_error(error: SupervisorError) -> ProviderError {
     ProviderError::Io(io::Error::other(error))
 }
 
+fn io_error_of(error: LeftoverError) -> ProviderError {
+    ProviderError::Io(io::Error::other(error))
+}
+
 impl Isolation {
+    /// Isolation through `supervisor`, agent `CODEX_HOME`s below `codex_homes`.
+    pub fn new(supervisor: Arc<Supervisor>, codex_homes: PathBuf) -> Self {
+        Self {
+            supervisor,
+            codex_homes,
+            poisoned: Arc::default(),
+        }
+    }
+
+    /// False once an agent directory was left reachable by the agent uid: the runner then takes no job
+    /// (reported as an unusable credential until a restart recovers or the owner intervenes).
+    pub fn healthy(&self) -> bool {
+        !self.poisoned.load(Ordering::SeqCst)
+    }
+
     /// The agent's `CODEX_HOME` for the staging home `staging`.
     pub(super) fn codex_home(&self, staging: &Path) -> PathBuf {
         self.codex_homes
@@ -60,8 +92,13 @@ impl Isolation {
     pub async fn recover(&self, staging: &Path, work: &Path) -> Result<usize, ProviderError> {
         self.supervisor.sweep().await.map_err(io_error)?;
         let mut removed = 0;
+        let me = rustix::process::getuid().as_raw();
         for entry in std::fs::read_dir(&self.codex_homes)? {
             let home = entry?.path();
+            if std::fs::symlink_metadata(&home).is_ok_and(|meta| meta.uid() == me) {
+                tracing::error!(dir = %home.display(), "a quarantined agent directory is left over; inspect and remove it by hand");
+                continue;
+            }
             let key = home.file_name().unwrap_or_default().to_owned();
             if staging
                 .join(format!("{}.cas", key.to_string_lossy()))
@@ -82,15 +119,15 @@ impl Isolation {
                     }
                 }
             }
-            self.remove(&home).await;
+            self.remove(&home).await.map_err(io_error_of)?;
             removed += 1;
         }
         if let Ok(entries) = std::fs::read_dir(work) {
             for entry in entries {
                 let job = entry?.path();
                 for dir in [agent_home(&job), agent_tmp(&job)] {
-                    if dir.exists() {
-                        self.remove(&dir).await;
+                    if std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.uid() != me) {
+                        self.remove(&dir).await.map_err(io_error_of)?;
                         removed += 1;
                     }
                 }
@@ -109,7 +146,7 @@ impl Isolation {
         let home = self.codex_home(&call.codex_home);
         if home.exists() {
             // An earlier run of this key left it.
-            self.remove(&home).await;
+            self.remove(&home).await.map_err(io_error_of)?;
         }
         create_dir(&home)?;
         std::fs::set_permissions(&call.job_dir, std::fs::Permissions::from_mode(0o755))?;
@@ -155,7 +192,9 @@ impl Isolation {
     }
 
     /// Copy-back after a sweep (ADR-013 step 5): `auth.json` and the rollout of `thread` into the staging home.
-    /// A missing or unsafe `auth.json` leaves the staged copy as it was.
+    /// An `auth.json` that cannot be copied back (missing, link, oversized, not a single regular file) leaves
+    /// the credential state unknown: Codex may have rotated the single-use refresh token, so the old staged
+    /// copy proves nothing and the call fails as [`ProviderError::CredentialUnusable`] (a new login is needed).
     pub(super) async fn pull(
         &self,
         call: &ProviderCall,
@@ -169,7 +208,8 @@ impl Isolation {
         {
             Ok(bytes) => replace_private(&call.codex_home.join(AUTH_FILE), &bytes)?,
             Err(error) => {
-                tracing::warn!(job = %call.job_id, %error, "the agent's auth.json could not be copied back");
+                tracing::error!(job = %call.job_id, %error, "the agent's auth.json could not be copied back; the Codex login is treated as unusable until the owner signs in again");
+                return Err(ProviderError::CredentialUnusable);
             }
         }
         let Some(thread) = thread.filter(|thread| session::valid_thread_id(thread)) else {
@@ -205,10 +245,12 @@ impl Isolation {
     }
 
     /// The end of a call (ADR-013 step 5): sweep, empty and remove the agent's directories, `/dev/mqueue` and
-    /// System V IPC. Best effort: failures are logged (a later start-up recovers).
+    /// System V IPC. A directory that can be neither removed nor quarantined poisons the isolation (no next
+    /// job); the IPC clean-up is best effort.
     pub(super) async fn leave(&self, call: &ProviderCall) {
         if let Err(error) = self.supervisor.sweep().await {
-            tracing::error!(job = %call.job_id, %error, "the final sweep of a call failed");
+            tracing::error!(job = %call.job_id, %error, "the final sweep of a call failed; no further job is taken");
+            self.poisoned.store(true, Ordering::SeqCst);
             return;
         }
         for dir in [
@@ -216,7 +258,10 @@ impl Isolation {
             agent_home(&call.job_dir),
             agent_tmp(&call.job_dir),
         ] {
-            self.remove(&dir).await;
+            if let Err(error) = self.remove(&dir).await {
+                tracing::error!(job = %call.job_id, %error, "an agent directory stays reachable by the agent; no further job is taken");
+                self.poisoned.store(true, Ordering::SeqCst);
+            }
         }
         if Path::new("/dev/mqueue").is_dir()
             && let Err(error) = self.supervisor.clear(Path::new("/dev/mqueue")).await
@@ -233,21 +278,32 @@ impl Isolation {
         }
     }
 
-    /// `clear` as the agent, then `rmdir` as the runner (the parent is the runner's); absent is fine.
-    async fn remove(&self, dir: &Path) {
+    /// `clear` as the agent (which first restores its own access to locked entries), then `rmdir` as the
+    /// runner (the parent is the runner's); absent is fine. Anything left is quarantined (fail closed): the
+    /// supervisor gives it to the runner, mode 0700, so the next job's agent cannot reach it.
+    async fn remove(&self, dir: &Path) -> Result<(), LeftoverError> {
         if dir.symlink_metadata().is_err() {
-            return;
+            return Ok(());
         }
         if let Err(error) = self.supervisor.clear(dir).await {
             tracing::warn!(dir = %dir.display(), %error, "cannot empty an agent directory");
         }
         match std::fs::remove_dir(dir) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => {
-                tracing::warn!(dir = %dir.display(), %error, "cannot remove an agent directory")
+                tracing::warn!(dir = %dir.display(), %error, "cannot remove an agent directory; quarantining it")
             }
         }
+        self.supervisor
+            .quarantine(dir)
+            .await
+            .map_err(|source| LeftoverError {
+                dir: dir.to_path_buf(),
+                source,
+            })?;
+        tracing::error!(dir = %dir.display(), "an agent directory could not be emptied and is quarantined; inspect and remove it by hand");
+        Ok(())
     }
 }
 
@@ -285,6 +341,8 @@ impl CodexProvider {
             .await
             .map_err(io_error)?;
         let pid = process.pid;
+        // Only a panic drops this run before its own sweep; the guard still sweeps then.
+        let mut guard = SweepOnDrop(Some(Arc::clone(supervisor)));
         self.set_group(call, Pid::from_raw(pid));
         let mut stdin = process.stdin;
         let prompt = prompt.to_owned();
@@ -338,6 +396,7 @@ impl CodexProvider {
         .await;
         // Codex has exited (or failed): nothing of the agent may outlive the run.
         let sweep = supervisor.sweep().await;
+        guard.0 = None;
         self.set_group(call, None);
         writer.abort();
         let drain = async {
@@ -362,13 +421,18 @@ impl CodexProvider {
             && !tail.is_empty()
             && credential.watch()
         {
-            tracing::debug!(job = %call.job_id, stderr = %credential.scrubber().text(&tail), "Codex stderr tail");
+            tracing::debug!(job = %call.job_id, stderr = %credential.scrubber().text_and_token_shapes(&tail), "Codex stderr tail");
         }
         let thread = parsed.thread_id().map(str::to_owned).or(match invocation {
             Invocation::Resume(thread) | Invocation::Compaction(thread) => Some(thread.to_owned()),
             Invocation::New => None,
         });
-        isolation.pull(call, thread.as_deref()).await?;
+        if let Err(error) = isolation.pull(call, thread.as_deref()).await {
+            if matches!(error, ProviderError::CredentialUnusable) {
+                credential.unknown("the agent's auth.json could not be copied back");
+            }
+            return Err(error);
+        }
         if timed_out {
             return Err(ProviderError::Timeout);
         }
@@ -395,11 +459,29 @@ impl CodexProvider {
     }
 }
 
-/// The supervisor's status: an exit code, or 128 + signal.
+/// Sweeps the agent processes from a task when a supervised run is dropped before its own sweep.
+struct SweepOnDrop(Option<Arc<Supervisor>>);
+
+impl Drop for SweepOnDrop {
+    fn drop(&mut self) {
+        if let Some(supervisor) = self.0.take()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(async move {
+                if let Err(error) = supervisor.sweep().await {
+                    tracing::error!(%error, "the sweep after a dropped Codex run failed");
+                }
+            });
+        }
+    }
+}
+
+/// The supervisor's status: an exit code, or the negated signal number.
 fn exit_of_code(status: i32) -> Exit {
-    match status {
-        129..=192 => Exit::Signal(status - 128),
-        code => Exit::Code(code),
+    if status < 0 {
+        Exit::Signal(-status)
+    } else {
+        Exit::Code(status)
     }
 }
 
@@ -458,7 +540,8 @@ mod tests {
 
     #[test]
     fn supervisor_status_maps_signals() {
-        assert!(matches!(exit_of_code(143), Exit::Signal(15)));
+        assert!(matches!(exit_of_code(-15), Exit::Signal(15)));
+        assert!(matches!(exit_of_code(143), Exit::Code(143)));
         assert!(matches!(exit_of_code(0), Exit::Code(0)));
         assert!(matches!(exit_of_code(1), Exit::Code(1)));
     }

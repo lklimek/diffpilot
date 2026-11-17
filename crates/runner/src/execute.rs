@@ -63,6 +63,8 @@ pub struct Executor {
     credential: LlmCredentialRef,
     /// Attempts run as their own task: dropping `execute` cancels the attempt instead of abandoning it.
     detached: bool,
+    /// Held by a detached attempt until it has stopped, swept, copied back and cleaned up.
+    gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl std::fmt::Debug for Executor {
@@ -86,7 +88,14 @@ impl Executor {
             dirs,
             credential,
             detached: false,
+            gate: Arc::default(),
         }
+    }
+
+    /// Waits until no detached attempt is still finishing (stop, sweep, copy-back, cleanup); call before a
+    /// terminal result is posted and before the next claim.
+    pub async fn settled(&self) {
+        drop(self.gate.lock().await);
     }
 
     /// Runs every attempt as its own task (process isolation, ADR-013): agent processes of another uid can
@@ -122,13 +131,21 @@ impl Executor {
             provider: Arc::clone(&self.provider),
             dirs: self.dirs.clone(),
             credential: self.credential.clone(),
-            detached: false,
+            detached: true,
+            gate: Arc::clone(&self.gate),
         };
+        // Taken before the task starts, so `settled` never passes an attempt that has not begun.
+        let held = Arc::clone(&self.gate).lock_owned().await;
         let mut cancel = CancelOnDrop {
             provider: Arc::clone(&self.provider),
             job: Some(spec.job_id),
         };
-        let joined = tokio::spawn(async move { attempt.execute_here(spec, sink).await }).await;
+        let joined = tokio::spawn(async move {
+            let result = attempt.execute_here(spec, sink).await;
+            drop(held);
+            result
+        })
+        .await;
         cancel.job = None;
         match joined {
             Ok(result) => result,
@@ -206,9 +223,21 @@ impl Executor {
         };
         let (tx, rx) = mpsc::channel(EVENT_BUFFER);
         let run = async {
-            tokio::time::timeout_at(deadline, self.run_session(spec, call, tx))
-                .await
-                .unwrap_or((Err(ProviderError::Timeout), SessionOutcome::Started))
+            let session = self.run_session(spec, call, tx);
+            tokio::pin!(session);
+            match tokio::time::timeout_at(deadline, &mut session).await {
+                Ok(done) => done,
+                // Supervised agent processes are stopped through the provider, never by dropping the call
+                // that owns them: the cap starts the stop sequence and the call still finishes it.
+                Err(_) if self.detached => {
+                    if let Err(error) = self.provider.cancel(spec.job_id).await {
+                        tracing::warn!(job = %spec.job_id, %error, "cannot stop the agent at the runtime cap");
+                    }
+                    let (_, session_outcome) = session.await;
+                    (Err(ProviderError::Timeout), session_outcome)
+                }
+                Err(_) => (Err(ProviderError::Timeout), SessionOutcome::Started),
+            }
         };
         let ((outcome, session_outcome), ()) = tokio::join!(run, pump(rx, sink, &scrubber));
         let outcome = match outcome {

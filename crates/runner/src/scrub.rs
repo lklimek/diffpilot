@@ -57,6 +57,18 @@ impl Scrubber {
         both
     }
 
+    /// [`Scrubber::text`] plus token-shaped strings (for live text under process isolation, where a credential
+    /// rotated by the agent is known only after the run): JWTs, and runs of at least
+    /// [`MIN_PREFIXED_TOKEN_CHARS`] token characters after a prefix of a known secret (`rt_`, `ghs_`, `sk-`).
+    pub fn text_and_token_shapes(&self, text: &str) -> String {
+        let prefixes: Vec<&str> = self
+            .secrets
+            .iter()
+            .filter_map(|s| token_prefix(s))
+            .collect();
+        token_shapes(&self.text(text), &prefixes)
+    }
+
     /// Whether no secret is known.
     pub fn is_empty(&self) -> bool {
         self.secrets.is_empty()
@@ -179,5 +191,116 @@ mod tests {
         let clipped = clip(&text, SUMMARY_MAX_CHARS);
         assert_eq!(clipped.chars().count(), SUMMARY_MAX_CHARS);
         assert!(clipped.ends_with('…'));
+    }
+}
+
+/// Shortest run of token characters after a known prefix that is redacted as a token.
+pub const MIN_PREFIXED_TOKEN_CHARS: usize = 20;
+/// Shortest JWT segment (header and payload) taken as a token.
+const MIN_JWT_SEGMENT: usize = 10;
+
+fn token_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
+/// The prefix of a secret up to and including its first `_` or `-` within 8 characters (`rt_…`, `ghs_…`).
+fn token_prefix(secret: &str) -> Option<&str> {
+    let end = secret
+        .bytes()
+        .take(8)
+        .position(|b| b == b'_' || b == b'-')?;
+    (end >= 1).then(|| &secret[..=end])
+}
+
+/// Length of a JWT (`eyJ<header>.<payload>.<signature>`) at the start of `text`, if it is one.
+fn jwt_len(text: &[u8]) -> Option<usize> {
+    if !text.starts_with(b"eyJ") {
+        return None;
+    }
+    let mut at = 0;
+    for segment in 0..3 {
+        let run = text[at..].iter().take_while(|b| token_char(**b)).count();
+        if run < if segment < 2 { MIN_JWT_SEGMENT } else { 1 } {
+            return None;
+        }
+        at += run;
+        if segment < 2 {
+            if text.get(at) != Some(&b'.') {
+                return None;
+            }
+            at += 1;
+        }
+    }
+    Some(at)
+}
+
+/// `text` with JWTs and prefixed token runs replaced by [`REDACTED`]; linear in the text length.
+pub fn token_shapes(text: &str, prefixes: &[&str]) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        let boundary = at == 0 || !token_char(bytes[at - 1]);
+        let token = boundary
+            .then(|| {
+                jwt_len(&bytes[at..]).or_else(|| {
+                    prefixes.iter().find_map(|prefix| {
+                        let rest = bytes[at..].strip_prefix(prefix.as_bytes())?;
+                        let run = rest
+                            .iter()
+                            .take_while(|b| token_char(**b) || **b == b'.')
+                            .count();
+                        (run >= MIN_PREFIXED_TOKEN_CHARS).then_some(prefix.len() + run)
+                    })
+                })
+            })
+            .flatten();
+        match token {
+            Some(len) => {
+                out.push_str(&text[copied..at]);
+                out.push_str(REDACTED);
+                at += len;
+                copied = at;
+            }
+            None => at += 1,
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+#[cfg(test)]
+mod token_shape_tests {
+    use super::*;
+
+    #[test]
+    fn jwts_and_prefixed_tokens_are_redacted_but_hashes_are_not() {
+        let jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhY2N0LTEifQ.c2lnbmF0dXJl";
+        let refresh = "rt_NEWrotatedRefreshToken0123456789";
+        let text = format!(
+            "token {jwt} and {refresh}; commit 3f9c2a7e1b0d4c5a6e7f8091a2b3c4d5e6f70812 ok"
+        );
+        let scrubbed = token_shapes(&text, &["rt_"]);
+        assert_eq!(
+            scrubbed,
+            "token [redacted] and [redacted]; commit 3f9c2a7e1b0d4c5a6e7f8091a2b3c4d5e6f70812 ok"
+        );
+        assert_eq!(
+            token_shapes("rt_short and eyJx.y.z", &["rt_"]),
+            "rt_short and eyJx.y.z"
+        );
+    }
+
+    #[test]
+    fn prefixes_come_from_the_known_secrets() {
+        let scrubber = Scrubber::new(["rt_OLDrefreshToken0123456789", "ghs_installationtoken"]);
+        let text = "new rt_ROTATEDrefreshTokenABCDEFGHIJ and ghs_ROTATEDinstallationTOKEN0123";
+        assert_eq!(
+            scrubber.text_and_token_shapes(text),
+            "new [redacted] and [redacted]"
+        );
+        assert_eq!(token_prefix("opaquetoken"), None);
+        assert_eq!(token_prefix("sk-abc"), Some("sk-"));
     }
 }

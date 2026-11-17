@@ -12,6 +12,8 @@ use crate::git;
 
 /// Largest total size of the skill files given to one job.
 const MAX_SKILL_BYTES: u64 = 4 * 1024 * 1024;
+/// Longest a refresh (fetch and checkout) may take; a stalled git server must not hold up the next claim.
+const REFRESH_TIMEOUT: Duration = Duration::from_secs(120);
 /// Subdirectory of the claudius repository holding one directory per skill.
 const SKILLS_DIR: &str = "skills";
 
@@ -23,6 +25,7 @@ pub struct Skills {
     checkout: PathBuf,
     allowed: Vec<String>,
     interval: Duration,
+    timeout: Duration,
     state: Mutex<State>,
 }
 
@@ -57,8 +60,15 @@ impl Skills {
             checkout,
             allowed,
             interval,
+            timeout: REFRESH_TIMEOUT,
             state: Mutex::default(),
         }
+    }
+
+    /// The longest a refresh may take (default two minutes).
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Fetches the ref when the interval has passed since the last attempt; a failure keeps the last checkout.
@@ -73,7 +83,20 @@ impl Skills {
             }
             state.attempted = Some(Instant::now());
         }
-        match git::sync_ref(&self.checkout, &self.url, &self.reference).await {
+        // Dropping the git step on timeout kills its whole process group.
+        let synced = tokio::time::timeout(
+            self.timeout,
+            git::sync_ref(&self.checkout, &self.url, &self.reference),
+        )
+        .await;
+        let Ok(synced) = synced else {
+            tracing::warn!(
+                timeout_secs = self.timeout.as_secs(),
+                "the claudius skills refresh timed out; the last checkout stays in use"
+            );
+            return;
+        };
+        match synced {
             Ok(commit) => {
                 tracing::info!(%commit, reference = %self.reference, "claudius skills refreshed");
                 self.state
@@ -246,5 +269,66 @@ mod tests {
         );
         broken.refresh_if_due().await;
         assert_eq!(broken.files(&[]).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn stalled_git_server_ends_the_refresh_at_its_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/claudius.git", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            // Accepts and never answers.
+            let held = listener.accept();
+            std::thread::sleep(Duration::from_secs(60));
+            drop(held);
+        });
+        let root = TempDir::new().unwrap();
+        let skills = Skills::new(
+            url,
+            "main".to_owned(),
+            root.path().join("checkout"),
+            vec!["severity".to_owned()],
+            Duration::ZERO,
+        )
+        .with_timeout(Duration::from_secs(1));
+        let started = Instant::now();
+        skills.refresh_if_due().await;
+        assert!(started.elapsed() < Duration::from_secs(20));
+        assert_eq!(skills.files(&[]).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_commit_ref_pins_the_checkout() {
+        let root = TempDir::new().unwrap();
+        let url = claudius(root.path());
+        let head = String::from_utf8(
+            Command::new("git")
+                .arg("-C")
+                .arg(root.path().join("claudius"))
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let pinned = Skills::new(
+            url.clone(),
+            head.clone(),
+            root.path().join("pinned"),
+            vec![],
+            Duration::ZERO,
+        );
+        pinned.refresh_if_due().await;
+        assert_eq!(pinned.files(&[]).unwrap().unwrap().commit, head);
+        let wrong = Skills::new(
+            url,
+            "0".repeat(40),
+            root.path().join("wrong"),
+            vec![],
+            Duration::ZERO,
+        );
+        wrong.refresh_if_due().await;
+        assert_eq!(wrong.files(&[]).unwrap(), None);
     }
 }

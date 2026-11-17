@@ -41,6 +41,8 @@ enum Behaviour {
     Straddle,
     /// Succeeds and leaves a session file holding the sink's secret.
     WriteSession,
+    /// Runs until cancelled, then needs a while to stop (sweep, copy-back) before it ends as cancelled.
+    StopsOnCancel,
 }
 
 struct Stub {
@@ -49,6 +51,8 @@ struct Stub {
     /// Whether `resume` succeeds; the (thread, prompt) of every resume.
     resumable: bool,
     resumed: Mutex<Vec<(String, String)>>,
+    cancelled: tokio::sync::Notify,
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 impl Stub {
@@ -58,6 +62,8 @@ impl Stub {
             seen: Mutex::new(None),
             resumable: false,
             resumed: Mutex::new(Vec::new()),
+            cancelled: tokio::sync::Notify::new(),
+            stopped: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -126,6 +132,13 @@ impl LlmProvider for Stub {
                     Ok(outcome(json!({"ok": true})))
                 }
                 Behaviour::Hang => std::future::pending().await,
+                Behaviour::StopsOnCancel => {
+                    self.cancelled.notified().await;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    self.stopped
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    Err(ProviderError::Cancelled)
+                }
                 Behaviour::Straddle => {
                     for secret in [TOKEN_CANARY, SINK_SECRET] {
                         events
@@ -178,6 +191,7 @@ impl LlmProvider for Stub {
     }
 
     fn cancel(&self, _job: contracts::ids::JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        self.cancelled.notify_one();
         Box::pin(async { Ok(()) })
     }
 }
@@ -806,4 +820,53 @@ async fn hanging_fetch_ends_with_timeout_and_kills_the_whole_git_group() {
             .unwrap(),
         "git-remote-http (in git's process group) still holds the connection"
     );
+}
+
+#[tokio::test]
+async fn runtime_cap_stops_a_detached_attempt_through_the_provider_and_awaits_it() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::StopsOnCancel);
+    let executor =
+        Executor::new(stub.clone(), dirs(root.path()), credential()).with_detached_attempts();
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.limits.max_runtime_secs = 1;
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(
+        matches!(
+            result.outcome,
+            JobOutcome::Failed {
+                kind: JobFailureKind::Timeout,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(
+        stub.stopped.load(std::sync::atomic::Ordering::SeqCst),
+        "the result waited for the provider's stop sequence"
+    );
+    assert_removed(&stub.seen());
+}
+
+#[tokio::test]
+async fn dropped_detached_attempt_holds_settled_until_it_has_stopped() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::StopsOnCancel);
+    let executor =
+        Executor::new(stub.clone(), dirs(root.path()), credential()).with_detached_attempts();
+    let spec = spec(JobKind::Plan, shared_repo());
+    let (tx, _rx) = mpsc::channel(64);
+    let running = executor.execute(spec, EventSink::new(tx, Scrubber::default()));
+    tokio::select! {
+        _ = running => panic!("the attempt ended without a cancel"),
+        () = async {
+            while stub.seen.lock().unwrap().is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        } => {}
+    }
+    // `execute` was dropped: the attempt is cancelled, and the runner may go on only once it stopped.
+    executor.settled().await;
+    assert!(stub.stopped.load(std::sync::atomic::Ordering::SeqCst));
+    assert_removed(&stub.seen());
 }

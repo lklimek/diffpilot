@@ -355,6 +355,14 @@ impl<'a> JobCredential<'a> {
     /// (compare-and-swap) and marks the credential unusable after a refresh failure, a rejected copy or a
     /// conflict. False when the copy could not be read safely: its tokens may be missing from the scrubber, so
     /// the caller must not forward agent text.
+    /// The job's copy could not be brought back (process isolation): its state is unknown, so the master is
+    /// marked unusable (a new login is needed) and nothing is written back.
+    pub(crate) fn unknown(&mut self, reason: &str) {
+        self.credential.mark_unusable_if_master(self.base, reason);
+        remove_file(&base_file(&self.codex_home));
+        self.settled = Some(false);
+    }
+
     pub(crate) fn settle(&mut self, refresh_failed: bool) -> bool {
         if let Some(certain) = self.settled {
             return certain;

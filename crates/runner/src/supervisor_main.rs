@@ -11,6 +11,12 @@ const RUNNER_UID: &str = "SR_RUNNER_UID";
 const AGENT_UID: &str = "SR_AGENT_UID";
 const SWEEP_DEADLINE_MS: &str = "SR_SUPERVISOR_SWEEP_DEADLINE_MS";
 const UNPRIVILEGED: &str = "SR_SUPERVISOR_UNPRIVILEGED";
+/// Test-only fault injection (container test): every sweep fails. Honoured only with [`TEST_FAULTS`].
+const FAULT_SWEEP_FAILS: &str = "R1_FAULT_SWEEP_FAILS";
+/// Enables test-only fault injection; never set in the image.
+const TEST_FAULTS: &str = "SR_SUPERVISOR_TEST_FAULTS";
+/// Shortest sweep deadline accepted: a shorter one would fail every sweep of a busy agent.
+const MIN_SWEEP_DEADLINE_MS: u64 = 100;
 
 fn main() {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -64,6 +70,21 @@ fn config() -> Result<ServeConfig, String> {
             .map_err(|_| format!("{SWEEP_DEADLINE_MS} is not a number"))?,
         Err(_) => 5000,
     };
+    if sweep_ms < MIN_SWEEP_DEADLINE_MS {
+        return Err(format!(
+            "{SWEEP_DEADLINE_MS} must be at least {MIN_SWEEP_DEADLINE_MS}"
+        ));
+    }
+    let set = |key: &str| std::env::var_os(key).is_some_and(|value| value == "1");
+    let fail_sweeps = set(FAULT_SWEEP_FAILS);
+    if fail_sweeps && !set(TEST_FAULTS) {
+        return Err(format!(
+            "{FAULT_SWEEP_FAILS} needs {TEST_FAULTS}=1 (tests only)"
+        ));
+    }
+    if fail_sweeps {
+        eprintln!("supervisor: TEST FAULT INJECTION: every sweep fails");
+    }
     let path = |key: &str, default: &str| {
         std::env::var_os(key).map_or_else(|| PathBuf::from(default), PathBuf::from)
     };
@@ -77,6 +98,7 @@ fn config() -> Result<ServeConfig, String> {
         state_dir,
         work_dir,
         sweep_deadline: Duration::from_millis(sweep_ms),
+        fail_sweeps,
         binary: std::env::current_exe().map_err(|error| format!("own path: {error}"))?,
     })
 }

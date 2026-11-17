@@ -54,6 +54,8 @@ pub struct ServeConfig {
     pub work_dir: PathBuf,
     /// How long a sweep may take before the supervisor gives up.
     pub sweep_deadline: Duration,
+    /// Test-only fault injection: every sweep fails (the container test's fail-closed check).
+    pub fail_sweeps: bool,
     /// This binary, given to the runner for helper modes.
     pub binary: PathBuf,
 }
@@ -140,6 +142,7 @@ impl Server {
                 }
             },
             Op::Handover { path } => self.handover(Path::new(&path)).map(|()| Reply::default()),
+            Op::Quarantine { path } => self.quarantine(Path::new(&path)).map(|()| Reply::default()),
             Op::Sweep => match self.sweep() {
                 Ok(reply) => Ok(reply),
                 Err(error) => {
@@ -179,7 +182,13 @@ impl Server {
     fn sweep(&mut self) -> Result<Reply, String> {
         let started = std::time::Instant::now();
         let (target, deadline) = (self.target, self.config.sweep_deadline);
-        let result = procs::sweep(target, deadline, || self.collect());
+        let result = if self.config.fail_sweeps {
+            Err(procs::SweepFailed {
+                survivors: Vec::new(),
+            })
+        } else {
+            procs::sweep(target, deadline, || self.collect())
+        };
         self.collect();
         match result {
             Ok(swept) => Ok(Reply {
@@ -189,7 +198,10 @@ impl Server {
                 ..Reply::default()
             }),
             Err(error) => {
-                eprintln!("supervisor: {error}: {:?}; exiting", error.survivors);
+                eprintln!(
+                    "supervisor: sweep failed, terminating the container: {error}: {:?}",
+                    error.survivors
+                );
                 Err(error.to_string())
             }
         }
@@ -255,9 +267,9 @@ impl Server {
     }
 
     /// The final sweep: the exit code to use.
-    pub(crate) fn final_sweep(&mut self, runner_code: i32) -> i32 {
+    pub(crate) fn final_sweep(&mut self, runner_status: i32) -> i32 {
         match self.sweep() {
-            Ok(_) => runner_code,
+            Ok(_) => process_exit_code(runner_status),
             Err(_) => EXIT_SWEEP_FAILED,
         }
     }
@@ -284,7 +296,9 @@ impl Server {
             || std::fs::canonicalize(program).ok()
                 == std::fs::canonicalize(&self.config.binary).ok();
         if (exclusive || own_helper) && procs::agent_alive(self.target) {
-            return Err("refused while an agent process is alive".to_owned());
+            return Err(
+                "refused: helpers run only after a sweep (an agent process is alive)".to_owned(),
+            );
         }
         let mut command = Command::new(&self.config.binary);
         command
@@ -320,7 +334,40 @@ impl Server {
     }
 
     /// Gives an empty runner-owned 0700 per-job directory to the agent.
-    fn handover(&self, path: &Path) -> Result<(), String> {
+    /// Takes a per-job directory the agent could not empty away from it (fail closed): chown to the runner
+    /// through a no-symlink `O_PATH` descriptor, after which the runner sets mode 0700. Only while no agent
+    /// process is alive.
+    fn quarantine(&self, path: &Path) -> Result<(), String> {
+        self.per_job_dir(path)?;
+        if procs::agent_alive(self.target) {
+            return Err(
+                "refused: helpers run only after a sweep (an agent process is alive)".to_owned(),
+            );
+        }
+        let fd = openat2(
+            rustix::fs::CWD,
+            path,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+            ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+        )
+        .map_err(|error| format!("open: {error}"))?;
+        let owner = fstat(&fd).map_err(|error| format!("stat: {error}"))?.st_uid;
+        if owner != self.config.agent.uid && owner != self.config.runner.uid {
+            return Err("not an agent or runner directory".to_owned());
+        }
+        chownat(
+            &fd,
+            "",
+            Some(Uid::from_raw(self.config.runner.uid)),
+            Some(Gid::from_raw(self.config.runner.gid)),
+            AtFlags::EMPTY_PATH,
+        )
+        .map_err(|error| format!("chown: {error}"))
+    }
+
+    /// `<state>/codex-homes/<name>` or `<work>/<name>/{home,tmp}`, normalised.
+    fn per_job_dir(&self, path: &Path) -> Result<(), String> {
         let parent = path.parent().unwrap_or(Path::new(""));
         let name = path
             .file_name()
@@ -336,6 +383,11 @@ impl Server {
         if !plain || !allowed || !valid_name(name) {
             return Err("not a per-job directory".to_owned());
         }
+        Ok(())
+    }
+
+    fn handover(&self, path: &Path) -> Result<(), String> {
+        self.per_job_dir(path)?;
         let fd = openat2(
             rustix::fs::CWD,
             path,
@@ -399,14 +451,21 @@ fn send_reply(socket: impl AsFd, reply: &Reply) {
     }
 }
 
+/// A `wait` status as ADR-013 encodes it: the exit code, or the negated signal number (`-9` for SIGKILL), so a
+/// signal never looks like an exit code.
 fn exit_code(status: rustix::process::WaitStatus) -> i32 {
     if let Some(code) = status.exit_status() {
         code
     } else if let Some(signal) = status.terminating_signal() {
-        128 + signal
+        -signal
     } else {
         1
     }
+}
+
+/// The supervisor's own exit code for the runner's `wait` status (a signal as 128 + signal).
+fn process_exit_code(status: i32) -> i32 {
+    if status < 0 { 128 - status } else { status }
 }
 
 /// Runs the supervisor around `runner_argv` and returns its exit code.
