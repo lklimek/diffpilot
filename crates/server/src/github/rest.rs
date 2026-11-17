@@ -1,9 +1,11 @@
-//! GitHub REST calls made with the signed-in user's token: pull-request metadata. Also the strict parsing of
-//! pull-request URLs and repository names (they become mirror paths and API paths).
+//! GitHub REST calls made with the signed-in user's token: pull-request metadata and the App installations the
+//! user can access. Also the strict parsing of pull-request URLs and repository names (they become mirror paths
+//! and API paths).
 
 use std::time::Duration;
 
 use contracts::api::pr::PrSummary;
+use contracts::api::settings::AppInstallation;
 use contracts::common::{PrRef, RepoRef};
 use contracts::ids::CommitSha;
 use reqwest::header::{ACCEPT, USER_AGENT};
@@ -149,6 +151,96 @@ pub async fn get_pull(
         },
         repo_github_id: pull.base.repo.id,
         private: pull.base.repo.private,
+    })
+}
+
+#[derive(Deserialize)]
+struct InstallationsPage {
+    total_count: u32,
+    installations: Vec<InstallationEntry>,
+}
+
+#[derive(Deserialize)]
+struct InstallationEntry {
+    account: InstallationAccount,
+    repository_selection: String,
+    suspended_at: Option<String>,
+}
+
+/// A user or organisation (`login`) or an enterprise (`slug`).
+#[derive(Deserialize)]
+struct InstallationAccount {
+    login: Option<String>,
+    slug: Option<String>,
+}
+
+/// Installations per page (GitHub's maximum) and the most pages read.
+const INSTALLATIONS_PER_PAGE: u32 = 100;
+const INSTALLATION_PAGES: u32 = 10;
+
+/// `GET /user/installations` with the user's token: the App's installations the user can access, suspended
+/// ones left out.
+pub async fn user_installations(
+    config: &GithubConfig,
+    token: &SecretString,
+) -> Result<Vec<AppInstallation>, GithubError> {
+    let client = client()?;
+    let mut installations = Vec::new();
+    let mut seen = 0;
+    for page in 1..=INSTALLATION_PAGES {
+        let mut url = endpoint(&config.api_url, "user/installations");
+        url.query_pairs_mut()
+            .append_pair("per_page", &INSTALLATIONS_PER_PAGE.to_string())
+            .append_pair("page", &page.to_string());
+        let response = client
+            .get(url)
+            .bearer_auth(token.expose_secret())
+            .header(ACCEPT, "application/vnd.github+json")
+            .header(USER_AGENT, CLIENT_NAME)
+            .header("x-github-api-version", GITHUB_API_VERSION)
+            .send()
+            .await
+            .map_err(GithubError::Http)?;
+        match response.status() {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED => return Err(GithubError::Unauthorized),
+            status => return Err(GithubError::Status(status)),
+        }
+        let body: InstallationsPage = response.json().await.map_err(GithubError::Http)?;
+        let count = u32::try_from(body.installations.len()).unwrap_or(u32::MAX);
+        seen += count;
+        for entry in body.installations {
+            if entry.suspended_at.is_some() {
+                continue;
+            }
+            let all_repositories = match entry.repository_selection.as_str() {
+                "all" => true,
+                "selected" => false,
+                _ => {
+                    return Err(GithubError::Unexpected {
+                        field: "repository selection",
+                    });
+                }
+            };
+            let account =
+                entry
+                    .account
+                    .login
+                    .or(entry.account.slug)
+                    .ok_or(GithubError::Unexpected {
+                        field: "installation account",
+                    })?;
+            installations.push(AppInstallation {
+                account,
+                all_repositories,
+            });
+        }
+        if count == 0 || seen >= body.total_count {
+            return Ok(installations);
+        }
+    }
+    Err(GithubError::Unexpected {
+        field: "installation count",
     })
 }
 
@@ -384,5 +476,105 @@ mod tests {
 
     fn pr_ref(number: u32) -> PrRef {
         pr("acme", "node-client", number)
+    }
+
+    fn installation(account: Value, selection: &str, suspended: bool) -> Value {
+        serde_json::json!({
+            "id": 1,
+            "account": account,
+            "repository_selection": selection,
+            "suspended_at": suspended.then_some("2026-11-01T00:00:00Z"),
+        })
+    }
+
+    #[tokio::test]
+    async fn user_installations_reads_the_recorded_answer() {
+        let server = MockServer::start().await;
+        serve(&server, "user-installations.json", "ghu_fake_user_token").await;
+        let mut config = test_config();
+        config.github.api_url = Url::parse(&format!("{}/api", server.uri())).expect("url");
+        let installations =
+            user_installations(&config.github, &SecretString::from("ghu_fake_user_token")).await;
+        assert_eq!(
+            installations.expect("installations"),
+            [AppInstallation {
+                account: "acme".to_owned(),
+                all_repositories: false,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn user_installations_pages_and_skips_suspended_ones() {
+        let server = MockServer::start().await;
+        let first: Vec<Value> = (0..100)
+            .map(|n| {
+                installation(
+                    serde_json::json!({ "login": format!("org-{n}") }),
+                    "selected",
+                    n == 7,
+                )
+            })
+            .collect();
+        let second = vec![installation(
+            serde_json::json!({ "slug": "big-corp" }),
+            "all",
+            false,
+        )];
+        for (page, installations) in [("1", first), ("2", second)] {
+            Mock::given(method("GET"))
+                .and(path("/api/user/installations"))
+                .and(wiremock::matchers::query_param("per_page", "100"))
+                .and(wiremock::matchers::query_param("page", page))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({ "total_count": 101, "installations": installations }),
+                ))
+                .mount(&server)
+                .await;
+        }
+        let mut config = test_config();
+        config.github.api_url = Url::parse(&format!("{}/api", server.uri())).expect("url");
+        let installations = user_installations(&config.github, &SecretString::from("t"))
+            .await
+            .expect("installations");
+        assert_eq!(installations.len(), 100, "100 listed, one suspended");
+        assert!(!installations.iter().any(|i| i.account == "org-7"));
+        assert_eq!(
+            installations.last(),
+            Some(&AppInstallation {
+                account: "big-corp".to_owned(),
+                all_repositories: true,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn user_installations_maps_a_rejected_token_and_bad_answers() {
+        let server = MockServer::start().await;
+        let mut config = test_config();
+        config.github.api_url = Url::parse(&format!("{}/api", server.uri())).expect("url");
+        let token = SecretString::from("t");
+        Mock::given(method("GET"))
+            .and(path("/api/user/installations"))
+            .respond_with(ResponseTemplate::new(401))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            user_installations(&config.github, &token).await,
+            Err(GithubError::Unauthorized)
+        ));
+        Mock::given(method("GET"))
+            .and(path("/api/user/installations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "total_count": 1,
+                "installations": [installation(serde_json::json!({ "login": "acme" }), "some", false)],
+            })))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            user_installations(&config.github, &token).await,
+            Err(GithubError::Unexpected { .. })
+        ));
     }
 }

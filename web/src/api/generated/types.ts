@@ -504,9 +504,13 @@ old_line: number | null,
  */
 new_line: number | null,
 /**
- * Text without the diff marker.
+ * Text without the diff marker and line ending.
  */
-text: string, };
+text: string,
+/**
+ * Line ending when it is not LF: `crlf`, or `no_newline` for a last line without one; null for LF.
+ */
+eol: LineEnding | null, };
 
 /**
  * Kind of a diff line.
@@ -971,6 +975,11 @@ basis: Basis,
  * GitHub link.
  */
 github_url: string, };
+
+/**
+ * A line ending other than LF.
+ */
+export type LineEnding = "crlf" | "no_newline";
 
 /**
  * Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.
@@ -1655,9 +1664,10 @@ llm_status: LlmCallOutcome | null,
  */
 language: LlmLanguage,
 /**
- * GitHub App installations.
+ * GitHub App installations the user can access; null = not checked (GitHub could not be reached or the
+ * user's GitHub sign-in is not usable), never a stand-in for "none installed".
  */
-app_installations: Array<AppInstallation>,
+app_installations: Array<AppInstallation> | null,
 /**
  * The tenant's known repositories (any pull request opened); each one's settings can be opened.
  */

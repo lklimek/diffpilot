@@ -27,18 +27,25 @@ async fn lines(
 ) -> ApiResult<Json<LinesResponse>> {
     let Path(id) = id.map_err(failure)?;
     let Query(query) = query.map_err(failure)?;
-    if query.from == 0 || query.from > query.to {
-        return Err(failure(AnalysisApiError::InvalidRange));
-    }
-    if query.to - query.from >= RangeQuery::MAX_LINES {
-        return Err(failure(AnalysisApiError::RangeTooLarge));
-    }
-    if !is_tree_path(&query.path) {
-        return Err(failure(AnalysisApiError::InvalidPath));
-    }
+    check_range(&query).map_err(failure)?;
     let summary = visible_analysis(&state, &session, id).await?;
     let lines = pipeline::lines::read(&state, &summary, query)
         .await
         .map_err(failure)?;
     Ok(Json(lines))
+}
+
+/// Transport checks of a `lines` or `diff` query: `1 ≤ from ≤ to`, at most `RangeQuery::MAX_LINES` lines and a
+/// plain repository-relative path.
+pub(crate) fn check_range(query: &RangeQuery) -> Result<(), AnalysisApiError> {
+    if query.from == 0 || query.from > query.to {
+        return Err(AnalysisApiError::InvalidRange);
+    }
+    if query.to - query.from >= RangeQuery::MAX_LINES {
+        return Err(AnalysisApiError::RangeTooLarge);
+    }
+    if !is_tree_path(&query.path) {
+        return Err(AnalysisApiError::InvalidPath);
+    }
+    Ok(())
 }

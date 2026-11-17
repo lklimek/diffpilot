@@ -11,9 +11,9 @@ const diff: DiffResponse = {
     {
       header: "@@ -54,1 +97,2 @@ impl RpcClient",
       lines: [
-        { kind: "context", old_line: 53, new_line: 96, text: "    let timeout = t;" },
-        { kind: "removed", old_line: 54, new_line: null, text: "    send(http).await?;" },
-        { kind: "added", old_line: null, new_line: 97, text: "    match send(http).await {" },
+        { kind: "context", old_line: 53, new_line: 96, text: "    let timeout = t;", eol: null },
+        { kind: "removed", old_line: 54, new_line: null, text: "    send(http).await?;", eol: null },
+        { kind: "added", old_line: null, new_line: 97, text: "    match send(http).await {", eol: null },
       ],
     },
   ],
@@ -30,6 +30,32 @@ describe("ClassicDiff", () => {
       "5396 unchanged    let timeout = t;",
       "54−removed    send(http).await?;",
       "97+added    match send(http).await {",
+    ]);
+  });
+
+  it("shows a change of only the line ending: CRLF and a missing final newline", () => {
+    const endings: DiffResponse = {
+      path: "a.txt",
+      side: "head",
+      hunks: [
+        {
+          header: "@@ -1,2 +1,2 @@",
+          lines: [
+            { kind: "removed", old_line: 1, new_line: null, text: "x", eol: "crlf" },
+            { kind: "added", old_line: null, new_line: 1, text: "x", eol: null },
+            { kind: "removed", old_line: 2, new_line: null, text: "last", eol: "no_newline" },
+            { kind: "added", old_line: null, new_line: 2, text: "last", eol: null },
+          ],
+        },
+      ],
+    };
+    render(<ClassicDiff diff={endings} />);
+    const rows = [...document.querySelectorAll("[data-diff-line]")].map((r) => r.textContent);
+    expect(rows).toEqual([
+      "1−removedx(CRLF)",
+      "1+addedx",
+      "2−removedlast(no newline at end of file)",
+      "2+addedlast",
     ]);
   });
 
@@ -69,6 +95,7 @@ describe("ClassicDiff", () => {
         old_line: h * 5 + i + 1,
         new_line: null,
         text,
+        eol: null,
       })),
     }));
     render(<ClassicDiff diff={{ ...diff, hunks }} highlight={highlight} />);
