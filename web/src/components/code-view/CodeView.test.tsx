@@ -276,6 +276,11 @@ describe("CodeView", () => {
     ).toHaveLength(1);
   });
 
+  it("names comment actions on removed code read from the base commit as removed lines", () => {
+    render(<CodeView {...stepProps("f4.1")} onLineAction={() => {}} />);
+    expect(screen.getAllByRole("button", { name: /^Comment on removed line \d+$/ })).toHaveLength(10);
+  });
+
   it("renders line numbers as plain text without a line action", () => {
     render(<CodeView {...stepProps("f1.2")} />);
     expect(screen.queryAllByRole("button", { name: /^Comment on / })).toHaveLength(0);

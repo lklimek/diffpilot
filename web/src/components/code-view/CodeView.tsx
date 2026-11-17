@@ -127,16 +127,17 @@ function Line({
   const key = keyOf({ side, line });
   const commenting = ctx.activeKey === key;
   const changed = row?.changed ?? false;
+  const removedLine = removed || (side === "base" && changed);
   const background = commenting
     ? "bg-accent-bg outline-3 -outline-offset-3 outline-accent"
     : highlighted
       ? ""
-      : removed || (side === "base" && changed)
+      : removedLine
         ? "bg-rm-bg"
         : row?.moved
           ? "bg-mv-bg"
           : "";
-  const label = `Comment on ${removed ? "removed line" : "line"} ${line}`;
+  const label = `Comment on ${removedLine ? "removed line" : "line"} ${line}`;
   return (
     <div
       data-line={line}
@@ -191,8 +192,8 @@ function Line({
           <Glyph
             key={t.id}
             mark="thread"
-            glyph="❝"
-            className="text-[15px] font-bold"
+            glyph="⚑"
+            className="text-[12px]"
             text={`GitHub thread by ${t.author}: ${t.excerpt}`}
           />
         ))}
