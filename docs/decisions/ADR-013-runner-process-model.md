@@ -1,9 +1,10 @@
 # ADR-013: Runner process model (decision R1)
 
-- Status: accepted by evidence (WP3-OPS phase 1, 2026-11-17, revised after review SEC-001/SEC-002); R1 holds,
+- Status: accepted by evidence (WP3-OPS phase 1, 2026-11-17, revised after reviews SEC-001/SEC-002 and
+  SEC-003/QA-001); R1 holds,
   the two-container fallback is not needed.
 - Source: threat model R1, T1a–T1d, T4, T8b, T13; ADR-003 (per-job `CODEX_HOME` persistent); plan §5.4.
-- Evidence: `deploy/runner/r1-test/run.sh` (40 named checks, all PASS); ledger
+- Evidence: `deploy/runner/r1-test/run.sh` (43 named checks, all PASS); ledger
   `/data/artifacts/smart-review/2026-11-17/wp3-ops/r1-test.log`. Docker 29.9.2, kernel 7.0, default seccomp,
   AppArmor `docker-default (enforce)`, real Codex CLI 0.167.0 and `github-mcp-server` 2.1.0, fake keys only.
 
@@ -24,13 +25,14 @@ per datagram, `id` echoed in the reply; replies may arrive out of order (`wait`)
 
 | Request | Effect |
 |---|---|
-| `spawn {argv, env, cwd}` + `SCM_RIGHTS` [stdin, stdout, stderr] → `{pid}` | fork; child: `oom_score_adj` 1000 (OOM killer takes agents first), `setsid()`, `setgroups(0)`, `setresgid(agent)`, `setresuid(agent)`, `umask 077`, `chdir(cwd)`, dup2 the three fds, close the rest, default signals and empty mask, `execve(argv[0], argv, env)` with exactly `env` (T2). `argv[0]` and `cwd` absolute. The supervisor is the parent. A failed fork (pids exhausted) is an error reply. |
+| `spawn {argv, env, cwd, exclusive}` + `SCM_RIGHTS` [stdin, stdout, stderr] → `{pid}` | refused while any agent thread is alive (same test as `sweep`) when `exclusive` is set or argv starts this binary's helper mode; then fork; child: `oom_score_adj` 1000 (OOM killer takes agents first), `setsid()`, `setgroups(0)`, `setresgid(agent)`, `setresuid(agent)`, `umask 077`, `chdir(cwd)`, dup2 the three fds, close the rest, default signals and empty mask, `execve(argv[0], argv, env)` with exactly `env` (T2). `argv[0]` and `cwd` absolute. The supervisor is the parent. A failed fork (pids exhausted) is an error reply. |
 | `wait {pid}` → `{status}` | answered when the supervisor reaps that spawned pid |
-| `signal {pid, signal}` → `{signalled}` | `pid` must be a spawned pid (= its process group, `setsid`); the signal goes to each live member of that group whose four uids are all `agent`, through a pidfd (below). Used for the graceful SIGTERM to Codex. |
-| `sweep` → `{rounds, killed, ms}` | loop: list `/proc`; every live (non-zombie) process with **any** of real/effective/saved/fs uid = `agent` gets SIGKILL through a pidfd; reap; until none is alive. In-process: no fork, no exec, so a full `pids_limit` cannot stop it. Hard deadline (default 5 s): past it, or on any error, the supervisor logs and exits 70 — init then ends the container and every process in it, the restart policy brings a clean one (fail closed). Never `kill(-1)` as root. |
+| `signal {pid, signal}` → `{signalled}` | `pid` must be a spawned pid (= its process group, `setsid`); the signal goes to each thread group of that process group whose live threads all have the four uids = `agent`, through a pidfd (below). Used for the graceful SIGTERM to Codex. |
+| `sweep` → `{rounds, killed, ms}` | loop: for every thread group in `/proc`, read `/proc/<tgid>/task/*/status`; a group is live when **any thread** is neither zombie nor dead, whatever the leader's state (a leader that called `pthread_exit()` is a zombie while its other threads run); every live group with any of real/effective/saved/fs uid = `agent` on a live thread gets SIGKILL through a pidfd (kills the whole group); reap (a zombie leader is reaped after its last thread); until no live agent thread exists in `/proc/*/task/*`. In-process: no fork, no exec, so a full `pids_limit` cannot stop it. Hard deadline (default 5 s): past it, or on any error, the supervisor logs and exits 70 — init then ends the container and every process in it, the restart policy brings a clean one (fail closed). Never `kill(-1)` as root. |
 | `handover {path}` | `path` normalised and either `<state>/codex-homes/<name>` or `<work>/<name>/{home,tmp}`; opened with `openat2(O_PATH\|O_DIRECTORY\|O_NOFOLLOW, RESOLVE_NO_SYMLINKS)`; must be owned by `runner`, mode 0700 and empty (listed by a runner-uid child, same dev/ino, because root without `DAC_READ_SEARCH` cannot list it); then `fchownat(fd, "", agent, agent, AT_EMPTY_PATH)`. The only use of `CHOWN`. |
 
-pidfd rule (no reused pid is ever hit): `pidfd_open(pid)`, then read `/proc/<pid>/status` and check the uids, then
+pidfd rule (no reused pid is ever hit): `pidfd_open(tgid)` (works on a zombie leader with live threads), then read
+`/proc/<tgid>/task/*/status` and check the uids of the live threads, then
 `pidfd_send_signal(pidfd, sig)`. If the pinned process died and the pid was reused before the read, the check sees
 the new owner and skips it; if it dies after the read, `pidfd_send_signal` fails with `ESRCH`.
 
@@ -47,11 +49,19 @@ refused as root), because they read or write agent-owned files:
 | `list ROOT` | entries below ROOT without following symlinks (to find `sessions/YYYY/MM/DD/rollout-*-<thread>.jsonl`) |
 | `clear ROOT` | removes everything below ROOT with fd-relative calls, no symlink followed; ROOT stays |
 
-Helpers run only while no other agent process is alive (after a `sweep`, or before Codex starts): a same-uid
-process can stop them and open their pipes through `/proc/<pid>/fd`. Every wait on an agent process has a deadline
-(helpers 30 s; writes to a helper's stdin non-blocking with the same deadline); past it the runner requests `sweep`,
-which kills the stopped or hung helper and everything else of uid `agent`, and if the sweep fails the container
-ends. A hostile agent can therefore never hang the runner.
+Helpers run only while no other agent thread is alive (after a `sweep`, or before Codex starts): a same-uid
+process can stop them and open their pipes through `/proc/<pid>/fd`. The trusted runner orders its calls that way,
+and the supervisor enforces it: it refuses a `spawn` of its own helper modes, and of any `exclusive` request (the
+runner sets it for `ipcrm`), while an agent thread exists (`supervisor_refuses_helper_while_agent_alive`). The
+check and the fork are not atomic, but between them only the supervisor can create an agent process.
+
+One deadline covers reading an agent command's output **and** the `wait` reply (helpers 30 s; writes to a helper's
+stdin non-blocking with the same deadline); past it the runner requests `sweep` and then collects the status, and
+if the sweep fails the container ends. Proven for a SIGSTOPped command (`hung_agent_command_hits_deadline_then_swept`)
+and for one that closes stdout and stderr, ignores SIGTERM and keeps running
+(`closed_streams_sigterm_ignored_hits_deadline_then_swept`); the prototype bounds every other wait the same way.
+The Rust runner must keep this property (one deadline per wait, then sweep) — it is not proven for it until the
+checks are ported.
 
 `pids_limit` is mandatory: it bounds a fork loop racing the sweep (measured: 509 processes holding every pid of a
 512 limit, swept in 2 rounds, 45 ms).
@@ -119,10 +129,13 @@ setuid/setgid bits stripped).
   `process` for `pidfd_open`/`pidfd_send_signal`). `spawn` may use `std::process::Command` with
   `.uid(10002).gid(10002)` (std calls `setgroups(0)` then `setuid` when a uid is set), `.env_clear().envs(..)`,
   `Stdio::from(OwnedFd)` and `pre_exec(setsid)`; reap with `waitpid(-1, WNOHANG)`, not `Child::wait`. `sweep` and
-  `signal` run in the supervisor process; helpers are subcommands of the same binary.
+  `signal` run in the supervisor process and decide liveness per thread (`/proc/<tgid>/task/*`), never by the
+  leader's state; helpers are subcommands of the same binary, and `spawn` refuses them (and `exclusive` requests)
+  while an agent thread lives.
 - Runner: `kill_on_drop` and `kill_process_group` on Codex no longer work (different uid); every drop/cancel path
-  must go through `signal` + `sweep`, and the supervisor's final sweep covers a runner crash. Every read of agent
-  output and every `wait` is bounded by a deadline, then `sweep`. `RemoveOnDrop` cannot delete agent-owned
+  must go through `signal` + `sweep`, and the supervisor's final sweep covers a runner crash. Reading an agent
+  command's output and receiving its `wait` reply share one deadline, then `sweep`; the socket `recv` is bounded
+  too. `RemoveOnDrop` cannot delete agent-owned
   contents: use `clear` + `rmdir`. Job dir mode 0755 (today 0700).
 - Port the checks of `deploy/runner/r1-test/` to the Rust supervisor: same scenarios, same check names.
 
@@ -138,6 +151,8 @@ setuid/setgid bits stripped).
   `pids_limit` stops the helper from being forked at all; the mechanism that kills the agent must not be signalable
   by the agent. Hence `CAP_KILL` and the in-process root sweep (`hostile_agent_swept_within_deadline`,
   `pid_exhaustion_sweep_still_works`).
+- Liveness from the thread-group leader's state (first root-sweep version): a zombie leader with running threads
+  was skipped and the sweep reported success (`zombie_leader_thread_group_swept`, RED before the fix).
 - `kill(-1)` as root: would hit the runner and the supervisor's other children; the root sweep selects by uid.
 - Two containers: unnecessary, every property holds in one.
 - Prior art: init systems (tini, s6, runit `chpst`) switch uid only at start; `systemd-run` needs systemd/D-Bus;
@@ -152,5 +167,9 @@ setuid/setgid bits stripped).
   the credential unusable): a denial of service for an attacker who already holds the credential (AR-4).
 - A crashed run's per-job dirs stay agent-owned until start-up recovery (order step 1), which must finish before
   the first job: a later agent could traverse into a guessed `<job>-<attempt>` name.
+- **Accepted denial of service:** a hostile job can make a sweep fail (for example a process the kernel cannot
+  kill within the deadline) and so force the fail-closed exit 70 and a container restart, once per attempt; the
+  job's attempt limit (`max_attempts` = 3, `runner-protocol.md`) bounds the repetitions per job, other jobs of the
+  queue are delayed meanwhile.
 - Until phase 2 lands the bounded `codex-homes` filesystem, a plain volume there lets the agent fill the host
   disk; v1 must not deploy without it.
