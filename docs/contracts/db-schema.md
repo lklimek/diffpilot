@@ -15,7 +15,7 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `oauth_logins` | OAuth state + encrypted PKCE verifier, short-lived | – |
 | `sessions` | cookie sessions, token hash only, CSRF token | – |
 | `user_tokens` | GitHub user tokens, AES-GCM ciphertext | `version` = CAS counter of the serialised refresh |
-| `repos`, `pull_requests` | known repositories (Settings list) and PR snapshots; PR-level `agent_thread_id` and `session_state`, shared across analyses; PR id uses AUTOINCREMENT for archive keys | – |
+| `repos`, `pull_requests` | known repositories (Settings list) and PR snapshots; PR-level analytic `agent_thread_id`, `analytic_generation` (default 0), and `session_state`, shared across analyses; PR id uses AUTOINCREMENT for archive keys | – |
 | `analyses` | one analysis per PR head and language: state, progress, skills commit, `round` (incremented by each Retry) | partial unique index: one live (not cancelled) per (PR, head, language) |
 | `documents` | validated agent output and pre-pass as JSON: `prepass`, `plan`, `pr_context`, `flow` (key = flow id), `github_snapshot` (threads, checks), `unsent` (lines the server did not send to the LLM with their reason; key `plan` or a flow id), `memcan_profile` (the analysis's MemCan project profile lookup: `not_checked`, or `checked` with the bounded profile text or none; a Retry looks a `not_checked` one up again); `github_access` (an accepted agent output's attempt ran with an installation token; NULL for server-built documents) | `json_valid` |
 | `llm_credentials` | credential ids runners hold (never the secret), pause, unusable, last call outcome | kind `codex_chatgpt` |
@@ -23,7 +23,8 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `installation_tokens` | AES-GCM ciphertext and expiry of the installation token per (job, attempt), kept until revocation is confirmed | PK `(job_id, attempt)`; listed for revocation once the attempt is no longer claimed or running |
 | `job_events` | bounded activity log (last 500 per job) | PK `(job_id, attempt, seq)` |
 | `review_states` | ticks and last viewed block per user and analysis | – |
-| `questions` | Ask questions and answers | – |
+| `questions` | private Ask questions and answers; lists and quotas scoped by authenticated user; fallback history spans the PR, latest 20 final answers | `user_id` selects the owner |
+| `working_sessions` | private Ask thread and fork's analytic generation, with `tenant_id` | PK `(pull_request_id, user_id)`; cascading PR/user foreign keys |
 | `feedback` | one entry per (user, analysis, target, value) (CCR-F1); `revision` (+1 per replacement or removal); `memcan_state` pending/written/failed of the current revision (exposed as `Feedback.memory`); `removed_at` marks a removed entry kept until MemCan deleted its memory; `attempts` / `next_attempt_at` schedule retries per entry; `unsettled_until` is the end of the settle period of a write with unknown outcome | `target_key`: step id, annotation id, or `<side>:<line>:<path>` for lines; `overrated` / `underrated` exclusive per (user, analysis, target) |
 | `comment_requests` | pending-review idempotency: request hash + response per (user, key) | – |
 
@@ -61,3 +62,8 @@ Schema changes are change requests to the coordinator.
 `analyses.failure_reason` preserves the optional API failure code, including `configuration`; state transitions
 clear it together with the failure message. `llm_credentials.last_call_failure` accepts `configuration` for a
 required agent skill that could not be provided. These remain additions to the single pre-deployment schema.
+
+Analytic completion advances the generation even when it keeps the same thread id. Ask completion updates
+only `working_sessions` using the job's durable question owner. A stale fork is not selected at claim. Successful
+analytic output without an archive clears its reference and invalidates forks. Cancel/Re-analyze keep archives;
+explicit PR removal or PR-wide retention deletes them. This migration is rewritten, not upgraded in place.

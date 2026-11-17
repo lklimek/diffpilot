@@ -833,6 +833,7 @@ impl Driver<'_> {
             },
             session: None,
             // Built at claim from the results stored then (`context::StoredPacks`).
+            working_session: None,
             context_pack: None,
             skills: prompts::required_skills(),
             access: AgentAccess::default(),

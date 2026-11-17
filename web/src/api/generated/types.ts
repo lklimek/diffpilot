@@ -280,7 +280,7 @@ answer: string,
 evidence: Array<Evidence>, };
 
 /**
- * A question and its LLM answer, pinned to the step.
+ * A private question and its LLM answer, pinned to the step; returned only to its asker.
  */
 export type AskQuestion = {
 /**
@@ -292,7 +292,7 @@ id: QuestionId,
  */
 asked_by?: string,
 /**
- * Whether the current reader asked this question.
+ * Always true in current HTTP/SSE responses; absent only in older payloads.
  */
 mine?: boolean,
 /**

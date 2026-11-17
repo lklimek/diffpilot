@@ -6,11 +6,28 @@
   brief §5 Agent sessions; plan §5.3, §5.4 T8.
 
 ## Decisions
-- **One session per pull request**, shared across heads, Retry rounds, languages and Ask on any analysis.
-  `pull_requests.id` (unique for repository + PR number, never reused) is the archive key:
-  `<state>/sessions/<pull_request_id>/YYYY/MM/DD/rollout-…-<thread>.jsonl`, owned by uid `runner`.
-  `auth.json` is never archived. `JobSpec.pull_request_id` carries the key, and `SessionRef` is
-  `{pull_request_id, thread_id}`. The server resolves the current thread at claim time.
+- **One analytic session per PR**, shared across heads, Retry rounds and languages, for plan, PR context,
+  flow and repair jobs only. It never receives local questions, answers, feedback notes or comment drafts.
+  Archive: `<state>/sessions/<pull_request_id>/analytic/YYYY/MM/DD/rollout-…-<thread>.jsonl`.
+- **One private working session per (PR, user)** for Ask. Archive:
+  `<state>/sessions/<pull_request_id>/users/<sha256-user-id>/YYYY/MM/DD/rollout-…-<thread>.jsonl`.
+  Lazy fork copies only the analytic rollout into a fresh job home; the useful turn saves only the working
+  archive. A working thread is eligible only at its recorded analytic generation. Missing working archive
+  falls back to the analytic archive; missing analytic archive falls back to the context pack. Every re-fork
+  receives the asker's latest 20 final Q&A across the PR, further bounded and fenced as untrusted data by the
+  existing Ask context-pack renderer. No other user's history is selected.
+- **Generation and publication.** Each effective analytic checkpoint advances `analytic_generation`, even
+  if the provider thread id is unchanged. Successful output without an archive clears the analytic reference
+  and invalidates forks. Ask completion updates only its user's working reference. Replayed/stale results
+  never rewrite references. A cancelled checkpoint invalidates forks without accepting its thread.
+- **Self-contained routing.** `JobSpec.session` always names the analytic source; `working_session` is required
+  for Ask and absent otherwise. Its `user_key`, `analytic_generation`, and optional working `thread_id` select
+  restore-first and save locations. Runner rejects missing/mismatched routing and non-hex archive keys.
+  The server derives ownership from the authenticated question, never from runner output.
+- **No indirect private-memory channel.** Agents receive no MemCan endpoint/bearer. The server still reads
+  bounded project profiles and calibration examples. Feedback notes stay local; shared calibration contains
+  only the fixed feedback value and public analysis facts, marked `private_text_excluded: true`. Legacy
+  calibration records without that marker are ignored. This supersedes the prior full-agent-MemCan decision.
 - **Automatic compaction only.** Every useful new or resumed Codex turn sets
   `model_auto_compact_token_limit = 400000`. No extra turn, trivial prompt or deadline reserve.
   Measured forced compaction cost was 35–147 s per job; the owner approved removing it on 2026-11-17.
@@ -37,6 +54,20 @@
   protocol fields are needed for logging.
 
 ## Consequences
-- The server stores the thread reference at PR level; only the runner handles the files.
+- The server stores the analytic reference/generation at PR level and working references per PR/user; only the runner handles files.
 - The single rewritable migration moves thread/lifecycle columns from analyses to pull_requests; local
   databases must be recreated. Analysis documents, review state and skills commit remain per analysis.
+
+## Privacy and concurrency (owner decision, 2026-11-17)
+
+HTTP lists and SSE snapshots/live events expose only the signed-in user's questions, feedback notes and
+review state. GitHub pending comments use that user's token and require `viewerDidAuthor`; foreign ids
+return 404. Unsent comment drafts live only in the browser component. Published GitHub comments remain
+public PR data and may enter analysis; pending comments are excluded from the shared snapshot.
+
+Jobs remain serialised per PR and credential, including two users' Ask jobs. The archive model permits
+parallel working sessions later; v1 does not enable that concurrency. Cancel and Re-analyze keep both kinds
+of archive. Explicit PR removal and the existing 14-day retention remove the whole PR archive tree.
+Removing sessions when a user is deleted or removed from the allowlist is out of scope; references have
+foreign-key cleanup, but archive retention remains PR-wide. Existing databases must be recreated (the single
+rewritable migration); old analytic references must not be reused because they may contain earlier Ask text.

@@ -293,6 +293,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_feedback_notes_and_foreign_ids_are_hidden_from_the_other_reader() {
+        let f = fixture().await;
+        let (_, own) = f.post(on_step("wrong", Some("PRIVATE_NOTE"))).await;
+        let cookie = crate::test_support::other_user_cookie(&f.state).await;
+        let (status, listed) = f.list_as(f.analysis, &cookie).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed, json!([]));
+        assert_eq!(
+            f.delete_as(
+                f.analysis,
+                own["id"].as_str().expect("id"),
+                &cookie,
+                Some("csrf")
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+        let (status, other) = f
+            .post_as(
+                f.analysis,
+                &cookie,
+                Some("csrf"),
+                on_step("wrong", Some("OTHER_NOTE")),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(own["id"], other["id"]);
+        assert_eq!(f.list().await, [own]);
+    }
+
+    #[tokio::test]
     async fn hard_case_1_wrong_and_overrated_are_both_stored() {
         let f = fixture().await;
         let (status, wrong) = f.post(on_step("wrong", Some("  Not a defect.  "))).await;

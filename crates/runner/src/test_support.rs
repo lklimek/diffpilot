@@ -86,6 +86,11 @@ pub(crate) fn spec(kind: JobKind, repo: &Path) -> JobSpec {
         limits: JobLimits::default(),
         credential: credential(),
         session: None,
+        working_session: (kind == JobKind::Ask).then(|| contracts::job::spec::WorkingSession {
+            user_key: "a".repeat(64),
+            analytic_generation: 0,
+            thread_id: None,
+        }),
         context_pack: None,
         skills: Vec::new(),
         access: AgentAccess::default(),

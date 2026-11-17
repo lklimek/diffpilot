@@ -173,7 +173,7 @@ impl CodexProvider {
             known,
         )?;
         let before = match resume {
-            Some(thread) => session::restore(&call.session_dir, thread, &call.codex_home)?,
+            Some(thread) => session::restore(&call.restore_dir, thread, &call.codex_home)?,
             None => Usage::default(),
         };
         let (skills_commit, skill_files) = self.prepare(call).await?;

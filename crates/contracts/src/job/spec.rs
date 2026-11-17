@@ -19,7 +19,7 @@ pub struct JobSpec {
     pub kind: JobKind,
     /// The analysis the job belongs to.
     pub analysis_id: AnalysisId,
-    /// Stable database key of the pull request; keys the shared agent-session archive.
+    /// Stable database key of the pull request; root of its analytic and private working archives.
     pub pull_request_id: i64,
     /// The repository to check out.
     pub repo: RepoCheckout,
@@ -33,8 +33,11 @@ pub struct JobSpec {
     pub limits: JobLimits,
     /// The LLM credential to run with; jobs are serialised per credential (ADR-003).
     pub credential: LlmCredentialRef,
-    /// The pull request's agent session to resume, or none for the first job.
+    /// The pull request's analytic session to resume or fork, or none before its first checkpoint.
     pub session: Option<SessionRef>,
+    /// Ask-only archive routing. Absent for analytic jobs; required for Ask.
+    #[serde(default)]
+    pub working_session: Option<WorkingSession>,
     /// Context to seed a new session when `session` is missing or unusable.
     pub context_pack: Option<String>,
     /// Names of the claudius skills exposed read-only to the agent.
@@ -131,4 +134,15 @@ pub enum JobPriority {
     Interactive,
     /// Pipeline jobs.
     Batch,
+}
+
+/// Private Ask archive: restore this thread first, then the analytic `session`; save only here.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkingSession {
+    /// SHA-256 of the authenticated user's stable id (64 lowercase hex digits).
+    pub user_key: String,
+    /// Analytic generation this fork is based on. Stale forks are never offered for restore.
+    pub analytic_generation: i64,
+    /// Working thread to restore, or none for a lazy fork from the analytic session.
+    pub thread_id: Option<String>,
 }

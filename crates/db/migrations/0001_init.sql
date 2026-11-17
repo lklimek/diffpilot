@@ -99,6 +99,7 @@ CREATE TABLE pull_requests (
     head_sha   TEXT NOT NULL,
     fetched_at TEXT NOT NULL,
     agent_thread_id     TEXT,
+    analytic_generation INTEGER NOT NULL DEFAULT 0,
     session_state       TEXT NOT NULL DEFAULT 'none' CHECK (session_state IN ('none', 'active', 'drop_requested', 'dropped')),
     UNIQUE (repo_id, number)
 ) STRICT;
@@ -306,4 +307,14 @@ CREATE TABLE comment_requests (
     response        TEXT CHECK (response IS NULL OR json_valid(response)),
     created_at      TEXT NOT NULL,
     PRIMARY KEY (user_id, idempotency_key)
+) STRICT;
+
+-- Private Ask sessions forked from an analytic PR generation; removed with the PR.
+CREATE TABLE working_sessions (
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    pull_request_id INTEGER NOT NULL REFERENCES pull_requests(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_thread_id TEXT NOT NULL,
+    analytic_generation INTEGER NOT NULL,
+    PRIMARY KEY (pull_request_id, user_id)
 ) STRICT;

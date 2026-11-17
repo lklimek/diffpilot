@@ -417,7 +417,7 @@ struct Current {
 
 async fn current(tx: &mut SqliteConnection, job: JobId) -> Result<(Current, SqliteRow), DbError> {
     let row = sqlx::query(
-        "SELECT state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, credential_id,
+        "SELECT kind, state, attempt, cancel_requested, max_attempts, ready_output, ready_output_attempt, credential_id,
              json_extract(result, '$.attempt') AS result_attempt
          FROM jobs WHERE id = ?",
     )
@@ -678,24 +678,54 @@ impl Jobs<'_> {
         .execute(&mut *tx)
         .await?;
         apply_credential_effects(&mut tx, &credential, result, now).await?;
-        // The session the attempt reported becomes the PR's session (ADR-004) only for the first effective,
+        // Publish the reported analytic or private working checkpoint only for the first effective,
         // not cancelled result: a repeated or late result never restores an older session. A session already asked
         // to be dropped stays dropped.
         if let (Some(session), false) = (
             &stored.session,
             matches!(stored.outcome, JobOutcome::Cancelled),
         ) {
-            sqlx::query(
-                "UPDATE pull_requests SET agent_thread_id = ?,
-                     session_state = CASE WHEN session_state IN ('none', 'active') THEN 'active' ELSE session_state END
-                 WHERE id = (SELECT a.pull_request_id FROM jobs j JOIN analyses a ON a.id = j.analysis_id WHERE j.id = ?)",
-            )
-            .bind(&session.thread_id)
-            .bind(result.job_id.to_string())
-            .execute(&mut *tx)
-            .await?;
+            let kind: String = row.try_get("kind")?;
+            if kind == "ask" {
+                // The PR claim lock keeps the analytic generation unchanged for the entire Ask turn.
+                // Derive the owner from the durable question, never the runner's result.
+                sqlx::query("INSERT INTO working_sessions (tenant_id, pull_request_id, user_id, agent_thread_id, analytic_generation)
+                    SELECT p.tenant_id, p.id, q.user_id, ?, p.analytic_generation FROM jobs j
+                    JOIN questions q ON q.id = j.question_id JOIN analyses a ON a.id = j.analysis_id
+                    JOIN pull_requests p ON p.id = a.pull_request_id
+                    WHERE j.id = ? AND p.session_state IN ('none', 'active')
+                    ON CONFLICT (pull_request_id, user_id) DO UPDATE SET
+                        agent_thread_id = excluded.agent_thread_id, analytic_generation = excluded.analytic_generation")
+                    .bind(&session.thread_id).bind(result.job_id.to_string()).execute(&mut *tx).await?;
+            } else {
+                sqlx::query("UPDATE pull_requests SET agent_thread_id = ?, analytic_generation = analytic_generation + 1,
+                    session_state = CASE WHEN session_state IN ('none', 'active') THEN 'active' ELSE session_state END
+                    WHERE id = (SELECT a.pull_request_id FROM jobs j JOIN analyses a ON a.id = j.analysis_id WHERE j.id = ?)")
+                    .bind(&session.thread_id).bind(result.job_id.to_string()).execute(&mut *tx).await?;
+            }
             sqlx::query("UPDATE analyses SET skills_commit = COALESCE(?, skills_commit) WHERE id = (SELECT analysis_id FROM jobs WHERE id = ?)")
                 .bind(stored.skills_commit.as_deref()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
+        }
+        let kind: String = row.try_get("kind")?;
+        if kind != "ask"
+            && stored.session.is_none()
+            && matches!(stored.outcome, JobOutcome::Succeeded { .. })
+        {
+            // Valid output without a checkpoint means the old archive no longer represents this
+            // generation. Neither an old analytic thread nor its private forks may be resumed.
+            sqlx::query("UPDATE pull_requests SET agent_thread_id = NULL, analytic_generation = analytic_generation + 1,
+                session_state = CASE WHEN session_state = 'active' THEN 'none' ELSE session_state END
+                WHERE id = (SELECT a.pull_request_id FROM jobs j JOIN analyses a ON a.id = j.analysis_id WHERE j.id = ?)")
+                .bind(result.job_id.to_string()).execute(&mut *tx).await?;
+        }
+        if kind != "ask"
+            && stored.session.is_some()
+            && matches!(stored.outcome, JobOutcome::Cancelled)
+        {
+            // Cancel wins the result, but a useful turn may already have checkpointed before cancellation.
+            sqlx::query("UPDATE pull_requests SET analytic_generation = analytic_generation + 1
+                WHERE id = (SELECT a.pull_request_id FROM jobs j JOIN analyses a ON a.id = j.analysis_id WHERE j.id = ?)")
+                .bind(result.job_id.to_string()).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(Completion::Applied { state })
@@ -1172,6 +1202,37 @@ mod tests {
                 output: json!({"flows": []}),
             },
         )
+    }
+
+    #[tokio::test]
+    async fn lost_analytic_checkpoint_invalidates_private_forks() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        db.analyses()
+            .set_session(analysis, "analytic", None)
+            .await
+            .expect("session");
+        let generation = db.agent_sessions().generation(1).await.expect("generation");
+        sqlx::query("INSERT INTO working_sessions (tenant_id, pull_request_id, user_id, agent_thread_id, analytic_generation) VALUES ('default', 1, 'u1', 'private', ?)")
+            .bind(generation).execute(&db.pool).await.expect("fork");
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        claim(&db, 1).await.expect("claim");
+        db.jobs()
+            .complete(&succeeded(job, 1), at(2))
+            .await
+            .expect("complete without archive");
+        assert_eq!(
+            db.agent_sessions().working(1, "u1").await.expect("fork"),
+            None
+        );
+        assert_eq!(
+            db.analyses()
+                .get(analysis)
+                .await
+                .expect("analysis")
+                .agent_thread_id,
+            None
+        );
     }
 
     #[tokio::test]

@@ -19,6 +19,35 @@ only**. S6 part 2 resolved in §10.
 | B8 | browser ↔ server | CSRF; login CSRF on the OAuth callback; forged `X-Forwarded-*` from a LAN peer; renamed-login takeover; traversal in `lines`/`diff` | T7a, T7b | — |
 | B9 | server ↔ GitHub | token minted **without `permissions`** (App write: issues, pull requests) or **without `repositories`** (all 49 repos of the `lklimek` installation, private included); a review submitted; duplicate pending reviews; `thread: null` taken as success | T3, T11 | — |
 
+## Private Ask isolation (owner decision, 2026-11-17; supersedes T6/T8 and AR-1/AR-2 below)
+
+ADR-004 defines one analytic session per PR and one working fork per PR/user. Analytic jobs and repairs never
+restore a working archive or receive local user text. Ask writes only its own working archive; stale generation
+or missing working archive re-forks the analytic checkpoint, with bounded own Q&A as untrusted data. The
+runner validates the archive key and job kind and scrubs only the destination archive. PR/credential claim
+serialization prevents concurrent writes. Archive-copy hardening T8b remains mandatory.
+
+User input flows:
+- Ask text and its answer: private database row → own HTTP/SSE → own Ask prompt/history/working archive.
+  A marker injection cannot enter later analytic restore sets or another user's archive.
+- Feedback note (including comment-derived feedback): private user-scoped row only. Shared MemCan records
+  contain the fixed enum value and public target facts, never the note. Legacy calibration records without
+  `private_text_excluded` are rejected. Agents receive no MemCan bearer or MCP endpoint, closing the indirect
+  Ask-write → analytic-read path. AR-1 is no longer accepted for smart-review jobs.
+- Unsent comment body: local component state. Submitted/edited pending comment: own user-token GitHub
+  request, own pending-review list only; `viewerDidAuthor` required, foreign ids return 404. Pending threads
+  are excluded from the shared PR snapshot. Published review comments are public PR data.
+- Review ticks and last viewed block: validated ids → own `review_states` row; never an agent prompt.
+- PR URL/repo/number and language: validated identifiers/enums select the public analysis; raw URL text is not
+  forwarded as instructions. Repository configuration, public PR descriptions/comments, and administrator
+  project profiles remain untrusted public/external inputs under T5; they are distinct from private app text.
+
+Questions, answers, counts, feedback notes and review-state are filtered before HTTP/SSE emission, never by
+browser convention. Q&A list/history tests, SSE snapshot/live filtering, foreign-feedback-id API tests and
+pending-review ownership tests cover these paths. Fake-provider marker tests and Codex archive-copy tests
+cover source/destination isolation and re-fork/loss. User removal/allowlist cleanup of archive files is deferred;
+PR deletion and PR-wide retention still remove every descendant archive.
+
 ## 2. Assets
 
 | Asset | Lives in | Agent uid reads it? | Loss means |

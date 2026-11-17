@@ -1378,10 +1378,13 @@ async fn ask_resumes_analysis_session_with_a_context_pack_of_the_step() {
         "its answer"
     );
     assert!(
-        !pack.contains("Unrelated?"),
-        "questions of other steps are left out"
+        pack.contains("Unrelated?"),
+        "own questions of other steps survive a re-fork"
     );
-    assert!(claim.spec.access.memcan.is_some(), "MemCan access at claim");
+    assert!(
+        claim.spec.access.memcan.is_none(),
+        "no shared memory access"
+    );
     assert_eq!(
         claim.spec.access.github, None,
         "no App installed in the test config"
@@ -1389,7 +1392,7 @@ async fn ask_resumes_analysis_session_with_a_context_pack_of_the_step() {
 }
 
 #[tokio::test]
-async fn shared_questions_mark_the_asker_and_current_user() {
+async fn private_questions_never_expose_another_asker() {
     use db::repo::users::GithubProfile;
     let f = fixture(false).await;
     f.state
@@ -1433,8 +1436,24 @@ async fn shared_questions_mark_the_asker_and_current_user() {
         .expect("question");
     let (_, listed) = f.list().await;
     assert_eq!(listed[0]["mine"], true);
-    assert_eq!(listed[1]["asked_by"], "colleague");
-    assert_eq!(listed[1]["mine"], false);
+    assert_eq!(listed.as_array().expect("list").len(), 1);
+    assert!(!listed.to_string().contains("Another user"));
+    let foreign_cookie = crate::test_support::other_user_cookie(&f.state).await;
+    let response = router(f.state.clone())
+        .oneshot(
+            Request::get(LIST_QUESTIONS.path.replace("{id}", &f.analysis.to_string()))
+                .header(header::COOKIE, &foreign_cookie)
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let (status, other) = json_of(response).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(other.as_array().expect("list").len(), 1);
+    assert_eq!(other[0]["text"], "Another user's question");
+    assert_eq!(other[0]["mine"], true);
+    assert_eq!(other[0]["asked_by"], "colleague");
 }
 
 #[tokio::test]
@@ -1497,4 +1516,181 @@ async fn analysis_reports_only_the_current_users_stored_state() {
         true,
         "even an explicitly saved empty state exists"
     );
+}
+
+#[tokio::test]
+async fn private_working_thread_is_committed_without_advancing_analytic_and_reforks_after_advance()
+{
+    use contracts::job::result::{SessionOutcome, SessionReport};
+    let f = fixture(true).await;
+    f.state
+        .db
+        .analyses()
+        .set_session(f.analysis, "analytic", None)
+        .await
+        .expect("session");
+    let initial_generation = f
+        .state
+        .db
+        .agent_sessions()
+        .generation(1)
+        .await
+        .expect("generation");
+    let first = f.asked("f1.5", "PRIVATE_MARKER").await;
+    f.queued_job(first).await;
+    let claim = f.claim().await.expect("claim");
+    let route = claim.spec.working_session.as_ref().expect("private route");
+    assert_eq!(route.thread_id, None, "lazy fork");
+    assert_eq!(route.analytic_generation, initial_generation);
+    f.post_job_result(
+        &claim,
+        JobResult {
+            job_id: claim.spec.job_id,
+            attempt: claim.spec.attempt,
+            outcome: JobOutcome::Succeeded {
+                output: good_answer(),
+            },
+            session: Some(SessionReport {
+                thread_id: "private-a".to_owned(),
+                outcome: SessionOutcome::Resumed,
+            }),
+            usage: None,
+            skills_commit: None,
+            llm_call: None,
+        },
+    )
+    .await;
+    f.wait_for(first, |q| q.state == AskState::Answered).await;
+    assert_eq!(
+        f.state
+            .db
+            .analyses()
+            .get(f.analysis)
+            .await
+            .expect("analysis")
+            .agent_thread_id
+            .as_deref(),
+        Some("analytic")
+    );
+    assert_eq!(
+        f.state
+            .db
+            .agent_sessions()
+            .generation(1)
+            .await
+            .expect("generation"),
+        initial_generation
+    );
+    assert_eq!(
+        f.state
+            .db
+            .agent_sessions()
+            .working(1, "u1")
+            .await
+            .expect("own")
+            .as_deref(),
+        Some("private-a")
+    );
+    assert_eq!(
+        f.state
+            .db
+            .agent_sessions()
+            .working(1, "u2")
+            .await
+            .expect("foreign"),
+        None
+    );
+    let cookie_b = crate::test_support::other_user_cookie(&f.state).await;
+    let (status, question_b) = f
+        .ask_as(f.analysis, "f1.5", "USER_B_MARKER", &cookie_b, Some("csrf"))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let id_b = serde_json::from_value(question_b["id"].clone()).expect("id");
+    f.queued_job(id_b).await;
+    let claim_b = f.claim().await.expect("B claim");
+    assert_eq!(
+        claim_b.spec.working_session.as_ref().unwrap().thread_id,
+        None
+    );
+    assert_ne!(
+        claim_b.spec.working_session.as_ref().unwrap().user_key,
+        route.user_key
+    );
+    assert!(
+        !claim_b
+            .spec
+            .context_pack
+            .as_ref()
+            .unwrap()
+            .contains("PRIVATE_MARKER")
+    );
+    f.post_result(
+        &claim_b,
+        JobOutcome::Succeeded {
+            output: good_answer(),
+        },
+    )
+    .await;
+    f.wait_for(id_b, |q| q.state == AskState::Answered).await;
+    let next = f.asked("f1.5", "Follow up").await;
+    f.queued_job(next).await;
+    let resumed = f.claim().await.expect("claim");
+    assert_eq!(
+        resumed
+            .spec
+            .working_session
+            .as_ref()
+            .unwrap()
+            .thread_id
+            .as_deref(),
+        Some("private-a")
+    );
+    f.post_result(
+        &resumed,
+        JobOutcome::Succeeded {
+            output: good_answer(),
+        },
+    )
+    .await;
+    f.wait_for(next, |q| q.state == AskState::Answered).await;
+    f.state
+        .db
+        .analyses()
+        .set_session(f.analysis, "analytic", None)
+        .await
+        .expect("same thread, new turn");
+    let third = f.asked("f1.5", "After head move").await;
+    f.queued_job(third).await;
+    let refork = f.claim().await.expect("claim");
+    assert_eq!(
+        refork.spec.working_session.as_ref().unwrap().thread_id,
+        None
+    );
+    assert!(
+        refork
+            .spec
+            .context_pack
+            .as_ref()
+            .unwrap()
+            .contains("PRIVATE_MARKER")
+    );
+    let analytic_pack = crate::pipeline::context::StoredPacks {
+        db: f.state.db.clone(),
+    };
+    use crate::jobs::claim::ContextPacks;
+    for stage in [
+        JobStage::Plan { batch: 1 },
+        JobStage::PrContext,
+        JobStage::Flow(contracts::ids::FlowId("f1".to_owned())),
+    ] {
+        let pack = analytic_pack
+            .pack(f.analysis, &stage)
+            .await
+            .expect("pack")
+            .unwrap();
+        assert!(
+            !pack.contains("PRIVATE_MARKER"),
+            "analysis and repair packs have no private Q&A"
+        );
+    }
 }

@@ -154,7 +154,7 @@ impl Questions<'_> {
         let inserted = sqlx::query(
             "INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, created_at)
              SELECT ?1, a.tenant_id, a.id, ?2, ?3, ?4, 'pending', ?5 FROM analyses a WHERE a.id = ?6
-                 AND (SELECT COUNT(*) FROM questions WHERE analysis_id = a.id) < ?7
+                 AND (SELECT COUNT(*) FROM questions WHERE analysis_id = a.id AND user_id = ?3) < ?7
                  AND (SELECT COUNT(*) FROM questions WHERE user_id = ?3 AND created_at >= ?8) < ?9",
         )
         .bind(question.id.to_string())
@@ -172,9 +172,10 @@ impl Questions<'_> {
             return Ok(Asked::Stored(Box::new(self.get(question.id, now).await?)));
         }
         let held: Option<u32> = sqlx::query_scalar(
-            "SELECT (SELECT COUNT(*) FROM questions q WHERE q.analysis_id = a.id) FROM analyses a WHERE a.id = ?",
+            "SELECT (SELECT COUNT(*) FROM questions q WHERE q.analysis_id = a.id AND q.user_id = ?2) FROM analyses a WHERE a.id = ?1",
         )
         .bind(question.analysis_id.to_string())
+        .bind(&question.user_id)
         .fetch_optional(self.pool)
         .await?;
         match held {
@@ -213,7 +214,7 @@ impl Questions<'_> {
             .collect()
     }
 
-    /// Shared questions with ownership projected for this reader.
+    /// Private questions of this reader only.
     pub async fn list_for_user(
         &self,
         analysis: AnalysisId,
@@ -222,10 +223,11 @@ impl Questions<'_> {
     ) -> Result<Vec<AskQuestion>, DbError> {
         let rows = sqlx::query(concat!(
             question_select!(),
-            " WHERE q.analysis_id = ?2 ORDER BY q.created_at, q.rowid"
+            " WHERE q.analysis_id = ?2 AND q.user_id = ?3 ORDER BY q.created_at, q.rowid"
         ))
         .bind(ts(now))
         .bind(analysis.to_string())
+        .bind(user)
         .fetch_all(self.pool)
         .await?;
         rows.iter()
@@ -262,7 +264,7 @@ impl Questions<'_> {
     ) -> Result<Vec<(String, AskOutput)>, DbError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT q.text, q.answer FROM questions q, questions asked
-             WHERE asked.id = ?3 AND q.analysis_id = ?1 AND q.step_id = ?2 AND q.state = 'answered'
+             WHERE asked.id = ?3 AND q.user_id = asked.user_id AND q.analysis_id = ?1 AND q.step_id = ?2 AND q.state = 'answered'
                  AND q.answer IS NOT NULL AND q.answered_at IS NOT NULL AND q.rowid < asked.rowid
              ORDER BY q.rowid",
         )
@@ -272,6 +274,25 @@ impl Questions<'_> {
         .fetch_all(self.pool)
         .await?;
         rows.into_iter()
+            .map(|(text, answer)| Ok((text, serde_json::from_str(&answer)?)))
+            .collect()
+    }
+
+    /// The asker's earlier final answers across this PR, newest 20 only, returned chronologically.
+    /// A foreign question id cannot select another user's history.
+    pub async fn history_before(
+        &self,
+        question: QuestionId,
+    ) -> Result<Vec<(String, AskOutput)>, DbError> {
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT q.text, q.answer FROM questions q JOIN analyses a ON a.id = q.analysis_id,
+                questions asked JOIN analyses current ON current.id = asked.analysis_id
+             WHERE asked.id = ? AND q.user_id = asked.user_id AND a.pull_request_id = current.pull_request_id
+                AND q.state = 'answered' AND q.answered_at IS NOT NULL AND q.answer IS NOT NULL
+                AND q.rowid < asked.rowid ORDER BY q.rowid DESC LIMIT 20")
+            .bind(question.to_string()).fetch_all(self.pool).await?;
+        rows.into_iter()
+            .rev()
             .map(|(text, answer)| Ok((text, serde_json::from_str(&answer)?)))
             .collect()
     }
@@ -395,6 +416,62 @@ mod tests {
                 line: 3,
             }],
         }
+    }
+
+    #[tokio::test]
+    async fn private_question_quota_does_not_count_another_user() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        db.users()
+            .upsert_member(
+                DEFAULT_TENANT,
+                "u2",
+                &crate::repo::users::GithubProfile {
+                    github_id: 2,
+                    login: "colleague".to_owned(),
+                    name: None,
+                    avatar_url: None,
+                },
+                at(0),
+            )
+            .await
+            .expect("user");
+        let limits = QuestionLimits {
+            per_analysis: 1,
+            ..LIMITS
+        };
+        let a = new_question(analysis, "f1.1", "PRIVATE_A");
+        assert!(matches!(
+            db.questions().create(a, limits, at(0)).await.expect("A"),
+            Asked::Stored(_)
+        ));
+        let mut b = new_question(analysis, "f1.1", "PRIVATE_B");
+        b.user_id = "u2".to_owned();
+        assert!(matches!(
+            db.questions().create(b, limits, at(1)).await.expect("B"),
+            Asked::Stored(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn private_questions_are_not_listed_for_another_user() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        ask(&db, analysis, "f1.1", "PRIVATE_MARKER", at(0)).await;
+        assert!(
+            db.questions()
+                .list_for_user(analysis, "u2", at(1))
+                .await
+                .expect("list")
+                .is_empty()
+        );
+        let own = db
+            .questions()
+            .list_for_user(analysis, "u1", at(1))
+            .await
+            .expect("list");
+        assert_eq!(own.len(), 1);
+        assert_eq!(own[0].mine, Some(true));
     }
 
     #[tokio::test]
