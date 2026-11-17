@@ -114,6 +114,9 @@ impl Executor {
         codex_home: &Path,
         sink: &EventSink,
     ) -> JobResult {
+        // The runtime limit counts from the start of the attempt: a hanging fetch must not hold the lease.
+        let deadline = tokio::time::Instant::now()
+            + Duration::from_secs(u64::from(spec.limits.max_runtime_secs));
         if spec.credential != self.credential {
             return failed(
                 spec,
@@ -121,30 +124,17 @@ impl Executor {
                 "the runner does not hold the LLM credential this job needs",
             );
         }
-        if let Err(error) = prepare_dirs(&[job_dir, codex_home]).await {
-            tracing::error!(job = %spec.job_id, %error, "cannot create the job directories; check SR_RUNNER_STATE_DIR and SR_RUNNER_WORK_DIR");
-            return failed(
-                spec,
-                JobFailureKind::Internal,
-                "the runner could not prepare the job directory",
-            );
-        }
-        let mirror = git::mirror_path(&self.dirs.mirrors, &spec.repo.clone_url);
-        let commits = [spec.repo.head_sha.0.as_str(), spec.repo.base_sha.0.as_str()];
-        if let Err(error) = git::checkout(
-            &mirror,
-            &spec.repo.clone_url,
-            &commits,
-            &job_dir.join("repo"),
-        )
-        .await
-        {
-            tracing::warn!(job = %spec.job_id, %error, "repository fetch or checkout failed");
-            return failed(
-                spec,
-                JobFailureKind::CheckoutFailed,
-                "the repository could not be fetched or checked out",
-            );
+        match tokio::time::timeout_at(deadline, self.prepare(spec, job_dir, codex_home)).await {
+            Ok(Ok(())) => {}
+            Ok(Err((kind, message))) => return failed(spec, kind, message),
+            Err(_) => {
+                tracing::warn!(job = %spec.job_id, "repository fetch or checkout exceeded the job's runtime limit");
+                return failed(
+                    spec,
+                    JobFailureKind::Timeout,
+                    "the repository fetch or checkout exceeded the job's runtime limit",
+                );
+            }
         }
 
         let scrubber = sink.secrets.with(&Scrubber::new(
@@ -181,15 +171,47 @@ impl Executor {
             access: spec.access.clone(),
             skills: spec.skills.clone(),
         };
-        let cap = Duration::from_secs(u64::from(spec.limits.max_runtime_secs));
         let (tx, rx) = mpsc::channel(EVENT_BUFFER);
         let run = async {
-            tokio::time::timeout(cap, self.provider.run(&call, tx))
+            tokio::time::timeout_at(deadline, self.provider.run(&call, tx))
                 .await
                 .unwrap_or(Err(ProviderError::Timeout))
         };
         let (outcome, ()) = tokio::join!(run, pump(rx, sink, &scrubber));
         to_result(spec, outcome, session_outcome, &scrubber)
+    }
+
+    /// Creates the job directories and checks the repository out; the error is the job's failure.
+    async fn prepare(
+        &self,
+        spec: &JobSpec,
+        job_dir: &Path,
+        codex_home: &Path,
+    ) -> Result<(), (JobFailureKind, &'static str)> {
+        if let Err(error) = prepare_dirs(&[job_dir, codex_home]).await {
+            tracing::error!(job = %spec.job_id, %error, "cannot create the job directories; check SR_RUNNER_STATE_DIR and SR_RUNNER_WORK_DIR");
+            return Err((
+                JobFailureKind::Internal,
+                "the runner could not prepare the job directory",
+            ));
+        }
+        let mirror = git::mirror_path(&self.dirs.mirrors, &spec.repo.clone_url);
+        let commits = [spec.repo.head_sha.0.as_str(), spec.repo.base_sha.0.as_str()];
+        if let Err(error) = git::checkout(
+            &mirror,
+            &spec.repo.clone_url,
+            &commits,
+            &job_dir.join("repo"),
+        )
+        .await
+        {
+            tracing::warn!(job = %spec.job_id, %error, "repository fetch or checkout failed");
+            return Err((
+                JobFailureKind::CheckoutFailed,
+                "the repository could not be fetched or checked out",
+            ));
+        }
+        Ok(())
     }
 }
 

@@ -641,3 +641,68 @@ async fn context_pack_seeds_a_new_session_without_a_requested_session() {
         Some(SessionOutcome::Started)
     );
 }
+
+/// An HTTP remote that accepts the fetch and never answers. Reports whether the connection was closed (every
+/// process of the fetch gone) within `closed_within` of the request.
+fn hanging_http_remote(closed_within: Duration) -> (String, std::sync::mpsc::Receiver<bool>) {
+    use std::io::{ErrorKind, Read};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/repo.git", listener.local_addr().unwrap());
+    let (report, closed) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = socket.read(&mut request);
+        socket.set_read_timeout(Some(closed_within)).unwrap();
+        let was_closed = match socket.read(&mut request) {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(error) => !matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut),
+        };
+        let _ = report.send(was_closed);
+        // Never answers or closes: only the fetch going away ends the connection.
+        std::thread::sleep(Duration::from_secs(60));
+        drop(socket);
+    });
+    (url, closed)
+}
+
+#[tokio::test]
+async fn hanging_fetch_ends_with_timeout_and_kills_the_whole_git_group() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Succeed);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let (url, closed) = hanging_http_remote(Duration::from_secs(5));
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.repo.clone_url = url;
+    spec.limits.max_runtime_secs = 1;
+    let key = format!("{}-{}", spec.job_id, spec.attempt);
+    let (result, _) =
+        tokio::time::timeout(Duration::from_secs(20), execute_collect(&executor, spec))
+            .await
+            .expect("the runtime limit covers the fetch");
+    assert!(
+        matches!(
+            result.outcome,
+            JobOutcome::Failed {
+                kind: JobFailureKind::Timeout,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(
+        stub.seen.lock().unwrap().is_none(),
+        "the provider never ran"
+    );
+    assert!(
+        !root.path().join("work").join(&key).exists(),
+        "the job dir is removed"
+    );
+    assert!(
+        tokio::task::spawn_blocking(move || closed.recv().unwrap())
+            .await
+            .unwrap(),
+        "git-remote-http (in git's process group) still holds the connection"
+    );
+}

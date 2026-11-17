@@ -1,20 +1,34 @@
 import { useId, type ReactNode } from "react";
 import type {
+  CiState,
   CiStatus,
   FitTopic,
   PrContextBlock as PrContext,
+  PrContextFacts,
   PrSummary,
   ProjectProfileStatus,
   RelatedWork,
+  RelatedWorkKind,
 } from "../../api/generated/types";
 import { evidenceText } from "../section/format";
 import { LlmLine, Section, Subhead } from "../section/Section";
+
+/**
+ * CI status including `not_checked` (the server could not read the checks). Mirrors the approved contract
+ * addition `CiState::NotChecked`; replace with `CiStatus` once the generated type has it.
+ */
+export type CiFact = Omit<CiStatus, "state"> & { state: CiState | "not_checked" };
+
+/** The PR context as rendered: the contract type with CI widened by `not_checked`. */
+export type PrContextView = Omit<PrContext, "facts"> & {
+  facts: Omit<PrContextFacts, "ci"> & { ci: CiFact };
+};
 
 interface PrContextBlockProps {
   /** The pull request. */
   pr: PrSummary;
   /** Deterministic facts and LLM content of the PR context. */
-  context: PrContext;
+  context: PrContextView;
 }
 
 const FIT_TOPIC: Record<FitTopic, string> = {
@@ -24,18 +38,28 @@ const FIT_TOPIC: Record<FitTopic, string> = {
   other: "Fit",
 };
 
+const RELATED_KIND: Record<RelatedWorkKind, string> = {
+  duplicate: "Duplicate",
+  competing_solution: "Competing solution",
+  stacked_pr: "Stacked PR",
+  linked_issue: "Linked issue",
+  companion_repository: "Companion repository",
+};
+
+const CARD = "mb-1.5 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12.5px]";
+
 function Related({ item }: { item: RelatedWork }) {
   return (
-    <li className="mb-1.5 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12.5px]">
+    <li className={CARD}>
       {/* LLM text: never a link (threat model T12); only server-built GitHub links are links. */}
       <code className="break-all">{item.reference}</code>
-      <span className="block text-[11px] text-muted">{item.kind.replaceAll("_", " ")}</span>
+      <span className="block text-[11px] text-muted">{RELATED_KIND[item.kind]}</span>
       {item.overlap}
     </li>
   );
 }
 
-function ciLine(ci: CiStatus): string {
+function ciLine(ci: CiFact): string {
   switch (ci.state) {
     case "failing":
       return `CI: ${ci.failing.length} of ${ci.total} checks failing`;
@@ -45,6 +69,8 @@ function ciLine(ci: CiStatus): string {
       return `CI: ${ci.total} checks, still running`;
     case "none":
       return "CI: no checks reported";
+    case "not_checked":
+      return "CI: not checked";
   }
 }
 
@@ -63,10 +89,18 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
   const headingId = useId();
   const { facts, llm } = context;
   return (
-    <article aria-labelledby={headingId} className="@container">
-      <h2 id={headingId} className="mb-3 text-xl font-bold">
+    <article aria-labelledby={headingId} className="@container grid gap-3.5">
+      <h2 id={headingId} className="text-xl font-bold">
         PR context: {pr.repo.owner}/{pr.repo.name} #{pr.number}
       </h2>
+      {facts.agent_instruction_files.length > 0 && (
+        <p role="note" className="rounded-md border border-l-4 border-med-bd bg-med-bg px-3 py-2">
+          <strong>This PR changes files that look like agent instructions:</strong>{" "}
+          <code>{facts.agent_instruction_files.join(", ")}</code>. The analysing agent may have read them, and
+          they can steer its analysis. Review them like code and read the LLM analysis with that in mind.{" "}
+          <span className="text-[12px] text-muted">From the diff; no LLM.</span>
+        </p>
+      )}
       <div className="grid grid-cols-1 gap-3.5 @[1250px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section title="LLM analysis" tone="llm">
           <LlmLine />
@@ -78,6 +112,9 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
           </p>
           <p>
             <strong>Problem:</strong> {llm.problem}
+          </p>
+          <p className="mt-1 text-[12.5px] text-muted">
+            The LLM split this PR into {facts.flow_count} flows with {facts.step_count} steps.
           </p>
           <Subhead>Related work</Subhead>
           {!facts.related_work_checked ? (
@@ -97,10 +134,7 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
           ) : (
             <ul className="m-0 list-none p-0">
               {llm.fit_questions.map((q) => (
-                <li
-                  key={q.question}
-                  className="mb-1.5 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12.5px]"
-                >
+                <li key={q.question} className={CARD}>
                   <span className="block text-[11px] text-muted">{FIT_TOPIC[q.topic]}</span>
                   {q.question}
                   {q.evidence.length > 0 && (
@@ -115,12 +149,6 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
           )}
         </Section>
         <Section title="Facts" subtitle="From GitHub and the diff; no LLM.">
-          {facts.agent_instruction_files.length > 0 && (
-            <p role="note" className="rounded-md border border-l-4 border-med-bd bg-med-bg px-2.5 py-1.5">
-              This PR changes files that look like agent instructions:{" "}
-              <code>{facts.agent_instruction_files.join(", ")}</code>. Review them like code.
-            </p>
-          )}
           <ul className="m-0 list-none p-0">
             <Fact>
               {ciLine(facts.ci)}
@@ -152,9 +180,6 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
                 `: ${facts.counters.dependencies_changed.join(", ")}`}
             </Fact>
             <Fact>{profileLine(facts.project_profile)}</Fact>
-            <Fact>
-              {facts.flow_count} flows, {facts.step_count} steps
-            </Fact>
           </ul>
         </Section>
       </div>
