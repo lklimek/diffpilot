@@ -47,6 +47,9 @@
 #                SR_RUNNER_STATE_DIR       <state>/runner
 #                SR_RUNNER_PROVIDER        fake (fixture replay; ignores SR_RUNNER_CREDENTIAL_ID, default "default")
 #                SR_RUNNER_DEV_NO_ISOLATION 1 (no supervisor in the dev stack; never in the image)
+# A runner under the supervisor, in the production image behind the egress proxy: deploy/dev/real-codex-smoke.sh
+# with SR_SMOKE_ISOLATION=supervisor (this stack with --without runner), or the whole stack in containers with
+# deploy/compose.yaml plus deploy/compose.local.yaml (docs/runbook.md, "Local stack").
 #
 # The sign-in allowlist gets the fake user `alice` (stage 2 has no allowlist settings route): inserted into
 # the database once the server has created it. Output: one line `SR_DEV_URL=<url>` when the stack is ready, then
