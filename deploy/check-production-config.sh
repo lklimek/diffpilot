@@ -2,9 +2,13 @@
 # Fails when a production deployment file enables a development or test switch (ADR-013 "Rust implementation",
 # threat model T1/T4): the dev no-isolation mode, the supervisor's fault injection or unprivileged test mode,
 # the prototype's fault switches, the fake LLM provider, or (production compose only) the tmpfs codex-homes switch.
-# With docker compose available, the rendered production and local configurations are checked too.
+# With docker compose available, the rendered configurations are checked too: production with the env file, and
+# the local variant (compose.local.yaml) only with an SR_PUBLIC_URL on localhost.
 #
-# Usage: deploy/check-production-config.sh [--self-test]
+# Usage: deploy/check-production-config.sh [--env-file FILE [--local]] | --self-test
+#   (no option)       the files, production rendered with .env.example, local rendered with it on localhost
+#   --env-file FILE   production rendered with FILE (for example the deployment's .env)
+#   --local           also the local variant rendered with FILE; fails unless FILE's SR_PUBLIC_URL is on localhost
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -33,20 +37,32 @@ scan() {
   return "$found"
 }
 
-# rendered ROOT: checks `docker compose config` of the production and the local stack with .env.example.
+have_compose() {
+  docker compose version > /dev/null 2>&1 && return 0
+  echo "check-production-config: docker compose not available; rendered configuration not checked" >&2
+  return 1
+}
+
+# rendered ROOT ENV_FILE: `docker compose config` of the production stack has no switch.
 rendered() {
-  local root="$1" out
-  if ! docker compose version > /dev/null 2>&1; then
-    echo "check-production-config: docker compose not available; rendered configuration not checked" >&2
-    return 0
-  fi
-  # The private key path only has to exist for `config` when it is a bind source; it is not created.
-  out="$(docker compose --env-file "$root/.env.example" -f "$root/deploy/compose.yaml" config 2>&1)" ||
-    { echo "$out" >&2; return 1; }
+  local out
+  # The private key path only has to exist for `up`; `config` does not check it.
+  out="$(docker compose --env-file "$2" -f "$1/deploy/compose.yaml" config 2>&1)" || { echo "$out" >&2; return 1; }
   if grep -nE "$forbidden|$production_only" <<< "$out"; then return 1; fi
-  out="$(docker compose --env-file "$root/.env.example" -f "$root/deploy/compose.yaml" \
-    -f "$root/deploy/compose.local.yaml" config 2>&1)" || { echo "$out" >&2; return 1; }
+  return 0
+}
+
+# rendered_local ROOT ENV_FILE: the local variant has no switch but its tmpfs one, and serves localhost only.
+rendered_local() {
+  local out url
+  out="$(docker compose --env-file "$2" -f "$1/deploy/compose.yaml" -f "$1/deploy/compose.local.yaml" config 2>&1)" ||
+    { echo "$out" >&2; return 1; }
   if grep -nE "$forbidden" <<< "$out"; then return 1; fi
+  url="$(sed -n 's/^ *SR_PUBLIC_URL: *//p' <<< "$out" | head -n 1)"
+  if ! grep -Eq '^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?/?$' <<< "$url"; then
+    echo "check-production-config: compose.local.yaml with SR_PUBLIC_URL=$url: the local variant (tmpfs codex-homes) is for localhost only" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -63,15 +79,42 @@ if [[ "${1:-}" == --self-test ]]; then
   cp "$repo/deploy/runner/Dockerfile" "$tmp/deploy/runner/Dockerfile"
   printf '      SR_CODEX_HOMES_ALLOW_TMPFS: "1"\n' >> "$tmp/deploy/compose.yaml"
   if scan "$tmp" > /dev/null; then echo "self-test: tmpfs switch in production compose not caught" >&2; exit 1; fi
+  if have_compose; then
+    sed 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' "$repo/.env.example" > "$tmp/local.env"
+    rendered_local "$repo" "$tmp/local.env" > /dev/null 2>&1 || { echo "self-test: localhost local variant rejected" >&2; exit 1; }
+    if rendered_local "$repo" "$repo/.env.example" > /dev/null 2>&1; then
+      echo "self-test: local variant with a public SR_PUBLIC_URL not caught" >&2
+      exit 1
+    fi
+  fi
   echo "check-production-config: self-test passed"
   exit 0
 fi
 
+env_file="" local=0
+while (($#)); do
+  case "$1" in
+    --env-file) env_file="${2:?--env-file needs a file}"; shift 2 ;;
+    --local) local=1; shift ;;
+    *) echo "check-production-config: unknown argument $1 (see the header)" >&2; exit 2 ;;
+  esac
+done
 status=0
 scan "$repo" || status=1
-rendered "$repo" || status=1
+if have_compose; then
+  if [[ -n "$env_file" ]]; then
+    rendered "$repo" "$env_file" || status=1
+    if ((local)); then rendered_local "$repo" "$env_file" || status=1; fi
+  else
+    rendered "$repo" "$repo/.env.example" || status=1
+    local_env="$(mktemp)"
+    sed 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' "$repo/.env.example" > "$local_env"
+    rendered_local "$repo" "$local_env" || status=1
+    rm -f "$local_env"
+  fi
+fi
 if ((status)); then
-  echo "check-production-config: a development or test switch is in a production file (lines above)" >&2
+  echo "check-production-config: failed (lines above)" >&2
 else
   echo "check-production-config: no development or test switch in the production files"
 fi

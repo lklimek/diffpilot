@@ -1,22 +1,22 @@
 # Local test variant of deploy/compose.yaml on http://localhost (never on the production host):
 #   docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml up -d
-# Differences: public URL http://localhost:<SR_HTTP_PORT>, published on loopback only, and the per-job CODEX_HOME
-# root on a size- and inode-capped tmpfs instead of the host's ext4 loop image (no host preparation; a rotated
-# credential is lost if the container crashes mid-job, ADR-003). Everything else, the runner's isolation
-# included, is the production configuration.
+# with SR_PUBLIC_URL=http://localhost:<SR_HTTP_PORT> in that .env. Differences: published on loopback only, and the
+# per-job CODEX_HOME root on a size- and inode-capped tmpfs instead of the host's ext4 loop image (no host
+# preparation; a rotated credential is lost if the container crashes mid-job, ADR-003). The runner's preflight
+# refuses the tmpfs unless SR_PUBLIC_URL is on localhost; `deploy/check-production-config.sh --env-file .env
+# --local` checks the same. Everything else, the runner's isolation included, is the production configuration.
 services:
   server:
-    environment:
-      SR_PUBLIC_URL: http://localhost:${SR_HTTP_PORT:-3000}
     ports: !override
       - "127.0.0.1:${SR_HTTP_PORT:-3000}:3000"
 
   runner:
     environment:
       SR_CODEX_HOMES_ALLOW_TMPFS: "1"
+      SR_CODEX_HOMES_TMPFS_PUBLIC_URL: ${SR_PUBLIC_URL:?set SR_PUBLIC_URL}
     volumes: !override
       - runner-state:/var/lib/smart-review-runner
     tmpfs: !override
       - "/work:size=${SR_RUNNER_WORK_SIZE:-4g},uid=10001,gid=10001,mode=0711,nosuid,nodev"
       - "/tmp:size=256m,uid=10001,gid=10001,mode=0700,nosuid,nodev"
-      - "/var/lib/smart-review-runner/codex-homes:size=${SR_LOCAL_CODEX_HOMES_SIZE:-2g},nr_inodes=262144,uid=10001,gid=10001,mode=0711,nosuid,nodev"
+      - "/var/lib/smart-review-runner/codex-homes:size=${SR_LOCAL_CODEX_HOMES_SIZE:-2g},nr_inodes=262144,uid=10001,gid=10001,mode=0711,nosuid,nodev,noexec"

@@ -172,12 +172,12 @@ if [[ "$isolation" == supervisor ]]; then
     --tmpfs /tmp:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700 \
     --network "$inner" "${bin_mount[@]}" \
     --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" \
-    --tmpfs /var/lib/smart-review-runner/codex-homes:rw,nosuid,nodev,size=1g,nr_inodes=131072,uid=10001,gid=10001,mode=0711 \
+    --tmpfs /var/lib/smart-review-runner/codex-homes:rw,nosuid,nodev,noexec,size=1g,nr_inodes=131072,uid=10001,gid=10001,mode=0711 \
     -e SR_RUNNER_SERVER_URL="http://$gateway:$runner_port" -e SR_RUNNER_SECRET -e SR_RUNNER_ID=smoke-runner \
     -e SR_RUNNER_PROVIDER="$provider" -e SR_RUNNER_EGRESS_PROXY="http://$proxy_ip:3128" \
     -e HTTPS_PROXY="http://$proxy_ip:3128" -e https_proxy="http://$proxy_ip:3128" \
     -e NO_PROXY="localhost,127.0.0.1,$gateway" -e no_proxy="localhost,127.0.0.1,$gateway" \
-    -e SR_CODEX_HOMES_ALLOW_TMPFS=1 -e RUST_LOG=info -e NO_COLOR=1 \
+    -e SR_CODEX_HOMES_ALLOW_TMPFS=1 -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL="$url" -e RUST_LOG=info -e NO_COLOR=1 \
     "${SR_SMOKE_RUNNER_IMAGE:-smart-review-runner:local}" > /dev/null
 else
   docker run -d --name "$container" --init --restart no \

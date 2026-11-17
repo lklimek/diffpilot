@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Prepares the bounded filesystem for the runner's per-job CODEX_HOMEs on the Docker host (ADR-013): a
-# preallocated ext4 image of fixed size and inode count, loop-mounted through /etc/fstab (nosuid, nodev), root
-# owned by the runner uid 10001, mode 0711, without lost+found (the runner treats every entry as a job's home).
-# No boot-time fsck (pass 0), so lost+found is not recreated; the content is per-job scratch. Persistent across container crashes (ADR-003), bounded so the
-# agent cannot fill the host disk. Idempotent: an existing image is never reformatted or resized.
+# preallocated ext4 image of fixed size and inode count, loop-mounted through /etc/fstab (nosuid, nodev, noexec;
+# the runner's preflight requires all three), root owned by the runner uid 10001, mode 0711, without lost+found
+# (the runner treats every entry as a job's home). No boot-time fsck (pass 0), so lost+found is not recreated; the
+# content is per-job scratch. Persistent across container crashes (ADR-003), bounded so the agent cannot fill the
+# host disk. Idempotent: an existing image is never reformatted or resized.
 #
 # Usage (root):  sudo SR_CODEX_HOMES_SIZE=8G deploy/host/prepare-codex-homes.sh
 # Env:  SR_CODEX_HOMES_SIZE    size of a new image (default 8G; fallocate syntax). Must stay below the runner's
@@ -40,7 +41,7 @@ else
   echo "prepare-codex-homes: created $image ($size, $inodes inodes)"
 fi
 
-entry="$image $dir ext4 loop,nosuid,nodev,nofail 0 0"
+entry="$image $dir ext4 loop,nosuid,nodev,noexec,nofail 0 0"
 if ! awk -v d="$dir" '$2 == d { found = 1 } END { exit !found }' /etc/fstab; then
   printf '%s\n' "$entry" >> /etc/fstab
   echo "prepare-codex-homes: added to /etc/fstab: $entry"

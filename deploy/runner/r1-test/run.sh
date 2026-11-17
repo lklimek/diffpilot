@@ -47,7 +47,7 @@ start() {
     --tmpfs /work:rw,nosuid,nodev,size=512m,uid=10001,gid=10001,mode=0711 \
     --tmpfs /tmp:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700 \
     --mount "type=volume,source=$state,target=/var/lib/smart-review-runner" \
-    --tmpfs /var/lib/smart-review-runner/codex-homes:rw,nosuid,nodev,size=16m,nr_inodes=2048,uid=10001,gid=10001,mode=0711 \
+    --tmpfs /var/lib/smart-review-runner/codex-homes:rw,nosuid,nodev,noexec,size=16m,nr_inodes=2048,uid=10001,gid=10001,mode=0711 \
     -e "R1_SUPERVISOR=${R1_SUPERVISOR:-python}" "$@" "$image" > /dev/null
 }
 trap cleanup EXIT
@@ -101,12 +101,18 @@ mkdir -m 0755 "$host_dir/homes"
 no_mount="$(run_preflight)"
 tmpfs_refused="$(run_preflight --tmpfs /var/lib/smart-review-runner/codex-homes:size=16m,uid=10001,mode=0711)"
 host_bind="$(run_preflight --mount "type=bind,source=$host_dir/homes,target=/var/lib/smart-review-runner/codex-homes")"
-tmpfs_allowed="$(run_preflight --tmpfs /var/lib/smart-review-runner/codex-homes:size=16m,nr_inodes=2048,uid=10001,mode=0711 \
-  -e SR_CODEX_HOMES_ALLOW_TMPFS=1)"
+local_tmpfs=/var/lib/smart-review-runner/codex-homes:size=16m,nr_inodes=2048,uid=10001,mode=0711,nosuid,nodev
+tmpfs_allowed="$(run_preflight --tmpfs "$local_tmpfs,noexec" -e SR_CODEX_HOMES_ALLOW_TMPFS=1 \
+  -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL=http://localhost:3000)"
+tmpfs_public="$(run_preflight --tmpfs "$local_tmpfs,noexec" -e SR_CODEX_HOMES_ALLOW_TMPFS=1 \
+  -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL=https://review.example.com)"
+tmpfs_exec="$(run_preflight --tmpfs "$local_tmpfs" -e SR_CODEX_HOMES_ALLOW_TMPFS=1 \
+  -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL=http://localhost:3000)"
 if [[ "$no_mount" == "78|"*"not a mount point"* && "$tmpfs_refused" == "78|"*"is a tmpfs"* \
+      && "$tmpfs_public" == "78|"*"is not on localhost"* && "$tmpfs_exec" == "78|"*"without noexec"* \
       && "$host_bind" =~ ^78\|.*(more\ than\ SR_CODEX_HOMES_MAX_BYTES|on\ the\ state\ volume\'s\ filesystem|not\ the\ bounded) \
       && "$tmpfs_allowed" != 78"|"* && "$tmpfs_allowed" == *"is a bounded tmpfs filesystem"* ]]; then r=PASS; else r=FAIL; fi
-echo "CHECK runner_preflight_refuses_unbounded_codex_homes $r no mount: $no_mount; tmpfs: $tmpfs_refused; host directory bind: $host_bind; tmpfs with the local-test switch (runner then stops on its config): $tmpfs_allowed" | tee -a "$ledger"
+echo "CHECK runner_preflight_refuses_unbounded_codex_homes $r no mount: $no_mount; tmpfs: $tmpfs_refused; host directory bind: $host_bind; tmpfs with the local switch and a public URL: $tmpfs_public; local tmpfs without noexec: $tmpfs_exec; local tmpfs with the local switch (runner then stops on its config): $tmpfs_allowed" | tee -a "$ledger"
 docker rm -f "$preflight" > /dev/null 2>&1 || true
 
 docker volume create "$state" > /dev/null
