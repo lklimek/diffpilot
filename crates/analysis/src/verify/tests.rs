@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
+use contracts::agent::ask::AskOutput;
 use contracts::agent::plan::PlanOutput;
 use contracts::agent::pr_context::{FitQuestion, PrContextOutput, RelatedWork};
 use contracts::common::{
@@ -418,6 +419,128 @@ fn pr_context_rejects_empty_texts_and_evidence_outside_the_tree() {
             (LineSide::Head, "src/a.rs".to_owned())
         ]
     );
+}
+
+fn ask_output(answer: &str, evidence: Vec<Evidence>) -> AskOutput {
+    AskOutput {
+        answer: answer.to_owned(),
+        evidence,
+    }
+}
+
+fn kinds_of(result: Result<(), VerifyError>) -> Vec<VerifyIssueKind> {
+    match result {
+        Ok(()) => Vec::new(),
+        Err(VerifyError::Rejected(issues)) => issues.iter().map(|issue| issue.kind).collect(),
+        Err(other) => panic!("verification did not run: {other}"),
+    }
+}
+
+#[test]
+fn ask_rejects_blank_answers_and_evidence_outside_the_tree() {
+    let mut facts = LineFacts::default();
+    let file = FileFacts {
+        line_count: 10,
+        blank_lines: Vec::new(),
+    };
+    facts.insert(LineSide::Head, "src/a.rs", file);
+    let evidence = |file: &str, line| Evidence {
+        file: file.to_owned(),
+        side: LineSide::Head,
+        line,
+    };
+    let fine = ask_output("Can `send` run twice?", vec![evidence("src/a.rs", 3)]);
+    assert_eq!(kinds_of(ask(&fine, &facts)), []);
+    let output = ask_output(
+        " \n",
+        vec![
+            evidence("src/a.rs", 3),
+            evidence("src/a.rs", 11),
+            evidence("../x", 1),
+        ],
+    );
+    assert_eq!(
+        kinds_of(ask(&output, &facts)),
+        [
+            VerifyIssueKind::EmptyText,
+            VerifyIssueKind::LineOutOfRange,
+            VerifyIssueKind::UnknownFile,
+        ]
+    );
+    assert_eq!(
+        ask_files(&output),
+        [
+            (LineSide::Head, "../x".to_owned()),
+            (LineSide::Head, "src/a.rs".to_owned())
+        ]
+    );
+}
+
+#[test]
+fn ask_rejects_markup_and_links_outside_github() {
+    let facts = LineFacts::default();
+    let rejected = [
+        "See <img src=x onerror=alert(1)> here?",
+        "Is <script>alert(1)</script> run?",
+        "Bold <b>text</b>?",
+        "Read https://evil.example/x first?",
+        "Read http://github.com/acme/x?",
+        "Read https://github.com.evil.example/x?",
+        "Click javascript:alert(1)?",
+        "Open data:text/html;base64,AAAA?",
+        "Mail <a href=\"https://github.com/acme\">here</a>?",
+        "A<br>B",
+        "A <br/> B",
+        "Hidden <!-- note --> text?",
+        "Closing </p> tag?",
+        "Is Option<A> unchanged?",
+        "Open [x](//evil.example/path)?",
+        "Open [x](JaVaScRiPt:alert(1))?",
+        "Open [x](src/rpc/client.rs)?",
+        "Open ![x](https://evil.example/a.png)?",
+        "Open <https://evil.example/x>?",
+        "Open <mailto:a@evil.example>?",
+        "Open //evil.example/path?",
+        "Read https://github.com@evil.example/x?",
+        "Read https://user:pass@github.com/acme/x?",
+        "Read https://github.com:8443/acme/x?",
+        "Read HTTP://GITHUB.COM/acme/x?",
+        "Click VBScript:msgbox(1)?",
+        "Open DATA:text/html,x?",
+        "In code `curl https://evil.example/x`?",
+        "[x]: https://evil.example/x",
+        "Unclosed fence?\n```\nA<br>B",
+        "Fake close?\n```rust\nlet x = 1;\n``` <br>",
+        "Fake close?\n```\nlet x = 1;\n```[x](//evil.example/a)",
+        "Read https://github.com:443/acme/x?",
+    ];
+    for answer in rejected {
+        assert_eq!(
+            kinds_of(ask(&ask_output(answer, Vec::new()), &facts)),
+            [VerifyIssueKind::MarkupOrLink],
+            "{answer}"
+        );
+    }
+    let allowed = [
+        "Compare https://github.com/acme/node-client/pull/470 and acme/node-client#471?",
+        "Does `Result<Vec<u8>, Error>` or `Option<A>` change?",
+        "Is `a < b && c > d` still true?",
+        "Does `HashMap<K, V>` keep order?",
+        "Read HTTPS://GITHUB.COM/acme/x?",
+        "See [PR 470](https://github.com/acme/node-client/pull/470) and <https://github.com/acme/x>?",
+        "Does this change?\n```rust\nfn first<T: Clone>(items: &[T]) -> Option<T> { None }\n```\nOr not?",
+        "Does ``Vec<`u8`>`` change?",
+        "Is std::fmt::Display used, or a // comment in `// keep <b>`?",
+        "Is 3 < 4 and a <= b?",
+        "Closed with spaces?\n```rust\nlet v: Vec<u8> = vec![];\n```   \nDone?",
+    ];
+    for answer in allowed {
+        assert_eq!(
+            kinds_of(ask(&ask_output(answer, Vec::new()), &facts)),
+            [],
+            "{answer}"
+        );
+    }
 }
 
 #[test]

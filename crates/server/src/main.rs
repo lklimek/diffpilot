@@ -53,6 +53,8 @@ enum StartError {
     Recover(#[source] server::pipeline::control::ControlError),
     #[error("could not resume the unfinished analyses")]
     Resume(#[source] DbError),
+    #[error("could not follow the open questions")]
+    ResumeQuestions(#[source] DbError),
     #[error("the HTTP server stopped with an I/O error")]
     Serve(#[source] std::io::Error),
 }
@@ -115,6 +117,9 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     server::pipeline::resume_unfinished(&state)
         .await
         .map_err(StartError::Resume)?;
+    server::ask::resume_unanswered(&state)
+        .await
+        .map_err(StartError::ResumeQuestions)?;
 
     let (stop, stopped) = watch::channel(false);
     tokio::spawn(async move {

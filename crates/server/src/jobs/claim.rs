@@ -97,12 +97,15 @@ pub enum ContextPackError {
     Prompt(#[from] PromptError),
 }
 
-/// Builds the context pack of an analysis from the results stored at claim time (`pipeline::context`): the
-/// claim path stays free of pipeline internals.
+/// Builds the context pack of a job from the results stored at claim time (`pipeline::context`; an `ask` job's
+/// pack adds the asked step and its earlier answers): the claim path stays free of pipeline internals.
 pub trait ContextPacks: Send + Sync {
-    /// The pack of `analysis`; `None` when nothing is stored yet.
-    fn pack(&self, analysis: AnalysisId)
-    -> BoxFuture<'_, Result<Option<String>, ContextPackError>>;
+    /// The pack of a job of `stage` in `analysis`; `None` when nothing is stored yet.
+    fn pack<'a>(
+        &'a self,
+        analysis: AnalysisId,
+        stage: &'a JobStage,
+    ) -> BoxFuture<'a, Result<Option<String>, ContextPackError>>;
 }
 
 /// Serves one runner claim: housekeeping, credential registration, then the next runnable job, if any, with
@@ -207,9 +210,9 @@ pub async fn claim(
     })
 }
 
-/// The claimed job's spec with the analysis's session and, for pipeline jobs, the context pack of the results
-/// stored now: only the runner knows whether the session files survived, so every pipeline job carries the pack
-/// used when a new session is started. Ask jobs bring their own.
+/// The claimed job's spec with the analysis's session and the context pack of the results stored now: only the
+/// runner knows whether the session files survived, so every job carries the pack used when a new session is
+/// started. Built at claim, an `ask` job's pack also holds the step's answers given while it waited.
 async fn prepare_spec(
     db: &Db,
     packs: &dyn ContextPacks,
@@ -217,12 +220,10 @@ async fn prepare_spec(
 ) -> Result<contracts::job::spec::JobSpec, ClaimError> {
     let mut spec = job.spec.clone();
     spec.session = analysis_session(db, job.analysis_id).await?;
-    if !matches!(job.stage, JobStage::Ask(_)) {
-        spec.context_pack = packs
-            .pack(job.analysis_id)
-            .await
-            .map_err(ClaimError::ContextPack)?;
-    }
+    spec.context_pack = packs
+        .pack(job.analysis_id, &job.stage)
+        .await
+        .map_err(ClaimError::ContextPack)?;
     Ok(spec)
 }
 
@@ -419,7 +420,11 @@ mod tests {
     struct NoPacks;
 
     impl ContextPacks for NoPacks {
-        fn pack(&self, _: AnalysisId) -> BoxFuture<'_, Result<Option<String>, ContextPackError>> {
+        fn pack<'a>(
+            &'a self,
+            _: AnalysisId,
+            _: &'a JobStage,
+        ) -> BoxFuture<'a, Result<Option<String>, ContextPackError>> {
             Box::pin(async { Ok(None) })
         }
     }
@@ -428,7 +433,11 @@ mod tests {
     struct FailingPacks;
 
     impl ContextPacks for FailingPacks {
-        fn pack(&self, _: AnalysisId) -> BoxFuture<'_, Result<Option<String>, ContextPackError>> {
+        fn pack<'a>(
+            &'a self,
+            _: AnalysisId,
+            _: &'a JobStage,
+        ) -> BoxFuture<'a, Result<Option<String>, ContextPackError>> {
             Box::pin(async { Err(ContextPackError::Db(DbError::NotFound)) })
         }
     }

@@ -206,14 +206,19 @@ failure: string | null,
 /**
  * When it was asked.
  */
-created_at: string, };
+created_at: string,
+/**
+ * While `pending` and waiting for the LLM usage limit to reset: when its job is queued again; absent
+ * otherwise.
+ */
+resumes_at?: string, };
 
 /**
  * Body of `POST /api/v1/analyses/{id}/steps/{step_id}/questions`.
  */
 export type AskRequest = {
 /**
- * The question.
+ * The question, at most `AskRequest::MAX_TEXT_CHARS` characters.
  */
 text: string, };
 

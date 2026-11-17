@@ -5,6 +5,7 @@
 mod check_flow;
 mod check_plan;
 mod facts;
+mod plain;
 pub(crate) mod spans;
 pub mod wording;
 
@@ -15,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
+use contracts::agent::ask::AskOutput;
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::tour::{FlowGraph, MoveFact};
@@ -142,6 +144,8 @@ pub enum VerifyIssueKind {
     FileTooLarge,
     /// An impact reference on changed lines; impact references name code outside the diff.
     ImpactInsideDiff,
+    /// Markup or a link other than `https://github.com/…` in text shown as plain text (an Ask answer).
+    MarkupOrLink,
 }
 
 impl VerifyIssueKind {
@@ -168,6 +172,7 @@ impl VerifyIssueKind {
             Self::ThreadStatusMissing => "thread_status_missing",
             Self::FileTooLarge => "file_too_large",
             Self::ImpactInsideDiff => "impact_inside_diff",
+            Self::MarkupOrLink => "markup_or_link",
         }
     }
 }
@@ -274,6 +279,27 @@ pub fn pr_context(output: &PrContextOutput, facts: &LineFacts) -> Result<(), Ver
         issues.evidence(facts, &at, &question.evidence);
     }
     issues.finish(())
+}
+
+/// Verifies an `ask` output: a non-blank answer shown as plain text (no markup, no link except
+/// `https://github.com/…`) and evidence lines inside their file on their side.
+pub fn ask(output: &AskOutput, facts: &LineFacts) -> Result<(), VerifyError> {
+    let mut issues = Issues::default();
+    issues.text("answer", &output.answer);
+    if let Some(found) = plain::check(&output.answer) {
+        issues.push(
+            VerifyIssueKind::MarkupOrLink,
+            format!("answer contains {}; write plain text", found.describe()),
+        );
+    }
+    issues.evidence(facts, "answer", &output.evidence);
+    issues.finish(())
+}
+
+/// The (side, path) pairs whose [`LineFacts`] verifying an `ask` output needs.
+pub fn ask_files(output: &AskOutput) -> Vec<(LineSide, String)> {
+    let files: BTreeSet<_> = output.evidence.iter().map(evidence_file).collect();
+    files.into_iter().collect()
 }
 
 /// Verifies an `analyse_flow` output.

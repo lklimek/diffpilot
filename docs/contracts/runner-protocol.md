@@ -131,10 +131,12 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
   request changes nothing); a session already asked to be dropped stays dropped.
 - `context_pack` is built at claim from the plan, PR context and accepted flow analyses stored at that moment
   (`jobs::claim::ContextPacks`, implemented by `pipeline::context::StoredPacks`); never at enqueue. Only the runner
-  knows whether its session files survived, so every pipeline job carries it; the runner uses it only when it
-  starts a new session (`started_after_loss`). Ask jobs bring their own pack. Session and pack are prepared
-  before the installation token is minted; when they cannot be (stored results unreadable, pack not renderable)
-  the claim is released (job `queued`, attempt unspent, no token minted) and the claim answers 500 `internal`.
+  knows whether its session files survived, so every job carries it; the runner uses it only when it starts a new
+  session (`started_after_loss`). An `ask` job's pack adds the asked step in full, the rest of its flow analysis
+  and the step's questions answered before it (`ask::context_pack`), so answers given while it waited are in it.
+  Session and pack are prepared before the installation token is minted; when they cannot be (stored results
+  unreadable, pack not renderable) the claim is released (job `queued`, attempt unspent, no token minted) and
+  the claim answers 500 `internal`.
 - `jobs.github_access_granted` records whether the attempt's claim got an installation token; the executor
   reports it with the result (`JobUpdate::Finished { github_access }`), the pipeline stores it with the accepted
   PR context (`documents.github_access`), and the Tour's `related_work_checked` reads only that stored fact.

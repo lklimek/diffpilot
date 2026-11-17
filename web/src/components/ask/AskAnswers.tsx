@@ -1,4 +1,5 @@
 import type { AskQuestion, StepId } from "../../api/generated/types";
+import { clockText } from "../format/time";
 import { useAction } from "../inspector/action";
 import { evidenceText } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -40,7 +41,9 @@ function Answer({ question, onAskAgain }: { question: AskQuestion } & Pick<AskAn
     case "pending":
       return (
         <p role="status" className="text-muted">
-          Waiting for the LLM to start on it.
+          {question.resumes_at
+            ? `Waiting for the LLM usage limit to reset; the question runs at ${clockText(question.resumes_at)}.`
+            : "Waiting for the LLM to start on it."}
         </p>
       );
     case "answering":

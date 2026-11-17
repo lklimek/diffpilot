@@ -10,6 +10,7 @@ use contracts::ids::AnalysisId;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::documents::DocumentKind;
+use db::repo::jobs::JobStage;
 
 use futures::future::BoxFuture;
 
@@ -69,7 +70,7 @@ pub fn pack(
     .map(Some)
 }
 
-/// The claim path's context packs: the analysis's results stored at claim time.
+/// The claim path's context packs: the analysis's results stored at claim time (`ask` jobs: `ask::context_pack`).
 #[derive(Clone, Debug)]
 pub struct StoredPacks {
     /// The database.
@@ -77,11 +78,15 @@ pub struct StoredPacks {
 }
 
 impl ContextPacks for StoredPacks {
-    fn pack(
-        &self,
+    fn pack<'a>(
+        &'a self,
         analysis: AnalysisId,
-    ) -> BoxFuture<'_, Result<Option<String>, ContextPackError>> {
+        stage: &'a JobStage,
+    ) -> BoxFuture<'a, Result<Option<String>, ContextPackError>> {
         Box::pin(async move {
+            if let JobStage::Ask(question) = stage {
+                return crate::ask::context_pack(&self.db, analysis, *question).await;
+            }
             let summary = self.db.analyses().summary(analysis).await?;
             let results = StoredResults::load(&self.db, analysis).await?;
             Ok(pack(&summary.pr, &results, None)?)
