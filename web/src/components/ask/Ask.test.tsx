@@ -173,6 +173,15 @@ describe("AskAnswers", () => {
     expect(screen.getByRole("status")).toHaveTextContent(text);
   });
 
+  it("shows a question waiting for the usage limit with the reset time", () => {
+    const resumes = new Date();
+    resumes.setHours(23, 59, 0, 0);
+    render(<AskAnswers questions={[question({ state: "pending", resumes_at: resumes.toISOString() })]} />);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Waiting for the LLM usage limit to reset; the question runs at 23:59.",
+    );
+  });
+
   it("shows a failed question with its plain reason and lets the user ask again", async () => {
     const onAskAgain = vi.fn();
     render(
