@@ -71,7 +71,7 @@ function setup() {
 const emit = (question: AskQuestion) =>
   act(() => FakeEventSource.latest().emit({ event: "question", question }));
 
-describe("question cache (QA-006)", () => {
+describe("question cache", () => {
   it("merges by arrival: newer cached copies win, others take the fetched copy", () => {
     const merged = mergeFetchedQuestions(
       [q("a", "pending"), q("b", "answered")],
@@ -118,7 +118,7 @@ describe("question cache (QA-006)", () => {
   });
 });
 
-describe("question stream (QA-008)", () => {
+describe("question stream", () => {
   it("when the browser gives up: says so, reads the list again and reopens the stream", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     listed = async () => [];

@@ -131,7 +131,7 @@ describe("CodeView", () => {
     },
   );
 
-  it("draws an unrated remark with a thin neutral line, not the LOW pattern, and says so in the tooltip (UX-102)", () => {
+  it("draws an unrated remark with a thin neutral line, not the LOW pattern, and says so in the tooltip", () => {
     render(<CodeView lines={plain(1, ["a", "b"])} annotations={[note("x.a1", 2, 2)]} band={null} />);
     const highlight = document.querySelector("[data-highlight]")!;
     expect(highlight).toHaveAttribute("data-band", "none");
@@ -143,7 +143,7 @@ describe("CodeView", () => {
     expect(label).toHaveAccessibleDescription(/Risk not rated by the LLM/);
   });
 
-  it("keeps line numbers and code in the same columns inside and outside a highlight (UX-002)", () => {
+  it("keeps line numbers and code in the same columns inside and outside a highlight", () => {
     render(<CodeView {...stepProps("f1.2")} />);
     const segments = [...document.querySelectorAll("[data-segment]")];
     expect(segments.length).toBeGreaterThan(2);
@@ -273,7 +273,7 @@ describe("CodeView", () => {
     expect(region.querySelectorAll("[data-changed]")).toHaveLength(10);
   });
 
-  it("gives a context step a style hook and a caption from the diff only when no line changed (UX-003)", () => {
+  it("gives a context step a style hook and a caption from the diff only when no line changed", () => {
     const caption = "Unchanged code: no changed lines in this range (from the diff).";
     const { unmount } = render(<CodeView {...stepProps("f1.1")} />);
     const region = screen.getByRole("region", { name: /src\/mempool\/mod.rs/ });

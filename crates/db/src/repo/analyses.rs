@@ -341,8 +341,9 @@ impl Analyses<'_> {
 
     /// Starts a new round of a failed analysis (explicit Retry): state `planning` and the round incremented, and in
     /// the same transaction every unfinished job of earlier rounds cancelled (queued and paused ones at once,
-    /// claimed and running ones flagged), so no submit of the new round re-uses them. `false` when the analysis is
-    /// not failed (nothing changed).
+    /// claimed and running ones flagged), so no submit of the new round re-uses them; a `not_checked` MemCan profile
+    /// lookup is deleted too, so the new round looks the profile up again. `false` when the analysis is not failed
+    /// (nothing changed).
     pub async fn retry(&self, id: AnalysisId, now: DateTime<Utc>) -> Result<bool, DbError> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let updated = sqlx::query(
@@ -379,6 +380,13 @@ impl Analyses<'_> {
         }
         sqlx::query(
             "UPDATE jobs SET cancel_requested = 1 WHERE analysis_id = ? AND state IN ('claimed', 'running')",
+        )
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM documents WHERE analysis_id = ? AND kind = 'memcan_profile'
+                 AND json_extract(body, '$.memcan') = 'not_checked'",
         )
         .bind(id.to_string())
         .execute(&mut *tx)
@@ -737,6 +745,75 @@ mod tests {
                 .await,
             Err(DbError::NotFound)
         ));
+    }
+
+    fn failed() -> AnalysisState {
+        AnalysisState::Failed {
+            flow: None,
+            message: "Planning failed.".to_owned(),
+        }
+    }
+
+    async fn profile_lookup(db: &Db, id: AnalysisId) -> Option<serde_json::Value> {
+        db.documents()
+            .get(id, DocumentKind::MemcanProfile, "")
+            .await
+            .expect("read")
+    }
+
+    /// A not-checked MemCan profile lookup is gone when the Retry's `planning` becomes visible, so no driver of
+    /// the new round can read it; a checked one is kept.
+    #[tokio::test]
+    async fn retry_forgets_a_not_checked_profile_lookup_in_its_transaction() {
+        let db = db().await;
+        let unchecked = seed_analysis(&db).await.expect("seed");
+        let checked = db
+            .analyses()
+            .create(new_analysis("c"), at(0))
+            .await
+            .expect("second")
+            .id;
+        let kept = serde_json::json!({"memcan": "checked", "text": null});
+        for (id, body) in [
+            (unchecked, serde_json::json!({"memcan": "not_checked"})),
+            (checked, kept.clone()),
+        ] {
+            db.documents()
+                .put(id, DocumentKind::MemcanProfile, "", &body, at(1))
+                .await
+                .expect("lookup");
+            db.analyses()
+                .set_state(id, &failed(), at(2))
+                .await
+                .expect("failed");
+            assert!(db.analyses().retry(id, at(3)).await.expect("retry"));
+        }
+        assert_eq!(profile_lookup(&db, unchecked).await, None);
+        assert_eq!(profile_lookup(&db, checked).await, Some(kept));
+    }
+
+    #[tokio::test]
+    async fn retry_rolls_back_when_the_profile_lookup_cannot_be_forgotten() {
+        let db = db().await;
+        let id = seed_analysis(&db).await.expect("seed");
+        let lookup = serde_json::json!({"memcan": "not_checked"});
+        db.documents()
+            .put(id, DocumentKind::MemcanProfile, "", &lookup, at(1))
+            .await
+            .expect("lookup");
+        db.analyses()
+            .set_state(id, &failed(), at(2))
+            .await
+            .expect("failed");
+        sqlx::query(
+            "CREATE TRIGGER keep_documents BEFORE DELETE ON documents BEGIN SELECT RAISE(ABORT, 'kept'); END",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("trigger");
+        assert!(db.analyses().retry(id, at(3)).await.is_err());
+        assert_eq!(db.analyses().get(id).await.expect("get").state, failed());
+        assert_eq!(profile_lookup(&db, id).await, Some(lookup));
     }
 
     #[tokio::test]

@@ -219,6 +219,8 @@ pub struct AskInput<'a> {
     pub step: &'a AgentStep,
     /// The reviewer's question.
     pub question: &'a str,
+    /// Project profile.
+    pub profile: Profile<'a>,
 }
 
 /// The job whose output is repaired, with its original input.
@@ -404,6 +406,7 @@ pub fn ask(input: &AskInput<'_>) -> Result<String, PromptError> {
         &[
             ("step_id", &plain(&input.step_id.0)),
             ("lenses", part("lenses")?),
+            ("profile", &profile(input.profile)?),
             ("step", &data("step", &step)),
             ("question", &question),
         ],

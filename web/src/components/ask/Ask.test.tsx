@@ -33,7 +33,7 @@ const step5 = { id: "f1.5", label: "Step 5" };
 const step6 = { id: "f1.6", label: "Step 6" };
 
 describe("AskForm", () => {
-  it("keeps the field read-only while sending and clears only what was sent (QA-001)", async () => {
+  it("keeps the field read-only while sending and clears only what was sent", async () => {
     const user = userEvent.setup();
     const pending = deferred();
     render(<AskForm step={step5} onAsk={() => pending.promise} />);
@@ -47,7 +47,7 @@ describe("AskForm", () => {
     expect(field).not.toHaveAttribute("readonly");
   });
 
-  it("ignores the outcome of a question sent from a step that is no longer current (QA-001)", async () => {
+  it("ignores the outcome of a question sent from a step that is no longer current", async () => {
     const user = userEvent.setup();
     const pending = deferred();
     const { rerender } = render(<AskForm step={step5} onAsk={() => pending.promise} />);
@@ -61,7 +61,7 @@ describe("AskForm", () => {
     expect(field).toHaveValue("B");
   });
 
-  it("drops the draft and the error on a step change, also through null (QA-003)", async () => {
+  it("drops the draft and the error on a step change, also through null", async () => {
     const user = userEvent.setup();
     const onAsk = vi.fn().mockRejectedValue(new Error("failed"));
     const { rerender } = render(<AskForm step={step5} onAsk={onAsk} />);
@@ -195,7 +195,7 @@ describe("AskAnswers", () => {
     expect(onAskAgain).toHaveBeenCalledWith("f1.5", "Is the reply deduplicated?");
   });
 
-  it("asks again once while pending and shows a rejection (QA-004)", async () => {
+  it("asks again once while pending and shows a rejection", async () => {
     const user = userEvent.setup();
     const pending = deferred();
     const onAskAgain = vi.fn().mockReturnValue(pending.promise);

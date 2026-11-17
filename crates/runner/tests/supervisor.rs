@@ -140,6 +140,30 @@ fn supervisor_exits_with_the_runner_status() {
 }
 
 #[test]
+fn runner_is_told_the_agent_uid() {
+    let dir = state();
+    let me = rustix::process::getuid().as_raw();
+    let status = Command::new(SUPERVISOR)
+        .args([
+            "serve",
+            "--",
+            "/bin/sh",
+            "-c",
+            &format!("test \"$SR_AGENT_UID\" = {me}"),
+        ])
+        .env("SR_SUPERVISOR_UNPRIVILEGED", "1")
+        .env_remove("SR_AGENT_UID")
+        .env("SR_RUNNER_STATE_DIR", dir.path())
+        .status()
+        .unwrap();
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "unprivileged: the agent shares the uid"
+    );
+}
+
+#[test]
 fn supervisor_refuses_to_run_unprivileged_by_accident() {
     if rustix::process::geteuid().is_root() {
         return;

@@ -13,6 +13,10 @@ use crate::execute::RunnerDirs;
 pub const SERVER_URL: &str = "SR_RUNNER_SERVER_URL";
 /// Secret the runner presents when claiming jobs (same value as the server's).
 pub const RUNNER_SECRET: &str = "SR_RUNNER_SECRET";
+/// Path of a file holding the runner secret; exactly one of it and [`RUNNER_SECRET`] may be set.
+pub const RUNNER_SECRET_FILE: &str = "SR_RUNNER_SECRET_FILE";
+/// The agent uid the supervisor runs agents as (gid = uid, ADR-013); set by the supervisor, default 10002.
+pub const AGENT_UID: &str = "SR_AGENT_UID";
 /// Name of this runner in claims and logs.
 pub const RUNNER_ID: &str = "SR_RUNNER_ID";
 /// The runner's persistent private volume: credentials, per-job `CODEX_HOME`s, mirrors, sessions.
@@ -52,6 +56,10 @@ const DEFAULT_CLAUDIUS_REF: &str = "main";
 const DEFAULT_CLAUDIUS_REFRESH_SECS: u64 = 6 * 3600;
 const DEFAULT_SKILLS: &str = "severity";
 const SECS_PER_DAY: u64 = 24 * 3600;
+/// Largest secret file read.
+const MAX_SECRET_FILE_BYTES: u64 = 64 * 1024;
+/// The supervisor's default agent uid (ADR-013).
+const DEFAULT_AGENT_UID: u32 = 10_002;
 
 /// Which provider runs the agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,6 +134,40 @@ pub enum ConfigError {
     /// Unknown provider name.
     #[error("environment variable {0} must be 'codex' (or 'fake' in fake-provider builds)")]
     UnknownProvider(&'static str),
+    /// A secret is given both directly and as a file.
+    #[error("set only one of {0} and {1}")]
+    BothSet(&'static str, &'static str),
+    /// A secret file cannot be read.
+    #[error("the file named by {key} ({}) cannot be read", path.display())]
+    SecretFileUnreadable {
+        /// Variable name.
+        key: &'static str,
+        /// The file.
+        path: PathBuf,
+        /// Read error (never the contents).
+        #[source]
+        source: std::io::Error,
+    },
+    /// Under the supervisor, the agent uid could read the secret file.
+    #[error("the file named by {key} ({}) is readable by the agent uid {agent}; give it to the runner uid with mode 0400 or 0600", path.display())]
+    SecretFileReadableByAgent {
+        /// Variable name.
+        key: &'static str,
+        /// The file.
+        path: PathBuf,
+        /// The agent uid.
+        agent: u32,
+    },
+    /// A secret file is not a regular file, is empty or is larger than any secret.
+    #[error("the file named by {key} ({}) is {problem}", path.display())]
+    SecretFileInvalid {
+        /// Variable name.
+        key: &'static str,
+        /// The file.
+        path: PathBuf,
+        /// What is wrong.
+        problem: &'static str,
+    },
 }
 
 impl Config {
@@ -147,7 +189,14 @@ impl Config {
         if !(server_url.starts_with("http://") || server_url.starts_with("https://")) {
             return Err(ConfigError::NotHttpUrl(SERVER_URL));
         }
-        let runner_secret = Secret::new(required(RUNNER_SECRET)?);
+        let runner_secret = Secret::new(match (get(RUNNER_SECRET), get(RUNNER_SECRET_FILE)) {
+            (Some(_), Some(_)) => {
+                return Err(ConfigError::BothSet(RUNNER_SECRET, RUNNER_SECRET_FILE));
+            }
+            (Some(value), None) => value,
+            (None, Some(path)) => read_secret_file(RUNNER_SECRET_FILE, Path::new(&path))?,
+            (None, None) => return Err(ConfigError::Missing(RUNNER_SECRET)),
+        });
         let state_dir = absolute(
             STATE_DIR,
             get(STATE_DIR).unwrap_or_else(|| DEFAULT_STATE_DIR.to_owned()),
@@ -252,6 +301,82 @@ impl Config {
     }
 }
 
+/// Reads a secret file once (a regular file, symlinks followed); trailing newlines are removed. Errors name the
+/// variable and the path, never the contents; a file every user (the agent uid included) may read is reported
+/// with `warn!`.
+fn read_secret_file(key: &'static str, path: &Path) -> Result<String, ConfigError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let invalid = |problem| ConfigError::SecretFileInvalid {
+        key,
+        path: path.to_path_buf(),
+        problem,
+    };
+    let unreadable = |source| ConfigError::SecretFileUnreadable {
+        key,
+        path: path.to_path_buf(),
+        source,
+    };
+    let metadata = std::fs::metadata(path).map_err(unreadable)?;
+    if !metadata.is_file() {
+        return Err(invalid("not a regular file"));
+    }
+    if metadata.len() > MAX_SECRET_FILE_BYTES {
+        return Err(invalid("larger than any secret"));
+    }
+    if metadata.permissions().mode() & 0o004 != 0 {
+        tracing::warn!(variable = key, path = %path.display(),
+            "runner secret file is readable by every user, the agent included; restrict it to mode 0400 or 0600");
+    }
+    let mut value = std::fs::read_to_string(path).map_err(unreadable)?;
+    value.truncate(value.trim_end_matches(['\n', '\r']).len());
+    if value.is_empty() {
+        return Err(invalid("empty"));
+    }
+    Ok(value)
+}
+
+/// Under the supervisor: refuses a runner secret file the agent could read (see [`agent_may_read`]). Only the
+/// file's own owner and mode are checked; the directories leading to it are the operator's.
+pub fn check_secret_file_hidden_from_agent(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<(), ConfigError> {
+    use std::os::unix::fs::MetadataExt as _;
+    let get = |key: &str| {
+        lookup(key)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    let Some(path) = get(RUNNER_SECRET_FILE).map(PathBuf::from) else {
+        return Ok(());
+    };
+    let agent = match get(AGENT_UID) {
+        Some(uid) => uid
+            .parse::<u32>()
+            .map_err(|_| ConfigError::NotPositive(AGENT_UID))?,
+        None => DEFAULT_AGENT_UID,
+    };
+    let metadata =
+        std::fs::metadata(&path).map_err(|source| ConfigError::SecretFileUnreadable {
+            key: RUNNER_SECRET_FILE,
+            path: path.clone(),
+            source,
+        })?;
+    if agent_may_read(metadata.mode(), metadata.uid(), metadata.gid(), agent) {
+        return Err(ConfigError::SecretFileReadableByAgent {
+            key: RUNNER_SECRET_FILE,
+            path,
+            agent,
+        });
+    }
+    Ok(())
+}
+
+/// Whether the agent (uid and primary gid `agent`, no supplementary groups) may reach a file of `mode`, `owner`
+/// and `group`: it owns it, any `other` bit is set, or its group is the agent's with any group bit set.
+fn agent_may_read(mode: u32, owner: u32, group: u32, agent: u32) -> bool {
+    owner == agent || mode & 0o007 != 0 || (group == agent && mode & 0o070 != 0)
+}
+
 fn absolute(key: &'static str, value: String) -> Result<PathBuf, ConfigError> {
     let path = PathBuf::from(value);
     if Path::is_absolute(&path) {
@@ -264,6 +389,7 @@ fn absolute(key: &'static str, value: String) -> Result<PathBuf, ConfigError> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
 
@@ -356,6 +482,157 @@ mod tests {
             config(&[(SERVER_URL, "file:///x"), (RUNNER_SECRET, "s")]),
             Err(ConfigError::NotHttpUrl(SERVER_URL))
         ));
+    }
+
+    /// Writes `contents` to a file of `mode` in `dir`.
+    fn secret_file(dir: &Path, contents: &str, mode: u32) -> String {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join("runner-secret");
+        std::fs::write(&path, contents).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn secret_can_be_read_from_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = secret_file(dir.path(), "s3cret-file-value\n", 0o600);
+        let config = config(&[
+            (SERVER_URL, "http://server:3001"),
+            (RUNNER_SECRET_FILE, &path),
+        ])
+        .unwrap();
+        assert_eq!(config.runner_secret.expose(), "s3cret-file-value");
+    }
+
+    #[test]
+    fn secret_and_its_file_together_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = secret_file(dir.path(), "s3cret-value", 0o600);
+        let mut pairs = BASE.to_vec();
+        pairs.push((RUNNER_SECRET_FILE, &path));
+        let message = config(&pairs).unwrap_err().to_string();
+        assert_eq!(
+            message,
+            "set only one of SR_RUNNER_SECRET and SR_RUNNER_SECRET_FILE"
+        );
+    }
+
+    #[test]
+    fn secret_file_must_be_a_readable_non_empty_regular_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("absent").to_string_lossy().into_owned();
+        let directory = dir.path().to_string_lossy().into_owned();
+        let empty = secret_file(dir.path(), "\n", 0o600);
+        let cases = [
+            (missing, "cannot be read"),
+            (directory, "not a regular file"),
+            (empty, "is empty"),
+        ];
+        for (path, expected) in cases {
+            let error = config(&[
+                (SERVER_URL, "http://server:3001"),
+                (RUNNER_SECRET_FILE, &path),
+            ])
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains(RUNNER_SECRET_FILE) && error.contains(expected),
+                "{path}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn world_readable_secret_file_is_named_in_a_warning() {
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let sink = std::sync::Arc::clone(&log);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || Captured(std::sync::Arc::clone(&sink)))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let dir = tempfile::tempdir().unwrap();
+        let path = secret_file(dir.path(), "file-CANARY-7731", 0o644);
+        config(&[
+            (SERVER_URL, "http://server:3001"),
+            (RUNNER_SECRET_FILE, &path),
+        ])
+        .unwrap();
+        let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+        assert!(
+            logged.contains("WARN") && logged.contains(&path),
+            "{logged}"
+        );
+        assert!(!logged.contains("CANARY"), "contents leaked: {logged}");
+    }
+
+    #[test]
+    fn agent_may_read_through_owner_other_or_its_group() {
+        const AGENT: u32 = 10_002;
+        const RUNNER: u32 = 10_001;
+        for (mode, owner, group) in [
+            (0o400, AGENT, RUNNER),
+            (0o404, RUNNER, RUNNER),
+            (0o401, 0, 0),
+            (0o440, RUNNER, AGENT),
+            (0o420, 0, AGENT),
+        ] {
+            assert!(
+                agent_may_read(mode, owner, group, AGENT),
+                "{mode:o} {owner}:{group}"
+            );
+        }
+        for (mode, owner, group) in [
+            (0o400, RUNNER, RUNNER),
+            (0o600, RUNNER, AGENT),
+            (0o440, 0, RUNNER),
+            (0o640, RUNNER, 0),
+        ] {
+            assert!(
+                !agent_may_read(mode, owner, group, AGENT),
+                "{mode:o} {owner}:{group}"
+            );
+        }
+    }
+
+    #[test]
+    fn supervised_runner_refuses_a_secret_file_the_agent_can_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = rustix::process::getuid().as_raw().to_string();
+        let other = (rustix::process::getuid().as_raw() + 1).to_string();
+        let private = secret_file(dir.path(), "s3cret", 0o600);
+        let check = |path: &str, agent: &str| {
+            let map: HashMap<&str, &str> =
+                HashMap::from([(RUNNER_SECRET_FILE, path), (AGENT_UID, agent)]);
+            check_secret_file_hidden_from_agent(|key| map.get(key).map(|v| (*v).to_owned()))
+        };
+        check(&private, &other).expect("only the runner reads it");
+        let error = check(&private, &me).expect_err("owned by the agent uid");
+        assert!(
+            matches!(error, ConfigError::SecretFileReadableByAgent { .. }),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains(&private), "{error}");
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o604)).unwrap();
+        assert!(check(&private, &other).is_err(), "readable by every user");
+        let none: HashMap<&str, &str> = HashMap::new();
+        check_secret_file_hidden_from_agent(|key| none.get(key).map(|v| (*v).to_owned()))
+            .expect("no file, nothing to check");
+    }
+
+    /// A log writer appending to a shared buffer.
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     #[cfg(not(feature = "fake-provider"))]

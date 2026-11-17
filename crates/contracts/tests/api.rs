@@ -532,7 +532,7 @@ fn removed(after_line: u32, base_start: u32) -> DeletedBlock {
     }
 }
 
-/// ARCH-001: every deletion has a valid location: base-side lines where no head line exists, deletion
+/// Every deletion has a valid location: base-side lines where no head line exists, deletion
 /// markers inside head lines otherwise.
 #[test]
 fn deletions_have_valid_locations() {
@@ -597,7 +597,7 @@ fn deletions_have_valid_locations() {
     );
 }
 
-/// ARCH-002: a highlighted question keeps its own was → is for the tooltip, separate from the question.
+/// A highlighted question keeps its own was → is for the tooltip, separate from the question.
 #[test]
 fn annotation_projection_keeps_was_is_and_remark() {
     let agent: AgentAnnotation = serde_json::from_value(json!({
@@ -626,7 +626,7 @@ fn annotation_projection_keeps_was_is_and_remark() {
     assert_eq!(json["is"], json!("A timeout is retried while attempt < 3."));
 }
 
-/// ARCH-006: Settings lists the tenant's known repositories, so per-repository settings can be opened.
+/// Settings lists the tenant's known repositories, so per-repository settings can be opened.
 #[test]
 fn settings_lists_known_repositories() {
     let settings = Settings {
@@ -670,7 +670,7 @@ fn settings_installations_not_checked_is_null_not_empty() {
     assert_eq!(json["app_installations"], json!([]));
 }
 
-/// QA-001: a diff line carries its ending when it is not LF.
+/// A diff line carries its ending when it is not LF.
 #[test]
 fn diff_line_ending_is_null_for_lf_and_named_otherwise() {
     use contracts::api::code::{DiffLine, DiffLineKind, LineEnding};

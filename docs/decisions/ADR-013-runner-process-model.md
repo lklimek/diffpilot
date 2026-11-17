@@ -1,8 +1,7 @@
 # ADR-013: Runner process model (decision R1)
 
-- Status: accepted by evidence (WP3-OPS phase 1, 2026-11-17, revised after reviews SEC-001/SEC-002 and
-  SEC-003/QA-001); R1 holds,
-  the two-container fallback is not needed.
+- Status: accepted by evidence (WP3-OPS phase 1, 2026-11-17, revised after its security and correctness
+  reviews); R1 holds, the two-container fallback is not needed.
 - Source: threat model R1, T1a–T1d, T4, T8b, T13; ADR-003 (per-job `CODEX_HOME` persistent); plan §5.4.
 - Evidence: `deploy/runner/r1-test/run.sh` (43 named checks, all PASS); ledger
   `/data/artifacts/smart-review/2026-11-17/wp3-ops/r1-test.log`. Docker 29.9.2, kernel 7.0, default seccomp,
@@ -114,8 +113,8 @@ this is host preparation: `deploy/host/prepare-codex-homes.sh` (ext4 image, fsta
 policy retries, the log names the reason) unless `codex-homes` is a mount point on its own filesystem, ext4,
 mounted `nosuid,nodev,noexec`, within `SR_CODEX_HOMES_MAX_BYTES`/`_MAX_INODES`. A tmpfs passes only with
 `SR_CODEX_HOMES_ALLOW_TMPFS=1` and a localhost public URL (`deploy/compose.local.yaml`). `noexec` holds for Codex:
-it only places symlinks to its own binary there (`tmp/arg0-linux/*`), and exec resolves to `/opt/codex`. The check
-moves into the runner binary later (approved follow-up); until then a changed CMD would skip it. The test uses a `size=16m,nr_inodes=2048` tmpfs as a stand-in for the bound
+it only places symlinks to its own binary there (`tmp/arg0-linux/*`), and exec resolves to `/opt/codex`. The runner
+binary repeats the check at its start ("Rust implementation"), so a changed CMD does not skip it. The test uses a `size=16m,nr_inodes=2048` tmpfs as a stand-in for the bound
 (`codex_home_exhaustion_fails_job_cleanly`: the agent hits `ENOSPC` for bytes and inodes, the runner still writes
 its state, copies `auth.json` back and cleans up).
 
@@ -173,6 +172,18 @@ development smoke only (rejected by `check-production-config.sh` and the image c
   sweep scoped to its own descendants outside the runner; ignored as root); `R1_FAULT_SWEEP_FAILS=1` (every sweep
   fails) and `R1_FAULT_CLEAR_FAILS=<name>` (`clear` of a directory with that name is refused, so it gets
   quarantined) are refused unless `SR_SUPERVISOR_TEST_FAULTS=1`. The image sets none of them.
+- **codex-homes check:** under the supervisor, before recovery and the first claim, the runner refuses to start
+  (exit 78, as the image's preflight, so a changed command does not bypass it) unless `<state>/codex-homes` is on
+  another filesystem than the state directory, ext4 (a tmpfs only with `SR_CODEX_HOMES_ALLOW_TMPFS=1` and
+  `SR_CODEX_HOMES_TMPFS_PUBLIC_URL` on localhost: local stack, never set by the image), mounted
+  `nosuid,nodev,noexec`, with a finite capacity and inode count of at most `SR_CODEX_HOMES_MAX_BYTES` (default
+  16 GiB) and `SR_CODEX_HOMES_MAX_INODES` (default 1048576). Its root-owned `lost+found` is never treated as a job
+  home nor removed.
+- **Runner secret file:** under the supervisor the runner refuses to start (exit 78) when the agent could read
+  `SR_RUNNER_SECRET_FILE`: the file is owned by the agent uid, has any `other` bit, or has any group bit with the
+  agent's gid as its group (the agent has gid = uid and no supplementary group). Only the file itself is checked;
+  the directories leading to it are the operator's. The supervisor tells the runner the agent uid in
+  `SR_AGENT_UID`. Without the supervisor a world-readable file is only a warning.
 - **Runner without a supervisor:** refuses to start unless `SR_RUNNER_DEV_NO_ISOLATION=1` (dev stack, smoke),
   then warns on every job; the image never sets it.
 - **Runner layout:** the provider works on a runner-private staging `CODEX_HOME` (`<state>/codex-staging/<key>`,
@@ -239,7 +250,5 @@ token without such a prefix, or one the agent encodes, can appear in live progre
   kill within the deadline) and so force the fail-closed exit 70 and a container restart, once per attempt; the
   job's attempt limit (`max_attempts` = 3, `runner-protocol.md`) bounds the repetitions per job, other jobs of the
   queue are delayed meanwhile.
-- The bounded `codex-homes` check is a shell preflight in the image's CMD, not part of the runner binary: an
-  operator who overrides the command skips it (runner-side check approved as follow-up work).
 - The development smoke (`deploy/dev/real-codex-smoke.sh`, `SR_SMOKE_ISOLATION=supervisor`) keeps a host address
   on its internal network, because the dev server runs on the host; never a deployment.

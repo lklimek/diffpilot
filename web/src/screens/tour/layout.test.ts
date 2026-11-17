@@ -90,7 +90,7 @@ describe("Tour layout (brief §4.3 columns)", () => {
     expect(loadLayout().widths.nav).toBeNull();
   });
 
-  it("widths stored on a wide screen leave the centre usable on a narrow one; the preference stays (QA-003)", () => {
+  it("widths stored on a wide screen leave the centre usable on a narrow one; the preference stays", () => {
     const wide = { ...DEFAULT_LAYOUT, widths: { nav: 1800, inspector: 620 } };
     const drawn = sideWidths(wide, 1440);
     expect(1440 - 12 - drawn.nav - drawn.inspector).toBeGreaterThanOrEqual(MIN_MAIN_PX);

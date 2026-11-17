@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use runner::client::{ClientError, ServerClient};
+use runner::codex_homes::{self, CodexHomesError};
 use runner::config::{Config, ConfigError, ProviderKind};
 use runner::execute::Executor;
 use runner::provider::LlmProvider;
@@ -44,6 +45,10 @@ enum StartError {
     Supervisor(#[from] SupervisorError),
     #[error("cannot recover the agent directories of a previous run")]
     Recover(#[source] ProviderError),
+    #[error("the per-job CODEX_HOME root is not a bounded filesystem of its own")]
+    CodexHomes(#[from] CodexHomesError),
+    #[error("the runner secret file is not hidden from the agent")]
+    SecretFile(#[source] ConfigError),
 }
 
 fn main() -> ExitCode {
@@ -57,7 +62,12 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!("runner stopped: {}", error_chain(&error));
-            ExitCode::FAILURE
+            match error {
+                StartError::CodexHomes(_) | StartError::SecretFile(_) => {
+                    ExitCode::from(codex_homes::EXIT_CODE)
+                }
+                _ => ExitCode::FAILURE,
+            }
         }
     }
 }
@@ -82,6 +92,15 @@ async fn run() -> Result<(), StartError> {
     }
     match &isolation {
         Some(isolation) => {
+            runner::config::check_secret_file_hidden_from_agent(|key| std::env::var(key).ok())
+                .map_err(StartError::SecretFile)?;
+            let limits = codex_homes::Limits::from_env()?;
+            let facts = codex_homes::verify(&isolation.codex_homes, &config.state_dir, &limits)?;
+            tracing::info!(
+                bytes = facts.bytes,
+                inodes = facts.inodes,
+                "the per-job CODEX_HOME root is a bounded filesystem of its own"
+            );
             // ADR-013 layout: the agent may traverse these roots, not list them; the runner works on a
             // private staging copy of each per-job CODEX_HOME.
             for dir in [&config.state_dir, &isolation.codex_homes, &dirs.work] {
