@@ -1,7 +1,10 @@
 //! Fake GitHub for development and tests: serves the recordings of `fixtures/pr-482/github` — the OAuth web
-//! flow, `GET /user`, the recorded REST endpoints and a GraphQL endpoint with review threads and an in-memory
-//! pending review. Deterministic; never contacts GitHub.
+//! flow, `GET /user`, the recorded REST endpoints, the GitHub App endpoints (installation, installation token) and
+//! a GraphQL endpoint with review threads and an in-memory pending review. Deterministic; never contacts GitHub.
+//! Tests move the pull request's head with `POST /_fake/head` (`{"sha": "<40 hex>"}`) and read the App JWTs and
+//! installation tokens issued with `GET /_fake/app-credentials`.
 
+mod app;
 mod fixtures;
 mod graphql;
 mod oauth;
@@ -20,6 +23,7 @@ use axum::routing::post;
 use url::Url;
 
 use crate::fixtures::{RECORDED_ENDPOINTS, RawRecording, load};
+use crate::graphql::{Graphql, PULL};
 
 /// Configuration of the fake GitHub.
 #[derive(Clone, Debug, clap::Args)]
@@ -36,6 +40,12 @@ pub struct Config {
     /// Numeric id of the fake user; default: the recorded id.
     #[arg(long, env = "FAKE_GITHUB_USER_ID")]
     pub user_id: Option<i64>,
+    /// GitHub App id the App JWTs must name (`SR_GITHUB_APP_ID`); without it every App call gets 401.
+    #[arg(long, env = "FAKE_GITHUB_APP_ID")]
+    pub app_id: Option<u64>,
+    /// Public key (PEM) of the App's private key the App JWTs must verify against.
+    #[arg(long, env = "FAKE_GITHUB_APP_PUBLIC_KEY_FILE")]
+    pub app_public_key_file: Option<PathBuf>,
 }
 
 /// The fake GitHub could not start.
@@ -68,6 +78,24 @@ pub enum StartError {
         #[source]
         source: serde_json::Error,
     },
+    /// The App public key file could not be read.
+    #[error("could not read the GitHub App public key {}; check --app-public-key-file", path.display())]
+    ReadAppKey {
+        /// The key file.
+        path: PathBuf,
+        /// The I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The App public key file holds no RSA public key in PEM form.
+    #[error("the GitHub App public key {} is not an RSA public key in PEM form", path.display())]
+    AppKey {
+        /// The key file.
+        path: PathBuf,
+        /// The key error.
+        #[source]
+        source: jsonwebtoken::errors::Error,
+    },
     /// A recording has an unusable method or status.
     #[error("the recording {} has an invalid {field}", path.display())]
     BadRecording {
@@ -87,10 +115,14 @@ struct Recorded {
 /// Recorded REST responses by method and path.
 type RecordedEndpoints = HashMap<(Method, String), Recorded>;
 
-/// State of the recorded REST endpoints: the responses and the OAuth state that checks present tokens.
+/// State of the recorded REST endpoints: the responses, the OAuth state that checks present tokens, and the
+/// pull request's path and recorded head (its current head lives in the GraphQL state).
 struct RecordedState {
     endpoints: RecordedEndpoints,
     oauth: Arc<oauth::Oauth>,
+    graphql: Arc<Graphql>,
+    pull_path: String,
+    recorded_head: String,
 }
 
 /// Loads every recording and builds the router; fails when the fixture directory or a recording is missing.
@@ -102,6 +134,8 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
     }
     let oauth = Arc::new(oauth::Oauth::load(config)?);
     let graphql = Arc::new(graphql::Graphql::load(config, Arc::clone(&oauth))?);
+    let recorded_head = graphql.head();
+    let mut pull_path = String::new();
     let mut recorded = RecordedEndpoints::new();
     for file in RECORDED_ENDPOINTS {
         let recording: RawRecording = load(&config.fixture_dir, file)?;
@@ -112,6 +146,9 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
         let method = Method::from_bytes(recording.request.method.as_bytes())
             .map_err(|_| invalid("request.method"))?;
         let status = StatusCode::from_u16(recording.status).map_err(|_| invalid("status"))?;
+        if *file == PULL {
+            recording.request.url.path().clone_into(&mut pull_path);
+        }
         recorded.insert(
             (method, recording.request.url.path().to_owned()),
             Recorded {
@@ -130,11 +167,16 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
         .with_state(Arc::new(RecordedState {
             endpoints: recorded,
             oauth: Arc::clone(&oauth),
+            graphql: Arc::clone(&graphql),
+            pull_path,
+            recorded_head,
         }))
         .merge(oauth::routes(oauth))
+        .merge(app::routes(Arc::new(app::App::load(config)?)))
         .merge(
             Router::new()
                 .route("/graphql", post(graphql::serve))
+                .route("/_fake/head", post(move_head))
                 .with_state(graphql),
         ))
 }
@@ -193,6 +235,16 @@ async fn serve_recorded(
         .endpoints
         .get(&(method.clone(), uri.path().to_owned()))
     {
+        Some(response) if uri.path() == state.pull_path => {
+            let head = state.graphql.head();
+            if head == state.recorded_head {
+                return json_body(response.status, response.body.clone());
+            }
+            let mut pull: serde_json::Value =
+                serde_json::from_slice(&response.body).unwrap_or_default();
+            pull["head"]["sha"] = serde_json::Value::String(head);
+            json_body(response.status, Bytes::from(pull.to_string()))
+        }
         Some(response) => json_body(response.status, response.body.clone()),
         None => {
             tracing::warn!(
@@ -203,4 +255,21 @@ async fn serve_recorded(
             github_error(StatusCode::NOT_FOUND, "Not Found")
         }
     }
+}
+
+#[derive(serde::Deserialize)]
+struct MoveHead {
+    sha: String,
+}
+
+/// `POST /_fake/head`: the pull request's head becomes `sha` (40 hex digits) for REST and GraphQL.
+async fn move_head(
+    State(graphql): State<Arc<Graphql>>,
+    axum::Json(request): axum::Json<MoveHead>,
+) -> StatusCode {
+    if request.sha.len() != 40 || !request.sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return StatusCode::BAD_REQUEST;
+    }
+    graphql.move_head(request.sha);
+    StatusCode::NO_CONTENT
 }

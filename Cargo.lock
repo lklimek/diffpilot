@@ -838,10 +838,13 @@ dependencies = [
 name = "fake-github"
 version = "0.0.0"
 dependencies = [
+ "aws-lc-rs",
  "axum",
  "base64 0.23.1",
+ "chrono",
  "clap",
  "contracts",
+ "jsonwebtoken",
  "reqwest",
  "serde",
  "serde_json",
@@ -852,6 +855,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "fake-memcan"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "clap",
+ "reqwest",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

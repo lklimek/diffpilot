@@ -28,9 +28,11 @@ if (typeof ts.createSourceFile !== "function") {
 }
 
 const SK = ts.SyntaxKind;
-const WORDS = /\bno\s+risk|\bnothing\s+to\s+review\b|\bno\s+review\s+needed\b|\bnoise\b|\bverified\b|\bwas\s+wrong\b|\bconfidence\b/giu;
-// `{}` stands for an interpolated value, so `${share}%` and `{share}%` count as percentages.
-const PERCENT = /(?:\d+|\{\})\s?%/gu;
+// The rules are shared with the rendered-text checks of e2e/support/app.ts. `{}` stands for an interpolated
+// value, so `${share}%` and `{share}%` count as percentages.
+const RULES = JSON.parse(readFileSync(new URL("wording-rules.json", import.meta.url), "utf8"));
+const WORDS = new RegExp(RULES.words, "giu");
+const PERCENT = new RegExp(RULES.percent, "gu");
 const SLOT = "{}";
 // Exempts the percentage rule (never the words) on its line; must be in a comment, with a reason.
 const ALLOW = /wording-check: allow[ \t]+[^\s*]/;

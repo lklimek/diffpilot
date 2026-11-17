@@ -37,6 +37,8 @@ fn config() -> Config {
         app_url: Url::parse(APP_URL).unwrap(),
         user_login: None,
         user_id: None,
+        app_id: None,
+        app_public_key_file: None,
     }
 }
 
@@ -758,4 +760,43 @@ async fn graphql_rejects_positions_silently_and_never_submits() {
     assert_eq!(body["errors"][0]["type"], "FORBIDDEN");
     let (status, _) = graphql(&base, "not-a-token", PENDING, pull_variables()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn moved_head_is_served_by_rest_and_graphql() {
+    let base = spawn(config()).await;
+    let token = token(&sign_in(&base).await, "access_token");
+    let moved = "d41b7a0d41b7a0d41b7a0d41b7a0d41b7a0d41b7";
+    let refused = client()
+        .post(format!("{base}/_fake/head"))
+        .json(&serde_json::json!({"sha": "not-a-commit"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let accepted = client()
+        .post(format!("{base}/_fake/head"))
+        .json(&serde_json::json!({"sha": moved}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::NO_CONTENT);
+
+    let pull: Value = get_recorded(&base, "rest/pull.json", Some(&token))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let mut expected = recording("rest/pull.json")["response"].clone();
+    expected["head"]["sha"] = serde_json::json!(moved);
+    assert_eq!(pull, expected, "only the head moved");
+    assert_eq!(pending(&base, &token).await["headRefOid"], moved);
+    let thread = add(
+        &base,
+        &token,
+        serde_json::json!({"pullRequestId": "PR_fixture482",
+        "path": "src/rpc/client.rs", "line": 96, "side": "RIGHT", "body": "on the new head"}),
+    )
+    .await;
+    assert_eq!(thread["comments"]["nodes"][0]["commit"]["oid"], moved);
 }
