@@ -146,7 +146,9 @@ describe("FeedbackButtons", () => {
     const note = screen.getByRole("textbox", { name: "Optional note" });
     await user.clear(note);
     await user.type(note, "see error.rs:7");
-    await user.click(screen.getByRole("button", { name: "Save note" }));
+    const save = screen.getByRole("button", { name: "Save note" });
+    expect(save).toHaveAccessibleDescription(/Saves the note with your latest feedback \(wrong\)/);
+    await user.click(save);
     expect(onSubmit).toHaveBeenCalledWith({ target: step31, value: "wrong", note: "see error.rs:7" });
   });
 

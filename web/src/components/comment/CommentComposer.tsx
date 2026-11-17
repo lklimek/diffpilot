@@ -5,8 +5,10 @@ import type {
   CreateCommentResponse,
   PendingComment,
 } from "../../api/generated/types";
+import { busyTip } from "../button/button";
 import { assignRef, codeOf, growField, messageOf, useAction } from "../inspector/action";
 import { GithubLink } from "../inspector/text";
+import { Tooltip } from "../tooltip/Tooltip";
 import type { CommentPlacement } from "./placement";
 
 /** The displayed line a comment is written on. */
@@ -44,9 +46,25 @@ export interface CommentComposerProps {
 }
 
 const BUTTON =
-  "cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold text-text hover:border-accent disabled:cursor-wait disabled:opacity-60";
+  "cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold text-text hover:border-accent aria-disabled:cursor-wait aria-disabled:opacity-60";
 const PRIMARY =
-  "cursor-pointer rounded-md border border-accent bg-accent px-2.5 py-1 text-[12.5px] font-semibold text-on-accent disabled:cursor-wait disabled:opacity-60";
+  "cursor-pointer rounded-md border border-accent bg-accent px-2.5 py-1 text-[12.5px] font-semibold text-on-accent aria-disabled:cursor-wait aria-disabled:opacity-60";
+
+// Tooltips (brief §4 rule 3): what each button does, and what happens on GitHub.
+const TIP = {
+  add: "Adds this comment to your pending review on GitHub; nothing is published. You submit the review on GitHub.",
+  leave: "Leaves this line; a draft not added yet is dropped. Nothing is sent to GitHub.",
+  leaveOutside: "Leaves this line; nothing is sent to GitHub.",
+  retry: "Sends the same comment again with the same key, so GitHub does not add it twice.",
+  discard:
+    "Makes the text editable again and forgets the failed attempt. It may already be in your pending review on GitHub: check the list below before posting it again.",
+  edit: "Edit the text of this comment in your pending review on GitHub.",
+  save: "Replaces the text of this comment in your pending review on GitHub; nothing is published.",
+  cancelEdit: "Stops editing; the comment on GitHub stays as it was.",
+  delete: "Asks for confirmation, then removes this comment from your pending review on GitHub.",
+  deleteNow: "Removes this comment from your pending review on GitHub; this cannot be undone here.",
+  keep: "Keeps the comment; nothing changes on GitHub.",
+} as const;
 const FIELD = "w-full resize-none rounded-md border border-border bg-surface px-2 py-1 font-sans";
 
 /** A version 4 UUID from `crypto.getRandomValues` (`randomUUID` needs a secure context). */
@@ -121,36 +139,53 @@ function OwnComment({
       <div className="flex flex-wrap items-center gap-2">
         {draft !== null ? (
           <>
-            <button type="button" disabled={action.busy} onClick={() => void save()} className={BUTTON}>
-              Save
-            </button>
-            <button type="button" onClick={() => setDraft(null)} className={BUTTON}>
-              Cancel
-            </button>
+            <Tooltip tip={busyTip(TIP.save, action.busy)}>
+              <button
+                type="button"
+                aria-disabled={action.busy || undefined}
+                onClick={() => !action.busy && void save()}
+                className={BUTTON}
+              >
+                Save
+              </button>
+            </Tooltip>
+            <Tooltip tip={TIP.cancelEdit}>
+              <button type="button" onClick={() => setDraft(null)} className={BUTTON}>
+                Cancel
+              </button>
+            </Tooltip>
           </>
         ) : confirming ? (
           <>
             <span>Delete this comment from your GitHub pending review?</span>
-            <button
-              type="button"
-              disabled={action.busy}
-              onClick={() => void action.run(() => onDelete(comment.id))}
-              className={BUTTON}
-            >
-              Delete from GitHub
-            </button>
-            <button type="button" onClick={() => setConfirming(false)} className={BUTTON}>
-              Keep
-            </button>
+            <Tooltip tip={busyTip(TIP.deleteNow, action.busy)}>
+              <button
+                type="button"
+                aria-disabled={action.busy || undefined}
+                onClick={() => !action.busy && void action.run(() => onDelete(comment.id))}
+                className={BUTTON}
+              >
+                Delete from GitHub
+              </button>
+            </Tooltip>
+            <Tooltip tip={TIP.keep}>
+              <button type="button" onClick={() => setConfirming(false)} className={BUTTON}>
+                Keep
+              </button>
+            </Tooltip>
           </>
         ) : (
           <>
-            <button type="button" onClick={() => setDraft(comment.body)} className={BUTTON}>
-              Edit
-            </button>
-            <button type="button" onClick={() => setConfirming(true)} className={BUTTON}>
-              Delete
-            </button>
+            <Tooltip tip={TIP.edit}>
+              <button type="button" onClick={() => setDraft(comment.body)} className={BUTTON}>
+                Edit
+              </button>
+            </Tooltip>
+            <Tooltip tip={TIP.delete}>
+              <button type="button" onClick={() => setConfirming(true)} className={BUTTON}>
+                Delete
+              </button>
+            </Tooltip>
           </>
         )}
       </div>
@@ -227,7 +262,7 @@ export function CommentComposer(props: CommentComposerProps) {
     );
   }
   return (
-    <section aria-labelledby={`${id}-h`}>
+    <section aria-labelledby={`${id}-h`} data-comment-composer>
       {heading}
       {body}
     </section>
@@ -277,9 +312,11 @@ function Draft({
             line {line.target.line} on GitHub
           </GithubLink>
         </p>
-        <button type="button" onClick={onCancel} className={`${BUTTON} mt-1`}>
-          Cancel
-        </button>
+        <Tooltip tip={TIP.leaveOutside} className="mt-1 inline-block">
+          <button type="button" onClick={onCancel} className={BUTTON}>
+            Cancel
+          </button>
+        </Tooltip>
       </>
     );
   }
@@ -325,9 +362,11 @@ function Draft({
         <span>
           On <code>{location}</code>
         </span>
-        <button type="button" onClick={onCancel} className={BUTTON}>
-          Cancel
-        </button>
+        <Tooltip tip={TIP.leave}>
+          <button type="button" onClick={onCancel} className={BUTTON}>
+            Cancel
+          </button>
+        </Tooltip>
       </p>
       <form
         className="grid gap-1 text-[12.5px]"
@@ -382,26 +421,32 @@ function Draft({
               because posting it again may add it twice.
             </p>
             <p className="flex flex-wrap items-center gap-2">
-              <button type="button" onClick={() => void retry()} className={PRIMARY}>
-                Retry
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setText(unresolved.request.body);
-                  discard();
-                }}
-                className={BUTTON}
-              >
-                Discard
-              </button>
+              <Tooltip tip={TIP.retry}>
+                <button type="button" onClick={() => void retry()} className={PRIMARY}>
+                  Retry
+                </button>
+              </Tooltip>
+              <Tooltip tip={TIP.discard}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setText(unresolved.request.body);
+                    discard();
+                  }}
+                  className={BUTTON}
+                >
+                  Discard
+                </button>
+              </Tooltip>
             </p>
           </>
         ) : (
           <p className="flex flex-wrap items-center gap-2">
-            <button type="submit" disabled={pending} className={PRIMARY}>
-              {pending ? "Adding…" : "Add to GitHub pending review"}
-            </button>
+            <Tooltip tip={busyTip(TIP.add, pending)}>
+              <button type="submit" aria-disabled={pending || undefined} className={PRIMARY}>
+                {pending ? "Adding…" : "Add to GitHub pending review"}
+              </button>
+            </Tooltip>
             <span className="text-[11.5px] text-muted">
               The first comment creates the pending review; you submit it on GitHub.
             </span>

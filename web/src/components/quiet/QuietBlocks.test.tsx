@@ -243,12 +243,19 @@ describe("PendingReviewBlock", () => {
     const field = screen.getByRole("textbox", { name: `Edit comment on ${WHERE}` });
     expect(field).toHaveValue(missed.comments[0]!.body);
     await userEvent.clear(field);
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    const empty = screen.getByRole("button", { name: "Save" });
+    expect(empty).toHaveAttribute("aria-disabled", "true");
+    expect(empty).toHaveAccessibleDescription(/Write the comment text first\./);
+    await userEvent.click(empty);
+    expect(onEdit).not.toHaveBeenCalled();
     await userEvent.type(field, "Shorter.");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(onEdit).toHaveBeenCalledWith("PRRC_fixture482_c1", "Shorter.");
     expect(screen.getByRole("textbox")).toHaveValue("Shorter.");
-    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Saving…" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveAccessibleDescription(
+      /Not available while the current request runs\./,
+    );
     await userEvent.click(screen.getByRole("button", { name: "Saving…" }));
     expect(onEdit).toHaveBeenCalledOnce();
     save.resolve();
@@ -265,7 +272,7 @@ describe("PendingReviewBlock", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Not saved: The pull request head changed.");
     expect(screen.getByRole("textbox")).toHaveValue("My new text.");
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save" })).not.toHaveAttribute("aria-disabled");
   });
 
   it("a delete answered comment_published shows the server's sentence, not 'Not deleted'", async () => {
@@ -288,12 +295,26 @@ describe("PendingReviewBlock", () => {
     const button = screen.getByRole("button", { name: `Delete comment on ${WHERE}` });
     await userEvent.click(button);
     expect(onDelete).toHaveBeenCalledWith("PRRC_fixture482_c1");
-    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).toHaveAccessibleDescription(/Not available while the current request runs\./);
     await userEvent.click(button);
     expect(onDelete).toHaveBeenCalledOnce();
     del.reject(new Error("GitHub is not reachable."));
     expect(await screen.findByRole("alert")).toHaveTextContent("Not deleted: GitHub is not reachable.");
-    expect(button).toBeEnabled();
+    expect(button).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("explains Edit, Delete, Save and Cancel in tooltips", async () => {
+    render(<PendingReviewBlock review={missed} prUrl={PR_URL} onEdit={vi.fn()} onDelete={vi.fn()} />);
+    expect(screen.getByRole("button", { name: `Edit comment on ${WHERE}` })).toHaveAccessibleDescription(
+      /pending review on GitHub/,
+    );
+    expect(screen.getByRole("button", { name: `Delete comment on ${WHERE}` })).toHaveAccessibleDescription(
+      /Removes this comment from your pending review on GitHub/,
+    );
+    await userEvent.click(screen.getByRole("button", { name: `Edit comment on ${WHERE}` }));
+    expect(screen.getByRole("button", { name: "Save" })).toHaveAccessibleDescription(/nothing is published/);
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveAccessibleDescription(/stays as it was/);
   });
 
   it("is read-only without callbacks", () => {

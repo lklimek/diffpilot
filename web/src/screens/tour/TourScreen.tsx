@@ -30,6 +30,7 @@ import { UnexplainedBlock } from "../../components/quiet/UnexplainedBlock";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { StepBlock } from "../../components/step/StepBlock";
 import { TopBar } from "../../components/top-bar/TopBar";
+import { Tooltip } from "../../components/tooltip/Tooltip";
 import { ChunkedCode, DiffCode, LinesCode, errorText, type CodeContext } from "./code";
 import { DiagramPane } from "./DiagramPane";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
@@ -384,13 +385,15 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
           <p role="status" className="m-0 flex-1">
             Resumed where you left off: {resumedAt(tour, resumed)}.
           </p>
-          <button
-            type="button"
-            onClick={() => setResumed(null)}
-            className="min-h-6 cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] hover:border-accent"
-          >
-            Dismiss
-          </button>
+          <Tooltip tip="Hides this note; you stay on this block.">
+            <button
+              type="button"
+              onClick={() => setResumed(null)}
+              className="min-h-6 cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] hover:border-accent"
+            >
+              Dismiss
+            </button>
+          </Tooltip>
         </div>
       )}
       {progressAlert && (

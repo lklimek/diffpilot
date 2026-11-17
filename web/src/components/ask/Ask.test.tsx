@@ -206,10 +206,12 @@ describe("AskAnswers", () => {
     const button = screen.getByRole("button", { name: "Ask again" });
     await user.dblClick(button);
     expect(onAskAgain).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: /Asking/ })).toBeDisabled();
+    const asking = screen.getByRole("button", { name: /Asking/ });
+    expect(asking).toHaveAttribute("aria-disabled", "true");
+    expect(asking).toHaveAccessibleDescription(/Not available while the current request runs\./);
     pending.reject(new Error("The analysis is busy."));
     expect(await screen.findByRole("alert")).toHaveTextContent("Not asked again: The analysis is busy.");
-    expect(screen.getByRole("button", { name: "Ask again" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Ask again" })).not.toHaveAttribute("aria-disabled");
   });
 
   it("lists the newest question first", () => {

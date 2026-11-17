@@ -179,14 +179,21 @@ function FeedbackForm({
           className="min-h-8 flex-1 resize-none rounded-md border border-border bg-surface px-2 py-1 font-sans"
         />
         {latest && note.trim() !== storedNote && (
-          <button
-            type="button"
-            disabled={action.busy}
-            onClick={() => void submit(latest.value)}
-            className={BUTTON}
+          <Tooltip
+            tip={busyTip(
+              `Saves the note with your latest feedback (${latest.value}) on this item. Nothing is sent to GitHub.`,
+              action.busy,
+            )}
           >
-            Save note
-          </button>
+            <button
+              type="button"
+              aria-disabled={action.busy || undefined}
+              onClick={() => !action.busy && void submit(latest.value)}
+              className={BUTTON}
+            >
+              Save note
+            </button>
+          </Tooltip>
         )}
       </div>
       {action.error && (
