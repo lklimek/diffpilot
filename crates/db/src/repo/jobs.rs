@@ -818,6 +818,23 @@ impl Jobs<'_> {
         Ok(())
     }
 
+    /// Undoes the claim of `attempt` before anything was handed out: back to `queued` with the attempt unspent,
+    /// no lease and no job token. `false` when the attempt is no longer claimed (nothing changes).
+    pub async fn release_claim(&self, job: JobId, attempt: u32) -> Result<bool, DbError> {
+        let released = sqlx::query(
+            "UPDATE jobs SET state = 'queued', attempt = attempt - 1,
+                 spec = json_set(spec, '$.attempt', attempt - 1), lease_expires_at = NULL,
+                 job_token_hash = NULL
+             WHERE id = ? AND attempt = ? AND state = 'claimed'",
+        )
+        .bind(job.to_string())
+        .bind(attempt)
+        .execute(self.pool)
+        .await?
+        .rows_affected();
+        Ok(released == 1)
+    }
+
     /// The live or succeeded job of `stage` and `generation` in the analysis's current round, if any: the job an
     /// idempotent submit answers with. Jobs of earlier rounds (before a Retry) are never returned.
     pub async fn current_for_stage(

@@ -57,6 +57,9 @@ pub enum ClaimError {
     /// The task minting the job's installation token ended abnormally.
     #[error("the task minting the job's GitHub installation token failed")]
     GithubTask(#[source] tokio::task::JoinError),
+    /// The job's context pack could not be built; the job was not handed out and stays queued.
+    #[error("the job's context pack could not be built")]
+    ContextPack(#[source] ContextPackError),
 }
 
 /// SHA-256 of a bearer value; only this hash of a job token is stored.
@@ -154,6 +157,17 @@ pub async fn claim(
                 runner = %request.runner_id,
                 "runner claimed a job"
             );
+            // Session and pack first: a job whose context cannot be prepared is released before any token is
+            // minted, so it stays claimable and nothing needs revoking.
+            let mut spec = match prepare_spec(db, packs, &job).await {
+                Ok(spec) => spec,
+                Err(error) => {
+                    tracing::warn!(job = %job.id, attempt = job.attempt, %error,
+                        "the job's context could not be prepared; the claim is released");
+                    db.jobs().release_claim(job.id, job.attempt).await?;
+                    return Err(error);
+                }
+            };
             // Spawned, so a token received after the budget (or after the runner hung up) is still stored or
             // revoked; the unanswered attempt's lease then expires and the worker revokes the stored token.
             let access = tokio::spawn(github_access(db.clone(), config.clone(), job.clone(), now));
@@ -172,20 +186,6 @@ pub async fn claim(
             db.jobs()
                 .record_github_access(job.id, job.attempt, github.is_some())
                 .await?;
-            let mut spec = job.spec;
-            spec.session = analysis_session(db, job.analysis_id).await?;
-            // Only the runner knows whether the session files survived: every pipeline job carries the pack of
-            // the results stored at this moment, used when a new session is started. Ask jobs bring their own.
-            if !matches!(job.stage, JobStage::Ask(_)) {
-                spec.context_pack = match packs.pack(job.analysis_id).await {
-                    Ok(pack) => pack,
-                    Err(error) => {
-                        tracing::warn!(job = %job.id, %error,
-                            "context pack not built; a new agent session would start without earlier results");
-                        None
-                    }
-                };
-            }
             spec.access = AgentAccess {
                 github,
                 memcan: Some(McpHttpEndpoint {
@@ -205,6 +205,25 @@ pub async fn claim(
         claim,
         drop_sessions,
     })
+}
+
+/// The claimed job's spec with the analysis's session and, for pipeline jobs, the context pack of the results
+/// stored now: only the runner knows whether the session files survived, so every pipeline job carries the pack
+/// used when a new session is started. Ask jobs bring their own.
+async fn prepare_spec(
+    db: &Db,
+    packs: &dyn ContextPacks,
+    job: &JobRecord,
+) -> Result<contracts::job::spec::JobSpec, ClaimError> {
+    let mut spec = job.spec.clone();
+    spec.session = analysis_session(db, job.analysis_id).await?;
+    if !matches!(job.stage, JobStage::Ask(_)) {
+        spec.context_pack = packs
+            .pack(job.analysis_id)
+            .await
+            .map_err(ClaimError::ContextPack)?;
+    }
+    Ok(spec)
 }
 
 /// The analysis's agent session at claim time (ADR-004): one running job per analysis, so the session a job
@@ -403,6 +422,39 @@ mod tests {
         fn pack(&self, _: AnalysisId) -> BoxFuture<'_, Result<Option<String>, ContextPackError>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    /// Packs whose stored results cannot be read.
+    struct FailingPacks;
+
+    impl ContextPacks for FailingPacks {
+        fn pack(&self, _: AnalysisId) -> BoxFuture<'_, Result<Option<String>, ContextPackError>> {
+            Box::pin(async { Err(ContextPackError::Db(DbError::NotFound)) })
+        }
+    }
+
+    /// A pack that cannot be built fails the claim before any installation token is minted (the mock allows
+    /// exactly one mint, for the later claim); the job stays queued with its attempt unspent.
+    #[tokio::test]
+    async fn failed_context_pack_fails_the_claim_and_keeps_the_job_claimable() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let now = Utc::now();
+        installed(&s, now).await;
+        let result = claim(&s.db, &s.config, &FailingPacks, &request(), now).await;
+        assert!(
+            matches!(result, Err(ClaimError::ContextPack(_))),
+            "{result:?}"
+        );
+        let stored = s.db.jobs().get(job).await.expect("job");
+        assert_eq!(stored.state, contracts::job::state::JobState::Queued);
+        assert_eq!(stored.attempt, 0, "the attempt is not spent");
+        assert_eq!(stored.lease_expires_at, None);
+        assert_eq!(s.db.jobs().token_hash(job).await.expect("read"), None);
+        assert_eq!(s.db.jobs().github_token(job, 1).await.expect("read"), None);
+        let claimed = claim_one(&s, now).await;
+        assert_eq!(claimed.spec.job_id, job);
+        assert_eq!(claimed.spec.attempt, 1);
     }
 
     fn agent_fixture(name: &str) -> serde_json::Value {
