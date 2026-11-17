@@ -1,123 +1,462 @@
-import type { CSSProperties } from "react";
-import type { Annotation, LinesResponse } from "../../api/generated/types";
+import {
+  useId,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
+import type {
+  Annotation,
+  AnnotationId,
+  CommentTarget,
+  DeletedBlock,
+  FragmentKind,
+  GithubThread,
+  LineSide,
+  LinesResponse,
+  PendingComment,
+  RiskBand,
+} from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
+import type { Highlight, Token } from "./highlight";
+import { buildSegments, type Row } from "./rows";
+import { CodeText, useTokens } from "./tokens";
 
-interface CodeViewProps {
-  /** Lines of the range with their deterministic gutter facts. */
+/** A displayed line: its side and number on that side. */
+export interface LineRef {
+  side: LineSide;
+  line: number;
+}
+
+/** Props of the code view; everything is optional except the lines. */
+export interface CodeViewProps {
+  /** Lines of the range with their deterministic gutter facts (changed, deleted, moved). */
   lines: LinesResponse;
-  /** LLM annotations of the step; their ranges are highlighted. */
-  annotations: Annotation[];
+  /** LLM annotations on these lines; only their ranges get the LLM bar. */
+  annotations?: readonly Annotation[];
+  /** The step's LLM risk band (`assessment.risk`), styling the bar (ADR-008); null = not rated. */
+  band?: RiskBand | null;
+  /** Step kind; `context` without changed lines gets the "unchanged" style (UX-003). */
+  kind?: FragmentKind;
+  /** GitHub review threads of the PR; those on displayed lines get a marker. */
+  threads?: readonly GithubThread[];
+  /** The reviewer's pending comments; those on displayed lines get a marker. */
+  comments?: readonly PendingComment[];
+  /** The line a comment is being written on (highlighted). */
+  activeLine?: LineRef | null;
+  /** The annotation shown in the inspector; its highlight is outlined. */
+  selectedAnnotation?: AnnotationId | null;
+  /** Syntax colouring of the displayed lines; plain text until it resolves, and if it fails. */
+  highlight?: Highlight;
+  /** A highlight was activated (click, or Enter on its label): its annotation ids. */
+  onSelectAnnotation?: (ids: AnnotationId[]) => void;
+  /** Comment action on a displayed line; without it line numbers are plain text. */
+  onLineAction?: (target: CommentTarget) => void;
+  /** Load the rest of a deleted block whose `lines` were cut (`lines.length < total_lines`). */
+  onLoadDeleted?: (block: DeletedBlock) => void;
 }
 
-interface Row {
-  number: number;
+const BANDS: Record<RiskBand | "none", { label: string; bar: string; text: string }> = {
+  high: { label: "▲ HIGH", bar: "border-solid border-high-bd bg-high-bg", text: "text-high" },
+  medium: { label: "◆ MEDIUM", bar: "border-dashed border-med-bd bg-med-bg", text: "text-med" },
+  low: { label: "● LOW", bar: "border-dotted border-low-bd bg-low-bg", text: "text-low" },
+  none: { label: "◇ not rated", bar: "border-dotted border-llm bg-llm-bg", text: "text-llm" },
+};
+
+// Every segment reserves the same 5 px left bar column, so line numbers and code never shift (UX-002).
+const SEGMENT = "border-l-5 min-w-full w-max";
+const STRIP = "sticky left-0 block w-max pr-2 pl-[calc(var(--ln)+var(--gutter))] font-sans";
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const keyOf = (ref: LineRef) => `${ref.side}:${ref.line}`;
+
+interface LineContext {
+  path: string;
+  threads: Map<string, GithubThread[]>;
+  comments: Set<string>;
+  activeKey: string | null;
+  tabKey: string | null;
+  onLineAction?: (target: CommentTarget) => void;
+  onFocusLine: (key: string) => void;
+}
+
+interface LineProps {
+  ctx: LineContext;
+  side: LineSide;
+  line: number;
   text: string;
-  changed: boolean;
+  tokens: Token[] | undefined;
+  row?: Row;
+  removed?: boolean;
+  /** Inside an LLM highlight: the band tint is the background. */
+  highlighted?: boolean;
+  remark?: boolean;
 }
 
-interface Run {
-  rows: Row[];
-  annotations: Annotation[];
-}
-
-// Consecutive rows covered by at least one annotation form one highlight; others stay plain.
-function runsOf(rows: Row[], annotations: Annotation[]): Run[] {
-  const runs: Run[] = [];
-  for (const row of rows) {
-    const covering = annotations.filter(
-      (a) => a.range.start_line <= row.number && row.number <= a.range.end_line,
-    );
-    const last = runs.at(-1);
-    const highlighted = covering.length > 0;
-    if (last && last.annotations.length > 0 === highlighted) {
-      last.rows.push(row);
-      for (const a of covering) if (!last.annotations.includes(a)) last.annotations.push(a);
-    } else {
-      runs.push({ rows: [row], annotations: covering });
-    }
-  }
-  return runs;
-}
-
-function Line({ row, width }: { row: Row; width: number }) {
+function Glyph({
+  mark,
+  glyph,
+  text,
+  className = "",
+}: {
+  mark: string;
+  glyph: string;
+  text: string;
+  className?: string;
+}) {
   return (
-    <div
-      data-line={row.number}
-      data-changed={row.changed || undefined}
-      className="grid min-w-full grid-cols-[var(--ln)_28px_max-content]"
-      style={{ "--ln": `${width + 2}ch` } as CSSProperties}
-    >
-      <span className="sticky left-0 pr-2.5 text-right text-muted select-none">{row.number}</span>
-      <span className="flex items-center select-none">
-        {row.changed && (
-          <>
-            <span aria-hidden className="inline-block h-[1.35em] w-1 bg-mark" />
-            <span className="sr-only">changed line</span>
-          </>
-        )}
-      </span>
-      <code className="pr-4 whitespace-pre">{row.text}</code>
-    </div>
-  );
-}
-
-function WasIs({ annotations }: { annotations: Annotation[] }) {
-  const pairs = [...new Map(annotations.map((a) => [`${a.was}\u0000${a.is}`, a])).values()];
-  return (
-    <span className="grid gap-1">
-      {pairs.map((a) => (
-        <span key={a.id}>
-          Was: {a.was} → Is: {a.is}
-        </span>
-      ))}
+    <span data-mark={mark} title={text} className={`leading-none ${className}`}>
+      <span aria-hidden>{glyph}</span>
+      <span className="sr-only">{text}</span>
     </span>
   );
 }
 
-/** Plain code view: numbered lines, neutral gutter mark on changed lines, one highlight on annotated lines. */
-export function CodeView({ lines, annotations }: CodeViewProps) {
-  const rows: Row[] = lines.lines.map((text, i) => ({
-    number: lines.from + i,
-    text,
-    changed: lines.changed.includes(lines.from + i),
-  }));
-  const width = String(lines.to).length;
-  const label = `${lines.path}, lines ${lines.from} to ${lines.to}`;
+function Line({
+  ctx,
+  side,
+  line,
+  text,
+  tokens,
+  row,
+  removed = false,
+  highlighted = false,
+  remark = false,
+}: LineProps) {
+  const key = keyOf({ side, line });
+  const commenting = ctx.activeKey === key;
+  const changed = row?.changed ?? false;
+  const background = commenting
+    ? "bg-accent-bg outline-3 -outline-offset-3 outline-accent"
+    : highlighted
+      ? ""
+      : removed || (side === "base" && changed)
+        ? "bg-rm-bg"
+        : row?.moved
+          ? "bg-mv-bg"
+          : "";
+  const label = `Comment on ${removed ? "removed line" : "line"} ${line}`;
+  return (
+    <div
+      data-line={line}
+      data-side={side}
+      data-changed={changed || undefined}
+      data-moved={row?.moved || undefined}
+      data-removed={removed || undefined}
+      data-commenting={commenting || undefined}
+      className={`grid min-w-full grid-cols-[var(--ln)_var(--gutter)_max-content] ${background}`}
+    >
+      {ctx.onLineAction ? (
+        <button
+          type="button"
+          data-line-action
+          aria-label={label}
+          title={label}
+          tabIndex={ctx.tabKey === key ? 0 : -1}
+          onFocus={() => ctx.onFocusLine(key)}
+          onClick={(event: MouseEvent) => {
+            event.stopPropagation();
+            ctx.onLineAction?.({ path: ctx.path, side, start_line: null, line });
+          }}
+          className="sticky left-0 cursor-pointer border-0 bg-transparent p-0 pr-2.5 text-right font-[inherit] text-muted hover:text-accent hover:underline"
+        >
+          {line}
+        </button>
+      ) : (
+        <span className="sticky left-0 pr-2.5 text-right text-muted select-none">{line}</span>
+      )}
+      <span className="flex items-center gap-px select-none">
+        <span className={`h-[1.35em] w-1 ${row?.moved ? "border-l-4 border-double border-mv-bd" : ""}`} />
+        {changed ? (
+          <span data-mark="changed" className="h-[1.35em] w-1 bg-mark">
+            <span className="sr-only">changed line</span>
+          </span>
+        ) : (
+          <span className="w-1" />
+        )}
+        {removed && (
+          <Glyph mark="removed" glyph="−" text="removed line" className="text-[11px] font-bold text-high" />
+        )}
+        {row?.differs && (
+          <Glyph
+            mark="differs"
+            glyph="≠"
+            text="differs from the moved original"
+            className="text-[11px] font-bold"
+          />
+        )}
+        {remark && <Glyph mark="remark" glyph="◆" text="LLM remark" className="text-[11px]" />}
+        {(ctx.threads.get(key) ?? []).map((t) => (
+          <Glyph
+            key={t.id}
+            mark="thread"
+            glyph="❝"
+            className="text-[15px] font-bold"
+            text={`GitHub thread by ${t.author}: ${t.excerpt}`}
+          />
+        ))}
+        {ctx.comments.has(key) && (
+          <Glyph mark="comment" glyph="▣" text="your comment" className="text-[11px] text-accent" />
+        )}
+      </span>
+      <code className="pr-4 whitespace-pre">
+        <CodeText text={text} tokens={tokens} />
+        {commenting && (
+          <span className="ml-2.5 font-sans text-[11.5px] font-bold text-accent">
+            ✎ commenting on this line
+          </span>
+        )}
+      </code>
+    </div>
+  );
+}
+
+function WasIs({ annotations }: { annotations: readonly Annotation[] }) {
+  const pairs = [...new Map(annotations.map((a) => [`${a.was}\u0000${a.is}`, a])).values()];
+  return pairs.map((a) => (
+    <span key={a.id} className="block">
+      Was: {a.was} → Is: {a.is}
+    </span>
+  ));
+}
+
+interface HighlightRunProps {
+  rows: Row[];
+  annotations: Annotation[];
+  band: RiskBand | null;
+  selected: boolean;
+  line: (row: Row, highlighted: boolean, remark: boolean) => ReactNode;
+  onSelect?: (ids: AnnotationId[]) => void;
+}
+
+function HighlightRun({ rows, annotations, band, selected, line, onSelect }: HighlightRunProps) {
+  const descriptionId = useId();
+  const look = BANDS[band ?? "none"];
+  const ids = annotations.map((a) => a.id);
+  const text = `${look.label} · LLM remark: ${[...new Set(annotations.map((a) => a.type))].join(", ")}`;
+  const labelClass = `${STRIP} border-0 bg-transparent text-left text-[10.5px] leading-[17px] font-bold ${look.text}`;
+  return (
+    <Tooltip tip={<WasIs annotations={annotations} />} className="block">
+      <div
+        data-segment
+        data-highlight
+        data-band={band ?? "none"}
+        data-selected={selected || undefined}
+        onClick={onSelect && (() => onSelect(ids))}
+        className={`${SEGMENT} ${look.bar} ${onSelect ? "cursor-pointer" : "cursor-help"} ${
+          selected ? "outline-2 -outline-offset-2 outline-accent" : ""
+        }`}
+      >
+        <span id={descriptionId} hidden>
+          <WasIs annotations={annotations} />
+        </span>
+        {onSelect ? (
+          <button
+            type="button"
+            aria-describedby={descriptionId}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelect(ids);
+            }}
+            className={`${labelClass} cursor-pointer`}
+          >
+            {text}
+          </button>
+        ) : (
+          <span tabIndex={0} aria-describedby={descriptionId} className={labelClass}>
+            {text}
+          </span>
+        )}
+        {rows.map((row, i) => line(row, true, i === 0))}
+      </div>
+    </Tooltip>
+  );
+}
+
+interface DeletedRunProps {
+  block: DeletedBlock;
+  anchor: string;
+  ctx: LineContext;
+  highlight?: Highlight;
+  onLoadDeleted?: (block: DeletedBlock) => void;
+}
+
+function DeletedRun({ block, anchor, ctx, highlight, onLoadDeleted }: DeletedRunProps) {
+  const tokens = useTokens(highlight, ctx.path, block.lines);
+  const more = plural(block.total_lines - block.lines.length, "more deleted line");
+  return (
+    <div
+      role="group"
+      aria-label={`Removed code ${anchor}: ${plural(block.total_lines, "line")} from base line ${block.base_start}`}
+      data-segment
+      className={`${SEGMENT} my-0.5 border-y-2 border-dashed border-transparent border-y-high-bd`}
+    >
+      <span className={`${STRIP} text-[11px] leading-[17px] font-semibold text-high`}>
+        Removed here: {plural(block.total_lines, "line")} of the base commit
+      </span>
+      {block.lines.map((text, i) => (
+        <Line
+          key={i}
+          ctx={ctx}
+          side="base"
+          line={block.base_start + i}
+          text={text}
+          tokens={tokens?.[i]}
+          removed
+        />
+      ))}
+      {block.lines.length < block.total_lines && (
+        <span className={`${STRIP} py-0.5 text-[11.5px]`}>
+          {onLoadDeleted ? (
+            <button
+              type="button"
+              onClick={() => onLoadDeleted(block)}
+              className="cursor-pointer rounded border border-border bg-surface px-2 text-text hover:border-accent"
+            >
+              {more}
+            </button>
+          ) : (
+            <span className="text-muted">{more}</span>
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// Arrow keys, Home and End move between line actions: one tab stop for all lines.
+function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
+  const target = event.target as HTMLElement;
+  if (!("lineAction" in target.dataset)) return;
+  const all = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-line-action]")];
+  const at = all.indexOf(target);
+  const next = (
+    { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 } as Record<string, number>
+  )[event.key];
+  const button = next === undefined ? undefined : all[next];
+  if (!button) return;
+  event.preventDefault();
+  button.focus();
+}
+
+/**
+ * Line renderer of one range (brief §4.3 Code view): neutral mark on every changed line, LLM bar by risk band
+ * only on annotated ranges (hover: was → is only), `≠` on differing moved lines, markers, removed code inline.
+ */
+export function CodeView({
+  lines,
+  annotations = [],
+  band = null,
+  kind,
+  threads = [],
+  comments = [],
+  activeLine = null,
+  selectedAnnotation = null,
+  highlight,
+  onSelectAnnotation,
+  onLineAction,
+  onLoadDeleted,
+}: CodeViewProps) {
+  const tokens = useTokens(highlight, lines.path, lines.lines);
+  const [focusKey, setFocusKey] = useState<string | null>(null);
+  const segments = buildSegments(lines, annotations);
+  const keys = segments.flatMap((s) =>
+    s.kind === "deleted"
+      ? s.block.lines.map((_, i) => keyOf({ side: "base", line: s.block.base_start + i }))
+      : s.rows.map((r) => keyOf({ side: lines.side, line: r.line })),
+  );
+  const ctx: LineContext = {
+    path: lines.path,
+    threads: new Map(),
+    comments: new Set(),
+    activeKey: activeLine && keyOf(activeLine),
+    tabKey: focusKey && keys.includes(focusKey) ? focusKey : (keys[0] ?? null),
+    onLineAction,
+    onFocusLine: setFocusKey,
+  };
+  for (const t of threads) {
+    if (t.path !== lines.path || t.side === null || t.line === null) continue;
+    const key = keyOf({ side: t.side, line: t.line });
+    ctx.threads.set(key, [...(ctx.threads.get(key) ?? []), t]);
+  }
+  for (const c of comments) {
+    if (c.path === lines.path && c.line !== null)
+      ctx.comments.add(keyOf({ side: c.side ?? "head", line: c.line }));
+  }
+
+  const maxLine = Math.max(lines.to, ...lines.deleted.map((d) => d.base_start + d.lines.length));
+  const base = lines.side === "base";
+  const unchangedContext = kind === "context" && lines.changed.length === 0;
+  const label = `${lines.path}, lines ${lines.from} to ${lines.to}${base ? ", removed code at the base commit" : ""}`;
+  const line = (row: Row, highlighted = false, remark = false) => (
+    <Line
+      key={row.line}
+      ctx={ctx}
+      side={lines.side}
+      line={row.line}
+      text={row.text}
+      tokens={tokens?.[row.index]}
+      row={row}
+      highlighted={highlighted}
+      remark={remark}
+    />
+  );
+
   return (
     <div
       role="region"
       aria-label={label}
       tabIndex={0}
-      className="overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55]"
+      data-kind={kind}
+      onKeyDown={moveLineFocus}
+      style={{ "--ln": `${String(maxLine).length + 2}ch`, "--gutter": "46px" } as CSSProperties}
+      className={`overflow-auto rounded-md bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${
+        unchangedContext
+          ? "border-2 border-dotted border-mv-bd bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]"
+          : "border border-border"
+      }`}
     >
-      {lines.side === "base" && (
-        <p className="sticky left-0 w-max px-2 font-sans text-[11px] text-muted">
-          Removed code at the base commit
+      {base && <p className={`${STRIP} m-0 text-[11px] text-muted`}>Removed code at the base commit</p>}
+      {unchangedContext && (
+        <p className={`${STRIP} m-0 text-[11px] font-semibold text-muted`}>
+          Unchanged code connecting the flow
         </p>
       )}
-      <div className="w-max min-w-full">
-        {runsOf(rows, annotations).map((run) =>
-          run.annotations.length === 0 ? (
-            run.rows.map((row) => <Line key={row.number} row={row} width={width} />)
-          ) : (
-            <Tooltip
-              key={run.rows[0]!.number}
-              tip={<WasIs annotations={run.annotations} />}
-              className="block"
-            >
-              <div
-                role="mark"
-                tabIndex={0}
-                className="block min-w-full cursor-help border-l-[5px] border-accent bg-accent-bg text-text"
-              >
-                {run.rows.map((row) => (
-                  <Line key={row.number} row={row} width={width} />
-                ))}
-              </div>
-            </Tooltip>
-          ),
-        )}
-      </div>
+      {lines.lines.length === 0 && <p className={`${STRIP} m-0 text-muted`}>No lines in this range.</p>}
+      {segments.map((segment) => {
+        if (segment.kind === "deleted") {
+          const after = segment.block.after_line;
+          return (
+            <DeletedRun
+              key={`d${after}:${segment.block.base_start}`}
+              block={segment.block}
+              anchor={after < lines.from ? `before line ${lines.from}` : `after line ${after}`}
+              ctx={ctx}
+              highlight={highlight}
+              onLoadDeleted={onLoadDeleted}
+            />
+          );
+        }
+        if (segment.kind === "rows") {
+          return (
+            <div key={`r${segment.rows[0]!.line}`} data-segment className={`${SEGMENT} border-transparent`}>
+              {segment.rows.map((row) => line(row))}
+            </div>
+          );
+        }
+        return (
+          <HighlightRun
+            key={`h${segment.rows[0]!.line}`}
+            rows={segment.rows}
+            annotations={segment.annotations}
+            band={band}
+            selected={segment.annotations.some((a) => a.id === selectedAnnotation)}
+            line={line}
+            onSelect={onSelectAnnotation}
+          />
+        );
+      })}
     </div>
   );
 }
