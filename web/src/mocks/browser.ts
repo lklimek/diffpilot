@@ -1,16 +1,29 @@
 import { setupWorker } from "msw/browser";
 import { FIXTURE_STATES, setFixtureState, type FixtureState } from "./fixtures";
 import { handlers } from "./handlers";
+import { SCENARIO_NAMES, setScenario, type ScenarioName } from "./scenarios";
 
 const isFixtureState = (value: string): value is FixtureState =>
   (FIXTURE_STATES as readonly string[]).includes(value);
 
-/** Starts msw in the browser; `?state=<wrong|missed|noq|noprofile|resume>` selects the fixture state. */
+const isScenario = (value: string): value is ScenarioName =>
+  (SCENARIO_NAMES as readonly string[]).includes(value);
+
+/**
+ * Starts msw in the browser; `?state=<wrong|missed|noq|noprofile|resume>` selects the fixture state,
+ * `?scenario=<name>` a screen scenario (scenarios.ts).
+ */
 export async function startMockApi(): Promise<void> {
-  const requested = new URLSearchParams(window.location.search).get("state");
+  const search = new URLSearchParams(window.location.search);
+  const requested = search.get("state");
   if (requested !== null) {
     if (!isFixtureState(requested)) throw new Error(`unknown fixture state "${requested}"`);
     setFixtureState(requested);
+  }
+  const named = search.get("scenario");
+  if (named !== null) {
+    if (!isScenario(named)) throw new Error(`unknown scenario "${named}"`);
+    setScenario(named);
   }
   await setupWorker(...handlers).start({
     quiet: true,
