@@ -88,6 +88,8 @@ limit, a total budget and a deadline that kills git.
 outputs with their issues), wording `warnings`, and the Tour skeleton (flows in tour order, planned flows
 without an accepted output, coverage). Lines of the plan's `unassigned` hunks and of flows without an accepted
 output are Unexplained; `coverage.double_covered` lists lines covered by two flows or by a flow and a quiet item.
+`moves_incomplete` passes `MovesReport::incomplete` through (the move detection ran out of its work budget, so
+some moves have no fact) for the pipeline to record; it is never a rejection.
 
 ## Mandatory prompt rules block (every job kind)
 1. Trust and wording: facts carry evidence you read; inferences are marked; suspicions are questions; no

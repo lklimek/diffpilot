@@ -385,6 +385,9 @@ pub struct AnalysisVerdict {
     pub warnings: Vec<(OutputRef, WordingWarning)>,
     /// The Tour skeleton; `None` while the plan is rejected.
     pub tour: Option<TourSkeleton>,
+    /// The move detection ran out of its work budget (`MovesReport::incomplete`): some moves have no fact. For
+    /// the pipeline to record; never a rejection.
+    pub moves_incomplete: bool,
 }
 
 /// The ordered Tour content built from the accepted outputs.
@@ -438,6 +441,7 @@ pub fn analysis(input: AnalysisInput<'_>) -> Result<AnalysisVerdict, VerifyError
             repairs,
             warnings,
             tour: None,
+            moves_incomplete: input.moves.incomplete,
         });
     };
     let mut accepted: BTreeMap<FlowId, VerifiedFlow> = BTreeMap::new();
@@ -496,6 +500,7 @@ pub fn analysis(input: AnalysisInput<'_>) -> Result<AnalysisVerdict, VerifyError
             unanalysed,
             coverage,
         }),
+        moves_incomplete: input.moves.incomplete,
     })
 }
 

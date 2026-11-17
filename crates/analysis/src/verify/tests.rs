@@ -43,6 +43,7 @@ struct Fixture {
     pr_context: PrContextOutput,
     flows: Vec<FlowAnalysisOutput>,
     aliases: BTreeMap<FlowId, Vec<String>>,
+    moves: MovesReport,
 }
 
 impl Fixture {
@@ -100,6 +101,7 @@ impl Fixture {
             pr_context: read("agent/pr_context.json"),
             flows,
             aliases: BTreeMap::from([(id("f1"), vec!["t1".to_owned(), "t2".to_owned()])]),
+            moves: MovesReport::default(),
         }
     }
 
@@ -128,7 +130,7 @@ impl Fixture {
             listed: &listed,
             quiet: &self.quiet,
             facts,
-            moves: &MovesReport::default(),
+            moves: &self.moves,
             plan: &self.plan,
             pr_context: &self.pr_context,
             flows: &self.flows,
@@ -177,6 +179,21 @@ fn fixture_pr_482_output_is_accepted_and_ordered() {
     assert_eq!(tour.coverage.double_covered, []);
     let steps: usize = tour.flows.iter().map(|flow| flow.step_ids.len()).sum();
     assert_eq!(steps, 17);
+    assert!(!verdict.moves_incomplete);
+}
+
+#[test]
+fn incomplete_move_detection_is_passed_through_not_rejected() {
+    let mut fixture = Fixture::new();
+    fixture.moves.incomplete = true;
+    let verdict = fixture.verdict(&fixture.facts());
+    assert!(verdict.moves_incomplete, "the pipeline records it");
+    assert_eq!(
+        verdict.repairs,
+        [],
+        "an exhausted move budget is no rejection"
+    );
+    assert!(verdict.tour.is_some());
 }
 
 /// Real-Codex smoke finding 8: PR 482's output replayed against another pull request was accepted because
