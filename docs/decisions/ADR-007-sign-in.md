@@ -25,11 +25,11 @@
 - **Token pair lifetime**: the GitHub pair is kept only while the user has a live session. Sign-out of one
   session deletes the pair with the user's last live session; sign-out everywhere, a rejected refresh
   (`bad_refresh_token`), an expired refresh token and a pair that no longer decrypts (`SR_SECRET_KEY` replaced)
-  delete the pair and every session. The cleanup at each sign-in start deletes dead sessions and pairs left
-  without sessions.
+  delete the pair and every session. A sign-in writes its session and pair in one transaction (neither on
+  failure). The cleanup at each sign-in start deletes dead sessions and pairs left without sessions.
 - **GitHub 401**: a 401 for an access token the server still holds as fresh marks it expired; the next use
-  refreshes the pair, and a rejected refresh ends the sign-in ("Sign in again"). Wired in Settings; other user-token
-  callers should call `auth::user_token_rejected` on `GithubError::Unauthorized` too.
+  refreshes the pair, and a rejected refresh ends the sign-in ("Sign in again"). Wired in Settings, the GitHub
+  snapshot (`review`) and the pending-review comments; the pipeline's own user-token calls are not wired yet.
 - **Refresh**: runs in its own task under the user's lock, so a dropped request keeps the rotated pair.
   Residual risk: a server crash or a lost GitHub answer (timeout, reset) between the rotation and the database
   write loses the new pair; the next refresh gets `bad_refresh_token` and the user signs in again.

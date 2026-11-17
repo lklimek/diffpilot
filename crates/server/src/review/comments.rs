@@ -28,7 +28,7 @@ use secrecy::SecretString;
 use tokio::sync::OwnedMutexGuard;
 use url::Url;
 
-use crate::auth::{UserTokenError, user_access_token};
+use crate::auth::{UserTokenError, user_access_token, user_token_rejected};
 use crate::github::app_token::{self, AppTokenError, Installation};
 use crate::github::graphql::{GraphqlError, GraphqlErrorType};
 use crate::github::mirror::{MirrorError, is_tree_path, read_blob};
@@ -161,6 +161,21 @@ fn validate_body(body: &str) -> Result<(), CommentError> {
     Ok(())
 }
 
+/// Passes `result` on; a GitHub 401 for the user's `token` makes its next use refresh the pair (ADR-007 addendum).
+async fn note_rejected<T>(
+    state: &AppState,
+    user_id: &str,
+    token: &SecretString,
+    result: Result<T, CommentError>,
+) -> Result<T, CommentError> {
+    if let Err(CommentError::Github(PendingReviewError::Graphql(GraphqlError::Unauthorized))) =
+        &result
+    {
+        user_token_rejected(state, user_id, token).await;
+    }
+    result
+}
+
 /// Maps a GitHub failure of a pending-review call whose outcome is known.
 fn github_error(error: PendingReviewError) -> CommentError {
     match error {
@@ -289,7 +304,8 @@ pub async fn list(
     let token = user_access_token(state, user_id).await?;
     let pending = review::pending_comments(&state.config.github, &token, &pr_of(summary))
         .await
-        .map_err(github_error)?;
+        .map_err(github_error);
+    let pending = note_rejected(state, user_id, &token, pending).await?;
     Ok(PendingReview {
         commenting_available,
         comments: pending.comments,
@@ -400,7 +416,13 @@ async fn add_comment(
     };
     validate_body(&body)?;
     let pr = pr_of(summary);
-    let pull = head_checked(state, &token, summary).await?;
+    let pull = note_rejected(
+        state,
+        user_id,
+        &token,
+        head_checked(state, &token, summary).await,
+    )
+    .await?;
     let added = review::add_thread(&state.config.github, &token, &pr, &pull, &thread, &body)
         .await
         .map_err(write_error)?;
@@ -505,7 +527,8 @@ pub async fn update(
     let _write = lock_writes(user_id, &pr_of(summary)).await;
     require_commenting(state, &summary.pr.repo).await?;
     let token = user_access_token(state, user_id).await?;
-    let comment = own_pending_comment(state, &token, summary, comment_id).await?;
+    let comment = own_pending_comment(state, &token, summary, comment_id).await;
+    let comment = note_rejected(state, user_id, &token, comment).await?;
     let (body, review_state) =
         review::update_comment(&state.config.github, &token, &comment.id, body)
             .await
@@ -530,7 +553,8 @@ pub async fn delete(
     let _write = lock_writes(user_id, &pr_of(summary)).await;
     require_commenting(state, &summary.pr.repo).await?;
     let token = user_access_token(state, user_id).await?;
-    let comment = own_pending_comment(state, &token, summary, comment_id).await?;
+    let comment = own_pending_comment(state, &token, summary, comment_id).await;
+    let comment = note_rejected(state, user_id, &token, comment).await?;
     let review_state = review::delete_comment(&state.config.github, &token, &comment.id)
         .await
         .map_err(github_error)?;
