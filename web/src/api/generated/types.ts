@@ -1,6 +1,23 @@
 // This file is generated from crates/contracts by the test generated_artifacts_are_current (UPDATE_GENERATED=1 rewrites it). Do not edit.
 
 /**
+ * A bounded estimate, not a deadline or a guarantee.
+ */
+export type AnalysisEstimate = {
+/**
+ * Remaining seconds, never more than seven days.
+ */
+remaining_seconds: number,
+/**
+ * Strongest observation used; before planning ends the flow component is only line-based.
+ */
+basis: EstimateBasis,
+/**
+ * True while the flow count is unknown and estimated from changed lines.
+ */
+rough: boolean, };
+
+/**
  * One SSE event; the SSE `event` field is the `event` tag, `data` is this JSON.
  */
 export type AnalysisEvent = { "event": "analysis",
@@ -23,10 +40,47 @@ at: string, };
 export type AnalysisId = string;
 
 /**
+ * Whole-analysis waiting progress, never review completion or confidence.
+ */
+export type AnalysisProgress = {
+/**
+ * Start of this run, preserved across parts and server restarts.
+ */
+started_at: string,
+/**
+ * Plan parts accepted.
+ */
+planning: RunStage,
+/**
+ * PR context accepted.
+ */
+pr_context: RunStage,
+/**
+ * Flows completed; total unknown until the plan is accepted.
+ */
+flows: RunStage,
+/**
+ * Final verification and projection.
+ */
+finishing: RunStage,
+/**
+ * Estimated remaining time; null without sufficient observations, or while paused/terminal.
+ */
+estimate: AnalysisEstimate | null,
+/**
+ * Overall waiting progress, 0..=100; null until a denominator can be estimated or counted.
+ */
+percent: number | null, };
+
+/**
  * The stage of the analysis's live job (the queued, running or paused job of its current round); only facts the
  * server knows, no estimate.
  */
 export type AnalysisStage = {
+/**
+ * Current planning part; present only for a multi-part plan.
+ */
+part?: PlanPart,
 /**
  * What the job does.
  */
@@ -97,6 +151,10 @@ total: number, } | { "state": "cancelled" };
  * An analysis and its state.
  */
 export type AnalysisSummary = {
+/**
+ * Whole-run progress derived from existing jobs and documents, absent on older servers.
+ */
+progress?: AnalysisProgress,
 /**
  * Whether this reader has saved review state (including explicitly empty state).
  */
@@ -638,6 +696,11 @@ side: LineSide,
  * Hunks overlapping the range.
  */
 hunks: Array<DiffHunk>, };
+
+/**
+ * Where waiting-time estimates came from.
+ */
+export type EstimateBasis = "this_analysis" | "recent_runs" | "lines_only";
 
 /**
  * A line the agent actually read and cites as evidence.
@@ -1457,6 +1520,19 @@ comments: Array<PendingComment>,
 incomplete: boolean, };
 
 /**
+ * Position within the fixed plan batches of this run.
+ */
+export type PlanPart = {
+/**
+ * One-based current part.
+ */
+index: number,
+/**
+ * Total parts, fixed before the first plan job is submitted.
+ */
+total: number, };
+
+/**
  * The PR context: deterministic facts and LLM content.
  */
 export type PrContextBlock = {
@@ -1802,6 +1878,28 @@ export type RiskBand = "low" | "medium" | "high";
  * Kind of rule.
  */
 export type RuleKind = "path_glob" | "line_regex" | "lexer" | "header" | "binary";
+
+/**
+ * One stage in the short whole-run list.
+ */
+export type RunStage = {
+/**
+ * Accepted units, not attempts (repairs do not count twice).
+ */
+done: number,
+/**
+ * Unit count; null until known.
+ */
+total: number | null,
+/**
+ * Position relative to the currently executing stage.
+ */
+state: RunStageState, };
+
+/**
+ * State of a whole-run stage; pause/failure remain on AnalysisState.
+ */
+export type RunStageState = "pending" | "current" | "done";
 
 /**
  * Body of `PUT /api/v1/settings/language`.

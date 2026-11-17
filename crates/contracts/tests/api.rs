@@ -41,6 +41,7 @@ use serde_json::{Value, json};
 
 fn summary() -> AnalysisSummary {
     AnalysisSummary {
+        progress: None,
         has_my_state: None,
         id: AnalysisId::new_random(),
         pr: PrSummary {
@@ -361,6 +362,7 @@ fn tagged_wire_formats() {
         (
             serde_json::to_value(AnalysisState::Planning {
                 stage: Some(AnalysisStage {
+                    part: None,
                     kind: StageKind::Plan,
                     flow: None,
                     started_at: None,
@@ -373,6 +375,7 @@ fn tagged_wire_formats() {
                 done: 1,
                 total: 5,
                 stage: Some(AnalysisStage {
+                    part: None,
                     kind: StageKind::Flow,
                     flow: Some(StageFlow {
                         index: 2,

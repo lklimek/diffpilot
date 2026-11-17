@@ -1,5 +1,30 @@
 {
   "analysis": {
+    "progress": {
+      "started_at": "2026-11-16T09:12:00Z",
+      "planning": {
+        "done": 1,
+        "total": 1,
+        "state": "done"
+      },
+      "pr_context": {
+        "done": 1,
+        "total": 1,
+        "state": "done"
+      },
+      "flows": {
+        "done": 5,
+        "total": 5,
+        "state": "done"
+      },
+      "finishing": {
+        "done": 1,
+        "total": 1,
+        "state": "done"
+      },
+      "estimate": null,
+      "percent": 100
+    },
     "has_my_state": false,
     "id": "6d3a2f1e-0482-4c5e-9a7b-000000000482",
     "pr": {

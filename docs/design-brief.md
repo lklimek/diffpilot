@@ -49,6 +49,9 @@ can judge the PR at project scale, not only line by line.
   verdicts. The hover tooltip on a highlight states only the was → is fact: no risk, no verdict.
 - **No numeric confidence** anywhere (no decimals, no percentages). Observed facts carry a line reference;
   inferences are marked as inferences; hedges survive shortening.
+  Review ticks must not become points or a percentage score.
+  The analysis waiting screen may show stage counts, overall progress as a percentage and a clearly labelled ETA;
+  these describe processing work, never confidence or review quality.
 - **LLM-classified refactors** (LLM says "pure refactor" or "rename", no deterministic confirmation) are
   shown as normal flows with that label, never collapsed (§3, §4.3).
 
@@ -212,12 +215,14 @@ moved: banner "This analysis is for `abc123`; the PR is now at `def456`" with "R
 ticks not carried over) and a link to open the old analysis.
 
 ### 4.2 Analysis progress
-A single centred progress bar: "k of n flows analysed" and "Cancel analysis". No stages, activity feed or
-flows are shown. States:
+A centred overall analysis progress bar and Cancel analysis, with a compact list: Planning (parts done / total),
+PR context, Flows (done / total; known after planning), Finishing. Multi-part planning names the current part;
+its timer and the whole analysis timer are separate. Show a labelled estimate with its basis when available,
+otherwise "No estimate yet"; a pause shows its resume time instead. No agent activity feed. States:
 
 | State | Shows |
 |---|---|
-| Planning | indeterminate bar, "Planning flows…", Cancel analysis (the number of flows is not known yet) |
+| Planning | overall bar when estimable, otherwise indeterminate; current plan part, Cancel analysis |
 | Running | bar, "k of n flows analysed", Cancel analysis |
 | Paused | "Codex usage limit reached, resumes at HH:MM" |
 | Failed | which flow failed, or a plain description of what failed before any flow existed; Retry |

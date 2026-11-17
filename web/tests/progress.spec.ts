@@ -162,3 +162,48 @@ test.describe("stage and liveness", () => {
     });
   }
 });
+
+test("plan parts retain the whole-run clock, counters and estimate", async ({ page }) => {
+  await page.clock.install();
+  await open(page, "plan-parts");
+  await expect(page.getByText("Planning the review, part 6 of 23.")).toBeVisible();
+  const stages = page.getByRole("list", { name: "Analysis stages" });
+  await expect(stages).toContainText("Planning: 5 / 23 · current");
+  await expect(stages).toContainText("PR context: 0 / 1 · pending");
+  await expect(stages).toContainText("Flows: known after planning");
+  await expect(stages).toContainText("Finishing: 0 / 1 · pending");
+  await expect(
+    page.getByText(/About 40 min left.*rough estimate from this analysis's finished parts/),
+  ).toBeVisible();
+  await expect(bar(page)).toHaveAttribute("aria-valuenow", "12");
+  await page.clock.runFor(16_000);
+  await expect(page.getByText("Analysis started 40 min ago")).toBeVisible();
+  await expect(page.getByText(/this stage started 5 min ago/)).toBeVisible();
+  await page.clock.runFor(46_000);
+  await expect(page.getByText("Planning the review, part 7 of 23.")).toBeVisible();
+  await expect(page.getByText("Analysis started 41 min ago")).toBeVisible();
+  await expect(page.getByText(/this stage started less than a minute ago/)).toBeVisible();
+  await expect(stages).toContainText("Planning: 6 / 23 · current");
+  await expectAccessible(page);
+});
+
+for (const [scenario, text] of [
+  ["estimate-recent", "estimate from recent runs"],
+  ["estimate-lines", "rough estimate from changed lines in recent runs"],
+  ["estimate-none", "No estimate yet"],
+] as const) {
+  test(`waiting estimate: ${scenario}`, async ({ page }) => {
+    await page.clock.install();
+    await open(page, scenario);
+    await expect(page.getByText(text, { exact: false })).toBeVisible();
+    if (scenario === "estimate-none") await expect(bar(page)).not.toHaveAttribute("aria-valuenow", /.*/);
+  });
+}
+
+test("paused run shows the resume time instead of an ETA", async ({ page }) => {
+  await page.clock.install();
+  await open(page, "estimate-paused");
+  await expect(page.getByText(/^Paused until/)).toBeVisible();
+  await expect(page.getByText(/About .* left|No estimate yet/)).toHaveCount(0);
+  await expect(page.getByRole("list", { name: "Analysis stages" })).toBeVisible();
+});

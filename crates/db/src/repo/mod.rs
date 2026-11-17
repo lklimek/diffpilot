@@ -14,6 +14,7 @@ use sqlx::{SqlSafeStr, Sqlite, Transaction};
 use crate::error::DbError;
 
 pub mod analyses;
+mod analysis_progress;
 pub mod comments;
 pub mod documents;
 pub mod feedback;

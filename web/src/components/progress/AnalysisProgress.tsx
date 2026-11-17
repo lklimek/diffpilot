@@ -1,5 +1,10 @@
 import { plural } from "../quiet/labels";
-import type { AnalysisStage, AnalysisState } from "../../api/generated/types";
+import type {
+  AnalysisProgress as RunProgress,
+  AnalysisEstimate,
+  AnalysisStage,
+  AnalysisState,
+} from "../../api/generated/types";
 import { busyTip, buttonClass } from "../button/button";
 import { PAUSE_REASON, pausedText } from "./paused";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -22,6 +27,8 @@ export const SILENT_MS = 45_000;
 interface AnalysisProgressProps {
   /** State of the analysis (brief §4.2). */
   state: AnalysisState;
+  /** Whole-run facts; absent on older servers. */
+  progress?: RunProgress;
   /** Where "Open review" leads once the analysis has finished. */
   reviewHref: string;
   /** A cancel or retry request is running: the actions are disabled. */
@@ -63,7 +70,9 @@ function titleText(title: string): string {
 function stageWork(stage: AnalysisStage, done: number | null, total: number | null): string {
   switch (stage.kind) {
     case "plan":
-      return "planning the review.";
+      return stage.part
+        ? `planning the review, part ${stage.part.index} of ${stage.part.total}.`
+        : "planning the review.";
     case "pr_context":
       return "reading the PR context.";
     case "flow":
@@ -121,16 +130,26 @@ const BAR_LOOK: Record<AnalysisState["state"], string> = {
   cancelled: "border-border",
 };
 
-// Planning, and paused while planning, have no count: the bar is indeterminate (striped; planning pulses unless
-// motion is reduced). Paused with a count is striped too, filled to the flows analysed.
+// Without a whole-run denominator the bar stays indeterminate. Stripes distinguish planning and pauses.
 const STRIPES = {
   planning: "repeating-linear-gradient(135deg, var(--color-accent) 0 8px, var(--color-accent-bg) 8px 16px)",
   paused: "repeating-linear-gradient(135deg, var(--color-med-bd) 0 6px, var(--color-med-bg) 6px 12px)",
 };
 
-function Bar({ state, working }: { state: AnalysisState; working: boolean }) {
-  const counted =
-    state.state === "running" || (state.state === "paused" && state.total !== null)
+function Bar({
+  state,
+  working,
+  progress,
+}: {
+  state: AnalysisState;
+  working: boolean;
+  progress?: RunProgress;
+}) {
+  const counted = progress
+    ? progress.percent === null
+      ? null
+      : { now: progress.percent, max: 100 }
+    : state.state === "running" || (state.state === "paused" && state.total !== null)
       ? { now: state.done, max: state.total ?? 0 }
       : state.state === "finished"
         ? { now: state.total, max: state.total }
@@ -150,7 +169,13 @@ function Bar({ state, working }: { state: AnalysisState; working: boolean }) {
       aria-valuemin={counted ? 0 : undefined}
       aria-valuemax={counted?.max}
       aria-valuenow={counted?.now}
-      aria-valuetext={state.state === "planning" ? "Planning flows" : label(state)}
+      aria-valuetext={
+        progress && counted
+          ? percentLabel(counted.now) + label(state)
+          : state.state === "planning"
+            ? "Planning flows"
+            : label(state)
+      }
       className={`flex h-3 overflow-hidden rounded-md border bg-surface-2 ${BAR_LOOK[state.state]}`}
     >
       <i
@@ -165,6 +190,7 @@ function Bar({ state, working }: { state: AnalysisState; working: boolean }) {
 /** The single centred progress bar of an analysis with its actions (brief §4.2). */
 export function AnalysisProgress({
   state,
+  progress,
   reviewHref,
   busy,
   onCancel,
@@ -180,6 +206,12 @@ export function AnalysisProgress({
   // Activity only while a job runs and heartbeats arrive: never a loop on its own.
   const working = started !== null && activity !== undefined && activity.connected && !silent;
   const elapsed = stage !== null && activity !== undefined ? elapsedText(started, activity, working) : "";
+  const running = state.state === "planning" || state.state === "running";
+  const percentText = progress?.percent != null ? percentLabel(progress.percent) : "";
+  const analysisElapsed =
+    progress && activity && activity.clockOffset !== null && running
+      ? durationText(Math.max(0, activity.now - activity.clockOffset - Date.parse(progress.started_at)))
+      : null;
   return (
     <section aria-label="Analysis progress" className="w-3/5 max-w-[1400px] min-w-[min(100vw_-_4rem,480px)]">
       {/* Changes with the server's state and stage, and the silence notice every tick at most; the time stays outside. */}
@@ -192,9 +224,10 @@ export function AnalysisProgress({
           activity && !activity.connected && <p className="text-[13px]">Connection lost; reconnecting…</p>
         )}
       </div>
+      {progress && <StageList progress={progress} />}
       <div className="flex items-center gap-4">
         <div className="min-w-0 flex-1">
-          <Bar state={state} working={working} />
+          <Bar state={state} working={working} progress={progress} />
         </div>
         <span className="flex flex-none gap-2">
           {live && (
@@ -232,6 +265,15 @@ export function AnalysisProgress({
           )}
         </span>
       </div>
+      {progress && running && (
+        <p className="mt-2 text-[12.5px] text-muted">
+          {percentText && <span>{percentText}</span>}
+          {progress.estimate ? estimateText(progress.estimate) : "No estimate yet"}
+        </p>
+      )}
+      {analysisElapsed && (
+        <p className="mt-2 text-[12.5px] text-muted">Analysis started {analysisElapsed} ago</p>
+      )}
       {elapsed && (
         <p
           data-activity={working || undefined}
@@ -247,4 +289,45 @@ export function AnalysisProgress({
       {state.state === "paused" && <p className="mt-2 max-w-[100ch]">{PAUSE_REASON}</p>}
     </section>
   );
+}
+
+/** Waiting progress only; review ticks never contribute to these counts. */
+function StageList({ progress }: { progress: RunProgress }) {
+  const stages = [
+    ["Planning", progress.planning],
+    ["PR context", progress.pr_context],
+    ["Flows", progress.flows],
+    ["Finishing", progress.finishing],
+  ] as const;
+  return (
+    <ol aria-label="Analysis stages" className="mb-3 flex flex-wrap gap-x-5 gap-y-1 text-[12.5px]">
+      {stages.map(([name, stage]) => (
+        <li key={name} aria-current={stage.state === "current" ? "step" : undefined}>
+          <span className={stage.state === "current" ? "font-semibold" : "text-muted"}>
+            {name}:{" "}
+            {stage.total === null
+              ? name === "Flows"
+                ? "known after planning"
+                : "waiting"
+              : `${stage.done} / ${stage.total}`}{" "}
+            · {stage.state}
+          </span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function estimateText(estimate: AnalysisEstimate): string {
+  const basis = {
+    this_analysis: "this analysis's finished parts",
+    recent_runs: "recent runs",
+    lines_only: "changed lines in recent runs",
+  }[estimate.basis];
+  const duration = durationText(estimate.remaining_seconds * 1000);
+  return `About ${duration} left (${estimate.rough ? "rough estimate" : "estimate"} from ${basis})`;
+}
+
+function percentLabel(percent: number): string {
+  return `${percent}% of analysis · `; // wording-check: allow analysis waiting progress, brief 4.2
 }

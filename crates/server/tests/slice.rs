@@ -848,6 +848,7 @@ async fn slice_pipeline() {
     for key in ["id", "created_at", "finished_at"] {
         tour["analysis"][key] = seed["analysis"][key].clone();
     }
+    tour["analysis"]["progress"]["started_at"] = seed["analysis"]["created_at"].clone();
     let golden_path = fixtures().join("api/default/tour.json");
     let rendered = format!("{}\n", serde_json::to_string_pretty(&tour).expect("render"));
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
@@ -2185,6 +2186,10 @@ async fn huge_pull_request_is_planned_in_batches() {
     let id = created["id"].as_str().expect("id").to_owned();
     let finished = h.wait_until_finished(&id).await;
     assert_eq!(finished.state, AnalysisState::Finished { total: 2 });
+    let progress = finished.progress.as_ref().expect("whole-run progress");
+    assert_eq!(progress.planning.done, 2);
+    assert_eq!(progress.planning.total, Some(2));
+    assert_eq!(progress.percent, Some(100));
     let submitted = h.executor.submitted();
     for stage in ["plan:1", "plan:2", "flow:f1", "flow:f2"] {
         assert!(
