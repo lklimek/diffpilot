@@ -364,6 +364,34 @@ fn header_added_by_the_pull_request_does_not_hide_a_file() {
 }
 
 #[test]
+fn new_file_with_a_generated_header_goes_to_the_agent() {
+    let files = vec![file(
+        "src/new.rs",
+        None,
+        FileStatus::Added,
+        vec![hunk(1, (0, 0), (1, 3))],
+    )];
+    let lines = ["// @generated", "", "pub fn drain() { transfer(all()) }"];
+    let texts: Texts = [text(LineSide::Head, "src/new.rs", &lines)]
+        .into_iter()
+        .collect();
+    let result = run(&files, &[], &texts);
+    assert_eq!(result.hunks[0].disposition, Disposition::Agent);
+    assert_eq!(
+        result.agent_lines,
+        [FileRanges {
+            file: "src/new.rs".to_owned(),
+            side: LineSide::Head,
+            ranges: vec![LineRange {
+                start_line: 1,
+                end_line: 3
+            }],
+        }]
+    );
+    assert!(result.not_rendered.is_empty() && result.not_analysed.is_empty());
+}
+
+#[test]
 fn prepass_flags_agent_instruction_files() {
     let files = vec![
         file(
@@ -441,13 +469,19 @@ const POOL: [&str; 10] = [
     "call(other_function_name, argument);",
     "return result_value_here_now;",
 ];
-const PATHS: [&str; 6] = [
+const PATHS: [&str; 12] = [
     "Cargo.lock",
     "README.md",
     "src/a.rs",
     "src/b.rs",
     "src/gen.rs",
     "tests/t.rs",
+    "src/tests/auth.rs",
+    "crates/k/tests/it.rs",
+    "tool/build.py",
+    "web/app.test.ts",
+    "docs/guide.txt",
+    "src/c.rs",
 ];
 
 /// -U0 hunks between two line lists, as `git diff` reports them.
@@ -488,7 +522,7 @@ fn hunks_between(base: &[&str], head: &[&str], next_id: &mut usize) -> Vec<Hunk>
 
 fn generated_files() -> impl Strategy<Value = Vec<(usize, u8, Vec<usize>, Vec<usize>)>> {
     let one = (
-        0u8..4,
+        0u8..5,
         prop::collection::vec(0..POOL.len(), 0..10),
         prop::collection::vec(0..POOL.len(), 0..10),
     );
@@ -514,15 +548,18 @@ proptest! {
         let mut next_id = 0;
         for (path, status, base, head) in specs {
             let path = PATHS[path];
-            let (status, base, head): (FileStatus, Vec<&str>, Vec<&str>) = match status {
-                2 => (FileStatus::Added, Vec::new(), head.iter().map(|&i| POOL[i]).collect()),
-                3 => (FileStatus::Deleted, base.iter().map(|&i| POOL[i]).collect(), Vec::new()),
-                _ => (FileStatus::Modified, base.iter().map(|&i| POOL[i]).collect(), head.iter().map(|&i| POOL[i]).collect()),
+            let pick = |indices: &[usize]| -> Vec<&str> { indices.iter().map(|&i| POOL[i]).collect() };
+            let old_path = format!("old/{path}");
+            let (status, old, base, head): (FileStatus, Option<&str>, Vec<&str>, Vec<&str>) = match status {
+                2 => (FileStatus::Added, None, Vec::new(), pick(&head)),
+                3 => (FileStatus::Deleted, None, pick(&base), Vec::new()),
+                4 => (FileStatus::Renamed, Some(old_path.as_str()), pick(&base), pick(&head)),
+                _ => (FileStatus::Modified, None, pick(&base), pick(&head)),
             };
-            let diff = file(path, None, status, hunks_between(&base, &head, &mut next_id));
+            let diff = file(path, old, status, hunks_between(&base, &head, &mut next_id));
             for (side, lines) in [(LineSide::Base, &base), (LineSide::Head, &head)] {
-                if diff.path_on(side).is_some() {
-                    let (key, value) = text(side, path, lines);
+                if let Some(side_path) = diff.path_on(side) {
+                    let (key, value) = text(side, side_path, lines);
                     texts.insert(key, value);
                 }
             }
