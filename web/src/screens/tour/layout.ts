@@ -89,6 +89,11 @@ export function shownColumns(layout: TourLayout): Record<Column, boolean> {
   };
 }
 
+/** Whether hiding `column` leaves another column visible (full screen aside). */
+export function canHide(layout: TourLayout, column: Column): boolean {
+  return COLUMNS.some((c) => c !== column && !layout.hidden[c]);
+}
+
 /** Hides a column; leaves full screen first; never hides the last shown column. */
 export function hideColumn(layout: TourLayout, column: Column): TourLayout {
   const hidden = { ...layout.hidden, [column]: true };

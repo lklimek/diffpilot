@@ -4,6 +4,7 @@ import {
   LAYOUT_STORAGE_KEY,
   MIN_MAIN_PX,
   STRIP_PX,
+  canHide,
   clampWidth,
   hideColumn,
   loadLayout,
@@ -27,6 +28,15 @@ describe("Tour layout (brief §4.3 columns)", () => {
     const layout = { ...toggleFull(hideColumn(DEFAULT_LAYOUT, "nav"), "main"), diagram: true };
     saveLayout({ ...layout, widths: { nav: 320, inspector: 480 } });
     expect(loadLayout()).toEqual({ ...layout, widths: { nav: 320, inspector: 480 } });
+  });
+
+  it("lets a column be hidden only while another one stays visible", () => {
+    expect(canHide(DEFAULT_LAYOUT, "main")).toBe(true);
+    const onlyMain = hideColumn(hideColumn(DEFAULT_LAYOUT, "nav"), "inspector");
+    expect(canHide(onlyMain, "main")).toBe(false);
+    expect(canHide(onlyMain, "nav")).toBe(true);
+    // Full screen leaves the hidden columns as they were: Hide returns to them.
+    expect(canHide(toggleFull(DEFAULT_LAYOUT, "main"), "main")).toBe(true);
   });
 
   it("ignores a stored value of the wrong shape, and never restores all columns hidden", () => {

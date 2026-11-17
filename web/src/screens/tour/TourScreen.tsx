@@ -19,6 +19,7 @@ import type { UnresolvedPosts } from "../../components/comment/CommentComposer";
 import { FlowIntroBlock } from "../../components/flow-intro/FlowIntroBlock";
 import { isFlowReviewed } from "../../components/flow-intro/progress";
 import { HelpDialog } from "../../components/help/HelpDialog";
+import { quietTitle } from "../../components/inspector/summaries";
 import { shortcutAction } from "../../components/help/shortcuts";
 import { NavList } from "../../components/nav/NavList";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
@@ -95,6 +96,26 @@ interface TourViewProps {
   login: string | null;
 }
 
+/** Where a resumed review opens, e.g. "flow 1, step 5". */
+function resumedAt(tour: Tour, block: BlockRef): string {
+  switch (block.block) {
+    case "step": {
+      const found = findStep(tour, block.step_id);
+      return found ? `flow ${found.flow.position}, step ${found.step.number}` : "a step";
+    }
+    case "flow_intro": {
+      const flow = tour.flows.find((f) => f.id === block.flow_id);
+      return flow ? `the introduction of flow ${flow.position}` : "a flow introduction";
+    }
+    case "quiet":
+      return quietTitle(block.row);
+    case "pending_review":
+      return "your pending review";
+    case "pr_context":
+      return "PR context";
+  }
+}
+
 function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const { state, change: save, loadError, saveError } = review;
   const pending = usePendingReview(analysisId);
@@ -109,6 +130,10 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
       (sequence.some((b) => sameBlock(b, last)) || last.block === "quiet" || last.block === "pending_review");
     return known ? last : PR_CONTEXT;
   });
+  // A review opened elsewhere than at its start says once where it resumed (mockup "returning to a review").
+  const [resumed, setResumed] = useState<BlockRef | null>(() =>
+    current.block === "pr_context" ? null : current,
+  );
   const [annotationId, setAnnotationId] = useState<AnnotationId | null>(null);
   const [oldCode, setOldCode] = useState(false);
   const [commentLine, setCommentLine] = useState<CommentLineState | null>(null);
@@ -145,6 +170,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const go = (block: BlockRef | undefined) => {
     if (!block) return;
     setCurrent(block);
+    setResumed(null);
     setAnnotationId(null);
     setOldCode(false);
     setCommentLine(null);
@@ -348,6 +374,20 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         : null;
   const centre = (
     <>
+      {resumed && sameBlock(resumed, current) && (
+        <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1 text-[12.5px]">
+          <p role="status" className="m-0 flex-1">
+            Resumed where you left off: {resumedAt(tour, resumed)}.
+          </p>
+          <button
+            type="button"
+            onClick={() => setResumed(null)}
+            className="min-h-6 cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] hover:border-accent"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       {progressAlert && (
         <p
           role="alert"

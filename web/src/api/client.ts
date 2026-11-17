@@ -1,5 +1,5 @@
 // The only fetch layer of the web app: typed calls to the routes of crates/contracts.
-import { routes, type RouteName } from "./generated/routes";
+import { routes, type RouteName } from "./routes";
 import type {
   AnalysisEvent,
   AnalysisId,
@@ -12,6 +12,7 @@ import type {
   CreateCommentResponse,
   DiffResponse,
   Feedback,
+  FeedbackId,
   FeedbackRequest,
   LinesResponse,
   MeResponse,
@@ -149,6 +150,8 @@ export function createApiClient(baseUrl = "") {
     listFeedback: (id: AnalysisId) => call<Feedback[]>("listFeedback", { params: { id } }),
     postFeedback: (id: AnalysisId, body: FeedbackRequest) =>
       call<Feedback>("postFeedback", { params: { id }, body }),
+    deleteFeedback: (id: AnalysisId, feedbackId: FeedbackId) =>
+      call<void>("deleteFeedback", { params: { id, feedback_id: feedbackId } }),
     getPendingReview: (id: AnalysisId) => call<PendingReview>("getPendingReview", { params: { id } }),
     createComment: (id: AnalysisId, body: CreateCommentRequest) =>
       call<CreateCommentResponse>("createComment", { params: { id }, body }),

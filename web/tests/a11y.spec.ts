@@ -58,7 +58,7 @@ test("keyboard: skip link, menu and Next reachable by Tab with a visible focus r
   const outline = await page.evaluate(() => getComputedStyle(document.activeElement!).outlineStyle);
   expect(outline).toBe("solid");
   await page.keyboard.press("Enter");
-  await expect(page.getByRole("main").getByRole("heading", { level: 2 }).first()).toHaveText(
+  await expect(page.locator("main h2:not([data-column-title])").first()).toHaveText(
     "1 Send an RPC request with retry",
   );
 });

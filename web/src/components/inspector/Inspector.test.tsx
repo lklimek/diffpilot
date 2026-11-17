@@ -237,19 +237,31 @@ describe("Inspector summaries", () => {
     expect(onSelectStep).toHaveBeenCalledWith("f1.5");
   });
 
-  it("summarises the PR context, facts apart from LLM analysis", () => {
+  it("summarises the PR context: coverage facts apart from the LLM analysis, nothing the centre already lists", () => {
     render(<Inspector tour={tour} block={{ block: "pr_context" }} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("PR context");
-    const facts = region(/^Facts/);
-    expect(facts).toHaveTextContent("5 flows, 17 steps");
-    expect(facts).toHaveTextContent("Project profile: repository file");
-    expect(region(/^LLM analysis at a glance/)).toHaveTextContent(/fit questions? to check/);
+    const coverage = region(/^Coverage/);
+    expect(coverage).toHaveTextContent("From the diff and the pre-pass; no LLM.");
+    expect(coverage).toHaveTextContent("Unexplained: 6 changed lines in 1 file — read these yourself");
+    expect(coverage).toHaveTextContent(
+      "Not analysed: 8 files (Tests 4, Docs & comments 3, Mechanical & generated 1)",
+    );
+    expect(coverage).toHaveTextContent("Moves with identical text: 1");
+    // The LLM's split is not a fact (UX-104); the centre's Facts are not repeated (UX-110).
+    expect(coverage).not.toHaveTextContent(/flows?|steps?|CI|Project profile|removed from tests|dependenc/);
+    const glance = region(/^LLM analysis at a glance/);
+    expect(glance).toHaveTextContent("The LLM split this PR into 5 flows with 17 steps.");
+    expect(glance).toHaveTextContent("Flows by LLM risk: 1 HIGH, 3 MEDIUM, 1 LOW");
+    expect(glance).toHaveTextContent(/fit questions? to check/);
   });
 
-  it("says when there is no project profile (noprofile)", () => {
-    const noprofile = seedFor("noprofile", "tour") as Tour;
-    render(<Inspector tour={noprofile} block={{ block: "pr_context" }} />);
-    expect(region(/^Facts/)).toHaveTextContent("No project profile — ratings are component-level");
+  it("counts flows the LLM did not rate as not rated", () => {
+    const t = structuredClone(tour);
+    t.flows[0]!.llm.risk = null;
+    render(<Inspector tour={t} block={{ block: "pr_context" }} />);
+    expect(region(/^LLM analysis at a glance/)).toHaveTextContent(
+      "Flows by LLM risk: 3 MEDIUM, 1 LOW, 1 not rated",
+    );
   });
 
   it("says related work was not checked without the GitHub App", () => {
