@@ -199,6 +199,27 @@ describe("FeedbackButtons", () => {
     expect(note).toHaveValue("why");
   });
 
+  it("keeps the values focusable while a value is saved: aria-disabled, the tip says why", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockReturnValue(new Promise(() => {}));
+    render(
+      <FeedbackButtons
+        target={step31}
+        subject="step 1"
+        feedback={[]}
+        onSubmit={onSubmit}
+        onRemove={() => {}}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "wrong" }));
+    const correct = screen.getByRole("button", { name: "correct" });
+    expect(correct).toHaveAttribute("aria-disabled", "true");
+    expect(correct).not.toHaveAttribute("disabled");
+    expect(correct).toHaveAccessibleDescription(/Not available while the current request runs\./);
+    await user.click(correct);
+    expect(onSubmit).toHaveBeenCalledOnce();
+  });
+
   it("shows why feedback was not saved", async () => {
     const onSubmit = vi.fn().mockRejectedValue(new Error("Not signed in."));
     render(

@@ -7,6 +7,7 @@ import type {
   AnalysisSummary,
   AskQuestion,
   CreateCommentRequest,
+  Feedback,
   FeedbackId,
   FeedbackRequest,
   LlmLanguage,
@@ -128,14 +129,25 @@ export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
 /** Interval of re-reading feedback while a MemCan write is pending. */
 export const FEEDBACK_POLL_MS = 2000;
 
+/** Interval while a write failed: the server retries it (30 s retry, 60 s sweep), so read again slowly. */
+export const FEEDBACK_RETRY_POLL_MS = 15_000;
+
+/** How often to re-read feedback: until every MemCan write is `written`; never while all are. */
+function feedbackPollInterval(entries: readonly Feedback[] | undefined): number | false {
+  if (entries?.some((f) => f.memory === "pending")) return FEEDBACK_POLL_MS;
+  if (entries?.some((f) => f.memory === "failed")) return FEEDBACK_RETRY_POLL_MS;
+  return false;
+}
+
 /** Stored feedback of the analysis (user values and `missed_by_llm`). */
 export const useFeedback = (id: AnalysisId) =>
   useQuery({
     queryKey: ["feedback", id],
     queryFn: () => api.listFeedback(id),
-    // MemCan writes run after the response: read again while one is pending.
-    refetchInterval: (query) =>
-      query.state.data?.some((f) => f.memory === "pending") ? FEEDBACK_POLL_MS : false,
+    // MemCan writes run after the response and failed ones are retried by the server: read again until written.
+    refetchInterval: (query) => feedbackPollInterval(query.state.data),
+    // Paused while the tab is hidden; a returning tab reads again on focus.
+    refetchIntervalInBackground: false,
   });
 
 /** Stores a feedback value; the list is read again (the server merges values per target). */

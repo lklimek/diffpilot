@@ -1,5 +1,5 @@
 import type { AnalysisState } from "../../api/generated/types";
-import { buttonClass } from "../button/button";
+import { busyTip, buttonClass } from "../button/button";
 import { PAUSE_REASON, pausedText } from "./paused";
 import { Tooltip } from "../tooltip/Tooltip";
 
@@ -99,15 +99,27 @@ export function AnalysisProgress({ state, reviewHref, busy, onCancel, onRetry }:
         </div>
         <span className="flex flex-none gap-2">
           {live && (
-            <Tooltip tip="Stops the analysis and discards its partial results; you return to Home.">
-              <button type="button" disabled={busy} onClick={onCancel} className={buttonClass("danger")}>
+            <Tooltip
+              tip={busyTip("Stops the analysis and discards its partial results; you return to Home.", busy)}
+            >
+              <button
+                type="button"
+                aria-disabled={busy || undefined}
+                onClick={() => !busy && onCancel()}
+                className={buttonClass("danger")}
+              >
                 Cancel analysis
               </button>
             </Tooltip>
           )}
           {state.state === "failed" && (
-            <Tooltip tip="Runs the failed analysis again.">
-              <button type="button" disabled={busy} onClick={onRetry} className={buttonClass("primary")}>
+            <Tooltip tip={busyTip("Runs the failed analysis again.", busy)}>
+              <button
+                type="button"
+                aria-disabled={busy || undefined}
+                onClick={() => !busy && onRetry()}
+                className={buttonClass("primary")}
+              >
                 Retry
               </button>
             </Tooltip>

@@ -1,11 +1,11 @@
 import { useId, useState } from "react";
-import { buttonClass } from "../button/button";
+import { busyTip, buttonClass } from "../button/button";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface PrUrlFormProps {
   /** Value the field starts with. */
   initialUrl?: string;
-  /** A request is running: Analyze is disabled. */
+  /** A request is running: Analyze is unavailable (aria-disabled, its tip says why). */
   busy: boolean;
   /** Called with the trimmed URL. */
   onSubmit: (url: string) => void;
@@ -19,7 +19,7 @@ export function PrUrlForm({ initialUrl = "", busy, onSubmit }: PrUrlFormProps) {
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        onSubmit(url.trim());
+        if (!busy) onSubmit(url.trim());
       }}
     >
       <label htmlFor={id} className="mb-1 block text-xs font-semibold">
@@ -36,8 +36,13 @@ export function PrUrlForm({ initialUrl = "", busy, onSubmit }: PrUrlFormProps) {
           aria-describedby={`${id}-help`}
           className="min-w-0 flex-1 rounded-md border border-muted bg-surface px-2.5 py-1.5 font-mono"
         />
-        <Tooltip tip="Opens the pull request: an existing analysis is resumed, otherwise a new one starts.">
-          <button type="submit" disabled={busy} className={buttonClass("primary")}>
+        <Tooltip
+          tip={busyTip(
+            "Opens the pull request: an existing analysis is resumed, otherwise a new one starts.",
+            busy,
+          )}
+        >
+          <button type="submit" aria-disabled={busy || undefined} className={buttonClass("primary")}>
             Analyze
           </button>
         </Tooltip>

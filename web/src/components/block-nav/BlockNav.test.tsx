@@ -15,9 +15,27 @@ describe("BlockNav", () => {
     expect(screen.getByRole("button", { name: /Next/ })).toHaveAccessibleDescription(/k|j/);
   });
 
-  it("disables the missing direction at the ends of the tour", () => {
-    render(<BlockNav next="Flow 1: x" onPrevious={() => {}} onNext={() => {}} />);
-    expect(screen.getByRole("button", { name: "← Previous" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /Next/ })).toBeEnabled();
+  it("marks the missing direction aria-disabled at the ends: focusable, its tip says why, no action", async () => {
+    const user = userEvent.setup();
+    const onPrevious = vi.fn();
+    render(<BlockNav next="Flow 1: x" onPrevious={onPrevious} onNext={() => {}} />);
+    const previous = screen.getByRole("button", { name: "← Previous" });
+    expect(previous).toHaveAttribute("aria-disabled", "true");
+    expect(previous).not.toHaveAttribute("disabled");
+    expect(previous).toHaveAccessibleDescription("This is the first block; there is none before it.");
+    await user.tab();
+    expect(previous).toHaveFocus();
+    expect(screen.getByRole("tooltip")).toHaveTextContent("This is the first block");
+    await user.click(previous);
+    await user.keyboard("{Enter}");
+    expect(onPrevious).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /Next/ })).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("at the last block Next says there is none after it", () => {
+    render(<BlockNav previous="Flow 5: y" onPrevious={() => {}} onNext={() => {}} />);
+    const next = screen.getByRole("button", { name: "Next →" });
+    expect(next).toHaveAttribute("aria-disabled", "true");
+    expect(next).toHaveAccessibleDescription("This is the last block; there is none after it.");
   });
 });

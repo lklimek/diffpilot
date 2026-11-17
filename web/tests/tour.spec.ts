@@ -430,3 +430,24 @@ test("a binary file is listed in Not analysed with its badge and tooltip", async
     "Git treats this file as binary; it is not shown or analysed.",
   );
 });
+
+test("at the first block, Previous is reachable by keyboard and its tip says why it does nothing", async ({
+  page,
+}) => {
+  await openTour(page);
+  const previous = page.getByRole("main").getByRole("button", { name: "← Previous" });
+  await expect(previous).toHaveAttribute("aria-disabled", "true");
+  await page
+    .getByRole("main")
+    .getByRole("heading", { name: /^PR context:/ })
+    .click();
+  await previous.focus();
+  await expect(previous).toBeFocused();
+  await expect(page.getByRole("tooltip").filter({ visible: true })).toHaveText(
+    "This is the first block; there is none before it.",
+  );
+  await page.keyboard.press("Enter");
+  await expect(page.locator("main h2:not([data-column-title])").first()).toHaveText(
+    "PR context: acme/node-client #482",
+  );
+});
