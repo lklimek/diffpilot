@@ -191,7 +191,7 @@ impl Follower {
         // State, ready output and events come from one read, so they belong to one attempt and one moment.
         let JobSnapshot { job, events } = snapshot;
         if self.last_state.is_none() && job.state.is_terminal() {
-            return self.finish(job.result);
+            return self.finish(job.result, job.github_access_granted);
         }
         #[cfg(test)]
         if let Some(hook) = &self.between_reads {
@@ -236,7 +236,7 @@ impl Follower {
         }
         self.last_state = Some(job.state);
         if job.state.is_terminal() {
-            return self.finish(job.result);
+            return self.finish(job.result, job.github_access_granted);
         }
         Ok(())
     }
@@ -257,12 +257,16 @@ impl Follower {
     fn finish(
         &mut self,
         result: Option<contracts::job::result::JobResult>,
+        github_access: bool,
     ) -> Result<(), ExecutorError> {
         self.done = true;
         let result = result.ok_or(ExecutorError::Db(DbError::Corrupt {
             column: "jobs.result",
         }))?;
-        self.pending.push_back(JobUpdate::Finished(result));
+        self.pending.push_back(JobUpdate::Finished {
+            result,
+            github_access,
+        });
         Ok(())
     }
 }
@@ -471,6 +475,33 @@ mod tests {
         assert_ne!(fresh, claimed);
     }
 
+    /// The result reports whether the attempt that produced it ran with a GitHub installation token.
+    #[tokio::test]
+    async fn finished_reports_the_attempts_github_access() {
+        let (db, executor, analysis) = setup().await;
+        let handle = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit");
+        let job = handle.job_id;
+        claim(&db, 60).await;
+        db.jobs()
+            .record_github_access(job, 1, true)
+            .await
+            .expect("access");
+        db.jobs()
+            .complete(&succeeded(job, 1), Utc::now())
+            .await
+            .expect("complete");
+        assert_eq!(
+            next(&mut executor.events(&handle)).await,
+            JobUpdate::Finished {
+                result: succeeded(job, 1),
+                github_access: true
+            }
+        );
+    }
+
     #[tokio::test]
     async fn events_follow_a_scripted_job_to_its_result() {
         let (db, executor, analysis) = setup().await;
@@ -511,14 +542,20 @@ mod tests {
             .expect("complete");
         assert_eq!(
             next(&mut updates).await,
-            JobUpdate::Finished(succeeded(job, 1))
+            JobUpdate::Finished {
+                result: succeeded(job, 1),
+                github_access: false
+            }
         );
         assert!(updates.next().await.is_none());
 
         let mut finished = executor.events(&handle);
         assert_eq!(
             next(&mut finished).await,
-            JobUpdate::Finished(succeeded(job, 1)),
+            JobUpdate::Finished {
+                result: succeeded(job, 1),
+                github_access: false
+            },
             "a finished job yields only its result"
         );
         assert!(finished.next().await.is_none());
@@ -583,7 +620,7 @@ mod tests {
             .expire_leases(after_lease())
             .await
             .expect("expire");
-        let JobUpdate::Finished(result) = next(&mut updates).await else {
+        let JobUpdate::Finished { result, .. } = next(&mut updates).await else {
             panic!("expected the end of the job");
         };
         assert_eq!(result.outcome, JobOutcome::Cancelled);
@@ -647,7 +684,7 @@ mod tests {
                 JobUpdate::OutputReady(_) => "output".to_owned(),
                 JobUpdate::Requeued { attempt } => format!("requeued {attempt}"),
                 JobUpdate::Paused { .. } => "paused".to_owned(),
-                JobUpdate::Finished(result) => format!("finished {}", result.attempt),
+                JobUpdate::Finished { result, .. } => format!("finished {}", result.attempt),
             })
             .collect()
     }
@@ -698,7 +735,10 @@ mod tests {
         let mut seen = vec![next(&mut updates).await, next(&mut updates).await];
         loop {
             let update = next(&mut updates).await;
-            let end = matches!(update, JobUpdate::OutputReady(_) | JobUpdate::Finished(_));
+            let end = matches!(
+                update,
+                JobUpdate::OutputReady(_) | JobUpdate::Finished { .. }
+            );
             seen.push(update);
             if end {
                 return kinds(&seen);

@@ -107,6 +107,8 @@ struct ScriptedExecutor {
     /// Stages answered other than with their fixture output.
     scripts: Mutex<HashMap<String, Script>>,
     cancelled: Mutex<Vec<String>>,
+    /// Stages whose job ran with a GitHub installation token.
+    github_access: Mutex<HashSet<String>>,
 }
 
 /// How a stage's job ends instead of returning its fixture output. Scripts are keyed by `<stage>#<generation>`,
@@ -133,6 +135,14 @@ impl ScriptedExecutor {
         let mut stages = self.cancelled.lock().expect("lock").clone();
         stages.sort();
         stages
+    }
+
+    /// Jobs of `stage` run with a GitHub installation token.
+    fn grant_github_access(&self, stage: &str) {
+        self.github_access
+            .lock()
+            .expect("lock")
+            .insert(stage.to_owned());
     }
 
     fn unscript(&self, stage: &str) {
@@ -240,7 +250,11 @@ impl JobExecutor for ScriptedExecutor {
             skills_commit: None,
             llm_call: None,
         };
-        let finished = Ok(JobUpdate::Finished(result));
+        let github_access = self.github_access.lock().expect("lock").contains(&stage);
+        let finished = Ok(JobUpdate::Finished {
+            result,
+            github_access,
+        });
         match paused {
             None => stream::iter([finished]).boxed(),
             Some(notify) => stream::iter([Ok(JobUpdate::Paused { resumes_at: None })])
@@ -1920,66 +1934,10 @@ async fn provider_error_text_never_reaches_the_analysis_state() {
 #[tokio::test]
 async fn tour_has_no_uncomputed_fact_with_the_app_installed() {
     let h = harness_with_app(true).await;
+    // The executor reports that the accepted pr_context attempt ran with GitHub access; no job history is read.
+    h.executor.grant_github_access("pr_context");
     let id = h.create_fixture_analysis().await;
     h.wait_until_finished(&id).await;
-    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
-    let (_, before) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
-    assert_eq!(
-        before["pr_context"]["facts"]["related_work_checked"],
-        json!(false),
-        "no claimed job records GitHub access yet"
-    );
-    // The accepted pr_context attempt as the queue records it: claimed with an installation token.
-    let jobs = h.state.db.jobs();
-    let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::PrContext);
-    spec.credential.id = db::repo::analyses::testing::CREDENTIAL.to_owned();
-    let job = jobs
-        .enqueue(
-            db::repo::jobs::NewJob {
-                spec,
-                priority: JobPriority::Batch,
-                stage: JobStage::PrContext,
-                generation: 0,
-            },
-            Utc::now(),
-        )
-        .await
-        .expect("enqueue");
-    let now = Utc::now();
-    jobs.claim(db::repo::jobs::ClaimParams {
-        credential_ids: &[db::repo::analyses::testing::CREDENTIAL.to_owned()],
-        job_token_hash: b"hash",
-        lease_until: now + TimeDelta::seconds(60),
-        now,
-    })
-    .await
-    .expect("claim")
-    .expect("the job");
-    jobs.record_github_access(job.id, 1, true)
-        .await
-        .expect("access");
-    let accepted: Value = h
-        .state
-        .db
-        .documents()
-        .get(analysis, DocumentKind::PrContext, "")
-        .await
-        .expect("read")
-        .expect("pr context");
-    jobs.complete(
-        &JobResult {
-            job_id: job.id,
-            attempt: 1,
-            outcome: JobOutcome::Succeeded { output: accepted },
-            session: None,
-            usage: None,
-            skills_commit: None,
-            llm_call: None,
-        },
-        Utc::now(),
-    )
-    .await
-    .expect("complete");
     let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
     assert_eq!(status, StatusCode::OK, "{tour}");
     let facts = &tour["pr_context"]["facts"];

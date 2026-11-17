@@ -134,8 +134,9 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
   starts a new session (`started_after_loss`). Ask jobs bring their own pack. Session and pack are prepared
   before the installation token is minted; when they cannot be (stored results unreadable, pack not renderable)
   the claim is released (job `queued`, attempt unspent, no token minted) and the claim answers 500 `internal`.
-- `jobs.github_access_granted` records whether the attempt's claim got an installation token; the Tour's
-  `related_work_checked` comes from the job whose output is the accepted PR context.
+- `jobs.github_access_granted` records whether the attempt's claim got an installation token; the executor
+  reports it with the result (`JobUpdate::Finished { github_access }`), the pipeline stores it with the accepted
+  PR context (`documents.github_access`), and the Tour's `related_work_checked` reads only that stored fact.
 - Cancel and a re-analysis on a moved head request the drop of the analysis's session (`drop_sessions`).
 - Claims skip jobs of cancelled analyses. At start-up, before claims are served, the server finishes cancellations
   a crash interrupted (jobs cancelled, documents deleted, session drop requested; idempotent).

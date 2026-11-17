@@ -45,7 +45,7 @@ impl DocumentKind {
 }
 
 impl Documents<'_> {
-    /// Inserts or replaces a document.
+    /// Inserts or replaces a document the server built.
     pub async fn put<T: Serialize + Sync>(
         &self,
         analysis: AnalysisId,
@@ -54,16 +54,62 @@ impl Documents<'_> {
         body: &T,
         now: DateTime<Utc>,
     ) -> Result<(), DbError> {
+        self.store(analysis, kind, key, body, None, now).await
+    }
+
+    /// Inserts or replaces an accepted agent output with whether its attempt ran with GitHub access.
+    pub async fn put_agent_output<T: Serialize + Sync>(
+        &self,
+        analysis: AnalysisId,
+        kind: DocumentKind,
+        key: &str,
+        body: &T,
+        github_access: bool,
+        now: DateTime<Utc>,
+    ) -> Result<(), DbError> {
+        self.store(analysis, kind, key, body, Some(github_access), now)
+            .await
+    }
+
+    /// Whether the stored agent output's attempt ran with GitHub access; `None` when the document is missing or
+    /// the server built it.
+    pub async fn github_access(
+        &self,
+        analysis: AnalysisId,
+        kind: DocumentKind,
+        key: &str,
+    ) -> Result<Option<bool>, DbError> {
+        let access: Option<Option<bool>> = sqlx::query_scalar(
+            "SELECT github_access FROM documents WHERE analysis_id = ? AND kind = ? AND key = ?",
+        )
+        .bind(analysis.to_string())
+        .bind(kind.as_str())
+        .bind(key)
+        .fetch_optional(self.pool)
+        .await?;
+        Ok(access.flatten())
+    }
+
+    async fn store<T: Serialize + Sync>(
+        &self,
+        analysis: AnalysisId,
+        kind: DocumentKind,
+        key: &str,
+        body: &T,
+        github_access: Option<bool>,
+        now: DateTime<Utc>,
+    ) -> Result<(), DbError> {
         let body = serde_json::to_string(body)?;
         let stored = sqlx::query(
-            "INSERT INTO documents (analysis_id, tenant_id, kind, key, body, created_at)
-             SELECT id, tenant_id, ?, ?, ?, ? FROM analyses WHERE id = ?
+            "INSERT INTO documents (analysis_id, tenant_id, kind, key, body, github_access, created_at)
+             SELECT id, tenant_id, ?, ?, ?, ?, ? FROM analyses WHERE id = ?
              ON CONFLICT (analysis_id, kind, key) DO UPDATE SET body = excluded.body,
-                 created_at = excluded.created_at",
+                 github_access = excluded.github_access, created_at = excluded.created_at",
         )
         .bind(kind.as_str())
         .bind(key)
         .bind(body)
+        .bind(github_access)
         .bind(ts(now))
         .bind(analysis.to_string())
         .execute(self.pool)
@@ -133,6 +179,48 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 11, 16, 12, minute, 0)
             .single()
             .unwrap_or_default()
+    }
+
+    /// GitHub access is kept with an agent output, replaced with it, and absent for server-built documents.
+    #[tokio::test]
+    async fn agent_output_keeps_its_github_access() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let docs = db.documents();
+        let body = json!({"summary": "s"});
+        assert_eq!(
+            docs.github_access(analysis, DocumentKind::PrContext, "")
+                .await
+                .expect("read"),
+            None
+        );
+        docs.put_agent_output(analysis, DocumentKind::PrContext, "", &body, true, at(1))
+            .await
+            .expect("put");
+        assert_eq!(
+            docs.github_access(analysis, DocumentKind::PrContext, "")
+                .await
+                .expect("read"),
+            Some(true)
+        );
+        docs.put_agent_output(analysis, DocumentKind::PrContext, "", &body, false, at(2))
+            .await
+            .expect("replace");
+        assert_eq!(
+            docs.github_access(analysis, DocumentKind::PrContext, "")
+                .await
+                .expect("read"),
+            Some(false)
+        );
+        docs.put(analysis, DocumentKind::PrContext, "", &body, at(3))
+            .await
+            .expect("server-built");
+        assert_eq!(
+            docs.github_access(analysis, DocumentKind::PrContext, "")
+                .await
+                .expect("read"),
+            None
+        );
     }
 
     #[tokio::test]

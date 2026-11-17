@@ -135,6 +135,8 @@ CREATE TABLE documents (
     kind        TEXT NOT NULL CHECK (kind IN ('prepass', 'plan', 'pr_context', 'flow', 'github_snapshot')),
     key         TEXT NOT NULL DEFAULT '',
     body        TEXT NOT NULL CHECK (json_valid(body)),
+    -- An agent output's attempt ran with a GitHub installation token; NULL for documents the server built.
+    github_access INTEGER CHECK (github_access IS NULL OR github_access IN (0, 1)),
     created_at  TEXT NOT NULL,
     PRIMARY KEY (analysis_id, kind, key)
 ) STRICT;

@@ -221,8 +221,12 @@ impl Driver<'_> {
                 self.set_progress().await?;
             }
             match item {
-                Some(Ok(JobUpdate::Finished(result))) => {
-                    self.finish(&mut updates, stage, generation, result).await?;
+                Some(Ok(JobUpdate::Finished {
+                    result,
+                    github_access,
+                })) => {
+                    self.finish(&mut updates, (stage, generation), result, github_access)
+                        .await?;
                     if self
                         .in_flight
                         .as_ref()
@@ -368,13 +372,14 @@ impl Driver<'_> {
         self.plan_known(merged, true).await
     }
 
-    /// Handles a job's result: schema, verification, then storage, a repair run or the stage's end.
+    /// Handles a job's result: schema, verification, then storage, a repair run or the stage's end. The PR
+    /// context is stored with whether its attempt ran with GitHub access (the Tour's related-work fact).
     async fn finish(
         &mut self,
         updates: &mut Updates,
-        stage: JobStage,
-        generation: u32,
+        (stage, generation): (JobStage, u32),
         result: JobResult,
+        github_access: bool,
     ) -> Result<(), PipelineError> {
         let output = match result.outcome {
             JobOutcome::Succeeded { output } => output,
@@ -413,7 +418,18 @@ impl Driver<'_> {
                 let context: PrContextOutput = self.parse(&stage, output.clone())?;
                 match verdict::pr_context(Arc::clone(&self.facts), context.clone()).await? {
                     Ok(()) => {
-                        self.put(DocumentKind::PrContext, "", &context).await?;
+                        self.state
+                            .db
+                            .documents()
+                            .put_agent_output(
+                                self.analysis,
+                                DocumentKind::PrContext,
+                                "",
+                                &context,
+                                github_access,
+                                Utc::now(),
+                            )
+                            .await?;
                         self.results.pr_context = Some(context);
                         None
                     }
