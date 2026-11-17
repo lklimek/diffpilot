@@ -103,6 +103,7 @@ not that every tool or profile lookup succeeded.
 | `JobSpec.pull_request_id`; `SessionRef { pull_request_id, thread_id }`; numeric PR keys in `drop_sessions` / `dropped_sessions` | One agent session across every head, language, Retry and Ask of a PR (ADR-004). |
 | Move `agent_thread_id`, `session_state` to `pull_requests`; AUTOINCREMENT PR ids; running-job exclusion per PR | Stable, non-reused archive key; serialize shared-session jobs even with different credentials. Single rewritable migration, no compatibility. |
 | Codex auto-compaction at 400000; archive each successful useful turn | Remove the extra compaction turn and its latency; usage remains the useful turn's delta. |
+
 ## Waiting progress (owner approval, 2026-11-17)
 
 | Addition | Reason |
