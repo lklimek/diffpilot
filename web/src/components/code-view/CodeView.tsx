@@ -343,13 +343,15 @@ function DeletedRun({ block, anchor, ctx, tokens, onLoadDeleted }: DeletedRunPro
       {block.lines.length < block.total_lines && (
         <span className={`${STRIP} py-0.5 text-[11.5px]`}>
           {onLoadDeleted ? (
-            <button
-              type="button"
-              onClick={() => onLoadDeleted(block)}
-              className="cursor-pointer rounded border border-border bg-surface px-2 text-text hover:border-accent"
-            >
-              {more}
-            </button>
+            <Tooltip tip="Shows the rest of the deleted lines of this block, from the base commit.">
+              <button
+                type="button"
+                onClick={() => onLoadDeleted(block)}
+                className="cursor-pointer rounded border border-border bg-surface px-2 text-text hover:border-accent"
+              >
+                {more}
+              </button>
+            </Tooltip>
           ) : (
             <span className="text-muted">{more}</span>
           )}

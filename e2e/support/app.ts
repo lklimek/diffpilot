@@ -226,6 +226,26 @@ export const REQUIRED_TIPS: RequiredTip[] = [
     min: 0,
   },
   { screen: "body", what: "Ask", selector: 'form button[type="submit"]', name: "^(Ask|Sending…)$", min: 0 },
+  { screen: "body", what: "Ask again", selector: "button", name: "^(Ask again|Asking…)$", min: 0 },
+  { screen: "body", what: "feedback: Save note", selector: "button", name: "^Save note$", min: 0 },
+  { screen: "body", what: "inspector: Back to step", selector: "button", name: "^← Back to step$", min: 0 },
+  // Comment composer (CommentComposer.tsx): Cancel, Add, Retry, Discard; Edit, Delete, Save, Cancel, Delete
+  // from GitHub and Keep of the user's pending comments on the line.
+  { screen: "body", what: "comment composer button", selector: "[data-comment-composer] button", min: 0 },
+  // Pending-review block (PendingReviewBlock.tsx): Edit, Delete, and Save and Cancel while editing.
+  {
+    screen: REVIEW,
+    what: "pending review: Edit, Delete",
+    selector: 'main button[aria-label^="Edit comment on "], main button[aria-label^="Delete comment on "]',
+    min: 0,
+  },
+  {
+    screen: REVIEW,
+    what: "pending review: Save, Cancel",
+    selector: 'main li:has(> textarea[aria-label^="Edit comment on "]) button',
+    min: 0,
+  },
+  { screen: REVIEW, what: "resume note: Dismiss", selector: "main button", name: "^Dismiss$", min: 0 },
   // Progress (AnalysisProgress.tsx) and Home (PrUrlForm.tsx).
   {
     screen: PROGRESS,

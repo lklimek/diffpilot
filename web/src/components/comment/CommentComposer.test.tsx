@@ -77,7 +77,10 @@ describe("CommentComposer", () => {
   it("writes a line comment inside the diff and focuses the field", () => {
     setup();
     expect(field()).toHaveFocus();
-    expect(addButton()).toBeEnabled();
+    expect(addButton()).not.toHaveAttribute("aria-disabled");
+    expect(addButton()).toHaveAccessibleDescription(
+      "Adds this comment to your pending review on GitHub; nothing is published. You submit the review on GitHub.",
+    );
     expect(document.body).not.toHaveTextContent("posted as a file comment");
   });
 
@@ -254,7 +257,8 @@ describe("CommentComposer", () => {
     expect(field()).toHaveAttribute("readonly");
     expect(field()).toHaveValue("text");
     const adding = screen.getByRole("button", { name: /Adding/ });
-    expect(adding).toBeDisabled();
+    expect(adding).toHaveAttribute("aria-disabled", "true");
+    expect(adding).toHaveAccessibleDescription(/Not available while the current request runs\./);
     await user.click(adding);
     expect(onCreate).toHaveBeenCalledOnce();
     reject(new Error("timeout"));
@@ -380,6 +384,65 @@ describe("CommentComposer", () => {
     await user.keyboard("{Escape}");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onCancel).toHaveBeenCalledTimes(2);
+  });
+
+  it("explains every button in a tooltip (brief §4 rule 3)", async () => {
+    const onCreate = vi.fn().mockRejectedValue(new Error("GitHub is not reachable."));
+    const { user, unmount } = setup({ comments: missedComments, onCreate });
+    const tips = new Map<string, string>();
+    const collect = () => {
+      for (const button of screen.getAllByRole("button")) {
+        expect(button, button.textContent ?? "").toHaveAccessibleDescription(/\S/);
+        tips.set(button.textContent ?? "", button.getAttribute("aria-describedby") ?? "");
+      }
+    };
+    collect();
+    const list = screen.getByRole("list", { name: "Your pending comments on this line" });
+    await user.click(within(list).getByRole("button", { name: "Delete" }));
+    collect();
+    await user.click(within(list).getByRole("button", { name: "Keep" }));
+    await user.click(within(list).getByRole("button", { name: "Edit" }));
+    collect();
+    await user.type(field(), "text");
+    await user.click(addButton());
+    await screen.findByRole("button", { name: "Retry" });
+    collect();
+    expect([...tips.keys()].sort()).toEqual(
+      [
+        "Add to GitHub pending review",
+        "Cancel",
+        "Delete",
+        "Delete from GitHub",
+        "Discard",
+        "Edit",
+        "Keep",
+        "Retry",
+        "Save",
+      ].sort(),
+    );
+    expect(within(list).getByRole("button", { name: "Save" })).toHaveAccessibleDescription(
+      /pending review on GitHub; nothing is published/,
+    );
+    unmount();
+    setup({ line: { ...line96, placement: "not_in_diff" } });
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveAccessibleDescription(
+      /nothing is sent to GitHub/,
+    );
+  });
+
+  it("keeps Save and Delete from GitHub focusable while their request runs, with the reason in the tip", async () => {
+    const onEdit = vi.fn().mockReturnValue(new Promise(() => {}));
+    const onDelete = vi.fn().mockReturnValue(new Promise(() => {}));
+    const { user } = setup({ comments: missedComments, onEdit, onDelete });
+    const list = screen.getByRole("list", { name: "Your pending comments on this line" });
+    await user.click(within(list).getByRole("button", { name: "Edit" }));
+    const save = within(list).getByRole("button", { name: "Save" });
+    await user.click(save);
+    await user.click(save);
+    expect(onEdit).toHaveBeenCalledOnce();
+    expect(save).not.toBeDisabled();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveAccessibleDescription(/Not available while the current request runs\./);
   });
 
   it("exposes the field for the `c` shortcut", () => {
