@@ -4,10 +4,12 @@
 use chrono::{DateTime, Utc};
 use contracts::common::{LlmLanguage, RepoRef};
 use contracts::ids::AnalysisId;
+use contracts::job::result::{JobFailureKind, JobOutcome, LlmCallOutcome};
 use sqlx::{Row, SqlitePool};
 
 use super::Db;
 use super::jobs::{parse_ts, parse_wire, ts, wire_name};
+use super::llm_credentials::last_call_from_row;
 use crate::error::DbError;
 
 /// Access to settings.
@@ -32,7 +34,78 @@ pub struct AnalysedRepo {
     pub prepass_analysis: Option<AnalysisId>,
 }
 
+/// Typed cause of a failed LLM call, recorded with the call's outcome from the job result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallFailure {
+    /// The provider's usage limit was reached.
+    UsageLimited,
+    /// The attempt failed with this kind.
+    Failed(JobFailureKind),
+}
+
+impl CallFailure {
+    /// The typed failure of a job outcome; `None` for a success or a cancel.
+    pub fn of(outcome: &JobOutcome) -> Option<Self> {
+        match outcome {
+            JobOutcome::UsageLimited { .. } => Some(Self::UsageLimited),
+            JobOutcome::Failed { kind, .. } => Some(Self::Failed(*kind)),
+            JobOutcome::Succeeded { .. } | JobOutcome::Cancelled => None,
+        }
+    }
+
+    /// The stored `llm_credentials.last_call_failure` value.
+    pub(crate) fn wire(self) -> &'static str {
+        match self {
+            Self::UsageLimited => "usage_limited",
+            Self::Failed(JobFailureKind::ProviderFailed) => "provider_failed",
+            Self::Failed(JobFailureKind::OutputNotJson) => "output_not_json",
+            Self::Failed(JobFailureKind::CredentialUnusable) => "credential_unusable",
+            Self::Failed(JobFailureKind::CheckoutFailed) => "checkout_failed",
+            Self::Failed(JobFailureKind::Timeout) => "timeout",
+            Self::Failed(JobFailureKind::Internal) => "internal",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, DbError> {
+        Ok(match value {
+            "usage_limited" => Self::UsageLimited,
+            kind => Self::Failed(parse_wire(kind, "llm_credentials.last_call_failure")?),
+        })
+    }
+}
+
+/// The most recent LLM call of a tenant: its outcome and, when it failed, the typed cause if one was recorded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LastCall {
+    /// Time and outcome; a failure's message is the provider's raw text, for logs only.
+    pub outcome: LlmCallOutcome,
+    /// Typed cause of a failure.
+    pub failure: Option<CallFailure>,
+}
+
 impl SettingsRepo<'_> {
+    /// The tenant's most recent LLM call over all credentials; `None` before the first call.
+    pub async fn last_call(&self, tenant_id: &str) -> Result<Option<LastCall>, DbError> {
+        let row = sqlx::query(
+            "SELECT last_call_at, last_call_ok, last_call_message, last_call_failure FROM llm_credentials
+             WHERE tenant_id = ? AND last_call_at IS NOT NULL ORDER BY last_call_at DESC LIMIT 1",
+        )
+        .bind(tenant_id)
+        .fetch_optional(self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let Some(outcome) = last_call_from_row(&row)? else {
+            return Ok(None);
+        };
+        let failure: Option<String> = row.try_get("last_call_failure")?;
+        Ok(Some(LastCall {
+            outcome,
+            failure: failure.as_deref().map(CallFailure::parse).transpose()?,
+        }))
+    }
+
     /// Sets the language of the user's LLM texts (used by later analyses); `NotFound` for an unknown user.
     pub async fn set_language(
         &self,

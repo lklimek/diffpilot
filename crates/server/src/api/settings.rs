@@ -1,5 +1,7 @@
 //! User and repository settings, LLM status (brief §4.4). The LLM status is the outcome of the most recent LLM
-//! call as the runners reported it (`llm_credentials`), never an on-demand check: `null` before the first call.
+//! call as the runners reported it (`llm_credentials`), never an on-demand check: `null` before the first call. A
+//! failure is told with a fixed plain sentence chosen by its typed cause; the provider's raw text stays in the
+//! database and the logs.
 
 use std::borrow::Cow;
 
@@ -10,21 +12,28 @@ use axum::routing::{get, put};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use contracts::api::error::ApiErrorCode;
+use contracts::api::settings::AppInstallation;
 use contracts::api::settings::{RepoSettings, SetLanguageRequest, Settings};
 use contracts::common::RepoRef;
-use contracts::job::result::{LlmCallOutcome, LlmCallStatus};
+use contracts::job::result::{JobFailureKind, LlmCallOutcome, LlmCallStatus};
 use contracts::routes::{GET_REPO_SETTINGS, GET_SETTINGS, SET_LANGUAGE};
 use db::error::DbError;
-use db::repo::settings::AnalysedRepo;
+use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
-use crate::auth::{Session, SessionCsrf, UserTokenError, user_access_token};
-use crate::github::rest::{self, GithubError, is_valid_repo};
+use crate::auth::{Session, SessionCsrf, user_access_token};
+use crate::github::rest::{self, is_valid_repo};
 use crate::state::AppState;
 
-/// Shown while a credential the runner reported unusable is the newest LLM fact.
-const CREDENTIAL_UNUSABLE: &str = "The runner's Codex sign-in can no longer be refreshed: sign in to Codex again in \
-     the runner container (see the runbook).";
+/// Plain sentences of a failed LLM call, by typed cause.
+const USAGE_LIMIT: &str = "The LLM provider's usage limit was reached.";
+const SIGN_IN_NEEDED: &str = "Sign-in to the LLM provider is needed: sign in to Codex again in the runner \
+     container (see the runbook).";
+const PROVIDER_REJECTED: &str = "The LLM provider rejected the request or could not answer it.";
+const ANSWER_FORMAT: &str = "The LLM answer was not in the expected format.";
+const TIMED_OUT: &str = "The LLM call took too long and was stopped.";
+const OTHER_FAILURE: &str =
+    "The LLM call failed for another reason; the server log has the details.";
 
 /// A settings request failed.
 #[derive(Debug, thiserror::Error)]
@@ -41,12 +50,6 @@ pub enum SettingsApiError {
     /// No pre-pass of the repository is stored yet.
     #[error("the repository settings are not known yet")]
     NotKnownYet,
-    /// The user's GitHub token is not available.
-    #[error("the user's GitHub token is not available")]
-    Token(#[from] UserTokenError),
-    /// Listing the App installations failed.
-    #[error("a GitHub call failed")]
-    Github(#[from] GithubError),
     /// The database failed, or the item is not visible.
     #[error("the database failed")]
     Db(#[from] DbError),
@@ -59,9 +62,6 @@ impl ApiErrorSource for SettingsApiError {
             Self::Path(rejection) => rejection.code(),
             Self::InvalidRepository => ApiErrorCode::InvalidRequest,
             Self::NotKnownYet => ApiErrorCode::AnalysisNotFinished,
-            Self::Token(error) => error.code(),
-            Self::Github(GithubError::Unauthorized) => ApiErrorCode::Unauthenticated,
-            Self::Github(_) => ApiErrorCode::GithubUnavailable,
             Self::Db(error) => error.code(),
         }
     }
@@ -70,19 +70,12 @@ impl ApiErrorSource for SettingsApiError {
         match self {
             Self::Json(rejection) => rejection.public_message(),
             Self::Path(rejection) => rejection.public_message(),
-            Self::Token(error) => error.public_message(),
             Self::Db(error) => error.public_message(),
             Self::InvalidRepository => Cow::Borrowed("The repository name is not valid."),
             Self::NotKnownYet => Cow::Borrowed(
                 "Not known yet: the repository settings are read during an analysis and appear once one has \
                  run.",
             ),
-            Self::Github(GithubError::Unauthorized) => {
-                Cow::Borrowed("Your GitHub sign-in has ended. Sign in again.")
-            }
-            Self::Github(_) => {
-                Cow::Borrowed("GitHub did not list the App installations. Try again later.")
-            }
         }
     }
 }
@@ -148,22 +141,16 @@ async fn read_repo(
 /// The signed-in user's settings: LLM status, language, App installations, the tenant's analysed repositories.
 async fn settings(state: &AppState, session: &Session) -> Result<Settings, SettingsApiError> {
     let user = state.db.users().get(&session.user_id).await?;
-    let last_call = state
-        .db
-        .llm_credentials()
-        .last_call(&session.tenant_id)
-        .await?;
+    let last_call = state.db.settings().last_call(&session.tenant_id).await?;
     let unusable_since = state
         .db
         .settings()
         .credential_unusable_since(&session.tenant_id)
         .await?;
-    let token = user_access_token(state, &session.user_id).await?;
-    let app_installations = rest::user_installations(&state.config.github, &token).await?;
     Ok(Settings {
         llm_status: llm_status(last_call, unusable_since),
         language: user.language,
-        app_installations,
+        app_installations: installations(state, session).await,
         repos: state
             .db
             .settings()
@@ -172,20 +159,63 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
     })
 }
 
-/// The newest LLM fact: the last call's outcome, or a credential reported unusable after it (threat model T13).
+/// The App installations the user can access; `None` (not checked) when the user's GitHub sign-in is not usable
+/// or GitHub fails: never an empty list standing in for an unknown one.
+async fn installations(state: &AppState, session: &Session) -> Option<Vec<AppInstallation>> {
+    let listed = match user_access_token(state, &session.user_id).await {
+        Ok(token) => rest::user_installations(&state.config.github, &token)
+            .await
+            .map_err(|error| format!("{error:?}")),
+        Err(error) => Err(format!("{error:?}")),
+    };
+    listed
+        .inspect_err(|error| {
+            tracing::warn!(
+                user_id = %session.user_id,
+                %error,
+                "GitHub App installations could not be listed; Settings shows them as not checked"
+            );
+        })
+        .ok()
+}
+
+/// The newest LLM fact: the last call, or a credential reported unusable after it (threat model T13); a failure
+/// carries the plain sentence of its typed cause, never the provider's text.
 fn llm_status(
-    last_call: Option<LlmCallOutcome>,
+    last_call: Option<LastCall>,
     unusable_since: Option<DateTime<Utc>>,
 ) -> Option<LlmCallOutcome> {
+    let not_working = |at, message: &str| LlmCallOutcome {
+        at,
+        status: LlmCallStatus::NotWorking {
+            message: message.to_owned(),
+        },
+    };
     match (last_call, unusable_since) {
-        (Some(call), Some(since)) if call.at > since => Some(call),
-        (_, Some(since)) => Some(LlmCallOutcome {
-            at: since,
-            status: LlmCallStatus::NotWorking {
-                message: CREDENTIAL_UNUSABLE.to_owned(),
-            },
+        (Some(call), Some(since)) if call.outcome.at <= since => {
+            Some(not_working(since, SIGN_IN_NEEDED))
+        }
+        (None, Some(since)) => Some(not_working(since, SIGN_IN_NEEDED)),
+        (None, None) => None,
+        (Some(LastCall { outcome, failure }), _) => Some(match outcome.status {
+            LlmCallStatus::Working => outcome,
+            LlmCallStatus::NotWorking { .. } => not_working(outcome.at, plain_failure(failure)),
         }),
-        (call, None) => call,
+    }
+}
+
+/// The plain sentence for a failed call's typed cause.
+fn plain_failure(failure: Option<CallFailure>) -> &'static str {
+    match failure {
+        Some(CallFailure::UsageLimited) => USAGE_LIMIT,
+        Some(CallFailure::Failed(kind)) => match kind {
+            JobFailureKind::CredentialUnusable => SIGN_IN_NEEDED,
+            JobFailureKind::ProviderFailed => PROVIDER_REJECTED,
+            JobFailureKind::OutputNotJson => ANSWER_FORMAT,
+            JobFailureKind::Timeout => TIMED_OUT,
+            JobFailureKind::CheckoutFailed | JobFailureKind::Internal => OTHER_FAILURE,
+        },
+        None => OTHER_FAILURE,
     }
 }
 
@@ -208,17 +238,20 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use chrono::{DateTime, Utc};
+    use contracts::agent::JobKind;
     use contracts::common::LlmLanguage;
-    use contracts::job::result::{LlmCallOutcome, LlmCallStatus};
-    use contracts::job::spec::{CredentialKind, LlmCredentialRef};
+    use contracts::job::protocol::{ClaimRequest, ClaimResponse, CredentialStatus};
+    use contracts::job::result::{JobOutcome, JobResult};
+    use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
     use contracts::routes::{
-        GET_DIFF, GET_REPO_SETTINGS, GET_REVIEW_STATE, GET_SETTINGS, PUT_REVIEW_STATE, Route,
-        RouteAuth, SET_LANGUAGE,
+        GET_DIFF, GET_REPO_SETTINGS, GET_REVIEW_STATE, GET_SETTINGS, PUT_REVIEW_STATE,
+        RUNNER_CLAIM, RUNNER_RESULT, Route, RouteAuth, SET_LANGUAGE,
     };
-    use db::repo::analyses::testing::{seed_analysis, seed_tenant};
+    use db::repo::analyses::testing::{job_spec, seed_analysis, seed_tenant};
+    use db::repo::jobs::{JobStage, NewJob};
     use db::repo::{DEFAULT_TENANT, Db};
     use http_body_util::BodyExt;
-    use secrecy::SecretString;
+    use secrecy::{ExposeSecret, SecretString};
     use serde_json::{Value, json};
     use tower::ServiceExt;
     use url::Url;
@@ -233,6 +266,8 @@ mod tests {
     use crate::state::AppState;
     use crate::test_support::logs::LogCapture;
     use crate::test_support::session_cookie;
+
+    use super::*;
 
     const ACCESS: &str = "ghu_settings_access_canary";
 
@@ -413,17 +448,19 @@ mod tests {
             h.llm_status().await,
             json!({ "at": "2026-11-17T08:00:00Z", "status": { "state": "working" } })
         );
-        let failed = json!({
+        let raw = json!({
             "at": "2026-11-17T08:05:00Z",
-            "status": { "state": "not_working", "message": "Codex usage limit reached." },
+            "status": { "state": "not_working", "message": "codex: stream error 0x1f (internal detail)" },
         });
         credentials
-            .record_call(
-                "codex-1",
-                &serde_json::from_value(failed.clone()).expect("outcome"),
-            )
+            .record_call("codex-1", &serde_json::from_value(raw).expect("outcome"))
             .await
             .expect("call");
+        // Without a typed cause the status says so plainly; the raw text never reaches the user.
+        let failed = json!({
+            "at": "2026-11-17T08:05:00Z",
+            "status": { "state": "not_working", "message": OTHER_FAILURE },
+        });
         assert_eq!(h.llm_status().await, failed);
 
         // The runner reports the credential unusable (refresh failed): the status says so from then on.
@@ -459,6 +496,137 @@ mod tests {
         assert_eq!(
             h.llm_status().await["status"],
             json!({ "state": "working" })
+        );
+    }
+
+    /// The text a runner reports for the real Codex schema rejection (`fixtures/pr-482/codex/schema-error.jsonl`,
+    /// `turn.failed`).
+    fn fixture_schema_error() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/pr-482/codex/schema-error.jsonl");
+        std::fs::read_to_string(path)
+            .expect("fixture")
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("JSONL"))
+            .find(|event| event["type"] == json!("turn.failed"))
+            .and_then(|event| event["error"]["message"].as_str().map(str::to_owned))
+            .expect("turn.failed message")
+    }
+
+    /// Runs one job on credential `id` through the runner protocol (claim, result) ending with `outcome` and an LLM
+    /// call that failed with `raw`, as the runner reports it.
+    async fn fail_one_job(h: &Harness, id: &str, outcome: JobOutcome, raw: &str) {
+        let analysis = seed_analysis(&h.state.db).await.expect("analysis");
+        let mut spec = job_spec(analysis, JobKind::Plan);
+        spec.credential.id = id.to_owned();
+        h.state
+            .db
+            .jobs()
+            .enqueue(
+                NewJob {
+                    spec,
+                    priority: JobPriority::Batch,
+                    stage: JobStage::Plan { batch: 1 },
+                    generation: 0,
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("enqueue");
+        let runner = |path: &str, bearer: &str, body: Value| {
+            let request = Request::post(path)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {bearer}"))
+                .body(Body::from(body.to_string()))
+                .expect("request");
+            api::runner_router(h.state.clone()).oneshot(request)
+        };
+        let claim = ClaimRequest {
+            runner_id: "runner-1".to_owned(),
+            credentials: vec![CredentialStatus {
+                credential: credential(id),
+                usable: true,
+            }],
+            dropped_sessions: Vec::new(),
+        };
+        let response = runner(
+            RUNNER_CLAIM.path,
+            h.state.config.runner_secret.expose_secret(),
+            serde_json::to_value(claim).expect("claim"),
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let claimed: ClaimResponse = serde_json::from_slice(&bytes).expect("claim response");
+        let claimed = claimed.claim.expect("a claimed job");
+        let result = JobResult {
+            job_id: claimed.spec.job_id,
+            attempt: claimed.spec.attempt,
+            outcome,
+            session: None,
+            usage: None,
+            skills_commit: None,
+            llm_call: Some(LlmCallOutcome {
+                at: Utc::now(),
+                status: LlmCallStatus::NotWorking {
+                    message: raw.to_owned(),
+                },
+            }),
+        };
+        let response = runner(
+            &RUNNER_RESULT
+                .path
+                .replace("{id}", &claimed.spec.job_id.to_string()),
+            claimed.job_token.expose(),
+            serde_json::to_value(result).expect("result"),
+        )
+        .await
+        .expect("infallible");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn llm_status_shows_plain_messages_for_real_provider_failures() {
+        let logs = LogCapture::start();
+        let h = harness().await;
+        let raw = fixture_schema_error();
+        assert!(raw.contains("codex_output_schema"), "{raw}");
+        let failed = |kind| JobOutcome::Failed {
+            kind,
+            message: raw.clone(),
+        };
+        for (case, (outcome, plain)) in [
+            (failed(JobFailureKind::ProviderFailed), PROVIDER_REJECTED),
+            (JobOutcome::UsageLimited { resets_at: None }, USAGE_LIMIT),
+            (failed(JobFailureKind::OutputNotJson), ANSWER_FORMAT),
+            (failed(JobFailureKind::Timeout), TIMED_OUT),
+            (failed(JobFailureKind::Internal), OTHER_FAILURE),
+            (failed(JobFailureKind::CredentialUnusable), SIGN_IN_NEEDED),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // One credential per case: a usage limit pauses its credential, a sign-in failure blocks it.
+            fail_one_job(&h, &format!("codex-{case}"), outcome.clone(), &raw).await;
+            let status = h.llm_status().await;
+            assert_eq!(
+                status["status"]["state"],
+                json!("not_working"),
+                "{outcome:?}"
+            );
+            assert_eq!(status["status"]["message"], json!(plain), "{outcome:?}");
+            assert!(!status.to_string().contains("schema"), "{status}");
+        }
+        let text = logs.text();
+        assert!(
+            text.contains("codex_output_schema"),
+            "the raw text is logged: {text}"
         );
     }
 
@@ -549,7 +717,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn settings_report_github_failures_and_never_log_the_token() {
+    async fn installations_not_checked_on_github_failure_and_token_never_logged() {
         let logs = LogCapture::start();
         let h = harness().await;
         let (status, settings) = h.get(GET_SETTINGS.path).await;
@@ -560,21 +728,36 @@ mod tests {
             .respond_with(ResponseTemplate::new(502).set_body_string(ACCESS))
             .mount(&h.github)
             .await;
-        let (status, error) = h.get(GET_SETTINGS.path).await;
-        assert_eq!(status, StatusCode::BAD_GATEWAY, "{error}");
-        assert_eq!(error["code"], json!("github_unavailable"));
-        assert!(!error.to_string().contains(ACCESS));
+        // GitHub failing or rejecting the token: installations are "not checked" (null), never "none" ([]).
+        let (status, settings) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(status, StatusCode::OK, "{settings}");
+        assert_eq!(settings["app_installations"], Value::Null);
+        assert_eq!(settings["language"], json!("en"), "the rest is still shown");
+        assert!(!settings.to_string().contains(ACCESS));
         h.github.reset().await;
         Mock::given(method("GET"))
             .and(path("/api/user/installations"))
             .respond_with(ResponseTemplate::new(401))
             .mount(&h.github)
             .await;
-        let (status, error) = h.get(GET_SETTINGS.path).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "{error}");
-        assert_eq!(error["code"], json!("unauthenticated"));
+        let (status, settings) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(status, StatusCode::OK, "{settings}");
+        assert_eq!(settings["app_installations"], Value::Null);
+        // A user without a usable GitHub sign-in: not checked either.
+        h.state
+            .db
+            .user_tokens()
+            .end_sign_in("u1", db::repo::tokens::PairCondition::Any)
+            .await
+            .expect("end sign-in");
+        let other = session_cookie(&h.state, DEFAULT_TENANT).await;
+        let (status, settings) = h
+            .send("GET", GET_SETTINGS.path, Some(&other), false, None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{settings}");
+        assert_eq!(settings["app_installations"], Value::Null);
         let text = logs.text();
-        assert!(text.contains("API request"), "errors are logged: {text}");
+        assert!(text.contains("not checked"), "failures are logged: {text}");
         assert!(!text.contains(ACCESS), "{text}");
         assert!(!text.contains("ghr_settings_refresh_canary"), "{text}");
     }

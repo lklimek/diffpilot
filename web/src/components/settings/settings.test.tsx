@@ -77,6 +77,13 @@ describe("AppInstallationsCard", () => {
     );
   });
 
+  it("not checked: says so, not that the App is missing", () => {
+    render(<AppInstallationsCard installations={null} />);
+    const region = screen.getByRole("region", { name: "GitHub App" });
+    expect(region).toHaveTextContent("GitHub App installations: not checked — GitHub could not be reached");
+    expect(region).not.toHaveTextContent("not installed");
+  });
+
   it("not installed anywhere: says what does not work", () => {
     render(<AppInstallationsCard installations={[]} />);
     expect(screen.getByRole("region", { name: "GitHub App" })).toHaveTextContent(

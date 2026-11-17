@@ -44,6 +44,9 @@ pub enum DiffReadError {
     /// The file is binary: its change has no lines.
     #[error("the file is binary")]
     Binary,
+    /// The diff task did not finish.
+    #[error("the diff task did not finish")]
+    Task(#[source] tokio::task::JoinError),
 }
 
 /// Lines `query.from..=query.to` (clamped to the file) of `query.path` on `query.side` of the analysis, with
@@ -157,24 +160,21 @@ pub async fn diff(
             .unwrap_or_default(),
         None => Vec::new(),
     };
-    let texts = match query.side {
-        LineSide::Head => DiffTexts {
-            base: &other,
-            head: &text,
-        },
-        LineSide::Base => DiffTexts {
-            base: &text,
-            head: &other,
-        },
+    let (base, head) = match query.side {
+        LineSide::Head => (other, text),
+        LineSide::Base => (text, other),
     };
-    let hunks = classic_diff(
-        file,
-        query.side,
-        texts,
-        query.from,
-        query.to,
-        RangeQuery::MAX_LINES,
-    )?;
+    // Indexing two whole blobs is CPU work: off the async threads, like the diff itself.
+    let (file, side, from, to) = (file.clone(), query.side, query.from, query.to);
+    let hunks = tokio::task::spawn_blocking(move || {
+        let texts = DiffTexts {
+            base: &base,
+            head: &head,
+        };
+        classic_diff(&file, side, texts, from, to, RangeQuery::MAX_LINES)
+    })
+    .await
+    .map_err(DiffReadError::Task)??;
     Ok(DiffResponse {
         path: query.path,
         side: query.side,

@@ -29,7 +29,13 @@ function RepoSection({ repos }: { repos: RepoRef[] }) {
     <div className="grid content-start gap-2">
       {repos.length > 1 && <RepoList repos={repos} selected={selected} onSelect={setChosen} />}
       {settings.isPending && <StatusMessage kind="loading">Loading the repository settings…</StatusMessage>}
-      {settings.isError && <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>}
+      {settings.isError &&
+        (settings.error instanceof ApiError && settings.error.code === "analysis_not_finished" ? (
+          // Not known yet is an expected state before the first analysis, not a failure.
+          <StatusMessage kind="empty">{settings.error.message}</StatusMessage>
+        ) : (
+          <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>
+        ))}
       {settings.data && <RepoSettingsCard settings={settings.data} />}
     </div>
   );

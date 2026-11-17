@@ -475,9 +475,12 @@ fn header_numbers(header: &str) -> (u32, u32, u32, u32) {
     (old.0, old.1, new.0, new.1)
 }
 
-/// Hunks of `git diff -U3` of one file as (header numbers, `(marker, text)` lines).
-type GitHunk = ((u32, u32, u32, u32), Vec<(char, String)>);
+/// One diff line: marker, text without its ending, and the ending when it is not LF (`crlf`, `no_newline`).
+type GitLine = (char, String, Option<String>);
+/// Hunks of `git diff -U3` of one file as (header numbers, lines).
+type GitHunk = ((u32, u32, u32, u32), Vec<GitLine>);
 
+/// `git diff -U3` of one file, read byte-exactly: CR before LF and "\ No newline at end of file" become endings.
 fn git_diff(repo: &Path, base: &str, head: &str, path: &str) -> Vec<GitHunk> {
     let output = Command::new("git")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -499,16 +502,58 @@ fn git_diff(repo: &Path, base: &str, head: &str, path: &str) -> Vec<GitHunk> {
         .expect("git diff");
     assert!(output.status.success(), "{output:?}");
     let mut hunks: Vec<GitHunk> = Vec::new();
-    for line in String::from_utf8(output.stdout).expect("UTF-8").lines() {
+    // `split('\n')`, not `lines()`: `lines()` would drop a CR and hide a CRLF change.
+    for line in String::from_utf8(output.stdout).expect("UTF-8").split('\n') {
         if line.starts_with("@@") {
             hunks.push((header_numbers(line), Vec::new()));
-        } else if let Some((_, lines)) = hunks.last_mut()
-            && let Some(marker @ (' ' | '-' | '+')) = line.chars().next()
-        {
-            lines.push((marker, line[1..].to_owned()));
+        } else if let Some((_, lines)) = hunks.last_mut() {
+            if line.starts_with('\\') {
+                let last = lines.last_mut().expect("a line before the marker");
+                last.2 = Some("no_newline".to_owned());
+            } else if let Some(marker @ (' ' | '-' | '+')) = line.chars().next() {
+                let text = &line[1..];
+                lines.push(match text.strip_suffix('\r') {
+                    Some(text) => (marker, text.to_owned(), Some("crlf".to_owned())),
+                    None => (marker, text.to_owned(), None),
+                });
+            }
         }
     }
     hunks
+}
+
+/// The hunks of a `diff` response in the form of [`git_diff`]; asserts the line numbers run on from the header.
+fn response_hunks(body: &Value) -> Vec<GitHunk> {
+    body["hunks"]
+        .as_array()
+        .expect("hunks")
+        .iter()
+        .map(|hunk| {
+            let numbers = header_numbers(hunk["header"].as_str().expect("header"));
+            let (mut old, mut new) = (numbers.0, numbers.2);
+            let lines = hunk["lines"]
+                .as_array()
+                .expect("lines")
+                .iter()
+                .map(|line| {
+                    let marker = match line["kind"].as_str().expect("kind") {
+                        "context" => ' ',
+                        "removed" => '-',
+                        _ => '+',
+                    };
+                    let expected_old = (marker != '+').then_some(old);
+                    let expected_new = (marker != '-').then_some(new);
+                    assert_eq!(line["old_line"], json!(expected_old), "{line}");
+                    assert_eq!(line["new_line"], json!(expected_new), "{line}");
+                    old += u32::from(marker != '+');
+                    new += u32::from(marker != '-');
+                    let eol = line["eol"].as_str().map(str::to_owned);
+                    (marker, line["text"].as_str().expect("text").to_owned(), eol)
+                })
+                .collect();
+            (numbers, lines)
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -536,38 +581,8 @@ async fn diff_of_whole_files_matches_git_diff() {
         assert_eq!(status, StatusCode::OK, "{path}: {body}");
         assert_eq!(body["path"], json!(path));
         assert_eq!(body["side"], json!(side));
-        let ours: Vec<GitHunk> = body["hunks"]
-            .as_array()
-            .expect("hunks")
-            .iter()
-            .map(|hunk| {
-                let numbers = header_numbers(hunk["header"].as_str().expect("header"));
-                let (mut old, mut new) = (numbers.0, numbers.2);
-                let lines = hunk["lines"]
-                    .as_array()
-                    .expect("lines")
-                    .iter()
-                    .map(|line| {
-                        let marker = match line["kind"].as_str().expect("kind") {
-                            "context" => ' ',
-                            "removed" => '-',
-                            _ => '+',
-                        };
-                        // Line numbers run on from the header like a unified diff's.
-                        let expected_old = (marker != '+').then_some(old);
-                        let expected_new = (marker != '-').then_some(new);
-                        assert_eq!(line["old_line"], json!(expected_old), "{path}: {line}");
-                        assert_eq!(line["new_line"], json!(expected_new), "{path}: {line}");
-                        old += u32::from(marker != '+');
-                        new += u32::from(marker != '-');
-                        (marker, line["text"].as_str().expect("text").to_owned())
-                    })
-                    .collect();
-                (numbers, lines)
-            })
-            .collect();
         let expected = git_diff(&h.repo, &h.pr.base_sha.0, &h.pr.head_sha.0, &path);
-        assert_eq!(ours, expected, "{path}");
+        assert_eq!(response_hunks(&body), expected, "{path}");
     }
 }
 
@@ -721,19 +736,29 @@ fn commit(repo: &Path, files: &[(&str, &[u8])], message: &str) -> String {
 }
 
 #[tokio::test]
-async fn diff_of_a_binary_file_is_not_rendered_and_waits_for_the_merge_base() {
+async fn diff_keeps_line_endings_refuses_binary_files_and_waits_for_the_merge_base() {
     let h = Harness::new().await;
     let repo = h._dir.path().join("remotes/acme/blobs.git");
     git(&repo, &["init", "-q", "-b", "main"]);
     let fork = commit(
         &repo,
-        &[("a.txt", b"one\n"), ("image.bin", &[0, 1, 2, 0, 255])],
+        &[
+            ("a.txt", b"one\n"),
+            ("image.bin", &[0, 1, 2, 0, 255]),
+            ("eof.txt", b"1\n2\n3\nlast"),
+            ("crlf.txt", b"1\r\n2\r\n3\r\n"),
+        ],
         "fork point",
     );
     git(&repo, &["checkout", "-q", "-b", "feature"]);
     let head = commit(
         &repo,
-        &[("a.txt", b"two\n"), ("image.bin", &[0, 9, 9, 0, 255])],
+        &[
+            ("a.txt", b"two\n"),
+            ("image.bin", &[0, 9, 9, 0, 255]),
+            ("eof.txt", b"1\n2\n3\nlast\n"),
+            ("crlf.txt", b"1\r\n2\n3\r\n"),
+        ],
         "change",
     );
     git(&repo, &["checkout", "-q", "main"]);
@@ -751,6 +776,42 @@ async fn diff_of_a_binary_file_is_not_rendered_and_waits_for_the_merge_base() {
     let (status, body) = h.get(&diff(prepared, "a.txt", "head", 1, 1)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["hunks"][0]["header"], json!("@@ -1,1 +1,1 @@"));
+    // Line-ending changes stay visible and match git byte for byte (QA-001): LF <-> none, CRLF <-> LF.
+    for (path, side) in [
+        ("eof.txt", "head"),
+        ("eof.txt", "base"),
+        ("crlf.txt", "head"),
+        ("crlf.txt", "base"),
+    ] {
+        let (status, body) = h.get(&diff(prepared, path, side, 1, 10)).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        let expected = git_diff(&repo, &pr.base_sha.0, &pr.head_sha.0, path);
+        assert_eq!(response_hunks(&body), expected, "{path} {side}");
+    }
+    let (_, body) = h.get(&diff(prepared, "eof.txt", "head", 4, 4)).await;
+    let changed: Vec<(&Value, &Value)> = body["hunks"][0]["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .filter(|line| line["kind"] != json!("context"))
+        .map(|line| (&line["text"], &line["eol"]))
+        .collect();
+    assert_eq!(
+        changed,
+        [
+            (&json!("last"), &json!("no_newline")),
+            (&json!("last"), &Value::Null)
+        ]
+    );
+    let (_, body) = h.get(&diff(prepared, "crlf.txt", "head", 2, 2)).await;
+    let changed: Vec<&Value> = body["hunks"][0]["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .filter(|line| line["kind"] != json!("context"))
+        .map(|line| &line["eol"])
+        .collect();
+    assert_eq!(changed, [&json!("crlf"), &Value::Null]);
     // b.txt changed only on the base branch: not part of the pull request.
     let (status, body) = h.get(&diff(prepared, "b.txt", "head", 1, 1)).await;
     assert_eq!(

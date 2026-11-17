@@ -3,7 +3,7 @@
 //! classic diff of a range. Pure functions over file bytes and hunks.
 
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
-use contracts::api::code::{DeletedBlock, DiffHunk, DiffLine, DiffLineKind};
+use contracts::api::code::{DeletedBlock, DiffHunk, DiffLine, DiffLineKind, LineEnding};
 use contracts::api::comments::CommentTarget;
 use contracts::common::{LineRange, LineSide};
 
@@ -306,21 +306,35 @@ fn after(span: LineSpan) -> u32 {
     begin(span) + span.len
 }
 
-fn split_lines(text: &[u8]) -> Vec<&[u8]> {
+/// Lines of a file with their ending: none for LF, CR LF, or no newline after the last line.
+fn split_lines(text: &[u8]) -> Vec<(&[u8], Option<LineEnding>)> {
     if text.is_empty() {
         return Vec::new();
     }
-    let body = text.strip_suffix(b"\n").unwrap_or(text);
+    let (body, last_terminated) = match text.strip_suffix(b"\n") {
+        Some(body) => (body, true),
+        None => (text, false),
+    };
+    let count = body.split(|&byte| byte == b'\n').count();
     body.split(|&byte| byte == b'\n')
-        .map(|line| line.strip_suffix(b"\r").unwrap_or(line))
+        .enumerate()
+        .map(|(index, line)| {
+            if index + 1 == count && !last_terminated {
+                return (line, Some(LineEnding::NoNewline));
+            }
+            match line.strip_suffix(b"\r") {
+                Some(line) => (line, Some(LineEnding::Crlf)),
+                None => (line, None),
+            }
+        })
         .collect()
 }
 
 /// Writes the hunks of a classic diff, clipping `side` lines and counting other-side lines.
 struct DiffWriter<'a> {
     side: LineSide,
-    base: Vec<&'a [u8]>,
-    head: Vec<&'a [u8]>,
+    base: Vec<(&'a [u8], Option<LineEnding>)>,
+    head: Vec<(&'a [u8], Option<LineEnding>)>,
     clip: std::ops::RangeInclusive<u32>,
     budget: u32,
     other_lines: u32,
@@ -422,16 +436,17 @@ impl DiffWriter<'_> {
             }
             _ => (&self.head, head),
         };
-        let text = (line as usize)
+        let (text, eol) = (line as usize)
             .checked_sub(1)
             .and_then(|index| lines.get(index))
-            .map(|text| String::from_utf8_lossy(text).into_owned())
+            .map(|(text, eol)| (String::from_utf8_lossy(text).into_owned(), *eol))
             .unwrap_or_default();
         self.current.push(DiffLine {
             kind,
             old_line,
             new_line,
             text,
+            eol,
         });
         Ok(())
     }
@@ -539,7 +554,7 @@ pub fn missed_line(
 #[cfg(test)]
 mod tests {
     use crate::diff::{FileStatus, Hunk};
-    use contracts::api::code::{DiffHunk, DiffLine, DiffLineKind};
+    use contracts::api::code::{DiffHunk, DiffLine, DiffLineKind, LineEnding};
     use contracts::ids::HunkId;
 
     use super::*;
@@ -709,9 +724,15 @@ mod tests {
         }
     }
 
-    type Row = (DiffLineKind, Option<u32>, Option<u32>, String);
+    type Row = (
+        DiffLineKind,
+        Option<u32>,
+        Option<u32>,
+        String,
+        Option<LineEnding>,
+    );
 
-    /// Header and `(kind, old, new, text)` rows of every hunk.
+    /// Header and `(kind, old, new, text, eol)` rows of every hunk.
     fn shape(hunks: &[DiffHunk]) -> Vec<(String, Vec<Row>)> {
         hunks
             .iter()
@@ -719,7 +740,7 @@ mod tests {
                 let lines = hunk
                     .lines
                     .iter()
-                    .map(|l| (l.kind, l.old_line, l.new_line, l.text.clone()))
+                    .map(|l| (l.kind, l.old_line, l.new_line, l.text.clone(), l.eol))
                     .collect();
                 (hunk.header.clone(), lines)
             })
@@ -736,6 +757,7 @@ mod tests {
             Some(old),
             Some(new),
             format!("line {old}"),
+            None,
         )
     }
 
@@ -745,11 +767,17 @@ mod tests {
             Some(old),
             None,
             format!("line {old}"),
+            None,
         )
     }
 
     fn added(new: u32, text: &str) -> Row {
-        (DiffLineKind::Added, None, Some(new), text.to_owned())
+        (DiffLineKind::Added, None, Some(new), text.to_owned(), None)
+    }
+
+    fn ending(mut row: Row, eol: LineEnding) -> Row {
+        row.4 = Some(eol);
+        row
     }
 
     fn texts<'a>(base: &'a str, head: &'a str) -> DiffTexts<'a> {
@@ -757,6 +785,61 @@ mod tests {
             base: base.as_bytes(),
             head: head.as_bytes(),
         }
+    }
+
+    #[test]
+    fn classic_diff_keeps_line_ending_changes() {
+        let one = modified(vec![hunk((1, 1), (1, 1))]);
+        let cases = [
+            (
+                "x",
+                "x\n",
+                LineSide::Head,
+                Some(LineEnding::NoNewline),
+                None,
+            ),
+            (
+                "x\n",
+                "x",
+                LineSide::Base,
+                None,
+                Some(LineEnding::NoNewline),
+            ),
+            ("x\r\n", "x\n", LineSide::Head, Some(LineEnding::Crlf), None),
+            ("x\n", "x\r\n", LineSide::Base, None, Some(LineEnding::Crlf)),
+        ];
+        for (base, head, side, removed_eol, added_eol) in cases {
+            let diff = classic_diff(&one, side, texts(base, head), 1, 1, 100);
+            let rows = vec![
+                (
+                    DiffLineKind::Removed,
+                    Some(1),
+                    None,
+                    "x".to_owned(),
+                    removed_eol,
+                ),
+                (
+                    DiffLineKind::Added,
+                    None,
+                    Some(1),
+                    "x".to_owned(),
+                    added_eol,
+                ),
+            ];
+            assert_eq!(
+                diff.map(|h| shape(&h)),
+                Ok(vec![("@@ -1,1 +1,1 @@".to_owned(), rows)]),
+                "{base:?} -> {head:?}"
+            );
+        }
+        // A last line without newline as unchanged context on both sides keeps its marker.
+        let file = modified(vec![hunk((1, 1), (1, 1))]);
+        let diff = classic_diff(&file, LineSide::Head, texts("a\nb", "A\nb"), 1, 2, 100);
+        let last = diff.map(|h| h[0].lines.last().map(|l| (l.text.clone(), l.eol)));
+        assert_eq!(
+            last,
+            Ok(Some(("b".to_owned(), Some(LineEnding::NoNewline))))
+        );
     }
 
     #[test]
@@ -772,7 +855,7 @@ mod tests {
                 context(3, 3),
                 context(4, 4),
                 removed(5),
-                added(5, "five"),
+                ending(added(5, "five"), LineEnding::Crlf),
                 added(6, "five b"),
                 context(6, 7),
                 context(7, 8),
@@ -841,6 +924,7 @@ mod tests {
                 old_line: Some(6),
                 new_line: Some(6),
                 text: "line 6".to_owned(),
+                eol: None,
             }
         );
     }

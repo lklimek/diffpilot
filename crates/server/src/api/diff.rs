@@ -39,6 +39,7 @@ impl From<DiffReadError> for DiffApiError {
             DiffReadError::Lines(error) => Self::Analysis(error.into()),
             DiffReadError::TooLarge(_) => Self::TooLarge,
             DiffReadError::Binary => Self::Binary,
+            DiffReadError::Task(error) => Self::Analysis(AnalysisApiError::DiffTask(error)),
         }
     }
 }

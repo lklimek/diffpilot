@@ -29,7 +29,30 @@ describe("Settings (brief §4.4)", () => {
     renderRoute("/settings");
     const llm = await region("LLM status");
     expect(await within(llm).findByText("not working")).toBeVisible();
-    expect(llm).toHaveTextContent("Codex usage limit reached. It resets at 14:20.");
+    expect(llm).toHaveTextContent("The LLM provider's usage limit was reached.");
+  });
+
+  it("installations not checked: said plainly, the rest still shown", async () => {
+    setScenario("installations-not-checked");
+    renderRoute("/settings");
+    expect(await region("GitHub App")).toHaveTextContent(
+      "GitHub App installations: not checked — GitHub could not be reached",
+    );
+    expect(await region("LLM status")).toHaveTextContent("working");
+  });
+
+  it("repository settings not known yet: a neutral note, not an error", async () => {
+    const notKnown =
+      "Not known yet: the repository settings are read during an analysis and appear once one has run.";
+    server.use(
+      http.get("/api/v1/repos/:owner/:name/settings", () =>
+        HttpResponse.json({ code: "analysis_not_finished", message: notKnown }, { status: 409 }),
+      ),
+    );
+    renderRoute("/settings");
+    const note = await screen.findByText(notKnown);
+    expect(note).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("no LLM call yet, no profile, no related repositories: said, not hidden", async () => {

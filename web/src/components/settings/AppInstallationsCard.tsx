@@ -3,11 +3,13 @@ import { buttonClass } from "../button/button";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SettingsCard } from "./Card";
 
-/** GitHub App installation status (brief §4.4). */
-export function AppInstallationsCard({ installations }: { installations: AppInstallation[] }) {
+/** GitHub App installation status (brief §4.4); `null` = not checked, never shown as "none installed". */
+export function AppInstallationsCard({ installations }: { installations: AppInstallation[] | null }) {
   return (
     <SettingsCard title="GitHub App">
-      {installations.length === 0 ? (
+      {installations === null ? (
+        <p>GitHub App installations: not checked — GitHub could not be reached.</p>
+      ) : installations.length === 0 ? (
         <p>
           The App is not installed on any account. Analyses still run, but related work is not checked and
           comments cannot be written into your pending review.

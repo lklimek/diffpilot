@@ -115,9 +115,15 @@ mapping, query rules and the endpoint × fixture-state inventory.
   `not_found`). Its rules, related repositories and profile source come from the newest stored pre-pass of the
   repository; without one the route answers `analysis_not_finished` ("Not known yet …"), never invented values.
   `llm_status` is the newest LLM fact: the outcome of the most recent call the runners reported, or a credential
-  reported unusable after it (`not_working`, threat model T13); `null` before the first call. Installations are
-  read from GitHub with the user token (`GET /user/installations`, suspended ones left out); a GitHub failure is
-  `github_unavailable`, never an empty list. `PUT …/settings/language` accepts only `en` and `pl`.
+  reported unusable after it (`not_working`, threat model T13); `null` before the first call. A failure's
+  `message` is one fixed plain sentence chosen by the typed cause stored with the call
+  (`llm_credentials.last_call_failure`, from the job outcome): usage limit reached; sign-in to the LLM provider
+  needed; the provider rejected the request; the answer was not in the expected format; the call took too long;
+  the call failed for another reason (also when no cause is stored). The provider's raw text stays in the
+  database and the server log, never in the response. Installations are read from GitHub with the user token
+  (`GET /user/installations`, suspended ones left out); when the user's GitHub sign-in is not usable or GitHub
+  fails, `app_installations` is `null` ("not checked") and the rest of Settings is still returned; `[]` means
+  none installed. `PUT …/settings/language` accepts only `en` and `pl`.
 - **Review state**: `PUT` replaces the user's whole state (idempotent; repeated ticks are stored once); concurrent
   writes leave one of them whole. Every ticked step and the last viewed block must be in the analysis's Tour
   (quiet rows only when the Tour shows them), else `invalid_request` and nothing is stored.
@@ -125,7 +131,9 @@ mapping, query rules and the endpoint × fixture-state inventory.
   hunks at most six unchanged lines apart merged (as `git diff -U3`); lines of `side` outside the range ±3 are
   left out, changed lines of the other side are shown whole, at most `RangeQuery::MAX_LINES` of them, else
   `range_too_large`. A file of the pinned tree outside the pull request diff has no hunks; a binary file is
-  `not_rendered`.
+  `not_rendered`. Line endings are kept: `text` has none, `DiffLine.eol` is `null` for LF, `crlf` for CR LF and
+  `no_newline` for a last line without one, so a change of only the line ending shows as a removed and an added
+  line with equal text and different `eol` (as git's `\r` and "\ No newline at end of file").
 - Ids in paths are UUIDs (`analysis`, `question`) or server ids (`f1.2` steps); unknown or another tenant's →
   `not_found` (no existence leak).
 

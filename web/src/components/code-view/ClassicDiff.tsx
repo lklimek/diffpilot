@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { DiffHunk, DiffLineKind, DiffResponse } from "../../api/generated/types";
+import type { DiffHunk, DiffLine, DiffLineKind, DiffResponse, LineEnding } from "../../api/generated/types";
 import type { Highlight, Token } from "./highlight";
 import { CodeText, useTokens } from "./tokens";
 
@@ -17,12 +17,22 @@ const KINDS: Record<DiffLineKind, { sign: string; text: string; look: string }> 
   added: { sign: "+", text: "added", look: "bg-ad-bg" },
 };
 
+const ENDINGS: Record<LineEnding, string> = { crlf: "CRLF", no_newline: "no newline at end of file" };
+
+/** The line ending, when it is worth showing: on a changed line (a change of only the ending would otherwise look
+ * like no change) and a missing final newline anywhere. */
+function ending(line: DiffLine): string | null {
+  if (!line.eol || (line.kind === "context" && line.eol === "crlf")) return null;
+  return ENDINGS[line.eol];
+}
+
 function Hunk({ hunk, tokens }: { hunk: DiffHunk; tokens: Token[][] | undefined }) {
   return (
     <>
       <div className="sticky left-0 w-max px-2 text-muted">{hunk.header}</div>
       {hunk.lines.map((l, i) => {
         const kind = KINDS[l.kind];
+        const eol = ending(l);
         return (
           <div
             key={i}
@@ -37,6 +47,7 @@ function Hunk({ hunk, tokens }: { hunk: DiffHunk; tokens: Token[][] | undefined 
             </span>
             <code className="pr-4 whitespace-pre">
               <CodeText text={l.text} tokens={tokens?.[i]} />
+              {eol && <span className="ml-2 font-sans text-[11px] text-muted select-none">({eol})</span>}
             </code>
           </div>
         );
