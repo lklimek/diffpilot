@@ -112,6 +112,15 @@ not that every tool or profile lookup succeeded.
 | Optional `AnalysisSummary.progress` with `started_at`, four stage counters, `percent` and nullable `estimate` | Processing progress and ETA on the waiting screen; never a review score. Derived from existing jobs and documents without a migration or stored-document change. |
 | `AnalysisEstimate {remaining_seconds, basis, rough}`; basis `this_analysis`, `recent_runs`, `lines_only` | Show the source and uncertainty of an estimate; null when history is insufficient. |
 
+## Usage and pre-start size warning (owner approval, 2026-11-17)
+
+| Addition | Reason |
+|---|---|
+| Nullable `AnalysisSummary.usage: UsageTotals` | Sum existing finished job reports across all rounds, including Ask; no new storage or runner protocol. |
+| `UsageTotals {input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, jobs}` | Provider-reported counts. Reasoning is null because the stored job contract has no separate reasoning count. |
+| Optional `Settings.llm_usage {today, last_7_days}` | One tenant-scoped aggregate query over existing results, using the server's local calendar days. Each window is nullable without reports. |
+| Nullable `ResolvePrResponse.size_warning {changed_lines, changed_files, estimate}` | Non-blocking warning at 3,000 changed lines; metadata from the existing GitHub PR read and the waiting screen's estimator. |
+
 ## Consequences
 - The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.
 - Further contract changes still need a change request (ADR-010).

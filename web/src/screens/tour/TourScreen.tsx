@@ -479,6 +479,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   } else if (current.block === "pr_context") {
     block = (
       <PrContextBlock
+        usage={tour.analysis.usage}
         onEvidence={showEvidence}
         pr={tour.analysis.pr}
         context={tour.pr_context}

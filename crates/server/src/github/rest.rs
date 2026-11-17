@@ -51,6 +51,8 @@ pub enum GithubError {
 /// A pull request as fetched from GitHub.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GithubPull {
+    /// Additions plus deletions and changed files, from the same REST response when available.
+    pub size: Option<(u64, u32)>,
     /// The pull request at its current head.
     pub summary: PrSummary,
     /// GitHub id of the base repository.
@@ -63,6 +65,9 @@ pub struct GithubPull {
 
 #[derive(Deserialize)]
 struct PullResponse {
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    changed_files: Option<u32>,
     number: u32,
     title: String,
     html_url: String,
@@ -144,6 +149,11 @@ pub async fn get_pull(
         });
     }
     Ok(GithubPull {
+        size: pull
+            .additions
+            .zip(pull.deletions)
+            .and_then(|(a, d)| a.checked_add(d))
+            .zip(pull.changed_files),
         summary: PrSummary {
             repo,
             number: pull.number,

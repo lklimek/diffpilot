@@ -60,3 +60,15 @@ describe("homeOutcome (brief §4.1)", () => {
     );
   });
 });
+
+it("shows the large-PR note before starting, without an extra dialog", () => {
+  expect(
+    startsAtOnce({
+      pr: {} as ResolvePrResponse["pr"],
+      analysis: null,
+      commenting_available: true,
+      head_moved: false,
+      size_warning: { changed_lines: 27081, changed_files: 371, estimate: null },
+    }),
+  ).toBe(false);
+});

@@ -353,3 +353,47 @@ Private Ask history used for re-forking is scoped to `(pull_request_id, user_id)
 questions or answers. Review-state and feedback routes also select by the authenticated user; removing a
 foreign feedback id answers 404. Draft comment text remains component-local until explicitly sent to the
 user's GitHub pending review. Published GitHub review comments are public PR data.
+
+### Provider-reported usage
+
+Analysis summaries (including Tour and analysis SSE events) carry nullable `usage`:
+
+```json
+{"usage":{"input_tokens":1200000,"cached_input_tokens":900000,"output_tokens":45000,"reasoning_output_tokens":null,"jobs":7}}
+```
+
+Counts sum retained `jobs.result.usage` reports with `finished_at` set, across all analysis rounds,
+repair generations and Ask. Cached input is part of input, not an extra charge. `jobs` counts reports,
+including a report of zero tokens; jobs without a report do not contribute. An analysis without reports
+has `usage: null`. Earlier attempts whose result was replaced when a job was requeued cannot be recovered.
+Separate reasoning usage is not in the stored job-result contract, so it is unknown (`null`), not zero.
+These are provider reports, not billing totals. The UI hides the line without reports.
+Existing job-completion broadcasts refresh progress and the Tour's usage after Ask; no additional polling.
+
+Settings exposes tenant totals in `llm_usage`:
+
+```json
+{"llm_usage":{"today":{"input_tokens":1200000,"cached_input_tokens":900000,"output_tokens":45000,"reasoning_output_tokens":null,"jobs":7},"last_7_days":{"input_tokens":3400000,"cached_input_tokens":2900000,"output_tokens":120000,"reasoning_output_tokens":null,"jobs":23}}}
+```
+
+Windows use job completion time, from the server's local midnight through now; `last_7_days` includes
+today and the previous six calendar days. Each window is null without reports. One aggregate SQL query
+reads both windows; no counters or tables are added. Old responses may omit `llm_usage` and `usage`.
+
+### Large pull requests before starting
+
+Resolve returns `size_warning: null` below 3,000 additions plus deletions, or when GitHub did not provide
+the size. Otherwise it returns:
+
+```json
+{"size_warning":{"changed_lines":27081,"changed_files":371,"estimate":{"remaining_seconds":14400,"basis":"lines_only","rough":true}}}
+```
+
+`changed_lines` and `changed_files` come from the same GitHub PR metadata request already used by resolve.
+There is no additional GitHub call. `estimate` uses the same tenant-scoped recent-run samples and formula
+as waiting progress: historical plan seconds per changed agent line × PR changed lines + mean PR-context
+seconds + historical flow seconds per changed agent line × PR changed lines. The flow count is unknown,
+so this pre-start estimate uses `lines_only`, `rough: true`. PR metadata includes quiet lines too; this is
+an intentionally rough comparison. Missing samples or an estimate above seven days produce null.
+The Home notice makes no time claim without history, never disables Analyze, and adds no dialog.
+Old resolve responses without `size_warning` remain readable.

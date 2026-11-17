@@ -150,6 +150,13 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
         .credential_unusable_since(&session.tenant_id)
         .await?;
     Ok(Settings {
+        llm_usage: Some(
+            state
+                .db
+                .jobs()
+                .usage_windows(&session.tenant_id, Utc::now())
+                .await?,
+        ),
         memcan_status: Some(state.config.memcan.status()),
         llm_status: llm_status(last_call, unusable_since),
         language: user.language,

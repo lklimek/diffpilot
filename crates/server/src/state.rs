@@ -13,6 +13,8 @@ use crate::jobs::queue::QueueExecutor;
 /// State shared by all handlers; cheap to clone.
 #[derive(Clone, Debug)]
 pub struct AppState {
+    /// Process-local numeric observations for terminal statistics.
+    pub statistics: crate::pipeline::statistics::Statistics,
     /// Server configuration.
     pub config: Arc<Config>,
     /// The database.
@@ -39,6 +41,7 @@ impl AppState {
     /// Builds the state from a loaded configuration, the opened database and the job executor.
     pub fn new(config: Config, db: Db, executor: Arc<dyn JobExecutor>) -> Self {
         Self {
+            statistics: crate::pipeline::statistics::Statistics::default(),
             config: Arc::new(config),
             db,
             executor,

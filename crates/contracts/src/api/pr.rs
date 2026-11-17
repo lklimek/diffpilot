@@ -37,6 +37,9 @@ pub struct PrSummary {
 /// Response of `POST /api/v1/pr/resolve`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ResolvePrResponse {
+    /// Non-blocking notice for a large PR, using this same GitHub metadata response.
+    #[serde(default)]
+    pub size_warning: Option<SizeWarning>,
     /// The pull request now.
     pub pr: PrSummary,
     /// False when the GitHub App is not installed on the repository: analysis works, comments do not.
@@ -45,4 +48,16 @@ pub struct ResolvePrResponse {
     pub analysis: Option<AnalysisSummary>,
     /// The analysis is for an older head than the pull request now has.
     pub head_moved: bool,
+}
+
+/// Large-PR facts and a rough estimate, never a prerequisite for starting.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SizeWarning {
+    /// Additions plus deletions reported by GitHub.
+    #[ts(type = "number")]
+    pub changed_lines: u64,
+    /// Changed files reported by GitHub.
+    pub changed_files: u32,
+    /// Rough estimate from recent local runs; null without enough history.
+    pub estimate: Option<crate::api::analyses::AnalysisEstimate>,
 }

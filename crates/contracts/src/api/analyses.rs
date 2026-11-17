@@ -21,6 +21,9 @@ pub struct CreateAnalysisRequest {
 /// An analysis and its state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AnalysisSummary {
+    /// Provider-reported totals of finished jobs; null without reports.
+    #[serde(default)]
+    pub usage: Option<crate::api::usage::UsageTotals>,
     /// Whole-run progress derived from existing jobs and documents, absent on older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]

@@ -319,6 +319,7 @@ impl Analyses<'_> {
             *stage = self.live_stage(id).await?;
         }
         let mut summary = AnalysisSummary {
+            usage: super::jobs::Jobs { pool: self.pool }.usage(id).await?,
             progress: None,
             has_my_state: None,
             id: record.id,
@@ -1351,5 +1352,75 @@ mod tests {
             db.analyses().summary(AnalysisId::new_random()).await,
             Err(DbError::NotFound)
         ));
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use crate::repo::{
+        Db,
+        jobs::{JobStage, NewJob},
+    };
+    use contracts::ids::QuestionId;
+    use contracts::job::spec::JobPriority;
+
+    #[tokio::test]
+    async fn summary_sums_stored_usage_across_rounds_and_ask_without_unfinished_jobs() {
+        let db = Db::in_memory().await.unwrap();
+        let id = testing::seed_analysis(&db).await.unwrap();
+        for (round, stage, finished) in [
+            (0, JobStage::Plan { batch: 1 }, true),
+            (1, JobStage::Ask(QuestionId::new_random()), true),
+            (1, JobStage::PrContext, false),
+        ] {
+            sqlx::query("UPDATE analyses SET round = ? WHERE id = ?")
+                .bind(round)
+                .bind(id.to_string())
+                .execute(&db.pool)
+                .await
+                .unwrap();
+            let job = db
+                .jobs()
+                .enqueue(
+                    NewJob {
+                        spec: testing::job_spec(id, stage.kind()),
+                        stage,
+                        generation: 0,
+                        priority: JobPriority::Batch,
+                    },
+                    Utc::now(),
+                )
+                .await
+                .unwrap();
+            if finished {
+                let result = super::super::jobs::server_result(
+                    job.id,
+                    1,
+                    contracts::job::result::JobOutcome::Succeeded {
+                        output: serde_json::json!({}),
+                    },
+                );
+                let mut result = serde_json::to_value(result).unwrap();
+                result["usage"] = serde_json::json!({"input_tokens": 100, "cached_input_tokens": 40, "output_tokens": 12});
+                sqlx::query(
+                    "UPDATE jobs SET state = 'succeeded', result = ?, finished_at = ? WHERE id = ?",
+                )
+                .bind(result.to_string())
+                .bind(Utc::now().to_rfc3339())
+                .bind(job.id.to_string())
+                .execute(&db.pool)
+                .await
+                .unwrap();
+            }
+        }
+        let wire = serde_json::to_value(db.analyses().summary(id).await.unwrap()).unwrap();
+        assert_eq!(
+            wire["usage"],
+            serde_json::json!({"input_tokens": 200, "cached_input_tokens": 80, "output_tokens": 24, "reasoning_output_tokens": null, "jobs": 2})
+        );
+        let empty = testing::seed_analysis(&db).await.unwrap();
+        let wire = serde_json::to_value(db.analyses().summary(empty).await.unwrap()).unwrap();
+        assert!(wire.get("usage").is_some_and(serde_json::Value::is_null));
     }
 }

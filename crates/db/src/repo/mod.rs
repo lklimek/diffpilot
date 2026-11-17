@@ -188,3 +188,5 @@ impl Db {
         llm_credentials::LlmCredentials { pool: &self.pool }
     }
 }
+
+pub mod usage;

@@ -184,3 +184,25 @@ describe("PrContextBlock", () => {
     expectTrustWording(container.textContent ?? "");
   });
 });
+
+it("shows usage in the facts footer and omits it without a report", () => {
+  const { rerender } = render(
+    <PrContextBlock
+      pr={tour.analysis.pr}
+      context={tour.pr_context}
+      threadCount={0}
+      usage={{
+        input_tokens: 1000,
+        cached_input_tokens: 500,
+        output_tokens: 12,
+        reasoning_output_tokens: null,
+        jobs: 1,
+      }}
+    />,
+  );
+  expect(
+    within(screen.getByRole("region", { name: "Facts" })).getByText(/LLM usage so far: 1 k input/),
+  ).toBeVisible();
+  rerender(<PrContextBlock pr={tour.analysis.pr} context={tour.pr_context} threadCount={0} usage={null} />);
+  expect(screen.queryByText(/LLM usage so far/)).toBeNull();
+});

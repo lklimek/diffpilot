@@ -1,3 +1,5 @@
+import { UsageLine } from "../usage/UsageLine";
+import type { UsageTotals } from "../../api/generated/types";
 import { ciText } from "../section/ci";
 import { MemcanStatusLine } from "../section/MemcanStatusLine";
 import { CodeText } from "../section/CodeText";
@@ -28,6 +30,7 @@ interface PrContextBlockProps {
   context: PrContextView;
   /** Review threads of the PR as listed (`Tour.threads`); read with `facts.threads_status`. */
   threadCount: number;
+  usage?: UsageTotals | null;
   onEvidence?: (evidence: Evidence) => void;
 }
 
@@ -103,7 +106,7 @@ function Fact({ children }: { children: ReactNode }) {
 }
 
 /** PR context block: LLM analysis (problem, why, what it gives, related work, fit questions) and facts. */
-export function PrContextBlock({ pr, context, threadCount, onEvidence }: PrContextBlockProps) {
+export function PrContextBlock({ pr, context, threadCount, onEvidence, usage }: PrContextBlockProps) {
   const headingId = useId();
   const { facts, llm } = context;
   return (
@@ -208,6 +211,7 @@ export function PrContextBlock({ pr, context, threadCount, onEvidence }: PrConte
               <Fact key={line}>{line}</Fact>
             ))}
           </ul>
+          <UsageLine usage={usage} />
         </Section>
       </div>
     </article>

@@ -16,6 +16,7 @@ import type {
   RangeQuery,
   RepoRef,
   StepId,
+  Tour,
 } from "./generated/types";
 import { api } from "./client";
 
@@ -115,6 +116,12 @@ export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
         onEvent: (event) => {
           setLost(false);
           if (event.event === "question") arrive(client, id, event.question, true);
+          if (event.event === "analysis" && event.summary.id === id && event.summary.usage !== undefined) {
+            client.setQueryData<Tour>(
+              ["tour", id],
+              (tour) => tour && { ...tour, analysis: { ...tour.analysis, usage: event.summary.usage } },
+            );
+          }
         },
         onClosed: () => {
           setLost(true);

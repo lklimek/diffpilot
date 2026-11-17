@@ -53,6 +53,15 @@ export function HomeScreen() {
       { onSuccess: (analysis) => void navigate(`/analyses/${analysis.id}/progress`) },
     );
   const submit = (url: string) => {
+    if (
+      resolve.data?.size_warning &&
+      resolve.variables === url &&
+      resolve.data.commenting_available &&
+      homeOutcome(resolve.data).kind === "analyze"
+    ) {
+      analyze(resolve.data);
+      return;
+    }
     create.reset();
     resolve.mutate(url, {
       onSuccess: (resolved) => {
@@ -82,7 +91,18 @@ export function HomeScreen() {
             {user && (
               <>
                 <h1 className="text-[22px] font-bold">Which pull request?</h1>
-                <PrUrlForm initialUrl={cancelledPrUrl} busy={busy} onSubmit={submit} />
+                <PrUrlForm
+                  initialUrl={cancelledPrUrl}
+                  busy={busy}
+                  onSubmit={submit}
+                  sizeWarning={
+                    (outcome?.kind === "analyze" || outcome?.kind === "head_moved") &&
+                    resolved?.size_warning &&
+                    resolve.variables
+                      ? { url: resolve.variables, warning: resolved.size_warning }
+                      : undefined
+                  }
+                />
                 {cancelledPrUrl && resolve.isIdle && (
                   <Banner tone="info" title="Analysis cancelled — analyze again.">
                     Its partial results were discarded.
