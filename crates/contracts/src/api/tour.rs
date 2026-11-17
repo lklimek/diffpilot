@@ -79,8 +79,10 @@ pub enum CiState {
     Failing,
     /// Checks still running.
     Pending,
-    /// No checks.
+    /// No checks reported for the head commit.
     None,
+    /// The check runs could not be read (no GitHub token, GitHub error or rate limit); nothing is claimed.
+    NotChecked,
 }
 
 /// A failing check.

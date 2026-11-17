@@ -332,7 +332,7 @@ failing_tests: Array<string>, };
 /**
  * Overall CI state.
  */
-export type CiState = "passing" | "failing" | "pending" | "none";
+export type CiState = "passing" | "failing" | "pending" | "none" | "not_checked";
 
 /**
  * CI status of the head commit.

@@ -62,7 +62,13 @@ mapping, query rules and the endpoint × fixture-state inventory.
   false (and comment routes answer `app_not_installed`) when the GitHub App is not installed on the PR repo.
 - **No installation** (ADR-005 addendum): analysis still runs; `PrContextFacts.related_work_checked = false`
   (UI: "Related work: not checked"); commenting disabled.
-- **Idempotency**: `CreateCommentRequest.idempotency_key` per (user, key) returns the first response.
+- **CI status** (`PrContextFacts.ci`): read from the head commit's check runs with the user token of the analysis
+  creator at ingest. `none` = read, no check runs; `not_checked` = the check runs could not be read (no token,
+  GitHub error, rate limit). `CiCheck.url` and `GithubThread.url` are always `https://github.com/…`: any other
+  URL GitHub reports is dropped (`CiCheck.url` null; a thread links to its pull request instead).
+- **Idempotency**: `CreateCommentRequest.idempotency_key` per (user, key) returns the first response. The same key
+  with another request (other analysis, target or body) is `conflict`; so is a repeat while the first attempt's
+  outcome is unknown (GitHub did not answer the write): the comment may exist, the pending-review list shows it.
 - **Settings**: `repos` lists the tenant's known repositories (from `repos`); each opens
   `/api/v1/repos/{owner}/{name}/settings`.
 - Ids in paths are UUIDs (`analysis`, `question`) or server ids (`f1.2` steps); unknown or another tenant's →
