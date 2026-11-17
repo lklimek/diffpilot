@@ -7,10 +7,12 @@ publish.workspace = true
 
 [dependencies]
 contracts.workspace = true
+serde.workspace = true
+similar.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-serde.workspace = true
+proptest.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 
