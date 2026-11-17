@@ -95,6 +95,10 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         state.db.clone(),
         state.config.clone(),
     ));
+    tokio::spawn(server::memcan::writer::run_writer(
+        state.db.clone(),
+        state.config.clone(),
+    ));
     server::pipeline::resume_unfinished(&state)
         .await
         .map_err(StartError::Resume)?;
