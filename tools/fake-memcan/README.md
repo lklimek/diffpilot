@@ -23,7 +23,7 @@ Control and inspection (same bearer token):
 | Endpoint            | Behaviour                                                                                         |
 | ------------------- | ------------------------------------------------------------------------------------------------- |
 | `GET /_fake/state`  | `{mode, memories, deleted, calls, unauthorized}`: stored memories by id, deleted ids, tool calls. |
-| `POST /_fake/mode`  | `{"mode": "<mode>"}` (below) or `{"mode": "delay", "ms": N}`.                                      |
+| `POST /_fake/mode`  | `{"mode": "<mode>"}` (below) or `{"mode": "delay", "ms": N}`.                                     |
 | `POST /_fake/reset` | Forgets memories, calls and mode.                                                                 |
 
 Modes: `embedding_failure` is MemCan with a failing embedding provider (imports report every valid record skipped

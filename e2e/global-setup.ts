@@ -56,7 +56,11 @@ export default async function globalSetup(): Promise<void> {
   const packages = "-p server --features server/embed-ui -p runner --features runner/fake-provider";
   const messages = await run(
     "cargo",
-    ["build", "--message-format=json-render-diagnostics", ...`${packages} -p fake-github -p fake-memcan`.split(" ")],
+    [
+      "build",
+      "--message-format=json-render-diagnostics",
+      ...`${packages} -p fake-github -p fake-memcan`.split(" "),
+    ],
     deadline,
   );
   const executables = new Map<string, string>();
