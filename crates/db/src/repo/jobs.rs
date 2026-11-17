@@ -511,7 +511,8 @@ impl Jobs<'_> {
         query.push_bind(ts(params.now));
         query.push(
             " WHERE id = (SELECT j.id FROM jobs j WHERE j.state = 'queued'
-                 AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.id = j.analysis_id AND a.state = 'cancelled')
+                 AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.id = j.analysis_id AND (a.state = 'cancelled' OR a.user_paused_at IS NOT NULL))
+                 AND NOT EXISTS (SELECT 1 FROM analyses a JOIN pull_requests p ON p.id=a.pull_request_id WHERE a.id=j.analysis_id AND p.session_state='drop_requested')
                  AND j.credential_id IN (",
         );
         let mut ids = query.separated(", ");
@@ -680,7 +681,7 @@ impl Jobs<'_> {
         apply_credential_effects(&mut tx, &credential, result, now).await?;
         // Publish the reported analytic or private working checkpoint only for the first effective,
         // not cancelled result: a repeated or late result never restores an older session. A session already asked
-        // to be dropped stays dropped.
+        // to be dropped waits for its deletion acknowledgement before another job can start.
         if let (Some(session), false) = (
             &stored.session,
             matches!(stored.outcome, JobOutcome::Cancelled),
@@ -1904,6 +1905,58 @@ mod tests {
         let reclaimed = claim(&db, 4000).await.expect("claim");
         assert_eq!(reclaimed.attempt, 2);
         assert_eq!(reclaimed.result, None);
+    }
+
+    #[tokio::test]
+    async fn user_pause_blocks_claim_after_usage_limit_expires_until_explicit_resume() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.unwrap();
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        claim(&db, 0).await.unwrap();
+        db.analyses()
+            .pause_by_user(analysis, "alice", at(1))
+            .await
+            .unwrap();
+        db.jobs()
+            .complete(
+                &result(
+                    job,
+                    1,
+                    JobOutcome::UsageLimited {
+                        resets_at: Some(at(100)),
+                    },
+                ),
+                at(2),
+            )
+            .await
+            .unwrap();
+        // Resuming the user's pause before the provider deadline leaves the usage-limit pause.
+        db.analyses().resume_by_user(analysis, at(3)).await.unwrap();
+        assert!(matches!(
+            db.analyses().get(analysis).await.unwrap().state,
+            contracts::api::analyses::AnalysisState::Paused {
+                reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+                ..
+            }
+        ));
+        db.analyses()
+            .pause_by_user(analysis, "alice", at(4))
+            .await
+            .unwrap();
+        db.jobs().resume_paused(at(100)).await.unwrap();
+        assert!(claim(&db, 101).await.is_none());
+        assert!(matches!(
+            db.analyses().get(analysis).await.unwrap().state,
+            contracts::api::analyses::AnalysisState::Paused {
+                reason: Some(contracts::api::analyses::PauseReason::User),
+                ..
+            }
+        ));
+        db.analyses()
+            .resume_by_user(analysis, at(102))
+            .await
+            .unwrap();
+        assert_eq!(claim(&db, 103).await.unwrap().id, job);
     }
 
     #[tokio::test]

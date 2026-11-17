@@ -115,6 +115,18 @@ total: number,
  */
 stage?: AnalysisStage, } | { "state": "paused",
 /**
+ * User pause takes precedence over a provider usage limit.
+ */
+reason?: PauseReason,
+/**
+ * Login that requested the pause.
+ */
+paused_by?: string,
+/**
+ * When the user requested the pause.
+ */
+paused_at?: string,
+/**
  * When it resumes, if known.
  */
 resumes_at: string | null,
@@ -151,6 +163,10 @@ total: number, } | { "state": "cancelled" };
  * An analysis and its state.
  */
 export type AnalysisSummary = {
+/**
+ * Distinct model choices of jobs actually claimed, in first-use order.
+ */
+models_used?: Array<ModelChoice>,
 /**
  * Provider-reported totals of finished jobs; null without reports.
  */
@@ -1233,6 +1249,44 @@ message: string, };
 export type LlmLanguage = "en" | "pl";
 
 /**
+ * One model available in this deployment.
+ */
+export type LlmModelOption = {
+/**
+ * Provider id.
+ */
+id: string,
+/**
+ * Plain display name.
+ */
+label: string, };
+
+/**
+ * Allowed models and the installation-wide choice for newly submitted jobs.
+ */
+export type LlmSelection = {
+/**
+ * Fixed server-supported model ids and labels.
+ */
+models: Array<LlmModelOption>,
+/**
+ * Allowed reasoning efforts.
+ */
+efforts: Array<ReasoningEffort>,
+/**
+ * Current choice, or the server default before the first save.
+ */
+current: ModelChoice,
+/**
+ * Login of the last editor; null for the default.
+ */
+changed_by: string | null,
+/**
+ * Time of the last save; null for the default.
+ */
+changed_at: string | null, };
+
+/**
  * Why sign-in failed; passed to Home as `/?login_error=<code>` by the OAuth callback.
  */
 export type LoginError = "login_not_allowed" | "oauth_failed" | "state_mismatch";
@@ -1297,6 +1351,19 @@ state: MemcanState,
  * Last successful tool call in this server process, retained after a later failure.
  */
 last_success_at: string | null, };
+
+/**
+ * Model and reasoning effort (plan §5.2, ADR-002).
+ */
+export type ModelChoice = {
+/**
+ * Provider model id, e.g. `gpt-6.1-sol`.
+ */
+model: string,
+/**
+ * Reasoning effort.
+ */
+reasoning_effort: ReasoningEffort, };
 
 /**
  * Result of the deterministic move check.
@@ -1468,6 +1535,11 @@ step_id: StepId | null,
  * GitHub link.
  */
 github_url: string, };
+
+/**
+ * Why an analysis waits; absent reasons in older responses mean a usage limit.
+ */
+export type PauseReason = "user" | "usage_limit";
 
 /**
  * A comment in the pending review.
@@ -1745,6 +1817,11 @@ from: number,
 to: number, };
 
 /**
+ * Reasoning effort of the model.
+ */
+export type ReasoningEffort = "low" | "medium" | "high";
+
+/**
  * One piece of related work.
  */
 export type RelatedWork = {
@@ -1922,6 +1999,10 @@ language: LlmLanguage, };
  * Response of `GET /api/v1/settings`.
  */
 export type Settings = {
+/**
+ * Installation-wide model selection; absent on older servers.
+ */
+llm_selection?: LlmSelection,
 /**
  * Tenant usage in the server's local calendar; absent on older responses.
  */

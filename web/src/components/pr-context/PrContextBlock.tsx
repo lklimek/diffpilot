@@ -1,3 +1,4 @@
+import { ModelsUsed } from "../usage/ModelsUsed";
 import { UsageLine } from "../usage/UsageLine";
 import type { UsageTotals } from "../../api/generated/types";
 import { ciText } from "../section/ci";
@@ -31,6 +32,7 @@ interface PrContextBlockProps {
   /** Review threads of the PR as listed (`Tour.threads`); read with `facts.threads_status`. */
   threadCount: number;
   usage?: UsageTotals | null;
+  modelsUsed?: import("../../api/generated/types").ModelChoice[];
   onEvidence?: (evidence: Evidence) => void;
 }
 
@@ -106,7 +108,14 @@ function Fact({ children }: { children: ReactNode }) {
 }
 
 /** PR context block: LLM analysis (problem, why, what it gives, related work, fit questions) and facts. */
-export function PrContextBlock({ pr, context, threadCount, onEvidence, usage }: PrContextBlockProps) {
+export function PrContextBlock({
+  pr,
+  context,
+  threadCount,
+  onEvidence,
+  usage,
+  modelsUsed,
+}: PrContextBlockProps) {
   const headingId = useId();
   const { facts, llm } = context;
   return (
@@ -212,6 +221,7 @@ export function PrContextBlock({ pr, context, threadCount, onEvidence, usage }: 
             ))}
           </ul>
           <UsageLine usage={usage} />
+          <ModelsUsed models={modelsUsed} />
         </Section>
       </div>
     </article>

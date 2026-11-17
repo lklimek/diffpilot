@@ -1,3 +1,4 @@
+import { dateTimeText } from "../format/time";
 import type { MemcanStatus } from "../../api/generated/types";
 /** Last observed connection state; rendering never calls MemCan. */
 export function MemcanStatusLine({ status }: { status?: MemcanStatus }) {
@@ -12,7 +13,7 @@ export function MemcanStatusLine({ status }: { status?: MemcanStatus }) {
       MemCan: {labels[status?.state ?? "not_checked"]}
       {status?.last_success_at && (
         <>
-          ; last success <time dateTime={status.last_success_at}>{status.last_success_at}</time>
+          ; last success <time dateTime={status.last_success_at}>{dateTimeText(status.last_success_at)}</time>
         </>
       )}
     </>

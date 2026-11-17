@@ -27,7 +27,8 @@ const STATES: [string, (page: Page) => Promise<unknown>][] = [
     (p) =>
       p
         .goto(`${progress}?scenario=running`)
-        .then(() => p.getByRole("button", { name: "Cancel analysis" }).click()),
+        .then(() => p.getByRole("button", { name: "Cancel analysis" }).click())
+        .then(() => p.getByRole("button", { name: "Confirm cancel", exact: true }).click()),
   ],
   ["progress-planning", (p) => p.goto(`${progress}?scenario=planning`)],
   ["progress-running", (p) => p.goto(`${progress}?scenario=running`)],

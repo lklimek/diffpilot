@@ -117,6 +117,7 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
     if !control::is_live(&summary.state) {
         return Ok(());
     }
+    control::wait_for_resume(state, analysis).await?;
     let mirror = prepare(state, &mut summary).await?;
     let files = diff_files(mirror.clone(), &summary).await?;
     let snapshot = snapshot(state, &summary).await?;
@@ -368,6 +369,7 @@ impl Driver<'_> {
     /// Final verification over every stored output (wording warnings logged, incomplete move detection
     /// recorded), then `finished`.
     async fn finish_analysis(&mut self) -> Result<(), PipelineError> {
+        control::wait_for_resume(self.state, self.analysis).await?;
         let (Some(plan), Some(pr_context)) =
             (self.results.plan.clone(), self.results.pr_context.clone())
         else {
@@ -799,6 +801,16 @@ impl Driver<'_> {
         prompt: String,
         issue_names: &[&str],
     ) -> Result<(), PipelineError> {
+        if self
+            .state
+            .db
+            .jobs()
+            .current_for_stage(self.analysis, &stage, generation)
+            .await?
+            .is_none()
+        {
+            control::wait_for_resume(self.state, self.analysis).await?;
+        }
         let kind = stage.kind();
         let pr = &self.summary.pr;
         let changed_lines = changed_line_count(&self.facts.files);
@@ -825,7 +837,17 @@ impl Driver<'_> {
             },
             prompt,
             output_schema: agent::output_schema(kind)?,
-            model: select_model(kind, &ModelContext { changed_lines }),
+            model: select_model(
+                kind,
+                &ModelContext { changed_lines },
+                self.state
+                    .db
+                    .settings()
+                    .llm_selection()
+                    .await?
+                    .as_ref()
+                    .map(|s| &s.choice),
+            ),
             limits: JobLimits::default(),
             credential: LlmCredentialRef {
                 id: CREDENTIAL_ID.to_owned(),
@@ -972,6 +994,9 @@ impl Driver<'_> {
     async fn set_progress(&self) -> Result<(), PipelineError> {
         let state = match (self.progress(), self.paused.is_empty()) {
             ((done, total), false) => AnalysisState::Paused {
+                reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+                paused_by: None,
+                paused_at: None,
                 resumes_at: self.paused.values().flatten().max().copied(),
                 done,
                 total,

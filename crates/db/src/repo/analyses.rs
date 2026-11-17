@@ -101,7 +101,7 @@ impl SessionState {
 macro_rules! columns {
     () => {
         "a.id, a.tenant_id, a.pull_request_id, a.base_sha, a.head_sha, a.language, a.state,
-    a.flows_total, a.flows_done, a.paused_until, a.failure_flow_id, a.failure_flow_title, a.failure_message, a.failure_reason,
+    a.flows_total, a.flows_done, a.paused_until, a.user_paused_by, a.user_paused_at, a.failure_flow_id, a.failure_flow_title, a.failure_message, a.failure_reason,
     (SELECT agent_thread_id FROM pull_requests WHERE id = a.pull_request_id) AS agent_thread_id,
     (SELECT session_state FROM pull_requests WHERE id = a.pull_request_id) AS session_state, a.skills_commit, a.created_by, a.created_at, a.finished_at"
     };
@@ -188,12 +188,33 @@ fn state_from_row(row: &SqliteRow) -> Result<AnalysisState, DbError> {
             stage: None,
         },
         "paused" => AnalysisState::Paused {
+            reason: Some(
+                if row
+                    .try_get::<Option<String>, _>("user_paused_at")?
+                    .is_some()
+                {
+                    contracts::api::analyses::PauseReason::User
+                } else {
+                    contracts::api::analyses::PauseReason::UsageLimit
+                },
+            ),
+            paused_by: row.try_get("user_paused_by")?,
+            paused_at: row
+                .try_get::<Option<String>, _>("user_paused_at")?
+                .map(|s| parse_ts(&s, "analyses.user_paused_at"))
+                .transpose()?,
             done: row.try_get("flows_done")?,
             total,
-            resumes_at: row
-                .try_get::<Option<String>, _>("paused_until")?
-                .map(|at| parse_ts(&at, "analyses.paused_until"))
-                .transpose()?,
+            resumes_at: if row
+                .try_get::<Option<String>, _>("user_paused_at")?
+                .is_some()
+            {
+                None
+            } else {
+                row.try_get::<Option<String>, _>("paused_until")?
+                    .map(|at| parse_ts(&at, "analyses.paused_until"))
+                    .transpose()?
+            },
             stage: None,
         },
         "failed" => {
@@ -319,6 +340,11 @@ impl Analyses<'_> {
             *stage = self.live_stage(id).await?;
         }
         let mut summary = AnalysisSummary {
+            models_used: Some(
+                super::jobs::Jobs { pool: self.pool }
+                    .models_used(id)
+                    .await?,
+            ),
             usage: super::jobs::Jobs { pool: self.pool }.usage(id).await?,
             progress: None,
             has_my_state: None,
@@ -491,8 +517,7 @@ impl Analyses<'_> {
     /// job not yet flagged for cancellation, or a stored document.
     pub async fn cancellations_to_finish(&self) -> Result<Vec<AnalysisId>, DbError> {
         let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT a.id FROM analyses a WHERE a.state = 'cancelled' AND (
-                 EXISTS (SELECT 1 FROM documents d WHERE d.analysis_id = a.id)
+            "SELECT a.id FROM analyses a WHERE a.state = 'cancelled' AND (EXISTS (SELECT 1 FROM documents d WHERE d.analysis_id = a.id)
                  OR EXISTS (SELECT 1 FROM jobs j WHERE j.analysis_id = a.id AND j.cancel_requested = 0
                      AND j.state IN ('queued', 'claimed', 'running', 'paused')))
              ORDER BY a.created_at, a.rowid",
@@ -500,6 +525,29 @@ impl Analyses<'_> {
         .fetch_all(self.pool)
         .await?;
         ids.iter().map(|id| parse_wire(id, "analyses.id")).collect()
+    }
+
+    /// User pause is persistent and does not cancel or change an in-flight job.
+    pub async fn pause_by_user(
+        &self,
+        id: AnalysisId,
+        login: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, DbError> {
+        Ok(sqlx::query("UPDATE analyses SET state='paused', user_paused_by=COALESCE(user_paused_by, ?), user_paused_at=COALESCE(user_paused_at, ?) WHERE id=? AND state IN ('planning','running','paused')")
+            .bind(login).bind(ts(now)).bind(id.to_string()).execute(self.pool).await?.rows_affected() > 0)
+    }
+
+    /// Clears only the user pause; a job's provider-limit gate remains in force.
+    pub async fn resume_by_user(
+        &self,
+        id: AnalysisId,
+        now: DateTime<Utc>,
+    ) -> Result<bool, DbError> {
+        Ok(sqlx::query("UPDATE analyses SET user_paused_at=NULL, user_paused_by=NULL,
+            state=CASE WHEN EXISTS (SELECT 1 FROM jobs j WHERE j.analysis_id=analyses.id AND j.round=analyses.round AND j.state='paused' AND (j.resumes_at IS NULL OR julianday(j.resumes_at)>julianday(?))) THEN 'paused' WHEN flows_total IS NULL THEN 'planning' ELSE 'running' END
+            WHERE id=? AND user_paused_at IS NOT NULL AND state='paused'")
+            .bind(ts(now)).bind(id.to_string()).execute(self.pool).await?.rows_affected() > 0)
     }
 
     /// Stores a new state (progress included); terminal states set `finished_at`.
@@ -511,9 +559,13 @@ impl Analyses<'_> {
     ) -> Result<(), DbError> {
         let columns = StateColumns::of(state);
         let updated = sqlx::query(
-            "UPDATE analyses SET state = ?, flows_total = ?, flows_done = ?, paused_until = ?, failure_flow_id = ?,
-                 failure_flow_title = ?, failure_message = ?, failure_reason = ?, finished_at = ?
-             WHERE id = ?",
+            "UPDATE analyses SET state = CASE WHEN user_paused_at IS NOT NULL AND ?1 NOT IN ('failed','cancelled') THEN 'paused' ELSE ?1 END,
+                 flows_total = ?2, flows_done = ?3, paused_until = ?4, failure_flow_id = ?5,
+                 failure_flow_title = ?6, failure_message = ?7, failure_reason = ?8,
+                 finished_at = CASE WHEN user_paused_at IS NOT NULL AND ?1 = 'finished' THEN NULL ELSE ?9 END,
+                 user_paused_at = CASE WHEN ?1 IN ('failed','cancelled') THEN NULL ELSE user_paused_at END,
+                 user_paused_by = CASE WHEN ?1 IN ('failed','cancelled') THEN NULL ELSE user_paused_by END
+             WHERE id = ?10",
         )
         .bind(columns.state)
         .bind(columns.flows_total)
@@ -604,7 +656,7 @@ impl Analyses<'_> {
     /// Pull-request keys whose session files the runner must delete.
     pub async fn pending_session_drops(&self) -> Result<Vec<i64>, DbError> {
         let ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT id FROM pull_requests WHERE session_state = 'drop_requested' ORDER BY id",
+            "SELECT p.id FROM pull_requests p WHERE p.session_state='drop_requested' AND NOT EXISTS (SELECT 1 FROM jobs j JOIN analyses a ON a.id=j.analysis_id WHERE a.pull_request_id=p.id AND j.state IN ('claimed','running')) ORDER BY p.id",
         )
         .fetch_all(self.pool)
         .await?;
@@ -929,6 +981,9 @@ mod tests {
             ),
             (
                 AnalysisState::Paused {
+                    reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+                    paused_by: None,
+                    paused_at: None,
                     resumes_at: Some(at(30)),
                     done: 2,
                     total: Some(5),
@@ -938,6 +993,9 @@ mod tests {
             ),
             (
                 AnalysisState::Paused {
+                    reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+                    paused_by: None,
+                    paused_at: None,
                     resumes_at: None,
                     done: 0,
                     total: None,
@@ -1260,6 +1318,9 @@ mod tests {
             .set_state(
                 id,
                 &AnalysisState::Paused {
+                    reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+                    paused_by: None,
+                    paused_at: None,
                     resumes_at: None,
                     done: 0,
                     total: Some(2),
@@ -1422,5 +1483,43 @@ mod usage_tests {
         let empty = testing::seed_analysis(&db).await.unwrap();
         let wire = serde_json::to_value(db.analyses().summary(empty).await.unwrap()).unwrap();
         assert!(wire.get("usage").is_some_and(serde_json::Value::is_null));
+    }
+    #[tokio::test]
+    async fn user_pause_survives_reopen_and_usage_limit_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pause.sqlite");
+        let db = Db::open(&path).await.unwrap();
+        let id = testing::seed_analysis(&db).await.unwrap();
+        db.analyses()
+            .pause_by_user(id, "alice", Utc::now())
+            .await
+            .unwrap();
+        let reset = Utc::now() + chrono::TimeDelta::hours(3);
+        db.analyses()
+            .set_state(
+                id,
+                &AnalysisState::Paused {
+                    reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+                    paused_by: None,
+                    paused_at: None,
+                    resumes_at: Some(reset),
+                    done: 1,
+                    total: Some(5),
+                    stage: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        db.pool.close().await;
+        let db = Db::open(&path).await.unwrap();
+        let summary = db.analyses().summary(id).await.unwrap();
+        let wire = serde_json::to_value(summary).unwrap();
+        assert_eq!(wire["state"]["reason"], "user");
+        assert_eq!(wire["state"]["paused_by"], "alice");
+        assert_eq!(wire["state"]["resumes_at"], serde_json::Value::Null);
+        assert_eq!(wire["state"]["done"], 1);
+        assert!(db.analyses().resume_by_user(id, Utc::now()).await.unwrap());
+        assert!(!db.analyses().resume_by_user(id, Utc::now()).await.unwrap());
     }
 }

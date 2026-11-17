@@ -17,7 +17,9 @@ use axum::{Json, Router};
 use contracts::api::analyses::{AnalysisSummary, CreateAnalysisRequest};
 use contracts::api::error::ApiErrorCode;
 use contracts::ids::AnalysisId;
-use contracts::routes::{CANCEL_ANALYSIS, CREATE_ANALYSIS, GET_ANALYSIS, RETRY_ANALYSIS};
+use contracts::routes::{
+    CANCEL_ANALYSIS, CREATE_ANALYSIS, GET_ANALYSIS, PAUSE_ANALYSIS, RESUME_ANALYSIS, RETRY_ANALYSIS,
+};
 use db::error::DbError;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
@@ -247,6 +249,9 @@ impl ApiErrorSource for AnalysisApiError {
             Self::StateConflict { action: "retried" } => {
                 "Only a failed analysis can be retried. Reload to see its current state."
             }
+            Self::StateConflict { action: "resumed" } => {
+                "Only an analysis paused by a user can be resumed. Reload to see its current state."
+            }
             Self::StateConflict { .. } => {
                 "The analysis has already ended. Reload to see its current state."
             }
@@ -282,6 +287,8 @@ pub fn routes() -> Router<AppState> {
         .route(GET_ANALYSIS.path, get(read))
         .route(CANCEL_ANALYSIS.path, post(cancel))
         .route(RETRY_ANALYSIS.path, post(retry))
+        .route(PAUSE_ANALYSIS.path, post(pause))
+        .route(RESUME_ANALYSIS.path, post(resume))
 }
 
 /// The analysis if the session's tenant may see it; `not_found` otherwise (no existence leak).
@@ -343,4 +350,37 @@ async fn retry(
     visible_analysis(&state, &session, id).await?;
     let summary = control::retry(&state, id).await.map_err(failure)?;
     Ok(Json(visible_analysis(&state, &session, summary.id).await?))
+}
+
+async fn pause(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    id: Result<Path<AnalysisId>, PathRejection>,
+) -> ApiResult<Json<AnalysisSummary>> {
+    let Path(id) = id.map_err(failure)?;
+    visible_analysis(&state, &session, id).await?;
+    let user = state
+        .db
+        .users()
+        .get(&session.user_id)
+        .await
+        .map_err(failure)?;
+    control::pause(&state, id, &user.profile.login)
+        .await
+        .map_err(failure)?;
+    Ok(Json(visible_analysis(&state, &session, id).await?))
+}
+
+async fn resume(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    id: Result<Path<AnalysisId>, PathRejection>,
+) -> ApiResult<Json<AnalysisSummary>> {
+    let Path(id) = id.map_err(failure)?;
+    let summary = visible_analysis(&state, &session, id).await?;
+    ingest::check_head(&state, &session, &summary)
+        .await
+        .map_err(failure)?;
+    control::resume(&state, id).await.map_err(failure)?;
+    Ok(Json(visible_analysis(&state, &session, id).await?))
 }

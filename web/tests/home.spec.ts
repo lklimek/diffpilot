@@ -124,6 +124,7 @@ test("without the GitHub App: warning, Analyze without it", async ({ page }) => 
 test("cancelled: Home says 'Analysis cancelled — analyze again' with the URL filled in", async ({ page }) => {
   await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=running`);
   await page.getByRole("button", { name: "Cancel analysis" }).click();
+  await page.getByRole("button", { name: "Confirm cancel", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
     page.getByRole("status").filter({ hasText: "Analysis cancelled — analyze again." }),

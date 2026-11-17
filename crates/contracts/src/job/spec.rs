@@ -58,7 +58,7 @@ pub struct RepoCheckout {
 }
 
 /// Model and reasoning effort (plan §5.2, ADR-002).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, ts_rs::TS)]
 pub struct ModelChoice {
     /// Provider model id, e.g. `gpt-6.1-sol`.
     pub model: String,
@@ -67,7 +67,9 @@ pub struct ModelChoice {
 }
 
 /// Reasoning effort of the model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, ts_rs::TS,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     /// Low effort.

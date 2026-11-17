@@ -115,6 +115,8 @@ CREATE TABLE analyses (
     flows_total         INTEGER,
     flows_done          INTEGER NOT NULL DEFAULT 0,
     paused_until        TEXT,
+    user_paused_by      TEXT,
+    user_paused_at      TEXT,
     failure_flow_id     TEXT,
     failure_flow_title  TEXT,
     failure_message     TEXT,
@@ -307,6 +309,15 @@ CREATE TABLE comment_requests (
     response        TEXT CHECK (response IS NULL OR json_valid(response)),
     created_at      TEXT NOT NULL,
     PRIMARY KEY (user_id, idempotency_key)
+) STRICT;
+
+-- One model selection for this installation, shared by all tenants and users.
+CREATE TABLE llm_selection (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    model TEXT NOT NULL,
+    reasoning_effort TEXT NOT NULL CHECK (reasoning_effort IN ('low', 'medium', 'high')),
+    changed_by TEXT NOT NULL,
+    changed_at TEXT NOT NULL
 ) STRICT;
 
 -- Private Ask sessions forked from an analytic PR generation; removed with the PR.

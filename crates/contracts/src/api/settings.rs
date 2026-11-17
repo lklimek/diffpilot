@@ -1,5 +1,6 @@
 //! Settings (brief §4.4).
 
+use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -11,6 +12,10 @@ use crate::job::result::LlmCallOutcome;
 /// Response of `GET /api/v1/settings`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Settings {
+    /// Installation-wide model selection; absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub llm_selection: Option<LlmSelection>,
     /// Tenant usage in the server's local calendar; absent on older responses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -107,4 +112,28 @@ pub enum MemcanState {
     Reachable,
     /// The most recent attempt could not reach MemCan or timed out.
     NotReachable,
+}
+
+/// Allowed models and the installation-wide choice for newly submitted jobs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct LlmSelection {
+    /// Fixed server-supported model ids and labels.
+    pub models: Vec<LlmModelOption>,
+    /// Allowed reasoning efforts.
+    pub efforts: Vec<crate::job::spec::ReasoningEffort>,
+    /// Current choice, or the server default before the first save.
+    pub current: crate::job::spec::ModelChoice,
+    /// Login of the last editor; null for the default.
+    pub changed_by: Option<String>,
+    /// Time of the last save; null for the default.
+    pub changed_at: Option<DateTime<Utc>>,
+}
+
+/// One model available in this deployment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct LlmModelOption {
+    /// Provider id.
+    pub id: String,
+    /// Plain display name.
+    pub label: String,
 }

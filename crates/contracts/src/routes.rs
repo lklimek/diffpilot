@@ -132,7 +132,21 @@ pub const ANALYSIS_EVENTS: Route = route(
     "/api/v1/analyses/{id}/events",
     Session,
 );
-/// Cancels an analysis.
+/// Pauses future jobs of an analysis.
+pub const PAUSE_ANALYSIS: Route = route(
+    "pauseAnalysis",
+    Post,
+    "/api/v1/analyses/{id}/pause",
+    SessionCsrf,
+);
+/// Resume a user-paused analysis.
+pub const RESUME_ANALYSIS: Route = route(
+    "resumeAnalysis",
+    Post,
+    "/api/v1/analyses/{id}/resume",
+    SessionCsrf,
+);
+/// Cancel an analysis.
 pub const CANCEL_ANALYSIS: Route = route(
     "cancelAnalysis",
     Post,
@@ -229,7 +243,9 @@ pub const DELETE_COMMENT: Route = route(
     "/api/v1/analyses/{id}/pending-review/comments/{comment_id}",
     SessionCsrf,
 );
-/// Settings.
+/// Saves the installation model and reasoning effort.
+pub const SET_LLM: Route = route("setLlm", Put, "/api/v1/settings/llm", SessionCsrf);
+/// Read settings.
 pub const GET_SETTINGS: Route = route("getSettings", Get, "/api/v1/settings", Session);
 /// Sets the language of LLM texts.
 pub const SET_LANGUAGE: Route = route("setLanguage", Put, "/api/v1/settings/language", SessionCsrf);
@@ -264,6 +280,8 @@ pub const ROUTES: &[Route] = &[
     GET_ANALYSIS,
     ANALYSIS_EVENTS,
     CANCEL_ANALYSIS,
+    PAUSE_ANALYSIS,
+    RESUME_ANALYSIS,
     RETRY_ANALYSIS,
     GET_TOUR,
     GET_LINES,
@@ -281,6 +299,7 @@ pub const ROUTES: &[Route] = &[
     DELETE_COMMENT,
     GET_SETTINGS,
     SET_LANGUAGE,
+    SET_LLM,
     GET_REPO_SETTINGS,
     RUNNER_CLAIM,
     RUNNER_EVENTS,

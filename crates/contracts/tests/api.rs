@@ -41,6 +41,7 @@ use serde_json::{Value, json};
 
 fn summary() -> AnalysisSummary {
     AnalysisSummary {
+        models_used: None,
         usage: None,
         progress: None,
         has_my_state: None,
@@ -699,6 +700,7 @@ fn annotation_projection_keeps_was_is_and_remark() {
 #[test]
 fn settings_lists_known_repositories() {
     let settings = Settings {
+        llm_selection: None,
         llm_usage: None,
         memcan_status: None,
         llm_status: None,
@@ -729,6 +731,7 @@ fn flow_facts_have_no_changed_line_counter() {
 #[test]
 fn settings_installations_not_checked_is_null_not_empty() {
     let mut settings = Settings {
+        llm_selection: None,
         llm_usage: None,
         memcan_status: None,
         llm_status: None,

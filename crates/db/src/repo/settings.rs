@@ -84,6 +84,73 @@ pub struct LastCall {
     pub failure: Option<CallFailure>,
 }
 
+/// Persisted installation selection; model allowlist belongs to the server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredLlmSelection {
+    /// Choice copied into new job specs.
+    pub choice: contracts::job::spec::ModelChoice,
+    /// Editor's login at save time.
+    pub changed_by: String,
+    /// Save time.
+    pub changed_at: DateTime<Utc>,
+}
+
+fn selection(row: &sqlx::sqlite::SqliteRow) -> Result<StoredLlmSelection, DbError> {
+    Ok(StoredLlmSelection {
+        choice: contracts::job::spec::ModelChoice {
+            model: row.try_get("model")?,
+            reasoning_effort: parse_wire(
+                &row.try_get::<String, _>("reasoning_effort")?,
+                "llm_selection.reasoning_effort",
+            )?,
+        },
+        changed_by: row.try_get("changed_by")?,
+        changed_at: parse_ts(
+            &row.try_get::<String, _>("changed_at")?,
+            "llm_selection.changed_at",
+        )?,
+    })
+}
+
+impl SettingsRepo<'_> {
+    /// Installation-wide choice, independent of tenant or requesting user.
+    pub async fn llm_selection(&self) -> Result<Option<StoredLlmSelection>, DbError> {
+        sqlx::query("SELECT * FROM llm_selection WHERE singleton = 1")
+            .fetch_optional(self.pool)
+            .await?
+            .as_ref()
+            .map(selection)
+            .transpose()
+    }
+
+    /// Saves a choice and returns the previous and new values under one write transaction.
+    pub async fn set_llm_selection(
+        &self,
+        choice: &contracts::job::spec::ModelChoice,
+        login: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(Option<StoredLlmSelection>, StoredLlmSelection), DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let old = sqlx::query("SELECT * FROM llm_selection WHERE singleton = 1")
+            .fetch_optional(&mut *tx)
+            .await?
+            .as_ref()
+            .map(selection)
+            .transpose()?;
+        sqlx::query("INSERT INTO llm_selection (singleton, model, reasoning_effort, changed_by, changed_at) VALUES (1, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET model=excluded.model, reasoning_effort=excluded.reasoning_effort, changed_by=excluded.changed_by, changed_at=excluded.changed_at")
+            .bind(&choice.model).bind(wire_name(choice.reasoning_effort)?).bind(login).bind(ts(now)).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok((
+            old,
+            StoredLlmSelection {
+                choice: choice.clone(),
+                changed_by: login.into(),
+                changed_at: parse_ts(&ts(now), "llm_selection.changed_at")?,
+            },
+        ))
+    }
+}
+
 impl SettingsRepo<'_> {
     /// The tenant's most recent LLM call over all credentials; `None` before the first call.
     pub async fn last_call(&self, tenant_id: &str) -> Result<Option<LastCall>, DbError> {
@@ -126,14 +193,14 @@ impl SettingsRepo<'_> {
         Ok(())
     }
 
-    /// The tenant's repositories with at least one analysis, by owner and name.
+    /// The tenant's repositories, newest analysis first, then owner and name.
     pub async fn analysed_repos(&self, tenant_id: &str) -> Result<Vec<RepoRef>, DbError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT r.owner, r.name FROM repos r
              WHERE r.tenant_id = ?1 AND EXISTS (
                  SELECT 1 FROM analyses a JOIN pull_requests p ON p.id = a.pull_request_id
                  WHERE p.repo_id = r.id AND a.tenant_id = ?1)
-             ORDER BY r.owner, r.name",
+             ORDER BY (SELECT MAX(COALESCE(a.finished_at, a.created_at)) FROM analyses a JOIN pull_requests p ON p.id=a.pull_request_id WHERE p.repo_id=r.id AND a.tenant_id=r.tenant_id) DESC, r.owner, r.name",
         )
         .bind(tenant_id)
         .fetch_all(self.pool)
@@ -306,6 +373,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repository_picker_orders_latest_analysis_then_name() {
+        let db = Db::in_memory().await.unwrap();
+        seed_analysis(&db).await.unwrap();
+        for (name, at) in [
+            ("aaa", "2026-11-16T00:00:00Z"),
+            ("zzz", "2026-11-17T00:00:00Z"),
+            ("bbb", "2026-11-16T00:00:00Z"),
+        ] {
+            let repo = db
+                .repos()
+                .upsert(DEFAULT_TENANT, &acme(name), None)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO pull_requests (tenant_id, repo_id, number, title, author, base_sha, head_sha, html_url, fetched_at) SELECT tenant_id, ?, number, title, author, base_sha, head_sha, html_url, fetched_at FROM pull_requests LIMIT 1")
+                .bind(repo.id).execute(&db.pool).await.unwrap();
+            let pr: i64 = sqlx::query_scalar("SELECT id FROM pull_requests WHERE repo_id=?")
+                .bind(repo.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO analyses (id,tenant_id,pull_request_id,created_by,base_sha,head_sha,language,state,created_at) SELECT ?,tenant_id,?,created_by,base_sha,head_sha,language,'planning',? FROM analyses LIMIT 1")
+                .bind(contracts::ids::AnalysisId::new_random().to_string()).bind(pr).bind(at).execute(&db.pool).await.unwrap();
+        }
+        let repos = db.settings().analysed_repos(DEFAULT_TENANT).await.unwrap();
+        let names: Vec<_> = repos
+            .iter()
+            .filter(|r| r.name != "node-client")
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(names, ["zzz", "aaa", "bbb"]);
+    }
+
+    #[tokio::test]
     async fn credential_unusable_since_follows_the_runner_report() {
         let db = Db::in_memory().await.expect("db");
         let settings = db.settings();
@@ -353,5 +453,38 @@ mod tests {
                 .expect("other tenant"),
             None
         );
+    }
+    #[tokio::test]
+    async fn installation_selection_is_global_and_survives_repository_handles() {
+        use contracts::job::spec::{ModelChoice, ReasoningEffort};
+        let db = Db::in_memory().await.unwrap();
+        assert!(db.settings().llm_selection().await.unwrap().is_none());
+        let first = ModelChoice {
+            model: "gpt-6-astra".into(),
+            reasoning_effort: ReasoningEffort::Low,
+        };
+        let (old, saved) = db
+            .settings()
+            .set_llm_selection(&first, "alice", Utc::now())
+            .await
+            .unwrap();
+        assert!(old.is_none());
+        assert_eq!(saved.choice, first);
+        assert_eq!(
+            db.settings().llm_selection().await.unwrap(),
+            Some(saved.clone())
+        );
+        let next = ModelChoice {
+            reasoning_effort: ReasoningEffort::High,
+            ..first
+        };
+        let (old, saved) = db
+            .settings()
+            .set_llm_selection(&next, "bob", Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(old.unwrap().changed_by, "alice");
+        assert_eq!(saved.changed_by, "bob");
+        assert_eq!(saved.choice, next);
     }
 }

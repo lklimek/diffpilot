@@ -19,6 +19,7 @@ describe("Settings (brief §4.4)", () => {
     expect(screen.getByLabelText(/written in/)).toHaveValue("en");
     expect(await region("GitHub App")).toHaveTextContent("acme: selected repositories");
     const repo = await region(/acme\/node-client/);
+    await userEvent.click(await within(repo).findByText(/Show the .* built-in rules/));
     expect(await within(repo).findByText("tests/**")).toBeVisible();
     expect(repo).toHaveTextContent("acme/node-sdk");
     expectTrustWording(document.body.textContent ?? "");

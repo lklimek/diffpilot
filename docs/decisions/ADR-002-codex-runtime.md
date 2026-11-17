@@ -5,9 +5,13 @@
   `S7-llm-capability.md`; plan §5.2–§5.4; brief §5.
 
 ## Decisions
-- **Model.** "Sol" is `gpt-6.1-sol`. `select_model` returns `gpt-6.1-sol` with reasoning effort `high` for every
-  job kind. The runner passes the id as `model` and the effort as `model_reasoning_effort` in the per-job config.
-  `select_model` is the only place to change either. Resolves the *pending spike S1a* items of ADR-001.
+- **Model (owner decision, 2026-11-17).** `select_model` remains the single plain Rust selector. It uses
+  the installation-wide Settings choice, falling back to `gpt-6.1-sol`, effort `high`. The fixed S1a catalog
+  is `gpt-6.1-sol`, `gpt-6-sol`, `gpt-5.6-sol`, `gpt-6-astra`; efforts are `low`, `medium`, `high`.
+  Any signed-in allowlisted user can save the choice with CSRF protection. A singleton row records the
+  choice, changer login and time; each submission reads it, including later jobs of running analyses.
+  Already submitted jobs keep their immutable spec. The runner passes its model and effort to Codex;
+  the Tour lists distinct choices from claimed job specs, including Ask and repair jobs.
 - **Per-job configuration.** Each job gets a fresh `CODEX_HOME` outside `/tmp` (Codex refuses helper aliases
   there) holding a generated lean `config.toml` (S1a: analytics off; plugins, apps, remote plugins, image
   generation, browser/computer use, hooks, tool suggestions, goals and daemon auto-start off), a copy of the

@@ -10,6 +10,7 @@ test("default: LLM working with time, language, App, repository rules", async ({
   await expect(page.getByLabel(/written in/)).toHaveValue("en");
   await expect(page.getByRole("region", { name: "GitHub App" })).toContainText("acme: selected repositories");
   const repo = page.getByRole("region", { name: /acme\/node-client/ });
+  await repo.getByText(/Show the .* built-in rules/).click();
   await expect(repo.getByRole("cell", { name: "tests/**" })).toBeVisible();
   await expect(repo).toContainText("acme/node-sdk");
   await expect(page.getByRole("button", { name: /check/i })).toHaveCount(0);

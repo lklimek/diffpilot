@@ -27,6 +27,18 @@ fn totals(row: &SqliteRow) -> Result<Option<UsageTotals>, DbError> {
 }
 
 impl Jobs<'_> {
+    /// Model choices from immutable specs of claimed jobs, in first-use order, across all rounds.
+    pub async fn models_used(
+        &self,
+        analysis: AnalysisId,
+    ) -> Result<Vec<contracts::job::spec::ModelChoice>, DbError> {
+        let rows: Vec<String> = sqlx::query_scalar("SELECT json_extract(spec, '$.model') AS choice FROM jobs WHERE analysis_id=? AND claimed_at IS NOT NULL GROUP BY choice ORDER BY MIN(claimed_at), MIN(rowid)")
+            .bind(analysis.to_string()).fetch_all(self.pool).await?;
+        rows.iter()
+            .map(|s| serde_json::from_str(s).map_err(DbError::from))
+            .collect()
+    }
+
     /// Sums provider reports in finished jobs, including Ask, repair generations and all rounds.
     pub async fn usage(&self, analysis: AnalysisId) -> Result<Option<UsageTotals>, DbError> {
         let row = sqlx::query(
@@ -133,6 +145,66 @@ mod tests {
     use chrono::{Local, TimeDelta, TimeZone};
     use contracts::agent::JobKind;
     use contracts::job::spec::JobPriority;
+
+    #[tokio::test]
+    async fn models_used_groups_claimed_specs_across_rounds_and_ask() {
+        use contracts::job::spec::{ModelChoice, ReasoningEffort};
+        let db = Db::in_memory().await.unwrap();
+        let id = testing::seed_analysis(&db).await.unwrap();
+        assert!(db.jobs().models_used(id).await.unwrap().is_empty());
+        let sol = ModelChoice {
+            model: "gpt-6.1-sol".into(),
+            reasoning_effort: ReasoningEffort::High,
+        };
+        let astra = ModelChoice {
+            model: "gpt-6-astra".into(),
+            reasoning_effort: ReasoningEffort::Low,
+        };
+        let now = Utc::now();
+        for (i, kind, choice, claimed) in [
+            (0, JobKind::Plan, sol.clone(), true),
+            (1, JobKind::Ask, astra.clone(), true),
+            (2, JobKind::Plan, sol.clone(), true),
+            (
+                3,
+                JobKind::Plan,
+                ModelChoice {
+                    model: "gpt-6-sol".into(),
+                    reasoning_effort: ReasoningEffort::Medium,
+                },
+                false,
+            ),
+        ] {
+            let mut spec = testing::job_spec(id, kind);
+            spec.model = choice;
+            let stage = if kind == JobKind::Ask {
+                JobStage::Ask(contracts::ids::QuestionId::new_random())
+            } else {
+                JobStage::Plan { batch: i }
+            };
+            let job = db
+                .jobs()
+                .enqueue(
+                    NewJob {
+                        spec,
+                        stage,
+                        generation: 0,
+                        priority: JobPriority::Batch,
+                    },
+                    now,
+                )
+                .await
+                .unwrap();
+            sqlx::query("UPDATE jobs SET round=?, claimed_at=? WHERE id=?")
+                .bind(i)
+                .bind(claimed.then(|| (now + TimeDelta::seconds(i64::from(i))).to_rfc3339()))
+                .bind(job.id.to_string())
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        }
+        assert_eq!(db.jobs().models_used(id).await.unwrap(), vec![sol, astra]);
+    }
 
     #[tokio::test]
     async fn calendar_windows_are_tenant_scoped_and_exclude_old_future_and_unreported_jobs() {

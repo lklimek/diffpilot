@@ -1,5 +1,5 @@
 //! Analysis state changes that race with a running driver: guarded state writes, cancel (partial results and the
-//! agent session discarded) and retry. Every write goes through `ProgressHub::update`, so a guard and its write
+//! PR sessions retained) and retry. Every write goes through `ProgressHub::update`, so a guard and its write
 //! are one step for every writer of the analysis.
 
 use chrono::Utc;
@@ -11,7 +11,7 @@ use db::error::DbError;
 use crate::jobs::executor::ExecutorError;
 use crate::state::AppState;
 
-/// A cancel or retry could not be applied.
+/// A requested analysis state change could not be applied.
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
     /// The analysis is not in a state that allows it (e.g. retry of a running analysis).
@@ -68,7 +68,7 @@ pub async fn set_state_if(
             db.analyses().set_state(analysis, next, Utc::now()).await?;
             let summary = db.analyses().summary(analysis).await?;
             if is_live(&current.state)
-                && !is_live(next)
+                && !is_live(&summary.state)
                 && let Err(error) = super::statistics::log_end(state, &summary).await
             {
                 tracing::warn!(%analysis, ?error, "analysis statistics unavailable");
@@ -92,8 +92,89 @@ fn published(written: Result<AnalysisEvent, Guarded>) -> Result<Option<AnalysisS
     }
 }
 
+/// Waits without holding a lock; cancellation still stops a user-paused driver.
+pub async fn wait_for_resume(
+    state: &AppState,
+    analysis: AnalysisId,
+) -> Result<(), super::PipelineError> {
+    loop {
+        let current = state.db.analyses().get(analysis).await?;
+        if !is_live(&current.state) {
+            return Err(super::PipelineError::Stopped);
+        }
+        if !matches!(
+            current.state,
+            AnalysisState::Paused {
+                reason: Some(contracts::api::analyses::PauseReason::User),
+                ..
+            }
+        ) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+/// Pauses future submissions; the claimed job keeps its result and session.
+pub async fn pause(
+    state: &AppState,
+    analysis: AnalysisId,
+    login: &str,
+) -> Result<AnalysisSummary, ControlError> {
+    user_pause(state, analysis, Some(login)).await
+}
+
+/// Resumes without clearing documents or changing the round.
+pub async fn resume(
+    state: &AppState,
+    analysis: AnalysisId,
+) -> Result<AnalysisSummary, ControlError> {
+    let summary = user_pause(state, analysis, None).await?;
+    super::start(state, analysis);
+    Ok(summary)
+}
+
+async fn user_pause(
+    state: &AppState,
+    analysis: AnalysisId,
+    login: Option<&str>,
+) -> Result<AnalysisSummary, ControlError> {
+    let event = state
+        .progress
+        .update(analysis, || async {
+            let changed = match login {
+                Some(login) => {
+                    state
+                        .db
+                        .analyses()
+                        .pause_by_user(analysis, login, Utc::now())
+                        .await?
+                }
+                None => {
+                    state
+                        .db
+                        .analyses()
+                        .resume_by_user(analysis, Utc::now())
+                        .await?
+                }
+            };
+            if !changed {
+                return Err(Guarded::Refused);
+            }
+            Ok(AnalysisEvent::Analysis {
+                summary: state.db.analyses().summary(analysis).await?,
+            })
+        })
+        .await;
+    let summary = published(event)?.ok_or(ControlError::Conflict {
+        action: if login.is_some() { "paused" } else { "resumed" },
+    })?;
+    tracing::info!(%analysis, paused = login.is_some(), login, "analysis user pause changed");
+    Ok(summary)
+}
+
 /// Cancels a live or failed analysis: state `cancelled`, then every unfinished job cancelled, the stored results
-/// deleted and the agent session dropped. A running driver ends when its jobs report `cancelled`.
+/// deleted and both PR sessions retained. A running driver ends when its jobs report `cancelled`.
 pub async fn cancel(
     state: &AppState,
     analysis: AnalysisId,
@@ -111,7 +192,7 @@ pub async fn cancel(
     Ok(summary)
 }
 
-/// Cancels the analysis's jobs, deletes its stored documents and preserves the PR's agent session.
+/// Cancels the analysis's jobs and deletes its stored documents, retaining both PR sessions.
 /// Idempotent: the driver repeats it when it sees the cancellation, so a document it stored meanwhile goes too.
 pub async fn discard(state: &AppState, analysis: AnalysisId) -> Result<(), ControlError> {
     state.executor.cancel_analysis(analysis).await?;
@@ -144,7 +225,7 @@ pub async fn retry(
     Ok(summary)
 }
 
-/// Finishes the clean-up of cancellations a crash interrupted (state stored, jobs, documents or session left);
+/// Finishes the clean-up of cancellations a crash interrupted (state stored, jobs or documents left);
 /// idempotent. Runs at start-up before runner claims are served; claims skip jobs of cancelled analyses meanwhile.
 pub async fn recover_cancellations(state: &AppState) -> Result<usize, ControlError> {
     let pending = state.db.analyses().cancellations_to_finish().await?;
@@ -242,7 +323,7 @@ mod tests {
         assert_eq!(record.agent_thread_id.as_deref(), Some("thread-1"));
     }
 
-    /// A crash after any durable step of a cancel (state, jobs, documents, session) is completed at start-up.
+    /// A crash after any durable step of a cancel (state, jobs, documents) is completed at start-up.
     #[tokio::test]
     async fn restart_after_each_cancel_step_finishes_the_clean_up() {
         for done in 1..=3 {
@@ -264,7 +345,7 @@ mod tests {
                 db.documents()
                     .delete_for_analysis(analysis)
                     .await
-                    .expect("documents");
+                    .expect("discard");
             }
 
             let finished = recover_cancellations(&state).await.expect("recover");
@@ -277,6 +358,181 @@ mod tests {
             );
         }
     }
+    #[tokio::test]
+    async fn cancel_keeps_analytic_and_private_working_sessions() {
+        use contracts::job::result::{JobOutcome, JobResult, SessionOutcome, SessionReport};
+        let db = Db::in_memory().await.unwrap();
+        let state = AppState::with_queue(test_config(), db.clone());
+        let (id, jobs) = live(&db).await;
+        let q = contracts::ids::QuestionId::new_random();
+        db.questions()
+            .create(
+                db::repo::questions::NewQuestion {
+                    id: q,
+                    analysis_id: id,
+                    step_id: contracts::ids::StepId("f1.1".into()),
+                    user_id: "u1".into(),
+                    text: "why?".into(),
+                },
+                db::repo::questions::QuestionLimits {
+                    per_analysis: 10,
+                    per_user: 10,
+                    user_window_start: Utc::now() - TimeDelta::days(1),
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let spec = job_spec(id, JobKind::Ask);
+        let ask = db
+            .jobs()
+            .enqueue(
+                NewJob {
+                    spec,
+                    stage: JobStage::Ask(q),
+                    generation: 0,
+                    priority: JobPriority::Interactive,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        db.jobs()
+            .complete(
+                &JobResult {
+                    job_id: jobs[0],
+                    attempt: 1,
+                    outcome: JobOutcome::Succeeded { output: json!({}) },
+                    session: Some(SessionReport {
+                        outcome: SessionOutcome::Started,
+                        thread_id: "analytic-thread".into(),
+                    }),
+                    usage: None,
+                    skills_commit: None,
+                    llm_call: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        db.jobs()
+            .claim(ClaimParams {
+                credential_ids: &[CREDENTIAL.into()],
+                job_token_hash: b"ask",
+                lease_until: Utc::now() + TimeDelta::seconds(60),
+                now: Utc::now(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        db.jobs()
+            .complete(
+                &JobResult {
+                    job_id: ask.id,
+                    attempt: 1,
+                    outcome: JobOutcome::Succeeded { output: json!({}) },
+                    session: Some(SessionReport {
+                        outcome: SessionOutcome::Started,
+                        thread_id: "working-thread".into(),
+                    }),
+                    usage: None,
+                    skills_commit: None,
+                    llm_call: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            db.agent_sessions()
+                .working(1, "u1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("working-thread")
+        );
+        let generation = db.agent_sessions().generation(1).await.unwrap();
+        cancel(&state, id).await.unwrap();
+        discard(&state, id).await.unwrap();
+        assert_eq!(
+            db.analyses()
+                .get(id)
+                .await
+                .unwrap()
+                .agent_thread_id
+                .as_deref(),
+            Some("analytic-thread")
+        );
+        assert_eq!(db.agent_sessions().generation(1).await.unwrap(), generation);
+        assert_eq!(
+            db.agent_sessions()
+                .working(1, "u1")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("working-thread")
+        );
+        assert!(
+            db.analyses()
+                .pending_session_drops()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            db.documents()
+                .list::<serde_json::Value>(id, DocumentKind::Flow)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn late_cancel_cleanup_keeps_the_next_analysis_session() {
+        let db = Db::in_memory().await.unwrap();
+        let state = AppState::with_queue(test_config(), db.clone());
+        let (old, _) = live(&db).await;
+        cancel(&state, old).await.unwrap();
+        let record = db.analyses().get(old).await.unwrap();
+        let fresh = db
+            .analyses()
+            .create(
+                db::repo::analyses::NewAnalysis {
+                    id: AnalysisId::new_random(),
+                    tenant_id: record.tenant_id,
+                    pull_request_id: record.pull_request_id,
+                    base_sha: record.base_sha,
+                    head_sha: record.head_sha,
+                    language: record.language,
+                    created_by: record.created_by,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        db.analyses()
+            .set_session(fresh.id, "fresh-thread", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.analyses().get(fresh.id).await.unwrap().session_state,
+            SessionState::Active
+        );
+        discard(&state, old).await.unwrap();
+        assert_eq!(
+            db.analyses().get(fresh.id).await.unwrap().session_state,
+            SessionState::Active
+        );
+        assert!(
+            db.analyses()
+                .pending_session_drops()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[tokio::test]
     async fn terminal_transition_logs_statistics_once_even_when_cancel_is_repeated() {
         let state = crate::state::tests::test_state().await;

@@ -109,9 +109,10 @@ const repoSettings: RepoSettings = {
 };
 
 describe("RepoSettingsCard (read-only)", () => {
-  it("shows rules, related repositories and the profile sources", () => {
+  it("shows rules, related repositories and the profile sources", async () => {
     render(<RepoSettingsCard settings={repoSettings} />);
     const region = screen.getByRole("region", { name: /acme\/node-client/ });
+    await userEvent.click(screen.getByText("Show the 2 built-in rules"));
     const rows = within(region)
       .getAllByRole("row")
       .slice(1)
@@ -177,8 +178,9 @@ describe("RepoList", () => {
       { owner: "acme", name: "wallet-ui" },
     ];
     render(<RepoList repos={repos} selected={repos[0]!} onSelect={onSelect} />);
-    expect(screen.getByRole("button", { name: "acme/node-client" })).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(screen.getByRole("button", { name: "acme/wallet-ui" }));
+    expect(screen.getByRole("combobox", { name: "Repository" })).toHaveValue("acme/node-client");
+    await userEvent.click(screen.getByRole("combobox", { name: "Repository" }));
+    await userEvent.click(screen.getByRole("option", { name: "acme/wallet-ui" }));
     expect(onSelect).toHaveBeenCalledWith(repos[1]);
   });
 });
@@ -214,4 +216,23 @@ it("shows today's and seven-day provider totals separately", () => {
   render(<LlmStatusCard status={null} usage={{ today: usage, last_7_days: usage }} />);
   expect(screen.getByText("Today: 3.4 M input (2.9 M cached), 120 k output tokens in 23 jobs")).toBeVisible();
   expect(screen.getByText(/^Last 7 days:/)).toHaveAccessibleDescription(/Reported by the provider/);
+});
+
+it("rules are initially collapsed and cards use only their content height", async () => {
+  render(<RepoSettingsCard settings={repoSettings} />);
+  expect(screen.getByText("Show the 2 built-in rules").closest("details")).not.toHaveAttribute("open");
+  await userEvent.click(screen.getByText(`Show the ${repoSettings.rules.length} built-in rules`));
+  expect(screen.getByRole("table")).toBeVisible();
+  expect(screen.getByRole("region")).toHaveClass("self-start");
+});
+
+it("filters dozens of repositories and chooses one with the keyboard", async () => {
+  const repos = Array.from({ length: 30 }, (_, i) => ({ owner: "acme", name: `repo-${i}` }));
+  const onSelect = vi.fn();
+  render(<RepoList repos={repos} selected={repos[0]!} onSelect={onSelect} />);
+  const combo = screen.getByRole("combobox", { name: "Repository" });
+  await userEvent.clear(combo);
+  await userEvent.type(combo, "repo-29");
+  await userEvent.keyboard("{ArrowDown}{Enter}");
+  expect(onSelect).toHaveBeenCalledWith(repos[29]);
 });

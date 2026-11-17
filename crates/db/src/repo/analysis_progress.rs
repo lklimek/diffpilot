@@ -680,6 +680,9 @@ mod tests {
             .set_state(
                 id,
                 &AnalysisState::Paused {
+                    reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+                    paused_by: None,
+                    paused_at: None,
                     done: 0,
                     total: None,
                     resumes_at: Some(Utc::now()),

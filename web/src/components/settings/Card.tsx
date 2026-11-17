@@ -6,9 +6,9 @@ export function SettingsCard({ title, children }: { title: ReactNode; children: 
   return (
     <section
       aria-labelledby={id}
-      className="grid content-start gap-2 rounded-lg border border-border bg-surface px-4 py-3.5"
+      className="grid min-w-0 self-start content-start gap-2 rounded-lg border border-border bg-surface px-4 py-3.5"
     >
-      <h2 id={id} className="text-base font-semibold">
+      <h2 id={id} className="text-base font-semibold [overflow-wrap:anywhere]">
         {title}
       </h2>
       {children}

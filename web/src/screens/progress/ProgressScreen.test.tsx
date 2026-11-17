@@ -85,6 +85,7 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
   it("Cancel analysis returns to Home with 'Analysis cancelled — analyze again'", async () => {
     const router = await showAt({ state: "running", done: 1, total: 5 });
     await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
     expect(liveAnalysis().state).toEqual({ state: "cancelled" });
     expect(await screen.findByText("Analysis cancelled — analyze again.")).toBeVisible();
@@ -108,6 +109,7 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
     );
     const router = await showAt({ state: "running", done: 1, total: 5 });
     await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Something went wrong on the server.");
     expect(router.state.location.pathname).toBe(`/analyses/${ID}/progress`);
   });
