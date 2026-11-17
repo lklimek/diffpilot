@@ -4,6 +4,8 @@ import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface TopBarProps {
+  hideContextChanges?: boolean;
+  onHideContextChanges?: (hide: boolean) => void;
   /** The pull request under review; absent outside the review. */
   pr?: PrSummary;
   /** CI status of the head commit. */
@@ -33,7 +35,17 @@ function pendingText(count: NonNullable<TopBarProps["pendingCount"]>): string {
  * Top bar (brief §4 rule 5): brand, pull request (number opens GitHub in a new tab), head SHA, CI status,
  * "flows reviewed k / n", pending-review count, help, user (link to Settings).
  */
-export function TopBar({ pr, ci, login, progress, pendingCount, onOpenPending, onHelp }: TopBarProps) {
+export function TopBar({
+  hideContextChanges = true,
+  onHideContextChanges,
+  pr,
+  ci,
+  login,
+  progress,
+  pendingCount,
+  onOpenPending,
+  onHelp,
+}: TopBarProps) {
   const repo = pr ? `${pr.repo.owner}/${pr.repo.name}` : "";
   return (
     <header className="sticky top-0 z-30 flex h-12 flex-none items-center gap-3.5 border-b border-border bg-surface px-3.5 whitespace-nowrap">
@@ -104,6 +116,18 @@ export function TopBar({ pr, ci, login, progress, pendingCount, onOpenPending, o
           >
             ?
           </button>
+        </Tooltip>
+      )}
+      {onHideContextChanges && (
+        <Tooltip tip="Hides Rust comment and import changes in the main code view. The classic diff always shows them. Other languages are unchanged.">
+          <label className="flex cursor-pointer items-center gap-1 text-xs whitespace-normal">
+            <input
+              type="checkbox"
+              checked={hideContextChanges}
+              onChange={(e) => onHideContextChanges(e.target.checked)}
+            />
+            Hide comment and import changes
+          </label>
         </Tooltip>
       )}
       {login && (

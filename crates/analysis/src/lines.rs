@@ -19,6 +19,8 @@ pub struct DeletionMarker {
     pub after_line: u32,
     /// The removed lines at the base commit.
     pub base: LineSpan,
+    /// Replacement lines from the same zero-context diff hunk.
+    pub replacement: Option<LineRange>,
 }
 
 /// A window of a file: its line count and the requested lines clamped to the file.
@@ -68,6 +70,14 @@ pub fn deletion_markers(file: &FileDiff, from: u32, to: u32) -> Vec<DeletionMark
                 hunk.head.start.saturating_sub(1)
             },
             base: hunk.base,
+            replacement: (hunk.head.len > 0).then_some(LineRange {
+                start_line: hunk.head.start,
+                end_line: hunk
+                    .head
+                    .start
+                    .saturating_add(hunk.head.len)
+                    .saturating_sub(1),
+            }),
         })
         .filter(|marker| marker.after_line + 1 >= from && marker.after_line <= to)
         .collect()
@@ -85,6 +95,7 @@ pub fn deleted_blocks(
     for &DeletionMarker {
         after_line,
         base: span,
+        replacement,
     } in markers
     {
         let take = span.len.min(budget);
@@ -97,6 +108,8 @@ pub fn deleted_blocks(
             base_start: span.start,
             lines: Vec::new(),
             total_lines: span.len,
+            replacement,
+            context_only: None,
         });
     }
     // One pass over the base file; hunks are in file order and do not overlap.
@@ -591,6 +604,28 @@ mod tests {
             to,
             lines: lines.iter().map(|line| (*line).to_owned()).collect(),
         }
+    }
+
+    #[test]
+    fn replacements_carry_the_paired_head_range() {
+        let file = FileDiff {
+            path: "a.rs".into(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            hunks: vec![hunk((2, 1), (2, 2)), hunk((5, 1), (5, 0))],
+        };
+        let blocks = deleted_blocks(
+            &deletion_markers(&file, 1, 8),
+            b"one\nold\nthree\nfour\ndeleted\n",
+            20,
+        );
+        let wire = serde_json::to_value(&blocks).expect("serialize");
+        assert_eq!(
+            wire[0]["replacement"],
+            serde_json::json!({"start_line":2,"end_line":3})
+        );
+        assert!(wire[1]["replacement"].is_null());
     }
 
     #[test]

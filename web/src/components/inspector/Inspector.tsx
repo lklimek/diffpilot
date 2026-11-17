@@ -11,8 +11,10 @@ import type {
   StepId,
   Tour,
 } from "../../api/generated/types";
+import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
 import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
 import { rangeText } from "../section/format";
+import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Collapsible } from "./Collapsible";
 import { useSectionState, type SectionControl } from "./sectionState";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -122,20 +124,67 @@ function stepPanel(
     ),
     body: (
       <>
+        {step.facts.moved && (
+          <Collapsible
+            sectionKey="moved"
+            title="Moved code"
+            tone="facts"
+            source="From the diff; no LLM."
+            sections={sections}
+          >
+            <p>Moved from the base commit.</p>
+            {step.facts.moved.badge ? (
+              <ProvenanceBadge badge={step.facts.moved.badge} />
+            ) : (
+              <DifferingLinesBadge count={step.facts.moved.differing_lines} />
+            )}
+            <EvidenceLinks
+              currentFile={step.facts.file}
+              onEvidence={onEvidence}
+              evidence={[
+                ...new Set([step.facts.moved.from.range.start_line, step.facts.moved.from.range.end_line]),
+              ].map((line) => ({ file: step.facts.moved!.from.file, side: "base", line }))}
+            />
+          </Collapsible>
+        )}
+        {[
+          ["Called by", step.llm.called_by],
+          ["Goes next", step.llm.next],
+        ]
+          .filter(([, text]) => text?.trim())
+          .map(([title, text]) => (
+            <Collapsible key={title} sectionKey={title!} title={title!} tone="llm" sections={sections}>
+              <p>{text}</p>
+            </Collapsible>
+          ))}
         <DiffSection diff={diff} ofRange={annotation !== undefined} sections={sections} />
         <BehaviourSection
+          currentFile={step.facts.file}
           onEvidence={onEvidence}
           annotations={annotation ? anns : byType("behaviour")}
           sections={sections}
         />
-        <WhySection onEvidence={onEvidence} why={step.llm.why} notes={byType("note")} sections={sections} />
+        <WhySection
+          currentFile={step.facts.file}
+          onEvidence={onEvidence}
+          why={step.llm.why}
+          notes={byType("note")}
+          sections={sections}
+        />
         <ConsequencesSection
+          currentFile={step.facts.file}
           onEvidence={onEvidence}
           annotations={byType("consequence")}
           sections={sections}
         />
         <CallHierarchySection hierarchy={step.facts.call_hierarchy} sections={sections} />
-        <QuestionsSection onEvidence={onEvidence} questions={byType("question")} sections={sections} />
+        <QuestionsSection
+          currentFile={step.facts.file}
+          step={step}
+          onEvidence={onEvidence}
+          questions={byType("question")}
+          sections={sections}
+        />
         <AssessmentSection assessment={step.llm.assessment} sections={sections} />
         <ThreadsSection
           threads={annotation ? stepThreads.filter((t) => overlaps(t, step, annotation)) : stepThreads}
@@ -169,7 +218,15 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
             <GroupLabel group={flow.group} />
           </>
         ),
-        body: <FlowSummary flow={flow} flows={tour.flows} onSelectStep={onSelectStep} sections={sections} />,
+        body: (
+          <FlowSummary
+            onEvidence={props.onEvidence}
+            flow={flow}
+            flows={tour.flows}
+            onSelectStep={onSelectStep}
+            sections={sections}
+          />
+        ),
       };
     }
     case "pr_context":

@@ -91,9 +91,9 @@ function Answer({
             <CodeText text={answer.answer} />
           </div>
           {answer.evidence.length > 0 && (
-            <p className="mt-1 text-[11.5px] text-muted">
-              Lines read: <EvidenceLinks evidence={answer.evidence} onEvidence={onEvidence} />
-            </p>
+            <div className="mt-1 text-[11.5px] text-muted">
+              <EvidenceLinks evidence={answer.evidence} onEvidence={onEvidence} />
+            </div>
           )}
         </div>
       );
@@ -103,9 +103,7 @@ function Answer({
 
 /** Questions asked about a step, newest first, each with its state or its whole LLM answer (ADR-004). */
 export function AskAnswers({ questions, onAskAgain, onEvidence }: AskAnswersProps) {
-  if (questions.length === 0) {
-    return <p className="text-muted">No questions asked about this step yet. Answers stay pinned here.</p>;
-  }
+  if (questions.length === 0) return null;
   const newestFirst = [...questions].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   return (
     <ol aria-label="Questions asked about this step" className="m-0 grid list-none gap-2.5 p-0">

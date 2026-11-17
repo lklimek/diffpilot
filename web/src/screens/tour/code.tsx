@@ -44,6 +44,7 @@ export function rangeChunks(path: string, side: LineSide, ranges: readonly LineR
 
 /** What every code view of the screen shares: markers and the comment action. */
 export interface CodeContext {
+  hideContextChanges?: boolean;
   analysisId: AnalysisId;
   threads: readonly GithubThread[];
   comments: readonly PendingComment[];
@@ -82,6 +83,7 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
   return (
     <>
       <CodeView
+        hideContextChanges={ctx.hideContextChanges}
         lines={data}
         {...view}
         threads={ctx.threads}
@@ -151,6 +153,37 @@ export function ChunkedCode({
           >
             Show lines {next.from}–{next.to} of {path}
             {side === "base" ? " (base commit)" : ""}
+          </button>
+        </Tooltip>
+      )}
+    </div>
+  );
+}
+
+/** A whole file's classic diff, loaded in bounded ranges on demand. */
+export function FileDiffCode({ ctx, path, side }: { ctx: CodeContext; path: string; side: LineSide }) {
+  const metadata = useLines(ctx.analysisId, { path, side, from: 1, to: 1 });
+  const [shown, setShown] = useState(1);
+  if (metadata.isPending) return <StatusMessage kind="loading">Loading the diff…</StatusMessage>;
+  if (metadata.isError)
+    return <StatusMessage kind="error">Cannot show the diff: {errorText(metadata.error)}</StatusMessage>;
+  const chunks = rangeChunks(path, side, [
+    { start_line: 1, end_line: Math.max(1, metadata.data.total_lines) },
+  ]);
+  const next = chunks[shown];
+  return (
+    <div className="grid gap-1.5">
+      {chunks.slice(0, shown).map((query) => (
+        <DiffCode key={query.from} analysisId={ctx.analysisId} query={query} comments={ctx} />
+      ))}
+      {next && (
+        <Tooltip tip="Loads the next part of this file's classic diff; nothing is hidden by the comment/import switch.">
+          <button
+            type="button"
+            className="cursor-pointer text-accent underline"
+            onClick={() => setShown((n) => n + 1)}
+          >
+            Show diff lines {next.from}–{next.to}
           </button>
         </Tooltip>
       )}

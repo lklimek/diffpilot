@@ -672,7 +672,15 @@ lines: Array<string>,
 /**
  * Number of removed lines in the block.
  */
-total_lines: number, };
+total_lines: number,
+/**
+ * Head range paired with these old lines; absent for pure deletions.
+ */
+replacement?: LineRange,
+/**
+ * Base-side comment/import lines covered by deterministic rules.
+ */
+context_only?: Array<number>, };
 
 /**
  * A diff hunk.
@@ -1272,6 +1280,10 @@ lines: Array<string>,
  * base side.
  */
 changed: Array<number>,
+/**
+ * Rust comment/import lines covered by deterministic rules; classic diff retains them.
+ */
+context_only?: Array<number>,
 /**
  * Code removed by the pull request at markers in the range (head side only).
  */

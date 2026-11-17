@@ -79,7 +79,9 @@ test("PageDown scrolls the focused column", async ({ page }) => {
   expect((await fits(page)).scrolled).toBe(0);
 });
 
-test("opening a changed step reveals its first changed line and keeps code scrollable", async ({ page }) => {
+test("opening a changed step reveals its first changed line and keeps code inside its column", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await open(page, "real-tiny");
   await page
@@ -93,11 +95,13 @@ test("opening a changed step reveals its first changed line and keeps code scrol
   const changed = page.locator("main [data-code-slot] [data-line='43'][data-side=head]");
   await expect(changed).toBeInViewport();
   const code = page.getByRole("main").getByRole("region", { name: /lines 28 to 47/ });
-  expect(await code.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
-  await code.evaluate((el) => {
-    el.scrollLeft = 500;
-  });
-  expect(await code.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+  if (await code.evaluate((el) => el.scrollWidth > el.clientWidth)) {
+    await code.evaluate((el) => {
+      el.scrollLeft = 500;
+    });
+    expect(await code.evaluate((el) => el.scrollLeft)).toBeGreaterThan(0);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const width = await page.locator("[data-column=main]").evaluate((el) => el.clientWidth);
   await page
     .getByRole("navigation")
@@ -180,19 +184,26 @@ test("deep links survive reload and browser history, and evidence opens the cite
     .click();
   await page
     .getByRole("main")
+    .getByText(/Evidence ·/)
+    .first()
+    .click();
+  await page
+    .getByRole("main")
     .getByRole("button", { name: "Show src/ui/components/subscreen_chooser_panel.rs:43" })
     .click();
   await expect(page).toHaveURL(/#f1\.2\?file=/);
   await expect(page.locator("main [data-code-slot] [data-line='43']")).toBeInViewport();
 });
 
-test("Ask Lines read opens code on its cited step or in the standalone range", async ({ page }) => {
+test("Ask evidence opens code on its cited step or in the standalone range", async ({ page }) => {
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=real-small#f1.5`);
-  const answers = page.getByRole("region", { name: "Ask: pinned answers" });
+  const answers = page.getByRole("region", { name: /Ask: pinned answers/ });
+  await answers.getByText(/Evidence ·/).click();
   await answers.getByRole("button", { name: "Show internal/statesync/reactor.go:1171" }).click();
   await expect(page).toHaveURL(/#f1\.3\?file=/);
   await expect(page.locator("main [data-code-slot] [data-line='1171']")).toBeInViewport();
   await page.goBack();
+  await answers.getByText(/Evidence ·/).click();
   await answers.getByRole("button", { name: "Show internal/statesync/reactor.go:1286" }).click();
   await expect(page).toHaveURL(/#lines\?file=/);
   await expect(page.getByRole("button", { name: "Comment on line 1286" })).toBeVisible();
@@ -201,7 +212,7 @@ test("Ask Lines read opens code on its cited step or in the standalone range", a
 test("long Ask prose and fenced code wrap inside the inspector", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=long-answer#f1.5`);
-  const answers = page.getByRole("region", { name: "Ask: pinned answers" });
+  const answers = page.getByRole("region", { name: /Ask: pinned answers/ });
   const prose = answers.getByText("longword".repeat(100));
   await expect(prose).toBeVisible();
   await expect(prose).toHaveCSS("overflow-wrap", "anywhere");

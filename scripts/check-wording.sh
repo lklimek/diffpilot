@@ -135,7 +135,7 @@ self_test() {
   expect_fail "allow marker without reason" a.tsx "<p><div style={{ width: '50%' }} /> {/* wording-check: allow */}</p>" "a.tsx:1: \"50%\""
 
   # Not violations: comments, code (identifiers, operators, module paths), tests, other files.
-  expect_pass "clean text"          a.tsx '<p>The LLM raised no questions. That is not evidence of no defects.</p>'
+  expect_pass "clean text"          a.tsx '<p>CI check runs: not checked.</p>'
   expect_pass "not analysed"        a.ts  "const s = 'Not analysed';"
   expect_pass "line comment"        a.ts  '// never say "no risk" or "noise"'
   expect_pass "block comment"       a.ts  $'/*\n * verified, confidence, 50%\n */'

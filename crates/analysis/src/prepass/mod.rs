@@ -135,7 +135,26 @@ impl Prepass {
                     .hunks
                     .iter()
                     .filter(|hunk| !quiet.contains(&hunk.id))
-                    .cloned()
+                    .map(|hunk| {
+                        let mut hunk = hunk.clone();
+                        let covered = |side, line| {
+                            self.not_analysed
+                                .iter()
+                                .flat_map(|s| &s.items)
+                                .filter(|i| {
+                                    i.side == side && Some(i.file.as_str()) == file.path_on(side)
+                                })
+                                .any(|i| {
+                                    i.ranges.as_ref().is_none_or(|rs| {
+                                        rs.iter()
+                                            .any(|r| r.start_line <= line && line <= r.end_line)
+                                    })
+                                })
+                        };
+                        hunk.added.retain(|&line| !covered(LineSide::Head, line));
+                        hunk.removed.retain(|&line| !covered(LineSide::Base, line));
+                        hunk
+                    })
                     .collect();
                 (!hunks.is_empty()).then(|| FileDiff {
                     hunks,
@@ -171,7 +190,34 @@ impl Prepass {
                 }
             }
         }
-        out
+        for item in self.not_analysed.iter().flat_map(|s| &s.items) {
+            if let Some(ranges) = &item.ranges {
+                out.push(FileRanges {
+                    file: item.file.clone(),
+                    side: item.side,
+                    ranges: ranges.clone(),
+                });
+            }
+        }
+        let mut merged: BTreeMap<(LineSide, String), Vec<u32>> = BTreeMap::new();
+        for item in out {
+            merged
+                .entry((item.side, item.file))
+                .or_default()
+                .extend(item.ranges.iter().flat_map(|r| r.start_line..=r.end_line));
+        }
+        merged
+            .into_iter()
+            .map(|((side, file), mut lines)| {
+                lines.sort_unstable();
+                lines.dedup();
+                FileRanges {
+                    side,
+                    file,
+                    ranges: ranges(&lines),
+                }
+            })
+            .collect()
     }
 
     /// Whether `path` on `side` is never rendered (generated or binary).
@@ -492,9 +538,7 @@ impl Lines {
                     disposition: match disposition {
                         None => Disposition::Agent,
                         Some(Quiet::Move) => Disposition::IdenticalMove,
-                        Some(Quiet::LineRule) => {
-                            Disposition::NotAnalysed(NotAnalysedCategory::DocsComments)
-                        }
+                        Some(Quiet::LineRule) => Disposition::Agent,
                         Some(Quiet::WholeFile(category)) => Disposition::NotAnalysed(category),
                     },
                 });
@@ -543,6 +587,13 @@ impl Lines {
                     .get(&(item.side, item.file.clone()))?
                     .iter()
                     .copied()
+                    .filter(|line| {
+                        item.ranges.as_ref().is_none_or(|ranges| {
+                            ranges
+                                .iter()
+                                .any(|r| r.start_line <= *line && *line <= r.end_line)
+                        })
+                    })
                     .collect();
                 (!kept.is_empty()).then(|| Classified {
                     ranges: Some(ranges(&kept)),

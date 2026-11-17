@@ -24,7 +24,7 @@ import type {
 import { CommentMarker, CommentPanel, commentsByLine, lineName } from "../comment/LineComments";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { Highlight, Token } from "./highlight";
-import { buildSegments, type Row } from "./rows";
+import { buildSegments, type Segment, type Row } from "./rows";
 import { CodeText, useTokens } from "./tokens";
 
 /** A displayed line: its side and number on that side. */
@@ -37,6 +37,7 @@ export interface LineRef {
 export interface CodeViewProps {
   /** Lines of the range with their deterministic gutter facts (changed, deleted, moved). */
   lines: LinesResponse;
+  hideContextChanges?: boolean;
   /** Reveal this line when this range opens, without stealing keyboard focus. */
   revealLine?: number;
   /** LLM annotations on these lines; only their ranges get the LLM bar. */
@@ -217,7 +218,8 @@ function Line({
         <span className="flex items-center gap-px select-none">
           <span className={`h-[1.35em] w-1 ${row?.moved ? "border-l-4 border-double border-mv-bd" : ""}`} />
           {changed ? (
-            <span data-mark="changed" className="h-[1.35em] w-1 bg-mark">
+            <span data-mark="changed" className="h-[1.35em] w-2 text-accent">
+              <span className="font-bold">{side === "base" ? "−" : "+"}</span>
               <span className="sr-only">changed line</span>
             </span>
           ) : (
@@ -351,6 +353,8 @@ function HighlightRun({ rows, annotations, band, selected, line, onSelect }: Hig
 
 interface DeletedRunProps {
   block: DeletedBlock;
+  paired?: ReactNode;
+  hideContextChanges?: boolean;
   anchor: string;
   ctx: LineContext;
   /** Token lists of the block's lines, from the view's single highlight call. */
@@ -358,29 +362,41 @@ interface DeletedRunProps {
   onLoadDeleted?: (block: DeletedBlock) => void;
 }
 
-function DeletedRun({ block, anchor, ctx, tokens, onLoadDeleted }: DeletedRunProps) {
+function DeletedRun({
+  block,
+  anchor,
+  ctx,
+  tokens,
+  onLoadDeleted,
+  paired,
+  hideContextChanges,
+}: DeletedRunProps) {
   const more = plural(block.total_lines - block.lines.length, "more deleted line");
   return (
     <div
       role="group"
-      aria-label={`Removed code ${anchor}: ${plural(block.total_lines, "line")} from base line ${block.base_start}`}
+      aria-label={`${block.replacement ? "Changed" : "Removed"} code ${anchor}: ${plural(block.total_lines, "line")} from base line ${block.base_start}`}
       data-segment
       className={`${SEGMENT} my-0.5 border-y-2 border-dashed border-transparent border-y-high-bd`}
     >
       <span className={`${STRIP} text-[11px] leading-[17px] font-semibold text-high`}>
-        Removed here: {plural(block.total_lines, "line")} of the base commit
+        {block.replacement
+          ? `Changed: ${plural(block.total_lines, "line")} replaced`
+          : `Removed here: ${plural(block.total_lines, "line")} of the base commit`}
       </span>
-      {block.lines.map((text, i) => (
-        <Line
-          key={i}
-          ctx={ctx}
-          side="base"
-          line={block.base_start + i}
-          text={text}
-          tokens={tokens?.[i]}
-          removed
-        />
-      ))}
+      {block.lines.map((text, i) =>
+        hideContextChanges && block.context_only?.includes(block.base_start + i) ? null : (
+          <Line
+            key={i}
+            ctx={ctx}
+            side="base"
+            line={block.base_start + i}
+            text={text}
+            tokens={tokens?.[i]}
+            removed
+          />
+        ),
+      )}
       {block.lines.length < block.total_lines && (
         <span className={`${STRIP} py-0.5 text-[11.5px]`}>
           {onLoadDeleted ? (
@@ -398,6 +414,7 @@ function DeletedRun({ block, anchor, ctx, tokens, onLoadDeleted }: DeletedRunPro
           )}
         </span>
       )}
+      {paired}
     </div>
   );
 }
@@ -423,6 +440,7 @@ function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
  */
 export function CodeView({
   lines,
+  hideContextChanges = true,
   revealLine,
   annotations = [],
   band = null,
@@ -457,10 +475,39 @@ export function CodeView({
   const fragmentTokens = useTokens(highlight, lines.path, fragments);
   const tokens = fragmentTokens?.[0];
   const [focusKey, setFocusKey] = useState<string | null>(null);
-  const segments = buildSegments(lines, annotations);
+  const hidden = new Set(hideContextChanges ? (lines.context_only ?? []) : []);
+  if (revealLine !== undefined) hidden.delete(revealLine);
+  const hiddenRemoved = hideContextChanges
+    ? lines.deleted.reduce(
+        (n, block) =>
+          n +
+          (block.context_only?.filter(
+            (line) => line >= block.base_start && line < block.base_start + block.lines.length,
+          ).length ?? 0),
+        0,
+      )
+    : 0;
+  const hiddenCount = hidden.size + hiddenRemoved;
+  const segments = buildSegments(lines, annotations).flatMap<Segment>((segment) => {
+    if (segment.kind === "deleted") {
+      const paired = segment.paired.filter((row) => !hidden.has(row.line));
+      if (
+        hideContextChanges &&
+        paired.length === 0 &&
+        segment.block.total_lines === segment.block.context_only?.length
+      )
+        return [];
+      return [{ ...segment, paired }];
+    }
+    const rows = segment.rows.filter((row) => !hidden.has(row.line));
+    return rows.length ? [{ ...segment, rows }] : [];
+  });
   const keys = segments.flatMap((s) =>
     s.kind === "deleted"
-      ? s.block.lines.map((_, i) => keyOf({ side: "base", line: s.block.base_start + i }))
+      ? [
+          ...s.block.lines.map((_, i) => keyOf({ side: "base", line: s.block.base_start + i })),
+          ...s.paired.map((row) => keyOf({ side: lines.side, line: row.line })),
+        ]
       : s.rows.map((r) => keyOf({ side: lines.side, line: r.line })),
   );
   const byLine = commentsByLine(comments, lines.path);
@@ -552,6 +599,11 @@ export function CodeView({
           onDelete={onDeleteComment}
         />
       )}
+      {hiddenCount > 0 && (
+        <p className="px-2 text-xs text-muted">
+          {plural(hiddenCount, "comment/import line")} hidden — in the classic diff
+        </p>
+      )}
       {unchangedContext && (
         <p className={`${STRIP} m-0 text-[11px] font-semibold text-muted`}>
           Unchanged code: no changed lines in this range (from the diff).
@@ -565,6 +617,21 @@ export function CodeView({
             <DeletedRun
               key={`d${after}:${segment.block.base_start}`}
               block={segment.block}
+              hideContextChanges={hideContextChanges}
+              paired={
+                segment.annotations.length > 0 ? (
+                  <HighlightRun
+                    rows={segment.paired}
+                    annotations={segment.annotations}
+                    band={band}
+                    selected={segment.annotations.some((a) => a.id === selectedAnnotation)}
+                    line={line}
+                    onSelect={onSelectAnnotation}
+                  />
+                ) : (
+                  segment.paired.map((row) => line(row))
+                )
+              }
               anchor={after < lines.from ? `before line ${lines.from}` : `after line ${after}`}
               ctx={ctx}
               tokens={fragmentTokens?.[1 + lines.deleted.indexOf(segment.block)] ?? undefined}

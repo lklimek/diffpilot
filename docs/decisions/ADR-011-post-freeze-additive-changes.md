@@ -175,3 +175,13 @@ another analysis job round at a serial boundary, preserving accepted documents a
 |---|---|
 | `JobSpec.flow_file?: {context, previous?}` | Self-contained, versioned no-secret flow checker inputs; rejected text restored for edit-only repairs (ADR-014). |
 | Flow `JobOutcome::Succeeded.output` carries a JSON string | Transport tagged file contents through the existing output channel; server parses/checks into unchanged canonical documents. Other job kinds keep JSON objects. |
+
+### 2026-11-17 — compact review and deterministic code context (owner approved)
+
+| Addition | Purpose |
+|---|---|
+| `LinesResponse.context_only?: number[]` | Rust comment/import changed lines covered by deterministic rules; the user's main-view preference may hide them. Classic diff is unchanged. |
+| `DeletedBlock.replacement?: LineRange` | Head lines paired with old lines from the same zero-context diff hunk; absent for pure deletion. |
+| `DeletedBlock.context_only?: number[]` | Rule-covered base lines within removed/replaced blocks; applies the same main-view preference. |
+
+No stored document or database schema changes. Step ids and numbers remain unchanged; the top-to-bottom diagram follows the persisted walk order at every viewport width.

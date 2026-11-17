@@ -97,6 +97,15 @@ pub async fn read(
         to,
         lines,
     } = line_window(&text, query.from, query.to);
+    let context_only = std::str::from_utf8(&text)
+        .map(|text| {
+            analysis::tech::context_lines(
+                &query.path,
+                text,
+                &changed_lines_within(&files, &query.path, query.side, from, to),
+            )
+        })
+        .unwrap_or_default();
     drop(text);
 
     let file = files
@@ -128,6 +137,7 @@ pub async fn read(
         total_lines,
         lines,
         changed,
+        context_only: Some(context_only),
         deleted,
         moved,
         comments,
@@ -150,7 +160,28 @@ async fn removed_code(
     let base_text = read_blob(mirror, base, base_path)
         .await?
         .unwrap_or_default();
-    Ok(deleted_blocks(&markers, &base_text, RangeQuery::MAX_LINES))
+    let mut blocks = deleted_blocks(&markers, &base_text, RangeQuery::MAX_LINES);
+    let changed: Vec<u32> = file
+        .hunks
+        .iter()
+        .flat_map(|h| h.removed.iter().copied())
+        .collect();
+    let context = std::str::from_utf8(&base_text)
+        .map(|text| analysis::tech::context_lines(base_path, text, &changed))
+        .unwrap_or_default();
+    for block in &mut blocks {
+        block.context_only = Some(
+            context
+                .iter()
+                .copied()
+                .filter(|line| {
+                    *line >= block.base_start
+                        && *line < block.base_start.saturating_add(block.total_lines)
+                })
+                .collect(),
+        );
+    }
+    Ok(blocks)
 }
 
 /// The classic diff of lines `query.from..=query.to` of `query.path` on `query.side`: the hunks overlapping the

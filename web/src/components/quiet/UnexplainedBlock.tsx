@@ -25,31 +25,28 @@ function rangesText(item: UnexplainedRanges): string {
 
 /** "Unexplained — read these yourself": changed lines the analysis did not assign to any flow. */
 export function UnexplainedBlock({ items, code }: UnexplainedBlockProps) {
+  if (items.length === 0) return null;
   const lines = items.reduce((n, item) => n + lineCount(item.ranges), 0);
   return (
     <QuietCard title="Unexplained — read these yourself">
-      {items.length === 0 ? (
-        <p>The analysis assigned every changed line to a flow or a Not analysed section.</p>
-      ) : (
-        <>
-          <p>
-            The analysis did not explain these lines: {plural(lines, "changed line")} in{" "}
-            {plural(fileCount(items), "file")} were not assigned to any flow. Read them yourself.
-          </p>
-          <ul className="m-0 grid list-none gap-3 p-0">
-            {items.map((item) => (
-              <li key={`${item.side}:${item.file}:${item.reason ?? ""}`} className="grid gap-1">
-                <p className="flex flex-wrap gap-2">
-                  <code className="font-semibold">{item.file}</code>
-                  <span className="text-muted">{rangesText(item)}</span>
-                </p>
-                {item.reason && <p>{REASON_TEXT[item.reason]}</p>}
-                {code?.(item)}
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
+      <>
+        <p>
+          The analysis did not explain these lines: {plural(lines, "changed line")} in{" "}
+          {plural(fileCount(items), "file")} were not assigned to any flow. Read them yourself.
+        </p>
+        <ul className="m-0 grid list-none gap-3 p-0">
+          {items.map((item) => (
+            <li key={`${item.side}:${item.file}:${item.reason ?? ""}`} className="grid gap-1">
+              <p className="flex flex-wrap gap-2">
+                <code className="font-semibold">{item.file}</code>
+                <span className="text-muted">{rangesText(item)}</span>
+              </p>
+              {item.reason && <p>{REASON_TEXT[item.reason]}</p>}
+              {code?.(item)}
+            </li>
+          ))}
+        </ul>
+      </>
     </QuietCard>
   );
 }

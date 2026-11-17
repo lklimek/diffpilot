@@ -131,14 +131,16 @@ export function FlowIntroBlock({
       <Section title="LLM analysis" tone="llm">
         <LlmLine />
         <dl className="m-0 grid grid-cols-1 gap-x-3 gap-y-1.5 text-[13px] sm:grid-cols-[minmax(10rem,auto)_1fr]">
-          {rows.map(([term, value]) => (
-            <div key={term} className="contents">
-              <dt className={TERM}>{term}</dt>
-              <dd className="m-0 max-w-[100ch]">
-                <CodeText text={value} />
-              </dd>
-            </div>
-          ))}
+          {rows
+            .filter(([, value]) => value.trim())
+            .map(([term, value]) => (
+              <div key={term} className="contents">
+                <dt className={TERM}>{term}</dt>
+                <dd className="m-0 max-w-[100ch]">
+                  <CodeText text={value} />
+                </dd>
+              </div>
+            ))}
         </dl>
       </Section>
     </article>

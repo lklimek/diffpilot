@@ -1,9 +1,7 @@
 import { CodeText } from "../section/CodeText";
 import { useId, type ReactNode } from "react";
 import type { ImpactRef, PatternRepetition, Step, StepId, ThreadsStatus } from "../../api/generated/types";
-import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
 import { KindLabel } from "../badge/LlmLabel";
-import { AssessmentFields } from "../inspector/StepSections";
 import { GithubLink } from "../inspector/text";
 import { rangeText, threadsNote } from "../section/format";
 import { LlmLine, Section } from "../section/Section";
@@ -92,12 +90,17 @@ function Markers({
 }
 
 function CodeSlot({ step, changed, children }: { step: Step; changed: number; children: ReactNode }) {
-  if (step.llm.kind !== "context") return <div data-code-slot>{children}</div>;
+  if (step.llm.kind !== "context")
+    return (
+      <div data-code-slot className="min-w-0">
+        {children}
+      </div>
+    );
   return (
     <div
       data-code-slot
       data-context
-      className={`rounded-md border-l-[5px] border-dotted border-mv-bd ${HATCH}`}
+      className={`min-w-0 rounded-md border-l-[5px] border-dotted border-mv-bd ${HATCH}`}
     >
       {/* With no changed line the code view states that fact itself, once. */}
       <p className="px-2 py-0.5 text-[11px] font-semibold text-muted">
@@ -187,7 +190,7 @@ function Pattern({
   );
 }
 
-/** Step block: header with ticks and markers, facts, the four LLM facts, code slot, collapsed assessment, impact, patterns. */
+/** Step title, decision, review actions and full-width code; details live in the Inspector. */
 export function StepBlock({
   step,
   code,
@@ -204,12 +207,6 @@ export function StepBlock({
   const { facts, llm } = step;
   const changed = facts.changed_lines.reduce((n, r) => n + r.end_line - r.start_line + 1, 0);
   const repeated = patterns.filter((p) => p.explained_in === step.id);
-  const fourFacts: [string, string][] = [
-    ["Called by", llm.called_by],
-    ["Decides or changes", llm.decides],
-    ["Goes next", llm.next],
-    ["Why", llm.why],
-  ];
   return (
     <article aria-labelledby={headingId} className="@container rounded-lg border border-border bg-surface">
       <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
@@ -229,85 +226,44 @@ export function StepBlock({
           L{rangeText(facts.range)}
         </GithubLink>
         <Markers step={step} ownComments={ownComments} threadsStatus={threadsStatus} />
-        {(oldCode || onSetReviewed) && (
-          <div className="ml-auto flex flex-wrap gap-2">
-            {oldCode && (
-              <Tooltip tip="Show or hide the classic diff of this step (d)">
-                <button
-                  type="button"
-                  aria-pressed={oldCode.shown}
-                  onClick={oldCode.onToggle}
-                  className={BUTTON}
-                >
-                  Show old code
-                </button>
-              </Tooltip>
-            )}
-            {onSetReviewed && (
-              <ReviewToggle
-                label="Mark reviewed"
-                tip="Tick this step as reviewed by you (x); a flow is reviewed when all its steps are ticked."
-                pressed={reviewed}
-                onChange={onSetReviewed}
-              />
-            )}
-          </div>
-        )}
-      </header>
-      {/* Wide (21:9): facts and LLM text on the left, the code beside them (mockup .stepgrid). */}
-      <div className="grid content-start gap-3 p-3 @[1300px]:grid-cols-[minmax(380px,560px)_minmax(0,1fr)]">
-        <Section title="Facts" subtitle="From the diff; no LLM.">
-          <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12.5px]">
-            <span>
-              Lines {rangeText(facts.range)}
-              {facts.side === "base" && " at the base commit (removed code)"}
-            </span>
-            <span>
-              {changed} changed {changed === 1 ? "line" : "lines"}
-            </span>
-            {facts.moved && (
-              <>
-                <span>
-                  Moved from {facts.moved.from.file}:{rangeText(facts.moved.from.range)}
-                </span>
-                {facts.moved.badge ? (
-                  <ProvenanceBadge badge={facts.moved.badge} />
-                ) : (
-                  <DifferingLinesBadge count={facts.moved.differing_lines} />
-                )}
-              </>
-            )}
-          </p>
-        </Section>
-        <Section title="LLM analysis" tone="llm">
-          <LlmLine />
-          <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-0.5 text-[12.5px]">
-            {fourFacts.map(([term, value]) => (
-              <div key={term} className="contents">
-                <dt className="pt-0.5 text-[10.5px] font-bold tracking-wide text-muted uppercase">{term}</dt>
-                <dd className={`m-0 max-w-[100ch] ${term === "Why" ? "font-semibold" : ""}`}>
-                  <CodeText text={value} />
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </Section>
-        <div className="min-w-0 @[1300px]:col-start-2 @[1300px]:row-span-3 @[1300px]:row-start-1">
-          <CodeSlot step={step} changed={changed}>
-            {code}
-          </CodeSlot>
-        </div>
-        <details className="rounded-lg border border-border bg-surface px-4 py-2 text-[12.5px]">
-          <summary className="cursor-pointer font-semibold">Assessment (LLM)</summary>
-          <p className="mt-1.5 text-[11.5px] text-llm">LLM analysis unless marked otherwise.</p>
-          {llm.assessment ? (
-            <AssessmentFields assessment={llm.assessment} />
-          ) : (
-            <p className="mt-1">The LLM gave no assessment for this step.</p>
+        <div className="flex w-full min-w-0 items-start gap-2">
+          {llm.decides.trim() && (
+            <div className="min-w-0 flex-1 text-sm">
+              <CodeText text={llm.decides} />
+            </div>
           )}
-        </details>
+          {(oldCode || onSetReviewed) && (
+            <div className="ml-auto flex shrink-0 flex-wrap gap-2">
+              {oldCode && (
+                <Tooltip tip="Show or hide the classic diff of this step (d)">
+                  <button
+                    type="button"
+                    aria-pressed={oldCode.shown}
+                    onClick={oldCode.onToggle}
+                    className={BUTTON}
+                  >
+                    Show old code
+                  </button>
+                </Tooltip>
+              )}
+              {onSetReviewed && (
+                <ReviewToggle
+                  label="Mark reviewed"
+                  tip="Tick this step as reviewed by you (x); a flow is reviewed when all its steps are ticked."
+                  pressed={reviewed}
+                  onChange={onSetReviewed}
+                />
+              )}
+            </div>
+          )}
+        </div>
+      </header>
+      <div className="grid min-w-0 content-start gap-3 p-3">
+        <CodeSlot step={step} changed={changed}>
+          {code}
+        </CodeSlot>
         {(llm.impact.length > 0 || repeated.length > 0) && (
-          <div className="grid min-w-0 gap-3 @[1300px]:col-span-2">
+          <div className="grid min-w-0 gap-3">
             {llm.impact.length > 0 && <Impact impacts={llm.impact} impactCode={impactCode} />}
             {repeated.map((p) => (
               <Pattern key={p.description} pattern={p} onSelectStep={onSelectStep} />

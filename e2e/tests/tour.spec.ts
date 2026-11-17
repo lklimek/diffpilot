@@ -94,16 +94,14 @@ test("quiet rows: Unexplained, moves and not analysed sections, deterministic on
   }
 });
 
-test("hard case 3: a step without LLM questions says so and invents no risk", async ({ page }) => {
+test("hard case 3: empty questions are hidden and the low assessment stays collapsed", async ({ page }) => {
   await finishedReview(page);
   await openStep(page, 1, 2);
-  const questions = inspector(page).getByRole("button", { name: /Questions to check/ });
-  if ((await questions.getAttribute("aria-expanded")) === "false") await questions.click();
-  await expect(
-    inspector(page).getByText("The LLM raised no questions. That is not evidence of no defects."),
-  ).toBeVisible();
-  await page.getByRole("main").getByText("Assessment (LLM)").click();
-  await expect(page.getByRole("main")).toContainText("The LLM gave no assessment for this step.");
+  await expect(inspector(page).getByRole("button", { name: /Questions to check/ })).toHaveCount(0);
+  await expect(inspector(page).getByRole("button", { name: /Assessment$/ })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
   await checkScreen(page);
 });
 

@@ -50,6 +50,32 @@ async function openStep(flow: string, step: string) {
 }
 
 describe("Tour screen (brief §4.3)", () => {
+  it("does not reveal a hidden comment just because it is the step's first changed line", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/lines", () =>
+        HttpResponse.json({
+          path: "src/rpc/client.rs",
+          side: "head",
+          from: 88,
+          to: 94,
+          total_lines: 100,
+          lines: ["fn send() {", "// changed comment", "send_request();", "}", "", "", ""],
+          changed: [89, 90],
+          context_only: [89],
+          deleted: [],
+          moved: [],
+          comments: { scope: "in_diff", line_thread_ranges: [] },
+        }),
+      ),
+    );
+    await open();
+    await openStep("1", "2");
+    expect(
+      await within(main()).findByText("1 comment/import line hidden — in the classic diff"),
+    ).toBeVisible();
+    expect(within(main()).queryByText("// changed comment")).toBeNull();
+  });
+
   it("walks beyond the last step into quiet rows and pending review", async () => {
     setScenario("real-small");
     await open();

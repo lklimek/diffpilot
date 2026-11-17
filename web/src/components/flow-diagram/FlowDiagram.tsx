@@ -22,6 +22,7 @@ import { canvasMeasure, estimateWidth } from "./measure";
 interface FlowDiagramProps {
   /** The flow graph (one node per step). */
   graph: FlowGraph;
+  decisions?: Readonly<Record<StepId, string>>;
   /** Flow title, used in the accessible name. */
   title: string;
   /** The step shown in the centre; null when the current block is not a step of this flow. */
@@ -68,7 +69,7 @@ const lineSpans = (lines: string[], x: number, lineHeight: number) =>
   ));
 
 /** Flow diagram: numbered steps, branch labels, current step; click or Enter on a node selects its step. */
-export function FlowDiagram({ graph, title, currentStepId, onSelectStep }: FlowDiagramProps) {
+export function FlowDiagram({ graph, title, currentStepId, onSelectStep, decisions = {} }: FlowDiagramProps) {
   const arrowId = `flow-arrow-${useId().replace(/[^\w-]/g, "")}`;
   const scroller = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef(new Map<StepId, SVGGElement>());
@@ -246,6 +247,7 @@ export function FlowDiagram({ graph, title, currentStepId, onSelectStep }: FlowD
                   role="button"
                   tabIndex={node.stepId === tabStop ? 0 : -1}
                   aria-label={nodeName(node)}
+                  aria-description={decisions[node.stepId]}
                   aria-current={current ? "step" : undefined}
                   data-step={node.stepId}
                   data-kind={node.kind}
@@ -254,6 +256,7 @@ export function FlowDiagram({ graph, title, currentStepId, onSelectStep }: FlowD
                   onFocus={() => setFocusedId(node.stepId)}
                   onKeyDown={(event) => onKeyDown(event, index)}
                 >
+                  {decisions[node.stepId] && <title>{decisions[node.stepId]}</title>}
                   {current && (
                     <rect
                       data-current-outline

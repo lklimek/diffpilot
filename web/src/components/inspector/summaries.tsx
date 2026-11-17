@@ -1,6 +1,8 @@
+import { Tooltip } from "../tooltip/Tooltip";
 import { testLines } from "../quiet/labels";
 import type {
   Flow,
+  Evidence,
   NotAnalysedCategory,
   PendingReview,
   PrContextBlock,
@@ -10,11 +12,9 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
-import { KindLabel } from "../badge/LlmLabel";
 import { PENDING_INCOMPLETE, dependencyFacts, rangeText } from "../section/format";
 import { Collapsible } from "./Collapsible";
 import type { SectionControl } from "./sectionState";
-import { Empty } from "./text";
 
 type Sections = { sections: SectionControl };
 
@@ -25,38 +25,20 @@ export function FlowSummary({
   flow,
   flows,
   onSelectStep,
+  onEvidence,
   sections,
-}: { flow: Flow; flows: readonly Flow[]; onSelectStep?: (step: StepId) => void } & Sections) {
-  const questions = flow.steps.reduce(
-    (n, s) => n + s.llm.annotations.filter((a) => a.type === "question").length,
-    0,
+}: {
+  flow: Flow;
+  flows: readonly Flow[];
+  onSelectStep?: (step: StepId) => void;
+  onEvidence?: (e: Evidence) => void;
+} & Sections) {
+  const questions = flow.steps.flatMap((step) =>
+    step.llm.annotations.filter((a) => a.type === "question").map((annotation) => ({ step, annotation })),
   );
   const dependencies = flows.filter((f) => flow.llm.depends_on.includes(f.id));
   return (
     <>
-      <Collapsible sectionKey="flow-steps" title="Steps of this flow" tone="llm" sections={sections}>
-        <ul className="m-0 grid list-none gap-1 p-0">
-          {flow.steps.map((s) => {
-            const label = `Step ${s.number} · ${s.llm.title}`;
-            return (
-              <li key={s.id} className="flex flex-wrap items-center gap-1.5">
-                {onSelectStep ? (
-                  <button
-                    type="button"
-                    onClick={() => onSelectStep(s.id)}
-                    className="min-h-6 cursor-pointer text-left text-accent underline"
-                  >
-                    {label}
-                  </button>
-                ) : (
-                  <span>{label}</span>
-                )}
-                <KindLabel kind={s.llm.kind} />
-              </li>
-            );
-          })}
-        </ul>
-      </Collapsible>
       <Collapsible
         sectionKey="flow-files"
         title="Files touched"
@@ -72,17 +54,34 @@ export function FlowSummary({
           ))}
         </ul>
       </Collapsible>
-      <Collapsible sectionKey="flow-questions" title="Questions to check" tone="llm" sections={sections}>
-        <p>
-          {questions > 0
-            ? `${plural(questions, "question")} across the steps of this flow. Open a step to read them.`
-            : "The LLM raised no questions. That is not evidence of no defects."}
-        </p>
-      </Collapsible>
-      <Collapsible sectionKey="flow-depends" title="Depends on" tone="llm" sections={sections}>
-        {dependencies.length === 0 ? (
-          <Empty>The LLM named no other flow this one depends on.</Empty>
-        ) : (
+      {questions.length > 0 && (
+        <Collapsible sectionKey="flow-questions" title="Questions to check" tone="llm" sections={sections}>
+          <ul className="m-0 grid list-none gap-2 p-0">
+            {questions.map(({ step, annotation }) => (
+              <li key={annotation.id}>
+                <Tooltip tip="Open the step and source lines this question concerns.">
+                  <button
+                    type="button"
+                    className="cursor-pointer text-left text-accent underline"
+                    onClick={() => {
+                      onSelectStep?.(step.id);
+                      onEvidence?.({
+                        file: step.facts.file,
+                        side: step.facts.side,
+                        line: annotation.range.start_line,
+                      });
+                    }}
+                  >
+                    Step {step.number} · {step.llm.title}: {annotation.text}
+                  </button>
+                </Tooltip>
+              </li>
+            ))}
+          </ul>
+        </Collapsible>
+      )}
+      {dependencies.length > 0 && (
+        <Collapsible sectionKey="flow-depends" title="Depends on" tone="llm" sections={sections}>
           <ul className="m-0 list-none p-0">
             {dependencies.map((d) => (
               <li key={d.id}>
@@ -90,8 +89,8 @@ export function FlowSummary({
               </li>
             ))}
           </ul>
-        )}
-      </Collapsible>
+        </Collapsible>
+      )}
     </>
   );
 }
@@ -167,11 +166,6 @@ export function PrContextSummary({
             {facts.related_work_checked
               ? `Related work: ${plural(llm.related_work.length, "item")}`
               : "Related work: not checked (the GitHub App is not installed on this repository)"}
-          </li>
-          <li>
-            {llm.fit_questions.length > 0
-              ? `${plural(llm.fit_questions.length, "fit question")} to check`
-              : "The LLM raised no fit questions. That is not evidence of no defects."}
           </li>
         </ul>
       </Collapsible>
@@ -253,6 +247,7 @@ export function QuietSummary({
   }
   const section = quiet.not_analysed.find((s) => s.category === row.category);
   const counters = context.facts.counters;
+  if (!section) return null;
   return (
     <Collapsible
       sectionKey="quiet"
@@ -261,25 +256,21 @@ export function QuietSummary({
       source="Recognised by file path, line rule or git's binary check; no LLM."
       sections={sections}
     >
-      {section ? (
-        <>
-          <p>{plural(section.file_count, "file")}. The content was not analysed.</p>
-          {row.category === "tests" && <p>{testLines(counters)}.</p>}
-          {row.category === "generated_mechanical" &&
-            dependencyFacts(counters).map((line) => <p key={line}>{line}.</p>)}
-          <ul className="m-0 grid list-none gap-1 p-0">
-            {section.items.map((item) => (
-              <li key={`${item.side}:${item.file}`}>
-                <code>{item.file}</code>
-                {item.side === "base" && " (base)"} <ProvenanceBadge badge={item.badge} />{" "}
-                <span className="text-muted">{item.rule}</span>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : (
-        <Empty>No file of this PR is in this section.</Empty>
-      )}
+      <>
+        <p>{plural(section.file_count, "file")}. The content was not analysed.</p>
+        {row.category === "tests" && <p>{testLines(counters)}.</p>}
+        {row.category === "generated_mechanical" &&
+          dependencyFacts(counters).map((line) => <p key={line}>{line}.</p>)}
+        <ul className="m-0 grid list-none gap-1 p-0">
+          {section.items.map((item) => (
+            <li key={`${item.side}:${item.file}`}>
+              <code>{item.file}</code>
+              {item.side === "base" && " (base)"} <ProvenanceBadge badge={item.badge} />{" "}
+              <span className="text-muted">{item.rule}</span>
+            </li>
+          ))}
+        </ul>
+      </>
     </Collapsible>
   );
 }

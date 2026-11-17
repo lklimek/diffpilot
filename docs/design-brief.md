@@ -596,3 +596,11 @@ Outside the repository, in `/data/artifacts/smart-review/2026-11-16/`:
 - `input/review-assist.md` — the owner's manual-review skill.
 - `mockups`, `mockups-v2`, `mockups-v3`, `mockups-v4` — archived earlier mockup sets, including the dropped
   Groups workspace, overview and files screens. Superseded by `docs/mockups/`.
+
+### Owner-approved amendment — 2026-11-17: show less in the Tour
+
+Empty explanatory sections are hidden, without implying safety. Unavailable deterministic checks retain one factual line. The navigation owns the step list and kind icons; the Inspector owns step facts, caller/next descriptions and the collapsed assessment. The decision sentence belongs under the step title and in the diagram node's accessible description. Evidence remains attached to each statement, collapsed beneath it behind “Evidence · N places”; opening it exposes short in-app line links. The code occupies the full centre width. The diagram uses the persisted step order from top to bottom, independent of viewport width, so navigation, diagram, Previous/Next and deep links agree. Replacements pair old and new lines under one label; pure deletions remain distinct.
+
+Test files, fixtures, mocks, benches and test helpers recognised by deterministic path rules are outside LLM planning, flow analysis and coverage. They appear in Tests once with file and added/removed-line counts and access to the diff. Test code may be read as evidence for a production step and mentioned in one clause; never create a test-subject flow. Inline Rust test modules/functions are not yet delimited by the generic plugin; a Rust syntax plugin is required before excluding these ranges deterministically.
+
+Rust comment-only lines (including block/doc comments) and complete single-line `use`, `mod` and `extern crate` declarations remain available to the agent as context, but require no explanation, annotation, assessment or flow. They are covered by a deterministic rule. Main code views hide them by default with a per-user browser preference and a hidden-line count; the classic diff always retains them. Other languages have no such rule. A contradiction between a comment and production code may be cited on the code's step. This supersedes the earlier test-flow and comment-omission rules above.

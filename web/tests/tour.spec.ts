@@ -67,10 +67,10 @@ test("step block: gutter marks, one highlight with was → is, collapsed assessm
   await expect(mark).toHaveCount(1);
   await mark.hover();
   await expect(page.getByRole("tooltip").filter({ visible: true })).toContainText("Was: ");
-  const summary = page.getByText("Assessment (LLM)");
-  await expect(page.locator("details")).not.toHaveAttribute("open");
+  const summary = page.getByRole("button", { name: /Assessment$/ });
+  await expect(summary).toHaveAttribute("aria-expanded", "false");
   await summary.click();
-  await expect(page.locator("details")).toHaveAttribute("open");
+  await expect(summary).toHaveAttribute("aria-expanded", "true");
 });
 
 test("resume opens the last viewed block", async ({ page }) => {
@@ -110,10 +110,8 @@ test("noq: the step says the LLM raised no questions", async ({ page }) => {
     .click();
   await page.getByRole("navigation").getByRole("button", { name: "Step 5: Retry allowed?" }).click();
   const inspector = page.getByRole("complementary", { name: "Inspector" });
-  await inspector.getByRole("button", { name: "Questions to check" }).click();
-  await expect(
-    inspector.getByText("The LLM raised no questions. That is not evidence of no defects."),
-  ).toBeVisible();
+  await expect(inspector.getByRole("button", { name: /Questions to check/ })).toHaveCount(0);
+  await expect(inspector.getByRole("button", { name: /Assessment$/ })).toHaveCount(0);
 });
 
 test("noprofile: the PR context states the missing project profile", async ({ page }) => {
@@ -191,6 +189,10 @@ test("columns: hide, full screen and widths are remembered; a click anywhere on 
 }) => {
   await openTour(page);
   const separator = page.getByRole("separator", { name: /Resize the Flows column/ });
+  // The Tour removes the page scrollbar gutter; wait for its ResizeObserver measurement.
+  await page.evaluate(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+  );
   const before = Number(await separator.getAttribute("aria-valuenow"));
   await separator.focus();
   await page.keyboard.press("ArrowRight");

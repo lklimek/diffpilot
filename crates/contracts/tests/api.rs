@@ -589,6 +589,7 @@ fn lines(side: LineSide, total_lines: u8, deleted: Vec<DeletedBlock>) -> LinesRe
         total_lines: u32::from(total_lines),
         lines: vec!["x".to_owned(); usize::from(total_lines)],
         changed: vec![],
+        context_only: None,
         deleted,
         moved: vec![],
         comments: CommentScope::InDiff {
@@ -603,6 +604,8 @@ fn removed(after_line: u32, base_start: u32) -> DeletedBlock {
         base_start,
         lines: vec!["fn send_once() {}".to_owned()],
         total_lines: 1,
+        replacement: None,
+        context_only: None,
     }
 }
 

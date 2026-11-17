@@ -136,7 +136,7 @@ describe("FlowDiagram width", () => {
           onSelectStep={onSelectStep}
         />,
       );
-      expect(diagram()).toHaveAttribute("data-direction", "LR");
+      expect(diagram()).toHaveAttribute("data-direction", "TB");
     } finally {
       vi.unstubAllGlobals();
     }

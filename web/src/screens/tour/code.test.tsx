@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { startMockServer } from "../../__tests__/screen";
 import type { LinesResponse, RangeQuery } from "../../api/generated/types";
-import { ChunkedCode, MAX_RANGE_LINES, RangeCode, rangeChunks, type CodeContext } from "./code";
+import { ChunkedCode, FileDiffCode, MAX_RANGE_LINES, RangeCode, rangeChunks, type CodeContext } from "./code";
 
 const server = startMockServer();
 let requests: RangeQuery[] = [];
@@ -65,6 +65,23 @@ function show(node: ReactNode) {
 }
 
 describe("code of long and disjoint ranges", () => {
+  it("makes the whole test file's classic diff accessible beyond the range limit", async () => {
+    const seen: number[] = [];
+    server.use(
+      http.get("/api/v1/analyses/:id/diff", ({ request }) => {
+        const q = new URL(request.url).searchParams;
+        seen.push(Number(q.get("from")));
+        return HttpResponse.json({ path: "tests/large.rs", side: "head", hunks: [] });
+      }),
+    );
+    show(<FileDiffCode ctx={ctx()} path="tests/large.rs" side="head" />);
+    await screen.findByRole("button", { name: "Show diff lines 2001–4000" });
+    await userEvent.click(screen.getByRole("button", { name: "Show diff lines 2001–4000" }));
+    await screen.findByRole("button", { name: "Show diff lines 4001–6000" });
+    expect(seen).toEqual([1, 2001]);
+    expect(requests.map((q) => [q.from, q.to])).toEqual([[1, 1]]);
+  });
+
   it("splits ranges into requests of at most the server limit, never joining disjoint ranges", () => {
     expect(
       rangeChunks("a.rs", "head", [

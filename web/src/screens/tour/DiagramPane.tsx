@@ -108,6 +108,7 @@ export function DiagramPane({
             <Suspense fallback={<StatusMessage kind="loading">Loading the diagram…</StatusMessage>}>
               <Diagram
                 graph={flow.graph}
+                decisions={Object.fromEntries(flow.steps.map((s) => [s.id, s.llm.decides]))}
                 title={flow.llm.title}
                 currentStepId={currentStepId}
                 onSelectStep={onSelectStep}
