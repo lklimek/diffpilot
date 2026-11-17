@@ -342,7 +342,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
 
   const progressAlert =
     review.status === "unreadable"
-      ? `Your ticks and last viewed block could not be read, so changes are not saved: ${errorText(loadError)}`
+      ? `Your ticks and last viewed block could not be read. Changes stay on this page and are saved once they can be read: ${errorText(loadError)}`
       : saveError !== null
         ? `Your ticks and last viewed block are not saved: ${errorText(saveError)}`
         : null;

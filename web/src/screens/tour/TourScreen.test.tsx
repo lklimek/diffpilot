@@ -232,7 +232,7 @@ describe("Tour screen (brief §4.3)", () => {
     await waitFor(() => expect(topBar()).toHaveTextContent("Pending review 0"));
   });
 
-  it("a review state that cannot be read: the tour opens at PR context and says nothing is saved", async () => {
+  it("a review state that cannot be read: the tour opens at PR context and says changes stay on this page", async () => {
     server.use(
       http.get("/api/v1/analyses/:id/review-state", () =>
         HttpResponse.json({ code: "not_found", message: "Not here." }, { status: 404 }),
@@ -241,7 +241,7 @@ describe("Tour screen (brief §4.3)", () => {
     await open("resume");
     expect(blockHeading()).toHaveTextContent("PR context");
     expect(within(main()).getByRole("alert")).toHaveTextContent(
-      "Your ticks and last viewed block could not be read, so changes are not saved: Not here.",
+      "Your ticks and last viewed block could not be read. Changes stay on this page and are saved once they can be read: Not here.",
     );
     await user().keyboard("j");
     expect(readStore("reviewState").last_viewed).toEqual({ block: "step", step_id: "f1.5" });
@@ -268,7 +268,7 @@ describe("Tour screen (brief §4.3)", () => {
     expect(finished.map((b) => b.last_viewed?.block)).toEqual(["pr_context", "flow_intro", "step"]);
   });
 
-  it("after a failed read, reopening never writes before the stored ticks were read (QA-002)", async () => {
+  it("after a failed read, reopening never writes over the stored ticks (QA-002)", async () => {
     const written: ReviewState[] = [];
     server.use(
       http.get(
@@ -285,11 +285,36 @@ describe("Tour screen (brief §4.3)", () => {
     await user().keyboard("j");
     await act(() => router.navigate("/"));
     await act(() => router.navigate(`/analyses/${ID}`));
-    await waitFor(() => expect(blockHeading()).toHaveTextContent("5 Retry allowed?"));
+    // The block moved to before the read succeeded wins over the stored one.
+    await waitFor(() => expect(blockHeading()).toHaveTextContent("Send an RPC request with retry"));
     expect(within(main()).queryByRole("alert")).toBeNull();
-    await user().keyboard("x");
+    await user().keyboard("jx");
     await waitFor(() => expect(written.length).toBeGreaterThan(0));
     expect(written.every((w) => w.ticked_steps.includes("f2.1"))).toBe(true);
+  });
+
+  it("after a failed read, a change made meanwhile is merged with the stored state and saved (QA-010)", async () => {
+    const written: ReviewState[] = [];
+    server.use(
+      http.get(
+        "/api/v1/analyses/:id/review-state",
+        () => HttpResponse.json({ code: "internal", message: "Down." }, { status: 500 }),
+        { once: true },
+      ),
+      http.put("/api/v1/analyses/:id/review-state", async ({ request }) => {
+        written.push((await request.json()) as ReviewState);
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    await open("resume");
+    expect(blockHeading()).toHaveTextContent("PR context");
+    await user().keyboard("j");
+    await waitFor(() => expect(written.length).toBeGreaterThan(0));
+    // The stored tick is kept and the block the user moved to wins over the stored one.
+    expect(written.at(-1)).toMatchObject({ ticked_steps: expect.arrayContaining(["f2.1"]) });
+    expect(written.at(-1)!.last_viewed?.block).toBe("flow_intro");
+    await waitFor(() => expect(within(main()).queryByRole("alert")).toBeNull());
+    expect(blockHeading()).not.toHaveTextContent("Retry allowed?");
   });
 
   it("keeps the trust wording in every fixture state", async () => {

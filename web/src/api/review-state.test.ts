@@ -70,22 +70,51 @@ describe("review-state store", () => {
     expect(store.view(ID).state).toEqual(state(["f2.1", "f1.1"], "f1.1"));
   });
 
-  it("never writes before a read succeeded, also after the screen is opened again (QA-002)", async () => {
+  it("a read that started before a save completed is ignored: the saved tick stays (QA-001)", async () => {
+    const { store, gets, puts, tick } = setup();
+    const first = store.read(ID);
+    gets[0]!.resolve(state([]));
+    await first;
+    tick("f1.1");
+    // The screen is opened again while the PUT is in flight: its GET still sees the old state.
+    const reopened = store.read(ID);
+    puts[0]!.reply.resolve();
+    await flush();
+    gets[1]!.resolve(state([]));
+    await reopened;
+    expect(store.view(ID).state.ticked_steps).toEqual(["f1.1"]);
+    tick("f1.2");
+    expect(puts.at(-1)!.body.ticked_steps).toEqual(["f1.1", "f1.2"]);
+  });
+
+  it("never writes before a read succeeded; then merges the changes made meanwhile and saves them (QA-002, QA-010)", async () => {
     const { store, gets, puts, tick } = setup();
     const failed = store.read(ID);
     gets[0]!.reject(new Error("down"));
     await failed;
     expect(store.view(ID)).toMatchObject({ status: "unreadable", loadError: new Error("down") });
+    // A change retries the read; until it succeeds nothing is written.
     tick("f1.1");
-    expect(store.view(ID).state.ticked_steps).toEqual(["f1.1"]);
-    // The screen is opened again: the store still knows nothing was read.
-    expect(store.view(ID).status).toBe("unreadable");
-    tick("f1.2");
+    expect(gets).toHaveLength(2);
+    store.change(ID, (s) => ({ ...s, last_viewed: { block: "step", step_id: "f1.1" } }));
+    expect(store.view(ID).state).toEqual(state(["f1.1"], "f1.1"));
     expect(puts).toEqual([]);
+    gets[1]!.resolve(state(["f2.1"], "f1.5"));
+    await flush();
+    // Stored ticks plus the ticks made meanwhile; the block the user is on wins.
+    expect(store.view(ID)).toMatchObject({ status: "ready", state: state(["f2.1", "f1.1"], "f1.1") });
+    expect(puts.map((p) => p.body)).toEqual([state(["f2.1", "f1.1"], "f1.1")]);
+  });
+
+  it("a successful first read with no changes meanwhile writes nothing", async () => {
+    const { store, gets, puts } = setup();
+    const failed = store.read(ID);
+    gets[0]!.reject(new Error("down"));
+    await failed;
     const retry = store.read(ID);
-    gets[1]!.resolve(state(["f2.1"]));
+    gets[1]!.resolve(state(["f2.1"], "f1.5"));
     await retry;
-    expect(store.view(ID)).toMatchObject({ status: "ready", state: state(["f2.1"]) });
+    expect(store.view(ID)).toMatchObject({ status: "ready", state: state(["f2.1"], "f1.5") });
     expect(puts).toEqual([]);
   });
 

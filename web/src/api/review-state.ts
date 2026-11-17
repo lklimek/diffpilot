@@ -11,7 +11,7 @@ export interface ReviewStateView {
   state: ReviewState;
   /** `loading` until the first read for this analysis finished; `ready` after a successful read. */
   status: "loading" | "ready" | "unreadable";
-  /** Why the stored state could not be read (status `unreadable`): changes stay on this page. */
+  /** Why the stored state could not be read (status `unreadable`): changes stay on this page until a read succeeds. */
   loadError: unknown;
   /** The last failed save; null once a save succeeded. */
   saveError: unknown;
@@ -85,6 +85,8 @@ export function createReviewStateStore(client: ReviewStateClient) {
       e.next = null;
       try {
         await client.putReviewState(id, sent);
+        // A read that started before this write completed may hold the older state.
+        e.version += 1;
         e.confirmed = sent;
         e.saveError = null;
         if (e.next === null && e.local === sent) e.local = null;
@@ -94,6 +96,51 @@ export function createReviewStateStore(client: ReviewStateClient) {
       publish(e);
     }
     e.running = false;
+  };
+
+  /**
+   * Reads the stored state. A result is used only when no local change and no write happened while it was read
+   * and none is waiting. The first successful read merges changes made before it (ticks added, the local block
+   * wins) and saves them. `background` keeps the view as it is while a failed first read is retried.
+   */
+  const read = async (id: AnalysisId, background = false): Promise<void> => {
+    const e = entry(id);
+    if (e.reading) return;
+    e.reading = true;
+    if (!background && !e.readOnce && e.loadError !== null) {
+      // Retrying the first read on opening the screen: loading again, so it opens on what it finds.
+      e.loadError = null;
+      publish(e);
+    }
+    const version = e.version;
+    try {
+      const stored = await client.getReviewState(id);
+      if (!e.readOnce) {
+        e.readOnce = true;
+        e.loadError = null;
+        e.confirmed = stored;
+        const made = e.local;
+        if (made) {
+          e.local = {
+            ticked_steps: [
+              ...stored.ticked_steps,
+              ...made.ticked_steps.filter((step) => !stored.ticked_steps.includes(step)),
+            ],
+            last_viewed: made.last_viewed ?? stored.last_viewed,
+          };
+          e.version += 1;
+          e.next = e.local;
+          void drain(id, e);
+        }
+      } else if (e.version === version && e.local === null && !e.running && e.next === null) {
+        e.confirmed = stored;
+      }
+    } catch (error) {
+      if (!e.readOnce) e.loadError = error;
+    } finally {
+      e.reading = false;
+    }
+    publish(e);
   };
 
   return {
@@ -107,36 +154,9 @@ export function createReviewStateStore(client: ReviewStateClient) {
       return () => e.listeners.delete(listener);
     },
 
-    /** Reads the stored state; a result is ignored when a local change happened while it was read. */
-    async read(id: AnalysisId): Promise<void> {
-      const e = entry(id);
-      if (e.reading) return;
-      e.reading = true;
-      if (!e.readOnce && e.loadError !== null) {
-        // Retrying the first read: loading again, so the screen opens on what it finds.
-        e.loadError = null;
-        publish(e);
-      }
-      const version = e.version;
-      try {
-        const stored = await client.getReviewState(id);
-        if (!e.readOnce) {
-          // Changes made before the first read were never saved and rest on an unknown state.
-          e.readOnce = true;
-          e.local = null;
-          e.confirmed = stored;
-        } else if (e.version === version && e.local === null && !e.running) {
-          e.confirmed = stored;
-        }
-      } catch (error) {
-        if (!e.readOnce) e.loadError = error;
-      } finally {
-        e.reading = false;
-      }
-      publish(e);
-    },
+    read,
 
-    /** Applies a local change; saved when the stored state was read, else kept on this page only. */
+    /** Applies a local change; saved once the stored state was read (a change retries a failed first read). */
     change(id: AnalysisId, update: (state: ReviewState) => ReviewState): void {
       const e = entry(id);
       const next = update(e.view.state);
@@ -145,6 +165,8 @@ export function createReviewStateStore(client: ReviewStateClient) {
       if (e.readOnce) {
         e.next = next;
         void drain(id, e);
+      } else if (e.loadError !== null) {
+        void read(id, true);
       }
       publish(e);
     },
