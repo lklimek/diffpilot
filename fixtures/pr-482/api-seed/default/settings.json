@@ -1,0 +1,21 @@
+{
+  "llm_status": {
+    "at": "2026-11-16T09:31:00Z",
+    "status": {
+      "state": "working"
+    }
+  },
+  "language": "en",
+  "app_installations": [
+    {
+      "account": "acme",
+      "all_repositories": false
+    }
+  ],
+  "repos": [
+    {
+      "owner": "acme",
+      "name": "node-client"
+    }
+  ]
+}

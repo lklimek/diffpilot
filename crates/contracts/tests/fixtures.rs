@@ -20,6 +20,7 @@ use contracts::api::feedback::{Feedback, FeedbackTarget, FeedbackValue};
 use contracts::api::pr::ResolvePrResponse;
 use contracts::api::questions::{AskQuestion, AskState};
 use contracts::api::review::{BlockRef, ReviewState};
+use contracts::api::settings::Settings;
 use contracts::api::tour::{Annotation, FlowGroup, ProfileSource, Tour};
 use contracts::common::{AnnotationType, Basis, FragmentKind, LineRange, LineSide, NodeKind};
 use contracts::ids::{AnnotationId, StepId};
@@ -809,6 +810,7 @@ fn check_entry(what: &str, key: &str, value: &Value) {
         "questions" => round_trip::<Vec<AskQuestion>>(what, value),
         "feedback" => round_trip::<Vec<Feedback>>(what, value),
         "pending-review" => round_trip::<PendingReview>(what, value),
+        "settings" => round_trip::<Settings>(what, value),
         lines if lines.starts_with("lines/") => round_trip::<LinesResponse>(what, value),
         other => panic!("{what}: no contract type for seed entry {other}"),
     }
