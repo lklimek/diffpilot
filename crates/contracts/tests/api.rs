@@ -426,7 +426,11 @@ fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
     question.resumes_at = Some(at);
     let json = serde_json::to_value(&question).expect("serialises");
     assert_eq!(json["resumes_at"], serde_json::to_value(at).expect("time"));
-    assert!(AskRequest::MAX_TEXT_CHARS >= 500);
+    assert_eq!(
+        AskRequest::MAX_TEXT_CHARS,
+        2000,
+        "docs/contracts/http-api.md"
+    );
 }
 
 #[test]
