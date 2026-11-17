@@ -97,7 +97,13 @@ pub async fn resolve(
         .filter(|record| record.tenant_id == session.tenant_id);
     let (analysis, head_moved) = match latest {
         Some(record) => (
-            Some(state.db.analyses().summary(record.id).await?),
+            Some(
+                state
+                    .db
+                    .analyses()
+                    .summary_for_user(record.id, &session.user_id)
+                    .await?,
+            ),
             record.head_sha != pull.summary.head_sha,
         ),
         None => (None, false),
@@ -175,5 +181,9 @@ pub async fn create(
         "analysis requested"
     );
     pipeline::start(state, record.id);
-    Ok(state.db.analyses().summary(record.id).await?)
+    Ok(state
+        .db
+        .analyses()
+        .summary_for_user(record.id, &session.user_id)
+        .await?)
 }

@@ -10,7 +10,7 @@ test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ 
   await page.getByRole("button", { name: "Analyze" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress$`));
   await page.getByRole("link", { name: "Open review" }).click();
-  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}$`));
+  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
 
   await page.keyboard.press("j");
@@ -217,8 +217,16 @@ test("reload keeps the position and the ticks", async ({ page }) => {
   await openTour(page);
   await page.keyboard.press("j");
   await page.keyboard.press("j");
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/review-state") &&
+      response.request().method() === "PUT" &&
+      response.status() === 204 &&
+      response.request().postDataJSON().ticked_steps.includes("f1.1"),
+  );
   await page.keyboard.press("x");
   await expect(heading(page)).toHaveText("1 Trigger: callers of send");
+  await saved;
   await page.reload();
   await expect(heading(page)).toHaveText("1 Trigger: callers of send");
   await expect(
@@ -277,7 +285,7 @@ test("every top-bar control explains itself in a tooltip", async ({ page }) => {
   await openTour(page);
   const banner = page.getByRole("banner").first();
   await expect(banner.getByRole("link", { name: /#482/ })).toHaveAccessibleDescription(/GitHub/);
-  await expect(banner.getByText(/^CI:/)).toHaveAccessibleDescription(/Failing checks/);
+  await expect(banner.getByText(/^Check runs:/).first()).toHaveAccessibleDescription(/Failing checks/);
   await expect(banner.getByText(/^flows reviewed/)).toHaveAccessibleDescription(/No percentage/);
   await expect(banner.getByRole("button", { name: /^Pending review/ })).toHaveAccessibleDescription(
     /pending review/,
@@ -361,7 +369,7 @@ for (const [scenario, outcome] of [
       .getByRole("button", { name: /^Step 1:/ })
       .click();
     const memory = page.getByRole("list", { name: "Calibration memory" });
-    await expect(memory).toContainText("wrong: Saved to calibration memory");
+    await expect(memory).toContainText("wrong: Recorded");
     await expect(memory).toContainText("overrated: Recorded; saving to calibration memory…");
     await expect(memory).toContainText(`overrated: ${outcome}`, { timeout: 8000 });
   });

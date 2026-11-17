@@ -1,5 +1,6 @@
 {
   "analysis": {
+    "has_my_state": false,
     "id": "6d3a2f1e-0482-4c5e-9a7b-000000000482",
     "pr": {
       "repo": {
@@ -23,9 +24,14 @@
   },
   "pr_context": {
     "facts": {
+      "related_work_links": [],
+      "memcan_status": {
+        "state": "not_reachable",
+        "last_success_at": null
+      },
       "ci": {
         "state": "failing",
-        "total": 6,
+        "total": 7,
         "failing": [
           {
             "name": "test (integration)",
@@ -34,10 +40,25 @@
               "sync_headers::slow_peer_2000_headers"
             ]
           }
-        ]
+        ],
+        "check_runs": {
+          "passed": 3,
+          "failed": 1,
+          "pending": 0,
+          "skipped": 1,
+          "neutral": 1
+        },
+        "statuses": {
+          "passed": 0,
+          "failed": 0,
+          "pending": 1,
+          "skipped": 0,
+          "neutral": 0
+        }
       },
       "threads_status": "checked",
       "counters": {
+        "lines_added_to_tests": 30,
         "lines_removed_from_tests": 12,
         "dependencies_changed": [
           "tokio",
@@ -292,8 +313,8 @@
                   "start_line": 130,
                   "end_line": 130
                 },
-                "was": "A timeout on this call came back once as Timeout.",
-                "is": "The same call may be sent up to 3 times.",
+                "was": "",
+                "is": "",
                 "text": "broadcast_tx now reaches a retrying send.",
                 "evidence": [
                   {
@@ -321,8 +342,8 @@
                   "start_line": 129,
                   "end_line": 130
                 },
-                "was": "One broadcast per call.",
-                "is": "Up to 3 broadcasts per call.",
+                "was": "",
+                "is": "",
                 "text": "Not visible in this repository: does the node reject a repeated broadcast_tx for the same transaction, so that a second send is harmless?",
                 "evidence": [
                   {
@@ -409,8 +430,8 @@
                   "start_line": 93,
                   "end_line": 94
                 },
-                "was": "One attempt with the full timeout.",
-                "is": "Up to 3 attempts, each with the full timeout.",
+                "was": "",
+                "is": "",
                 "text": "Every attempt gets the full per-attempt timeout, so the worst case is 3 × timeout plus delays.",
                 "evidence": []
               }
@@ -599,8 +620,8 @@
                   "start_line": 99,
                   "end_line": 99
                 },
-                "was": "A timeout was returned to the caller.",
-                "is": "A timeout is retried while attempt < 3, for every method.",
+                "was": "",
+                "is": "",
                 "text": "mempool::broadcast_tx may submit the same transaction twice if attempt 1 reached the node and only the reply was late.",
                 "evidence": [
                   {
@@ -618,8 +639,8 @@
                   "start_line": 99,
                   "end_line": 99
                 },
-                "was": "A timeout was returned to the caller.",
-                "is": "A timeout is retried while attempt < 3, for every method.",
+                "was": "",
+                "is": "",
                 "text": "should_retry receives only the attempt number and no method or idempotency input: can broadcast_tx be sent twice when the reply arrives late?",
                 "evidence": [
                   {
@@ -716,8 +737,8 @@
                   "start_line": 100,
                   "end_line": 100
                 },
-                "was": "No delay.",
-                "is": "Delay = jitter(min(200 ms × 2^(attempt - 1), 4 s)).",
+                "was": "",
+                "is": "",
                 "text": "With jitter applied after the cap, can one sleep exceed max_delay (4 s)?",
                 "evidence": [
                   {
@@ -809,8 +830,8 @@
                   "start_line": 105,
                   "end_line": 105
                 },
-                "was": "Callers saw Timeout after one attempt.",
-                "is": "Callers see Exhausted after the last attempt.",
+                "was": "",
+                "is": "",
                 "text": "Callers that matched on Timeout no longer see it from send; wallet::fetch_balance maps only Timeout to WalletError::Offline.",
                 "evidence": [
                   {
@@ -833,8 +854,8 @@
                   "start_line": 104,
                   "end_line": 106
                 },
-                "was": "Returned Err(Timeout).",
-                "is": "Returns Err(Exhausted { attempts }).",
+                "was": "",
+                "is": "",
                 "text": "Two wildcard sites were found (flow 3): do all callers of send still handle the case that used to be Timeout?",
                 "evidence": []
               }
@@ -974,8 +995,8 @@
                   "start_line": 42,
                   "end_line": 42
                 },
-                "was": "No retry settings.",
-                "is": "Always the default policy.",
+                "was": "",
+                "is": "",
                 "text": "No setter or constructor argument takes a policy: how does a caller that must not retry change it?",
                 "evidence": [
                   {
@@ -1060,8 +1081,8 @@
                   "start_line": 28,
                   "end_line": 30
                 },
-                "was": "No delay rule.",
-                "is": "backoff = with_jitter(min(exp_delay(base, attempt), max_delay)).",
+                "was": "",
+                "is": "",
                 "text": "Jitter is applied after the cap, so one delay can exceed max_delay by up to half; with the default 3 attempts the delays are 200 ms and 400 ms before jitter and never reach the cap.",
                 "evidence": [
                   {
@@ -1198,8 +1219,8 @@
                   "start_line": 23,
                   "end_line": 23
                 },
-                "was": "timeout = 30 s.",
-                "is": "timeout = 5 s.",
+                "was": "",
+                "is": "",
                 "text": "sync::fetch_headers relied on the longer wait; CI: sync_headers::slow_peer_2000_headers fails with a timeout after 5 s.",
                 "evidence": [
                   {
@@ -1222,8 +1243,8 @@
                   "start_line": 23,
                   "end_line": 23
                 },
-                "was": "timeout = 30 s.",
-                "is": "timeout = 5 s.",
+                "was": "",
+                "is": "",
                 "text": "Its own comment says 10-20 s and the failing CI test is about this: does sync::fetch_headers finish within 5 s for 2000 headers on slow peers?",
                 "evidence": [
                   {
@@ -1293,8 +1314,8 @@
                   "start_line": 64,
                   "end_line": 65
                 },
-                "was": "One wait of up to 30 s.",
-                "is": "Up to 3 waits of 5 s each, then Exhausted.",
+                "was": "",
+                "is": "",
                 "text": "A reply that needs 10-20 s now times out on every attempt.",
                 "evidence": [
                   {
@@ -1317,8 +1338,8 @@
                   "start_line": 64,
                   "end_line": 64
                 },
-                "was": "One wait of up to 30 s.",
-                "is": "Waits of 5 s per attempt.",
+                "was": "",
+                "is": "",
                 "text": "Is a 2000-header reply from a slow peer expected to arrive within 5 s?",
                 "evidence": []
               }
@@ -1456,8 +1477,8 @@
                   "start_line": 13,
                   "end_line": 13
                 },
-                "was": "Two failure variants.",
-                "is": "Three failure variants.",
+                "was": "",
+                "is": "",
                 "text": "Two wildcard match sites outside the diff swallow it (wallet and peers).",
                 "evidence": [
                   {
@@ -1480,8 +1501,8 @@
                   "start_line": 13,
                   "end_line": 13
                 },
-                "was": "Two failure variants.",
-                "is": "Three failure variants.",
+                "was": "",
+                "is": "",
                 "text": "Should the two wildcard sites handle Exhausted explicitly?",
                 "evidence": []
               }
@@ -1545,8 +1566,8 @@
                   "start_line": 121,
                   "end_line": 121
                 },
-                "was": "The wildcard arm saw one other error.",
-                "is": "The wildcard arm also receives Exhausted.",
+                "was": "",
+                "is": "",
                 "text": "The user message differs from the Timeout case.",
                 "evidence": [
                   {
@@ -1569,8 +1590,8 @@
                   "start_line": 121,
                   "end_line": 121
                 },
-                "was": "The wildcard arm saw one other error.",
-                "is": "The wildcard arm also receives Exhausted.",
+                "was": "",
+                "is": "",
                 "text": "Should Exhausted map to WalletError::Offline like Timeout?",
                 "evidence": []
               }
@@ -1654,8 +1675,8 @@
                   "start_line": 52,
                   "end_line": 53
                 },
-                "was": "Two ways to send: with and without retry.",
-                "is": "One way, always with retry.",
+                "was": "",
+                "is": "",
                 "text": "No way is left to send a request exactly once (see flow 1, step 5).",
                 "evidence": [
                   {
@@ -1678,8 +1699,8 @@
                   "start_line": 53,
                   "end_line": 53
                 },
-                "was": "send_once() existed.",
-                "is": "send_once() is gone.",
+                "was": "",
+                "is": "",
                 "text": "Does acme/node-sdk (PR #118) still call send_once()?",
                 "evidence": []
               },
@@ -1691,8 +1712,8 @@
                   "start_line": 52,
                   "end_line": 53
                 },
-                "was": "send_once() existed.",
-                "is": "send_once() is gone.",
+                "was": "",
+                "is": "",
                 "text": "How does a caller now send a request that must not be repeated?",
                 "evidence": []
               }
@@ -1833,8 +1854,8 @@
                   "start_line": 49,
                   "end_line": 50
                 },
-                "was": "JITTER is a tenth.",
-                "is": "JITTER is a half.",
+                "was": "",
+                "is": "",
                 "text": "Is the jump from a tenth to a half of the delay intended in a PR that is described as a move?",
                 "evidence": []
               }
@@ -1960,6 +1981,8 @@
         "file_count": 4,
         "items": [
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/common/mod.rs",
             "side": "base",
             "ranges": [
@@ -1972,6 +1995,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/common/mod.rs",
             "side": "head",
             "ranges": [
@@ -1984,6 +2009,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/rpc_retry.rs",
             "side": "head",
             "ranges": null,
@@ -1991,6 +2018,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/send_once.rs",
             "side": "base",
             "ranges": null,
@@ -1998,6 +2027,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/sync_headers.rs",
             "side": "base",
             "ranges": [
@@ -2010,6 +2041,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/sync_headers.rs",
             "side": "head",
             "ranges": [
@@ -2028,6 +2061,8 @@
         "file_count": 3,
         "items": [
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "README.md",
             "side": "head",
             "ranges": [
@@ -2040,6 +2075,8 @@
             "rule": "*.md"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "docs/rpc.md",
             "side": "base",
             "ranges": [
@@ -2060,6 +2097,8 @@
             "rule": "docs/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "docs/rpc.md",
             "side": "head",
             "ranges": [
@@ -2080,6 +2119,8 @@
             "rule": "docs/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "lexer",
             "file": "src/rpc/client.rs",
             "side": "base",
             "ranges": [
@@ -2092,6 +2133,8 @@
             "rule": "comment-only lines (Rust, by the compiler's lexer)"
           },
           {
+            "renderable": true,
+            "rule_kind": "lexer",
             "file": "src/rpc/client.rs",
             "side": "head",
             "ranges": [
@@ -2110,6 +2153,8 @@
         "file_count": 1,
         "items": [
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "Cargo.lock",
             "side": "base",
             "ranges": [
@@ -2142,6 +2187,8 @@
             "rule": "Cargo.lock"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "Cargo.lock",
             "side": "head",
             "ranges": [

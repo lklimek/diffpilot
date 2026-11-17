@@ -383,6 +383,10 @@ fn to_result(
                 }
                 ProviderError::OutputNotJson => failure(JobFailureKind::OutputNotJson, &message),
                 ProviderError::Timeout => failure(JobFailureKind::Timeout, &message),
+                ProviderError::Configuration(_) => failure(
+                    JobFailureKind::Configuration,
+                    "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+                ),
                 ProviderError::Io(_) => failure(JobFailureKind::Internal, &message),
                 ProviderError::SessionUnavailable
                 | ProviderError::SchemaRejected { .. }

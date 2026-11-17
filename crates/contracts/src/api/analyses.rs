@@ -21,6 +21,10 @@ pub struct CreateAnalysisRequest {
 /// An analysis and its state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AnalysisSummary {
+    /// Whether this reader has saved review state (including explicitly empty state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub has_my_state: Option<bool>,
     /// Analysis id.
     pub id: AnalysisId,
     /// The pull request as analysed (its head is the analysis head).
@@ -40,13 +44,22 @@ pub struct AnalysisSummary {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AnalysisState {
     /// Planning flows; the number of flows is not known yet.
-    Planning,
+    Planning {
+        /// The current stage; absent when no job of the analysis is queued, running or paused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        stage: Option<AnalysisStage>,
+    },
     /// Analysing flows.
     Running {
         /// Flows analysed.
         done: u32,
         /// Flows in total.
         total: u32,
+        /// The current stage; absent when no job of the analysis is queued, running or paused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        stage: Option<AnalysisStage>,
     },
     /// Waiting for the Codex usage limit to reset.
     Paused {
@@ -56,9 +69,17 @@ pub enum AnalysisState {
         done: u32,
         /// Flows in total; null while planning (the number of flows is not known yet).
         total: Option<u32>,
+        /// The stage that resumes; absent when no job of the analysis is queued, running or paused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        stage: Option<AnalysisStage>,
     },
-    /// Failed; Retry is offered.
+    /// Failed; configuration problems require administrator action before another attempt.
     Failed {
+        /// Typed cause when known; absent on older failures.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<crate::api::error::ApiErrorCode>,
         /// The flow that failed, or null when it failed before any flow existed.
         flow: Option<FlowRef>,
         /// Plain description of what failed.
@@ -71,6 +92,41 @@ pub enum AnalysisState {
     },
     /// Cancelled; partial results discarded.
     Cancelled,
+}
+
+/// The stage of the analysis's live job (the queued, running or paused job of its current round); only facts the
+/// server knows, no estimate.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct AnalysisStage {
+    /// What the job does.
+    pub kind: StageKind,
+    /// The flow analysed (`flow` only); absent when the stored plan does not list it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub flow: Option<StageFlow>,
+    /// When the server handed the job to the runner; null while the job waits for the runner.
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+/// Kind of an analysis stage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum StageKind {
+    /// Planning the flows.
+    Plan,
+    /// Describing the pull request context.
+    PrContext,
+    /// Analysing one flow.
+    Flow,
+}
+
+/// The flow of a `flow` stage.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StageFlow {
+    /// 1-based position of the flow in the stored plan (the order flows are analysed in).
+    pub index: u32,
+    /// Flow title.
+    pub title: String,
 }
 
 /// A flow named in a state message.

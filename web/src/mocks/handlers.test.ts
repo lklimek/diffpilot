@@ -8,7 +8,7 @@ import { handlers } from "./handlers";
 import { setMockLanguage } from "./handlers/get-settings";
 import { RUN_STEP_MS, resetLive, setLiveState } from "./live-analysis";
 import { MEMCAN_SYNC_MS, resetStore } from "./review-store";
-import { MOVED_HEAD, setScenario } from "./scenarios";
+import { FLOW_TITLES, MOVED_HEAD, setScenario } from "./scenarios";
 
 const BASE = location.origin;
 const server = setupServer(...handlers);
@@ -266,7 +266,17 @@ describe("msw handlers of the screens", () => {
       expect(events[0]).toMatchObject({ event: "analysis", summary: { state: { state: "planning" } } });
       expect(events[1]).toMatchObject({ event: "question", question: { step_id: "f1.5" } });
       expect(states(events).slice(1)).toEqual([
-        ...[0, 1, 2, 3, 4, 5].map((done) => ({ state: "running", done, total: 5 })),
+        ...[0, 1, 2, 3, 4].map((done) => ({
+          state: "running",
+          done,
+          total: 5,
+          stage: {
+            kind: "flow",
+            flow: { index: done + 1, title: FLOW_TITLES[done] },
+            started_at: expect.any(String),
+          },
+        })),
+        { state: "running", done: 5, total: 5 },
         { state: "finished", total: 5 },
       ]);
     },

@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
-use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::sse::{Event, Sse};
 use axum::routing::get;
 use chrono::Utc;
 use contracts::api::error::ApiErrorCode;
@@ -18,13 +18,14 @@ use contracts::routes::ANALYSIS_EVENTS;
 use db::error::DbError;
 use futures::stream::{self, Stream, StreamExt};
 use tokio::sync::broadcast;
+use tokio::time::MissedTickBehavior;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::Session;
 use crate::state::AppState;
 
-/// Keep-alive comment interval.
-const KEEP_ALIVE: Duration = Duration::from_secs(15);
+/// Interval of the `heartbeat` event, which also keeps proxies from closing an idle stream.
+const HEARTBEAT: Duration = Duration::from_secs(15);
 
 /// The event stream could not be opened.
 #[derive(Debug, thiserror::Error)]
@@ -90,13 +91,44 @@ async fn analysis_events(
             .into_iter()
             .map(|question| AnalysisEvent::Question { question }),
     );
-    let events = stream::iter(snapshot).chain(live_events(live));
+    let events = analysis_stream(snapshot, live);
     Ok(Sse::new(
         events
-            .filter_map(|event| async move { sse_event(&event) })
+            .then(move |mut event| {
+                let state = state.clone();
+                let user = session.user_id.clone();
+                async move {
+                    if let Err(error) = personalize_event(&state, &user, &mut event).await {
+                        tracing::warn!(%error, "SSE ownership projection failed; closing stream");
+                        return None;
+                    }
+                    Some(event)
+                }
+            })
+            .take_while(|event| std::future::ready(event.is_some()))
+            .filter_map(|event| async move { event.and_then(|event| sse_event(&event)) })
             .map(Ok),
-    )
-    .keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
+    ))
+}
+
+/// Reader-specific fields are computed after the shared broadcast, never cached in that broadcast.
+async fn personalize_event(
+    state: &AppState,
+    user: &str,
+    event: &mut AnalysisEvent,
+) -> Result<(), DbError> {
+    match event {
+        AnalysisEvent::Analysis { summary } => {
+            summary.has_my_state = Some(state.db.review_states().exists(user, summary.id).await?);
+        }
+        AnalysisEvent::Question { question } => {
+            let record = state.db.questions().get(question.id, Utc::now()).await?;
+            question.asked_by = record.question.asked_by;
+            question.mine = Some(record.user_id == user);
+        }
+        AnalysisEvent::Heartbeat { .. } => {}
+    }
+    Ok(())
 }
 
 /// Every question of the analysis in any state, for the snapshot.
@@ -105,6 +137,29 @@ async fn question_snapshot(
     analysis: AnalysisId,
 ) -> Result<Vec<AskQuestion>, DbError> {
     state.db.questions().list(analysis, Utc::now()).await
+}
+
+/// The snapshot, then live events and a [`AnalysisEvent::Heartbeat`] every [`HEARTBEAT`] (no database read); ends
+/// when the live events end.
+fn analysis_stream(
+    snapshot: Vec<AnalysisEvent>,
+    live: broadcast::Receiver<AnalysisEvent>,
+) -> impl Stream<Item = AnalysisEvent> {
+    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let heartbeats = stream::unfold(ticks, |mut ticks| async move {
+        ticks.tick().await;
+        Some((Some(AnalysisEvent::Heartbeat { at: Utc::now() }), ticks))
+    });
+    // `None` marks the end of the live events, which ends the stream (heartbeats never end).
+    let live = live_events(live)
+        .map(Some)
+        .chain(stream::once(async { None }));
+    stream::iter(snapshot).chain(
+        stream::select(live, heartbeats)
+            .take_while(|event| std::future::ready(event.is_some()))
+            .filter_map(std::future::ready),
+    )
 }
 
 /// Live events in channel order; a subscriber that fell behind loses its stream and reconnects for a snapshot.
@@ -140,11 +195,14 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
+    use contracts::agent::JobKind;
     use contracts::api::analyses::AnalysisState;
+    use contracts::job::spec::JobPriority;
     use db::repo::DEFAULT_TENANT;
-    use db::repo::analyses::testing::{seed_analysis, seed_tenant};
-    use serde_json::Value;
+    use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis, seed_tenant};
+    use db::repo::jobs::{ClaimParams, JobStage, NewJob};
+    use serde_json::{Value, json};
     use tower::ServiceExt;
 
     use super::*;
@@ -194,6 +252,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sse_projects_ownership_per_subscriber_without_replacing_the_event_state() {
+        use contracts::api::questions::AskState;
+        use contracts::ids::{QuestionId, StepId};
+        use db::repo::questions::{NewQuestion, QuestionLimits};
+        let state = test_state().await;
+        let analysis = seed_analysis(&state.db).await.expect("analysis");
+        let id = QuestionId::new_random();
+        state
+            .db
+            .questions()
+            .create(
+                NewQuestion {
+                    id,
+                    analysis_id: analysis,
+                    step_id: StepId("f1.1".to_owned()),
+                    user_id: "u1".to_owned(),
+                    text: "Question".to_owned(),
+                },
+                QuestionLimits {
+                    per_analysis: 10,
+                    per_user: 10,
+                    user_window_start: Utc::now(),
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("question");
+        let mut question = state
+            .db
+            .questions()
+            .get(id, Utc::now())
+            .await
+            .expect("question")
+            .question;
+        question.state = AskState::Answering;
+        let shared = AnalysisEvent::Question { question };
+        for (user, mine) in [("u1", true), ("u2", false)] {
+            let mut event = shared.clone();
+            personalize_event(&state, user, &mut event)
+                .await
+                .expect("projection");
+            let wire = serde_json::to_value(event).expect("wire");
+            assert_eq!(wire["question"]["mine"], mine);
+            assert_eq!(wire["question"]["asked_by"], "lklimek");
+            assert_eq!(
+                wire["question"]["state"], "answering",
+                "ownership reads must not reorder state"
+            );
+        }
+        assert!(
+            serde_json::to_value(shared).expect("wire")["question"]
+                .get("mine")
+                .is_none()
+        );
+        state
+            .db
+            .review_states()
+            .put(
+                "u1",
+                analysis,
+                &contracts::api::review::ReviewState::default(),
+                Utc::now(),
+            )
+            .await
+            .expect("state");
+        for (user, mine) in [("u1", true), ("u2", false)] {
+            let mut event = AnalysisEvent::Analysis {
+                summary: state
+                    .db
+                    .analyses()
+                    .summary(analysis)
+                    .await
+                    .expect("summary"),
+            };
+            personalize_event(&state, user, &mut event)
+                .await
+                .expect("projection");
+            assert_eq!(
+                serde_json::to_value(event).expect("wire")["summary"]["has_my_state"],
+                mine
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn sse_emits_snapshot_then_progress_for_a_scripted_sequence() {
         let state = test_state().await;
         let analysis = seed_analysis(&state.db).await.expect("seed");
@@ -210,8 +353,16 @@ mod tests {
             "SSE content type"
         );
         let script = [
-            AnalysisState::Running { done: 0, total: 2 },
-            AnalysisState::Running { done: 1, total: 2 },
+            AnalysisState::Running {
+                done: 0,
+                total: 2,
+                stage: None,
+            },
+            AnalysisState::Running {
+                done: 1,
+                total: 2,
+                stage: None,
+            },
             AnalysisState::Finished { total: 2 },
         ];
         let writer = {
@@ -244,6 +395,99 @@ mod tests {
             .collect();
         assert_eq!(states[1..], expected[..]);
         assert_eq!(events[0].1["summary"]["pr"]["number"], 482);
+    }
+
+    /// A reconnect reads the stage from the database: `started_at` is the claim time on every snapshot.
+    #[tokio::test]
+    async fn snapshot_carries_the_stage_started_at_the_claim() {
+        let state = test_state().await;
+        let analysis = seed_analysis(&state.db).await.expect("seed");
+        let claimed_at = Utc
+            .with_ymd_and_hms(2026, 11, 17, 9, 30, 0)
+            .single()
+            .expect("time");
+        state
+            .db
+            .jobs()
+            .enqueue(
+                NewJob {
+                    spec: job_spec(analysis, JobKind::Plan),
+                    priority: JobPriority::Batch,
+                    stage: JobStage::Plan { batch: 1 },
+                    generation: 0,
+                },
+                claimed_at,
+            )
+            .await
+            .expect("enqueue");
+        let cookie = session_cookie(&state, DEFAULT_TENANT).await;
+        let stage_on_connect = || async {
+            let response = router(state.clone())
+                .oneshot(events_request(analysis, Some(&cookie)))
+                .await
+                .expect("infallible");
+            let events = read_events(response.into_body(), 1).await;
+            events[0].1["summary"]["state"]["stage"].clone()
+        };
+        assert_eq!(
+            stage_on_connect().await,
+            json!({"kind": "plan", "started_at": null}),
+            "queued: waiting for the runner"
+        );
+        state
+            .db
+            .jobs()
+            .claim(ClaimParams {
+                credential_ids: &[CREDENTIAL.to_owned()],
+                job_token_hash: b"hash",
+                lease_until: claimed_at + chrono::TimeDelta::hours(1),
+                now: claimed_at,
+            })
+            .await
+            .expect("claim")
+            .expect("claimed");
+        for connect in ["first", "reconnect"] {
+            assert_eq!(
+                stage_on_connect().await,
+                json!({"kind": "plan", "started_at": claimed_at}),
+                "{connect}"
+            );
+        }
+    }
+
+    /// A `heartbeat` every 15 s while the stream is open; the stream ends with the live channel.
+    #[tokio::test(start_paused = true)]
+    async fn heartbeat_every_15_s_until_the_live_channel_ends() {
+        let (sender, receiver) = broadcast::channel(4);
+        let start = tokio::time::Instant::now();
+        let mut events = Box::pin(analysis_stream(Vec::new(), receiver));
+        for n in 1..=2 {
+            let event = tokio::time::timeout(Duration::from_secs(16), events.next())
+                .await
+                .expect("a heartbeat within 15 s")
+                .expect("heartbeat");
+            assert_eq!(start.elapsed(), Duration::from_secs(15) * n);
+            assert_eq!(event.name(), "heartbeat");
+            let data = serde_json::to_value(&event).expect("json");
+            let mut keys: Vec<&str> = data
+                .as_object()
+                .expect("object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["at", "event"], "{data}");
+            assert_eq!(data["event"], "heartbeat");
+            assert!(data["at"].is_string(), "{data}");
+        }
+        let live = AnalysisEvent::Heartbeat {
+            at: chrono::DateTime::UNIX_EPOCH,
+        };
+        sender.send(live.clone()).expect("send");
+        assert_eq!(events.next().await, Some(live), "live events pass at once");
+        assert_eq!(start.elapsed(), Duration::from_secs(30));
+        drop(sender);
+        assert_eq!(events.next().await, None, "ends with the live channel");
     }
 
     #[tokio::test]

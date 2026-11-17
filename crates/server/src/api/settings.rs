@@ -150,6 +150,7 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
         .credential_unusable_since(&session.tenant_id)
         .await?;
     Ok(Settings {
+        memcan_status: Some(state.config.memcan.status()),
         llm_status: llm_status(last_call, unusable_since),
         language: user.language,
         app_installations: installations(state, session).await,
@@ -217,6 +218,9 @@ pub(crate) fn plain_failure(failure: Option<CallFailure>) -> &'static str {
         Some(CallFailure::UsageLimited) => USAGE_LIMIT,
         Some(CallFailure::Failed(kind)) => match kind {
             JobFailureKind::CredentialUnusable => SIGN_IN_NEEDED,
+            JobFailureKind::Configuration => {
+                "The server is misconfigured: a required agent skill is missing. Ask the administrator."
+            }
             JobFailureKind::ProviderFailed => PROVIDER_REJECTED,
             JobFailureKind::OutputNotJson => ANSWER_FORMAT,
             JobFailureKind::Timeout => TIMED_OUT,
@@ -276,7 +280,6 @@ mod tests {
     use crate::auth::{lock_user, store_sign_in_tokens};
     use crate::config::tests::test_config;
     use crate::github::oauth::TokenGrant;
-    use crate::jobs::queue::QueueExecutor;
     use crate::state::AppState;
     use crate::test_support::logs::LogCapture;
     use crate::test_support::session_cookie;
@@ -311,8 +314,7 @@ mod tests {
         let mut config = test_config();
         config.github.api_url = Url::parse(&format!("{}/api", github.uri())).expect("url");
         let db = Db::in_memory().await.expect("db");
-        let executor = std::sync::Arc::new(QueueExecutor::new(db.clone()));
-        let state = AppState::new(config, db, executor);
+        let state = AppState::with_queue(config, db);
         seed_analysis(&state.db).await.expect("analysis");
         let lock = lock_user("u1").await;
         let grant = TokenGrant {
@@ -642,6 +644,14 @@ mod tests {
             text.contains("codex_output_schema"),
             "the raw text is logged: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn memcan_status_is_separate_from_the_project_profile() {
+        let h = harness().await;
+        let (_, settings) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(settings["memcan_status"]["state"], "not_checked");
+        assert_eq!(settings["memcan_status"]["last_success_at"], Value::Null);
     }
 
     #[tokio::test]

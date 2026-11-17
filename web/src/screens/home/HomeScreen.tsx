@@ -127,16 +127,16 @@ export function HomeScreen() {
                     tone="info"
                     title="Analysis found."
                     actions={
-                      <Tooltip tip="Opens the review where you left it.">
+                      <Tooltip tip="Opens this analysis; any saved progress is restored.">
                         <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
-                          Resume review
+                          Open review
                         </Link>
                       </Tooltip>
                     }
                   >
-                    This PR was analysed at {short(outcome.analysis.pr.head_sha)} (
-                    {outcome.analysis.state.total} flows). Your ticks, answers and last viewed block are kept;
-                    nothing is analysed again.
+                    {outcome.analysis.has_my_state === true
+                      ? "This PR head is already analysed. Your ticks, answers and last viewed block are kept."
+                      : "This PR head is already analysed. Open review."}
                   </Banner>
                 )}
                 {outcome?.kind === "in_progress" && (
@@ -161,9 +161,19 @@ export function HomeScreen() {
                     tone="error"
                     title="The last analysis of this PR failed."
                     actions={
-                      <Tooltip tip="Opens the failed analysis, where you can retry it.">
+                      <Tooltip
+                        tip={
+                          outcome.analysis.state.state === "failed" &&
+                          outcome.analysis.state.reason === "configuration"
+                            ? "Opens the configuration problem that needs administrator action."
+                            : "Opens the failed analysis, where you can retry it."
+                        }
+                      >
                         <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
-                          Show details and retry
+                          {outcome.analysis.state.state === "failed" &&
+                          outcome.analysis.state.reason === "configuration"
+                            ? "Show details"
+                            : "Show details and retry"}
                         </Link>
                       </Tooltip>
                     }

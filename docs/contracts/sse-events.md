@@ -2,7 +2,7 @@
 
 `GET /api/v1/analyses/{id}/events` (session). Type: `AnalysisEvent` (`crates/contracts/src/api/events.rs`).
 
-- SSE `event:` = the `event` tag (`analysis` | `question`), `data:` = the JSON of the variant. No `id:` and no
+- SSE `event:` = the `event` tag (`analysis` | `question` | `heartbeat`), `data:` = the JSON of the variant. No `id:` and no
   replay. Every event is a full snapshot of one entity (the analysis or one question), applied by id.
 - **(Re)connect = snapshot, then live events.** On every connection the server:
   1. subscribes to the analysis's in-process event channel (events are buffered from here on);
@@ -25,9 +25,26 @@
   job) or its credential's, paused by any job (another analysis, an earlier round; `paused_until` of the
   credential). When `resumes_at` passes, the state returns to planning/running. The stream stays open after a terminal state
   (re-analysis and Ask still emit) until the client closes it.
+- **Stage** (`planning`, `running`, `paused`: optional `stage {kind, flow?, started_at}`): the stage of the
+  analysis's live job, read from the jobs table on every summary (REST and SSE alike, so a reconnect snapshot
+  shows the same). Live job = the claimed or running pipeline job of the current round, else the next queued
+  or paused one in claim order; `ask` jobs are no stage. `kind` = `plan` | `pr_context` | `flow`; `flow
+  {index, title}` (1-based position in the stored plan, its title) only for `flow` and only when the stored plan
+  lists it. `started_at` = claim time of the job; null while it waits for the runner (queued, e.g. behind another
+  analysis, or paused). `stage` absent = no live job (e.g. between a job's end and the next submit). Facts only:
+  no estimate, no percentage, no provider activity. An `analysis` event is also sent whenever a job of the
+  analysis changes state (submitted, claimed, ended, requeued after a lease expiry or a released claim, paused,
+  resumed): the job's follower publishes the summary within its poll interval (250 ms), and the claim route at
+  once. A summary equal to the one published last is not sent again.
 - `question {question}`: full `AskQuestion` on every state change: `pending` → `answering` → `answered` |
   `failed`. `answered` is sent as soon as the job's output arrives before compaction (runner
   `OutputReady`, ADR-004); if that attempt is later requeued or cancelled, a new `question` event returns it to
   `answering` or `failed`. A usage limit returns it to `pending` with `resumes_at`. No token streaming in v1.
+- Reader fields are projected after the shared broadcast: `question.asked_by` is the asker's GitHub login,
+  `question.mine` compares the asker's stored user id with the subscriber, and `summary.has_my_state` checks
+  that subscriber's saved review state. Neither flag is reused across subscribers. Projection failure closes
+  the stream for a fresh reconnect; it never emits an event with another reader's ownership.
 - Activity events of jobs (commands, tool calls) are not forwarded to the browser (brief: no feed).
-- Keep-alive: an SSE comment every 15 s. Events carry no secrets and no raw agent output (summaries only).
+- `heartbeat {at}`: server time, every 15 s while the stream is open (first 15 s after connect; no database read),
+  so the client can tell an open but silent stream from a dead one. It replaces the former keep-alive comment.
+  Events carry no secrets and no raw agent output (summaries only).

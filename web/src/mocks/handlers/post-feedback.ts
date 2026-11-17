@@ -24,6 +24,7 @@ export const postFeedback = route(
       note: body.note,
       created_at: new Date().toISOString(),
       memory: "pending",
+      calibration_example: body.value === "overrated" || body.value === "underrated",
     };
     updateStore((store) => {
       store.feedback = [

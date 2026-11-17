@@ -1,15 +1,21 @@
+import { ciText } from "../section/ci";
+import { MemcanStatusLine } from "../section/MemcanStatusLine";
+import { CodeText } from "../section/CodeText";
+import { plural, testLines } from "../quiet/labels";
+import { EvidenceLinks } from "../section/EvidenceLinks";
 import { useId, type ReactNode } from "react";
 import type {
-  CiStatus,
+  Evidence,
   FitTopic,
   PrContextBlock as PrContext,
   PrSummary,
   ProjectProfileStatus,
   RelatedWork,
+  RelatedWorkLink,
   RelatedWorkKind,
   ThreadsStatus,
 } from "../../api/generated/types";
-import { dependencyFacts, evidenceText, threadsNote } from "../section/format";
+import { dependencyFacts, threadsNote } from "../section/format";
 import { LlmLine, Section, Subhead } from "../section/Section";
 
 /** The PR context as rendered. */
@@ -22,6 +28,7 @@ interface PrContextBlockProps {
   context: PrContextView;
   /** Review threads of the PR as listed (`Tour.threads`); read with `facts.threads_status`. */
   threadCount: number;
+  onEvidence?: (evidence: Evidence) => void;
 }
 
 const FIT_TOPIC: Record<FitTopic, string> = {
@@ -41,30 +48,35 @@ const RELATED_KIND: Record<RelatedWorkKind, string> = {
 
 const CARD = "mb-1.5 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12.5px]";
 
-function Related({ item }: { item: RelatedWork }) {
+function Related({ item, target }: { item: RelatedWork; target?: RelatedWorkLink }) {
+  const safe =
+    target &&
+    /^[a-zA-Z0-9-]+\/[a-zA-Z0-9_.-]+$/.test(target.repo) &&
+    !target.repo.split("/").some((s) => s === "." || s === "..") &&
+    Number.isSafeInteger(target.number) &&
+    target.number > 0 &&
+    ["pull_request", "issue"].includes(target.kind);
+  const href = safe
+    ? `https://github.com/${target.repo}/${target.kind === "pull_request" ? "pull" : "issues"}/${target.number}`
+    : undefined;
   return (
     <li className={CARD}>
-      {/* LLM text: never a link (threat model T12); only server-built GitHub links are links. */}
-      <code className="break-all">{item.reference}</code>
+      {href && target ? (
+        <a href={href} target="_blank" rel="noopener noreferrer">
+          <code>
+            {target.repo}#{target.number}
+          </code>
+        </a>
+      ) : (
+        <code className="break-all">{item.reference}</code>
+      )}
+      {(!safe || !target?.verified) && (
+        <span className="block text-muted">Target not checked against GitHub.</span>
+      )}
       <span className="block text-[11px] text-muted">{RELATED_KIND[item.kind]}</span>
-      {item.overlap}
+      <CodeText text={item.overlap} />
     </li>
   );
-}
-
-function ciLine(ci: CiStatus): string {
-  switch (ci.state) {
-    case "failing":
-      return `CI: ${ci.failing.length} of ${ci.total} checks failing`;
-    case "passing":
-      return `CI: all ${ci.total} checks passing`;
-    case "pending":
-      return `CI: ${ci.total} checks, still running`;
-    case "none":
-      return "CI: no checks reported";
-    case "not_checked":
-      return "CI: not checked";
-  }
 }
 
 function profileLines(profile: ProjectProfileStatus): string[] {
@@ -91,7 +103,7 @@ function Fact({ children }: { children: ReactNode }) {
 }
 
 /** PR context block: LLM analysis (problem, why, what it gives, related work, fit questions) and facts. */
-export function PrContextBlock({ pr, context, threadCount }: PrContextBlockProps) {
+export function PrContextBlock({ pr, context, threadCount, onEvidence }: PrContextBlockProps) {
   const headingId = useId();
   const { facts, llm } = context;
   return (
@@ -110,17 +122,18 @@ export function PrContextBlock({ pr, context, threadCount }: PrContextBlockProps
       <div className="grid grid-cols-1 items-start gap-3.5 @[1250px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section title="LLM analysis" tone="llm">
           <LlmLine />
-          <p>
-            <strong>What the change gives:</strong> {llm.what_it_gives}
-          </p>
-          <p>
-            <strong>Why it is needed:</strong> {llm.why_needed}
-          </p>
-          <p>
-            <strong>Problem:</strong> {llm.problem}
-          </p>
+          <div>
+            <strong>Problem:</strong> <CodeText text={llm.problem} />
+          </div>
+          <div>
+            <strong>Why it is needed:</strong> <CodeText text={llm.why_needed} />
+          </div>
+          <div>
+            <strong>What the change gives:</strong> <CodeText text={llm.what_it_gives} />
+          </div>
           <p className="mt-1 text-[12.5px] text-muted">
-            The LLM split this PR into {facts.flow_count} flows with {facts.step_count} steps.
+            The LLM split this PR into {plural(facts.flow_count, "flow")} with{" "}
+            {plural(facts.step_count, "step")}.
           </p>
           <Subhead>Related work</Subhead>
           {!facts.related_work_checked ? (
@@ -130,7 +143,11 @@ export function PrContextBlock({ pr, context, threadCount }: PrContextBlockProps
           ) : (
             <ul className="m-0 list-none p-0">
               {llm.related_work.map((item) => (
-                <Related key={item.reference} item={item} />
+                <Related
+                  key={item.reference}
+                  item={item}
+                  target={facts.related_work_links?.find((link) => link.reference === item.reference)}
+                />
               ))}
             </ul>
           )}
@@ -142,11 +159,11 @@ export function PrContextBlock({ pr, context, threadCount }: PrContextBlockProps
               {llm.fit_questions.map((q) => (
                 <li key={q.question} className={CARD}>
                   <span className="block text-[11px] text-muted">{FIT_TOPIC[q.topic]}</span>
-                  {q.question}
+                  <CodeText text={q.question} />
                   {q.evidence.length > 0 && (
                     <span className="text-muted">
                       {" "}
-                      Evidence: <code className="text-xs">{q.evidence.map(evidenceText).join(", ")}</code>
+                      Evidence: <EvidenceLinks evidence={q.evidence} onEvidence={onEvidence} />
                     </span>
                   )}
                 </li>
@@ -157,7 +174,7 @@ export function PrContextBlock({ pr, context, threadCount }: PrContextBlockProps
         <Section title="Facts" subtitle="From GitHub and the diff; no LLM.">
           <ul className="m-0 list-none p-0">
             <Fact>
-              {ciLine(facts.ci)}
+              {ciText(facts.ci)}
               {facts.ci.failing.length > 0 && (
                 <ul className="mt-1 list-disc pl-5">
                   {facts.ci.failing.map((check) => (
@@ -180,7 +197,10 @@ export function PrContextBlock({ pr, context, threadCount }: PrContextBlockProps
               )}
             </Fact>
             <Fact>{threadsFact(facts.threads_status, threadCount)}</Fact>
-            <Fact>{facts.counters.lines_removed_from_tests} lines removed from tests</Fact>
+            <Fact>{testLines(facts.counters)}</Fact>
+            <Fact>
+              <MemcanStatusLine status={facts.memcan_status} />
+            </Fact>
             {dependencyFacts(facts.counters).map((line) => (
               <Fact key={line}>{line}</Fact>
             ))}

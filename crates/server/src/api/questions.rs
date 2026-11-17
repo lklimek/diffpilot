@@ -109,7 +109,7 @@ async fn list(
     let questions = state
         .db
         .questions()
-        .list(analysis.id, Utc::now())
+        .list_for_user(analysis.id, &session.user_id, Utc::now())
         .await
         .map_err(|error| failure(AnalysisApiError::Db(error)))?;
     Ok(Json(questions))
@@ -126,8 +126,9 @@ async fn create(
         .await
         .map_err(|ApiFailure(error)| failure(error))?;
     let Json(request) = body.map_err(failure)?;
-    let question = ask::ask(&state, &session.user_id, &analysis, step, request)
+    let mut question = ask::ask(&state, &session.user_id, &analysis, step, request)
         .await
         .map_err(failure)?;
+    question.mine = Some(true);
     Ok((StatusCode::ACCEPTED, Json(question)))
 }

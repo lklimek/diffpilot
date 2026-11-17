@@ -1,3 +1,4 @@
+import { testLines } from "../quiet/labels";
 import type {
   Flow,
   NotAnalysedCategory,
@@ -262,10 +263,8 @@ export function QuietSummary({
     >
       {section ? (
         <>
-          <p>{plural(section.file_count, "file")}. Shown as a count only; the content was not analysed.</p>
-          {row.category === "tests" && (
-            <p>{plural(counters.lines_removed_from_tests, "line")} removed from tests.</p>
-          )}
+          <p>{plural(section.file_count, "file")}. The content was not analysed.</p>
+          {row.category === "tests" && <p>{testLines(counters)}.</p>}
           {row.category === "generated_mechanical" &&
             dependencyFacts(counters).map((line) => <p key={line}>{line}.</p>)}
           <ul className="m-0 grid list-none gap-1 p-0">

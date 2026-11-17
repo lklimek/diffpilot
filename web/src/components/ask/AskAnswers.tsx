@@ -1,14 +1,16 @@
-import type { AskQuestion, StepId } from "../../api/generated/types";
+import { CodeText } from "../section/CodeText";
+import type { AskQuestion, Evidence, StepId } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { clockText } from "../format/time";
 import { useAction } from "../inspector/action";
-import { evidenceText } from "../section/format";
+import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Tooltip } from "../tooltip/Tooltip";
 
 /** Props of the questions asked about a step and their LLM answers. */
 export interface AskAnswersProps {
   /** Questions of the current step, any order (`GET …/questions` and `question` SSE events). */
   questions: readonly AskQuestion[];
+  onEvidence?: (evidence: Evidence) => void;
   /** Asks a failed question again on its step; no button without it. One request at a time per question. */
   onAskAgain?: (step: StepId, text: string) => Promise<unknown> | void;
 }
@@ -44,7 +46,11 @@ function AskAgain({
   );
 }
 
-function Answer({ question, onAskAgain }: { question: AskQuestion } & Pick<AskAnswersProps, "onAskAgain">) {
+function Answer({
+  question,
+  onAskAgain,
+  onEvidence,
+}: { question: AskQuestion } & Pick<AskAnswersProps, "onAskAgain" | "onEvidence">) {
   switch (question.state) {
     case "pending":
       return (
@@ -64,7 +70,7 @@ function Answer({ question, onAskAgain }: { question: AskQuestion } & Pick<AskAn
       return (
         <p className="flex flex-wrap items-baseline gap-2 text-high">
           No answer: {question.failure ?? "the job failed."}
-          {onAskAgain && <AskAgain question={question} onAskAgain={onAskAgain} />}
+          {question.mine === true && onAskAgain && <AskAgain question={question} onAskAgain={onAskAgain} />}
         </p>
       );
     case "answered": {
@@ -81,10 +87,12 @@ function Answer({ question, onAskAgain }: { question: AskQuestion } & Pick<AskAn
               LLM answer
             </span>
           </Tooltip>
-          <p className="mt-0.5 whitespace-pre-wrap">{answer.answer}</p>
+          <div className="mt-0.5 whitespace-pre-wrap">
+            <CodeText text={answer.answer} />
+          </div>
           {answer.evidence.length > 0 && (
             <p className="mt-1 text-[11.5px] text-muted">
-              Lines read: {answer.evidence.map(evidenceText).join(", ")}
+              Lines read: <EvidenceLinks evidence={answer.evidence} onEvidence={onEvidence} />
             </p>
           )}
         </div>
@@ -94,7 +102,7 @@ function Answer({ question, onAskAgain }: { question: AskQuestion } & Pick<AskAn
 }
 
 /** Questions asked about a step, newest first, each with its state or its whole LLM answer (ADR-004). */
-export function AskAnswers({ questions, onAskAgain }: AskAnswersProps) {
+export function AskAnswers({ questions, onAskAgain, onEvidence }: AskAnswersProps) {
   if (questions.length === 0) {
     return <p className="text-muted">No questions asked about this step yet. Answers stay pinned here.</p>;
   }
@@ -104,10 +112,10 @@ export function AskAnswers({ questions, onAskAgain }: AskAnswersProps) {
       {newestFirst.map((q) => (
         <li key={q.id} className="grid gap-1">
           <p className="font-semibold whitespace-pre-wrap">
-            <span className="text-muted">You asked: </span>
+            <span className="text-muted">Asked by {q.mine ? "you" : (q.asked_by ?? "unknown author")}: </span>
             {q.text}
           </p>
-          <Answer question={q} onAskAgain={onAskAgain} />
+          <Answer question={q} onAskAgain={onAskAgain} onEvidence={onEvidence} />
         </li>
       ))}
     </ol>

@@ -22,7 +22,27 @@ impl Db {
     }
 }
 
+/// Whether a stored row exists; shared by review-state and summary reads.
+pub(super) async fn exists(
+    pool: &SqlitePool,
+    user: &str,
+    analysis: AnalysisId,
+) -> Result<bool, DbError> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM review_states WHERE user_id = ? AND analysis_id = ?)",
+    )
+    .bind(user)
+    .bind(analysis.to_string())
+    .fetch_one(pool)
+    .await?)
+}
+
 impl ReviewStates<'_> {
+    /// Whether the user explicitly stored any review state, including an empty state.
+    pub async fn exists(&self, user: &str, analysis: AnalysisId) -> Result<bool, DbError> {
+        exists(self.pool, user, analysis).await
+    }
+
     /// The user's review state of the analysis; empty before the first write.
     pub async fn get(&self, user_id: &str, analysis: AnalysisId) -> Result<ReviewState, DbError> {
         let row: Option<(String, Option<String>)> = sqlx::query_as(

@@ -57,3 +57,7 @@ Frozen cross-WP signatures (bodies return `NotImplemented` until filled): `jobs`
 (WP2-JOBS / WP2-INGEST), `documents` (WP2-INGEST), `feedback` (WP3-MEMCAN; WP3-REVIEW records
 `missed_by_llm`), `llm_credentials` (WP2-JOBS). Other modules are owned and shaped by their work package.
 Schema changes are change requests to the coordinator.
+
+`analyses.failure_reason` preserves the optional API failure code, including `configuration`; state transitions
+clear it together with the failure message. `llm_credentials.last_call_failure` accepts `configuration` for a
+required agent skill that could not be provided. These remain additions to the single pre-deployment schema.

@@ -408,11 +408,12 @@ async fn configured_user_overrides_login_and_id() {
     );
 }
 
-const RECORDED_REST: [&str; 4] = [
+const RECORDED_REST: [&str; 5] = [
     "rest/pull.json",
     "rest/pull-commits.json",
     "rest/pull-files.json",
     "rest/check-runs.json",
+    "rest/commit-status.json",
 ];
 
 /// `GET` of a recorded REST endpoint (path and query as recorded), anonymous or with a bearer token.
@@ -799,4 +800,27 @@ async fn moved_head_is_served_by_rest_and_graphql() {
     )
     .await;
     assert_eq!(thread["comments"]["nodes"][0]["commit"]["oid"], moved);
+}
+
+#[tokio::test]
+async fn ci_serves_skipped_neutral_and_pending_statuses() {
+    let base = spawn(config()).await;
+    let runs: Value = get_recorded(&base, "rest/check-runs.json", None)
+        .await
+        .json()
+        .await
+        .unwrap();
+    for conclusion in ["skipped", "neutral"] {
+        assert!(
+            runs["check_runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["conclusion"] == conclusion)
+        );
+    }
+    let response = get_recorded(&base, "rest/commit-status.json", None).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let statuses: Value = response.json().await.unwrap();
+    assert_eq!(statuses["statuses"][0]["state"], "pending");
 }

@@ -183,13 +183,22 @@ describe("Inspector at a step", () => {
 });
 
 describe("Inspector at a selected annotation", () => {
+  it("does not display empty was/is when selecting a consequence", () => {
+    const updated = structuredClone(tour);
+    const annotation = step(updated, "f1.5").llm.annotations.find((a) => a.id === "f1.5.a2")!;
+    annotation.was = "";
+    annotation.is = "";
+    render(<Inspector tour={updated} block={atStep("f1.5")} annotationId={annotation.id} />);
+    expect(region(/^Behaviour/)).toHaveTextContent("The LLM described no was → is change here.");
+    expect(region(/^Behaviour/).querySelector("dl")).toBeNull();
+  });
+
   it("narrows to the annotation and offers Back to step", async () => {
     const onBack = vi.fn();
     render(<Inspector tour={tour} block={atStep("f1.5")} annotationId="f1.5.a2" onBackToStep={onBack} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Consequence · line 99");
     expect(region(/^Classic diff of the selected range/)).toBeInTheDocument();
-    expect(region(/^Behaviour/)).toHaveTextContent("A timeout was returned to the caller.");
-    expect(region(/^Behaviour/)).toHaveTextContent("Line 99 (inference; src/mempool/mod.rs:129)");
+    expect(region(/^Behaviour/)).toHaveTextContent("The LLM described no was → is change here.");
     expect(region(/^Behaviour/)).not.toHaveTextContent("No retry decision");
     expect(region(/^Consequences/)).toHaveTextContent("may submit the same transaction twice");
     expect(region(/^Questions to check/)).toHaveTextContent("The LLM raised no questions");

@@ -183,8 +183,8 @@
                     "start_line": 130,
                     "end_line": 130
                   },
-                  "was": "A timeout on this call came back once as Timeout.",
-                  "is": "The same call may be sent up to 3 times.",
+                  "was": "",
+                  "is": "",
                   "text": "broadcast_tx now reaches a retrying send.",
                   "evidence": [
                     {
@@ -281,8 +281,8 @@
                     "start_line": 93,
                     "end_line": 94
                   },
-                  "was": "One attempt with the full timeout.",
-                  "is": "Up to 3 attempts, each with the full timeout.",
+                  "was": "",
+                  "is": "",
                   "text": "Every attempt gets the full per-attempt timeout, so the worst case is 3 × timeout plus delays.",
                   "evidence": []
                 }
@@ -471,8 +471,8 @@
                     "start_line": 99,
                     "end_line": 99
                   },
-                  "was": "A timeout was returned to the caller.",
-                  "is": "A timeout is retried while attempt < 3, for every method.",
+                  "was": "",
+                  "is": "",
                   "text": "mempool::broadcast_tx may submit the same transaction twice if attempt 1 reached the node and only the reply was late.",
                   "evidence": [
                     {
@@ -625,8 +625,8 @@
                     "start_line": 105,
                     "end_line": 105
                   },
-                  "was": "Callers saw Timeout after one attempt.",
-                  "is": "Callers see Exhausted after the last attempt.",
+                  "was": "",
+                  "is": "",
                   "text": "Callers that matched on Timeout no longer see it from send; wallet::fetch_balance maps only Timeout to WalletError::Offline.",
                   "evidence": [
                     {
@@ -835,8 +835,8 @@
                     "start_line": 28,
                     "end_line": 30
                   },
-                  "was": "No delay rule.",
-                  "is": "backoff = with_jitter(min(exp_delay(base, attempt), max_delay)).",
+                  "was": "",
+                  "is": "",
                   "text": "Jitter is applied after the cap, so one delay can exceed max_delay by up to half; with the default 3 attempts the delays are 200 ms and 400 ms before jitter and never reach the cap.",
                   "evidence": [
                     {
@@ -973,8 +973,8 @@
                     "start_line": 23,
                     "end_line": 23
                   },
-                  "was": "timeout = 30 s.",
-                  "is": "timeout = 5 s.",
+                  "was": "",
+                  "is": "",
                   "text": "sync::fetch_headers relied on the longer wait; CI: sync_headers::slow_peer_2000_headers fails with a timeout after 5 s.",
                   "evidence": [
                     {
@@ -1040,8 +1040,8 @@
                     "start_line": 64,
                     "end_line": 65
                   },
-                  "was": "One wait of up to 30 s.",
-                  "is": "Up to 3 waits of 5 s each, then Exhausted.",
+                  "was": "",
+                  "is": "",
                   "text": "A reply that needs 10-20 s now times out on every attempt.",
                   "evidence": [
                     {
@@ -1190,8 +1190,8 @@
                     "start_line": 13,
                     "end_line": 13
                   },
-                  "was": "Two failure variants.",
-                  "is": "Three failure variants.",
+                  "was": "",
+                  "is": "",
                   "text": "Two wildcard match sites outside the diff swallow it (wallet and peers).",
                   "evidence": [
                     {
@@ -1257,8 +1257,8 @@
                     "start_line": 121,
                     "end_line": 121
                   },
-                  "was": "The wildcard arm saw one other error.",
-                  "is": "The wildcard arm also receives Exhausted.",
+                  "was": "",
+                  "is": "",
                   "text": "The user message differs from the Timeout case.",
                   "evidence": [
                     {
@@ -1353,8 +1353,8 @@
                     "start_line": 52,
                     "end_line": 53
                   },
-                  "was": "Two ways to send: with and without retry.",
-                  "is": "One way, always with retry.",
+                  "was": "",
+                  "is": "",
                   "text": "No way is left to send a request exactly once (see flow 1, step 5).",
                   "evidence": [
                     {

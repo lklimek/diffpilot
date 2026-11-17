@@ -1,4 +1,6 @@
 import {
+  useEffect,
+  useRef,
   useId,
   useMemo,
   useState,
@@ -19,6 +21,7 @@ import type {
   PendingComment,
   RiskBand,
 } from "../../api/generated/types";
+import { CommentMarker, CommentPanel, commentsByLine, lineName } from "../comment/LineComments";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { Highlight, Token } from "./highlight";
 import { buildSegments, type Row } from "./rows";
@@ -34,6 +37,8 @@ export interface LineRef {
 export interface CodeViewProps {
   /** Lines of the range with their deterministic gutter facts (changed, deleted, moved). */
   lines: LinesResponse;
+  /** Reveal this line when this range opens, without stealing keyboard focus. */
+  revealLine?: number;
   /** LLM annotations on these lines; only their ranges get the LLM bar. */
   annotations?: readonly Annotation[];
   /** The step's LLM risk band (`assessment.risk`), styling the bar (ADR-008); null = not rated. */
@@ -42,8 +47,17 @@ export interface CodeViewProps {
   kind?: FragmentKind;
   /** GitHub review threads of the PR; those on displayed lines get a marker. */
   threads?: readonly GithubThread[];
-  /** The reviewer's pending comments; those on displayed lines get a marker. */
+  /**
+   * The reviewer's pending comments; those on displayed lines get a speech-bubble marker that opens their text,
+   * file comments whose line is not displayed get one at the top.
+   */
   comments?: readonly PendingComment[];
+  /** A pending comment to show open (from the pending-review list). */
+  revealComment?: string | null;
+  /** Replaces a pending comment's text on GitHub; Edit is offered with it. */
+  onEditComment?: (commentId: string, body: string) => Promise<void>;
+  /** Deletes a pending comment on GitHub; Delete is offered with it. */
+  onDeleteComment?: (commentId: string) => Promise<void>;
   /** The line a comment is being written on (highlighted). */
   activeLine?: LineRef | null;
   /** The annotation shown in the inspector; its highlight is outlined. */
@@ -98,7 +112,13 @@ const keyOf = (ref: LineRef) => `${ref.side}:${ref.line}`;
 interface LineContext {
   path: string;
   threads: Map<string, GithubThread[]>;
-  comments: Set<string>;
+  comments: Map<string, PendingComment[]>;
+  /** Whether the comments of a line (or `file`) are shown open. */
+  isOpen: (key: string) => boolean;
+  toggle: (key: string) => void;
+  panelId: (key: string) => string;
+  onEditComment?: (commentId: string, body: string) => Promise<void>;
+  onDeleteComment?: (commentId: string) => Promise<void>;
   activeKey: string | null;
   tabKey: string | null;
   onLineAction?: (target: CommentTarget) => void;
@@ -162,86 +182,107 @@ function Line({
           ? "bg-mv-bg"
           : "";
   const label = `Comment on ${removedLine ? "removed line" : "line"} ${line}`;
+  const mine = ctx.comments.get(key);
+  const open = mine !== undefined && ctx.isOpen(key);
   return (
-    <div
-      data-line={line}
-      data-side={side}
-      data-changed={changed || undefined}
-      data-moved={row?.moved || undefined}
-      data-removed={removed || undefined}
-      data-commenting={commenting || undefined}
-      className={`grid min-w-full grid-cols-[var(--ln)_var(--gutter)_max-content] ${background}`}
-    >
-      {ctx.onLineAction ? (
-        <button
-          type="button"
-          data-line-action
-          aria-label={label}
-          title={label}
-          tabIndex={ctx.tabKey === key ? 0 : -1}
-          onFocus={() => ctx.onFocusLine(key)}
-          onClick={(event: MouseEvent) => {
-            event.stopPropagation();
-            ctx.onLineAction?.({ path: ctx.path, side, start_line: null, line });
-          }}
-          className="sticky left-0 cursor-pointer border-0 bg-transparent p-0 pr-2.5 text-right font-[inherit] text-muted hover:text-accent hover:underline"
-        >
-          {line}
-        </button>
-      ) : (
-        <span className="sticky left-0 pr-2.5 text-right text-muted select-none">{line}</span>
-      )}
-      <span className="flex items-center gap-px select-none">
-        <span className={`h-[1.35em] w-1 ${row?.moved ? "border-l-4 border-double border-mv-bd" : ""}`} />
-        {changed ? (
-          <span data-mark="changed" className="h-[1.35em] w-1 bg-mark">
-            <span className="sr-only">changed line</span>
-          </span>
+    <>
+      <div
+        data-line={line}
+        data-side={side}
+        data-changed={changed || undefined}
+        data-moved={row?.moved || undefined}
+        data-removed={removed || undefined}
+        data-commenting={commenting || undefined}
+        className={`grid min-w-full grid-cols-[var(--ln)_var(--gutter)_max-content] ${background}`}
+      >
+        {ctx.onLineAction ? (
+          <button
+            type="button"
+            data-line-action
+            aria-label={label}
+            title={label}
+            tabIndex={ctx.tabKey === key ? 0 : -1}
+            onFocus={() => ctx.onFocusLine(key)}
+            onClick={(event: MouseEvent) => {
+              event.stopPropagation();
+              ctx.onLineAction?.({ path: ctx.path, side, start_line: null, line });
+            }}
+            className="sticky left-0 cursor-pointer border-0 bg-transparent p-0 pr-2.5 text-right font-[inherit] text-muted hover:text-accent hover:underline"
+          >
+            {line}
+          </button>
         ) : (
-          <span className="w-1" />
+          <span className="sticky left-0 pr-2.5 text-right text-muted select-none">{line}</span>
         )}
-        {removed && (
-          <Glyph mark="removed" glyph="−" text="removed line" className="text-[11px] font-bold text-high" />
-        )}
-        {row?.differs && (
-          <Glyph
-            mark="differs"
-            glyph="≠"
-            text="differs from the moved original"
-            className="text-[11px] font-bold"
-          />
-        )}
-        {remark && <Glyph mark="remark" glyph="◆" text="LLM remark" className="text-[11px]" />}
-        {(ctx.threads.get(key) ?? []).map((t) => (
-          <Glyph
-            key={t.id}
-            mark="thread"
-            glyph="⚑"
-            className="text-[12px]"
-            text={`GitHub thread by ${t.author}: ${t.excerpt}`}
-          />
-        ))}
-        {ctx.comments.has(key) && (
-          <Glyph mark="comment" glyph="▣" text="your comment" className="text-[11px] text-accent" />
-        )}
-      </span>
-      <code className="pr-4 whitespace-pre">
-        <CodeText text={text} tokens={tokens} />
-        {commenting && (
-          <span className="ml-2.5 font-sans text-[11.5px] font-bold text-accent">
-            ✎ commenting on this line
-          </span>
-        )}
-      </code>
-    </div>
+        <span className="flex items-center gap-px select-none">
+          <span className={`h-[1.35em] w-1 ${row?.moved ? "border-l-4 border-double border-mv-bd" : ""}`} />
+          {changed ? (
+            <span data-mark="changed" className="h-[1.35em] w-1 bg-mark">
+              <span className="sr-only">changed line</span>
+            </span>
+          ) : (
+            <span className="w-1" />
+          )}
+          {removed && (
+            <Glyph mark="removed" glyph="−" text="removed line" className="text-[11px] font-bold text-high" />
+          )}
+          {row?.differs && (
+            <Glyph
+              mark="differs"
+              glyph="≠"
+              text="differs from the moved original"
+              className="text-[11px] font-bold"
+            />
+          )}
+          {remark && <Glyph mark="remark" glyph="◆" text="LLM remark" className="text-[11px]" />}
+          {(ctx.threads.get(key) ?? []).map((t) => (
+            <Glyph
+              key={t.id}
+              mark="thread"
+              glyph="⚑"
+              className="text-[12px]"
+              text={`GitHub thread by ${t.author}: ${t.excerpt}`}
+            />
+          ))}
+          {mine && (
+            <CommentMarker
+              comments={mine}
+              subject={lineName(mine, removedLine)}
+              open={open}
+              panelId={ctx.panelId(key)}
+              onToggle={() => ctx.toggle(key)}
+            />
+          )}
+        </span>
+        <code className="pr-4 whitespace-pre">
+          <CodeText text={text} tokens={tokens} />
+          {commenting && (
+            <span className="ml-2.5 font-sans text-[11.5px] font-bold text-accent">
+              ✎ commenting on this line
+            </span>
+          )}
+        </code>
+      </div>
+      {open && (
+        <CommentPanel
+          id={ctx.panelId(key)}
+          comments={mine}
+          label={`Your pending comments at ${lineName(mine, removedLine)}`}
+          onEdit={ctx.onEditComment}
+          onDelete={ctx.onDeleteComment}
+        />
+      )}
+    </>
   );
 }
 
 function WasIs({ annotations, unrated }: { annotations: readonly Annotation[]; unrated: boolean }) {
-  const pairs = [...new Map(annotations.map((a) => [`${a.was}\u0000${a.is}`, a])).values()];
+  const behaviour = annotations.filter((a) => a.type === "behaviour");
+  const pairs = [...new Map(behaviour.map((a) => [`${a.was}\u0000${a.is}`, a])).values()];
   return (
     <>
       {unrated && <span className="block">Risk not rated by the LLM.</span>}
+      {pairs.length === 0 && <span className="block">No behaviour annotation on these lines.</span>}
       {pairs.map((a) => (
         <span key={a.id} className="block">
           Was: {a.was} → Is: {a.is}
@@ -382,18 +423,35 @@ function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
  */
 export function CodeView({
   lines,
+  revealLine,
   annotations = [],
   band = null,
   kind,
   threads = [],
   comments = [],
+  revealComment = null,
   activeLine = null,
   selectedAnnotation = null,
   highlight,
   onSelectAnnotation,
   onLineAction,
   onLoadDeleted,
+  onEditComment,
+  onDeleteComment,
 }: CodeViewProps) {
+  const id = useId();
+  const view = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (revealLine === undefined) return;
+    const frame = requestAnimationFrame(() => {
+      view.current
+        ?.querySelector<HTMLElement>(`[data-line="${revealLine}"][data-side="${lines.side}"]`)
+        ?.scrollIntoView?.({ block: "center", inline: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [revealLine, lines.path, lines.side, lines.from, lines.to]);
+  // Lines (and `file`) the reader opened or closed; the rest follow `revealComment`.
+  const [toggled, setToggled] = useState<ReadonlyMap<string, boolean>>(new Map());
   // One highlight call (one budget) for the range and its removed blocks, the range first.
   const fragments = useMemo(() => [lines.lines, ...lines.deleted.map((d) => d.lines)], [lines]);
   const fragmentTokens = useTokens(highlight, lines.path, fragments);
@@ -405,10 +463,28 @@ export function CodeView({
       ? s.block.lines.map((_, i) => keyOf({ side: "base", line: s.block.base_start + i }))
       : s.rows.map((r) => keyOf({ side: lines.side, line: r.line })),
   );
+  const byLine = commentsByLine(comments, lines.path);
+  // File comments without a displayed line are listed at the top of the file's code.
+  const fileComments = comments.filter(
+    (c) =>
+      c.path === lines.path && c.kind === "file" && !(c.line !== null && keys.includes(`head:${c.line}`)),
+  );
+  const revealKey =
+    revealComment === null
+      ? null
+      : fileComments.some((c) => c.id === revealComment)
+        ? "file"
+        : ([...byLine].find(([, cs]) => cs.some((c) => c.id === revealComment))?.[0] ?? null);
+  const isOpen = (key: string) => toggled.get(key) ?? key === revealKey;
   const ctx: LineContext = {
     path: lines.path,
     threads: new Map(),
-    comments: new Set(),
+    comments: byLine,
+    isOpen,
+    toggle: (key) => setToggled((all) => new Map(all).set(key, !isOpen(key))),
+    panelId: (key) => `${id}-c-${key}`,
+    onEditComment,
+    onDeleteComment,
     activeKey: activeLine && keyOf(activeLine),
     tabKey: focusKey && keys.includes(focusKey) ? focusKey : (keys[0] ?? null),
     onLineAction,
@@ -418,10 +494,6 @@ export function CodeView({
     if (t.path !== lines.path || t.side === null || t.line === null) continue;
     const key = keyOf({ side: t.side, line: t.line });
     ctx.threads.set(key, [...(ctx.threads.get(key) ?? []), t]);
-  }
-  for (const c of comments) {
-    if (c.path === lines.path && c.line !== null)
-      ctx.comments.add(keyOf({ side: c.side ?? "head", line: c.line }));
   }
 
   const maxLine = Math.max(lines.to, ...lines.deleted.map((d) => d.base_start + d.lines.length));
@@ -444,19 +516,42 @@ export function CodeView({
 
   return (
     <div
+      ref={view}
       role="region"
       aria-label={label}
       tabIndex={0}
       data-kind={kind}
       onKeyDown={moveLineFocus}
       style={{ "--ln": `${String(maxLine).length + 2}ch`, "--gutter": "46px" } as CSSProperties}
-      className={`overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${
+      className={`min-w-0 max-w-full overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${
         unchangedContext
           ? "bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]"
           : ""
       }`}
     >
       {base && <p className={`${STRIP} m-0 text-[11px] text-muted`}>Removed code at the base commit</p>}
+      {fileComments.length > 0 && (
+        <div className={`${STRIP} m-0 flex items-center gap-1.5 py-0.5 text-[11.5px] text-muted`}>
+          <CommentMarker
+            comments={fileComments}
+            subject={lines.path}
+            file
+            open={isOpen("file")}
+            panelId={ctx.panelId("file")}
+            onToggle={() => ctx.toggle("file")}
+          />
+          {fileComments.length === 1 ? "Your pending file comment" : "Your pending file comments"}
+        </div>
+      )}
+      {fileComments.length > 0 && isOpen("file") && (
+        <CommentPanel
+          id={ctx.panelId("file")}
+          comments={fileComments}
+          label={`Your pending file comments on ${lines.path}`}
+          onEdit={onEditComment}
+          onDelete={onDeleteComment}
+        />
+      )}
       {unchangedContext && (
         <p className={`${STRIP} m-0 text-[11px] font-semibold text-muted`}>
           Unchanged code: no changed lines in this range (from the diff).

@@ -38,6 +38,7 @@ use super::*;
 use crate::api::{router, runner_router};
 use crate::config::tests::test_config;
 use crate::jobs::executor::{ExecutorError, JobExecutor, JobHandle, JobRequest, JobUpdate};
+use crate::jobs::progress::ProgressHub;
 use crate::jobs::queue::QueueExecutor;
 use crate::pipeline::{self, CREDENTIAL_ID};
 use crate::test_support::logs::LogCapture;
@@ -163,7 +164,7 @@ async fn fixture_with(queue: bool, github: Option<crate::config::GithubConfig>) 
     let other = seed_analysis(&db).await.expect("seed");
     let scripted = Arc::new(Scripted::default());
     let executor: Arc<dyn JobExecutor> = if queue {
-        Arc::new(QueueExecutor::new(db.clone()))
+        Arc::new(QueueExecutor::new(db.clone(), ProgressHub::default()))
     } else {
         scripted.clone()
     };
@@ -657,6 +658,7 @@ async fn ask_job_goes_through_the_executor_as_an_interactive_ask_job() {
     );
     assert!(spec.prompt.contains("f1.5"));
     assert_eq!(spec.context_pack, None, "built at claim");
+    assert_eq!(spec.skills, ["severity"], "shared rules require severity");
     assert_eq!(spec.session, None, "set at claim");
     assert_eq!(spec.credential.id, CREDENTIAL_ID);
     assert_eq!(spec.access, contracts::job::access::AgentAccess::default());
@@ -1345,5 +1347,116 @@ async fn ask_resumes_analysis_session_with_a_context_pack_of_the_step() {
     assert_eq!(
         claim.spec.access.github, None,
         "no App installed in the test config"
+    );
+}
+
+#[tokio::test]
+async fn shared_questions_mark_the_asker_and_current_user() {
+    use db::repo::users::GithubProfile;
+    let f = fixture(false).await;
+    f.state
+        .db
+        .users()
+        .upsert_member(
+            DEFAULT_TENANT,
+            "u2",
+            &GithubProfile {
+                github_id: 2,
+                login: "colleague".to_owned(),
+                name: None,
+                avatar_url: None,
+            },
+            Utc::now(),
+        )
+        .await
+        .expect("second user");
+    let (_, mine) = f.ask("f1.5", QUESTION).await;
+    assert_eq!(mine["asked_by"], "lklimek");
+    assert_eq!(mine["mine"], true);
+    f.state
+        .db
+        .questions()
+        .create(
+            NewQuestion {
+                id: QuestionId::new_random(),
+                analysis_id: f.analysis,
+                step_id: StepId("f1.5".to_owned()),
+                user_id: "u2".to_owned(),
+                text: "Another user's question".to_owned(),
+            },
+            QuestionLimits {
+                per_analysis: 100,
+                per_user: 100,
+                user_window_start: Utc::now(),
+            },
+            Utc::now(),
+        )
+        .await
+        .expect("question");
+    let (_, listed) = f.list().await;
+    assert_eq!(listed[0]["mine"], true);
+    assert_eq!(listed[1]["asked_by"], "colleague");
+    assert_eq!(listed[1]["mine"], false);
+}
+
+#[tokio::test]
+async fn analysis_reports_only_the_current_users_stored_state() {
+    let f = fixture(false).await;
+    let read = || async {
+        let response = router(f.state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/analyses/{}", f.analysis))
+                    .header(header::COOKIE, &f.cookie)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        json_of(response).await.1
+    };
+    f.state
+        .db
+        .users()
+        .upsert_member(
+            DEFAULT_TENANT,
+            "u2",
+            &db::repo::users::GithubProfile {
+                github_id: 2,
+                login: "colleague".to_owned(),
+                name: None,
+                avatar_url: None,
+            },
+            Utc::now(),
+        )
+        .await
+        .expect("second user");
+    f.state
+        .db
+        .review_states()
+        .put(
+            "u2",
+            f.analysis,
+            &contracts::api::review::ReviewState::default(),
+            Utc::now(),
+        )
+        .await
+        .expect("colleague state");
+    assert_eq!(read().await["has_my_state"], false);
+    f.state
+        .db
+        .review_states()
+        .put(
+            "u1",
+            f.analysis,
+            &contracts::api::review::ReviewState::default(),
+            Utc::now(),
+        )
+        .await
+        .expect("state");
+    assert_eq!(
+        read().await["has_my_state"],
+        true,
+        "even an explicitly saved empty state exists"
     );
 }

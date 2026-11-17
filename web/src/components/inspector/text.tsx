@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { Basis, Evidence } from "../../api/generated/types";
-import { evidenceText } from "../section/format";
+import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Tooltip } from "../tooltip/Tooltip";
 
 // Only server-built GitHub links become links (threat model T12); anything else stays text.
@@ -19,11 +19,24 @@ export function GithubLink({ url, tip, children }: { url: string; tip: string; c
 }
 
 /** "(fact; file:line, …)" or "(inference; …)": how an LLM statement is backed (brief §1). */
-export function BasisNote({ basis, evidence }: { basis: Basis; evidence: readonly Evidence[] }) {
+export function BasisNote({
+  basis,
+  evidence,
+  onEvidence,
+}: {
+  basis: Basis;
+  evidence: readonly Evidence[];
+  onEvidence?: (e: Evidence) => void;
+}) {
   return (
     <span className="text-muted">
       ({basis}
-      {evidence.length > 0 && `; ${evidence.map(evidenceText).join(", ")}`})
+      {evidence.length > 0 && (
+        <>
+          ; <EvidenceLinks evidence={evidence} onEvidence={onEvidence} />
+        </>
+      )}
+      )
     </span>
   );
 }

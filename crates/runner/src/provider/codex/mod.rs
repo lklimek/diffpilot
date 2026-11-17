@@ -367,18 +367,15 @@ impl CodexProvider {
                 _ => {}
             }
         }
-        let Some(skills) = self
+        if call.skills.is_empty() {
+            return Ok((None, Vec::new()));
+        }
+        let skills = self
             .settings
             .skills
             .as_ref()
-            .filter(|_| !call.skills.is_empty())
-        else {
-            return Ok((None, Vec::new()));
-        };
-        let Some(given) = skills.files(&call.skills)? else {
-            tracing::warn!(job = %call.job_id, "no claudius checkout yet; the job runs without skills");
-            return Ok((None, Vec::new()));
-        };
+            .ok_or(crate::skills::SkillError::Unavailable)?;
+        let given = skills.required_files(&call.skills)?;
         if self.settings.isolation.is_some() {
             return Ok((Some(given.commit), given.files));
         }

@@ -5,6 +5,7 @@ import type {
   AnnotationId,
   BlockRef,
   CommentTarget,
+  Evidence,
   FeedbackTarget,
   LinesResponse,
   PendingReview,
@@ -46,6 +47,8 @@ interface InspectorPaneProps {
   annotationId: AnnotationId | null;
   onBackToStep: () => void;
   onSelectStep: (step: StepId) => void;
+  onEvidence: (evidence: Evidence) => void;
+  codeShown: boolean;
   pending: UseQueryResult<PendingReview>;
   comments: ReturnType<typeof useCommentActions>;
   commentLine: CommentLineState | null;
@@ -90,6 +93,11 @@ export function InspectorPane(props: InspectorPaneProps) {
   const diff = step && (
     <DiffCode
       analysisId={analysisId}
+      comments={{
+        comments: pending.data?.comments ?? [],
+        onEditComment: comments.edit,
+        onDeleteComment: comments.remove,
+      }}
       query={
         annotation
           ? { ...stepQuery(step), from: annotation.range.start_line, to: annotation.range.end_line }
@@ -110,7 +118,11 @@ export function InspectorPane(props: InspectorPaneProps) {
             The connection that delivers answers was lost. Reconnecting; answers already given are read again.
           </p>
         )}
-        <AskAnswers questions={questions.data.filter((q) => q.step_id === step.id)} onAskAgain={onAsk} />
+        <AskAnswers
+          onEvidence={props.onEvidence}
+          questions={questions.data.filter((q) => q.step_id === step.id)}
+          onAskAgain={onAsk}
+        />
       </>
     ));
 
@@ -151,6 +163,7 @@ export function InspectorPane(props: InspectorPaneProps) {
       pendingReview={pending.data ?? null}
       onBackToStep={props.onBackToStep}
       onSelectStep={props.onSelectStep}
+      onEvidence={props.onEvidence}
       dock={
         <>
           {/* While a comment is written its composer leads the dock, so its line reference is in view. */}
@@ -180,7 +193,7 @@ export function InspectorPane(props: InspectorPaneProps) {
               Stored feedback could not be read: {errorText(feedback.error)}
             </p>
           )}
-          {!commentLine && comment}
+          {!commentLine && props.codeShown && comment}
         </>
       }
     />

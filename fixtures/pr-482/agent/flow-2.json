@@ -42,8 +42,8 @@
           "basis": "fact",
           "start_line": 23,
           "end_line": 23,
-          "was": "timeout = 30 s.",
-          "is": "timeout = 5 s.",
+          "was": "",
+          "is": "",
           "text": "sync::fetch_headers relied on the longer wait; CI: sync_headers::slow_peer_2000_headers fails with a timeout after 5 s.",
           "evidence": [
             {
@@ -63,8 +63,8 @@
           "basis": "inference",
           "start_line": 23,
           "end_line": 23,
-          "was": "timeout = 30 s.",
-          "is": "timeout = 5 s.",
+          "was": "",
+          "is": "",
           "text": "Its own comment says 10-20 s and the failing CI test is about this: does sync::fetch_headers finish within 5 s for 2000 headers on slow peers?",
           "evidence": [
             {
@@ -106,8 +106,8 @@
           "basis": "fact",
           "start_line": 64,
           "end_line": 65,
-          "was": "One wait of up to 30 s.",
-          "is": "Up to 3 waits of 5 s each, then Exhausted.",
+          "was": "",
+          "is": "",
           "text": "A reply that needs 10-20 s now times out on every attempt.",
           "evidence": [
             {
@@ -127,8 +127,8 @@
           "basis": "inference",
           "start_line": 64,
           "end_line": 64,
-          "was": "One wait of up to 30 s.",
-          "is": "Waits of 5 s per attempt.",
+          "was": "",
+          "is": "",
           "text": "Is a 2000-header reply from a slow peer expected to arrive within 5 s?",
           "evidence": []
         }

@@ -204,3 +204,7 @@ The runner scrubs every known secret value (installation token, MemCan token, jo
 Codex access and refresh tokens) from events, ready outputs, results and the session files it stores, before
 they leave the job directory. Summaries never carry raw command output. `Secret` values are redacted in
 `Debug` and never logged by either side.
+
+A missing required agent skill is `JobOutcome::Failed { kind: configuration, ... }`. The server preserves the
+kind as the failed analysis's `reason`, presents a fixed administrator-action sentence, and the UI offers no
+Retry for it. This failure occurs before Codex starts; no agent output schema changes are involved.

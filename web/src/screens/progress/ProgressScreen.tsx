@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import { useAnalysisLive, useCancelAnalysis, useMe, useRetryAnalysis } from "../../api/queries";
+import { useNow } from "../../app/now";
 import { AnalysisProgress } from "../../components/progress/AnalysisProgress";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { TopBar } from "../../components/top-bar/TopBar";
@@ -19,6 +20,7 @@ export function ProgressScreen() {
   const retry = useRetryAnalysis();
   const navigate = useNavigate();
   const summary = live.summary;
+  const now = useNow();
 
   const cancelledPrUrl = summary?.state.state === "cancelled" ? summary.pr.html_url : null;
   useEffect(() => {
@@ -54,10 +56,17 @@ export function ProgressScreen() {
               })
             }
             onRetry={() => retry.mutate(analysisId)}
+            activity={
+              live.lastSignalAt !== undefined
+                ? {
+                    now,
+                    clockOffset: live.clockOffset ?? null,
+                    lastSignalAt: live.lastSignalAt,
+                    connected: !live.reconnecting,
+                  }
+                : undefined
+            }
           />
-        )}
-        {summary && live.reconnecting && (
-          <StatusMessage kind="loading">Connection lost; reconnecting…</StatusMessage>
         )}
         {failure && <StatusMessage kind="error">{errorText(failure)}</StatusMessage>}
       </main>

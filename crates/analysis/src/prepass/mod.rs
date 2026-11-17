@@ -80,6 +80,8 @@ pub struct NotRendered {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotRenderedReason {
+    /// File exceeds the code reader's per-file byte limit.
+    TooLarge,
     /// Generated file (brief §7).
     Generated,
     /// Binary file.
@@ -183,6 +185,13 @@ impl Prepass {
     /// already lists it): a binary file is never silently absent.
     pub fn not_analysed_with_binaries(&self) -> Vec<NotAnalysedSection> {
         let mut sections = self.not_analysed.clone();
+        for item in sections.iter_mut().flat_map(|section| &mut section.items) {
+            item.renderable = Some(!self.is_not_rendered(item.side, &item.file));
+            item.rule_kind = tech::rules()
+                .iter()
+                .find(|rule| rule.pattern == item.rule)
+                .map(|rule| rule.kind);
+        }
         let listed = |sections: &[NotAnalysedSection], item: &NotRendered| {
             sections
                 .iter()
@@ -198,6 +207,8 @@ impl Prepass {
                 continue;
             }
             let entry = NotAnalysedItem {
+                renderable: Some(false),
+                rule_kind: Some(contracts::api::settings::RuleKind::Binary),
                 file: item.file.clone(),
                 side: item.side,
                 ranges: None,
@@ -561,6 +572,8 @@ fn sections(files: &[FileDiff], classified: &[Classified]) -> Vec<NotAnalysedSec
                     for item in matching {
                         found = true;
                         items.push(NotAnalysedItem {
+                            renderable: None,
+                            rule_kind: None,
                             file: item.file.clone(),
                             side: item.side,
                             ranges: item.ranges.clone(),

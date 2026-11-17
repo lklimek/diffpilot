@@ -140,7 +140,7 @@ pub async fn stored_github_snapshot(
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::PathBuf;
-    use std::sync::{Arc, LazyLock};
+    use std::sync::LazyLock;
 
     use contracts::api::tour::CiState;
     use db::repo::Db;
@@ -157,7 +157,6 @@ pub(crate) mod tests {
     use crate::config::tests::test_config;
     use crate::github::app_token::tests::{mount_installation, write_key};
     use crate::github::oauth::TokenGrant;
-    use crate::jobs::queue::QueueExecutor;
     use crate::test_support::logs::LogCapture;
 
     /// User token of the seeded user `u1` in [`github_state`].
@@ -192,8 +191,7 @@ pub(crate) mod tests {
         mount_installation(server).await;
         let db = Db::in_memory().await.expect("db");
         let analysis = seed_analysis(&db).await.expect("seed");
-        let executor = Arc::new(QueueExecutor::new(db.clone()));
-        let state = AppState::new(config, db, executor);
+        let state = AppState::with_queue(config, db);
         if with_token {
             let lock = lock_user("u1").await;
             let grant = TokenGrant {
@@ -261,7 +259,7 @@ pub(crate) mod tests {
             "threads read: none exist"
         );
         let logs = capture.text();
-        assert!(logs.contains("check runs could not be read"), "{logs}");
+        assert!(logs.contains("CI source could not be read"), "{logs}");
         assert!(!logs.contains(USER_TOKEN), "{logs}");
     }
 
@@ -324,7 +322,7 @@ pub(crate) mod tests {
         let ingested = ingest_github_snapshot(&state, &summary(&state, analysis).await, "u1")
             .await
             .expect("ingest");
-        assert_eq!(ingested.ci.state, CiState::Passing);
+        assert_eq!(ingested.ci.state, CiState::NoFailures);
         assert_eq!(
             ingested.threads_status,
             ThreadsStatus::NotChecked,

@@ -138,6 +138,7 @@ fn from_row(row: &SqliteRow) -> Result<PendingFeedback, DbError> {
     Ok(PendingFeedback {
         analysis_id: parse_wire(&analysis, "feedback.analysis_id")?,
         feedback: Feedback {
+            calibration_example: Some(matches!(value.as_str(), "overrated" | "underrated")),
             id: parse_wire(&id, "feedback.id")?,
             target: parse_target(&kind, row.try_get("target_key")?)?,
             value: parse_wire(&value, "feedback.value")?,

@@ -1,6 +1,7 @@
 // Screen scenarios of the msw mocks (Home, progress, Settings), selected with `?scenario=<name>`; orthogonal to
 // the fixture states of fixtures.ts. Default settings come from the api-seed; repository settings have none yet.
 import type {
+  AnalysisStage,
   AnalysisState,
   AnalysisSummary,
   FeedbackMemory,
@@ -10,10 +11,31 @@ import type {
   RepoSettings,
   ResolvePrResponse,
   Settings,
+  StageKind,
   ThreadsStatus,
   Tour,
 } from "../api/generated/types";
 import { seedFor, seedNow } from "./fixtures";
+import { REAL_QUESTIONS, REAL_TOURS } from "./real";
+
+/** When this module loaded (the page in the browser): the start of the scenarios' running stages. */
+const LOADED = new Date().toISOString();
+const now = () => new Date().toISOString();
+/** Delay of the first scripted step (as `RUN_STEP_MS` of live-analysis, which imports this module). */
+const RUN_STEP_MS = 400;
+
+/** Titles of the fixture flows, in plan order. */
+export const FLOW_TITLES = (seedFor("default", "tour") as Tour).flows.map((f) => f.llm.title);
+
+/** A stage of kind `kind` claimed at `started_at` (null: waiting for the runner). */
+const stage = (kind: StageKind, started_at: string | null): AnalysisStage => ({ kind, started_at });
+
+/** The stage of flow `index` (1-based) of the fixture plan. */
+export const flowStage = (index: number, started_at: string | null): AnalysisStage => ({
+  kind: "flow",
+  flow: { index, title: FLOW_TITLES[index - 1] ?? `Flow ${index}` },
+  started_at,
+});
 
 /** Head of the fixture PR after it "moved" (scenario `head-moved`). */
 export const MOVED_HEAD = "d41b7a0c8e5f3a2b1c0d9e8f7a6b5c4d3e2f1a0b";
@@ -41,6 +63,10 @@ interface Scenario {
   resolve?: (seed: ResolvePrResponse) => ResolvePrResponse;
   /** The analysis stays in this state (no scripted run after Analyze). */
   analysis?: AnalysisState;
+  /** States made and published, each after its delay (ms), once the first event stream opens; the last one stays. */
+  script?: [number, () => AnalysisState][];
+  /** No heartbeats, and every event stream after the first stays silent (a dead server behind an open socket). */
+  silent?: true;
   /** `settings` answer. */
   settings?: Settings;
   /** `repos/{owner}/{name}/settings` answer; null = not known yet (409 `analysis_not_finished`). */
@@ -203,10 +229,36 @@ const SCENARIOS = {
     resolve: (seed: ResolvePrResponse) => ({ ...seed, commenting_available: false }),
     settings: { ...SETTINGS, app_installations: [] },
   },
-  planning: { analysis: { state: "planning" } },
-  running: { analysis: { state: "running", done: 2, total: 5 } },
-  paused: { analysis: { state: "paused", resumes_at: "2026-11-17T14:20:00Z", done: 2, total: 5 } },
-  "paused-unknown": { analysis: { state: "paused", resumes_at: null, done: 0, total: null } },
+  planning: { analysis: { state: "planning", stage: stage("plan", LOADED) } },
+  // A one-flow PR: planning, then the PR context, then flow 1 (no flow done yet).
+  "first-flow": {
+    analysis: { state: "planning", stage: stage("plan", LOADED) },
+    script: [
+      [RUN_STEP_MS, () => ({ state: "running", done: 0, total: 1, stage: stage("pr_context", now()) })],
+      [30_000, () => ({ state: "running", done: 0, total: 1, stage: flowStage(1, now()) })],
+    ],
+  },
+  // The plan job waits behind another analysis's job.
+  waiting: { analysis: { state: "planning", stage: stage("plan", null) } },
+  // One job ended, the next is not submitted yet.
+  "between-jobs": { analysis: { state: "running", done: 1, total: 5 } },
+  "signal-lost": {
+    analysis: { state: "running", done: 2, total: 5, stage: flowStage(3, LOADED) },
+    silent: true,
+  },
+  running: { analysis: { state: "running", done: 2, total: 5, stage: flowStage(3, LOADED) } },
+  paused: {
+    analysis: {
+      state: "paused",
+      resumes_at: "2026-11-17T14:20:00Z",
+      done: 2,
+      total: 5,
+      stage: flowStage(3, null),
+    },
+  },
+  "paused-unknown": {
+    analysis: { state: "paused", resumes_at: null, done: 0, total: null, stage: stage("plan", null) },
+  },
   failed: {
     analysis: {
       state: "failed",
@@ -236,6 +288,17 @@ const SCENARIOS = {
   "repo-not-known": { repoSettings: null },
   "binary-file": { tour: withBinaryFile },
   "comment-published": { commentPublished: true },
+  // Real PRs (mocks/real): their tours and questions, synthetic file text, no pending comments.
+  "real-small": {
+    tour: () => realTour()!,
+    questions: () => REAL_QUESTIONS,
+    pendingReview: (seed) => ({ ...seed, comments: [] }),
+  },
+  "real-tiny": {
+    tour: () => realTour()!,
+    questions: () => [],
+    pendingReview: (seed) => ({ ...seed, comments: [] }),
+  },
   "pending-incomplete": { pendingReview: (seed) => ({ ...seed, incomplete: true }) },
   "threads-partial": { tour: (seed) => withThreads(seed, "partial") },
   "threads-not-checked": { tour: (seed) => withThreads(seed, "not_checked") },
@@ -262,6 +325,13 @@ let current: ScenarioName | null = null;
 export function setScenario(name: ScenarioName | null): void {
   if (name !== null && !(name in SCENARIOS)) throw new Error(`unknown scenario "${String(name)}"`);
   current = name;
+}
+
+/** The real tour of a `real-*` scenario, with the mocks' analysis id; undefined for the fixture PR. */
+export function realTour(): Tour | undefined {
+  if (current !== "real-small" && current !== "real-tiny") return undefined;
+  const tour = REAL_TOURS[current];
+  return { ...tour, analysis: { ...tour.analysis, id: (seedNow("analysis") as AnalysisSummary).id } };
 }
 
 /** The selected scenario's overrides. */

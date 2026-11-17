@@ -3,22 +3,37 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
 import type { AnalysisState } from "../../api/generated/types";
-import { AnalysisProgress } from "./AnalysisProgress";
+import { AnalysisProgress, SILENT_MS, type ProgressActivity } from "./AnalysisProgress";
 
-function show(state: AnalysisState, busy = false) {
+function show(state: AnalysisState, busy = false, activity?: ProgressActivity) {
   const onCancel = vi.fn();
   const onRetry = vi.fn();
-  render(
+  const view = render(
     <AnalysisProgress
       state={state}
       reviewHref="/analyses/a1"
       busy={busy}
       onCancel={onCancel}
       onRetry={onRetry}
+      activity={activity}
     />,
   );
-  return { onCancel, onRetry };
+  return { onCancel, onRetry, ...view };
 }
+
+const NOW = Date.parse("2026-11-17T10:00:00Z");
+const MIN = 60_000;
+/** Connected, last server signal `signalAgo` ms ago, browser clock `offset` ms ahead of the server's. */
+const activity = (over: Partial<ProgressActivity> = {}): ProgressActivity => ({
+  now: NOW,
+  clockOffset: 0,
+  lastSignalAt: NOW - 5000,
+  connected: true,
+  ...over,
+});
+/** Started on the server `ago` ms before NOW (server clock). */
+const startedAgo = (ago: number) => new Date(NOW - ago).toISOString();
+const indicator = () => document.querySelector("[data-activity]");
 
 const bar = () => screen.getByRole("progressbar", { name: "Analysis progress" });
 const buttons = () => screen.queryAllByRole("button").map((b) => b.textContent);
@@ -147,4 +162,193 @@ describe("AnalysisProgress (brief §4.2)", () => {
       unmount();
     }
   });
+
+  describe("current stage and liveness (sse-events.md: stage, heartbeat)", () => {
+    const flowStage = (started_at: string | null) => ({
+      kind: "flow" as const,
+      flow: { index: 3, title: "Default timeout 30 s → 5 s" },
+      started_at,
+    });
+    it.each([
+      [{ state: "planning", stage: { kind: "plan", started_at: startedAgo(MIN) } }, "Planning the review."],
+      [
+        { state: "running", done: 0, total: 4, stage: { kind: "pr_context", started_at: startedAgo(MIN) } },
+        "Reading the PR context.",
+      ],
+      [
+        { state: "running", done: 2, total: 4, stage: flowStage(startedAgo(MIN)) },
+        "Analysing flow 3 of 4: Default timeout 30 s → 5 s",
+      ],
+      [
+        { state: "running", done: 2, total: 4, stage: { kind: "flow", started_at: startedAgo(MIN) } },
+        "Analysing a flow (2 of 4 still to do).",
+      ],
+      [
+        { state: "running", done: 2, total: 4, stage: flowStage(null) },
+        "Waiting for the runner; next: analysing flow 3 of 4: Default timeout 30 s → 5 s",
+      ],
+      [
+        { state: "planning", stage: { kind: "plan", started_at: null } },
+        "Waiting for the runner; next: planning the review.",
+      ],
+      [{ state: "running", done: 1, total: 4 }, "Between two jobs: the server starts the next one."],
+    ] as [AnalysisState, string][])("names the stage from the server: %j", (state, text) => {
+      show(state, false, activity());
+      const line = screen.getByText(text);
+      expect(line).toBeVisible();
+      expect(line.closest('[aria-live="polite"]')).not.toBeNull();
+      expectTrustWording(document.body.textContent ?? "");
+    });
+
+    it("shows an LLM flow title as plain text, on one line and shortened", () => {
+      const title = `<b>Retry</b>\n${"x".repeat(200)}`;
+      show(
+        {
+          state: "running",
+          done: 0,
+          total: 1,
+          stage: { kind: "flow", flow: { index: 1, title }, started_at: null },
+        },
+        false,
+        activity(),
+      );
+      const line = screen.getByText(/^Waiting for the runner; next: analysing flow 1 of 1: /);
+      expect(line.querySelector("b")).toBeNull();
+      expect(line.textContent).toContain("<b>Retry</b> xxx");
+      expect(line.textContent!.endsWith("…")).toBe(true);
+      expect(line.textContent!.length).toBeLessThan(160);
+    });
+
+    it.each([
+      { state: "paused", resumes_at: null, done: 1, total: 3, stage: flowStage(null) },
+      { state: "failed", flow: null, message: "Failed." },
+      { state: "finished", total: 3 },
+    ] as AnalysisState[])(
+      "paused and ended analyses keep their own text, no stage line or indicator: %j",
+      (state) => {
+        show(state, false, activity());
+        expect(
+          screen.queryByText(
+            /^(Planning the review|Reading the PR context|Analysing|Waiting for the runner|Between two jobs)/,
+          ),
+        ).toBeNull();
+        expect(indicator()).toBeNull();
+      },
+    );
+
+    it("elapsed time from started_at on the server's clock (browser clock offset removed), never negative", () => {
+      const state: AnalysisState = {
+        state: "running",
+        done: 2,
+        total: 4,
+        stage: flowStage(startedAgo(2 * MIN + 30_000)),
+      };
+      const { rerender } = show(state, false, activity());
+      expect(indicator()).toHaveTextContent("Working · this stage started 2 min ago");
+      const again = (a: ProgressActivity, st: AnalysisState = state) =>
+        rerender(
+          <AnalysisProgress
+            state={st}
+            reviewHref="/r"
+            busy={false}
+            onCancel={() => {}}
+            onRetry={() => {}}
+            activity={a}
+          />,
+        );
+      // Browser clock 10 min ahead of the server: still 2 min.
+      again(activity({ now: NOW + 10 * MIN, clockOffset: 10 * MIN, lastSignalAt: NOW + 10 * MIN }));
+      expect(indicator()).toHaveTextContent("Working · this stage started 2 min ago");
+      // Started "in the future" by a few seconds of clock jitter: not negative.
+      again(activity(), { ...state, stage: flowStage(startedAgo(-5000)) });
+      expect(indicator()).toHaveTextContent("Working · this stage started less than a minute ago");
+      again(activity(), { ...state, stage: flowStage(startedAgo(75 * MIN)) });
+      expect(indicator()).toHaveTextContent("Working · this stage started 1 h 15 min ago");
+      // No heartbeat yet: the server's clock is not known, so no time is claimed.
+      again(activity({ clockOffset: null }));
+      expect(indicator()).toHaveTextContent(/^Working$/);
+    });
+
+    it("waiting for the runner: no indicator and no elapsed time", () => {
+      show({ state: "running", done: 2, total: 4, stage: flowStage(null) }, false, activity());
+      expect(indicator()).toBeNull();
+      expect(screen.queryByText(/stage started/)).toBeNull();
+    });
+
+    it("a long flow with recent heartbeats stays Working", () => {
+      show(
+        { state: "running", done: 2, total: 4, stage: flowStage(startedAgo(40 * MIN)) },
+        false,
+        activity({ lastSignalAt: NOW - 15_000 }),
+      );
+      expect(indicator()).toHaveTextContent("Working · this stage started 40 min ago");
+      expect(screen.queryByText(/No signal from the server/)).toBeNull();
+    });
+
+    it("keeps the elapsed time out of the live region", () => {
+      show(
+        { state: "planning", stage: { kind: "plan", started_at: startedAgo(2 * MIN) } },
+        false,
+        activity(),
+      );
+      expect(screen.getByText(/stage started/).closest("[aria-live]")).toBeNull();
+    });
+
+    it("no signal for more than 45 s: says so with the real time, stops the indicator and the bar's motion", () => {
+      show(
+        { state: "planning", stage: { kind: "plan", started_at: startedAgo(3 * MIN) } },
+        false,
+        activity({ lastSignalAt: NOW - SILENT_MS - 7000 }),
+      );
+      const notice = screen.getByText("No signal from the server for 52 s; reconnecting…");
+      expect(notice.closest('[aria-live="polite"]')).not.toBeNull();
+      expect(indicator()).toBeNull();
+      expect(bar().querySelector("[class*='animate-']")).toBeNull();
+      expect(screen.getByText("This stage started 3 min ago")).toBeVisible();
+      expectTrustWording(document.body.textContent ?? "");
+    });
+
+    it("counts minutes after two minutes of silence; not silent just under 45 s", () => {
+      const state: AnalysisState = {
+        state: "planning",
+        stage: { kind: "plan", started_at: startedAgo(MIN) },
+      };
+      const { unmount } = show(state, false, activity({ lastSignalAt: NOW - 3 * MIN - 1000 }));
+      expect(screen.getByText("No signal from the server for 3 min; reconnecting…")).toBeVisible();
+      unmount();
+      show(state, false, activity({ lastSignalAt: NOW - SILENT_MS + 1000 }));
+      expect(screen.queryByText(/No signal/)).toBeNull();
+      expect(indicator()).not.toBeNull();
+    });
+
+    it("a dropped connection says it reconnects and shows no activity", () => {
+      show(
+        { state: "planning", stage: { kind: "plan", started_at: startedAgo(MIN) } },
+        false,
+        activity({ connected: false }),
+      );
+      expect(screen.getByText("Connection lost; reconnecting…")).toBeVisible();
+      expect(indicator()).toBeNull();
+    });
+
+    it("under reduced motion nothing animates and the word Working is the static alternative", () => {
+      show({ state: "planning", stage: { kind: "plan", started_at: startedAgo(MIN) } }, false, activity());
+      for (const animated of document.querySelectorAll("[class*='animate-']")) {
+        expect(animated.className).not.toMatch(/(^|\s)animate-/);
+      }
+      expect(indicator()).toHaveTextContent("Working");
+      expect(indicator()!.querySelector(".motion-safe\\:animate-pulse")).not.toBeNull();
+    });
+  });
+});
+
+it("configuration failure asks the administrator and offers no Retry", () => {
+  show({
+    state: "failed",
+    reason: "configuration",
+    flow: null,
+    message: "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+  });
+  expect(screen.getByText(/Ask the administrator/)).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 });

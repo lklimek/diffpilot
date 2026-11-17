@@ -44,9 +44,22 @@ pub fn compute<'t>(
     text: &dyn Fn(LineSide, &str) -> Option<&'t str>,
 ) -> CounterFacts {
     let mut removed_test_lines = Vec::new();
+    let mut added_test_lines = 0_u32;
     let mut dependencies: BTreeMap<String, Vec<Evidence>> = BTreeMap::new();
     let mut not_checked = Vec::new();
     for file in files {
+        if file.path_on(LineSide::Head).is_some_and(|path| {
+            classified.iter().any(|item| {
+                item.side == LineSide::Head
+                    && item.file == path
+                    && item.category == NotAnalysedCategory::Tests
+            })
+        }) {
+            for hunk in &file.hunks {
+                added_test_lines = added_test_lines
+                    .saturating_add(u32::try_from(hunk.added.len()).unwrap_or(u32::MAX));
+            }
+        }
         let test_file = file.path_on(LineSide::Base).filter(|path| {
             classified.iter().any(|item| {
                 item.side == LineSide::Base
@@ -81,6 +94,7 @@ pub fn compute<'t>(
     CounterFacts {
         counters: Counters {
             lines_removed_from_tests: lines_removed,
+            lines_added_to_tests: Some(added_test_lines),
             dependencies_changed: dependencies.keys().cloned().collect(),
             dependency_files_not_checked: not_checked.clone(),
         },
@@ -265,6 +279,28 @@ mod tests {
             badge: ProvenanceBadge::ClassifiedByPath,
             rule: "tests/**".to_owned(),
         }
+    }
+
+    #[test]
+    fn edited_test_lines_and_a_new_test_are_reported_as_churn() {
+        let path = "internal/statesync/dispatcher_test.go";
+        let files = [file(
+            path,
+            FileStatus::Modified,
+            vec![
+                hunk((85, 1), (85, 1)),
+                hunk((130, 1), (130, 1)),
+                hunk((167, 1), (167, 1)),
+                hunk((189, 0), (189, 53)),
+                hunk((407, 1), (460, 1)),
+            ],
+        )];
+        let mut head = tests_item(path);
+        head.side = LineSide::Head;
+        let facts = compute(&files, &[tests_item(path), head], &|_, _| None);
+        let wire = serde_json::to_value(facts.counters).expect("wire");
+        assert_eq!(wire["lines_removed_from_tests"], 4);
+        assert_eq!(wire["lines_added_to_tests"], 57);
     }
 
     #[test]

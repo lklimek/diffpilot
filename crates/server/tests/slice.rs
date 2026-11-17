@@ -38,6 +38,7 @@ use server::auth::{lock_user, store_sign_in_tokens};
 use server::config::Config;
 use server::github::oauth::TokenGrant;
 use server::jobs::executor::{ExecutorError, JobExecutor, JobHandle, JobRequest, JobUpdate};
+use server::jobs::progress::ProgressHub;
 use server::jobs::queue::QueueExecutor;
 use server::secrets::sha256;
 use server::state::AppState;
@@ -119,6 +120,7 @@ enum Script {
     Fail,
     /// Fails with this runner text.
     FailWith(String),
+    Configuration,
     Pending,
     /// Paused by the usage limit; returns the fixture output once notified.
     PausedUntil(Arc<tokio::sync::Notify>),
@@ -227,6 +229,10 @@ impl JobExecutor for ScriptedExecutor {
             Some(Script::Fail) => JobOutcome::Failed {
                 kind: JobFailureKind::ProviderFailed,
                 message: "the provider exited with an error".to_owned(),
+            },
+            Some(Script::Configuration) => JobOutcome::Failed {
+                kind: JobFailureKind::Configuration,
+                message: "private diagnostic: missing severity".to_owned(),
             },
             Some(Script::FailWith(message)) => JobOutcome::Failed {
                 kind: JobFailureKind::ProviderFailed,
@@ -390,6 +396,15 @@ async fn harness_with_app(app: bool) -> Harness {
         .mount(&github)
         .await;
 
+    let statuses = read_json(&fixtures().join("github/rest/commit-status.json"));
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/repos/acme/node-client/commits/{head}/status"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&statuses["response"]))
+        .mount(&github)
+        .await;
+
     let db = Db::in_memory().await.expect("db");
     let executor = Arc::new(ScriptedExecutor::default());
     let app_key = app.then(|| {
@@ -524,11 +539,9 @@ impl Harness {
 
     /// The harness with the real job queue as executor; runner calls go through [`Harness::runner`].
     fn with_queue(self) -> Self {
-        let queue = Arc::new(QueueExecutor::new(self.state.db.clone()));
-        let state = AppState::new(
+        let state = AppState::with_queue(
             config(self._dir.path(), &self.github, None),
             self.state.db.clone(),
-            queue,
         );
         Self { state, ..self }
     }
@@ -1240,9 +1253,8 @@ async fn other_tenants_analysis_is_not_found() {
         assert_eq!(body["code"], json!("not_found"));
     }
     let summary = h.state.db.analyses().summary(id).await.expect("summary");
-    assert_eq!(
-        summary.state,
-        AnalysisState::Planning,
+    assert!(
+        matches!(summary.state, AnalysisState::Planning { .. }),
         "untouched by the other tenant"
     );
 }
@@ -1416,6 +1428,7 @@ async fn fail_flow_2(h: &Harness, script: Script) -> AnalysisSummary {
 fn assert_failed_in_f2_and_nothing_after_it(h: &Harness, summary: &AnalysisSummary, message: &str) {
     match &summary.state {
         AnalysisState::Failed {
+            reason: None,
             flow: Some(flow),
             message: text,
         } => {
@@ -1453,12 +1466,17 @@ async fn restart_with_failing_preparation_cancels_live_jobs() {
     let h = harness().await;
     // The head commit is not on the remote: preparing the analysis (fetch) fails at restart.
     let id = h.seed_analysis_at(Some("f".repeat(40))).await;
-    let queue: Arc<QueueExecutor> = Arc::new(QueueExecutor::new(h.state.db.clone()));
-    let state = AppState::new(
-        config(h._dir.path(), &h.github, None),
-        h.state.db.clone(),
-        queue.clone(),
-    );
+    let progress = ProgressHub::default();
+    let queue: Arc<QueueExecutor> =
+        Arc::new(QueueExecutor::new(h.state.db.clone(), progress.clone()));
+    let state = AppState {
+        progress,
+        ..AppState::new(
+            config(h._dir.path(), &h.github, None),
+            h.state.db.clone(),
+            queue.clone(),
+        )
+    };
     let pending = queue
         .submit(JobRequest {
             spec: db::repo::analyses::testing::job_spec(id, JobKind::Plan),
@@ -1514,6 +1532,7 @@ async fn create_returns_at_once_and_lines_wait_for_preparation() {
     let ended = h.wait_until_ended(&id).await;
     match ended.state {
         AnalysisState::Failed {
+            reason: None,
             flow: None,
             message,
         } => {
@@ -1574,7 +1593,10 @@ async fn tour_has_no_uncomputed_fact() {
         json!("not_checked"),
         "CI read from the snapshot"
     );
-    assert_eq!(facts["ci"]["total"], json!(runs));
+    assert_eq!(facts["ci"]["total"], json!(runs + 1));
+    assert_eq!(facts["ci"]["statuses"]["pending"], 1);
+    assert_eq!(facts["ci"]["check_runs"]["skipped"], 1);
+    assert_eq!(facts["ci"]["check_runs"]["neutral"], 1);
     assert_eq!(facts["threads_status"], json!("checked"));
     let recorded = read_json(&fixtures().join("github/graphql/review-threads.json"));
     let nodes = recorded["response"]["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
@@ -1710,6 +1732,7 @@ async fn exhausted_plan_repairs_fail_the_analysis() {
     let ended = h.wait_until_ended(&id).await;
     match ended.state {
         AnalysisState::Failed {
+            reason: None,
             flow: None,
             message,
         } => {
@@ -1749,6 +1772,7 @@ async fn failure_before_any_flow_offers_retry() {
     let ended = h.wait_until_ended(&id).await;
     match &ended.state {
         AnalysisState::Failed {
+            reason: None,
             flow: None,
             message,
         } => {
@@ -1885,6 +1909,11 @@ async fn pipeline_jobs_carry_no_context_pack_at_enqueue() {
     assert!(!specs.is_empty());
     for (stage, _, spec) in specs {
         assert_eq!(spec.context_pack, None, "{stage}");
+        assert_eq!(
+            spec.skills,
+            ["severity"],
+            "{stage}: prompts require severity"
+        );
         assert_eq!(spec.session, None, "{stage}: the session is set at claim");
     }
 }
@@ -2010,6 +2039,10 @@ async fn tour_has_no_uncomputed_fact_with_the_app_installed() {
     assert_eq!(status, StatusCode::OK, "{tour}");
     let facts = &tour["pr_context"]["facts"];
     assert_eq!(facts["related_work_checked"], json!(true));
+    assert!(
+        facts["related_work_links"].is_array(),
+        "structured links must accompany related work"
+    );
     assert_eq!(
         tour["pr_context"]["llm"]["related_work"],
         agent_output("pr_context")["related_work"],
@@ -2358,6 +2391,7 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
         .set_state(
             analysis,
             &AnalysisState::Failed {
+                reason: None,
                 flow: None,
                 message: "x".to_owned(),
             },
@@ -2402,13 +2436,18 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     let paused = h
         .wait_for_state(&id, |state| matches!(state, AnalysisState::Paused { .. }))
         .await;
-    assert_eq!(
-        paused.state,
-        AnalysisState::Paused {
-            resumes_at: Some(resets_at),
-            done: 0,
-            total: None
-        }
+    assert!(
+        matches!(
+            paused.state,
+            AnalysisState::Paused {
+                resumes_at: Some(at),
+                done: 0,
+                total: None,
+                ..
+            } if at == resets_at
+        ),
+        "{:?}",
+        paused.state
     );
     let job = h.state.db.jobs().get(old.job_id).await.expect("job");
     assert_eq!(
@@ -2421,6 +2460,45 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
         record.agent_thread_id, None,
         "the late session is not applied"
     );
-    h.wait_for_state(&id, |state| *state == AnalysisState::Planning)
+    h.wait_for_state(&id, |state| matches!(state, AnalysisState::Planning { .. }))
         .await;
+}
+
+#[tokio::test]
+async fn configuration_failure_survives_storage_and_has_no_retry_message() {
+    let h = harness().await;
+    h.executor.script("plan:1", Script::Configuration);
+    let id = h.create_fixture_analysis().await;
+    h.wait_until_ended(&id).await;
+    let (status, body) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["state"]["reason"], "configuration");
+    assert_eq!(
+        body["state"]["message"],
+        "The server is misconfigured: a required agent skill is missing. Ask the administrator."
+    );
+}
+
+#[tokio::test]
+async fn oversized_mechanical_file_is_not_renderable() {
+    let h = harness().await;
+    let summary = h
+        .analyse_repo("huge-mechanical", 11, |repo| {
+            let base = commit(repo, &[("Cargo.lock", "version = 3\n")], "base");
+            let huge = "# padding\n".repeat(1024 * 1024);
+            let head = commit(repo, &[("Cargo.lock", &huge)], "large lockfile");
+            (base, head)
+        })
+        .await;
+    let (mirror, files) = server::pipeline::pr_diff(&h.state, &summary).await.unwrap();
+    let prepass = server::pipeline::prepass::ensure_for_read(&h.state, &summary, &mirror, &files)
+        .await
+        .unwrap();
+    let items = prepass.not_analysed_with_binaries();
+    let head = items
+        .iter()
+        .flat_map(|section| &section.items)
+        .find(|item| item.file == "Cargo.lock" && item.side == contracts::common::LineSide::Head)
+        .unwrap();
+    assert_eq!(head.renderable, Some(false));
 }

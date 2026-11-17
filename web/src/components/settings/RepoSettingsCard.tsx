@@ -1,14 +1,13 @@
+import { RuleLabel } from "../quiet/RuleLabel";
 import type {
   NotAnalysedCategory,
   ProfileSource,
   ProjectProfileStatus,
   RepoSettings,
-  RuleKind,
 } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SettingsCard } from "./Card";
 
-const KIND: Record<RuleKind, string> = { path_glob: "path glob", line_regex: "line regex" };
 const SECTION: Record<NotAnalysedCategory, string> = {
   tests: "Tests",
   docs_comments: "Docs & comments",
@@ -19,8 +18,8 @@ const SOURCE: Record<ProfileSource, string> = {
   memcan: "MemCan (type: project-profile)",
 };
 const COLUMNS = [
-  ["Rule", "The path glob or line regex."],
-  ["Kind", "Path globs match file paths; line regexes match single lines."],
+  ["Rule", "The path pattern, line expression or detector description."],
+  ["Kind", "The detector used: path glob, line regex, lexer, generated-file header or binary content."],
   ["Section", "The Not analysed section that matching material goes to."],
 ] as const;
 
@@ -75,7 +74,9 @@ export function RepoSettingsCard({ settings }: { settings: RepoSettings }) {
             {rules.map((rule) => (
               <tr key={`${rule.kind}:${rule.pattern}:${rule.category}`}>
                 <td className="border-b border-border px-2.5 py-2 font-mono">{rule.pattern}</td>
-                <td className="border-b border-border px-2.5 py-2">{KIND[rule.kind]}</td>
+                <td className="border-b border-border px-2.5 py-2">
+                  <RuleLabel kind={rule.kind} />
+                </td>
                 <td className="border-b border-border px-2.5 py-2">{SECTION[rule.category]}</td>
               </tr>
             ))}

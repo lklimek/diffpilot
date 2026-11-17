@@ -1,7 +1,10 @@
-import type { Counters, NotAnalysedItem, NotAnalysedSection } from "../../api/generated/types";
+import { RuleLabel } from "./RuleLabel";
+import { useState, type ReactNode } from "react";
+import { Tooltip } from "../tooltip/Tooltip";
+import type { LineRange, Counters, NotAnalysedItem, NotAnalysedSection } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { dependencyFacts, rangeText } from "../section/format";
-import { NOT_ANALYSED_LABEL, plural } from "./labels";
+import { NOT_ANALYSED_LABEL, plural, testLines } from "./labels";
 import { Note, QuietCard } from "./QuietCard";
 
 interface NotAnalysedBlockProps {
@@ -9,6 +12,8 @@ interface NotAnalysedBlockProps {
   section: NotAnalysedSection;
   /** Deterministic counters of the pre-pass (`PrContextFacts.counters`). */
   counters: Counters;
+  /** Code of an explicitly opened range. */
+  code?: (item: NotAnalysedItem, range: LineRange) => ReactNode;
 }
 
 function linesText(item: NotAnalysedItem): string {
@@ -29,7 +34,7 @@ function recognisedBy(section: NotAnalysedSection): string {
 
 function Counter({ section, counters }: NotAnalysedBlockProps) {
   if (section.category === "tests") {
-    return <p>{plural(counters.lines_removed_from_tests, "line")} removed from tests</p>;
+    return <p>{testLines(counters)}</p>;
   }
   if (section.category === "generated_mechanical") {
     return <p>{dependencyFacts(counters).join(". ")}. Dependency changes are counted, not interpreted.</p>;
@@ -38,7 +43,8 @@ function Counter({ section, counters }: NotAnalysedBlockProps) {
 }
 
 /** A Not analysed section: what a built-in rule recognised, with the deterministic counters. */
-export function NotAnalysedBlock({ section, counters }: NotAnalysedBlockProps) {
+export function NotAnalysedBlock({ section, counters, code }: NotAnalysedBlockProps) {
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const badges = [...new Set(section.items.map((i) => i.badge))];
   return (
     <QuietCard
@@ -59,6 +65,39 @@ export function NotAnalysedBlock({ section, counters }: NotAnalysedBlockProps) {
           <li key={`${item.side}:${item.file}:${item.rule}`}>
             <code>{item.file}</code> <span className="text-muted">{linesText(item)}</span> · rule{" "}
             <code>{item.rule}</code>
+            {item.rule_kind && (
+              <>
+                {" "}
+                · <RuleLabel kind={item.rule_kind} />
+              </>
+            )}
+            {code &&
+              (item.renderable ?? section.category !== "generated_mechanical") &&
+              item.badge !== "binary_content" &&
+              item.ranges?.map((range) => {
+                const key = `${item.side}:${item.file}:${range.start_line}:${range.end_line}`;
+                return (
+                  <div key={key} className="min-w-0 my-2">
+                    <Tooltip tip="Shows these lines with comment markers; click a line number to comment.">
+                      <button
+                        type="button"
+                        aria-expanded={opened.has(key)}
+                        className="cursor-pointer text-accent underline"
+                        onClick={() =>
+                          setOpened((all) => {
+                            const next = new Set(all);
+                            if (!next.delete(key)) next.add(key);
+                            return next;
+                          })
+                        }
+                      >
+                        {opened.has(key) ? "Hide" : "Show"} lines {rangeText(range)}
+                      </button>
+                    </Tooltip>
+                    {opened.has(key) && code(item, range)}
+                  </div>
+                );
+              })}
           </li>
         ))}
       </ul>

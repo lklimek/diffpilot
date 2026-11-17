@@ -10,6 +10,8 @@ import { AskForm } from "./AskForm";
 
 const question = (over: Partial<AskQuestion>): AskQuestion => ({
   id: "q1",
+  mine: true,
+  asked_by: "alice",
   step_id: "f1.5",
   text: "Is the reply deduplicated?",
   state: "pending",
@@ -250,4 +252,16 @@ describe("AskAnswers", () => {
     );
     expectTrustWording(container.textContent ?? "");
   });
+});
+
+it("renders only inline and fenced code in answers, leaving HTML and Markdown literal", () => {
+  const answer =
+    "Use `value` and **literal** [link](https://evil.test).\n```html\n<img src=x onerror=alert(1)>\n```\n<script>alert(1)</script>";
+  const { container } = render(
+    <AskAnswers questions={[question({ state: "answered", answer: { answer, evidence: [] } })]} />,
+  );
+  expect(container.querySelector("code")?.textContent).toBe("value");
+  expect(container.querySelector("pre code")?.textContent).toBe("<img src=x onerror=alert(1)>\n");
+  expect(container.querySelector("img,script,a,strong")).toBeNull();
+  expect(container).toHaveTextContent("**literal** [link](https://evil.test)");
 });

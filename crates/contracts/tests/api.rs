@@ -7,7 +7,10 @@ use contracts::agent::analyse_flow::AgentAnnotation;
 use contracts::agent::analyse_flow::{Assessment, FlowIntroduction};
 use contracts::agent::ask::AskOutput;
 use contracts::agent::pr_context::PrContextOutput;
-use contracts::api::analyses::{AnalysisState, AnalysisSummary, CreateAnalysisRequest, FlowRef};
+use contracts::api::analyses::{
+    AnalysisStage, AnalysisState, AnalysisSummary, CreateAnalysisRequest, FlowRef, StageFlow,
+    StageKind,
+};
 use contracts::api::auth::MeResponse;
 use contracts::api::code::{CommentScope, DeletedBlock, DiffResponse, LinesResponse, RangeQuery};
 use contracts::api::comments::{
@@ -38,6 +41,7 @@ use serde_json::{Value, json};
 
 fn summary() -> AnalysisSummary {
     AnalysisSummary {
+        has_my_state: None,
         id: AnalysisId::new_random(),
         pr: PrSummary {
             repo: RepoRef {
@@ -64,13 +68,18 @@ fn tour() -> Tour {
         analysis: summary(),
         pr_context: PrContextBlock {
             facts: PrContextFacts {
+                related_work_links: None,
+                memcan_status: None,
                 ci: CiStatus {
                     state: CiState::Passing,
+                    check_runs: None,
+                    statuses: None,
                     total: 6,
                     failing: vec![],
                 },
                 threads_status: ThreadsStatus::Checked,
                 counters: Counters {
+                    lines_added_to_tests: None,
                     lines_removed_from_tests: 12,
                     dependencies_changed: vec!["tokio".to_owned()],
                     dependency_files_not_checked: vec!["package-lock.json".to_owned()],
@@ -205,6 +214,7 @@ fn tour_round_trips() {
 #[test]
 fn error_codes_map_to_statuses() {
     let expected = [
+        ("configuration", 500),
         ("unauthenticated", 401),
         ("login_not_allowed", 403),
         ("csrf_rejected", 403),
@@ -327,15 +337,62 @@ fn node_kinds_follow_step_kinds() {
     }
 }
 
+fn stage_started() -> chrono::DateTime<Utc> {
+    chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 11, 17, 9, 30, 0)
+        .single()
+        .unwrap_or_default()
+}
+
 #[test]
 fn tagged_wire_formats() {
     let cases = [
         (
-            serde_json::to_value(AnalysisState::Running { done: 2, total: 5 }),
+            serde_json::to_value(AnalysisState::Running {
+                done: 2,
+                total: 5,
+                stage: None,
+            }),
             json!({"state": "running", "done": 2, "total": 5}),
         ),
         (
+            serde_json::to_value(AnalysisState::Planning { stage: None }),
+            json!({"state": "planning"}),
+        ),
+        (
+            serde_json::to_value(AnalysisState::Planning {
+                stage: Some(AnalysisStage {
+                    kind: StageKind::Plan,
+                    flow: None,
+                    started_at: None,
+                }),
+            }),
+            json!({"state": "planning", "stage": {"kind": "plan", "started_at": null}}),
+        ),
+        (
+            serde_json::to_value(AnalysisState::Running {
+                done: 1,
+                total: 5,
+                stage: Some(AnalysisStage {
+                    kind: StageKind::Flow,
+                    flow: Some(StageFlow {
+                        index: 2,
+                        title: "t".to_owned(),
+                    }),
+                    started_at: Some(stage_started()),
+                }),
+            }),
+            json!({"state": "running", "done": 1, "total": 5, "stage": {
+                "kind": "flow", "flow": {"index": 2, "title": "t"}, "started_at": "2026-11-17T09:30:00Z"}}),
+        ),
+        (
+            serde_json::to_value(AnalysisEvent::Heartbeat {
+                at: stage_started(),
+            }),
+            json!({"event": "heartbeat", "at": "2026-11-17T09:30:00Z"}),
+        ),
+        (
             serde_json::to_value(AnalysisState::Failed {
+                reason: None,
                 flow: Some(FlowRef {
                     id: FlowId("f2".to_owned()),
                     title: "t".to_owned(),
@@ -382,6 +439,8 @@ fn tagged_wire_formats() {
 #[test]
 fn sse_event_name_is_the_tag() {
     let question = AskQuestion {
+        asked_by: None,
+        mine: None,
         id: QuestionId::new_random(),
         step_id: StepId("f1.1".to_owned()),
         text: "q".to_owned(),
@@ -397,6 +456,9 @@ fn sse_event_name_is_the_tag() {
     for event in [
         AnalysisEvent::Analysis { summary: summary() },
         AnalysisEvent::Question { question },
+        AnalysisEvent::Heartbeat {
+            at: stage_started(),
+        },
     ] {
         let json = serde_json::to_value(&event).expect("serialises");
         assert_eq!(json["event"], json!(event.name()));
@@ -409,6 +471,8 @@ fn sse_event_name_is_the_tag() {
 fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
     let at = Utc::now();
     let mut question = AskQuestion {
+        asked_by: None,
+        mine: None,
         id: QuestionId::new_random(),
         step_id: StepId("f1.1".to_owned()),
         text: "q".to_owned(),
@@ -631,6 +695,7 @@ fn annotation_projection_keeps_was_is_and_remark() {
 #[test]
 fn settings_lists_known_repositories() {
     let settings = Settings {
+        memcan_status: None,
         llm_status: None,
         language: LlmLanguage::En,
         app_installations: Some(vec![AppInstallation {
@@ -659,6 +724,7 @@ fn flow_facts_have_no_changed_line_counter() {
 #[test]
 fn settings_installations_not_checked_is_null_not_empty() {
     let mut settings = Settings {
+        memcan_status: None,
         llm_status: None,
         language: LlmLanguage::En,
         app_installations: None,

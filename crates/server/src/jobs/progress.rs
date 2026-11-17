@@ -28,8 +28,9 @@ pub struct ProgressHub {
 #[derive(Debug)]
 struct Channel {
     sender: broadcast::Sender<AnalysisEvent>,
-    // Serialises write + publish of every entity of the analysis (a coarser lock than one per entity).
-    lock: tokio::sync::Mutex<()>,
+    // Serialises write + publish of every entity of the analysis (a coarser lock than one per entity); holds the
+    // analysis summary published last, so a re-publish of the same summary is skipped.
+    lock: tokio::sync::Mutex<Option<AnalysisSummary>>,
 }
 
 impl ProgressHub {
@@ -50,8 +51,11 @@ impl ProgressHub {
         Fut: Future<Output = Result<AnalysisEvent, E>>,
     {
         let channel = self.channel(analysis);
-        let _guard = channel.lock.lock().await;
+        let mut last = channel.lock.lock().await;
         let event = write().await?;
+        if let AnalysisEvent::Analysis { summary } = &event {
+            *last = Some(summary.clone());
+        }
         // No subscriber is not an error: the next connection reads the stored state.
         let _ = channel.sender.send(event.clone());
         Ok(event)
@@ -74,10 +78,26 @@ impl ProgressHub {
             .await?;
         match event {
             AnalysisEvent::Analysis { summary } => Ok(summary),
-            AnalysisEvent::Question { .. } => Err(DbError::Corrupt {
-                column: "analysis event",
-            }),
+            AnalysisEvent::Question { .. } | AnalysisEvent::Heartbeat { .. } => {
+                Err(DbError::Corrupt {
+                    column: "analysis event",
+                })
+            }
         }
+    }
+
+    /// Publishes the analysis's current summary when it differs from the one published last (e.g. its stage
+    /// changed with a job's claim, end, submit, requeue or pause; nothing is written).
+    pub async fn publish_analysis(&self, db: &Db, analysis: AnalysisId) -> Result<(), DbError> {
+        let channel = self.channel(analysis);
+        let mut last = channel.lock.lock().await;
+        let summary = db.analyses().summary(analysis).await?;
+        if last.as_ref() == Some(&summary) {
+            return Ok(());
+        }
+        *last = Some(summary.clone());
+        let _ = channel.sender.send(AnalysisEvent::Analysis { summary });
+        Ok(())
     }
 
     fn channel(&self, analysis: AnalysisId) -> Arc<Channel> {
@@ -89,7 +109,7 @@ impl ProgressHub {
         Arc::clone(channels.entry(analysis).or_insert_with(|| {
             Arc::new(Channel {
                 sender: broadcast::channel(BUFFER).0,
-                lock: tokio::sync::Mutex::new(()),
+                lock: tokio::sync::Mutex::new(None),
             })
         }))
     }
@@ -113,7 +133,7 @@ mod tests {
     fn state_of(event: &AnalysisEvent) -> Option<AnalysisState> {
         match event {
             AnalysisEvent::Analysis { summary } => Some(summary.state.clone()),
-            AnalysisEvent::Question { .. } => None,
+            AnalysisEvent::Question { .. } | AnalysisEvent::Heartbeat { .. } => None,
         }
     }
 
@@ -131,7 +151,11 @@ mod tests {
         let a = tokio::spawn(async move {
             hub_a
                 .update(analysis, || async {
-                    let state = AnalysisState::Running { done: 1, total: 3 };
+                    let state = AnalysisState::Running {
+                        done: 1,
+                        total: 3,
+                        stage: None,
+                    };
                     db_a.analyses().set_state(analysis, &state, at(1)).await?;
                     let _ = a_written.send(());
                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -144,7 +168,11 @@ mod tests {
         let b = hub.set_analysis_state(
             &db,
             analysis,
-            &AnalysisState::Running { done: 2, total: 3 },
+            &AnalysisState::Running {
+                done: 2,
+                total: 3,
+                stage: None,
+            },
             at(2),
         );
         let (a, b) = tokio::join!(a, b);
@@ -155,7 +183,11 @@ mod tests {
         let second = events.recv().await.expect("second");
         assert_eq!(
             state_of(&first),
-            Some(AnalysisState::Running { done: 1, total: 3 })
+            Some(AnalysisState::Running {
+                done: 1,
+                total: 3,
+                stage: None
+            })
         );
         let stored = db.analyses().get(analysis).await.expect("get").state;
         assert_eq!(state_of(&second), Some(stored));

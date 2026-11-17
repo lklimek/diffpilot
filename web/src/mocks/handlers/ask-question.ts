@@ -16,6 +16,8 @@ export const askQuestion = route(
       step_id: String(params.step_id),
       text,
       state: "pending",
+      mine: true,
+      asked_by: "alice",
       answer: null,
       failure: null,
       created_at: new Date().toISOString(),

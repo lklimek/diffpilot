@@ -84,14 +84,22 @@ describe("Home (brief §4.1)", () => {
     expect(router.state.location.pathname).toBe("/");
   });
 
+  it("does not promise personal progress for an existing shared analysis", async () => {
+    setFixtureState("resume");
+    renderRoute("/");
+    await analyze();
+    const message = await banner("Analysis found.", "status");
+    expect(message).toHaveTextContent("This PR head is already analysed. Open review.");
+    expect(message).not.toHaveTextContent("Your ticks, answers");
+  });
+
   it("an existing finished analysis is resumed, nothing is analysed again", async () => {
     setFixtureState("resume");
     const router = renderRoute("/");
     await analyze();
     const found = await banner("Analysis found.", "status");
-    expect(found).toHaveTextContent(analysis.pr.head_sha.slice(0, 7));
-    expect(found).toHaveTextContent("5 flows");
-    expect(within(found).getByRole("link", { name: "Resume review" })).toHaveAttribute(
+    expect(found).toHaveTextContent("This PR head is already analysed. Open review.");
+    expect(within(found).getByRole("link", { name: "Open review" })).toHaveAttribute(
       "href",
       `/analyses/${analysis.id}`,
     );
@@ -194,4 +202,22 @@ describe("Home (brief §4.1)", () => {
     expect(alert).toHaveTextContent("An analysis of this head is already running.");
     expect(router.state.location.pathname).toBe("/");
   });
+});
+
+it("only promises personal state when the server confirms it exists", async () => {
+  server.use(
+    http.post("/api/v1/pr/resolve", () =>
+      HttpResponse.json({
+        pr: analysis.pr,
+        commenting_available: true,
+        head_moved: false,
+        analysis: { ...analysis, state: { state: "finished", total: 5 }, has_my_state: true },
+      }),
+    ),
+  );
+  renderRoute("/");
+  await analyze();
+  expect(await banner("Analysis found.", "status")).toHaveTextContent(
+    "Your ticks, answers and last viewed block are kept",
+  );
 });
