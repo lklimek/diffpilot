@@ -301,6 +301,50 @@ describe("FlowDiagram limits", () => {
   });
 });
 
+describe("FlowDiagram text measurement", () => {
+  // Counts canvas measurements per text so a released cache shows up as a new measurement.
+  function stubCanvas() {
+    const measured = new Map<string, number>();
+    vi.stubGlobal(
+      "OffscreenCanvas",
+      class {
+        getContext() {
+          return {
+            font: "",
+            measureText: (text: string) => {
+              measured.set(text, (measured.get(text) ?? 0) + 1);
+              return { width: text.length * 7 };
+            },
+          };
+        }
+      },
+    );
+    return measured;
+  }
+  const one = (label: string): FlowGraph => ({
+    nodes: [{ step_id: "a", number: 1, kind: "added", label }],
+    edges: [],
+  });
+
+  it("keeps measurements while the graph stays and releases them when the graph changes", () => {
+    const measured = stubCanvas();
+    try {
+      const first = one("First label");
+      const { rerender, onSelectStep } = renderDiagram(first, null);
+      const props = { title: "t", onSelectStep };
+      const measuredFirst = measured.get("First label");
+      expect(measuredFirst).toBeGreaterThan(0);
+      rerender(<FlowDiagram graph={first} currentStepId="a" {...props} />);
+      expect(measured.get("First label")).toBe(measuredFirst);
+      rerender(<FlowDiagram graph={one("Second label")} currentStepId={null} {...props} />);
+      rerender(<FlowDiagram graph={first} currentStepId={null} {...props} />);
+      expect(measured.get("First label")).toBeGreaterThan(measuredFirst!);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("FlowDiagram wording", () => {
   it.each(toursByState)("rendered text follows the trust rules (%s)", (_, stateTour) => {
     for (const flow of stateTour.flows) {

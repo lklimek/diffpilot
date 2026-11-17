@@ -9,9 +9,12 @@ import {
   NODE_PADDING,
   describeSteps,
   drawable,
+  estimateLeftToRightWidth,
   layoutFlow,
-  pickLayout,
+  layoutForWidth,
+  type DiagramLayout,
   type DiagramNode,
+  type Direction,
 } from "./layout";
 import { canvasMeasure, estimateWidth } from "./measure";
 
@@ -69,17 +72,24 @@ export function FlowDiagram({ graph, title, currentStepId, onSelectStep }: FlowD
   const scroller = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef(new Map<StepId, SVGGElement>());
   const [width, setWidth] = useState(0);
-  // Text is measured with the page font when a canvas is available, so labels fit their nodes.
-  const measure = useMemo(
-    () => canvasMeasure(getComputedStyle(document.body).fontFamily || "sans-serif") ?? estimateWidth,
-    [],
-  );
-  const draw = drawable(graph);
-  const layouts = useMemo(
-    () => (draw ? { TB: layoutFlow(graph, "TB", measure), LR: layoutFlow(graph, "LR", measure) } : null),
-    [graph, draw, measure],
-  );
-  const layout = layouts && pickLayout(layouts, width);
+  // Per graph: the text measure (page font when a canvas is available; its cache lives with this graph) and
+  // each direction's layout, computed only when that direction is shown.
+  const drawing = useMemo(() => {
+    if (!drawable(graph)) return null;
+    const measure =
+      canvasMeasure(getComputedStyle(document.body).fontFamily || "sans-serif") ?? estimateWidth;
+    const layouts = new Map<Direction, DiagramLayout>();
+    const get = (direction: Direction) => {
+      let layout = layouts.get(direction);
+      if (!layout) {
+        layout = layoutFlow(graph, direction, measure);
+        layouts.set(direction, layout);
+      }
+      return layout;
+    };
+    return { get, estimate: estimateLeftToRightWidth(graph, measure) };
+  }, [graph]);
+  const layout = drawing && layoutForWidth(width, drawing.estimate, drawing.get);
   const ordered = useMemo(
     () => (layout ? [...layout.nodes].sort((a, b) => a.number - b.number) : []),
     [layout],

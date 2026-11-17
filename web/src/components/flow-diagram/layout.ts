@@ -1,5 +1,5 @@
 import { graphlib, layout as dagreLayout } from "@dagrejs/dagre";
-import type { FlowGraph, GraphEdge, NodeKind, StepId } from "../../api/generated/types";
+import type { FlowGraph, GraphEdge, GraphNode, NodeKind, StepId } from "../../api/generated/types";
 import { estimateWidth, type Measure } from "./measure";
 
 // Caps: labels are LLM text without a length limit in the schema; the drawing stays bounded.
@@ -16,10 +16,10 @@ export const LABEL_MAX_CHARS = 160;
 const EDGE_LABEL_MAX_CHARS = 80;
 /** Most characters of a label in accessible names and the text alternative. */
 export const TEXT_MAX_CHARS = 1000;
-/** Largest flow that is drawn; larger flows are shown only as text. */
-export const MAX_DRAWN_STEPS = 150;
-/** Most edges of a flow that is drawn. */
-export const MAX_DRAWN_EDGES = 300;
+/** Largest flow that is drawn; larger flows are shown only as text (real flows have up to about 30 steps). */
+export const MAX_DRAWN_STEPS = 40;
+/** Most edges of a flow that is drawn (layout cost grows fast with long, crossing edges). */
+export const MAX_DRAWN_EDGES = 80;
 
 /** Most steps listed in the text alternative. */
 export const MAX_LISTED_STEPS = 500;
@@ -107,6 +107,56 @@ export function drawable(graph: FlowGraph): boolean {
 
 const widest = (values: number[]) => values.reduce((a, b) => Math.max(a, b), 0);
 
+const RANK_SEP = 32;
+const MARGIN = 8;
+
+/** Drawn lines and size of a step's node. */
+function sizeNode(node: GraphNode, branching: boolean, measure: Measure) {
+  const nodeWidth = (s: string) => measure(s, "node");
+  const lines = wrapText(boundText(node.label, LABEL_MAX_CHARS), NODE_TEXT_WIDTH, nodeWidth, NODE_MAX_LINES);
+  const prefixWidth = GLYPH_WIDTH + measure(String(node.number), "number") + 6;
+  const width =
+    2 * NODE_PADDING.x + prefixWidth + widest(lines.map(nodeWidth)) + (branching ? 2 * BRANCH_INSET : 0);
+  const height = 2 * NODE_PADDING.y + lines.length * NODE_LINE_HEIGHT;
+  return { lines, prefixWidth, width, height };
+}
+
+/** Edges between nodes of `graph` and the number of outgoing edges per step. */
+function validEdges(graph: FlowGraph) {
+  const ids = new Set(graph.nodes.map((n) => n.step_id));
+  const edges = graph.edges.filter((e) => ids.has(e.from) && ids.has(e.to));
+  const outDegree = new Map<StepId, number>();
+  for (const edge of edges) outDegree.set(edge.from, (outDegree.get(edge.from) ?? 0) + 1);
+  return { edges, outDegree };
+}
+
+/**
+ * Cheap estimate of the left-to-right drawing's width without laying it out, normally below the real width:
+ * the widest chain of nodes along edges (back edges of a depth-first search left out) with the rank gaps.
+ */
+export function estimateLeftToRightWidth(graph: FlowGraph, measure: Measure): number {
+  const { edges, outDegree } = validEdges(graph);
+  const width = new Map(
+    graph.nodes.map((n) => [n.step_id, sizeNode(n, (outDegree.get(n.step_id) ?? 0) >= 2, measure).width]),
+  );
+  const next = new Map<StepId, StepId[]>();
+  for (const e of edges) if (e.from !== e.to) next.set(e.from, [...(next.get(e.from) ?? []), e.to]);
+  const state = new Map<StepId, "open" | "done">();
+  const chain = new Map<StepId, number>();
+  const visit = (id: StepId) => {
+    state.set(id, "open");
+    let best = 0;
+    for (const to of next.get(id) ?? []) {
+      if (!state.has(to)) visit(to);
+      if (state.get(to) === "done") best = Math.max(best, chain.get(to)! + RANK_SEP);
+    }
+    chain.set(id, (width.get(id) ?? 0) + best);
+    state.set(id, "done");
+  };
+  for (const node of graph.nodes) if (!state.has(node.step_id)) visit(node.step_id);
+  return widest([...chain.values()]) + 2 * MARGIN;
+}
+
 /**
  * Wraps bounded `text` on spaces into lines no wider than `maxWidth`; wider words are split. Beyond
  * `maxLines` the last line ends in "…".
@@ -167,12 +217,8 @@ export function layoutFlow(
   direction: Direction,
   measure: Measure = estimateWidth,
 ): DiagramLayout {
-  const nodeWidth = (s: string) => measure(s, "node");
   const edgeWidth = (s: string) => measure(s, "edge");
-  const ids = new Set(graph.nodes.map((n) => n.step_id));
-  const edges = graph.edges.filter((e) => ids.has(e.from) && ids.has(e.to));
-  const outDegree = new Map<StepId, number>();
-  for (const edge of edges) outDegree.set(edge.from, (outDegree.get(edge.from) ?? 0) + 1);
+  const { edges, outDegree } = validEdges(graph);
 
   const prepared = edges.map((edge: GraphEdge, i) => {
     const lines =
@@ -203,19 +249,17 @@ export function layoutFlow(
   }
 
   const g = new graphlib.Graph({ multigraph: true });
-  g.setGraph({ rankdir: direction, nodesep: 16, ranksep: 32, edgesep: 12, marginx: 8, marginy: 8 });
+  g.setGraph({
+    rankdir: direction,
+    nodesep: 16,
+    ranksep: RANK_SEP,
+    edgesep: 12,
+    marginx: MARGIN,
+    marginy: MARGIN,
+  });
   const nodes = graph.nodes.map((node) => {
-    const lines = wrapText(
-      boundText(node.label, LABEL_MAX_CHARS),
-      NODE_TEXT_WIDTH,
-      nodeWidth,
-      NODE_MAX_LINES,
-    );
-    const prefixWidth = GLYPH_WIDTH + measure(String(node.number), "number") + 6;
     const branching = (outDegree.get(node.step_id) ?? 0) >= 2;
-    const width =
-      2 * NODE_PADDING.x + prefixWidth + widest(lines.map(nodeWidth)) + (branching ? 2 * BRANCH_INSET : 0);
-    const height = 2 * NODE_PADDING.y + lines.length * NODE_LINE_HEIGHT;
+    const { lines, prefixWidth, width, height } = sizeNode(node, branching, measure);
     const loops = loopsOf.get(node.step_id) ?? [];
     const reach = loops.length === 0 ? 0 : LOOP_GAP + LOOP_STEP * (loops.length - 1);
     const labels = loops.filter((l) => l.label !== null).map((l) => l.size);
@@ -324,9 +368,20 @@ export function layoutFlow(
   };
 }
 
-/** The left-to-right drawing when it fits `width` (uses wide screens), else top to bottom. */
-export function pickLayout(layouts: Record<Direction, DiagramLayout>, width: number): DiagramLayout {
-  return layouts.LR.width <= width ? layouts.LR : layouts.TB;
+/**
+ * The drawing for a column `width` px wide: left to right when it fits (wide screens), else top to bottom.
+ * `get` lays a direction out; left to right is only tried when the cheap estimate fits.
+ */
+export function layoutForWidth(
+  width: number,
+  estimatedLeftToRight: number,
+  get: (direction: Direction) => DiagramLayout,
+): DiagramLayout {
+  if (width > 0 && estimatedLeftToRight <= width) {
+    const leftToRight = get("LR");
+    if (leftToRight.width <= width) return leftToRight;
+  }
+  return get("TB");
 }
 
 /** One step of the text alternative. */

@@ -13,10 +13,12 @@ import {
   boundText,
   drawable,
   layoutFlow,
-  pickLayout,
+  estimateLeftToRightWidth,
+  layoutForWidth,
   wrapText,
   type Box,
   type DiagramLayout,
+  type Direction,
 } from "./layout";
 import { estimateWidth } from "./measure";
 import { syntheticGraph } from "./syntheticGraph";
@@ -310,37 +312,85 @@ describe("drawable", () => {
     expect(drawable({ nodes, edges: edges.slice(1) })).toBe(true);
   });
 
-  it("lays out the largest drawable flow in reasonable time", () => {
+  // Chain plus long jumps i → i + n/2 (cycles across the flow), every edge labelled: the costliest shape found.
+  const adversarial = (n: number, m: number): FlowGraph => {
+    const id = (i: number) => `s1.${i + 1}`;
+    const edges = Array.from({ length: n - 1 }, (_, i) => ({
+      from: id(i),
+      to: id(i + 1),
+      label: "next step",
+    }));
+    for (let k = 0; edges.length < m; k += 1) {
+      const i = k % n;
+      edges.push({
+        from: id(i),
+        to: id((i + Math.floor(n / 2) + Math.floor(k / n)) % n),
+        label: "jump across",
+      });
+    }
+    return { nodes: syntheticGraph(n).nodes, edges };
+  };
+
+  it("lays out the costliest drawable flow quickly; the costlier one the review found is not drawn", () => {
+    const worst = adversarial(MAX_DRAWN_STEPS, MAX_DRAWN_EDGES);
+    expect(drawable(worst)).toBe(true);
     const start = performance.now();
-    layoutFlow(syntheticGraph(MAX_DRAWN_STEPS), "TB");
-    layoutFlow(syntheticGraph(MAX_DRAWN_STEPS), "LR");
-    expect(performance.now() - start).toBeLessThan(2000);
+    layoutFlow(worst, "TB");
+    // Measured about 120 ms; the bound leaves room for a loaded machine.
+    expect(performance.now() - start).toBeLessThan(1500);
+    expect(drawable(adversarial(150, 299))).toBe(false);
   });
 });
 
-describe("pickLayout", () => {
-  const layouts = { TB: layoutFlow(flow1, "TB"), LR: layoutFlow(flow1, "LR") };
+describe("layoutForWidth", () => {
+  const counted = (graph: FlowGraph) => {
+    const calls: Direction[] = [];
+    const get = (direction: Direction) => {
+      calls.push(direction);
+      return layoutFlow(graph, direction);
+    };
+    return { calls, get, estimate: estimateLeftToRightWidth(graph, estimateWidth) };
+  };
 
-  it("uses the wide left-to-right drawing when it fits the available width", () => {
-    expect(pickLayout(layouts, layouts.LR.width).direction).toBe("LR");
-  });
-
-  it("falls back to top-to-bottom when left-to-right does not fit or the width is unknown", () => {
-    expect(pickLayout(layouts, layouts.LR.width - 1).direction).toBe("TB");
-    expect(pickLayout(layouts, 0).direction).toBe("TB");
+  it("lays out only top to bottom while the width is unknown", () => {
+    const { calls, get, estimate } = counted(flow1);
+    expect(layoutForWidth(0, estimate, get).direction).toBe("TB");
+    expect(calls).toEqual(["TB"]);
   });
 
   // Centre column content per mockup 05-tour: 1440 − nav 270 − inspector 389 − gutters 12 − padding 28 = 741;
   // at 3440: 3440 − 400 − 620 − 12 − 28 = 2380.
-  it("draws fixture flow 1 left to right at 3440 px and top to bottom, unscrolled sideways, at 1440", () => {
-    expect(pickLayout(layouts, 2380).direction).toBe("LR");
-    expect(pickLayout(layouts, 741).direction).toBe("TB");
-    expect(layouts.TB.width).toBeLessThanOrEqual(741);
+  it("lays out fixture flow 1 only left to right at 3440 px and only top to bottom at 1440", () => {
+    const wide = counted(flow1);
+    expect(layoutForWidth(2380, wide.estimate, wide.get).direction).toBe("LR");
+    expect(wide.calls).toEqual(["LR"]);
+    const narrow = counted(flow1);
+    const tb = layoutForWidth(741, narrow.estimate, narrow.get);
+    expect(tb.direction).toBe("TB");
+    expect(narrow.calls).toEqual(["TB"]);
+    expect(tb.width).toBeLessThanOrEqual(741);
+  });
+
+  it("falls back to top to bottom when the left-to-right drawing turns out wider than estimated", () => {
+    const { calls, get } = counted(flow1);
+    const lr = layoutFlow(flow1, "LR");
+    expect(layoutForWidth(lr.width - 1, 0, get).direction).toBe("TB");
+    expect(calls).toEqual(["LR", "TB"]);
+  });
+
+  it("never estimates the left-to-right width above the real one, so a fitting drawing is not missed", () => {
+    for (const graph of [flow1, big, ...tour.flows.map((f) => f.graph)]) {
+      expect(estimateLeftToRightWidth(graph, estimateWidth)).toBeLessThanOrEqual(
+        layoutFlow(graph, "LR").width,
+      );
+    }
   });
 
   it("draws a 30-step flow top to bottom within the 1440 px centre column", () => {
-    const big30 = { TB: layoutFlow(big, "TB"), LR: layoutFlow(big, "LR") };
-    expect(pickLayout(big30, 2380).direction).toBe("TB");
-    expect(big30.TB.width).toBeLessThanOrEqual(741);
+    const { calls, get, estimate } = counted(big);
+    const layout = layoutForWidth(2380, estimate, get);
+    expect(layout.direction).toBe("TB");
+    expect(calls).toEqual(["TB"]);
+    expect(layout.width).toBeLessThanOrEqual(741);
   });
 });
