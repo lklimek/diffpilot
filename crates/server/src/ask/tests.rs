@@ -141,6 +141,11 @@ fn fixture_json(path: &str) -> Value {
 /// The fixture analysis, finished, with its stored outputs and pre-pass; `queue` runs the real job queue,
 /// otherwise the scripted executor.
 async fn fixture(queue: bool) -> Fixture {
+    fixture_with(queue, None).await
+}
+
+/// [`fixture`] with GitHub App settings (`github`), so claims mint an installation token.
+async fn fixture_with(queue: bool, github: Option<crate::config::GithubConfig>) -> Fixture {
     let dir = tempfile::tempdir().expect("temp dir");
     let built = Command::new(fixture_dir().join("repo/build-repo.sh"))
         .arg(dir.path().join("remotes/acme/node-client.git"))
@@ -149,6 +154,9 @@ async fn fixture(queue: bool) -> Fixture {
     assert!(built.status.success(), "{built:?}");
     let mut config = test_config();
     config.data_dir = dir.path().join("data");
+    if let Some(github) = github {
+        config.github = github;
+    }
     config.github.clone_url =
         url::Url::parse(&format!("file://{}", dir.path().join("remotes").display())).expect("url");
     let db = Db::in_memory().await.expect("db");
@@ -416,6 +424,10 @@ impl Fixture {
             skills_commit: None,
             llm_call: None,
         };
+        self.post_job_result(claim, result).await;
+    }
+
+    async fn post_job_result(&self, claim: &Claim, result: JobResult) {
         let uri = RUNNER_RESULT
             .path
             .replace("{id}", &claim.spec.job_id.to_string());
@@ -731,37 +743,103 @@ async fn invalid_answers_fail_the_question_and_are_never_shown() {
     }
 }
 
+/// The real failure path: the runner's result carries the provider's text (with a URL and the attempt's
+/// installation token) in the outcome and in `llm_call`. The operator log may carry it scrubbed, at warn; no log
+/// line carries a secret or the question, and no response, event or stored question carries the provider's text.
 #[tokio::test]
-async fn failed_job_fails_the_question_with_a_plain_sentence_and_logs_no_provider_text() {
+async fn failed_ask_shows_a_plain_sentence_and_logs_no_secret_or_question() {
+    use contracts::job::result::{LlmCallOutcome, LlmCallStatus};
+
+    use crate::github::app_token::tests::{
+        MINTED_TOKEN, github_config, minted, mount_installation, mount_mint, write_key,
+    };
+
     let capture = LogCapture::start();
-    let f = fixture(false).await;
-    let marker = "secret-question-marker";
+    let keys = tempfile::tempdir().expect("temp dir");
+    let github = wiremock::MockServer::start().await;
+    mount_installation(&github).await;
+    mount_mint(&github, minted(Utc::now()), 1).await;
+    let f = fixture_with(true, Some(github_config(&github, write_key(keys.path())))).await;
+    let mut events = f.state.progress.subscribe(f.analysis);
+    let marker = "question-text-marker-7f3a";
     let id = f.asked("f1.5", &format!("{QUESTION} {marker}")).await;
-    let job = f.scripted_job(id).await.spec.job_id;
-    let provider_text = "codex: 401 token ghs_RAWPROVIDERTOKEN rejected";
-    f.scripted.send(
-        job,
-        finished(
-            job,
-            JobOutcome::Failed {
-                kind: JobFailureKind::ProviderFailed,
-                message: provider_text.to_owned(),
-            },
-        ),
+    f.queued_job(id).await;
+    let claim = f.claim().await.expect("the ask job");
+    assert!(
+        claim.spec.access.github.is_some(),
+        "an installation token was minted"
     );
+    let provider_url = "https://api.provider.example/v1/responses?trace=4411";
+    let provider_text =
+        format!("401 Unauthorized from {provider_url}: token {MINTED_TOKEN} rejected");
+    f.post_job_result(
+        &claim,
+        JobResult {
+            job_id: claim.spec.job_id,
+            attempt: claim.spec.attempt,
+            outcome: JobOutcome::Failed {
+                kind: JobFailureKind::ProviderFailed,
+                message: provider_text.clone(),
+            },
+            session: None,
+            usage: None,
+            skills_commit: None,
+            llm_call: Some(LlmCallOutcome {
+                at: Utc::now(),
+                status: LlmCallStatus::NotWorking {
+                    message: provider_text.clone(),
+                },
+            }),
+        },
+    )
+    .await;
     let failed = f.wait_for(id, |q| q.state == AskState::Failed).await;
-    let failure = failed.failure.expect("failure");
-    assert!(failure.ends_with("Ask again."), "{failure}");
-    assert!(!failure.contains("ghs_"), "{failure}");
+    assert!(
+        failed
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.ends_with("Ask again.")),
+        "{failed:?}"
+    );
+
+    let stored = format!(
+        "{:?}",
+        f.state.db.questions().get(id, Utc::now()).await.expect("q")
+    );
     let (_, listed) = f.list().await;
-    assert!(!listed.to_string().contains("ghs_RAWPROVIDERTOKEN"));
+    let mut streamed = String::new();
+    while let Ok(event) = events.try_recv() {
+        streamed.push_str(&serde_json::to_string(&event).expect("event"));
+    }
+    assert!(streamed.contains("\"failed\""), "{streamed}");
+    for (place, text) in [
+        ("stored", stored),
+        ("list", listed.to_string()),
+        ("sse", streamed),
+    ] {
+        for provider in [
+            "api.provider.example",
+            "401 Unauthorized",
+            "ghs_",
+            "[redacted]",
+        ] {
+            assert!(!text.contains(provider), "{place} shows {provider}: {text}");
+        }
+    }
+
     let logs = capture.text();
-    assert!(logs.contains("the ask job failed"), "{logs}");
+    assert!(
+        logs.contains("LLM call failed") && logs.contains(provider_url),
+        "the operator log keeps the scrubbed provider text:\n{logs}"
+    );
+    let config = &f.state.config;
     for secret in [
-        "ghs_RAWPROVIDERTOKEN",
+        MINTED_TOKEN,
+        claim.job_token.expose(),
+        config.runner_secret.expose_secret(),
+        config.memcan.token.expose_secret(),
+        config.github.client_secret.expose_secret(),
         marker,
-        "memcan-token-value",
-        "runner-secret-value",
     ] {
         assert!(!logs.contains(secret), "{secret} logged:\n{logs}");
     }
