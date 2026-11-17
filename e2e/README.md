@@ -4,15 +4,19 @@ The v1 user journeys through the real stack, no mocks in the browser: server wit
 with the fake provider (fixture replay of `fixtures/pr-482`, scriptable), fake GitHub (`tools/fake-github`) and
 fake MemCan (`tools/fake-memcan`). Every reached state is checked by `checkScreen` (`support/app.ts`): the wording rules of brief §1
 (`scripts/wording-rules.json`, shared with `scripts/check-wording.sh`) on the page text, hidden tooltips included,
-no `%` at all in the top bar, every tooltip opened by keyboard focus and closed by Escape (its text checked too), and
-axe (serious or critical = failure). When a local stack stops, its component logs are checked for leaked secrets
+no `%` at all in the top bar, every tooltip opened by keyboard focus (aria-disabled controls included) and closed
+when focus leaves (its text checked too), the controls each screen must give a tooltip (`REQUIRED_TIPS`: top bar,
+quiet rows, risk and provenance labels, Previous/Next, feedback values, Ask, Analyze, Cancel/Retry) present with a
+non-empty tip, no `aria-describedby` naming a missing element, and axe (serious or critical = failure). When a local stack stops, its component logs are checked for leaked secrets
 (`support/secrets.ts`): generated secrets, the App private key lines, every App JWT and installation token fake
 GitHub issued, fixture credentials, session secrets the tests registered, and anything shaped like the server's
-random tokens (job tokens are known only by that shape: the server keeps just their hash). A leak fails the run.
+random tokens (any 43-character base64url run; job tokens are known only by that shape: the server keeps just their
+hash). A leak fails the run.
 
 | Spec                              | Journey                                                                                                               |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `check-screen.spec.ts`            | self-test of `checkScreen` on static pages (no stack): it fails on each kind of violation                             |
+| `secrets.spec.ts`                 | self-test of the leak check's token shape (no stack): any 43-character base64url run, known non-secrets excluded      |
 | `slice.spec.ts`                   | sign in, analyse PR 482, flow 1 step 1; a read-only installation token per job, revoked; no secret in the logs so far |
 | `analysis-cancel.spec.ts`         | planning, cancel → "analyze again"; failure before any flow → Retry → `k of n` → finished                             |
 | `analysis-cancel-running.spec.ts` | cancel while a flow job runs: the job stops, stored flows and session discarded, a clean new analysis                 |
@@ -88,8 +92,11 @@ Point the suite at a stack started elsewhere (e.g. compose with the fake provide
 
 The stack must serve fake GitHub's fixture PR and allow the login `alice`. Tests that need the runner's script,
 the clone base or the component logs skip themselves; the spec files share the one stack, so the first analysis
-of PR 482 is reused by the later files. Not wired into CI yet: the compose-based run waits for the deployment
-package (`deploy/compose.yaml`).
+of PR 482 is reused by the later files.
+
+CI (`.github/workflows/ci.yml`, job `e2e`) builds the web UI and the four binaries once, runs
+`deploy/dev/stack-check.sh`, then the whole suite with 2 workers on local dev stacks; on failure it uploads the
+Playwright traces and each stack's `logs/` (never `stack.env` or the App key).
 
 ## Adding a journey
 

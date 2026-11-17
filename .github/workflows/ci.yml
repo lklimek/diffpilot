@@ -209,3 +209,83 @@ jobs:
         if: hashFiles('web/package.json') != ''
         working-directory: web
         run: npm run test:e2e
+
+  # Full-stack journeys (e2e/README.md): built once, then every spec file starts its own dev stack
+  # (deploy/dev/stack.sh: server, runner with the scripted fake provider, fake GitHub, fake MemCan) on free ports.
+  # Not compose and no images. Two Playwright workers; traces and the stacks' logs are kept on failure.
+  e2e:
+    name: Full-stack e2e (dev stack, Playwright)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update && cargo --version
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/feat/v1' }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            e2e/package-lock.json
+      # stack.sh needs curl, git, openssl, python3 and sqlite3; the journeys read the database with sqlite3. Stack
+      # state and the checks' scratch live under /data/tmp (host convention, stack.sh and stack-check.sh).
+      - name: Install stack tools and the scratch directory
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends sqlite3
+          sudo install -d -o "$(id -u)" -g "$(id -g)" /data/tmp
+      - name: Build the web UI
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+      # The binaries every stack runs, built once and handed to stack.sh and the global setup (SR_DEV_*_BIN).
+      - name: Build the server (embedded UI), the runner (fake provider) and the fakes
+        run: |
+          cargo build --locked --message-format=json-render-diagnostics \
+            -p server --features server/embed-ui -p runner --features runner/fake-provider \
+            -p fake-github -p fake-memcan > "$RUNNER_TEMP/cargo-messages.json"
+          for pair in SR_DEV_SERVER_BIN=smart-review-server SR_DEV_RUNNER_BIN=smart-review-runner \
+            SR_DEV_FAKE_GITHUB_BIN=fake-github SR_DEV_FAKE_MEMCAN_BIN=fake-memcan; do
+            bin="$(jq -r --arg name "${pair#*=}" \
+              'select(.reason == "compiler-artifact" and .target.name == $name) | .executable // empty' \
+              "$RUNNER_TEMP/cargo-messages.json" | tail -n 1)"
+            [ -x "$bin" ] || { echo "::error::cargo built no executable ${pair#*=}"; exit 1; }
+            echo "${pair%%=*}=$bin" >> "$GITHUB_ENV"
+          done
+      - name: Install e2e dependencies and the browser
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Dev stack checks (git isolation, state dir, build timeouts, killed worker)
+        timeout-minutes: 10
+        run: deploy/dev/stack-check.sh
+      - name: Full-stack journeys
+        timeout-minutes: 40
+        working-directory: e2e
+        run: npx playwright test --workers=2
+      # Only the logs/ of each stack: stack.env and the App key next to them are secrets (fake, but never uploaded).
+      - name: Collect the stacks' logs
+        if: failure()
+        run: |
+          mkdir -p "$RUNNER_TEMP/stack-logs"
+          for dir in /data/tmp/smart-review-dev.*/logs; do
+            [ -d "$dir" ] && cp -r "$dir" "$RUNNER_TEMP/stack-logs/$(basename "$(dirname "$dir")")"
+          done
+      - name: Upload Playwright traces and stack logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-failure
+          path: |
+            e2e/test-results
+            ${{ runner.temp }}/stack-logs
+          retention-days: 7
+          if-no-files-found: warn
