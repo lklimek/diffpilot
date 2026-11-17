@@ -185,9 +185,15 @@ export function HomeScreen() {
                               </button>
                             </Tooltip>
                           )}
-                        <Tooltip tip="Opens the progress of the running analysis.">
+                        <Tooltip
+                          tip={
+                            outcome.analysis.review_ready
+                              ? "Opens accepted results while the remaining flows are analysed."
+                              : "Opens the progress of the running analysis."
+                          }
+                        >
                           <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
-                            Show progress
+                            {outcome.analysis.review_ready ? "Open review" : "Show progress"}
                           </Link>
                         </Tooltip>
                       </>

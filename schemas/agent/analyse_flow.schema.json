@@ -228,71 +228,119 @@
             }
           },
           "assessment": {
-            "description": "Required assessment of the change, including low risk; nullable only when reading older stored output.",
-            "type": "object",
-            "properties": {
-              "headline": {
-                "description": "What a production user or operator would notice.",
-                "type": "string"
+            "anyOf": [
+              {
+                "description": "Required assessment of the change, including low risk; nullable only when reading older stored output.",
+                "type": "object",
+                "properties": {
+                  "headline": {
+                    "description": "What a production user or operator would notice.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "risk": {
+                    "description": "Risk band from the severity skill; never its numeric scores. `low`: Small or contained effect. `medium`: Noticeable in some situations or by some users. `high`: A production user or operator would clearly notice.",
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "medium",
+                      "high"
+                    ]
+                  },
+                  "reason": {
+                    "description": "Reason for the band, also for low.",
+                    "type": "string"
+                  },
+                  "basis_note": {
+                    "description": "What was read and that nothing was executed.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "not_checked": {
+                    "description": "What was not checked.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "origin": {
+                    "description": "Introduced by this pull request or pre-existing.",
+                    "anyOf": [
+                      {
+                        "description": "Whether an issue was introduced by the pull request. `introduced`: Introduced by this pull request. `pre_existing`: Existed before this pull request. `unclear`: Cannot be told from what was read.",
+                        "type": "string",
+                        "enum": [
+                          "introduced",
+                          "pre_existing",
+                          "unclear"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "blocking": {
+                    "description": "Whether an action is proposed before merge, as a follow-up, or neither.",
+                    "anyOf": [
+                      {
+                        "description": "Merge impact of an assessed step. `no_action_proposed`: No blocking action or follow-up proposed; this is not an assurance of safety. `blocks_this_pr`: Should be resolved before this pull request merges. `follow_up`: Can be handled in a follow-up.",
+                        "type": "string",
+                        "enum": [
+                          "no_action_proposed",
+                          "blocks_this_pr",
+                          "follow_up"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "smallest_correction": {
+                    "description": "The smallest correction, or null; the agent may omit it for low.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "headline",
+                  "risk",
+                  "reason",
+                  "basis_note",
+                  "not_checked",
+                  "origin",
+                  "blocking",
+                  "smallest_correction"
+                ],
+                "additionalProperties": false
               },
-              "risk": {
-                "description": "Risk band from the severity skill; never its numeric scores. `low`: Small or contained effect. `medium`: Noticeable in some situations or by some users. `high`: A production user or operator would clearly notice.",
-                "type": "string",
-                "enum": [
-                  "low",
-                  "medium",
-                  "high"
-                ]
-              },
-              "reason": {
-                "description": "Reason for the band, also for low.",
-                "type": "string"
-              },
-              "basis_note": {
-                "description": "What was read and that nothing was executed.",
-                "type": "string"
-              },
-              "not_checked": {
-                "description": "What was not checked.",
-                "type": "string"
-              },
-              "origin": {
-                "description": "Introduced by this pull request or pre-existing. `introduced`: Introduced by this pull request. `pre_existing`: Existed before this pull request. `unclear`: Cannot be told from what was read.",
-                "type": "string",
-                "enum": [
-                  "introduced",
-                  "pre_existing",
-                  "unclear"
-                ]
-              },
-              "blocking": {
-                "description": "Whether an action is proposed before merge, as a follow-up, or neither. `no_action_proposed`: No blocking action or follow-up proposed; this is not an assurance of safety. `blocks_this_pr`: Should be resolved before this pull request merges. `follow_up`: Can be handled in a follow-up.",
-                "type": "string",
-                "enum": [
-                  "no_action_proposed",
-                  "blocks_this_pr",
-                  "follow_up"
-                ]
-              },
-              "smallest_correction": {
-                "description": "The smallest correction, or null.",
-                "type": [
-                  "string",
-                  "null"
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "risk": {
+                    "type": "string",
+                    "enum": [
+                      "low"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "risk",
+                  "reason"
                 ]
               }
-            },
-            "required": [
-              "headline",
-              "risk",
-              "reason",
-              "basis_note",
-              "not_checked",
-              "origin",
-              "blocking",
-              "smallest_correction"
-            ],
-            "additionalProperties": false
+            ]
           }
         },
         "required": [

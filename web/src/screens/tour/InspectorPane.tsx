@@ -18,7 +18,6 @@ import {
   useFeedback,
   useDeleteFeedback,
   usePostFeedback,
-  useQuestionEvents,
   useQuestions,
   type useCommentActions,
 } from "../../api/queries";
@@ -39,6 +38,7 @@ export interface CommentLineState {
 }
 
 interface InspectorPaneProps {
+  streamLost?: boolean;
   analysisId: AnalysisId;
   tour: Tour;
   block: BlockRef;
@@ -70,7 +70,6 @@ function permalink(tour: Tour, target: CommentTarget): string {
 /** The inspector with its data: classic diff, pinned answers, and the dock (Ask, feedback, comment). */
 export function InspectorPane(props: InspectorPaneProps) {
   const { analysisId, tour, block, step, annotationId, pending, comments, commentLine } = props;
-  const stream = useQuestionEvents(analysisId);
   const questions = useQuestions(analysisId);
   const ask = useAskQuestion(analysisId);
   const feedback = useFeedback(analysisId);
@@ -113,7 +112,7 @@ export function InspectorPane(props: InspectorPaneProps) {
       <StatusMessage kind="loading">Loading the questions…</StatusMessage>
     ) : (
       <>
-        {stream.lost && (
+        {props.streamLost && (
           <p role="status" className="mb-1 text-[12px] text-high">
             The connection that delivers answers was lost. Reconnecting; answers already given are read again.
           </p>

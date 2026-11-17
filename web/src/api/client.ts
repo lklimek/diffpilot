@@ -180,6 +180,10 @@ export function createApiClient(baseUrl = "") {
     getSettings: () => call<Settings>("getSettings"),
     setLlm: (body: import("./generated/types").ModelChoice) =>
       call<import("./generated/types").LlmSelection>("setLlm", { body }),
+    requestFlow: (id: AnalysisId, flow: string) =>
+      call<AnalysisSummary>("requestFlow", { params: { id, flow } }),
+    setBackgroundAnalysis: (id: AnalysisId, enabled: boolean) =>
+      call<AnalysisSummary>("setBackgroundAnalysis", { params: { id }, body: { enabled } }),
     pauseAnalysis: (id: AnalysisId) => call<AnalysisSummary>("pauseAnalysis", { params: { id } }),
     resumeAnalysis: (id: AnalysisId) => call<AnalysisSummary>("resumeAnalysis", { params: { id } }),
     setLanguage: (body: SetLanguageRequest) => call<void>("setLanguage", { body }),

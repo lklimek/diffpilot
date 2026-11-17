@@ -715,13 +715,13 @@ fn covering_output(id: &FlowId, lines: &[FileRanges]) -> FlowAnalysisOutput {
                 why: text(),
                 annotations: Vec::new(),
                 assessment: Some(contracts::agent::analyse_flow::Assessment {
-                    headline: text(),
+                    headline: Some(text()),
                     risk: contracts::common::RiskBand::Low,
                     reason: text(),
-                    basis_note: text(),
-                    not_checked: text(),
-                    origin: contracts::common::Origin::Introduced,
-                    blocking: contracts::common::Blocking::NoActionProposed,
+                    basis_note: Some(text()),
+                    not_checked: Some(text()),
+                    origin: Some(contracts::common::Origin::Introduced),
+                    blocking: Some(contracts::common::Blocking::NoActionProposed),
                     smallest_correction: None,
                 }),
             });

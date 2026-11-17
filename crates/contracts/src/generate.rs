@@ -130,6 +130,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<ResolvePrResponse>();
     collector.visit::<CreateAnalysisRequest>();
     collector.visit::<AnalysisSummary>();
+    collector.visit::<crate::api::analyses::BackgroundAnalysisRequest>();
     collector.visit::<AnalysisEvent>();
     collector.visit::<Tour>();
     collector.visit::<RangeQuery>();

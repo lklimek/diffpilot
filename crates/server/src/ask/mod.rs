@@ -1,11 +1,11 @@
-//! Ask (brief §5 Ask): a reviewer's question about one step of a finished analysis becomes an `ask` job on
-//! `JobExecutor` that resumes the analysis's agent session; a lost session falls back to the context pack built
+//! Ask (brief §5 Ask): a reviewer's question about one accepted step of a review-ready analysis becomes an `ask` job on
+//! `JobExecutor` that resumes the user's private PR working session; a lost session falls back to the context pack built
 //! at claim with the asked step and its earlier answers ([`context_pack`]). The answer is checked like every agent
 //! output and stored as a `Question`; each state change is published on the analysis's event stream.
 //!
 //! One follower task per open question drives it to `answered` or `failed` (also after a server restart:
 //! [`resume_unanswered`]). Ask jobs are claimed before batch jobs and never pre-empt a running job; the queue
-//! runs one job per analysis, so a second question of the same analysis waits queued until the first ends.
+//! runs one job per PR, so a second question of the same analysis waits queued until the first ends.
 
 mod job;
 #[cfg(test)]
@@ -48,7 +48,7 @@ pub enum AskError {
     /// The question is longer than [`AskRequest::MAX_TEXT_CHARS`].
     #[error("the question is too long")]
     TooLong,
-    /// Ask is available only for a finished analysis.
+    /// Ask requires accepted planning and PR context.
     #[error("the analysis has not finished")]
     NotFinished,
     /// A re-analysis replaced this analysis; its agent session is dropped.
@@ -68,7 +68,7 @@ pub enum AskError {
     Db(#[from] DbError),
 }
 
-/// Stores the user's question about `step` of the finished `analysis` as `pending`, publishes it and starts its
+/// Stores the user's question about `step` of the review-ready `analysis` as `pending`, publishes it and starts its
 /// follower, which submits the `ask` job.
 pub async fn ask(
     state: &AppState,
@@ -84,7 +84,9 @@ pub async fn ask(
     if text.chars().count() > AskRequest::MAX_TEXT_CHARS {
         return Err(AskError::TooLong);
     }
-    if !matches!(analysis.state, AnalysisState::Finished { .. }) {
+    if analysis.review_ready != Some(true)
+        && !matches!(analysis.state, AnalysisState::Finished { .. })
+    {
         return Err(AskError::NotFinished);
     }
     if superseded(&state.db.analyses().get(analysis.id).await?) {

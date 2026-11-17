@@ -76,13 +76,15 @@ impl JobExecutor for QueueExecutor {
                             }));
                         }
                         let current = self.db.analyses().get(analysis).await?;
-                        if matches!(
-                            current.state,
-                            contracts::api::analyses::AnalysisState::Paused {
-                                reason: Some(contracts::api::analyses::PauseReason::User),
-                                ..
-                            }
-                        ) {
+                        if !matches!(stage, db::repo::jobs::JobStage::Ask(_))
+                            && matches!(
+                                current.state,
+                                contracts::api::analyses::AnalysisState::Paused {
+                                    reason: Some(contracts::api::analyses::PauseReason::User),
+                                    ..
+                                }
+                            )
+                        {
                             return Ok(None);
                         }
                         if matches!(
@@ -90,6 +92,11 @@ impl JobExecutor for QueueExecutor {
                             contracts::api::analyses::AnalysisState::Cancelled
                         ) {
                             return Err(DbError::Conflict.into());
+                        }
+                        if let db::repo::jobs::JobStage::Flow(flow) = &stage
+                            && !self.db.flow_work().admitted(analysis, flow).await?
+                        {
+                            return Err(ExecutorError::Superseded);
                         }
                         let mut job = job.clone();
                         let saved = self.db.settings().llm_selection().await?;

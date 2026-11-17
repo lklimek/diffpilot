@@ -119,7 +119,19 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
                   <b>{flow.position}</b> {flow.llm.title}
                 </button>
                 <span className="flex flex-col items-end gap-0.5 pt-1.5">
-                  <RiskLabel risk={flow.llm.risk} />
+                  {flow.analysis_status && flow.analysis_status.state !== "analysed" ? (
+                    <span className="text-xs">
+                      {flow.analysis_status.state === "analysing"
+                        ? "Being analysed"
+                        : flow.analysis_status.state === "failed"
+                          ? "Failed"
+                          : flow.analysis_status.state === "queued"
+                            ? "Queued"
+                            : "Not analysed yet"}
+                    </span>
+                  ) : (
+                    <RiskLabel risk={flow.llm.risk} />
+                  )}
                   <GroupLabel group={flow.group} />
                 </span>
               </div>

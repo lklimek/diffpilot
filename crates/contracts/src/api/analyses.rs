@@ -21,6 +21,14 @@ pub struct CreateAnalysisRequest {
 /// An analysis and its state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AnalysisSummary {
+    /// Plan and PR context are accepted; analysed flows can be reviewed while work continues.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub review_ready: Option<bool>,
+    /// Whether unrequested flows are analysed in rank order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub background_analysis: Option<bool>,
     /// Distinct model choices of jobs actually claimed, in first-use order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -249,4 +257,11 @@ pub enum PauseReason {
     /// The provider decides when a job may run again.
     #[default]
     UsageLimit,
+}
+
+/// Change background work; an already running job is kept.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct BackgroundAnalysisRequest {
+    /// Analyse remaining flows automatically.
+    pub enabled: bool,
 }

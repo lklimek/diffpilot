@@ -60,6 +60,7 @@ export const REPO_SETTINGS: RepoSettings = {
 };
 
 interface Scenario {
+  lazy?: boolean;
   llmSaveFails?: boolean;
   manyRepos?: boolean;
   /** `me` answer. */
@@ -235,6 +236,7 @@ const REPORTED_USAGE: UsageTotals = {
 };
 
 const SCENARIOS = {
+  "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5 } },
   "llm-save-fails": { llmSaveFails: true },
   "many-repos": {
     manyRepos: true,

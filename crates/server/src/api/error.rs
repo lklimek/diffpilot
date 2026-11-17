@@ -101,6 +101,7 @@ impl ApiErrorSource for ExecutorError {
             Self::Db(error) => error.code(),
             Self::UnknownJob(_) => ApiErrorCode::NotFound,
             Self::Closed => ApiErrorCode::Internal,
+            Self::Superseded => ApiErrorCode::Conflict,
         }
     }
 
@@ -109,6 +110,7 @@ impl ApiErrorSource for ExecutorError {
             Self::Db(error) => error.public_message(),
             Self::UnknownJob(_) => Cow::Borrowed("The requested job was not found."),
             Self::Closed => Cow::Borrowed(INTERNAL_MESSAGE),
+            Self::Superseded => Cow::Borrowed("The flow queue changed. Request the flow again."),
         }
     }
 }

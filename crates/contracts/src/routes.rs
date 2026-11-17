@@ -268,8 +268,25 @@ pub const RUNNER_OUTPUT: Route =
 pub const RUNNER_RESULT: Route =
     runner_route("runnerResult", "/runner/v1/jobs/{id}/result", JobToken);
 
+/// Prioritise one planned flow, retrying it when needed.
+pub const REQUEST_FLOW: Route = route(
+    "requestFlow",
+    Post,
+    "/api/v1/analyses/{id}/flows/{flow}/request",
+    SessionCsrf,
+);
+/// Enable or disable automatic work on remaining flows.
+pub const SET_BACKGROUND_ANALYSIS: Route = route(
+    "setBackgroundAnalysis",
+    Put,
+    "/api/v1/analyses/{id}/background",
+    SessionCsrf,
+);
+
 /// Every route.
 pub const ROUTES: &[Route] = &[
+    REQUEST_FLOW,
+    SET_BACKGROUND_ANALYSIS,
     HEALTHZ,
     AUTH_LOGIN,
     AUTH_CALLBACK,

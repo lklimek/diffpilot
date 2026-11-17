@@ -1,4 +1,4 @@
-//! The Tour of a finished analysis: the tenant check; loading lives in `pipeline::tour`.
+//! The Tour of a review-ready analysis: the tenant check; loading lives in `pipeline::tour`.
 
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};

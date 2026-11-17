@@ -446,3 +446,20 @@ it("user pause resumes without a usage-limit claim and Cancel needs inline confi
   await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
   expect(cancel).toHaveBeenCalledOnce();
 });
+
+it("opens the review as soon as context is ready while flows are still running", () => {
+  render(
+    <AnalysisProgress
+      state={{ state: "running", done: 1, total: 5 }}
+      reviewReady
+      busy={false}
+      reviewHref="/analyses/a1"
+      onCancel={() => {}}
+      onRetry={() => {}}
+    />,
+  );
+  expect(screen.getByText("1 of 5 flows analysed. The review is open.")).toBeVisible();
+  expect(screen.queryByText("Between two jobs: the server starts the next one.")).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
+  expect(screen.getByRole("button", { name: "Cancel analysis" })).toBeVisible();
+});

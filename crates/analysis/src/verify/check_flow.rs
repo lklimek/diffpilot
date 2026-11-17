@@ -318,18 +318,32 @@ fn check_step(
     }
     if step.assessment.is_none() {
         issues.push(VerifyIssueKind::AssessmentMissing,
-            format!("{at}.assessment is required: rate what this change may break or leave wrong, with a reason and basis, also for low; use blocking no_action_proposed when no action is proposed"));
+            format!("{at}.assessment is required: rate what this change may break or leave wrong, with risk and one sentence reason for low; above low include basis, unchecked aspects, origin and blocking"));
     }
     if let Some(assessment) = &step.assessment {
         let at = format!("{at}.assessment");
-        let texts = [
+        issues.text(&format!("{at}.reason"), &assessment.reason);
+        for (field, text) in [
             ("headline", &assessment.headline),
-            ("reason", &assessment.reason),
             ("basis_note", &assessment.basis_note),
             ("not_checked", &assessment.not_checked),
-        ];
-        for (field, text) in texts {
-            issues.text(&format!("{at}.{field}"), text);
+        ] {
+            if let Some(text) = text {
+                issues.text(&format!("{at}.{field}"), text);
+            } else if assessment.risk != RiskBand::Low {
+                issues.push(
+                    VerifyIssueKind::AssessmentMissing,
+                    format!("{at}.{field} is required above low"),
+                );
+            }
+        }
+        if assessment.risk != RiskBand::Low
+            && (assessment.origin.is_none() || assessment.blocking.is_none())
+        {
+            issues.push(
+                VerifyIssueKind::AssessmentMissing,
+                format!("{at}: origin and blocking are required above low"),
+            );
         }
         if let Some(correction) = &assessment.smallest_correction {
             issues.text(&format!("{at}.smallest_correction"), correction);
@@ -344,7 +358,7 @@ fn check_step(
                     concrete_action(text) && text.trim().ends_with('?') && !note.evidence.is_empty()
                 })
         });
-        if (assessment.blocking == Blocking::FollowUp && !correction)
+        if (assessment.blocking == Some(Blocking::FollowUp) && !correction)
             || (assessment.risk != RiskBand::Low && !correction && !question)
         {
             issues.push(VerifyIssueKind::AssessmentActionMissing,
@@ -840,13 +854,13 @@ mod tests {
             why: "timeouts".to_owned(),
             annotations: Vec::new(),
             assessment: Some(Assessment {
-                headline: "A response may take longer.".to_owned(),
+                headline: Some("A response may take longer.".to_owned()),
                 risk: RiskBand::Low,
                 reason: "The wait is bounded to one request.".to_owned(),
-                basis_note: "Read the caller and retry; nothing executed.".to_owned(),
-                not_checked: "Runtime timing.".to_owned(),
-                origin: Origin::Introduced,
-                blocking: Blocking::NoActionProposed,
+                basis_note: Some("Read the caller and retry; nothing executed.".to_owned()),
+                not_checked: Some("Runtime timing.".to_owned()),
+                origin: Some(Origin::Introduced),
+                blocking: Some(Blocking::NoActionProposed),
                 smallest_correction: None,
             }),
         }
@@ -889,13 +903,13 @@ mod tests {
             vec![evidence("src/a.rs", LineSide::Base, 10)],
         ));
         changed.assessment = Some(Assessment {
-            headline: "Payments may be sent twice.".to_owned(),
+            headline: Some("Payments may be sent twice.".to_owned()),
             risk: RiskBand::High,
             reason: "Retries are not idempotent.".to_owned(),
-            basis_note: "Read 2 files; nothing executed.".to_owned(),
-            not_checked: "The node's deduplication.".to_owned(),
-            origin: Origin::Introduced,
-            blocking: Blocking::BlocksThisPr,
+            basis_note: Some("Read 2 files; nothing executed.".to_owned()),
+            not_checked: Some("The node's deduplication.".to_owned()),
+            origin: Some(Origin::Introduced),
+            blocking: Some(Blocking::BlocksThisPr),
             smallest_correction: Some("Deduplicate retries by request id.".to_owned()),
         });
         let removed = step(
@@ -1034,6 +1048,18 @@ mod tests {
     }
 
     #[test]
+    fn concise_low_assessment_is_valid_but_higher_bands_need_details() {
+        let mut output = output();
+        let concise =
+            serde_json::json!({"risk":"low", "reason":"The wait remains bounded to one request."});
+        output.steps[1].assessment =
+            Some(serde_json::from_value(concise).expect("concise assessment"));
+        assert!(Setup::new().run(&output).is_ok());
+        output.steps[1].assessment.as_mut().unwrap().risk = RiskBand::High;
+        assert!(!Setup::new().issues(&output).is_empty());
+    }
+
+    #[test]
     fn every_step_is_rated_without_inventing_an_action_for_low_risk() {
         let output = output();
         assert!(output.steps.iter().all(|step| step.assessment.is_some()));
@@ -1079,7 +1105,7 @@ mod tests {
             "As an AI, I cannot inspect this.",
         ] {
             let mut output = output();
-            output.steps[1].assessment.as_mut().unwrap().basis_note = text.to_owned();
+            output.steps[1].assessment.as_mut().unwrap().basis_note = Some(text.to_owned());
             assert_eq!(
                 kinds(&Setup::new().issues(&output)),
                 [VerifyIssueKind::AgentLimitation],
@@ -1094,8 +1120,8 @@ mod tests {
             for correction in [None, Some("none given"), Some("N/A"), Some("Brak.")] {
                 let mut output = output();
                 let assessment = output.steps[1].assessment.as_mut().unwrap();
-                assessment.origin = Origin::PreExisting;
-                assessment.blocking = blocking;
+                assessment.origin = Some(Origin::PreExisting);
+                assessment.blocking = Some(blocking);
                 assessment.smallest_correction = correction.map(str::to_owned);
                 assert_eq!(
                     kinds(&Setup::new().issues(&output)),
@@ -1120,7 +1146,7 @@ mod tests {
             vec![evidence("src/a.rs", LineSide::Head, 10)],
         ));
         assert!(Setup::new().run(&output).is_ok());
-        output.steps[1].assessment.as_mut().unwrap().blocking = Blocking::FollowUp;
+        output.steps[1].assessment.as_mut().unwrap().blocking = Some(Blocking::FollowUp);
         assert_eq!(
             kinds(&Setup::new().issues(&output)),
             [VerifyIssueKind::AssessmentActionMissing]

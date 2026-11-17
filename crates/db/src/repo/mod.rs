@@ -19,6 +19,7 @@ mod analysis_progress;
 pub mod comments;
 pub mod documents;
 pub mod feedback;
+pub mod flow_work;
 pub mod jobs;
 pub mod llm_credentials;
 pub mod pull_requests;

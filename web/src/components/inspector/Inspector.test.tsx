@@ -29,12 +29,12 @@ beforeEach(() => window.localStorage.clear());
 afterEach(() => vi.restoreAllMocks());
 
 describe("Inspector at a step", () => {
-  it("shows a low rating and basis without inventing a follow-up", async () => {
+  it("shows a low rating and one-sentence reason without detailed assessment fields", async () => {
     render(<Inspector tour={tour} block={atStep("f1.1")} />);
     await userEvent.click(sectionButton(/^Assessment/));
     expect(region(/^Assessment/)).toHaveTextContent("LOW");
-    expect(region(/^Assessment/)).toHaveTextContent("no action proposed");
-    expect(region(/^Assessment/)).toHaveTextContent("nothing executed");
+    expect(region(/^Assessment/)).toHaveTextContent(step(tour, "f1.1").llm.assessment!.reason);
+    expect(region(/^Assessment/)).not.toHaveTextContent("nothing executed");
   });
 
   it("shows the eight sections in the order of the brief", () => {

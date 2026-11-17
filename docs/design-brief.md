@@ -234,6 +234,18 @@ is independent of a provider limit and never resumes automatically. Resume check
 not moved. Home also offers Resume. Cancel has an inline confirmation explaining that it discards the
 plan and completed flows while retaining both PR sessions; Pause keeps everything. Confirmed cancellation returns to Home.
 
+Owner-approved amendment (2026-11-17): once planning and PR context are accepted, the Tour opens while
+flows continue serially. Pending flows show their planned intent/ranges and explicit work state, never
+an implied assessment. Opening a pending flow requests it ahead of background work; the current job is
+not interrupted. The per-analysis background switch defaults on and survives restart; off means on demand.
+Accepted flows support review state, comments and private Ask immediately. Pause, usage limits and Cancel
+retain their existing semantics. This supersedes the completion barrier above because the measured large-PR
+run produced about 184k output tokens in over 80 minutes before any review was readable.
+
+Owner-approved assessment amendment (2026-11-17): the lowest band needs only its band and one sentence
+reason; higher bands retain the full assessment. Detailed fields are optional in the data model and omitted
+for concise low assessments. Assessments remain collapsed by default; no step-count cap or per-kind effort.
+
 ### 4.3 Tour (the review screen)
 
 **Sequence.** PR context → for each flow in order: flow introduction → its steps, one at a time → next flow.

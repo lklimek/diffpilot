@@ -94,3 +94,22 @@ describe("FlowIntroBlock", () => {
     }
   });
 });
+
+it("shows pending planned ranges without an assessment or review tick", () => {
+  const pending = {
+    ...f1,
+    steps: [],
+    analysis_status: { state: "not_analysed", started_at: null, message: null },
+    planned: {
+      intent: "Bound RPC retries",
+      importance_rank: 1,
+      ranges: [{ file: "src/client.rs", side: "head", ranges: [{ start_line: 4, end_line: 8 }] }],
+    },
+  } as Tour["flows"][number];
+  render(<FlowIntroBlock flow={pending} dependencies={[]} ticked={[]} />);
+  expect(screen.getByText("Not analysed yet")).toBeVisible();
+  expect(screen.getByText("Bound RPC retries")).toBeVisible();
+  expect(screen.getByText(/src\/client.rs/)).toBeVisible();
+  expect(screen.queryByRole("button", { name: /Mark flow reviewed/ })).not.toBeInTheDocument();
+  expect(screen.queryByText("▲ HIGH")).not.toBeInTheDocument();
+});

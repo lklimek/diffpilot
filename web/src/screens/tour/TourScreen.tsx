@@ -1,3 +1,4 @@
+import { FlowWork } from "../../components/progress/FlowWork";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
 import { ApiError } from "../../api/client";
@@ -13,7 +14,15 @@ import type {
   StepId,
   Tour,
 } from "../../api/generated/types";
-import { useCommentActions, useLines, useMe, usePendingReview, useTour } from "../../api/queries";
+import {
+  useCommentActions,
+  useLines,
+  useMe,
+  usePendingReview,
+  useTour,
+  useFlowWork,
+  useQuestionEvents,
+} from "../../api/queries";
 import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
 import type { UnresolvedPosts } from "../../components/comment/CommentComposer";
@@ -47,6 +56,7 @@ import {
   blockFromHash,
   evidenceFromHash,
 } from "./sequence";
+import { useNow } from "../../app/now";
 import { Workspace } from "./Workspace";
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
@@ -130,6 +140,11 @@ function resumedAt(tour: Tour, block: BlockRef): string {
 
 function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const { state, change: save, loadError, saveError } = review;
+  const work = useFlowWork(analysisId);
+  const stream = useQuestionEvents(analysisId);
+  const now = useNow();
+  const requested = useRef<string | null>(null);
+  const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
   const pending = usePendingReview(analysisId);
   const comments = useCommentActions(analysisId);
   const ticked = state.ticked_steps;
@@ -201,6 +216,14 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     setRevealComment(null);
     mainRef.current?.scrollTo?.({ top: 0 });
   };
+
+  useEffect(() => {
+    const id = flow?.id ?? null;
+    if (!workAllowed || requested.current === id) return;
+    requested.current = id;
+    if (id && (flow?.analysis_status?.state === "not_analysed" || flow?.analysis_status?.state === "queued"))
+      work.request.mutate(id);
+  }, [flow, work.request, workAllowed]);
 
   const showEvidence = (item: Evidence) => {
     const found = tour.flows
@@ -384,6 +407,9 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     block = (
       <FlowIntroBlock
         flow={flow}
+        now={now}
+        onRequest={workAllowed ? () => work.request.mutate(flow.id) : undefined}
+        busy={work.request.isPending}
         dependencies={tour.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
         ticked={ticked}
         onSetReviewed={(on) =>
@@ -497,6 +523,21 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         : null;
   const centre = (
     <>
+      {tour.analysis.review_ready && workAllowed && (
+        <FlowWork
+          done={tour.flows.filter((f) => f.analysis_status?.state === "analysed").length}
+          total={tour.flows.length}
+          background={tour.analysis.background_analysis ?? true}
+          busy={work.background.isPending}
+          onBackground={(enabled) => work.background.mutate(enabled)}
+          progressHref={`/analyses/${analysisId}/progress`}
+          error={
+            work.request.error || work.background.error
+              ? errorText(work.request.error || work.background.error)
+              : undefined
+          }
+        />
+      )}
       {resumed && sameBlock(resumed, current) && (
         <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1 text-[12.5px]">
           <p role="status" className="m-0 flex-1">
@@ -521,7 +562,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
           {progressAlert}
         </p>
       )}
-      {flow && (
+      {flow && flow.steps.length > 0 && (
         <DiagramPane
           key={flow.id}
           flow={flow}
@@ -586,6 +627,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         main={centre}
         inspector={
           <InspectorPane
+            streamLost={stream.lost}
             analysisId={analysisId}
             tour={tour}
             block={current}

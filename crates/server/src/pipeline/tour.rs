@@ -1,4 +1,4 @@
-//! Projection of a finished analysis into the `Tour`: the verified Tour skeleton (`analysis::verify`), the stored
+//! Projection of a review-ready analysis into the `Tour`: the verified Tour skeleton (`analysis::verify`), the stored
 //! pre-pass and the stored GitHub snapshot. Every fact comes from one of them or says "not checked" (brief §1
 //! "silence is not safety"): CI and threads from the snapshot, counters, profile, instruction files, moves and
 //! Not analysed from the pre-pass, Unexplained from the coverage of the accepted flows, step ids, graph and move
@@ -86,7 +86,7 @@ impl Links {
 /// The Tour could not be loaded.
 #[derive(Debug, thiserror::Error)]
 pub enum TourLoadError {
-    /// The Tour exists only for finished analyses.
+    /// The Tour requires an accepted plan and PR context.
     #[error("the analysis has not finished")]
     NotFinished,
     /// A stored document is missing or the database failed.
@@ -103,10 +103,12 @@ pub enum TourLoadError {
     Tour(#[from] TourError),
 }
 
-/// The Tour of a finished analysis: its stored outputs verified again (verification is deterministic), then
+/// The Tour of a review-ready analysis: its stored outputs verified again (verification is deterministic), then
 /// projected with the stored pre-pass and GitHub snapshot.
 pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, TourLoadError> {
-    if !matches!(summary.state, AnalysisState::Finished { .. }) {
+    if summary.review_ready != Some(true)
+        && !matches!(summary.state, AnalysisState::Finished { .. })
+    {
         return Err(TourLoadError::NotFinished);
     }
     let results = StoredResults::load(&state.db, summary.id).await?;
@@ -154,7 +156,7 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         .into_iter()
         .map(|(_, unsent)| unsent)
         .collect();
-    Ok(project(&Projection {
+    let mut tour = project(&Projection {
         summary,
         skeleton: &skeleton,
         pr_context,
@@ -165,7 +167,11 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         related_work_checked,
         unsent: &unsent,
         memcan_profile: profile::stored(&state.db, summary.id).await?.found(),
-    }))
+    });
+    for flow in &mut tour.flows {
+        flow.analysis_status = Some(state.db.flow_work().status(summary.id, &flow.id).await?);
+    }
+    Ok(tour)
 }
 
 /// Everything the Tour is projected from.
@@ -192,7 +198,7 @@ pub struct Projection<'a> {
     pub memcan_profile: Option<bool>,
 }
 
-/// Builds the Tour of a finished analysis.
+/// Builds a Tour with accepted steps and explicit placeholders for pending flows.
 pub fn project(input: &Projection<'_>) -> Tour {
     let links = Links::new(input.summary);
     let mut flows: Vec<Flow> = Vec::with_capacity(input.skeleton.flows.len());
@@ -215,6 +221,106 @@ pub fn project(input: &Projection<'_>) -> Tour {
             &links,
         ));
     }
+    for planned in &input.skeleton.plan.output.flows {
+        let details = contracts::api::tour::PlannedFlowDetails {
+            intent: planned.intent.clone(),
+            importance_rank: planned.importance_rank,
+            ranges: input
+                .skeleton
+                .plan
+                .flow_lines
+                .get(&planned.id)
+                .cloned()
+                .unwrap_or_default(),
+        };
+        if let Some(flow) = flows.iter_mut().find(|f| f.id == planned.id) {
+            flow.planned = Some(details);
+        } else {
+            flows.push(Flow {
+                id: planned.id.clone(),
+                position: 0,
+                group: planned.classification.into(),
+                analysis_status: Some(contracts::api::tour::FlowAnalysisStatus {
+                    state: contracts::api::tour::FlowAnalysisState::NotAnalysed,
+                    started_at: None,
+                    message: None,
+                }),
+                facts: FlowFacts {
+                    files: details.ranges.iter().map(|r| r.file.clone()).collect(),
+                    step_count: 0,
+                },
+                llm: FlowLlm {
+                    title: planned.title.clone(),
+                    classification: planned.classification,
+                    risk: None,
+                    introduction: contracts::agent::analyse_flow::FlowIntroduction {
+                        problem_before: String::new(),
+                        change: String::new(),
+                        example_before_after: String::new(),
+                    },
+                    depends_on: planned.depends_on.clone(),
+                    pattern_repetitions: Vec::new(),
+                },
+                graph: contracts::api::tour::FlowGraph {
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
+                },
+                steps: Vec::new(),
+                planned: Some(details),
+            });
+        }
+    }
+    flows.sort_by_key(|f| {
+        (
+            f.group,
+            f.planned
+                .as_ref()
+                .map(|p| p.importance_rank)
+                .unwrap_or_default(),
+        )
+    });
+    for (flow, position) in flows.iter_mut().zip(1u32..) {
+        flow.position = position;
+    }
+    let pending: Vec<_> = flows
+        .iter()
+        .filter(|f| f.steps.is_empty())
+        .flat_map(|f| f.planned.iter().flat_map(|p| p.ranges.iter()))
+        .collect();
+    let mut unexplained = unsent::with_reasons(&input.skeleton.coverage.unexplained, input.unsent);
+    for item in &mut unexplained {
+        for excluded in pending
+            .iter()
+            .filter(|p| p.file == item.file && p.side == item.side)
+        {
+            for cut in &excluded.ranges {
+                item.ranges = item
+                    .ranges
+                    .iter()
+                    .flat_map(|r| {
+                        if cut.end_line < r.start_line || cut.start_line > r.end_line {
+                            return vec![*r];
+                        }
+                        let mut parts = Vec::new();
+                        if r.start_line < cut.start_line {
+                            parts.push(LineRange {
+                                start_line: r.start_line,
+                                end_line: cut.start_line - 1,
+                            });
+                        }
+                        if r.end_line > cut.end_line {
+                            parts.push(LineRange {
+                                start_line: cut.end_line + 1,
+                                end_line: r.end_line,
+                            });
+                        }
+                        parts
+                    })
+                    .collect();
+            }
+        }
+    }
+    unexplained.retain(|r| !r.ranges.is_empty());
     let threads = place_threads(input, &mut flows);
     let step_count = flows.iter().map(|flow| flow.facts.step_count).sum();
     let prepass = input.prepass;
@@ -252,7 +358,7 @@ pub fn project(input: &Projection<'_>) -> Tour {
         },
         flows,
         quiet: QuietRows {
-            unexplained: unsent::with_reasons(&input.skeleton.coverage.unexplained, input.unsent),
+            unexplained,
             moves: prepass.identical_moves(),
             not_analysed: prepass.not_analysed_with_binaries(),
         },
@@ -453,6 +559,8 @@ fn project_flow(
         })
         .collect();
     Flow {
+        analysis_status: None,
+        planned: None,
         id: planned.id.clone(),
         position,
         group: FlowGroup::from(planned.classification),

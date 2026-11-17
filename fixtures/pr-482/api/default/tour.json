@@ -1,5 +1,7 @@
 {
   "analysis": {
+    "review_ready": true,
+    "background_analysis": true,
     "models_used": [],
     "usage": null,
     "progress": {
@@ -159,6 +161,69 @@
   },
   "flows": [
     {
+      "analysis_status": {
+        "state": "analysed",
+        "started_at": null,
+        "message": null
+      },
+      "planned": {
+        "intent": "Retry RpcClient::send on timeout with exponential backoff and give up with Exhausted; entry points: mempool::broadcast_tx, wallet::send_payment and every other caller of send.",
+        "importance_rank": 1,
+        "ranges": [
+          {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 35,
+                "end_line": 35
+              },
+              {
+                "start_line": 42,
+                "end_line": 42
+              },
+              {
+                "start_line": 91,
+                "end_line": 109
+              }
+            ]
+          },
+          {
+            "file": "src/rpc/retry.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 5,
+                "end_line": 33
+              }
+            ]
+          },
+          {
+            "file": "src/rpc/client.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 41,
+                "end_line": 41
+              },
+              {
+                "start_line": 101,
+                "end_line": 103
+              }
+            ]
+          },
+          {
+            "file": "src/util/backoff.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 5,
+                "end_line": 6
+              }
+            ]
+          }
+        ]
+      },
       "id": "f1",
       "position": 1,
       "group": "behaviour",
@@ -1206,6 +1271,37 @@
       ]
     },
     {
+      "analysis_status": {
+        "state": "analysed",
+        "started_at": null,
+        "message": null
+      },
+      "planned": {
+        "intent": "Shorten the default per-request timeout in RpcConfig::default; reached through RpcClient::new.",
+        "importance_rank": 2,
+        "ranges": [
+          {
+            "file": "src/config.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 23,
+                "end_line": 23
+              }
+            ]
+          },
+          {
+            "file": "src/config.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 23,
+                "end_line": 23
+              }
+            ]
+          }
+        ]
+      },
       "id": "f2",
       "position": 2,
       "group": "behaviour",
@@ -1451,6 +1547,27 @@
       ]
     },
     {
+      "analysis_status": {
+        "state": "analysed",
+        "started_at": null,
+        "message": null
+      },
+      "planned": {
+        "intent": "Add RpcError::Exhausted, returned by send after the last attempt; reached by every match on RpcError.",
+        "importance_rank": 3,
+        "ranges": [
+          {
+            "file": "src/rpc/error.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 12,
+                "end_line": 13
+              }
+            ]
+          }
+        ]
+      },
       "id": "f3",
       "position": 3,
       "group": "behaviour",
@@ -1712,6 +1829,27 @@
       ]
     },
     {
+      "analysis_status": {
+        "state": "analysed",
+        "started_at": null,
+        "message": null
+      },
+      "planned": {
+        "intent": "Remove RpcClient::send_once; callers that must not retry have to use send.",
+        "importance_rank": 4,
+        "ranges": [
+          {
+            "file": "src/rpc/client.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 52,
+                "end_line": 62
+              }
+            ]
+          }
+        ]
+      },
       "id": "f4",
       "position": 4,
       "group": "behaviour",
@@ -1843,6 +1981,57 @@
       ]
     },
     {
+      "analysis_status": {
+        "state": "analysed",
+        "started_at": null,
+        "message": null
+      },
+      "planned": {
+        "intent": "Move the delay helpers next to RetryPolicy and change the jitter constant; reached through RetryPolicy::backoff.",
+        "importance_rank": 5,
+        "ranges": [
+          {
+            "file": "src/lib.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 13,
+                "end_line": 13
+              }
+            ]
+          },
+          {
+            "file": "src/rpc/retry.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 49,
+                "end_line": 50
+              }
+            ]
+          },
+          {
+            "file": "src/lib.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 18,
+                "end_line": 18
+              }
+            ]
+          },
+          {
+            "file": "src/util/backoff.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 22,
+                "end_line": 23
+              }
+            ]
+          }
+        ]
+      },
       "id": "f5",
       "position": 5,
       "group": "behaviour",

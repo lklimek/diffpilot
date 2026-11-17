@@ -545,3 +545,24 @@ fn output_schemas_need_an_object_root() {
         assert_eq!(strict::check_output(&schema), Ok(()), "{kind:?}");
     }
 }
+
+#[test]
+fn concise_low_assessment_schema_accepts_omitted_detail_fields() {
+    let (_, mut flow) = samples()
+        .into_iter()
+        .find(|(kind, _)| *kind == JobKind::AnalyseFlow)
+        .expect("flow");
+    flow["steps"][0]["assessment"] =
+        json!({"risk":"low","reason":"The retry remains bounded to this request."});
+    let validator = validator(JobKind::AnalyseFlow);
+    assert!(
+        validator.is_valid(&flow),
+        "{:?}",
+        validator
+            .iter_errors(&flow)
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+    );
+    flow["steps"][0]["assessment"]["risk"] = json!("high");
+    assert!(!validator.is_valid(&flow));
+}

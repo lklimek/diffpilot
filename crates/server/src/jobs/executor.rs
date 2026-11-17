@@ -88,6 +88,9 @@ pub enum JobUpdate {
 /// A job could not be submitted, followed or cancelled.
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
+    /// The user selected different flow work before this job was enqueued.
+    #[error("flow work was reprioritised")]
+    Superseded,
     /// The job queue's storage failed.
     #[error("the job queue is not available")]
     Db(#[from] db::error::DbError),

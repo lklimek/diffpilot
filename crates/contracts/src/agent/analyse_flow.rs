@@ -114,20 +114,30 @@ pub struct AgentAnnotation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Assessment {
     /// What a production user or operator would notice.
-    pub headline: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub headline: Option<String>,
     /// Risk band from the severity skill; never its numeric scores.
     pub risk: RiskBand,
     /// Reason for the band, also for low.
     pub reason: String,
     /// What was read and that nothing was executed.
-    pub basis_note: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub basis_note: Option<String>,
     /// What was not checked.
-    pub not_checked: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub not_checked: Option<String>,
     /// Introduced by this pull request or pre-existing.
-    pub origin: Origin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub origin: Option<Origin>,
     /// Whether an action is proposed before merge, as a follow-up, or neither.
-    pub blocking: Blocking,
-    /// The smallest correction, or null.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub blocking: Option<Blocking>,
+    /// The smallest correction, or null; the agent may omit it for low.
     pub smallest_correction: Option<String>,
 }
 

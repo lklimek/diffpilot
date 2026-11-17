@@ -41,6 +41,8 @@ use serde_json::{Value, json};
 
 fn summary() -> AnalysisSummary {
     AnalysisSummary {
+        review_ready: None,
+        background_analysis: None,
         models_used: None,
         usage: None,
         progress: None,
@@ -105,6 +107,8 @@ fn tour() -> Tour {
             },
         },
         flows: vec![Flow {
+            analysis_status: None,
+            planned: None,
             id: FlowId("f1".to_owned()),
             position: 1,
             group: FlowGroup::Behaviour,
@@ -179,13 +183,13 @@ fn tour() -> Tour {
                         evidence: vec![],
                     }],
                     assessment: Some(Assessment {
-                        headline: "h".to_owned(),
+                        headline: Some("h".to_owned()),
                         risk: RiskBand::High,
                         reason: "r".to_owned(),
-                        basis_note: "read 4 files".to_owned(),
-                        not_checked: "node".to_owned(),
-                        origin: Origin::Introduced,
-                        blocking: Blocking::BlocksThisPr,
+                        basis_note: Some("read 4 files".to_owned()),
+                        not_checked: Some("node".to_owned()),
+                        origin: Some(Origin::Introduced),
+                        blocking: Some(Blocking::BlocksThisPr),
                         smallest_correction: None,
                     }),
                     moved_from: None,

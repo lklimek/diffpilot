@@ -118,10 +118,19 @@ pub fn flow(output: &FlowAnalysisOutput) -> Vec<WordingWarning> {
         if let Some(assessment) = &step.assessment {
             let at = format!("{at}.assessment");
             for (field, text) in [
-                ("headline", &assessment.headline),
-                ("reason", &assessment.reason),
-                ("basis_note", &assessment.basis_note),
-                ("not_checked", &assessment.not_checked),
+                (
+                    "headline",
+                    assessment.headline.as_deref().unwrap_or_default(),
+                ),
+                ("reason", assessment.reason.as_str()),
+                (
+                    "basis_note",
+                    assessment.basis_note.as_deref().unwrap_or_default(),
+                ),
+                (
+                    "not_checked",
+                    assessment.not_checked.as_deref().unwrap_or_default(),
+                ),
             ] {
                 scan(&mut found, &format!("{at}.{field}"), text);
             }

@@ -511,7 +511,7 @@ impl Jobs<'_> {
         query.push_bind(ts(params.now));
         query.push(
             " WHERE id = (SELECT j.id FROM jobs j WHERE j.state = 'queued'
-                 AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.id = j.analysis_id AND (a.state = 'cancelled' OR a.user_paused_at IS NOT NULL))
+                 AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.id = j.analysis_id AND (a.state = 'cancelled' OR (a.user_paused_at IS NOT NULL AND j.kind <> 'ask')))
                  AND NOT EXISTS (SELECT 1 FROM analyses a JOIN pull_requests p ON p.id=a.pull_request_id WHERE a.id=j.analysis_id AND p.session_state='drop_requested')
                  AND j.credential_id IN (",
         );
