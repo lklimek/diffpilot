@@ -130,26 +130,59 @@ test("agent_output_xss_renders_as_text", async ({ page }) => {
     dialogs.push(dialog.message());
     void dialog.dismiss();
   });
+  /** Nothing the agent wrote became markup, a handler or a script link anywhere in the app. */
+  const expectInert = async () => {
+    const root = page.locator("#root");
+    await expect(root.locator("img, script, iframe, object, embed, foreignObject")).toHaveCount(0);
+    expect(
+      await root.evaluate((el) =>
+        [...el.querySelectorAll("*")].flatMap((node) =>
+          [...node.attributes]
+            .filter((a) => a.name.startsWith("on") || /^\s*javascript:/i.test(a.value))
+            .map((a) => `${node.tagName} ${a.name}`),
+        ),
+      ),
+    ).toEqual([]);
+    for (const href of await root
+      .locator("a[href]")
+      .evaluateAll((as) => as.map((a) => a.getAttribute("href")))) {
+      expect(href).toMatch(/^(https:\/\/|\/|#)/);
+    }
+    expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined();
+  };
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=xss`);
   const main = page.getByRole("main");
+  const nav = page.getByRole("navigation");
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
   await expect(main.getByText(markup).first()).toBeVisible();
+  await expectInert();
+
+  // Flow introduction and the diagram (node and branch labels).
   await page.keyboard.press("j");
   await expect(heading(page)).toContainText(`${markup} retry`);
+  await main.getByRole("button", { name: /Show flow diagram/ }).click();
+  const diagram = main.getByRole("region", { name: "Flow diagram" });
+  await expect(diagram.locator("svg").first()).toBeVisible();
+  await expect(diagram.getByRole("button", { name: /^Step 1, .*<img src=x/ })).toBeVisible();
+  await expectInert();
+
+  // Step 1: title (heading and menu aria-label), why, inspector, the pinned LLM answer.
   await page.keyboard.press("j");
   await expect(heading(page)).toContainText(`${markup} trigger`);
-  const inspector = page.getByRole("complementary", { name: "Inspector" });
-  await expect(inspector.getByText(markup).first()).toBeVisible();
-  await page
-    .getByRole("navigation")
-    .getByRole("button", { name: /^Step 5:/ })
-    .click();
-  await expect(page.locator("[role=mark]").first()).toBeVisible();
-  for (const where of [main, inspector]) {
-    await expect(where.locator("img")).toHaveCount(0);
-    await expect(where.locator("script")).toHaveCount(0);
-  }
-  await expect(page.locator('a[href^="javascript"]')).toHaveCount(0);
-  expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined();
+  await expect(nav.getByRole("button", { name: `Step 1: ${markup} trigger` })).toBeVisible();
+  await expect(inspector.getByText(`${markup} answer`)).toBeVisible();
+  await expectInert();
+
+  // Step 5: highlight tooltip (was → is) and the thread marker's title.
+  await nav.getByRole("button", { name: /^Step 5:/ }).click();
+  const mark = page.locator("[role=mark]").first();
+  await mark.hover();
+  await expect(page.getByRole("tooltip").filter({ visible: true })).toContainText(`Was: ${markup}`);
+  await expect(page.locator('[data-mark="thread"]').first()).toHaveAttribute(
+    "title",
+    new RegExp(`by .*: ${markup.slice(0, 10)}`),
+  );
+  await expectInert();
   expect(dialogs).toEqual([]);
 });
 

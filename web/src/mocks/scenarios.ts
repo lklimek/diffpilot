@@ -3,6 +3,7 @@
 import type {
   AnalysisState,
   AnalysisSummary,
+  AskQuestion,
   MeResponse,
   RepoSettings,
   ResolvePrResponse,
@@ -48,6 +49,8 @@ interface Scenario {
   repoSettings?: RepoSettings;
   /** Changes to the `tour` answer. */
   tour?: (seed: Tour) => Tour;
+  /** Changes to the stored questions. */
+  questions?: (seed: AskQuestion[]) => AskQuestion[];
 }
 
 /** Markup and a script URL in agent output (threat model T12): the page must show them as text. */
@@ -76,8 +79,33 @@ function withXss(seed: Tour): Tour {
     reference: XSS.url,
   }));
   tour.threads = tour.threads.map((t) => ({ ...t, excerpt: XSS.markup, url: XSS.url }));
+  for (const s of flow.steps) {
+    s.facts.github_url = XSS.url;
+    s.llm.impact = s.llm.impact.map((i) => ({ ...i, reason: XSS.markup, github_url: XSS.url }));
+  }
+  flow.llm.pattern_repetitions = flow.llm.pattern_repetitions.map((p) => ({
+    ...p,
+    description: XSS.markup,
+    sites: p.sites.map((site) => ({ ...site, github_url: XSS.url })),
+  }));
+  flow.graph.nodes = flow.graph.nodes.map((n) => ({ ...n, label: `${XSS.markup} ${n.number}` }));
+  flow.graph.edges = flow.graph.edges.map((e) => ({ ...e, label: e.label === null ? null : XSS.markup }));
   return tour;
 }
+
+/** A pinned LLM answer with markup on the first step of flow 1. */
+const xssQuestions = (seed: AskQuestion[]): AskQuestion[] => [
+  ...seed,
+  {
+    id: "3f1c5a7e-0482-4d2b-9e6f-0000000000x5",
+    step_id: "f1.1",
+    text: XSS.markup,
+    state: "answered",
+    answer: { answer: `${XSS.markup} answer`, evidence: [] },
+    failure: null,
+    created_at: "2026-11-16T10:30:00Z",
+  },
+];
 
 const analysisAt = (state: AnalysisState): AnalysisSummary => ({
   ...(seedNow("analysis") as AnalysisSummary),
@@ -140,7 +168,7 @@ const SCENARIOS = {
       },
     },
   },
-  xss: { tour: withXss },
+  xss: { tour: withXss, questions: xssQuestions },
   "llm-unknown": {
     settings: { ...SETTINGS, llm_status: null, language: "pl" },
     repoSettings: { ...REPO_SETTINGS, related_repos: [], project_profile: { sources: [] } },

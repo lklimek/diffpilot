@@ -9,6 +9,7 @@ import type {
   ReviewState,
 } from "../api/generated/types";
 import { fixtureState, seedNow } from "./fixtures";
+import { scenario } from "./scenarios";
 
 /** Delay before a mocked question is answered. */
 export const ANSWER_MS = 300;
@@ -32,7 +33,7 @@ const storage = (): Storage | undefined => globalThis.sessionStorage;
 function seed(): Store {
   return {
     reviewState: seedNow("review-state") as ReviewState,
-    questions: seedNow("questions") as AskQuestion[],
+    questions: (scenario().questions ?? ((q: AskQuestion[]) => q))(seedNow("questions") as AskQuestion[]),
     feedback: seedNow("feedback") as Feedback[],
     pendingReview: seedNow("pending-review") as PendingReview,
   };
