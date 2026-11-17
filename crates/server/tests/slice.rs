@@ -2256,3 +2256,103 @@ async fn flow_too_large_for_a_prompt_is_unexplained_with_its_reason() {
         ])
     );
 }
+
+/// A late usage limit of an earlier round's job pauses the shared credential: the new round's waiting job shows
+/// the analysis Paused with the reset time and resumes when it passes; the late output and session are not
+/// applied.
+#[tokio::test]
+async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
+    let h = harness().await.with_queue();
+    let analysis = h.seed_analysis().await;
+    let id = analysis.to_string();
+    let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::Plan);
+    spec.credential.id = server::pipeline::CREDENTIAL_ID.to_owned();
+    let old = h
+        .state
+        .executor
+        .submit(JobRequest {
+            spec,
+            priority: JobPriority::Batch,
+            stage: JobStage::Plan { batch: 1 },
+            generation: 0,
+            pr_repo: contracts::common::RepoRef {
+                owner: "acme".to_owned(),
+                name: "node-client".to_owned(),
+            },
+        })
+        .await
+        .expect("submit");
+    let claim = h.runner_claim().await.expect("the old round's job");
+    assert_eq!(claim.spec.job_id, old.job_id);
+    h.state
+        .db
+        .analyses()
+        .set_state(
+            analysis,
+            &AnalysisState::Failed {
+                flow: None,
+                message: "x".to_owned(),
+            },
+            Utc::now(),
+        )
+        .await
+        .expect("failed");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The new round's plan job is queued behind the old claim.
+    for _ in 0..500 {
+        let current = h
+            .state
+            .db
+            .jobs()
+            .current_for_stage(analysis, &JobStage::Plan { batch: 1 }, 0)
+            .await
+            .expect("read");
+        if current.is_some_and(|job| job.id != old.job_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let resets_at = chrono::DateTime::from_timestamp(Utc::now().timestamp() + 3, 0).expect("time");
+    let late = JobResult {
+        job_id: old.job_id,
+        attempt: claim.spec.attempt,
+        outcome: JobOutcome::UsageLimited {
+            resets_at: Some(resets_at),
+        },
+        session: Some(contracts::job::result::SessionReport {
+            thread_id: "thread-of-the-old-round".to_owned(),
+            outcome: contracts::job::result::SessionOutcome::Started,
+        }),
+        usage: None,
+        skills_commit: None,
+        llm_call: None,
+    };
+    let uri = RUNNER_RESULT.path.replace("{id}", &old.job_id.to_string());
+    let (status, body) = h.runner(&uri, claim.job_token.expose(), json!(late)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let paused = h
+        .wait_for_state(&id, |state| matches!(state, AnalysisState::Paused { .. }))
+        .await;
+    assert_eq!(
+        paused.state,
+        AnalysisState::Paused {
+            resumes_at: Some(resets_at),
+            done: 0,
+            total: None
+        }
+    );
+    let job = h.state.db.jobs().get(old.job_id).await.expect("job");
+    assert_eq!(
+        job.state,
+        JobState::Cancelled,
+        "the late result is not applied"
+    );
+    let record = h.state.db.analyses().get(analysis).await.expect("analysis");
+    assert_eq!(
+        record.agent_thread_id, None,
+        "the late session is not applied"
+    );
+    h.wait_for_state(&id, |state| *state == AnalysisState::Planning)
+        .await;
+}

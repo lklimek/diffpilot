@@ -47,9 +47,16 @@ use crate::prompts::{
 use crate::review::{self, GithubSnapshot};
 use crate::state::AppState;
 
-/// One item of the merged job streams: an update, or `None` at the end of a job's stream.
-type Updates =
-    SelectAll<BoxStream<'static, (JobStage, u32, Option<Result<JobUpdate, ExecutorError>>)>>;
+/// One item of the merged streams of a stage at a generation.
+enum Item {
+    /// An update of the stage's job, or `None` at the end of its stream.
+    Job(Option<Result<JobUpdate, ExecutorError>>),
+    /// The time a pause of the stage's job was reported to end has come.
+    PauseOver(DateTime<Utc>),
+}
+
+/// The merged job streams and pause timers.
+type Updates = SelectAll<BoxStream<'static, (JobStage, u32, Item)>>;
 
 /// How a planned flow ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,6 +223,19 @@ impl Driver<'_> {
         }
         self.advance(&mut updates).await?;
         while let Some((stage, generation, item)) = updates.next().await {
+            let item = match item {
+                Item::Job(item) => item,
+                // The limit reset: the job waits for a runner again (unless a later pause was reported since).
+                Item::PauseOver(at) => {
+                    if self.paused.get(&stage.key()) == Some(&Some(at)) {
+                        self.paused.remove(&stage.key());
+                        tracing::info!(analysis = %self.analysis, stage = %stage.key(),
+                            "usage limit reset; the job waits for a runner");
+                        self.set_progress().await?;
+                    }
+                    continue;
+                }
+            };
             // Any update after a pause means the job runs (or ended) again.
             if !matches!(item, Some(Ok(JobUpdate::Paused { .. })))
                 && self.paused.remove(&stage.key()).is_some()
@@ -243,6 +263,9 @@ impl Driver<'_> {
                     tracing::info!(analysis = %self.analysis, stage = %stage.key(), ?resumes_at,
                         "job paused by the usage limit");
                     self.paused.insert(stage.key(), resumes_at);
+                    if let Some(at) = resumes_at {
+                        updates.push(pause_timer(stage, generation, at));
+                    }
                     self.set_progress().await?;
                 }
                 Some(Ok(_)) => {}
@@ -251,6 +274,10 @@ impl Driver<'_> {
                     return Err(PipelineError::NoResult { stage: stage.key() });
                 }
                 None => {}
+            }
+            // Every stage resolved: pause timers still pending do not hold the analysis open.
+            if self.in_flight.is_none() && self.waiting.is_empty() {
+                break;
             }
         }
         self.finish_analysis().await
@@ -796,8 +823,10 @@ impl Driver<'_> {
             .state
             .executor
             .events(&handle)
-            .map(move |update| (stage.clone(), generation, Some(update)))
-            .chain(stream::once(async move { (ended, generation, None) }));
+            .map(move |update| (stage.clone(), generation, Item::Job(Some(update))))
+            .chain(stream::once(
+                async move { (ended, generation, Item::Job(None)) },
+            ));
         updates.push(events.boxed());
     }
 
@@ -902,6 +931,20 @@ impl Driver<'_> {
             .map(|_| ())
             .ok_or(PipelineError::Stopped)
     }
+}
+
+/// Yields [`Item::PauseOver`] for the stage once `at` has come.
+fn pause_timer(
+    stage: JobStage,
+    generation: u32,
+    at: DateTime<Utc>,
+) -> BoxStream<'static, (JobStage, u32, Item)> {
+    stream::once(async move {
+        let wait = (at - Utc::now()).to_std().unwrap_or_default();
+        tokio::time::sleep(wait).await;
+        (stage, generation, Item::PauseOver(at))
+    })
+    .boxed()
 }
 
 /// A MemCan calibration example as the prompt quotes it.

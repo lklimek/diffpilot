@@ -47,6 +47,7 @@ the same attempt; 400 malformed body.
 | claimed, running | result `failed` | failed |
 | claimed, running | result `usage_limited` | paused (`resumes_at`; the credential pauses too) |
 | paused | `resumes_at` passed | queued |
+| queued | the credential is paused (any job's usage limit) | stays queued; the follower reports `Paused { resumes_at: paused_until }` once per pause end |
 | claimed, running | lease expired, cancel requested | cancelled (never re-claimed) |
 | claimed, running | lease expired, attempts left | queued |
 | claimed, running | lease expired, `attempt ≥ max_attempts` (3) | failed |

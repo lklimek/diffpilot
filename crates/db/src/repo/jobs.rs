@@ -226,6 +226,8 @@ pub struct JobSnapshot {
     pub job: JobRecord,
     /// Events of `job.attempt`, in order.
     pub events: Vec<JobEvent>,
+    /// Until when the job's LLM credential is paused by a usage limit (any job's), if it is or was.
+    pub credential_paused_until: Option<DateTime<Utc>>,
 }
 
 /// Events kept per job: `job_events` is a bounded activity log.
@@ -961,7 +963,18 @@ impl Jobs<'_> {
         .bind(after_seq)
         .fetch_all(&mut *tx)
         .await?;
+        let paused_until: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT paused_until FROM llm_credentials
+                 WHERE id = (SELECT credential_id FROM jobs WHERE id = ?)",
+        )
+        .bind(job.to_string())
+        .fetch_optional(&mut *tx)
+        .await?;
         tx.commit().await?;
+        let credential_paused_until = paused_until
+            .flatten()
+            .map(|at| parse_ts(&at, "llm_credentials.paused_until"))
+            .transpose()?;
         let events = bodies
             .iter()
             .map(|body| serde_json::from_str(body).map_err(DbError::from))
@@ -969,6 +982,7 @@ impl Jobs<'_> {
         Ok(JobSnapshot {
             job: record,
             events,
+            credential_paused_until,
         })
     }
 

@@ -126,6 +126,8 @@ struct Follower {
     seq: u32,
     last_state: Option<JobState>,
     output_sent: bool,
+    /// The credential pause end last reported for the queued job.
+    reported_pause: Option<DateTime<Utc>>,
     pending: VecDeque<JobUpdate>,
     done: bool,
     /// Runs after the follower's read and before it acts on it, to force interleavings in tests.
@@ -146,6 +148,7 @@ impl Follower {
             seq: 0,
             last_state: None,
             output_sent: false,
+            reported_pause: None,
             pending: VecDeque::new(),
             done: false,
             #[cfg(test)]
@@ -189,7 +192,11 @@ impl Follower {
             snapshot = self.snapshot().await?;
         }
         // State, ready output and events come from one read, so they belong to one attempt and one moment.
-        let JobSnapshot { job, events } = snapshot;
+        let JobSnapshot {
+            job,
+            events,
+            credential_paused_until,
+        } = snapshot;
         if self.last_state.is_none() && job.state.is_terminal() {
             return self.finish(job.result, job.github_access_granted);
         }
@@ -232,6 +239,18 @@ impl Follower {
         if job.state == JobState::Paused && self.last_state != Some(JobState::Paused) {
             self.pending.push_back(JobUpdate::Paused {
                 resumes_at: job.resumes_at,
+            });
+        }
+        // A queued job waits while its credential is paused, whichever job (any analysis, any round) hit the
+        // usage limit: reported once per pause end.
+        let credential_pause = credential_paused_until.filter(|until| *until > now);
+        if job.state == JobState::Queued
+            && credential_pause.is_some()
+            && credential_pause != self.reported_pause
+        {
+            self.reported_pause = credential_pause;
+            self.pending.push_back(JobUpdate::Paused {
+                resumes_at: credential_pause,
             });
         }
         self.last_state = Some(job.state);
@@ -473,6 +492,41 @@ mod tests {
             .await
             .expect("submit after retry");
         assert_ne!(fresh, claimed);
+    }
+
+    /// A queued job whose credential another job paused reports the pause with its end, once per pause end.
+    #[tokio::test]
+    async fn queued_job_reports_the_pause_of_its_credential() {
+        let (db, executor, analysis) = setup().await;
+        let handle = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit");
+        let credential = contracts::job::spec::LlmCredentialRef {
+            id: CREDENTIAL.to_owned(),
+            kind: contracts::job::spec::CredentialKind::CodexChatgpt,
+        };
+        db.llm_credentials()
+            .register(db::repo::DEFAULT_TENANT, &credential, true, Utc::now())
+            .await
+            .expect("register");
+        let until = DateTime::from_timestamp(Utc::now().timestamp() + 600, 0).expect("reset time");
+        db.llm_credentials()
+            .pause(CREDENTIAL, until)
+            .await
+            .expect("pause");
+        let mut updates = executor.events(&handle);
+        assert_eq!(
+            next(&mut updates).await,
+            JobUpdate::Paused {
+                resumes_at: Some(until)
+            }
+        );
+        executor.cancel(&handle).await.expect("cancel");
+        assert!(
+            matches!(next(&mut updates).await, JobUpdate::Finished { .. }),
+            "the pause is reported once"
+        );
     }
 
     /// The result reports whether the attempt that produced it ran with a GitHub installation token.
