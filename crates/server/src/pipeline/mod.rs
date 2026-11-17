@@ -28,6 +28,7 @@ use crate::jobs::executor::ExecutorError;
 use crate::prompts::PromptError;
 use crate::state::AppState;
 
+pub mod batching;
 pub mod context;
 pub mod control;
 mod driver;

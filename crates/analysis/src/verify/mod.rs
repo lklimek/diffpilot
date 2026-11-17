@@ -331,8 +331,11 @@ fn evidence_file(evidence: &Evidence) -> (LineSide, String) {
     (evidence.side, evidence.file.clone())
 }
 
-/// Everything verifying one analysis needs; plain inputs, no IO.
-#[derive(Clone, Copy, Debug)]
+/// Reads the line facts of the given files (side, path), e.g. with [`LineFacts::load`].
+pub type FactsReader<'a> = dyn Fn(&[(LineSide, String)]) -> Result<LineFacts, VerifyError> + 'a;
+
+/// Everything verifying one analysis needs; plain inputs, IO only through `facts`.
+#[derive(Clone, Copy)]
 pub struct AnalysisInput<'a> {
     /// The whole diff of the pull request.
     pub diff: &'a DiffIndex<'a>,
@@ -340,9 +343,9 @@ pub struct AnalysisInput<'a> {
     pub listed: &'a DiffIndex<'a>,
     /// Changed lines the pre-pass took out of the agent's hunks: Not analysed items and identical moves.
     pub quiet: &'a [FileRanges],
-    /// Line facts of every file the outputs and the planned flows refer to ([`flow_files`],
-    /// [`pr_context_files`]).
-    pub facts: &'a LineFacts,
+    /// Reads the line facts of the given files (usually [`LineFacts::load`]); called once per output with that
+    /// output's files ([`pr_context_files`], [`flow_files`]), so each output keeps its own read budget.
+    pub facts: &'a FactsReader<'a>,
     /// Deterministic moves.
     pub moves: &'a MovesReport,
     /// The `plan` output.
@@ -354,6 +357,16 @@ pub struct AnalysisInput<'a> {
     pub flows: &'a [FlowAnalysisOutput],
     /// Thread aliases listed in each flow's prompt; a flow without an entry lists none.
     pub thread_aliases: &'a BTreeMap<FlowId, Vec<String>>,
+}
+
+impl std::fmt::Debug for AnalysisInput<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnalysisInput")
+            .field("plan", self.plan)
+            .field("pr_context", self.pr_context)
+            .field("flows", &self.flows.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// The agent output an issue or warning belongs to: the job to repair.
@@ -430,7 +443,8 @@ pub fn analysis(input: AnalysisInput<'_>) -> Result<AnalysisVerdict, VerifyError
             None
         }
     };
-    if let Err(issues) = rejected(pr_context(input.pr_context, input.facts))? {
+    let context_facts = (input.facts)(&pr_context_files(input.pr_context))?;
+    if let Err(issues) = rejected(pr_context(input.pr_context, &context_facts))? {
         repairs.push(Repair {
             output: OutputRef::PrContext,
             issues,
@@ -459,10 +473,15 @@ pub fn analysis(input: AnalysisInput<'_>) -> Result<AnalysisVerdict, VerifyError
             )]),
             Some(planned) => {
                 let aliases = input.thread_aliases.get(id).map_or(&[][..], Vec::as_slice);
+                let flow_lines = verified_plan
+                    .flow_lines
+                    .get(id)
+                    .map_or(&[][..], Vec::as_slice);
+                let facts = (input.facts)(&flow_files(output, flow_lines))?;
                 let context = FlowContext {
                     planned,
                     plan: &verified_plan,
-                    facts: input.facts,
+                    facts: &facts,
                     diff: input.diff,
                     moves: input.moves,
                     thread_aliases: aliases,

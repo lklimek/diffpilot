@@ -19,8 +19,11 @@ use contracts::api::tour::{
     PatternSite, PrContextBlock, PrContextFacts, QuietRows, Step, StepFacts, StepLlm, Tour,
 };
 use contracts::common::{LineRange, LineSide};
-use contracts::ids::{AnnotationId, FlowId, StepId};
+use contracts::ids::{AnalysisId, AnnotationId, FlowId, StepId};
+use contracts::job::result::JobOutcome;
+use contracts::job::state::JobState;
 use db::error::DbError;
+use db::repo::jobs::{JobRecord, JobStage};
 use url::Url;
 
 use crate::pipeline::context::StoredResults;
@@ -136,6 +139,7 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         .await
         .map_err(TourError::from)?;
     let skeleton = verdict.tour.ok_or(TourError::PlanRejected)?;
+    let related_work_checked = related_work_checked(state, summary.id, &pr_context).await?;
     Ok(project(&Projection {
         summary,
         skeleton: &skeleton,
@@ -144,7 +148,39 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         snapshot: &snapshot,
         files: &facts.files,
         aliases: &aliases,
+        related_work_checked,
     }))
+}
+
+/// Whether the agent that wrote the accepted PR context had the GitHub tool: the claim of its attempt got an
+/// installation token. False when no such job is found (never claimed through the queue).
+async fn related_work_checked(
+    state: &AppState,
+    analysis: AnalysisId,
+    accepted: &PrContextOutput,
+) -> Result<bool, DbError> {
+    let jobs = state
+        .db
+        .jobs()
+        .list_for_analysis(analysis, &[JobState::Succeeded])
+        .await?;
+    let wrote_it = |job: &&JobRecord| {
+        let Some(JobOutcome::Succeeded { output }) =
+            job.result.as_ref().map(|result| &result.outcome)
+        else {
+            return false;
+        };
+        job.stage == JobStage::PrContext
+            && serde_json::from_value::<PrContextOutput>(output.clone())
+                .ok()
+                .as_ref()
+                == Some(accepted)
+    };
+    Ok(jobs
+        .iter()
+        .rev()
+        .find(wrote_it)
+        .is_some_and(|job| job.github_access_granted))
 }
 
 /// Everything the Tour is projected from.
@@ -163,6 +199,8 @@ pub struct Projection<'a> {
     pub files: &'a [FileDiff],
     /// Thread aliases listed in each flow's prompt.
     pub aliases: &'a BTreeMap<FlowId, Vec<String>>,
+    /// The accepted PR context was written by an agent with the GitHub tool.
+    pub related_work_checked: bool,
 }
 
 /// Builds the Tour of a finished analysis.
@@ -192,11 +230,11 @@ pub fn project(input: &Projection<'_>) -> Tour {
     let step_count = flows.iter().map(|flow| flow.facts.step_count).sum();
     let prepass = input.prepass;
     let mut llm = input.pr_context.clone();
-    let related_work_checked = input.snapshot.app_installed;
+    let related_work_checked = input.related_work_checked;
     if !related_work_checked && !llm.related_work.is_empty() {
-        // Without the App the agent had no GitHub tool: whatever it lists is not checked related work.
+        // Without the GitHub tool the agent could not check: whatever it lists is not checked related work.
         tracing::warn!(analysis = %input.summary.id, items = llm.related_work.len(),
-            "related work listed although the GitHub App is not installed; it is not shown");
+            "related work listed by an agent without GitHub access; it is not shown");
         llm.related_work.clear();
     }
     Tour {

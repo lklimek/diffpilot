@@ -1,6 +1,6 @@
 //! Context packs (brief §5 Agent sessions): the stored results of an analysis that seed a new agent session when
-//! the analysis's session is missing or unusable. Shared by the pipeline and Ask; the text comes from
-//! `prompts::context_pack`.
+//! the analysis's session is missing or unusable. Built at claim ([`StoredPacks`]), so a job that waited sees every
+//! result stored before it starts; shared with Ask. The text comes from `prompts::context_pack`.
 
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::plan::PlanOutput;
@@ -11,6 +11,9 @@ use db::error::DbError;
 use db::repo::Db;
 use db::repo::documents::DocumentKind;
 
+use futures::future::BoxFuture;
+
+use crate::jobs::claim::{ContextPackError, ContextPacks};
 use crate::prompts::{self, AskContext, ContextPackInput, PromptError};
 
 /// The stored agent results of one analysis.
@@ -64,4 +67,24 @@ pub fn pack(
         ask,
     })
     .map(Some)
+}
+
+/// The claim path's context packs: the analysis's results stored at claim time.
+#[derive(Clone, Debug)]
+pub struct StoredPacks {
+    /// The database.
+    pub db: Db,
+}
+
+impl ContextPacks for StoredPacks {
+    fn pack(
+        &self,
+        analysis: AnalysisId,
+    ) -> BoxFuture<'_, Result<Option<String>, ContextPackError>> {
+        Box::pin(async move {
+            let summary = self.db.analyses().summary(analysis).await?;
+            let results = StoredResults::load(&self.db, analysis).await?;
+            Ok(pack(&summary.pr, &results, None)?)
+        })
+    }
 }

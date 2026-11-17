@@ -24,6 +24,7 @@ use serde_json::Value;
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::jobs::claim::{self, ClaimError, hashes_match, lease_until, token_hash};
 use crate::jobs::github_tokens::{self, TokenStoreError};
+use crate::pipeline::context::StoredPacks;
 use crate::state::AppState;
 
 /// Body caps (threat model T7b, T12).
@@ -324,7 +325,10 @@ async fn claim_job(
 ) -> RunnerResult<Json<ClaimResponse>> {
     authorize_runner(&state, &headers)?;
     let Json(request) = body.map_err(RunnerError::from)?;
-    let response = claim::claim(&state.db, &state.config, &request, Utc::now())
+    let packs = StoredPacks {
+        db: state.db.clone(),
+    };
+    let response = claim::claim(&state.db, &state.config, &packs, &request, Utc::now())
         .await
         .map_err(RunnerError::from)?;
     Ok(Json(response))
@@ -433,8 +437,6 @@ async fn apply_result(
         &mut result,
         &known_secrets(state, &auth.token, installation.as_ref()),
     );
-    // Before completing: the next job of the analysis becomes claimable only then, and must resume this session.
-    record_session(state, auth.job, &result).await?;
     let completion = state.db.jobs().complete(&result, Utc::now()).await?;
     if let Completion::Applied { state: job_state } = completion {
         tracing::info!(
@@ -453,29 +455,6 @@ async fn apply_result(
         }
         github_tokens::nudge();
     }
-    Ok(())
-}
-
-/// Records the agent session a job reported as its analysis's session (ADR-004): the next job of the analysis
-/// resumes it. A cancelled job's session is not kept (cancel discards the session).
-async fn record_session(state: &AppState, job: JobId, result: &JobResult) -> Result<(), DbError> {
-    let Some(session) = &result.session else {
-        return Ok(());
-    };
-    if matches!(result.outcome, JobOutcome::Cancelled) {
-        return Ok(());
-    }
-    let analysis = state.db.jobs().get(job).await?.analysis_id;
-    state
-        .db
-        .analyses()
-        .set_session(
-            analysis,
-            &session.thread_id,
-            result.skills_commit.as_deref(),
-        )
-        .await?;
-    tracing::debug!(%job, %analysis, outcome = ?session.outcome, "agent session of the analysis recorded");
     Ok(())
 }
 
@@ -1162,6 +1141,80 @@ mod tests {
         assert_eq!(record.agent_thread_id.as_deref(), Some("thread-1"));
         assert_eq!(record.session_state, SessionState::Active);
         assert_eq!(record.skills_commit.as_deref(), Some("abc"));
+    }
+
+    /// A repeated result of an earlier job never restores its older session.
+    #[tokio::test]
+    async fn repeated_result_does_not_restore_an_older_session() {
+        let harness = Harness::new().await;
+        let (analysis, _) = harness.enqueue(CREDENTIAL).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        let mut result = succeeded(claimed.job, 1);
+        result.session = Some(SessionReport {
+            thread_id: "S1".to_owned(),
+            outcome: SessionOutcome::Started,
+        });
+        let uri = path(RUNNER_RESULT.path, claimed.job);
+        let (status, _) = harness
+            .send(&uri, Some(&claimed.token), result.clone())
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        // The next job of the analysis started a new session after a loss.
+        harness
+            .state
+            .db
+            .analyses()
+            .set_session(analysis, "S2", None)
+            .await
+            .expect("session");
+        let (status, _) = harness.send(&uri, Some(&claimed.token), result).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "a repeat is idempotent");
+        let record = harness
+            .state
+            .db
+            .analyses()
+            .get(analysis)
+            .await
+            .expect("analysis");
+        assert_eq!(record.agent_thread_id.as_deref(), Some("S2"));
+    }
+
+    #[tokio::test]
+    async fn result_after_a_cancel_request_does_not_record_its_session() {
+        let harness = Harness::new().await;
+        let (analysis, _) = harness.enqueue(CREDENTIAL).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        harness
+            .state
+            .db
+            .jobs()
+            .request_cancel(claimed.job, Utc::now())
+            .await
+            .expect("cancel");
+        let mut result = succeeded(claimed.job, 1);
+        result.session = Some(SessionReport {
+            thread_id: "S3".to_owned(),
+            outcome: SessionOutcome::Started,
+        });
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_RESULT.path, claimed.job),
+                Some(&claimed.token),
+                result,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let record = harness
+            .state
+            .db
+            .analyses()
+            .get(analysis)
+            .await
+            .expect("analysis");
+        assert_eq!(
+            record.agent_thread_id, None,
+            "cancel wins: the session is not kept"
+        );
     }
 
     #[tokio::test]

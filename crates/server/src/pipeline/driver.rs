@@ -9,7 +9,7 @@ use analysis::prepass::batches::{merge_plans, plan_batches};
 use analysis::verify::{VerifiedPlan, VerifyIssue};
 use chrono::{DateTime, Utc};
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
-use contracts::agent::plan::{PlanOutput, PlannedFlow};
+use contracts::agent::plan::{PlanOutput, PlannedFlow, UnassignedHunk};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::{self as agent, JobKind};
 use contracts::api::analyses::{AnalysisState, AnalysisSummary, FlowRef};
@@ -29,7 +29,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use super::context::{self, StoredResults};
+use super::batching;
+use super::context::StoredResults;
 use super::verdict::{self, Facts, Outputs};
 use super::{CREDENTIAL_ID, PipelineError, control, diff_files, prepare, prepass};
 use crate::github::oauth::endpoint;
@@ -71,6 +72,8 @@ struct Driver<'a> {
     snapshot: GithubSnapshot,
     /// The agent hunks per plan batch (one batch unless the pull request is huge).
     batches: Vec<Vec<FileDiff>>,
+    /// Agent hunks of files too large for any plan prompt: added to the plan as unassigned (Unexplained).
+    unfit: Vec<UnassignedHunk>,
     batch_plans: BTreeMap<u32, PlanOutput>,
     verified_plan: Option<Arc<VerifiedPlan>>,
     /// Stored results: the plan, the PR context and the accepted flows (context packs).
@@ -97,7 +100,31 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
     let snapshot = snapshot(state, &summary).await?;
     let prepass = prepass::ensure(state, &summary, &mirror, &files).await?;
     let listed = prepass.agent_files(&files);
-    let batches = plan_batches(&listed);
+    let fitted = {
+        let job = JobContext {
+            pr: &summary.pr,
+            language: summary.language,
+            sub_agents: prompts::SUB_AGENTS_DEFAULT,
+            prepass: &prepass,
+        };
+        let profile = Profile {
+            file: prepass.profile_file.as_deref(),
+            memcan: None,
+        };
+        // The largest batch numbers bound the rendered size of every batch's prompt.
+        let largest = PlanBatch {
+            number: u32::MAX,
+            total: u32::MAX,
+        };
+        batching::fit(plan_batches(&listed), &|files| {
+            prompts::plan(&PlanInput {
+                job,
+                files,
+                profile,
+                batch: Some(largest),
+            })
+        })?
+    };
     let results = StoredResults::load(&state.db, analysis).await?;
     let facts = Arc::new(Facts {
         mirror,
@@ -113,7 +140,8 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
         summary,
         facts,
         snapshot,
-        batches,
+        batches: fitted.batches,
+        unfit: fitted.unfit,
         batch_plans: BTreeMap::new(),
         verified_plan: None,
         results,
@@ -148,13 +176,14 @@ impl Driver<'_> {
         let mut updates = Updates::new();
         if let Some(plan) = self.results.plan.clone() {
             self.plan_known(&mut updates, plan, false).await?;
-        } else if self.facts.listed.is_empty() {
-            // Nothing for the agent to plan: every change is quiet material.
+        } else if self.batches.is_empty() {
+            // Nothing for the agent to plan: every change is quiet material or fits no prompt.
             let empty = PlanOutput {
                 flows: Vec::new(),
                 unassigned: Vec::new(),
             };
-            self.plan_known(&mut updates, empty, true).await?;
+            let plan = self.with_unfit(empty);
+            self.plan_known(&mut updates, plan, true).await?;
         } else {
             self.set_progress().await?;
             for batch in self.batch_numbers() {
@@ -309,7 +338,7 @@ impl Driver<'_> {
             return Ok(());
         }
         let plans: Vec<PlanOutput> = self.batch_plans.values().cloned().collect();
-        let merged = merge_plans(&plans);
+        let merged = self.with_unfit(merge_plans(&plans));
         tracing::info!(analysis = %self.analysis, batches = plans.len(), flows = merged.flows.len(),
             "batch plans merged");
         self.plan_known(updates, merged, true).await
@@ -450,12 +479,19 @@ impl Driver<'_> {
         plan: PlanOutput,
     ) -> Result<(), PipelineError> {
         if self.batches.len() < 2 {
+            let plan = self.with_unfit(plan);
             return self.plan_known(updates, plan, true).await;
         }
         self.put(DocumentKind::Plan, &batch.to_string(), &plan)
             .await?;
         self.batch_plans.insert(batch, plan);
         self.merge_when_planned(updates).await
+    }
+
+    /// `plan` with the hunks no plan prompt could hold, listed as unassigned with their reason.
+    fn with_unfit(&self, mut plan: PlanOutput) -> PlanOutput {
+        plan.unassigned.extend(self.unfit.iter().cloned());
+        plan
     }
 
     fn batch_files(&self, batch: u32) -> Vec<FileDiff> {
@@ -649,7 +685,8 @@ impl Driver<'_> {
                 kind: CredentialKind::CodexChatgpt,
             },
             session: None,
-            context_pack: context::pack(pr, &self.results, None)?,
+            // Built at claim from the results stored then (`context::StoredPacks`).
+            context_pack: None,
             skills: Vec::new(),
             access: AgentAccess::default(),
         };

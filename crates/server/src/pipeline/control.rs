@@ -68,6 +68,10 @@ pub async fn set_state_if(
             Ok(AnalysisEvent::Analysis { summary })
         })
         .await;
+    published(written)
+}
+
+fn published(written: Result<AnalysisEvent, Guarded>) -> Result<Option<AnalysisSummary>, DbError> {
     match written {
         Ok(AnalysisEvent::Analysis { summary }) => Ok(Some(summary)),
         Ok(AnalysisEvent::Question { .. }) => Err(DbError::Corrupt {
@@ -107,17 +111,168 @@ pub async fn discard(state: &AppState, analysis: AnalysisId) -> Result<(), Contr
     Ok(())
 }
 
-/// Runs a failed analysis again: state `planning`, then a new driver. Stages with a stored result are kept;
-/// failed jobs are submitted again.
+/// Runs a failed analysis again in a new round: state `planning` and the round incremented atomically, the
+/// earlier round's unfinished jobs cancelled, then a new driver. Stored (verified) results are kept as documents;
+/// every other stage is submitted again as a new job, so the agent is called again.
 pub async fn retry(
     state: &AppState,
     analysis: AnalysisId,
 ) -> Result<AnalysisSummary, ControlError> {
-    let failed = |current: &AnalysisState| matches!(current, AnalysisState::Failed { .. });
-    let summary = set_state_if(state, analysis, &AnalysisState::Planning, failed)
-        .await?
-        .ok_or(ControlError::Conflict { action: "retried" })?;
+    let db = &state.db;
+    let written = state
+        .progress
+        .update(analysis, || async {
+            if !db.analyses().retry(analysis, Utc::now()).await? {
+                return Err(Guarded::Refused);
+            }
+            let summary = db.analyses().summary(analysis).await?;
+            Ok(AnalysisEvent::Analysis { summary })
+        })
+        .await;
+    let summary = published(written)?.ok_or(ControlError::Conflict { action: "retried" })?;
     tracing::info!(%analysis, "analysis retried by the user");
     super::start(state, analysis);
     Ok(summary)
+}
+
+/// Finishes the clean-up of cancellations a crash interrupted (state stored, jobs, documents or session left);
+/// idempotent. Runs at start-up before runner claims are served; claims skip jobs of cancelled analyses meanwhile.
+pub async fn recover_cancellations(state: &AppState) -> Result<usize, ControlError> {
+    let pending = state.db.analyses().cancellations_to_finish().await?;
+    for analysis in &pending {
+        discard(state, *analysis).await?;
+    }
+    if !pending.is_empty() {
+        tracing::warn!(
+            analyses = pending.len(),
+            "finished the clean-up of interrupted cancellations"
+        );
+    }
+    Ok(pending.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::TimeDelta;
+    use contracts::agent::JobKind;
+    use contracts::ids::FlowId;
+    use contracts::job::spec::JobPriority;
+    use db::repo::Db;
+    use db::repo::analyses::SessionState;
+    use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
+    use db::repo::documents::DocumentKind;
+    use db::repo::jobs::{ClaimParams, JobStage, NewJob};
+    use serde_json::json;
+
+    use super::*;
+    use crate::config::tests::test_config;
+    use crate::jobs::queue::QueueExecutor;
+
+    async fn enqueue(db: &Db, analysis: AnalysisId, flow: &str) -> contracts::ids::JobId {
+        db.jobs()
+            .enqueue(
+                NewJob {
+                    spec: job_spec(analysis, JobKind::AnalyseFlow),
+                    priority: JobPriority::Batch,
+                    stage: JobStage::Flow(FlowId(flow.to_owned())),
+                    generation: 0,
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("enqueue")
+            .id
+    }
+
+    /// A running analysis with a claimed and a queued job, a stored document and an active session.
+    async fn live(db: &Db) -> (AnalysisId, [contracts::ids::JobId; 2]) {
+        let analysis = seed_analysis(db).await.expect("seed");
+        let claimed = enqueue(db, analysis, "f1").await;
+        let now = Utc::now();
+        db.jobs()
+            .claim(ClaimParams {
+                credential_ids: &[CREDENTIAL.to_owned()],
+                job_token_hash: b"hash",
+                lease_until: now + TimeDelta::seconds(60),
+                now,
+            })
+            .await
+            .expect("claim")
+            .expect("a job");
+        let queued = enqueue(db, analysis, "f2").await;
+        db.documents()
+            .put(
+                analysis,
+                DocumentKind::Flow,
+                "f1",
+                &json!({"flow_id": "f1"}),
+                now,
+            )
+            .await
+            .expect("document");
+        db.analyses()
+            .set_session(analysis, "thread-1", None)
+            .await
+            .expect("session");
+        (analysis, [claimed, queued])
+    }
+
+    async fn assert_cleaned(db: &Db, analysis: AnalysisId, jobs: &[contracts::ids::JobId]) {
+        for job in jobs {
+            let job = db.jobs().get(*job).await.expect("job");
+            assert!(job.cancel_requested, "job {} left live", job.id);
+        }
+        let documents: Vec<(String, serde_json::Value)> = db
+            .documents()
+            .list(analysis, DocumentKind::Flow)
+            .await
+            .expect("documents");
+        assert!(documents.is_empty(), "documents left: {documents:?}");
+        let record = db.analyses().get(analysis).await.expect("analysis");
+        assert_eq!(record.session_state, SessionState::DropRequested);
+    }
+
+    /// A crash after any durable step of a cancel (state, jobs, documents, session) is completed at start-up.
+    #[tokio::test]
+    async fn restart_after_each_cancel_step_finishes_the_clean_up() {
+        for done in 1..=4 {
+            let db = Db::in_memory().await.expect("db");
+            let executor = Arc::new(QueueExecutor::new(db.clone()));
+            let state = AppState::new(test_config(), db.clone(), executor.clone());
+            let (analysis, jobs) = live(&db).await;
+            db.analyses()
+                .set_state(analysis, &AnalysisState::Cancelled, Utc::now())
+                .await
+                .expect("cancelled");
+            if done >= 2 {
+                state
+                    .executor
+                    .cancel_analysis(analysis)
+                    .await
+                    .expect("jobs");
+            }
+            if done >= 3 {
+                db.documents()
+                    .delete_for_analysis(analysis)
+                    .await
+                    .expect("documents");
+            }
+            if done >= 4 {
+                db.analyses()
+                    .request_session_drop(analysis)
+                    .await
+                    .expect("session");
+            }
+            let finished = recover_cancellations(&state).await.expect("recover");
+            assert_eq!(finished, usize::from(done < 4), "after step {done}");
+            assert_cleaned(&db, analysis, &jobs).await;
+            assert_eq!(
+                recover_cancellations(&state).await.expect("again"),
+                0,
+                "idempotent"
+            );
+        }
+    }
 }

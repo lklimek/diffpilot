@@ -59,18 +59,12 @@ impl JobExecutor for QueueExecutor {
             };
             match self.db.jobs().enqueue(job, Utc::now()).await {
                 Ok(job) => Ok(JobHandle { job_id: job.id }),
+                // Only the analysis's current round: a Retry never re-uses an earlier round's job.
                 Err(DbError::Conflict) => self
                     .db
                     .jobs()
-                    .list_for_analysis(analysis, &[])
+                    .current_for_stage(analysis, &stage, generation)
                     .await?
-                    .into_iter()
-                    .rev()
-                    .find(|job| {
-                        job.stage == stage
-                            && job.generation == generation
-                            && !matches!(job.state, JobState::Failed | JobState::Cancelled)
-                    })
                     .map(|job| JobHandle { job_id: job.id })
                     .ok_or(ExecutorError::Db(DbError::Conflict)),
                 Err(error) => Err(error.into()),
@@ -385,6 +379,96 @@ mod tests {
                 .await,
             Err(ExecutorError::UnknownJob(_))
         ));
+    }
+
+    async fn fail_analysis(db: &Db, analysis: contracts::ids::AnalysisId) {
+        let failed = contracts::api::analyses::AnalysisState::Failed {
+            flow: None,
+            message: "x".to_owned(),
+        };
+        db.analyses()
+            .set_state(analysis, &failed, Utc::now())
+            .await
+            .expect("failed");
+    }
+
+    #[tokio::test]
+    async fn retry_round_submits_new_jobs_for_succeeded_stages() {
+        let (db, executor, analysis) = setup().await;
+        let first = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit");
+        claim(&db, 60).await;
+        db.jobs()
+            .complete(&succeeded(first.job_id, 1), Utc::now())
+            .await
+            .expect("complete");
+        let replay = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("resubmit");
+        assert_eq!(
+            replay, first,
+            "same round: the succeeded job is re-used (restart recovery)"
+        );
+        fail_analysis(&db, analysis).await;
+        assert!(
+            db.analyses()
+                .retry(analysis, Utc::now())
+                .await
+                .expect("retry")
+        );
+        let fresh = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit after retry");
+        assert_ne!(fresh, first, "a Retry calls the agent again");
+        let again = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("resubmit after retry");
+        assert_eq!(again, fresh, "idempotent within the new round");
+        assert!(
+            !db.analyses()
+                .retry(analysis, Utc::now())
+                .await
+                .expect("retry"),
+            "only a failed analysis starts a new round"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_cancels_a_claimed_job_and_never_reuses_it() {
+        let (db, executor, analysis) = setup().await;
+        let claimed = executor
+            .submit(request(analysis, "f2"))
+            .await
+            .expect("submit");
+        claim(&db, 60).await;
+        let queued = executor
+            .submit(request(analysis, "f3"))
+            .await
+            .expect("submit");
+        fail_analysis(&db, analysis).await;
+        assert!(
+            db.analyses()
+                .retry(analysis, Utc::now())
+                .await
+                .expect("retry")
+        );
+        let old = db.jobs().get(claimed.job_id).await.expect("job");
+        assert!(
+            old.cancel_requested,
+            "the earlier round's running job is cancelled"
+        );
+        let old_queued = db.jobs().get(queued.job_id).await.expect("job");
+        assert_eq!(old_queued.state, JobState::Cancelled);
+        let fresh = executor
+            .submit(request(analysis, "f2"))
+            .await
+            .expect("submit after retry");
+        assert_ne!(fresh, claimed);
     }
 
     #[tokio::test]

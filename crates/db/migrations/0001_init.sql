@@ -118,6 +118,7 @@ CREATE TABLE analyses (
     agent_thread_id     TEXT,
     session_state       TEXT NOT NULL DEFAULT 'none' CHECK (session_state IN ('none', 'active', 'drop_requested', 'dropped')),
     skills_commit       TEXT,
+    round               INTEGER NOT NULL DEFAULT 0 CHECK (round >= 0), -- incremented by each explicit Retry
     created_by          TEXT NOT NULL REFERENCES users (id),
     created_at          TEXT NOT NULL,
     finished_at         TEXT
@@ -177,6 +178,8 @@ CREATE TABLE jobs (
                                 OR (kind = 'analyse_flow' AND stage LIKE 'flow:%')
                                 OR (kind = 'ask' AND stage LIKE 'ask:%')), -- JobStage::key
     generation              INTEGER NOT NULL DEFAULT 0 CHECK (generation BETWEEN 0 AND 2), -- 0 first run, 1..2 repairs
+    round                   INTEGER NOT NULL DEFAULT 0, -- the analysis's round at enqueue (Retry starts a new one)
+    github_access_granted   INTEGER NOT NULL DEFAULT 0 CHECK (github_access_granted IN (0, 1)), -- last claim had a token
     flow_id                 TEXT,
     question_id             TEXT,
     created_at              TEXT NOT NULL,
@@ -188,9 +191,9 @@ CREATE TABLE jobs (
 CREATE UNIQUE INDEX jobs_one_running_per_analysis ON jobs (analysis_id) WHERE state IN ('claimed', 'running');
 CREATE UNIQUE INDEX jobs_one_running_per_credential ON jobs (credential_id) WHERE state IN ('claimed', 'running');
 CREATE INDEX jobs_claim_order ON jobs (state, priority, created_at);
--- Idempotent submit: one live or succeeded job per pipeline stage and generation (repair run); a failed or
--- cancelled one may be retried.
-CREATE UNIQUE INDEX jobs_one_live_per_stage ON jobs (analysis_id, stage, generation)
+-- Idempotent submit: one live or succeeded job per pipeline stage, generation (repair run) and round (Retry); a
+-- failed or cancelled one may be submitted again.
+CREATE UNIQUE INDEX jobs_one_live_per_stage ON jobs (analysis_id, stage, generation, round)
     WHERE state NOT IN ('failed', 'cancelled');
 CREATE INDEX jobs_by_analysis ON jobs (analysis_id, state);
 

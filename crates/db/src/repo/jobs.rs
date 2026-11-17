@@ -141,6 +141,10 @@ pub struct JobRecord {
     pub stage: JobStage,
     /// 0 for the first run, else the repair run number.
     pub generation: u32,
+    /// The analysis's round when it was enqueued; an explicit Retry starts a new round.
+    pub round: u32,
+    /// The last claim gave the job a GitHub installation token (its agent had the GitHub tool).
+    pub github_access_granted: bool,
     /// When it was enqueued.
     pub created_at: DateTime<Utc>,
     /// When it reached a terminal state.
@@ -272,7 +276,7 @@ fn priority_value(priority: JobPriority) -> i64 {
 }
 
 /// A result the server records itself (cancel or failure without a runner result).
-fn server_result(job: JobId, attempt: u32, outcome: JobOutcome) -> JobResult {
+pub(crate) fn server_result(job: JobId, attempt: u32, outcome: JobOutcome) -> JobResult {
     JobResult {
         job_id: job,
         attempt,
@@ -287,7 +291,7 @@ fn server_result(job: JobId, attempt: u32, outcome: JobOutcome) -> JobResult {
 macro_rules! job_columns {
     () => {
         "id, analysis_id, kind, priority, state, attempt, max_attempts, spec, cancel_requested, lease_expires_at,
-         resumes_at, ready_output, result, stage, generation, created_at, finished_at"
+         resumes_at, ready_output, result, stage, generation, round, github_access_granted, created_at, finished_at"
     };
 }
 
@@ -341,6 +345,8 @@ fn job_from_row(row: &SqliteRow) -> Result<JobRecord, DbError> {
             column: "jobs.stage",
         })?,
         generation: row.try_get("generation")?,
+        round: row.try_get("round")?,
+        github_access_granted: row.try_get("github_access_granted")?,
         created_at: parse_ts(&created_at, "jobs.created_at")?,
         finished_at: optional_ts(row, "finished_at")?,
     })
@@ -450,8 +456,8 @@ impl Current {
 }
 
 impl Jobs<'_> {
-    /// Enqueues a job in state `queued`; `Conflict` if a live or succeeded job of the same stage and generation
-    /// exists (look it up with [`Jobs::list_for_analysis`] and reuse it).
+    /// Enqueues a job in state `queued` in the analysis's current round; `Conflict` if a live or succeeded job of
+    /// the same stage, generation and round exists (look it up with [`Jobs::current_for_stage`] and reuse it).
     pub async fn enqueue(&self, job: NewJob, now: DateTime<Utc>) -> Result<JobRecord, DbError> {
         let mut spec = job.spec;
         // The stored spec never holds a credential (threat model T3b); access is filled at claim.
@@ -464,8 +470,8 @@ impl Jobs<'_> {
         };
         let inserted = sqlx::query(
             "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, stage,
-                 generation, flow_id, question_id, created_at)
-             SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ? FROM analyses WHERE id = ?",
+                 generation, flow_id, question_id, created_at, round)
+             SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?",
         )
         .bind(spec.job_id.to_string())
         .bind(wire_name(spec.kind)?)
@@ -502,7 +508,9 @@ impl Jobs<'_> {
         query.push(", claimed_at = ");
         query.push_bind(ts(params.now));
         query.push(
-            " WHERE id = (SELECT j.id FROM jobs j WHERE j.state = 'queued' AND j.credential_id IN (",
+            " WHERE id = (SELECT j.id FROM jobs j WHERE j.state = 'queued'
+                 AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.id = j.analysis_id AND a.state = 'cancelled')
+                 AND j.credential_id IN (",
         );
         let mut ids = query.separated(", ");
         for id in params.credential_ids {
@@ -666,6 +674,24 @@ impl Jobs<'_> {
         .execute(&mut *tx)
         .await?;
         apply_credential_effects(&mut tx, &credential, result, now).await?;
+        // The session the attempt reported becomes the analysis's session (ADR-004) only for the first effective,
+        // not cancelled result: a repeated or late result never restores an older session. A session already asked
+        // to be dropped stays dropped.
+        if let (Some(session), false) = (
+            &stored.session,
+            matches!(stored.outcome, JobOutcome::Cancelled),
+        ) {
+            sqlx::query(
+                "UPDATE analyses SET agent_thread_id = ?, skills_commit = COALESCE(?, skills_commit),
+                     session_state = CASE WHEN session_state IN ('none', 'active') THEN 'active' ELSE session_state END
+                 WHERE id = (SELECT analysis_id FROM jobs WHERE id = ?)",
+            )
+            .bind(&session.thread_id)
+            .bind(stored.skills_commit.as_deref())
+            .bind(result.job_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
         Ok(Completion::Applied { state })
     }
@@ -773,6 +799,47 @@ impl Jobs<'_> {
         .fetch_all(self.pool)
         .await?;
         ids.iter().map(|id| parse_wire(id, "jobs.id")).collect()
+    }
+
+    /// Records whether the claimed `attempt` got a GitHub installation token (non-secret; related work is
+    /// checked only by an agent that had the GitHub tool). A stale attempt changes nothing.
+    pub async fn record_github_access(
+        &self,
+        job: JobId,
+        attempt: u32,
+        granted: bool,
+    ) -> Result<(), DbError> {
+        sqlx::query("UPDATE jobs SET github_access_granted = ? WHERE id = ? AND attempt = ?")
+            .bind(granted)
+            .bind(job.to_string())
+            .bind(attempt)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The live or succeeded job of `stage` and `generation` in the analysis's current round, if any: the job an
+    /// idempotent submit answers with. Jobs of earlier rounds (before a Retry) are never returned.
+    pub async fn current_for_stage(
+        &self,
+        analysis: AnalysisId,
+        stage: &JobStage,
+        generation: u32,
+    ) -> Result<Option<JobRecord>, DbError> {
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            job_columns!(),
+            " FROM jobs j WHERE analysis_id = ? AND stage = ? AND generation = ?
+                 AND state NOT IN ('failed', 'cancelled')
+                 AND round = (SELECT round FROM analyses WHERE id = j.analysis_id)
+             ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ))
+        .bind(analysis.to_string())
+        .bind(stage.key())
+        .bind(generation)
+        .fetch_optional(self.pool)
+        .await?;
+        row.as_ref().map(job_from_row).transpose()
     }
 
     /// A job.

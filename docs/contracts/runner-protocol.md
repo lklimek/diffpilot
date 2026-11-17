@@ -125,11 +125,18 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - One session per analysis. The server sets `spec.session` at claim from the analysis's recorded session (none
   before the first report, none once a drop was requested); the stored spec never holds it. One running job per
   analysis, so queued jobs never fork the session.
-- The result's `session` is recorded as the analysis's session before the job completes (not for a `cancelled`
-  result); a session already asked to be dropped stays dropped.
-- Every job after the first carries `context_pack`: the stored plan, PR context and accepted flow analyses
-  (`pipeline::context`); the runner uses it only when it starts a new session (`started_after_loss`).
+- The result's `session` is recorded as the analysis's session in the transaction that completes the job, only
+  for the first effective, not cancelled result of the current attempt (a repeat or a result after a cancel
+  request changes nothing); a session already asked to be dropped stays dropped.
+- `context_pack` is built at claim from the plan, PR context and accepted flow analyses stored at that moment
+  (`jobs::claim::ContextPacks`, implemented by `pipeline::context::StoredPacks`); never at enqueue. Only the runner
+  knows whether its session files survived, so every pipeline job carries it; the runner uses it only when it
+  starts a new session (`started_after_loss`). Ask jobs bring their own pack.
+- `jobs.github_access_granted` records whether the attempt's claim got an installation token; the Tour's
+  `related_work_checked` comes from the job whose output is the accepted PR context.
 - Cancel and a re-analysis on a moved head request the drop of the analysis's session (`drop_sessions`).
+- Claims skip jobs of cancelled analyses. At start-up, before claims are served, the server finishes cancellations
+  a crash interrupted (jobs cancelled, documents deleted, session drop requested; idempotent).
 - `access.memcan` is filled at claim from the server configuration (never stored, never logged).
 
 ## Pipeline recovery (server restart)
@@ -137,7 +144,11 @@ Durable state only; no in-memory handle is needed after a restart.
 - **Stage link.** Every job carries its stage (`JobStage`: `plan:<batch>`, `pr_context`, `flow:<id>`,
   `ask:<question id>`; `jobs.stage`) and its **generation**: 0 for the first run, 1..2 for repair runs
   (`MAX_REPAIR_RUNS` = 2, brief §5 Pipeline 6). The database allows one live or succeeded job per (analysis,
-  stage, generation) (`jobs_one_live_per_stage`); a failed or cancelled one may be submitted again (Retry).
+  stage, generation, round) (`jobs_one_live_per_stage`); a failed or cancelled one may be submitted again. An
+  explicit Retry increments `analyses.round` atomically with failed → planning and cancels the earlier round's
+  unfinished jobs in the same transaction; jobs are enqueued in the current round and `submit` finds only jobs of
+  that round, so a Retry calls the agent again while a restart (same round) re-uses stored outputs. Accepted
+  results of an earlier round are re-used only as verified documents.
 - **Repair.** When verification rejects the output of a succeeded job of generation g, the pipeline submits
   generation g + 1 with the repair prompt; with g = 2 repair is exhausted: a flow ends without output (its lines
   are Unexplained, the analysis goes on), a plan or PR context fails the analysis. The rejection

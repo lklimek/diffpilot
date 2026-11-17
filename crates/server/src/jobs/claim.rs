@@ -12,8 +12,9 @@ use contracts::job::protocol::{Claim, ClaimRequest, ClaimResponse, LeaseTiming};
 use contracts::job::spec::SessionRef;
 use db::error::DbError;
 use db::repo::analyses::SessionState;
-use db::repo::jobs::{ClaimParams, JobRecord};
+use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
 use db::repo::{DEFAULT_TENANT, Db};
+use futures::future::BoxFuture;
 use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -22,6 +23,7 @@ use crate::config::Config;
 use crate::github::app_token::{self, AppTokenError, Minted, Rejection};
 use crate::jobs::github_tokens::{self, TokenStoreError};
 use crate::jobs::queue::expire_leases;
+use crate::prompts::PromptError;
 
 /// Random bytes of a job token.
 const TOKEN_BYTES: usize = 32;
@@ -81,11 +83,32 @@ pub fn lease_until(now: DateTime<Utc>) -> DateTime<Utc> {
     now + TimeDelta::seconds(i64::from(LeaseTiming::V1.lease_secs))
 }
 
+/// A context pack could not be built.
+#[derive(Debug, thiserror::Error)]
+pub enum ContextPackError {
+    /// The stored results could not be read.
+    #[error("the stored results could not be read")]
+    Db(#[from] DbError),
+    /// The pack could not be rendered.
+    #[error("the context pack could not be rendered")]
+    Prompt(#[from] PromptError),
+}
+
+/// Builds the context pack of an analysis from the results stored at claim time (`pipeline::context`): the
+/// claim path stays free of pipeline internals.
+pub trait ContextPacks: Send + Sync {
+    /// The pack of `analysis`; `None` when nothing is stored yet.
+    fn pack(&self, analysis: AnalysisId)
+    -> BoxFuture<'_, Result<Option<String>, ContextPackError>>;
+}
+
 /// Serves one runner claim: housekeeping, credential registration, then the next runnable job, if any, with
-/// its read-only installation token (`runner-protocol.md` Claim).
+/// its read-only installation token, the analysis's session and the context pack of the results stored now
+/// (`runner-protocol.md` Claim).
 pub async fn claim(
     db: &Db,
     config: &Arc<Config>,
+    packs: &dyn ContextPacks,
     request: &ClaimRequest,
     now: DateTime<Utc>,
 ) -> Result<ClaimResponse, ClaimError> {
@@ -146,8 +169,23 @@ pub async fn claim(
                     return Err(ClaimError::GithubTimeout);
                 }
             };
+            db.jobs()
+                .record_github_access(job.id, job.attempt, github.is_some())
+                .await?;
             let mut spec = job.spec;
             spec.session = analysis_session(db, job.analysis_id).await?;
+            // Only the runner knows whether the session files survived: every pipeline job carries the pack of
+            // the results stored at this moment, used when a new session is started. Ask jobs bring their own.
+            if !matches!(job.stage, JobStage::Ask(_)) {
+                spec.context_pack = match packs.pack(job.analysis_id).await {
+                    Ok(pack) => pack,
+                    Err(error) => {
+                        tracing::warn!(job = %job.id, %error,
+                            "context pack not built; a new agent session would start without earlier results");
+                        None
+                    }
+                };
+            }
             spec.access = AgentAccess {
                 github,
                 memcan: Some(McpHttpEndpoint {
@@ -281,7 +319,7 @@ mod tests {
     use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
     use contracts::routes::RUNNER_RESULT;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
-    use db::repo::jobs::{JobStage, NewJob};
+    use db::repo::jobs::NewJob;
     use secrecy::ExposeSecret;
     use serde_json::json;
     use tempfile::TempDir;
@@ -297,8 +335,10 @@ mod tests {
     };
     use crate::jobs::executor::JobExecutor;
     use crate::jobs::queue::QueueExecutor;
+    use crate::pipeline::context::StoredPacks;
     use crate::state::AppState;
     use crate::test_support::logs::LogCapture;
+    use db::repo::documents::DocumentKind;
 
     struct Setup {
         db: Db,
@@ -348,6 +388,30 @@ mod tests {
             .id
     }
 
+    fn packs(s: &Setup) -> StoredPacks {
+        StoredPacks { db: s.db.clone() }
+    }
+
+    /// Packs of a database without stored results.
+    fn no_packs() -> NoPacks {
+        NoPacks
+    }
+
+    struct NoPacks;
+
+    impl ContextPacks for NoPacks {
+        fn pack(&self, _: AnalysisId) -> BoxFuture<'_, Result<Option<String>, ContextPackError>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    fn agent_fixture(name: &str) -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/pr-482/agent")
+            .join(name);
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("JSON")
+    }
+
     fn request() -> ClaimRequest {
         ClaimRequest {
             runner_id: "runner-1".to_owned(),
@@ -363,7 +427,7 @@ mod tests {
     }
 
     async fn claim_one(s: &Setup, now: DateTime<Utc>) -> Claim {
-        claim(&s.db, &s.config, &request(), now)
+        claim(&s.db, &s.config, &packs(s), &request(), now)
             .await
             .expect("claim")
             .claim
@@ -403,6 +467,108 @@ mod tests {
         let logs = capture.text();
         assert!(logs.contains("installation token minted"), "{logs}");
         assert!(!logs.contains(MINTED_TOKEN), "{logs}");
+    }
+
+    /// The pack is built when the job is claimed: results stored while it waited are in it.
+    #[tokio::test]
+    async fn lost_session_uses_context_pack() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        let now = Utc::now();
+        let documents = s.db.documents();
+        documents
+            .put(
+                analysis,
+                DocumentKind::Plan,
+                "",
+                &agent_fixture("plan.json"),
+                now,
+            )
+            .await
+            .expect("plan");
+        let pr_context = agent_fixture("pr_context.json");
+        documents
+            .put(analysis, DocumentKind::PrContext, "", &pr_context, now)
+            .await
+            .expect("pr context");
+        for flow in ["f1", "f2"] {
+            let output = agent_fixture(&format!("flow-{}.json", &flow[1..]));
+            documents
+                .put(analysis, DocumentKind::Flow, flow, &output, now)
+                .await
+                .expect("flow");
+        }
+        let stored = s.db.jobs().get(job).await.expect("job");
+        assert_eq!(
+            stored.spec.context_pack, None,
+            "nothing is packed at enqueue"
+        );
+        installed(&s, now).await;
+        let claimed = claim_one(&s, now).await;
+        assert_eq!(claimed.spec.session, None, "the session is lost");
+        let pack = claimed.spec.context_pack.expect("context pack");
+        for flow in ["\"flow_id\":\"f1\"", "\"flow_id\":\"f2\""] {
+            assert!(pack.contains(flow), "{flow} missing: {pack}");
+        }
+        let problem = pr_context["problem"].as_str().expect("problem");
+        assert!(pack.contains(problem), "pr_context missing: {pack}");
+    }
+
+    #[tokio::test]
+    async fn claim_records_whether_the_job_got_github_access() {
+        let s = setup().await;
+        let with = enqueue(&s.db).await;
+        let now = Utc::now();
+        installed(&s, now).await;
+        claim_one(&s, now).await;
+        assert!(
+            s.db.jobs()
+                .get(with)
+                .await
+                .expect("job")
+                .github_access_granted
+        );
+
+        let s = setup().await;
+        let without = enqueue(&s.db).await;
+        Mock::given(method("GET"))
+            .and(path("/api/repos/acme/node-client/installation"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&s.github)
+            .await;
+        let claimed = claim_one(&s, now).await;
+        assert!(claimed.spec.access.github.is_none());
+        assert!(
+            !s.db
+                .jobs()
+                .get(without)
+                .await
+                .expect("job")
+                .github_access_granted
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_skips_jobs_of_a_cancelled_analysis() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        s.db.analyses()
+            .set_state(
+                analysis,
+                &contracts::api::analyses::AnalysisState::Cancelled,
+                Utc::now(),
+            )
+            .await
+            .expect("cancelled");
+        let response = claim(&s.db, &s.config, &packs(&s), &request(), Utc::now())
+            .await
+            .expect("claim");
+        assert!(
+            response.claim.is_none(),
+            "a cancelled analysis's job is never run"
+        );
     }
 
     #[tokio::test]
@@ -516,7 +682,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(502))
             .mount(&s.github)
             .await;
-        let result = claim(&s.db, &s.config, &request(), Utc::now()).await;
+        let result = claim(&s.db, &s.config, &packs(&s), &request(), Utc::now()).await;
         assert!(
             matches!(result, Err(ClaimError::GithubAccess(_))),
             "{result:?}"
@@ -676,7 +842,7 @@ mod tests {
                         ..request()
                     };
                     let after_lease = claimed.lease_expires_at + TimeDelta::seconds(1);
-                    claim(&state.db, &state.config, &idle, after_lease)
+                    claim(&state.db, &state.config, &no_packs(), &idle, after_lease)
                         .await
                         .expect("claim after the lease");
                 }
@@ -713,6 +879,7 @@ mod tests {
         claim(
             &s.db,
             &s.config,
+            &packs(&s),
             &idle,
             claimed.lease_expires_at + TimeDelta::seconds(1),
         )
@@ -866,7 +1033,7 @@ mod tests {
             .mount(&s.github)
             .await;
         let started = std::time::Instant::now();
-        let result = claim(&s.db, &s.config, &request(), now).await;
+        let result = claim(&s.db, &s.config, &packs(&s), &request(), now).await;
         let took = started.elapsed();
         assert!(
             matches!(result, Err(ClaimError::GithubTimeout)),
@@ -924,7 +1091,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert!(started.elapsed() < Duration::from_secs(1), "result waited");
 
-        let second = claim(&state.db, &state.config, &request(), now)
+        let second = claim(&state.db, &state.config, &no_packs(), &request(), now)
             .await
             .expect("claim")
             .claim
@@ -937,6 +1104,7 @@ mod tests {
         claim(
             &state.db,
             &state.config,
+            &no_packs(),
             &idle,
             second.lease_expires_at + TimeDelta::seconds(1),
         )
@@ -1000,7 +1168,7 @@ mod tests {
                 .expect(1)
                 .mount_as_scoped(&s.github)
                 .await;
-            let result = claim(&s.db, &s.config, &request(), now).await;
+            let result = claim(&s.db, &s.config, &packs(&s), &request(), now).await;
             assert!(
                 matches!(
                     result,
@@ -1041,7 +1209,7 @@ mod tests {
         mount_installation(&s.github).await;
         mount_mint(&s.github, long, 1).await;
         mount_revoke(&s.github, 204, 1).await;
-        let result = claim(&s.db, &s.config, &request(), now).await;
+        let result = claim(&s.db, &s.config, &packs(&s), &request(), now).await;
         assert!(
             matches!(result, Err(ClaimError::TokenRejected(Rejection::Expiry))),
             "{result:?}"
@@ -1096,7 +1264,11 @@ mod tests {
                 drop(held);
             };
             let claim_request = request();
-            let (result, ()) = tokio::join!(claim(&s.db, &s.config, &claim_request, now), blocker);
+            let packs = packs(&s);
+            let (result, ()) = tokio::join!(
+                claim(&s.db, &s.config, &packs, &claim_request, now),
+                blocker
+            );
             assert!(
                 matches!(result, Err(ClaimError::GithubTimeout)),
                 "rejected {rejected}: {result:?}"

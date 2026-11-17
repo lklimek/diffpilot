@@ -277,7 +277,26 @@ struct Harness {
     _dir: TempDir,
 }
 
-fn config(dir: &Path, github: &MockServer) -> Config {
+/// A throwaway RSA key for the fake GitHub App (PKCS#8 PEM).
+fn app_key_pem() -> String {
+    use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
+    use aws_lc_rs::rsa::{KeyPair, KeySize};
+    use base64::Engine;
+    let pair = KeyPair::generate(KeySize::Rsa2048).expect("RSA key generation");
+    let der: Pkcs8V1Der<'static> = pair.as_der().expect("PKCS#8");
+    let body = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
+    let lines: Vec<&str> = body
+        .as_bytes()
+        .chunks(64)
+        .map(|chunk| std::str::from_utf8(chunk).expect("base64 is ASCII"))
+        .collect();
+    format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        lines.join("\n")
+    )
+}
+
+fn config(dir: &Path, github: &MockServer, app_key: Option<&Path>) -> Config {
     let remotes = dir.join("remotes");
     let env: HashMap<&str, String> = HashMap::from([
         ("SR_PUBLIC_URL", "http://review.example.test".to_owned()),
@@ -292,7 +311,10 @@ fn config(dir: &Path, github: &MockServer) -> Config {
         ("SR_GITHUB_CLIENT_SECRET", "fake-client-secret".to_owned()),
         (
             "SR_GITHUB_APP_PRIVATE_KEY_FILE",
-            "/nonexistent.pem".to_owned(),
+            app_key.map_or_else(
+                || "/nonexistent.pem".to_owned(),
+                |key| key.display().to_string(),
+            ),
         ),
         ("SR_GITHUB_API_URL", format!("{}/api", github.uri())),
         ("SR_GITHUB_OAUTH_URL", github.uri()),
@@ -307,6 +329,11 @@ fn config(dir: &Path, github: &MockServer) -> Config {
 }
 
 async fn harness() -> Harness {
+    harness_with_app(false).await
+}
+
+/// The harness; with `app`, the GitHub App is installed on the fixture repository (key and installation lookup).
+async fn harness_with_app(app: bool) -> Harness {
     let dir = tempfile::tempdir().expect("temp dir");
     let built = Command::new(fixtures().join("repo/build-repo.sh"))
         .arg(dir.path().join("remotes/acme/node-client.git"))
@@ -349,7 +376,25 @@ async fn harness() -> Harness {
 
     let db = Db::in_memory().await.expect("db");
     let executor = Arc::new(ScriptedExecutor::default());
-    let state = AppState::new(config(dir.path(), &github), db, executor.clone());
+    let app_key = app.then(|| {
+        let key = dir.path().join("app.pem");
+        std::fs::write(&key, app_key_pem()).expect("write key");
+        key
+    });
+    if app {
+        Mock::given(method("GET"))
+            .and(path("/api/repos/acme/node-client/installation"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 4242, "app_id": 1, "suspended_at": null
+            })))
+            .mount(&github)
+            .await;
+    }
+    let state = AppState::new(
+        config(dir.path(), &github, app_key.as_deref()),
+        db,
+        executor.clone(),
+    );
     let now = Utc::now();
     // The fixture user `alice` is not in the seeded allowlist: sign her in directly.
     let user = state
@@ -1303,7 +1348,7 @@ async fn restart_with_failing_preparation_cancels_live_jobs() {
     let id = h.seed_analysis_at(Some("f".repeat(40))).await;
     let queue: Arc<QueueExecutor> = Arc::new(QueueExecutor::new(h.state.db.clone()));
     let state = AppState::new(
-        config(h._dir.path(), &h.github),
+        config(h._dir.path(), &h.github, None),
         h.state.db.clone(),
         queue.clone(),
     );
@@ -1572,6 +1617,21 @@ async fn exhausted_plan_repairs_fail_the_analysis() {
             .iter()
             .all(|stage| !stage.starts_with("flow:"))
     );
+    // Retry starts a new round: the plan is asked again (the queue gives it a new job,
+    // `jobs::queue::retry_round_submits_new_jobs_for_succeeded_stages`) and the analysis finishes.
+    h.executor.unscript("plan:1");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.wait_until_finished(&id).await;
+    let plans = h.executor.specs_of("plan:1");
+    assert_eq!(
+        plans
+            .iter()
+            .filter(|(generation, _)| *generation == 0)
+            .count(),
+        2,
+        "asked again"
+    );
 }
 
 #[tokio::test]
@@ -1682,27 +1742,18 @@ async fn usage_limit_pauses_and_resumes() {
     assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
 }
 
-/// Jobs after the first carry a context pack of the stored results: a runner whose session of the analysis is
-/// missing starts a new one seeded with it (`StartedAfterLoss`).
+/// The context pack is built when a runner claims a job (`jobs::claim::lost_session_uses_context_pack`), never
+/// at enqueue, so a job that waited sees every result stored before it starts.
 #[tokio::test]
-async fn lost_session_uses_context_pack() {
+async fn pipeline_jobs_carry_no_context_pack_at_enqueue() {
     let h = harness().await;
     let id = h.create_fixture_analysis().await;
     h.wait_until_finished(&id).await;
-    let plan = h.executor.specs_of("plan:1");
-    assert_eq!(
-        plan[0].1.context_pack, None,
-        "nothing stored before the first job"
-    );
-    let title = agent_output("plan:1")["flows"][0]["title"]
-        .as_str()
-        .expect("title")
-        .to_owned();
-    for flow in ["flow:f1", "flow:f2", "flow:f3", "flow:f4", "flow:f5"] {
-        let spec = &h.executor.specs_of(flow)[0].1;
-        let pack = spec.context_pack.as_deref().expect("context pack");
-        assert!(pack.contains(&title), "{flow}: {pack}");
-        assert_eq!(spec.session, None, "the session is set at claim");
+    let specs = h.executor.specs.lock().expect("lock").clone();
+    assert!(!specs.is_empty());
+    for (stage, _, spec) in specs {
+        assert_eq!(spec.context_pack, None, "{stage}");
+        assert_eq!(spec.session, None, "{stage}: the session is set at claim");
     }
 }
 
@@ -1812,4 +1863,211 @@ async fn provider_error_text_never_reaches_the_analysis_state() {
         assert!(!text.contains("invalid_json_schema"), "{text}");
         assert!(!text.contains("codex_output_schema"), "{text}");
     }
+}
+
+/// With the App installed and the accepted PR context written by an agent that had the GitHub tool, related work
+/// is checked and shown; commenting is available.
+#[tokio::test]
+async fn tour_has_no_uncomputed_fact_with_the_app_installed() {
+    let h = harness_with_app(true).await;
+    let id = h.create_fixture_analysis().await;
+    h.wait_until_finished(&id).await;
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    let (_, before) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(
+        before["pr_context"]["facts"]["related_work_checked"],
+        json!(false),
+        "no claimed job records GitHub access yet"
+    );
+    // The accepted pr_context attempt as the queue records it: claimed with an installation token.
+    let jobs = h.state.db.jobs();
+    let mut spec = db::repo::analyses::testing::job_spec(analysis, JobKind::PrContext);
+    spec.credential.id = db::repo::analyses::testing::CREDENTIAL.to_owned();
+    let job = jobs
+        .enqueue(
+            db::repo::jobs::NewJob {
+                spec,
+                priority: JobPriority::Batch,
+                stage: JobStage::PrContext,
+                generation: 0,
+            },
+            Utc::now(),
+        )
+        .await
+        .expect("enqueue");
+    let now = Utc::now();
+    jobs.claim(db::repo::jobs::ClaimParams {
+        credential_ids: &[db::repo::analyses::testing::CREDENTIAL.to_owned()],
+        job_token_hash: b"hash",
+        lease_until: now + TimeDelta::seconds(60),
+        now,
+    })
+    .await
+    .expect("claim")
+    .expect("the job");
+    jobs.record_github_access(job.id, 1, true)
+        .await
+        .expect("access");
+    let accepted: Value = h
+        .state
+        .db
+        .documents()
+        .get(analysis, DocumentKind::PrContext, "")
+        .await
+        .expect("read")
+        .expect("pr context");
+    jobs.complete(
+        &JobResult {
+            job_id: job.id,
+            attempt: 1,
+            outcome: JobOutcome::Succeeded { output: accepted },
+            session: None,
+            usage: None,
+            skills_commit: None,
+            llm_call: None,
+        },
+        Utc::now(),
+    )
+    .await
+    .expect("complete");
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let facts = &tour["pr_context"]["facts"];
+    assert_eq!(facts["related_work_checked"], json!(true));
+    assert_eq!(
+        tour["pr_context"]["llm"]["related_work"],
+        agent_output("pr_context")["related_work"],
+        "checked related work is shown"
+    );
+    assert_ne!(facts["ci"]["state"], json!("not_checked"));
+    assert_eq!(facts["threads_status"], json!("checked"));
+    let (_, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
+    assert_eq!(
+        resolved["commenting_available"],
+        json!(true),
+        "installation looked up"
+    );
+}
+
+/// A pull request over the plan batch limit is planned in directory batches whose plans are merged.
+#[tokio::test]
+async fn huge_pull_request_is_planned_in_batches() {
+    let h = harness().await;
+    let (base, head) = h.remote_repo("huge", |repo| {
+        let base = commit(repo, &[("README.txt", "readme\n")], "base");
+        for dir in ["a", "b"] {
+            std::fs::create_dir_all(repo.join(dir)).expect("dir");
+        }
+        let head = commit(
+            repo,
+            &[
+                ("a/big.txt", &numbered(1..=2500)),
+                ("b/big.txt", &numbered(1..=2500)),
+            ],
+            "head",
+        );
+        (base, head)
+    });
+    // The batches the server computes, from the same diff and pre-pass rules.
+    let repo_dir = h._dir.path().join("remotes/acme/huge.git");
+    let files = analysis::diff::diff(
+        &repo_dir,
+        &CommitSha(base.clone()),
+        &CommitSha(head.clone()),
+    )
+    .expect("diff");
+    let pr_repo = contracts::common::RepoRef {
+        owner: "acme".to_owned(),
+        name: "huge".to_owned(),
+    };
+    let prepass = analysis::prepass::prepass(&pr_repo, &files, &[], &|_, _| None).expect("prepass");
+    let batches = analysis::prepass::batches::plan_batches(&prepass.agent_files(&files));
+    assert_eq!(batches.len(), 2, "one batch per directory");
+    for (index, batch) in batches.iter().enumerate() {
+        let hunks: Vec<Value> = batch
+            .iter()
+            .flat_map(|file| &file.hunks)
+            .map(|hunk| json!({ "hunk_id": hunk.id.0, "head_start": null, "head_end": null }))
+            .collect();
+        let plan = json!({
+            "flows": [{
+                "id": "f1", "title": format!("batch {}", index + 1), "classification": "behavioural",
+                "importance_rank": 1, "intent": "adds lines", "hunks": hunks, "depends_on": []
+            }],
+            "unassigned": []
+        });
+        h.executor
+            .script(&format!("plan:{}", index + 1), Script::Output(plan));
+    }
+    let mut context = agent_output("pr_context");
+    context["fit_questions"] = json!([]);
+    context["related_work"] = json!([]);
+    h.executor.script("pr_context", Script::Output(context));
+    for flow in ["f1", "f2"] {
+        // Rejected (the fixture flow's files are not in this repository): the flows end Unexplained.
+        let mut output = agent_output("flow:f1");
+        output["flow_id"] = json!(flow);
+        h.executor
+            .script(&format!("flow:{flow}"), Script::Output(output));
+    }
+    let mut pull = read_json(&fixtures().join("github/rest/pull.json"))["response"].clone();
+    pull["number"] = json!(11);
+    pull["html_url"] = json!("https://github.com/acme/huge/pull/11");
+    pull["base"]["sha"] = json!(base);
+    pull["head"]["sha"] = json!(head);
+    pull["base"]["repo"]["name"] = json!("huge");
+    Mock::given(method("GET"))
+        .and(path("/api/repos/acme/huge/pulls/11"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull))
+        .mount(&h.github)
+        .await;
+    let (status, created) = h
+        .post(
+            "/api/v1/analyses",
+            json!({ "pr": { "repo": { "owner": "acme", "name": "huge" }, "number": 11 }, "head_sha": head }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().expect("id").to_owned();
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 2 });
+    let submitted = h.executor.submitted();
+    for stage in ["plan:1", "plan:2", "flow:f1", "flow:f2"] {
+        assert!(
+            submitted.contains(&stage.to_owned()),
+            "{stage}: {submitted:?}"
+        );
+    }
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    let merged: Value = h
+        .state
+        .db
+        .documents()
+        .get(analysis, DocumentKind::Plan, "")
+        .await
+        .expect("read")
+        .expect("merged plan");
+    let titles: Vec<&str> = merged["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .map(|flow| flow["title"].as_str().expect("title"))
+        .collect();
+    assert_eq!(titles.len(), 2);
+    assert!(
+        titles.contains(&"batch 1") && titles.contains(&"batch 2"),
+        "{titles:?}"
+    );
+    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    let unexplained: Vec<&str> = tour["quiet"]["unexplained"]
+        .as_array()
+        .expect("unexplained")
+        .iter()
+        .map(|row| row["file"].as_str().expect("file"))
+        .collect();
+    assert_eq!(
+        unexplained,
+        ["a/big.txt", "b/big.txt"],
+        "flows without accepted output"
+    );
 }

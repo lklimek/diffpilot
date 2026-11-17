@@ -216,24 +216,15 @@ pub async fn analysis(
         let diff = DiffIndex::new(&facts.files)?;
         let listed = DiffIndex::new(&facts.listed)?;
         let quiet = facts.prepass.quiet_lines(&facts.files);
-        let flow_lines = verify::plan(&outputs.plan, &listed)
-            .map(|verified| verified.flow_lines)
-            .unwrap_or_default();
-        let mut wanted = verify::pr_context_files(&outputs.pr_context);
-        for output in &outputs.flows {
-            let lines = flow_lines
-                .get(&output.flow_id)
-                .map_or(&[][..], Vec::as_slice);
-            wanted.extend(verify::flow_files(output, lines));
-        }
-        wanted.sort();
-        wanted.dedup();
-        let lines = load(&facts, &wanted)?;
+        // Each output is read with its own bounded load, as when it was accepted.
+        let read = |wanted: &[(LineSide, String)]| {
+            LineFacts::load(&facts.mirror, &facts.base, &facts.head, wanted)
+        };
         verify::analysis(AnalysisInput {
             diff: &diff,
             listed: &listed,
             quiet: &quiet,
-            facts: &lines,
+            facts: &read,
             moves: &facts.prepass.moves,
             plan: &outputs.plan,
             pr_context: &outputs.pr_context,
