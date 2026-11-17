@@ -119,7 +119,7 @@ services:
       server: { condition: service_healthy }
       egress-proxy: { condition: service_healthy }
     networks:
-      runner: {}
+      runner: { ipv4_address: "${SR_RUNNER_ADDR:-172.29.71.4}" }
 
   egress-proxy:
     <<: *hardening
