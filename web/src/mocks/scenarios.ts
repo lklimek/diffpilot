@@ -7,6 +7,7 @@ import type {
   RepoSettings,
   ResolvePrResponse,
   Settings,
+  Tour,
 } from "../api/generated/types";
 import { seedNow } from "./fixtures";
 
@@ -45,6 +46,37 @@ interface Scenario {
   settings?: Settings;
   /** `repos/{owner}/{name}/settings` answer. */
   repoSettings?: RepoSettings;
+  /** Changes to the `tour` answer. */
+  tour?: (seed: Tour) => Tour;
+}
+
+/** Markup and a script URL in agent output (threat model T12): the page must show them as text. */
+export const XSS = {
+  markup: '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>',
+  url: "javascript:window.__xss=3",
+} as const;
+
+/** The seed tour with markup in LLM strings and script URLs in LLM-adjacent links. */
+function withXss(seed: Tour): Tour {
+  const tour = structuredClone(seed);
+  const flow = tour.flows[0]!;
+  const step = flow.steps[0]!;
+  flow.llm.title = `${XSS.markup} retry`;
+  flow.llm.introduction.problem_before = XSS.markup;
+  step.llm.title = `${XSS.markup} trigger`;
+  step.llm.why = XSS.markup;
+  step.facts.github_url = XSS.url;
+  for (const annotation of flow.steps.flatMap((s) => s.llm.annotations)) {
+    annotation.was = XSS.markup;
+    annotation.text = XSS.markup;
+  }
+  tour.pr_context.llm.problem = XSS.markup;
+  tour.pr_context.llm.related_work = tour.pr_context.llm.related_work.map((w) => ({
+    ...w,
+    reference: XSS.url,
+  }));
+  tour.threads = tour.threads.map((t) => ({ ...t, excerpt: XSS.markup, url: XSS.url }));
+  return tour;
 }
 
 const analysisAt = (state: AnalysisState): AnalysisSummary => ({
@@ -108,6 +140,7 @@ const SCENARIOS = {
       },
     },
   },
+  xss: { tour: withXss },
   "llm-unknown": {
     settings: { ...SETTINGS, llm_status: null, language: "pl" },
     repoSettings: { ...REPO_SETTINGS, related_repos: [], project_profile: { sources: [] } },

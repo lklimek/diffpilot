@@ -9,6 +9,7 @@ import { setFixtureState } from "../mocks/fixtures";
 import { handlers } from "../mocks/handlers";
 import { setMockLanguage } from "../mocks/handlers/get-settings";
 import { resetLive } from "../mocks/live-analysis";
+import { resetStore } from "../mocks/review-store";
 import { setScenario } from "../mocks/scenarios";
 
 /** Starts the msw server for the file's tests and resets every mock state after each test. */
@@ -21,6 +22,7 @@ export function startMockServer() {
     setScenario(null);
     setMockLanguage(null);
     resetLive();
+    resetStore();
   });
   afterAll(() => server.close());
   return server;
