@@ -209,12 +209,14 @@ impl Graphql {
                 .collect();
             vec![
                 json!({"id": PENDING_REVIEW_ID, "state": "PENDING", "viewerDidAuthor": true,
-                "comments": {"totalCount": comments.len(), "nodes": comments}}),
+                "comments": {"totalCount": comments.len(),
+                    "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": comments}}),
             ]
         };
         let threads = self.thread_nodes(&state.comments);
         self.pull_request(json!({"id": self.pull_id, "headRefOid": self.head,
-            "reviews": {"totalCount": reviews.len(), "nodes": reviews},
+            "reviews": {"totalCount": reviews.len(),
+                "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": reviews},
             "reviewThreads": {"totalCount": threads.len(),
                 "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": threads}}))
     }
@@ -280,7 +282,8 @@ impl Graphql {
             "line": if file_level { Some(1) } else { line },
             "startLine": comment.start_line.or(line), "diffSide": comment.side,
             "subjectType": if file_level { "FILE" } else { "LINE" },
-            "comments": {"nodes": [{"id": comment.id, "body": comment.body}]}}}}})
+            "comments": {"nodes": [{"id": comment.id, "body": comment.body, "state": "PENDING",
+                "commit": {"oid": self.head}, "originalCommit": {"oid": self.head}}]}}}}})
     }
 
     fn not_found(field: &str, id: &Value) -> Value {
@@ -296,7 +299,8 @@ impl Graphql {
         };
         comment.body = input["body"].as_str().unwrap_or_default().to_owned();
         json!({"data": {"updatePullRequestReviewComment": {"pullRequestReviewComment":
-            {"id": comment.id, "body": comment.body, "state": "PENDING"}}}})
+            {"id": comment.id, "body": comment.body, "state": "PENDING",
+                "pullRequestReview": {"state": "PENDING"}}}}})
     }
 
     fn delete_comment(&self, input: &Value) -> Value {
@@ -307,7 +311,10 @@ impl Graphql {
         };
         let removed = state.comments.remove(index);
         tracing::info!(id = %removed.id, left = state.comments.len(), "fake-github deleted a pending comment");
-        json!({"data": {"deletePullRequestReviewComment": {"pullRequestReviewComment": {"id": removed.id}}}})
+        // A pending review disappears with its last comment.
+        let review = (!state.comments.is_empty()).then(|| json!({"state": "PENDING"}));
+        json!({"data": {"deletePullRequestReviewComment": {"pullRequestReview": review,
+            "pullRequestReviewComment": {"id": removed.id}}}})
     }
 }
 

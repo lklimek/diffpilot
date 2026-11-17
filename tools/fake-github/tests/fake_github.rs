@@ -663,6 +663,10 @@ async fn graphql_pending_review_is_created_reused_edited_and_deleted() {
     )
     .await;
     assert!(first["id"].is_string() && second["id"].is_string());
+    assert_eq!(
+        first["comments"]["nodes"][0]["commit"]["oid"], pull["headRefOid"],
+        "a new comment is placed on the current head"
+    );
     let reviews = &pending(&base, &token).await["reviews"]["nodes"];
     assert_eq!(
         reviews.as_array().unwrap().len(),
@@ -683,10 +687,9 @@ async fn graphql_pending_review_is_created_reused_edited_and_deleted() {
         serde_json::json!({"in": {"pullRequestReviewCommentId": comment, "body": "edited"}}),
     )
     .await;
-    assert_eq!(
-        body["data"]["updatePullRequestReviewComment"]["pullRequestReviewComment"]["body"],
-        "edited"
-    );
+    let edited = &body["data"]["updatePullRequestReviewComment"]["pullRequestReviewComment"];
+    assert_eq!(edited["body"], "edited");
+    assert_eq!(edited["pullRequestReview"]["state"], "PENDING");
 
     let delete = "mutation($in:DeletePullRequestReviewCommentInput!){deletePullRequestReviewComment(input:$in){pullRequestReviewComment{id}}}";
     let (_, body) = graphql(
@@ -699,6 +702,10 @@ async fn graphql_pending_review_is_created_reused_edited_and_deleted() {
     assert_eq!(
         body["data"]["deletePullRequestReviewComment"]["pullRequestReviewComment"]["id"],
         comment.as_str()
+    );
+    assert_eq!(
+        body["data"]["deletePullRequestReviewComment"]["pullRequestReview"]["state"],
+        "PENDING"
     );
     let (_, body) = graphql(
         &base,
