@@ -38,8 +38,8 @@ mod tests;
 mod tokens;
 
 pub use tokens::{
-    UserLock, UserTokenError, end_sign_in, lock_user, store_sign_in_tokens, user_access_token,
-    user_token_rejected,
+    PendingPairs, UserLock, UserTokenError, end_sign_in, lock_user, store_sign_in_tokens,
+    user_access_token, user_token_rejected,
 };
 pub(crate) use tokens::{end_session, store_sign_in};
 

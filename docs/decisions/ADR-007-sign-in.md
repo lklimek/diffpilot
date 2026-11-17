@@ -35,6 +35,10 @@
 - **GitHub 401**: a 401 for an access token the server still holds as fresh marks it expired; the next use
   refreshes the pair, and a rejected refresh ends the sign-in ("Sign in again"). Wired in Settings, the GitHub
   snapshot (`review`) and the pending-review comments; the pipeline's own user-token calls are not wired yet.
-- **Refresh**: runs in its own task under the user's lock, so a dropped request keeps the rotated pair.
+- **Refresh**: runs in its own task under the user's lock, so a dropped request keeps the rotated pair. A
+  rotated pair the database refuses while busy is kept in memory (`PendingPairs`), used by the user's
+  requests and never rotated again; a background task retries the store with back-off (250 ms doubling to
+  30 s, 10 attempts), then the user's next token use tries again.
   Residual risk: a server crash or a lost GitHub answer (timeout, reset) between the rotation and the database
-  write loses the new pair; the next refresh gets `bad_refresh_token` and the user signs in again.
+  write, or a restart while the pair is only in memory, loses the new pair; the next refresh gets
+  `bad_refresh_token` and the user signs in again.

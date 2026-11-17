@@ -1270,6 +1270,81 @@ async fn refresh_survives_a_cancelled_request() {
     );
 }
 
+/// GitHub rotates the pair while another connection holds the write lock past the busy timeout: the new pair is
+/// used at once, never rotated again, and stored once the lock is released.
+#[tokio::test]
+async fn refresh_keeps_the_rotated_pair_while_the_database_is_busy() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db = file_backed_with_busy_timeout(dir.path(), Duration::from_millis(100))
+        .await
+        .expect("db");
+    let h = harness_on(db, "https://review.example.test", &[]).await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    store_pair(
+        &h,
+        &signed_in.user_id,
+        grant("ghu_expiring", 60, "ghr_current"),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_current"))
+        .respond_with(token_response("ghu_rotated", "ghr_rotated"))
+        .expect(1)
+        .mount(&h.github)
+        .await;
+    let capture = LogCapture::start();
+    let lock = hold_write_lock(&h.state.db).await.expect("write lock");
+    for attempt in ["rotated", "kept in memory"] {
+        let access = user_access_token(&h.state, &signed_in.user_id)
+            .await
+            .unwrap_or_else(|error| panic!("{attempt}: {error:?}"));
+        assert_eq!(access.expose_secret(), "ghu_rotated", "{attempt}");
+    }
+    drop(lock);
+    let stored = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let stored = h
+                .state
+                .db
+                .user_tokens()
+                .get(&signed_in.user_id)
+                .await
+                .expect("lookup")
+                .expect("pair");
+            if stored_access(&h, &stored, &signed_in.user_id) == "ghu_rotated" {
+                break stored;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the rotated pair is stored after the lock is released");
+    let cipher = TokenCipher::new(&h.state.config.secret_key);
+    let refresh = cipher
+        .decrypt(
+            Aad {
+                table: "user_tokens",
+                column: "refresh_ct",
+                row_id: &signed_in.user_id,
+            },
+            &stored.tokens.refresh_ct,
+        )
+        .expect("refresh");
+    assert_eq!(refresh.expose_secret(), "ghr_rotated");
+    assert_eq!(
+        user_access_token(&h.state, &signed_in.user_id)
+            .await
+            .expect("token")
+            .expose_secret(),
+        "ghu_rotated"
+    );
+    let logs = capture.text();
+    for secret in ["ghu_rotated", "ghr_rotated", "ghr_current"] {
+        assert!(!logs.contains(secret), "{logs}");
+    }
+}
+
 /// A pair that no longer decrypts (`SR_SECRET_KEY` replaced, ADR-001) ends the sign-in instead of failing forever.
 #[tokio::test]
 async fn unreadable_tokens_ask_to_sign_in_again() {

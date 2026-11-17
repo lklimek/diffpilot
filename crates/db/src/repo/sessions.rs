@@ -564,6 +564,8 @@ mod tests {
             .await
             .expect_err("the write lock is held past the busy timeout");
         assert_eq!(error.sqlite_code().as_deref(), Some("5"), "{error:?}");
+        assert!(error.is_busy());
+        assert!(!DbError::NotFound.is_busy());
     }
 
     #[tokio::test]
