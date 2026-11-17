@@ -12,6 +12,7 @@ pub mod memcan;
 pub mod model;
 pub mod pipeline;
 pub mod prompts;
+pub mod review;
 pub mod secrets;
 pub mod state;
 #[cfg(test)]

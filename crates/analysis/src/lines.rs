@@ -1,8 +1,10 @@
 //! Line arithmetic for showing a file by line range: the window of a file, removed blocks at their deletion
-//! markers, changed lines, the lines GitHub accepts line threads on and the classic diff of a range. Pure
-//! functions over file bytes and hunks.
+//! markers, changed lines, the lines GitHub accepts line threads on, where a comment on lines goes, and the
+//! classic diff of a range. Pure functions over file bytes and hunks.
 
+use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::api::code::{DeletedBlock, DiffHunk, DiffLine, DiffLineKind};
+use contracts::api::comments::CommentTarget;
 use contracts::common::{LineRange, LineSide};
 
 use crate::diff::{FileDiff, Hunk, LineSpan};
@@ -459,6 +461,81 @@ impl DiffWriter<'_> {
     }
 }
 
+/// Where a comment on displayed lines goes on GitHub (ADR-006).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommentPosition {
+    /// Every target line lies in one diff hunk (with GitHub's context): a line thread on the target's side.
+    Line {
+        /// Path of the file in the pull request (the head path; the base path of a deleted file).
+        path: String,
+        /// First line of a multi-line thread.
+        start_line: Option<u32>,
+        /// Last line.
+        line: u32,
+    },
+    /// The file is in the diff, the lines are not all in one hunk: a file-level thread linking to the lines.
+    File {
+        /// Path of the file in the pull request.
+        path: String,
+    },
+    /// The file is not in the diff, or the lines are not in the file.
+    NotCommentable,
+}
+
+/// Classifies `target` (`1 ≤ start ≤ line`) against the diff; `total_lines` is the length of the target's file
+/// on its side.
+pub fn comment_position(
+    files: &[FileDiff],
+    target: &CommentTarget,
+    total_lines: u32,
+) -> CommentPosition {
+    let Some(file) = files
+        .iter()
+        .find(|file| file.path_on(target.side) == Some(target.path.as_str()))
+    else {
+        return CommentPosition::NotCommentable;
+    };
+    if target.line > total_lines {
+        return CommentPosition::NotCommentable;
+    }
+    let start = target.start_line.unwrap_or(target.line);
+    let wanted = LineRange {
+        start_line: start,
+        end_line: target.line,
+    };
+    if thread_ranges(file, target.side, total_lines, start, target.line) == [wanted] {
+        CommentPosition::Line {
+            path: file.path.clone(),
+            start_line: (start < target.line).then_some(start),
+            line: target.line,
+        }
+    } else {
+        CommentPosition::File {
+            path: file.path.clone(),
+        }
+    }
+}
+
+/// The first changed line of `target` that no annotation of `flows` covers (brief §5 Comments: such a comment
+/// is also `missed_by_llm` feedback); `None` when the target has no such line.
+pub fn missed_line(
+    files: &[FileDiff],
+    flows: &[FlowAnalysisOutput],
+    target: &CommentTarget,
+) -> Option<u32> {
+    let start = target.start_line.unwrap_or(target.line);
+    let annotated: Vec<(u32, u32)> = flows
+        .iter()
+        .flat_map(|flow| &flow.steps)
+        .filter(|step| step.file == target.path && step.side == target.side)
+        .flat_map(|step| &step.annotations)
+        .map(|annotation| (annotation.start_line, annotation.end_line))
+        .collect();
+    changed_lines_within(files, &target.path, target.side, start, target.line)
+        .into_iter()
+        .find(|line| !annotated.iter().any(|(a, b)| (*a..=*b).contains(line)))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::diff::{FileStatus, Hunk};
@@ -880,5 +957,153 @@ mod tests {
             [range(3, 3), range(5, 7), range(10, 10)]
         );
         assert!(ranges(&[]).is_empty());
+    }
+
+    /// `src/a.rs`: base 10–11 replaced by head 10–12; base 49 replaced by head 50. `new.rs` renamed from
+    /// `old.rs` with base 5 replaced by head 5.
+    fn comment_files() -> Vec<FileDiff> {
+        vec![
+            FileDiff {
+                path: "src/a.rs".to_owned(),
+                old_path: None,
+                status: FileStatus::Modified,
+                binary: false,
+                hunks: vec![hunk((10, 2), (10, 3)), hunk((49, 1), (50, 1))],
+            },
+            FileDiff {
+                path: "new.rs".to_owned(),
+                old_path: Some("old.rs".to_owned()),
+                status: FileStatus::Renamed,
+                binary: false,
+                hunks: vec![hunk((5, 1), (5, 1))],
+            },
+        ]
+    }
+
+    fn target(path: &str, side: LineSide, start_line: Option<u32>, line: u32) -> CommentTarget {
+        CommentTarget {
+            path: path.to_owned(),
+            side,
+            start_line,
+            line,
+        }
+    }
+
+    fn line_thread(path: &str, start_line: Option<u32>, line: u32) -> CommentPosition {
+        CommentPosition::Line {
+            path: path.to_owned(),
+            start_line,
+            line,
+        }
+    }
+
+    #[test]
+    fn target_inside_one_hunk_is_a_line_thread() {
+        let files = comment_files();
+        let head = LineSide::Head;
+        assert_eq!(
+            comment_position(&files, &target("src/a.rs", head, None, 11), 100),
+            line_thread("src/a.rs", None, 11)
+        );
+        assert_eq!(
+            comment_position(&files, &target("src/a.rs", head, Some(8), 12), 100),
+            line_thread("src/a.rs", Some(8), 12),
+            "context lines around the hunk take a line thread"
+        );
+        assert_eq!(
+            comment_position(&files, &target("src/a.rs", LineSide::Base, None, 10), 100),
+            line_thread("src/a.rs", None, 10)
+        );
+        assert_eq!(
+            comment_position(&files, &target("old.rs", LineSide::Base, None, 5), 10),
+            line_thread("new.rs", None, 5),
+            "GitHub names a renamed file by its new path"
+        );
+    }
+
+    #[test]
+    fn outside_diff_comment_is_file_level() {
+        let files = comment_files();
+        let file = CommentPosition::File {
+            path: "src/a.rs".to_owned(),
+        };
+        assert_eq!(
+            comment_position(&files, &target("src/a.rs", LineSide::Head, None, 30), 100),
+            file
+        );
+        assert_eq!(
+            comment_position(
+                &files,
+                &target("src/a.rs", LineSide::Head, Some(12), 50),
+                100
+            ),
+            file,
+            "a range across two hunks is not one line thread"
+        );
+    }
+
+    #[test]
+    fn file_outside_the_diff_or_line_outside_the_file_is_not_commentable() {
+        let files = comment_files();
+        for (target, total) in [
+            (target("src/other.rs", LineSide::Head, None, 1), 100),
+            (target("src/a.rs", LineSide::Head, None, 101), 100),
+            (target("new.rs", LineSide::Base, None, 5), 10),
+            (target("old.rs", LineSide::Head, None, 5), 10),
+        ] {
+            assert_eq!(
+                comment_position(&files, &target, total),
+                CommentPosition::NotCommentable,
+                "{target:?}"
+            );
+        }
+    }
+
+    fn flow(steps: serde_json::Value) -> FlowAnalysisOutput {
+        serde_json::from_value(serde_json::json!({
+            "flow_id": "f1",
+            "introduction": {"problem_before": "p", "change": "c", "example_before_after": "e"},
+            "steps": steps, "edges": [], "impact_refs": [], "pattern_repetitions": [], "thread_statuses": []
+        }))
+        .expect("flow")
+    }
+
+    fn step(file: &str, side: &str, annotations: &[(u32, u32)]) -> serde_json::Value {
+        let annotations: Vec<serde_json::Value> = annotations
+            .iter()
+            .map(|(start, end)| {
+                serde_json::json!({"type": "behaviour", "basis": "inference", "start_line": start,
+                    "end_line": end, "was": "w", "is": "i", "text": null, "evidence": []})
+            })
+            .collect();
+        serde_json::json!({"id": "s1", "title": "t", "file": file, "side": side, "start_line": 1,
+            "end_line": 60, "symbol": null, "kind": "modified", "moved_from": null, "called_by": "c",
+            "decides": "d", "next": "n", "why": "w", "annotations": annotations, "assessment": null})
+    }
+
+    #[test]
+    fn missed_by_llm_only_for_changed_lines_without_annotation() {
+        let files = comment_files();
+        let flows = [flow(serde_json::json!([
+            step("src/a.rs", "head", &[(10, 10)]),
+            step("src/b.rs", "head", &[(11, 11)])
+        ]))];
+        let head = LineSide::Head;
+        for (target, expected) in [
+            (target("src/a.rs", head, None, 10), None),
+            (target("src/a.rs", head, None, 11), Some(11)),
+            (target("src/a.rs", head, Some(10), 12), Some(11)),
+            (target("src/a.rs", head, None, 30), None),
+            (target("src/a.rs", head, None, 50), Some(50)),
+            (target("src/a.rs", LineSide::Base, None, 10), Some(10)),
+            (target("src/other.rs", head, None, 11), None),
+        ] {
+            assert_eq!(missed_line(&files, &flows, &target), expected, "{target:?}");
+        }
+        assert_eq!(
+            missed_line(&files, &[], &target("src/a.rs", head, None, 10)),
+            Some(10),
+            "without annotations every changed line is unannotated"
+        );
     }
 }
