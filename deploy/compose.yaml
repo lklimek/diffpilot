@@ -1,0 +1,153 @@
+# smart-review production stack (plan §9 WP3-OPS, threat model T1–T4/T7b/T9, ADR-013): server, runner and
+# egress proxy as plain services (Portainer stack). Variables: .env.example; operations: docs/runbook.md.
+#   docker compose --env-file .env -f deploy/compose.yaml up -d
+# Local test variant on http://localhost: add -f deploy/compose.local.yaml (see that file).
+#
+# Networks (pinned subnets, so MemCan's allowlist and the server's bind addresses are fixed):
+#   public  server only: GitHub API, the published HTTP port (reverse proxy in front).
+#   runner  internal (no route out): runner, the server's runner listener, the proxy. The server's public
+#           listener is bound to its public address only, so the runner reaches nothing but the runner
+#           listener and the proxy.
+#   egress  proxy only: its way out; the proxy's address is MemCan's allowlist entry.
+name: smart-review
+
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  read_only: true
+  init: true
+  restart: unless-stopped
+  logging:
+    driver: local
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  server:
+    <<: *hardening
+    image: ${SR_SERVER_IMAGE:-smart-review-server:local}
+    build:
+      context: ..
+      dockerfile: deploy/server/Dockerfile
+    environment:
+      SR_PUBLIC_URL: ${SR_PUBLIC_URL:?set SR_PUBLIC_URL}
+      SR_LISTEN_ADDR: ${SR_SERVER_PUBLIC_ADDR:-172.29.73.2}:3000
+      SR_RUNNER_LISTEN_ADDR: ${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
+      SR_TRUSTED_PROXIES: ${SR_TRUSTED_PROXIES:-}
+      SR_DATA_DIR: /var/lib/smart-review
+      SR_SECRET_KEY: ${SR_SECRET_KEY:?set SR_SECRET_KEY}
+      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:?set SR_RUNNER_SECRET}
+      SR_GITHUB_APP_ID: ${SR_GITHUB_APP_ID:?set SR_GITHUB_APP_ID}
+      SR_GITHUB_CLIENT_ID: ${SR_GITHUB_CLIENT_ID:?set SR_GITHUB_CLIENT_ID}
+      SR_GITHUB_CLIENT_SECRET: ${SR_GITHUB_CLIENT_SECRET:?set SR_GITHUB_CLIENT_SECRET}
+      SR_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
+      SR_GITHUB_API_URL: ${SR_GITHUB_API_URL:-https://api.github.com}
+      SR_GITHUB_OAUTH_URL: ${SR_GITHUB_OAUTH_URL:-https://github.com}
+      SR_GITHUB_CLONE_URL: ${SR_GITHUB_CLONE_URL:-https://github.com}
+      SR_MEMCAN_URL: ${SR_MEMCAN_URL:?set SR_MEMCAN_URL}
+      SR_MEMCAN_TOKEN: ${SR_MEMCAN_TOKEN:?set SR_MEMCAN_TOKEN}
+      RUST_LOG: ${RUST_LOG:-info}
+      NO_COLOR: "1"
+    volumes:
+      - server-data:/var/lib/smart-review
+      # The App key stays on the host, read-only (never copied into an image or volume).
+      - type: bind
+        source: ${SR_GITHUB_APP_PRIVATE_KEY_PATH:?set SR_GITHUB_APP_PRIVATE_KEY_PATH}
+        target: /run/secrets/github-app.pem
+        read_only: true
+        bind: { create_host_path: false }
+    tmpfs: ["/tmp:size=256m,mode=1777"]
+    mem_limit: ${SR_SERVER_MEM_LIMIT:-2g}
+    pids_limit: 512
+    ports:
+      # Only to the reverse proxy: loopback by default (owner's proxy on this host), or SR_PUBLISH_ADDR.
+      - "${SR_PUBLISH_ADDR:-127.0.0.1}:${SR_HTTP_PORT:-3000}:3000"
+    networks:
+      public: { ipv4_address: "${SR_SERVER_PUBLIC_ADDR:-172.29.73.2}" }
+      runner: { ipv4_address: "${SR_SERVER_RUNNER_ADDR:-172.29.71.2}" }
+
+  runner:
+    <<: *hardening
+    image: ${SR_RUNNER_IMAGE:-smart-review-runner:local}
+    build:
+      context: runner
+      additional_contexts: { workspace: .. }
+    # ADR-013: root supervisor with exactly these capabilities; runner and agents have none.
+    cap_add: [CHOWN, SETUID, SETGID, KILL]
+    ipc: none
+    pids_limit: ${SR_RUNNER_PIDS_LIMIT:-1024}
+    mem_limit: ${SR_RUNNER_MEM_LIMIT:-6g}
+    memswap_limit: ${SR_RUNNER_MEM_LIMIT:-6g}
+    # Exit 70 (sweep failed) and 71 (supervisor setup failed) end the container; it restarts clean.
+    restart: unless-stopped
+    stop_grace_period: 60s
+    environment:
+      SR_RUNNER_SERVER_URL: http://${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
+      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:?set SR_RUNNER_SECRET}
+      SR_RUNNER_ID: ${SR_RUNNER_ID:-runner}
+      SR_RUNNER_EGRESS_PROXY: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
+      SR_RUNNER_CLAUDIUS_REF: ${SR_RUNNER_CLAUDIUS_REF:-main}
+      SR_RUNNER_SESSION_RETENTION_DAYS: ${SR_RUNNER_SESSION_RETENTION_DAYS:-14}
+      SR_SUPERVISOR_SWEEP_DEADLINE_MS: ${SR_SUPERVISOR_SWEEP_DEADLINE_MS:-5000}
+      SR_CODEX_HOMES_MAX_BYTES: ${SR_CODEX_HOMES_MAX_BYTES:-17179869184}
+      SR_CODEX_HOMES_MAX_INODES: ${SR_CODEX_HOMES_MAX_INODES:-1048576}
+      # The runner's own git (claudius checkout, repository mirrors) goes through the proxy too.
+      HTTPS_PROXY: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
+      https_proxy: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
+      NO_PROXY: localhost,127.0.0.1,${SR_SERVER_RUNNER_ADDR:-172.29.71.2}
+      no_proxy: localhost,127.0.0.1,${SR_SERVER_RUNNER_ADDR:-172.29.71.2}
+      RUST_LOG: ${RUST_LOG:-info}
+      NO_COLOR: "1"
+    tmpfs:
+      - "/work:size=${SR_RUNNER_WORK_SIZE:-4g},uid=10001,gid=10001,mode=0711,nosuid,nodev"
+      - "/tmp:size=256m,uid=10001,gid=10001,mode=0700,nosuid,nodev"
+    volumes:
+      - runner-state:/var/lib/smart-review-runner
+      # Bounded ext4 loop filesystem prepared on the host (deploy/host/prepare-codex-homes.sh); the runner's
+      # preflight refuses anything else.
+      - type: bind
+        source: ${SR_CODEX_HOMES_DIR:-/srv/smart-review/codex-homes}
+        target: /var/lib/smart-review-runner/codex-homes
+        bind: { create_host_path: false }
+    healthcheck:
+      # The supervisor exits (and the container with it) when the runner stops; healthy = the runner process
+      # is running.
+      test: ["CMD", "/bin/sh", "-c", "grep -qsa smart-review-runner /proc/[0-9]*/cmdline"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+    depends_on:
+      server: { condition: service_healthy }
+      egress-proxy: { condition: service_healthy }
+    networks:
+      runner: {}
+
+  egress-proxy:
+    <<: *hardening
+    image: ${SR_PROXY_IMAGE:-smart-review-egress-proxy:local}
+    build: { context: egress-proxy }
+    tmpfs: ["/run/squid:uid=13,gid=13,mode=0750,size=1m"]
+    mem_limit: 256m
+    pids_limit: 128
+    environment:
+      # MemCan exception of the SSRF guard: this host:port only (T4, S6 finding 4).
+      SR_MEMCAN_URL: ${SR_MEMCAN_URL:?set SR_MEMCAN_URL}
+    logging:
+      # T9/T4b: host-name log, retention by size (about 5 x 50 MB); access restricted to Docker operators.
+      driver: local
+      options: { max-size: "50m", max-file: "5" }
+    networks:
+      runner: { ipv4_address: "${SR_PROXY_RUNNER_ADDR:-172.29.71.3}" }
+      egress: { ipv4_address: "${SR_PROXY_EGRESS_ADDR:-172.29.72.2}" }
+
+volumes:
+  server-data: {}
+  runner-state: {}
+
+networks:
+  public:
+    ipam: { config: [{ subnet: "${SR_PUBLIC_SUBNET:-172.29.73.0/24}" }] }
+  runner:
+    internal: true
+    ipam: { config: [{ subnet: "${SR_RUNNER_SUBNET:-172.29.71.0/24}" }] }
+  egress:
+    ipam: { config: [{ subnet: "${SR_EGRESS_SUBNET:-172.29.72.0/24}" }] }
