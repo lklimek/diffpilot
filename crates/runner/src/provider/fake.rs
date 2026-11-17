@@ -1,14 +1,15 @@
 //! Scripted provider for tests and development (feature `fake-provider`, never in release builds): replays
 //! the recorded Codex streams of the fixture PR (`fixtures/pr-482/codex/`) through the Codex stream parser.
 //!
-//! The recording is chosen by the call's output schema (job kind) and, for `analyse_flow`, by the first flow
+//! The recording is chosen by file mode or the call's output schema and, for `analyse_flow`, by the first flow
 //! id token `f<n>` of the prompt's `Job: analyse_flow f<n>.` line. `ask` has no recording.
 //!
 //! A script (JSON file named by [`SCRIPT_ENV`], read before every call; no file: plain replay) overrides calls
 //! for the full-stack tests: the first rule matching the job kind, the flow and a prompt substring applies, at
 //! most `times` times. Example: `{"rules": [{"id": "pause", "job": "analyse_flow", "flow": 2, "times": 1,
 //! "action": {"usage_limit": {"resets_in_secs": 5}}}]}`; actions: `replay` (the recording, `step_delay_ms` per
-//! line), `usage_limit`, `fail` (`message`) and `answer` (`output`: the final JSON, e.g. an ask answer).
+//! line), `usage_limit`, `fail` (`message`) and `answer` (`output`: a JSON object for JSON jobs,
+//! a tagged-text string for file jobs). File jobs write `out/flow.md` before using the real bounded collector.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -202,6 +203,7 @@ impl FakeProvider {
         events: &mpsc::Sender<ProviderEvent>,
     ) -> Result<ProviderOutcome, ProviderError> {
         let kind = job_kind(call)?;
+        let mut scripted_output = None;
         let (jsonl, step_delay) = match self.scripted(kind, &call.prompt)? {
             None => (recorded(kind, &call.prompt)?.to_owned(), self.step_delay),
             Some((id, action)) => {
@@ -218,7 +220,10 @@ impl FakeProvider {
                         });
                     }
                     Action::Fail { message } => return Err(ProviderError::Failed { message }),
-                    Action::Answer { output } => (answer_stream(&output), Duration::ZERO),
+                    Action::Answer { output } => {
+                        scripted_output = Some(output.clone());
+                        (answer_stream(&output), Duration::ZERO)
+                    }
                 }
             }
         };
@@ -242,7 +247,31 @@ impl FakeProvider {
                 let _ = events.send(ProviderEvent::Activity(event)).await;
             }
         }
-        let finished = stream.finish(Exit::Code(0))?;
+        let mut finished = stream.finish(Exit::Code(0))?;
+        if call.flow_file.is_some() {
+            let text = if let Some(output) = scripted_output {
+                output
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| output.to_string())
+            } else {
+                let files = [
+                    include_str!("../../../../fixtures/pr-482/agent/flow-1.md"),
+                    include_str!("../../../../fixtures/pr-482/agent/flow-2.md"),
+                    include_str!("../../../../fixtures/pr-482/agent/flow-3.md"),
+                    include_str!("../../../../fixtures/pr-482/agent/flow-4.md"),
+                    include_str!("../../../../fixtures/pr-482/agent/flow-5.md"),
+                ];
+                let n = flow_number(&call.prompt).unwrap_or(1) as usize;
+                files
+                    .get(n.saturating_sub(1))
+                    .ok_or_else(super::output_file::refused)?
+                    .to_string()
+            };
+            std::fs::create_dir_all(call.job_dir.join("out"))?;
+            std::fs::write(call.job_dir.join("out/flow.md"), text)?;
+            finished.output = Value::String(super::output_file::collect(&call.job_dir)?);
+        }
         let _ = events
             .send(ProviderEvent::OutputReady(finished.output.clone()))
             .await;
@@ -328,6 +357,9 @@ fn recording(name: &str) -> Option<&'static str> {
 
 /// The call's job kind, from its output schema.
 fn job_kind(call: &ProviderCall) -> Result<JobKind, ProviderError> {
+    if call.flow_file.is_some() {
+        return Ok(JobKind::AnalyseFlow);
+    }
     JobKind::ALL
         .into_iter()
         .find(|kind| output_schema(*kind).is_ok_and(|schema| schema == call.output_schema))
@@ -414,6 +446,7 @@ mod tests {
             restore_dir: PathBuf::new(),
             prompt: prompt.to_owned(),
             output_schema: spec.output_schema,
+            flow_file: None,
             model: spec.model,
             limits: spec.limits,
             access: spec.access,
@@ -588,5 +621,46 @@ mod tests {
             output_tokens: 4414,
         };
         assert_eq!(cumulative_before(pr_context), after_plan_compaction);
+    }
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+    #[tokio::test]
+    async fn scripted_file_is_written_and_collected() {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("script.json");
+        let text = "# flow f1\n";
+        std::fs::write(&script,json!({"rules":[{"id":"file","job":"analyse_flow","action":{"answer":{"output":text}}}]}).to_string()).unwrap();
+        let call = ProviderCall {
+            job_id: JobId::new_random(),
+            job_dir: root.path().join("job"),
+            codex_home: root.path().join("home"),
+            session_dir: root.path().join("session"),
+            restore_dir: root.path().join("session"),
+            prompt: "Job: analyse_flow f1.".into(),
+            output_schema: Value::Null,
+            flow_file: Some(contracts::job::spec::FlowFile {
+                context: json!({}),
+                previous: None,
+            }),
+            model: crate::test_support::spec(JobKind::AnalyseFlow, root.path()).model,
+            limits: Default::default(),
+            access: Default::default(),
+            skills: vec![],
+        };
+        let (send, mut receive) = mpsc::channel(32);
+        let provider = FakeProvider::default().with_script(script);
+        let outcome = provider.run(&call, send).await.unwrap();
+        assert_eq!(outcome.output, json!(text));
+        assert_eq!(
+            std::fs::read_to_string(call.job_dir.join("out/flow.md")).unwrap(),
+            text
+        );
+        assert!(
+            std::iter::from_fn(|| receive.try_recv().ok())
+                .any(|e| e == ProviderEvent::OutputReady(json!(text)))
+        );
     }
 }

@@ -122,6 +122,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
         restore_dir: dir.path().join("sessions").join("analysis-a"),
         prompt: format!("Job: plan. {PROMPT_CANARY}"),
         output_schema: json!({"type": "object", "additionalProperties": false, "properties": {}, "required": []}),
+        flow_file: None,
         model: ModelChoice {
             model: "gpt-6.1-sol".to_owned(),
             reasoning_effort: ReasoningEffort::High,
@@ -139,6 +140,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
             memcan: Some(McpHttpEndpoint {
                 url: "http://memcan.example:8190/".to_owned(),
                 token: Secret::new(MEMCAN_CANARY),
+                allow_write: false,
             }),
         },
         skills: Vec::new(),
@@ -1573,4 +1575,66 @@ async fn private_archive_fork_restores_analytic_but_never_changes_it() {
     assert_eq!(fs::read(&analytic_file).unwrap(), original);
     assert!(h.call.session_dir.join(rollout_rel(THREAD)).exists());
     assert_eq!(outcome.usage.input_tokens, 180_776 - 50_000);
+}
+
+#[tokio::test]
+async fn flow_file_is_collected_without_a_schema_and_plain_final_message_is_allowed() {
+    let mut h = harness("plan.jsonl", 0);
+    h.call.flow_file = Some(contracts::job::spec::FlowFile {
+        context: json!({"version":1}),
+        previous: None,
+    });
+    super::super::output_file::prepare(&h.call.job_dir, h.call.flow_file.as_ref().unwrap())
+        .unwrap();
+    let document = "# flow f1\n";
+    fs::write(h.call.job_dir.join("out/flow.md"), document).unwrap();
+    let scenario = fs::read_to_string(h.call.job_dir.join("scenario.jsonl")).unwrap();
+    let scenario = scenario
+        .lines()
+        .map(|line| {
+            let mut value: Value = serde_json::from_str(line).unwrap();
+            if value["item"]["type"] == "agent_message" {
+                value["item"]["text"] = json!("Flow file ready.");
+            }
+            value.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(h.call.job_dir.join("scenario.jsonl"), scenario).unwrap();
+    let (result, events) = run(&h).await;
+    let result = result.unwrap();
+    assert_eq!(result.output, json!(document));
+    assert!(
+        result.session_id.is_some(),
+        "saving the file must still archive the useful session"
+    );
+    assert_eq!(
+        events.last(),
+        Some(&ProviderEvent::OutputReady(json!(document)))
+    );
+    assert!(!child_file(&h, "child-args.txt").contains("--output-schema"));
+    assert!(!h.call.codex_home.join("output-schema.json").exists());
+}
+
+#[tokio::test]
+async fn missing_flow_file_is_a_failed_attempt_with_a_repair_instruction() {
+    let mut h = harness("plan.jsonl", 0);
+    h.call.flow_file = Some(contracts::job::spec::FlowFile {
+        context: json!({}),
+        previous: None,
+    });
+    super::super::output_file::prepare(&h.call.job_dir, h.call.flow_file.as_ref().unwrap())
+        .unwrap();
+    let (result, events) = run(&h).await;
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("out/flow.md is missing")
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, ProviderEvent::OutputReady(_)))
+    );
 }

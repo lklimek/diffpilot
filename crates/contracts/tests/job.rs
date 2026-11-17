@@ -48,6 +48,7 @@ fn spec() -> JobSpec {
         },
         prompt: "Job: analyse_flow f1.".to_owned(),
         output_schema: json!({"type": "object"}),
+        flow_file: None,
         model: ModelChoice {
             model: "gpt-6.1-sol".to_owned(),
             reasoning_effort: ReasoningEffort::High,
@@ -76,6 +77,7 @@ fn spec() -> JobSpec {
             memcan: Some(McpHttpEndpoint {
                 url: "https://memcan.example/mcp".to_owned(),
                 token: Secret::new(MEMCAN_TOKEN),
+                allow_write: true,
             }),
         },
     }
@@ -419,4 +421,12 @@ fn self_fencing_ends_before_the_lease() {
         "one lost heartbeat must not fence: {t:?}"
     );
     assert!(t.output_retry_secs.iter().sum::<u32>() < t.fence_after_send_secs);
+}
+
+#[test]
+fn memcan_endpoint_without_allow_write_is_read_only() {
+    let endpoint: McpHttpEndpoint =
+        serde_json::from_value(json!({"url": "https://memcan.example/mcp", "token": MEMCAN_TOKEN}))
+            .expect("endpoint");
+    assert!(!endpoint.allow_write);
 }

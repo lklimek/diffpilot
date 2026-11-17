@@ -1244,6 +1244,7 @@ mod tests {
         job.spec.access.memcan = Some(McpHttpEndpoint {
             url: "https://memcan.example/mcp".to_owned(),
             token: Secret::new("memcan-canary"),
+            allow_write: true,
         });
         let record = db
             .jobs()

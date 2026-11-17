@@ -270,7 +270,7 @@ succeeded | failed | cancelled | paused{resumes_at}`; expired lease → `queued`
 ### 5.4 Security design (WP1-T, reviewed with the contracts; audited again in stage 4)
 
 Current session/privacy policy: ADR-004 and `docs/contracts/threat-model.md`, “Private Ask isolation”
-(owner decision 2026-11-17), supersede the original shared-session and agent-MemCan assumptions below.
+(owner decision 2026-11-17), supersede the original shared-session assumptions below; agents keep MemCan, Ask search-only.
 Analytic PR sessions never receive local user text; Ask uses private PR/user archive forks.
 The process model behind T1 (supervisor, uids, private socket) is decided in ADR-013.
 
@@ -680,7 +680,7 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | Repository | `lklimek/smart-review` public; GitHub Actions enabled; the owner pushes `main` | §6.1 O1, WP1-C |
 | Codex model | Installation-wide model/effort in Settings; `select_model` stays a plain Rust function, default Sol/high; catalog from S1a (ADR-002) | §5.2, S1a, WP2-INGEST |
 | Agent sessions | One analytic Codex session per PR; private working fork per PR/user for Ask; automatic compaction at 400k, no forced turn; generation-aware re-fork and own-history context pack on loss (ADR-004) | §5.3, §5.4 T8, S1b, S7, WP3-RUN, WP3-PIPE, WP3-ASK, WP3-PROMPTS |
-| MemCan | Traefik entrypoint (port 8190) with IP allowlist + shared bearer token; `SR_MEMCAN_URL`/`SR_MEMCAN_TOKEN` as pure configuration (MemCan moves before deployment); the token stays server-side; no agent MemCan access; server writes fixed feedback values and public calibration facts, never private notes; scope = analysed repository short name; the owner adds the proxy's source address (from S6) to the allowlist himself | §5.2, §5.4 T6, §6.1 O5, WP3-MEMCAN, WP3-RUN |
+| MemCan | Traefik entrypoint (port 8190) with IP allowlist + shared bearer token; `SR_MEMCAN_URL`/`SR_MEMCAN_TOKEN` as pure configuration (MemCan moves before deployment); the token reaches the agent through the per-job config; analytic jobs search and write, Ask jobs search only (ADR-004); server writes fixed feedback values and public calibration facts, never private notes; scope = analysed repository short name; the owner adds the proxy's source address (from S6) to the allowlist himself | §5.2, §5.4 T6, §6.1 O5, WP3-MEMCAN, WP3-RUN |
 | Deployment and URL | `SR_PUBLIC_URL` is configuration; owner's instance `https://review.klimek.ws` (callback `…/auth/github/callback`); TLS at the owner's reverse proxy; server HTTP behind it with trusted-proxy setting and Secure cookies; no built-in TLS/ACME | §5.2, §6.1 O2/O6, WP4-DEPLOY |
 | Quota | No cap on the Pro plan; real runs purposeful | §6.1 |
 | Test targets | `dashpay/dash-evo-tool` and `dashpay/platform` PRs by `lklimek` / `Claudius-Maginificent` (P-CAP, P-CAP2, P-REV, P-REF, P-LARGE, P-XREPO); on real PRs only pending comments, deleted afterwards, never submitted | §6.1, S3, S7, M2, M3b, WP4-REAL, WP4-GUI |

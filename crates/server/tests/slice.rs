@@ -221,7 +221,7 @@ impl JobExecutor for ScriptedExecutor {
                 .cloned()
         };
         let mut paused = None;
-        let outcome = match script {
+        let mut outcome = match script {
             None => JobOutcome::Succeeded {
                 output: agent_output(&stage),
             },
@@ -246,6 +246,31 @@ impl JobExecutor for ScriptedExecutor {
                 }
             }
         };
+        if stage.starts_with("flow:") {
+            let spec = self
+                .specs_of(&stage)
+                .into_iter()
+                .find(|(g, _)| *g == generation)
+                .expect("flow fixture")
+                .1;
+            let context: analysis::tagged::Context =
+                serde_json::from_value(spec.flow_file.expect("flow fixture").context)
+                    .expect("flow fixture");
+            if let JobOutcome::Succeeded { output } = &mut outcome
+                && !output.is_string()
+            {
+                *output = match serde_json::from_value::<
+                    contracts::agent::analyse_flow::FlowAnalysisOutput,
+                >(output.clone())
+                {
+                    Ok(document) => Value::String(
+                        analysis::tagged::encode(&document, &context.catalog())
+                            .expect("flow fixture"),
+                    ),
+                    Err(_) => Value::String(output.to_string()), // deliberately malformed script
+                };
+            }
+        }
         self.finished.lock().expect("lock").insert(handle.job_id);
         let result = JobResult {
             job_id: handle.job_id,
@@ -1809,6 +1834,18 @@ async fn rejected_flow_output_is_repaired() {
     assert!(h.executor.submitted().contains(&"flow:f2#1".to_owned()));
     let runs = h.executor.specs_of("flow:f2");
     assert_eq!(runs.len(), 2);
+    let restored = runs[1]
+        .1
+        .flow_file
+        .as_ref()
+        .unwrap()
+        .previous
+        .as_ref()
+        .unwrap();
+    assert!(restored.starts_with("# flow f2"));
+    assert!(restored.contains("9990-9999"));
+    assert!(runs[1].1.prompt.contains("editing that file"));
+
     assert!(
         runs[1].1.prompt.contains("repair 1 of 2"),
         "{}",
@@ -2381,7 +2418,14 @@ async fn each_job_is_claimable_only_after_the_previous_result_is_stored() {
             job_id: claim.spec.job_id,
             attempt: claim.spec.attempt,
             outcome: JobOutcome::Succeeded {
-                output: agent_output(&stage),
+                output: if let Some(file) = &claim.spec.flow_file {
+                    let context: analysis::tagged::Context =
+                        serde_json::from_value(file.context.clone()).unwrap();
+                    let doc = serde_json::from_value(agent_output(&stage)).unwrap();
+                    json!(analysis::tagged::encode(&doc, &context.catalog()).unwrap())
+                } else {
+                    agent_output(&stage)
+                },
             },
             session: None,
             usage: None,

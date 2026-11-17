@@ -454,7 +454,11 @@ pub fn repair(input: &RepairInput<'_>) -> Result<String, PromptError> {
             format!("{}: {}", issue.kind.code(), one_line(&message))
         })
         .collect();
-    let rejected = input.rejected.to_string();
+    let rejected = if matches!(input.of, RepairOf::Flow(_)) {
+        "Your file is still available for this session: the server restored its rejected contents to out/flow.md in this job. Fix the listed problems by editing that file; keep the rest unchanged. Run sr-check flow out/flow.md again.".to_owned()
+    } else {
+        input.rejected.to_string()
+    };
     if rejected.len() > MAX_REJECTED_BYTES {
         return Err(PromptError::OverBudget {
             kind: "repair",
@@ -463,8 +467,16 @@ pub fn repair(input: &RepairInput<'_>) -> Result<String, PromptError> {
         });
     }
     let rejected = data("rejected output", &rejected);
+    let repair_template = if matches!(input.of, RepairOf::Flow(_)) {
+        REPAIR.replace(
+            "Return the complete corrected output in the same schema.",
+            "Edit out/flow.md; do not rewrite the complete document.",
+        )
+    } else {
+        REPAIR.to_owned()
+    };
     let body = fill(
-        REPAIR,
+        &repair_template,
         &[
             ("attempt", &input.attempt.to_string()),
             ("max", &MAX_REPAIRS.to_string()),
@@ -789,7 +801,26 @@ fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, Promp
     } else {
         part("sub_agents_off")?
     };
-    let rules = fill(RULES, &[("language", language), ("sub_agents", sub_agents)])?;
+    let file_job = job.contains("analyse_flow");
+    let output_instruction = if file_job {
+        "Write the tagged flow document to out/flow.md in the job directory. Run `sr-check format` for the grammar and `sr-check catalog out/flow.md` for file/hunk ids. Run `sr-check flow out/flow.md`; edit the file to fix every problem, rerun until ok, then finish with one line: Flow file ready. Never return the document in the final message."
+    } else {
+        "Output only the JSON object of the output schema."
+    };
+    let file_permission = if file_job {
+        "You may write/edit out/flow.md and run the installed sr-check checker; these are the only write/execute exceptions."
+    } else {
+        ""
+    };
+    let rules = fill(
+        RULES,
+        &[
+            ("language", language),
+            ("sub_agents", sub_agents),
+            ("file_permission", file_permission),
+            ("output_instruction", output_instruction),
+        ],
+    )?;
     let prepass = context.prepass;
     let mut sides: BTreeMap<&str, BTreeSet<LineSide>> = BTreeMap::new();
     let generated = prepass

@@ -36,7 +36,7 @@ pub struct AgentAccess {
     /// Read-only GitHub App installation token for `github-mcp-server`; none when the App is not installed on
     /// the PR repository (no `github-mcp-server` for the job, related-work lookup skipped).
     pub github: Option<InstallationToken>,
-    /// MemCan MCP endpoint (search and `add_memory` only, by runner configuration; accepted risk T6).
+    /// MemCan MCP endpoint: search tools, plus `add_memory` for analytic jobs only (ADR-004; accepted risk T6).
     pub memcan: Option<McpHttpEndpoint>,
 }
 
@@ -59,4 +59,7 @@ pub struct McpHttpEndpoint {
     pub url: String,
     /// Bearer token.
     pub token: Secret,
+    /// Whether the agent is offered write tools; absent means read-only (Ask jobs never get them, ADR-004).
+    #[serde(default)]
+    pub allow_write: bool,
 }

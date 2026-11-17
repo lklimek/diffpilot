@@ -11,3 +11,5 @@ pub mod prepass;
 pub mod related;
 pub mod tech;
 pub mod verify;
+
+pub mod tagged;

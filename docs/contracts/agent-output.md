@@ -1,5 +1,7 @@
 # Agent output (v1)
 
+Flow jobs write tagged files according to [agent-output-format.md](agent-output-format.md), checked by `sr-check` and the server (ADR-014). The flow shape documented here is the canonical parsed/stored document. Plan, PR context and Ask still emit JSON.
+
 Types: `crates/contracts/src/agent/**`; schemas (generated, Codex strict subset): `schemas/agent/*.schema.json`,
 passed as `--output-schema`. Decisions: ADR-008 (shape), ADR-009 (generation). The server re-validates every
 output against the schema, then verifies it (`analysis::verify`), then projects it into the API.
