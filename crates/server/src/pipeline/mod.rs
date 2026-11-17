@@ -132,6 +132,21 @@ pub enum PipelineError {
 impl PipelineError {
     /// The analysis state this error ends in.
     fn final_state(&self) -> AnalysisState {
+        if let Self::JobFailed {
+            flow,
+            failure: CallFailure::Failed(contracts::job::result::JobFailureKind::Configuration),
+            ..
+        } = self
+        {
+            return AnalysisState::Failed {
+                reason: Some(contracts::api::error::ApiErrorCode::Configuration),
+                flow: flow.clone(),
+                message: plain_failure(Some(CallFailure::Failed(
+                    contracts::job::result::JobFailureKind::Configuration,
+                )))
+                .to_owned(),
+            };
+        }
         let (flow, message): (Option<FlowRef>, Cow<'static, str>) = match self {
             Self::Cancelled { .. } | Self::Stopped => return AnalysisState::Cancelled,
             Self::Mirror(_) => (
@@ -172,6 +187,7 @@ impl PipelineError {
             ),
         };
         AnalysisState::Failed {
+            reason: None,
             flow,
             message: message.into_owned(),
         }

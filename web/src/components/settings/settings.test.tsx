@@ -116,7 +116,10 @@ describe("RepoSettingsCard (read-only)", () => {
       .getAllByRole("row")
       .slice(1)
       .map((r) => r.textContent);
-    expect(rows).toEqual(["tests/**path globTests", "^\\s*//line regexDocs & comments"]);
+    expect(rows).toEqual([
+      "tests/**path globMatches the file path.Tests",
+      "^\\s*//line regexMatches a line with a regular expression.Docs & comments",
+    ]);
     for (const name of ["Rule", "Kind", "Section"]) {
       const header = within(region).getByRole("columnheader", { name });
       expect(within(header).getByText(name)).toHaveAccessibleDescription(/.+/);
@@ -178,4 +181,24 @@ describe("RepoList", () => {
     await userEvent.click(screen.getByRole("button", { name: "acme/wallet-ui" }));
     expect(onSelect).toHaveBeenCalledWith(repos[1]);
   });
+});
+
+it("names lexer, header and binary detectors with their actual checks", () => {
+  render(
+    <RepoSettingsCard
+      settings={{
+        repo: { owner: "acme", name: "node" },
+        related_repos: [],
+        project_profile: { sources: [], memcan: "not_checked" },
+        rules: [
+          { kind: "lexer", pattern: "Rust comments", category: "docs_comments" },
+          { kind: "header", pattern: "@generated", category: "generated_mechanical" },
+          { kind: "binary", pattern: "binary", category: "generated_mechanical" },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByText("lexer")).toHaveAccessibleDescription(/Rust compiler lexer/);
+  expect(screen.getByText("generated-file header")).toHaveAccessibleDescription(/generated-file header/);
+  expect(screen.getByText("binary content")).toHaveAccessibleDescription(/Git identifies binary/);
 });

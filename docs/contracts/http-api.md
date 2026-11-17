@@ -262,3 +262,49 @@ Fixture PR `acme/node-client#482` (`fixtures/pr-482/`): `api-seed/default/` plus
 | `feedback` | none | `wrong` + `overrated` on step 3.1 | `missed_by_llm` line 96 | – | – | – |
 | `pending-review` | empty | – | one LINE comment on line 96 | – | – | – |
 | `settings` | working, en, 1 repo | – | – | – | – | – |
+
+### Related-work targets, readable quiet rows and configuration failures
+
+The agent's `RelatedWork` output schema is unchanged. `PrContextFacts.related_work_links` is an optional list
+of server-projected targets associated with `llm.related_work` by exact `reference`. Each target contains
+`repo` (`owner/name`), a positive safe-integer `number`, `kind` (`pull_request` or `issue`) and `verified`.
+The server parses only whole GitHub references (`owner/name#number`, `#number`, or canonical HTTPS GitHub
+pull/issue URLs). Arbitrary prose and other URLs produce no target. GitHub's issue endpoint confirms existence
+and kind using the signed-in user's token; denied, missing or unavailable targets retain `verified: false`.
+Verification is bounded to 20 targets and five seconds for the whole lookup. The old `related_work_checked`
+field still describes the agent's GitHub access, not individual target verification. Clients build links only
+from the structured fields, open a new tab with `rel="noopener noreferrer"`, and mark unchecked targets.
+
+```json
+{
+  "related_work_links": [
+    {"reference":"acme/node#42","repo":"acme/node","number":42,"kind":"issue","verified":true},
+    {"reference":"acme/node#43","repo":"acme/node","number":43,"kind":"pull_request","verified":false}
+  ]
+}
+```
+
+`NotAnalysedItem.renderable` is an optional boolean computed from the pre-pass's excluded file sides. Mechanical
+text can be shown; generated, binary and files recorded above the code reader's byte limit cannot. `rule_kind` optionally names the actual detector
+(`path_glob`, `line_regex`, `lexer`, `header`, `binary`), independently of the provenance badge.
+
+```json
+{"file":"Cargo.lock","side":"head","ranges":[{"start_line":1,"end_line":2}],"badge":"classified_by_path","rule":"Cargo.lock","renderable":true,"rule_kind":"path_glob"}
+```
+
+`AnalysisState.failed.reason` optionally carries an `ApiErrorCode`; the additive `configuration` code means
+administrator action is required. The same kind is carried in `JobFailureKind`. Missing required agent skills
+produce the fixed public sentence below, never the runner's diagnostic text. The UI offers no Retry for this
+reason. Existing failures without a reason retain their retry behavior.
+
+```json
+{"state":"failed","flow":null,"reason":"configuration","message":"The server is misconfigured: a required agent skill is missing. Ask the administrator."}
+```
+
+The web renders CI source counts independently (including skipped and neutral), only says "all passing" when
+both sources were read and every reported result succeeded, and describes missing sources as "not checked".
+It attributes shared questions with `asked_by`/`mine`, offers Ask again only for `mine: true`, and promises
+personal progress on Home only for `has_my_state: true`. Test deletion counts include replacements and are
+labelled "test lines changed or removed" alongside additions. MemCan connection status is separate from profile
+availability. Written feedback says "Saved to calibration memory" only for `calibration_example: true`;
+other written feedback says "Recorded".

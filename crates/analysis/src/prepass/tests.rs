@@ -118,7 +118,7 @@ fn prepass_reproduces_fixture_pr_482() {
     let tour = json(&fixture().join("api-seed/default/tour.json"));
     let facts = &tour["pr_context"]["facts"];
     assert_eq!(
-        result.not_analysed,
+        result.not_analysed_with_binaries(),
         from_value::<Vec<NotAnalysedSection>>(&tour["quiet"]["not_analysed"])
     );
     assert_eq!(
@@ -307,6 +307,18 @@ fn generated_file_never_in_agent_input() {
         ],
         "the lockfile is mechanical and stays readable"
     );
+    for section in result.not_analysed_with_binaries() {
+        for item in section.items {
+            let wire = serde_json::to_value(&item).unwrap();
+            assert_eq!(
+                wire["renderable"],
+                !result.is_not_rendered(item.side, &item.file),
+                "{}",
+                item.file
+            );
+        }
+    }
+
     let section = result
         .not_analysed
         .iter()

@@ -68,6 +68,7 @@ fn tour() -> Tour {
         analysis: summary(),
         pr_context: PrContextBlock {
             facts: PrContextFacts {
+                related_work_links: None,
                 memcan_status: None,
                 ci: CiStatus {
                     state: CiState::Passing,
@@ -213,6 +214,7 @@ fn tour_round_trips() {
 #[test]
 fn error_codes_map_to_statuses() {
     let expected = [
+        ("configuration", 500),
         ("unauthenticated", 401),
         ("login_not_allowed", 403),
         ("csrf_rejected", 403),
@@ -390,6 +392,7 @@ fn tagged_wire_formats() {
         ),
         (
             serde_json::to_value(AnalysisState::Failed {
+                reason: None,
                 flow: Some(FlowRef {
                     id: FlowId("f2".to_owned()),
                     title: "t".to_owned(),

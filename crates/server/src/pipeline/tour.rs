@@ -230,6 +230,14 @@ pub fn project(input: &Projection<'_>) -> Tour {
         analysis: input.summary.clone(),
         pr_context: PrContextBlock {
             facts: PrContextFacts {
+                related_work_links: Some(
+                    llm.related_work
+                        .iter()
+                        .filter_map(|item| {
+                            crate::github::related::target(item, &input.summary.pr.repo)
+                        })
+                        .collect(),
+                ),
                 memcan_status: None,
                 ci: input.snapshot.ci.clone(),
                 threads_status: input.snapshot.threads_status,

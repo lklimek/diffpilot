@@ -120,6 +120,7 @@ enum Script {
     Fail,
     /// Fails with this runner text.
     FailWith(String),
+    Configuration,
     Pending,
     /// Paused by the usage limit; returns the fixture output once notified.
     PausedUntil(Arc<tokio::sync::Notify>),
@@ -228,6 +229,10 @@ impl JobExecutor for ScriptedExecutor {
             Some(Script::Fail) => JobOutcome::Failed {
                 kind: JobFailureKind::ProviderFailed,
                 message: "the provider exited with an error".to_owned(),
+            },
+            Some(Script::Configuration) => JobOutcome::Failed {
+                kind: JobFailureKind::Configuration,
+                message: "private diagnostic: missing severity".to_owned(),
             },
             Some(Script::FailWith(message)) => JobOutcome::Failed {
                 kind: JobFailureKind::ProviderFailed,
@@ -1423,6 +1428,7 @@ async fn fail_flow_2(h: &Harness, script: Script) -> AnalysisSummary {
 fn assert_failed_in_f2_and_nothing_after_it(h: &Harness, summary: &AnalysisSummary, message: &str) {
     match &summary.state {
         AnalysisState::Failed {
+            reason: None,
             flow: Some(flow),
             message: text,
         } => {
@@ -1526,6 +1532,7 @@ async fn create_returns_at_once_and_lines_wait_for_preparation() {
     let ended = h.wait_until_ended(&id).await;
     match ended.state {
         AnalysisState::Failed {
+            reason: None,
             flow: None,
             message,
         } => {
@@ -1725,6 +1732,7 @@ async fn exhausted_plan_repairs_fail_the_analysis() {
     let ended = h.wait_until_ended(&id).await;
     match ended.state {
         AnalysisState::Failed {
+            reason: None,
             flow: None,
             message,
         } => {
@@ -1764,6 +1772,7 @@ async fn failure_before_any_flow_offers_retry() {
     let ended = h.wait_until_ended(&id).await;
     match &ended.state {
         AnalysisState::Failed {
+            reason: None,
             flow: None,
             message,
         } => {
@@ -2030,6 +2039,10 @@ async fn tour_has_no_uncomputed_fact_with_the_app_installed() {
     assert_eq!(status, StatusCode::OK, "{tour}");
     let facts = &tour["pr_context"]["facts"];
     assert_eq!(facts["related_work_checked"], json!(true));
+    assert!(
+        facts["related_work_links"].is_array(),
+        "structured links must accompany related work"
+    );
     assert_eq!(
         tour["pr_context"]["llm"]["related_work"],
         agent_output("pr_context")["related_work"],
@@ -2378,6 +2391,7 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
         .set_state(
             analysis,
             &AnalysisState::Failed {
+                reason: None,
                 flow: None,
                 message: "x".to_owned(),
             },
@@ -2448,4 +2462,43 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     );
     h.wait_for_state(&id, |state| matches!(state, AnalysisState::Planning { .. }))
         .await;
+}
+
+#[tokio::test]
+async fn configuration_failure_survives_storage_and_has_no_retry_message() {
+    let h = harness().await;
+    h.executor.script("plan:1", Script::Configuration);
+    let id = h.create_fixture_analysis().await;
+    h.wait_until_ended(&id).await;
+    let (status, body) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["state"]["reason"], "configuration");
+    assert_eq!(
+        body["state"]["message"],
+        "The server is misconfigured: a required agent skill is missing. Ask the administrator."
+    );
+}
+
+#[tokio::test]
+async fn oversized_mechanical_file_is_not_renderable() {
+    let h = harness().await;
+    let summary = h
+        .analyse_repo("huge-mechanical", 11, |repo| {
+            let base = commit(repo, &[("Cargo.lock", "version = 3\n")], "base");
+            let huge = "# padding\n".repeat(1024 * 1024);
+            let head = commit(repo, &[("Cargo.lock", &huge)], "large lockfile");
+            (base, head)
+        })
+        .await;
+    let (mirror, files) = server::pipeline::pr_diff(&h.state, &summary).await.unwrap();
+    let prepass = server::pipeline::prepass::ensure_for_read(&h.state, &summary, &mirror, &files)
+        .await
+        .unwrap();
+    let items = prepass.not_analysed_with_binaries();
+    let head = items
+        .iter()
+        .flat_map(|section| &section.items)
+        .find(|item| item.file == "Cargo.lock" && item.side == contracts::common::LineSide::Head)
+        .unwrap();
+    assert_eq!(head.renderable, Some(false));
 }

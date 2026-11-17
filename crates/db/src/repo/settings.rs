@@ -63,6 +63,7 @@ impl CallFailure {
             Self::Failed(JobFailureKind::CheckoutFailed) => "checkout_failed",
             Self::Failed(JobFailureKind::Timeout) => "timeout",
             Self::Failed(JobFailureKind::Internal) => "internal",
+            Self::Failed(JobFailureKind::Configuration) => "configuration",
         }
     }
 

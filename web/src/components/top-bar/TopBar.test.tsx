@@ -17,7 +17,9 @@ describe("TopBar", () => {
     expect(prLink).toHaveAttribute("rel", expect.stringContaining("noopener"));
     expect(banner).toHaveTextContent("feat(rpc): retry with backoff on timeout");
     expect(banner).toHaveTextContent(tour.analysis.pr.head_sha.slice(0, 7));
-    const ci = within(banner).getByText("CI: 1 of 6 failing");
+    const ci = within(banner).getByText(
+      "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
+    );
     expect(ci).toHaveAccessibleDescription(/test \(integration\)/);
     expect(banner).toHaveTextContent("alice");
     expectTrustWording(banner.textContent ?? "");

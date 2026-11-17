@@ -77,6 +77,10 @@ total: number | null,
  */
 stage?: AnalysisStage, } | { "state": "failed",
 /**
+ * Typed cause when known; absent on older failures.
+ */
+reason?: ApiErrorCode,
+/**
  * The flow that failed, or null when it failed before any flow existed.
  */
 flow: FlowRef | null,
@@ -185,7 +189,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable";
+export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable";
 
 /**
  * A GitHub App installation.
@@ -1289,6 +1293,14 @@ export type NotAnalysedCategory = "tests" | "docs_comments" | "generated_mechani
  */
 export type NotAnalysedItem = {
 /**
+ * Whether the server can show code for this side and file; absent on older Tours.
+ */
+renderable?: boolean,
+/**
+ * Detector that actually matched; absent on older stored pre-passes.
+ */
+rule_kind?: RuleKind,
+/**
  * Repository-relative path on that side.
  */
 file: string,
@@ -1461,6 +1473,10 @@ llm: PrContextOutput, };
  * Deterministic facts of the PR context.
  */
 export type PrContextFacts = {
+/**
+ * Structured GitHub targets resolved independently of the agent's prose; missing on older Tours.
+ */
+related_work_links?: Array<RelatedWorkLink>,
 /**
  * Current observed MemCan connection state, separate from the analysis's profile lookup.
  */
@@ -1669,6 +1685,36 @@ overlap: string, };
  * Kind of related work in the PR context.
  */
 export type RelatedWorkKind = "duplicate" | "competing_solution" | "stacked_pr" | "linked_issue" | "companion_repository";
+
+/**
+ * A validated target syntax and the result of checking it against GitHub.
+ */
+export type RelatedWorkLink = {
+/**
+ * Exact reference in the agent output, used only to associate the item.
+ */
+reference: string,
+/**
+ * Repository in owner/name form, validated by the server.
+ */
+repo: string,
+/**
+ * Positive GitHub issue or pull request number.
+ */
+number: number,
+/**
+ * Resource kind, from GitHub when verified, otherwise inferred from the reference.
+ */
+kind: RelatedWorkTargetKind,
+/**
+ * GitHub confirmed the resource exists and its kind; false if it could not be read.
+ */
+verified: boolean, };
+
+/**
+ * GitHub resource linked from related work (distinct from the LLM's relationship kind).
+ */
+export type RelatedWorkTargetKind = "pull_request" | "issue";
 
 /**
  * A GitHub repository.

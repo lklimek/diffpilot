@@ -26,6 +26,12 @@ async fn read(
     let Path(id) = id.map_err(failure)?;
     let summary = visible_analysis(&state, &session, id).await?;
     let mut tour = tour::load(&state, &summary).await.map_err(failure)?;
+    if let Some(links) = &mut tour.pr_context.facts.related_work_links
+        && !links.is_empty()
+        && let Ok(token) = crate::auth::user_access_token(&state, &session.user_id).await
+    {
+        crate::github::related::verify(&state.config.github, &token, links).await;
+    }
     tour.pr_context.facts.memcan_status = Some(state.config.memcan.status());
     Ok(Json(tour))
 }

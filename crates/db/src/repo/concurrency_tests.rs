@@ -158,6 +158,7 @@ async fn job_completion_and_retry_run_concurrently() {
     let (_dir, db) = file_db().await;
     let analysis = seed_analysis(&db).await.expect("seed");
     let failed = AnalysisState::Failed {
+        reason: None,
         flow: None,
         message: "Planning failed.".to_owned(),
     };

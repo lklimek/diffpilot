@@ -1,3 +1,4 @@
+import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
 import { useState } from "react";
 import { ApiError } from "../../api/client";
 import { routes } from "../../api/generated/routes";
@@ -67,6 +68,11 @@ function SettingsContent() {
     <>
       <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(420px,1fr))]">
         <LlmStatusCard status={llm_status} />
+        <SettingsCard title="Memory">
+          <p>
+            <MemcanStatusLine status={settings.data.memcan_status} />
+          </p>
+        </SettingsCard>
         <LanguageCard
           language={language}
           busy={setLanguage.isPending}

@@ -70,7 +70,6 @@ pub struct NotAnalysedRule {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleKind {
-    // TODO(web): render lexer/header/binary labels in RepoSettingsCard.
     /// Matches file paths.
     PathGlob,
     /// Matches lines.

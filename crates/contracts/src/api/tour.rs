@@ -40,6 +40,10 @@ pub struct PrContextBlock {
 /// Deterministic facts of the PR context.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct PrContextFacts {
+    /// Structured GitHub targets resolved independently of the agent's prose; missing on older Tours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub related_work_links: Option<Vec<RelatedWorkLink>>,
     /// Current observed MemCan connection state, separate from the analysis's profile lookup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -62,6 +66,32 @@ pub struct PrContextFacts {
     pub flow_count: u32,
     /// Number of steps over all flows.
     pub step_count: u32,
+}
+
+/// A validated target syntax and the result of checking it against GitHub.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct RelatedWorkLink {
+    /// Exact reference in the agent output, used only to associate the item.
+    pub reference: String,
+    /// Repository in owner/name form, validated by the server.
+    pub repo: String,
+    /// Positive GitHub issue or pull request number.
+    #[ts(type = "number")]
+    pub number: u64,
+    /// Resource kind, from GitHub when verified, otherwise inferred from the reference.
+    pub kind: RelatedWorkTargetKind,
+    /// GitHub confirmed the resource exists and its kind; false if it could not be read.
+    pub verified: bool,
+}
+
+/// GitHub resource linked from related work (distinct from the LLM's relationship kind).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RelatedWorkTargetKind {
+    /// A pull request.
+    PullRequest,
+    /// An issue.
+    Issue,
 }
 
 /// CI status of the head commit: its check runs and its commit statuses.
@@ -106,7 +136,6 @@ pub enum CiState {
     Passing,
     /// Every check read has concluded and none failed, but not every one succeeded (some skipped or neutral) or
     /// one source was not read: never "all passing".
-    // TODO(web): handle this state and source counts in PrContextBlock and TopBar.
     NoFailures,
     /// At least one check failed.
     Failing,
@@ -532,6 +561,14 @@ pub struct NotAnalysedSection {
 /// One file (or line ranges of it) recognised by a rule; one item per file and side.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct NotAnalysedItem {
+    /// Whether the server can show code for this side and file; absent on older Tours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub renderable: Option<bool>,
+    /// Detector that actually matched; absent on older stored pre-passes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub rule_kind: Option<crate::api::settings::RuleKind>,
     /// Repository-relative path on that side.
     pub file: String,
     /// `base` for a deleted file or removed lines, else `head`.

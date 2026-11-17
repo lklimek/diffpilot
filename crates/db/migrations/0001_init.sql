@@ -115,6 +115,7 @@ CREATE TABLE analyses (
     failure_flow_id     TEXT,
     failure_flow_title  TEXT,
     failure_message     TEXT,
+    failure_reason      TEXT,
     agent_thread_id     TEXT,
     session_state       TEXT NOT NULL DEFAULT 'none' CHECK (session_state IN ('none', 'active', 'drop_requested', 'dropped')),
     skills_commit       TEXT,
@@ -152,7 +153,7 @@ CREATE TABLE llm_credentials (
     last_call_at      TEXT,
     last_call_ok      INTEGER CHECK (last_call_ok IN (0, 1)),
     last_call_message TEXT, -- raw provider text: logs and diagnosis only, never shown to users
-    last_call_failure TEXT CHECK (last_call_failure IN ('usage_limited', 'provider_failed', 'output_not_json', 'credential_unusable', 'checkout_failed', 'timeout', 'internal')),
+    last_call_failure TEXT CHECK (last_call_failure IN ('usage_limited', 'provider_failed', 'output_not_json', 'credential_unusable', 'checkout_failed', 'timeout', 'internal', 'configuration')),
     CHECK ((last_call_at IS NULL) = (last_call_ok IS NULL)),
     CHECK (last_call_failure IS NULL OR last_call_ok = 0)
 ) STRICT;

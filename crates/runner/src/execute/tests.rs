@@ -870,3 +870,15 @@ async fn dropped_detached_attempt_holds_settled_until_it_has_stopped() {
     assert!(stub.stopped.load(std::sync::atomic::Ordering::SeqCst));
     assert_removed(&stub.seen());
 }
+
+#[tokio::test]
+async fn missing_required_skill_reports_configuration() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Fail(|| {
+        ProviderError::Configuration(crate::skills::SkillError::Unavailable)
+    }));
+    let executor = Executor::new(stub, dirs(root.path()), credential());
+    let (result, _) = execute_collect(&executor, spec(JobKind::Plan, shared_repo())).await;
+    let wire = serde_json::to_value(&result).unwrap();
+    assert_eq!(wire["outcome"]["kind"], "configuration");
+}

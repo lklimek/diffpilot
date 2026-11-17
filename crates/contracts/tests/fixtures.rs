@@ -361,8 +361,12 @@ fn flow_outputs_follow_the_agent_output_rules() {
                     "{what}: annotation outside"
                 );
                 assert!(
-                    !a.was.trim().is_empty() && !a.is.trim().is_empty(),
-                    "{what}: was/is empty"
+                    if a.kind == AnnotationType::Behaviour {
+                        !a.was.trim().is_empty() && !a.is.trim().is_empty()
+                    } else {
+                        a.was.is_empty() && a.is.is_empty()
+                    },
+                    "{what}: was/is belongs only to behaviour"
                 );
                 assert_eq!(
                     a.text.is_none(),

@@ -285,7 +285,7 @@ test("every top-bar control explains itself in a tooltip", async ({ page }) => {
   await openTour(page);
   const banner = page.getByRole("banner").first();
   await expect(banner.getByRole("link", { name: /#482/ })).toHaveAccessibleDescription(/GitHub/);
-  await expect(banner.getByText(/^CI:/)).toHaveAccessibleDescription(/Failing checks/);
+  await expect(banner.getByText(/^Check runs:/).first()).toHaveAccessibleDescription(/Failing checks/);
   await expect(banner.getByText(/^flows reviewed/)).toHaveAccessibleDescription(/No percentage/);
   await expect(banner.getByRole("button", { name: /^Pending review/ })).toHaveAccessibleDescription(
     /pending review/,
@@ -369,7 +369,7 @@ for (const [scenario, outcome] of [
       .getByRole("button", { name: /^Step 1:/ })
       .click();
     const memory = page.getByRole("list", { name: "Calibration memory" });
-    await expect(memory).toContainText("wrong: Saved to calibration memory");
+    await expect(memory).toContainText("wrong: Recorded");
     await expect(memory).toContainText("overrated: Recorded; saving to calibration memory…");
     await expect(memory).toContainText(`overrated: ${outcome}`, { timeout: 8000 });
   });

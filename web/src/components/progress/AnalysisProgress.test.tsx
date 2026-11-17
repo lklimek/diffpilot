@@ -341,3 +341,14 @@ describe("AnalysisProgress (brief §4.2)", () => {
     });
   });
 });
+
+it("configuration failure asks the administrator and offers no Retry", () => {
+  show({
+    state: "failed",
+    reason: "configuration",
+    flow: null,
+    message: "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+  });
+  expect(screen.getByText(/Ask the administrator/)).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+});

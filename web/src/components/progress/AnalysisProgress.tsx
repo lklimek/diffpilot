@@ -211,7 +211,7 @@ export function AnalysisProgress({
               </button>
             </Tooltip>
           )}
-          {state.state === "failed" && (
+          {state.state === "failed" && state.reason !== "configuration" && (
             <Tooltip tip={busyTip("Runs the failed analysis again.", busy)}>
               <button
                 type="button"

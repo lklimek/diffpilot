@@ -24,6 +24,7 @@
   },
   "pr_context": {
     "facts": {
+      "related_work_links": [],
       "memcan_status": {
         "state": "not_reachable",
         "last_success_at": null
@@ -1980,6 +1981,8 @@
         "file_count": 4,
         "items": [
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/common/mod.rs",
             "side": "base",
             "ranges": [
@@ -1992,6 +1995,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/common/mod.rs",
             "side": "head",
             "ranges": [
@@ -2004,6 +2009,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/rpc_retry.rs",
             "side": "head",
             "ranges": null,
@@ -2011,6 +2018,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/send_once.rs",
             "side": "base",
             "ranges": null,
@@ -2018,6 +2027,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/sync_headers.rs",
             "side": "base",
             "ranges": [
@@ -2030,6 +2041,8 @@
             "rule": "tests/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "tests/sync_headers.rs",
             "side": "head",
             "ranges": [
@@ -2048,6 +2061,8 @@
         "file_count": 3,
         "items": [
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "README.md",
             "side": "head",
             "ranges": [
@@ -2060,6 +2075,8 @@
             "rule": "*.md"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "docs/rpc.md",
             "side": "base",
             "ranges": [
@@ -2080,6 +2097,8 @@
             "rule": "docs/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "docs/rpc.md",
             "side": "head",
             "ranges": [
@@ -2100,6 +2119,8 @@
             "rule": "docs/**"
           },
           {
+            "renderable": true,
+            "rule_kind": "lexer",
             "file": "src/rpc/client.rs",
             "side": "base",
             "ranges": [
@@ -2112,6 +2133,8 @@
             "rule": "comment-only lines (Rust, by the compiler's lexer)"
           },
           {
+            "renderable": true,
+            "rule_kind": "lexer",
             "file": "src/rpc/client.rs",
             "side": "head",
             "ranges": [
@@ -2130,6 +2153,8 @@
         "file_count": 1,
         "items": [
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "Cargo.lock",
             "side": "base",
             "ranges": [
@@ -2162,6 +2187,8 @@
             "rule": "Cargo.lock"
           },
           {
+            "renderable": true,
+            "rule_kind": "path_glob",
             "file": "Cargo.lock",
             "side": "head",
             "ranges": [

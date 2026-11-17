@@ -218,6 +218,9 @@ pub(crate) fn plain_failure(failure: Option<CallFailure>) -> &'static str {
         Some(CallFailure::UsageLimited) => USAGE_LIMIT,
         Some(CallFailure::Failed(kind)) => match kind {
             JobFailureKind::CredentialUnusable => SIGN_IN_NEEDED,
+            JobFailureKind::Configuration => {
+                "The server is misconfigured: a required agent skill is missing. Ask the administrator."
+            }
             JobFailureKind::ProviderFailed => PROVIDER_REJECTED,
             JobFailureKind::OutputNotJson => ANSWER_FORMAT,
             JobFailureKind::Timeout => TIMED_OUT,

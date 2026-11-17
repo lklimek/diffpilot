@@ -102,7 +102,7 @@ describe("NotAnalysedBlock", () => {
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Tests · 4 files");
     expect(within(block).getByText("classified by path")).toHaveAttribute("data-badge");
     expect(block).toHaveTextContent("Recognised by file path, no LLM.");
-    expect(block).toHaveTextContent("12 lines removed from tests");
+    expect(block).toHaveTextContent("12 test lines changed or removed, 30 added");
     const items = within(block).getAllByRole("listitem");
     expect(items).toHaveLength(6);
     expect(block).toHaveTextContent("tests/rpc_retry.rs");
@@ -417,4 +417,39 @@ it("does not offer code for generated ranges rejected by the lines endpoint", ()
     />,
   );
   expect(screen.queryByRole("button", { name: /Show lines/ })).toBeNull();
+});
+
+it("opens renderable mechanical lines, never generated or binary lines", async () => {
+  const s = {
+    category: "generated_mechanical" as const,
+    file_count: 2,
+    items: [
+      {
+        file: "Cargo.lock",
+        side: "head" as const,
+        ranges: [{ start_line: 1, end_line: 2 }],
+        badge: "classified_by_path" as const,
+        rule: "Cargo.lock",
+        renderable: true,
+      },
+      {
+        file: "generated.rs",
+        side: "head" as const,
+        ranges: [{ start_line: 3, end_line: 4 }],
+        badge: "classified_by_path" as const,
+        rule: "generated",
+        renderable: false,
+      },
+    ],
+  };
+  render(
+    <NotAnalysedBlock
+      section={s}
+      counters={tour.pr_context.facts.counters}
+      code={(item) => <p>code of {item.file}</p>}
+    />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Show lines 1–2" }));
+  expect(screen.getByText("code of Cargo.lock")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Show lines 3–4" })).toBeNull();
 });

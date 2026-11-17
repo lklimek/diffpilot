@@ -74,8 +74,12 @@ pub enum AnalysisState {
         #[ts(optional)]
         stage: Option<AnalysisStage>,
     },
-    /// Failed; Retry is offered.
+    /// Failed; configuration problems require administrator action before another attempt.
     Failed {
+        /// Typed cause when known; absent on older failures.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<crate::api::error::ApiErrorCode>,
         /// The flow that failed, or null when it failed before any flow existed.
         flow: Option<FlowRef>,
         /// Plain description of what failed.

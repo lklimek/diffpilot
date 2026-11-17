@@ -191,6 +191,7 @@ async fn check_lists_match_contract_enums() {
             stage: None,
         },
         AnalysisState::Failed {
+            reason: None,
             flow: None,
             message: String::new(),
         },
@@ -252,6 +253,7 @@ async fn check_lists_match_contract_enums() {
                             JobFailureKind::CheckoutFailed,
                             JobFailureKind::Timeout,
                             JobFailureKind::Internal,
+                            JobFailureKind::Configuration,
                         ]
                         .map(CallFailure::Failed),
                     )

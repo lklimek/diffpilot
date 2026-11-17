@@ -82,6 +82,14 @@ not that every tool or profile lookup succeeded.
 | Document kinds `unsent` and `memcan_profile` (`documents.kind`) | Lines left out of every LLM request with their reason; the analysis's MemCan profile lookup. |
 | `JobSpec.context_pack` built at claim | A lost agent session falls back to a context pack; a claim whose pack cannot be built is released. |
 
+### Coordinator-approved follow-up (2026-11-17)
+| Change | Reason |
+|---|---|
+| `PrContextFacts.related_work_links?: RelatedWorkLink[]` with `reference`, `repo`, `number`, `kind`, `verified` | Safe GitHub links from strictly parsed server fields, with independent resource verification; agent output schemas unchanged. |
+| `NotAnalysedItem.renderable?: bool`, `rule_kind?: RuleKind` | Open mechanical text when available and name the detector actually used; do not offer generated/binary content. |
+| `JobFailureKind::Configuration`, `ApiErrorCode::Configuration`, `AnalysisState::Failed.reason?: ApiErrorCode` | Required skills fail closed with an administrator-action message and no UI Retry. |
+| `analyses.failure_reason`, `llm_credentials.last_call_failure` accepts `configuration` (`0001_init.sql`) | Preserve the typed cause through stored analysis state and Settings; follows the pre-deployment single-schema convention. |
+
 ## Consequences
 - The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.
 - Further contract changes still need a change request (ADR-010).
