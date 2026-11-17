@@ -14,6 +14,8 @@ pub struct PendingReview {
     pub commenting_available: bool,
     /// Pending comments; the count is their number.
     pub comments: Vec<PendingComment>,
+    /// The server stopped reading at its cap (more pending comments or reviews exist on GitHub than listed).
+    pub incomplete: bool,
 }
 
 /// A comment in the pending review.

@@ -36,6 +36,7 @@
           }
         ]
       },
+      "threads_status": "checked",
       "counters": {
         "lines_removed_from_tests": 12,
         "dependencies_changed": [

@@ -1,12 +1,11 @@
-import type { PrSummary } from "../../api/generated/types";
-import type { CiFact } from "../pr-context/PrContextBlock";
+import type { CiStatus, PrSummary } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface TopBarProps {
   /** The pull request under review; absent outside the review. */
   pr?: PrSummary;
   /** CI status of the head commit. */
-  ci?: CiFact;
+  ci?: CiStatus;
   /** Signed-in GitHub login (links to Settings); null when signed out. */
   login: string | null;
   /** Review progress: flows with every step ticked, out of all flows. */
@@ -22,7 +21,7 @@ interface TopBarProps {
 const BUTTON =
   "cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-[12.5px] font-semibold text-text hover:border-accent";
 
-function ciText(ci: CiFact): string {
+function ciText(ci: CiStatus): string {
   switch (ci.state) {
     case "failing":
       return `CI: ${ci.failing.length} of ${ci.total} failing`;
@@ -37,7 +36,7 @@ function ciText(ci: CiFact): string {
   }
 }
 
-function ciTip(ci: CiFact): string {
+function ciTip(ci: CiStatus): string {
   if (ci.state === "not_checked") return "The CI checks of the head commit could not be read from GitHub.";
   if (ci.failing.length === 0) return "CI status of the head commit, from GitHub.";
   return `Failing checks: ${ci.failing.map((c) => c.name).join(", ")}. From GitHub.`;

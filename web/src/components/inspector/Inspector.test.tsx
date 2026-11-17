@@ -280,7 +280,7 @@ describe("Inspector summaries", () => {
       <Inspector
         tour={tour}
         block={{ block: "pending_review" }}
-        pendingReview={{ commenting_available: false, comments: [] }}
+        pendingReview={{ commenting_available: false, comments: [], incomplete: false }}
       />,
     );
     expect(document.body).toHaveTextContent("GitHub App is not installed");
