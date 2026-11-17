@@ -47,6 +47,9 @@ pub(crate) use tokens::{end_session, store_sign_in};
 pub const SESSION_TTL: TimeDelta = TimeDelta::days(7);
 /// A session unused for this long ends (idle timeout).
 pub const SESSION_IDLE_TIMEOUT: TimeDelta = TimeDelta::hours(24);
+/// A use is recorded only when the last recorded one is older, so the idle timeout may end a session up to this
+/// much early, never late.
+pub const SESSION_TOUCH_INTERVAL: TimeDelta = TimeDelta::seconds(60);
 /// Lifetime of an OAuth login between redirect to GitHub and callback.
 pub const OAUTH_LOGIN_TTL: TimeDelta = TimeDelta::minutes(10);
 /// Header carrying the CSRF token on mutating requests.
@@ -215,11 +218,24 @@ impl Session {
             return Ok(None);
         };
         let token_hash = sha256(token.as_bytes());
-        let record = state
-            .db
-            .sessions()
-            .touch(&token_hash, liveness(Utc::now()))
-            .await?;
+        let now = Utc::now();
+        let sessions = state.db.sessions();
+        // Validity is decided by this read alone; the use record below is best-effort.
+        let record = sessions.live(&token_hash, liveness(now)).await?;
+        let seen_before = now - SESSION_TOUCH_INTERVAL;
+        if let Some(record) = &record
+            && record.last_seen_at < seen_before
+            && let Err(error) = sessions
+                .touch(&token_hash, liveness(now), seen_before)
+                .await
+        {
+            tracing::warn!(
+                sqlite_code = ?error.sqlite_code(),
+                ?error,
+                "the use of a session could not be recorded (database busy?); the request proceeds and the next \
+                 use records it"
+            );
+        }
         Ok(record.map(|record| Self {
             user_id: record.user_id,
             tenant_id: record.tenant_id,
