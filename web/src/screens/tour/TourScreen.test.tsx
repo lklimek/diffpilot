@@ -203,6 +203,15 @@ describe("Tour screen (brief §4.3)", () => {
     expect(await within(answers).findByText("It is not.")).toBeInTheDocument();
   });
 
+  it("a lost answer stream is announced at the pinned answers (QA-008)", async () => {
+    await open();
+    await openStep("1", "5");
+    act(() => FakeEventSource.latest().fail());
+    expect(
+      await within(inspector()).findByText(/The connection that delivers answers was lost/),
+    ).toBeInTheDocument();
+  });
+
   it("the flow diagram is hidden by default, loads on demand and opens a clicked step", async () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));

@@ -66,7 +66,7 @@ function permalink(tour: Tour, target: CommentTarget): string {
 /** The inspector with its data: classic diff, pinned answers, and the dock (Ask, feedback, comment). */
 export function InspectorPane(props: InspectorPaneProps) {
   const { analysisId, tour, block, step, annotationId, pending, comments, commentLine } = props;
-  useQuestionEvents(analysisId);
+  const stream = useQuestionEvents(analysisId);
   const questions = useQuestions(analysisId);
   const ask = useAskQuestion(analysisId);
   const feedback = useFeedback(analysisId);
@@ -97,7 +97,14 @@ export function InspectorPane(props: InspectorPaneProps) {
     ) : questions.isPending ? (
       <StatusMessage kind="loading">Loading the questions…</StatusMessage>
     ) : (
-      <AskAnswers questions={questions.data.filter((q) => q.step_id === step.id)} onAskAgain={onAsk} />
+      <>
+        {stream.lost && (
+          <p role="status" className="mb-1 text-[12px] text-high">
+            The connection that delivers answers was lost. Reconnecting; answers already given are read again.
+          </p>
+        )}
+        <AskAnswers questions={questions.data.filter((q) => q.step_id === step.id)} onAskAgain={onAsk} />
+      </>
     ));
 
   const comment = pending.isSuccess ? (

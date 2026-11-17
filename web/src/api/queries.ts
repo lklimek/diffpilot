@@ -1,7 +1,8 @@
 // TanStack Query hooks over the API client; used by screens only (components get props).
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import type {
+  AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
   AskQuestion,
@@ -9,6 +10,7 @@ import type {
   FeedbackRequest,
   LlmLanguage,
   PendingReview,
+  QuestionId,
   RangeQuery,
   RepoRef,
   StepId,
@@ -40,39 +42,86 @@ export const useDiff = (id: AnalysisId, query: RangeQuery | undefined) =>
     staleTime: Infinity,
   });
 
-/** Questions asked about the analysis's steps, with their LLM answers. */
-export const useQuestions = (id: AnalysisId) =>
-  useQuery({ queryKey: ["questions", id], queryFn: () => api.listQuestions(id) });
+// Questions: GET /questions, POST responses and `question` stream events write one cache entry. Arrival order
+// decides (the contract allows answered → answering on a retry, so states have no ranking): a stream snapshot
+// received after a GET started wins over that GET's copy; a POST response never replaces a snapshot.
+const questionArrivals = new Map<AnalysisId, { seq: number; at: Map<QuestionId, number> }>();
+const arrivals = (id: AnalysisId) => {
+  let a = questionArrivals.get(id);
+  if (!a) questionArrivals.set(id, (a = { seq: 0, at: new Map() }));
+  return a;
+};
 
-const upsertQuestion = (questions: AskQuestion[] | undefined, question: AskQuestion) => [
-  ...(questions ?? []).filter((q) => q.id !== question.id),
-  question,
-];
+/** The GET result reconciled with the cache: questions that arrived after `since` keep their cached copy. */
+export function mergeFetchedQuestions(
+  fetched: readonly AskQuestion[],
+  cached: readonly AskQuestion[],
+  arrivedAfter: (id: QuestionId) => boolean,
+): AskQuestion[] {
+  const newer = cached.filter((q) => arrivedAfter(q.id));
+  return [
+    ...fetched.map((q) => newer.find((n) => n.id === q.id) ?? q),
+    ...newer.filter((n) => !fetched.some((q) => q.id === n.id)),
+  ];
+}
+
+/** Questions asked about the analysis's steps, with their LLM answers. */
+export const useQuestions = (id: AnalysisId) => {
+  const client = useQueryClient();
+  return useQuery({
+    queryKey: ["questions", id],
+    queryFn: async () => {
+      const a = arrivals(id);
+      const since = a.seq;
+      const fetched = await api.listQuestions(id);
+      const cached = client.getQueryData<AskQuestion[]>(["questions", id]) ?? [];
+      return mergeFetchedQuestions(fetched, cached, (q) => (a.at.get(q) ?? -1) > since);
+    },
+  });
+};
+
+/** Records a question that arrived; `replace` false keeps an existing snapshot (POST responses). */
+function arrive(client: QueryClient, id: AnalysisId, question: AskQuestion, replace: boolean): void {
+  client.setQueryData<AskQuestion[]>(["questions", id], (all = []) => {
+    if (!replace && all.some((q) => q.id === question.id)) return all;
+    const a = arrivals(id);
+    a.seq += 1;
+    a.at.set(question.id, a.seq);
+    return [...all.filter((q) => q.id !== question.id), question];
+  });
+}
 
 /** Asks about a step; the pending question joins the list, its answer arrives on the event stream. */
 export const useAskQuestion = (id: AnalysisId) => {
   const client = useQueryClient();
   return useMutation({
     mutationFn: ({ step, text }: { step: StepId; text: string }) => api.askQuestion(id, step, { text }),
-    onSuccess: (question) =>
-      client.setQueryData<AskQuestion[]>(["questions", id], (all) => upsertQuestion(all, question)),
+    onSuccess: (question) => arrive(client, id, question, false),
   });
 };
 
-/** Keeps the question list current from the analysis event stream while mounted. */
-export function useQuestionEvents(id: AnalysisId): void {
+/**
+ * Keeps the questions current from the analysis event stream while mounted. When the browser gives up on the
+ * stream, the list is read again and the stream reopened (its snapshot resyncs); `lost` meanwhile.
+ */
+export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
   const client = useQueryClient();
+  const [lost, setLost] = useState(false);
   useEffect(
     () =>
-      api.subscribeAnalysis(id, {
+      followAnalysisEvents(id, {
         onEvent: (event) => {
-          if (event.event !== "question") return;
-          client.setQueryData<AskQuestion[]>(["questions", id], (all) => upsertQuestion(all, event.question));
+          setLost(false);
+          if (event.event === "question") arrive(client, id, event.question, true);
         },
-        onError: () => {},
+        onClosed: () => {
+          setLost(true);
+          return client.refetchQueries({ queryKey: ["questions", id] }).catch(() => {});
+        },
       }),
     [client, id],
   );
+  return { lost };
 }
 
 /** Stored feedback of the analysis (user values and `missed_by_llm`). */
@@ -171,6 +220,47 @@ export interface AnalysisLive {
   reconnecting: boolean;
 }
 
+/** What to do with an analysis event stream (`followAnalysisEvents`). */
+export interface FollowHandlers {
+  /** One event of the stream. */
+  onEvent: (event: AnalysisEvent) => void;
+  /** The connection dropped; the browser retries on its own. */
+  onDrop?: () => void;
+  /** The browser gave up: resync; resolving reopens the stream after `ANALYSIS_RECONNECT_MS`, rejecting stops. */
+  onClosed: () => Promise<unknown>;
+}
+
+/** Opens the analysis event stream and reopens it after the browser gave up; returns the function that stops. */
+export function followAnalysisEvents(id: AnalysisId, handlers: FollowHandlers): () => void {
+  let active = true;
+  let close = () => {};
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const connect = () => {
+    close = api.subscribeAnalysis(id, {
+      onEvent: handlers.onEvent,
+      onError: (closed) => {
+        if (!closed) {
+          handlers.onDrop?.();
+          return;
+        }
+        close();
+        handlers.onClosed().then(
+          () => {
+            if (active) timer = setTimeout(connect, ANALYSIS_RECONNECT_MS);
+          },
+          () => {},
+        );
+      },
+    });
+  };
+  connect();
+  return () => {
+    active = false;
+    clearTimeout(timer);
+    close();
+  };
+}
+
 /**
  * Follows an analysis over SSE: every (re)connect starts with a snapshot, each event replaces the summary.
  * The browser retries dropped connections itself; when it gives up (HTTP error) the analysis is read once:
@@ -181,41 +271,29 @@ export function useAnalysisLive(id: AnalysisId): AnalysisLive {
   const [live, setLive] = useState<AnalysisLive & { id?: AnalysisId }>({ reconnecting: false });
   useEffect(() => {
     let active = true;
-    let close = () => {};
     // State kept across an error only when it is this analysis's own.
     const own = (current: AnalysisLive & { id?: AnalysisId }) => (current.id === id ? current : {});
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const connect = () => {
-      close = api.subscribeAnalysis(id, {
-        onEvent: (event) => {
-          if (event.event === "analysis" && event.summary.id === id) {
-            setLive({ id, summary: event.summary, reconnecting: false });
-          }
-        },
-        onError: (closed) => {
-          if (!closed) {
-            setLive((current) => ({ ...own(current), id, reconnecting: true }));
-            return;
-          }
-          close();
-          api.getAnalysis(id).then(
-            (summary) => {
-              if (!active) return;
-              setLive({ id, summary, reconnecting: true });
-              timer = setTimeout(connect, ANALYSIS_RECONNECT_MS);
-            },
-            (error: unknown) => {
-              if (active) setLive((current) => ({ ...own(current), id, error, reconnecting: false }));
-            },
-          );
-        },
-      });
-    };
-    connect();
+    const stop = followAnalysisEvents(id, {
+      onEvent: (event) => {
+        if (event.event === "analysis" && event.summary.id === id) {
+          setLive({ id, summary: event.summary, reconnecting: false });
+        }
+      },
+      onDrop: () => setLive((current) => ({ ...own(current), id, reconnecting: true })),
+      onClosed: () =>
+        api.getAnalysis(id).then(
+          (summary) => {
+            if (active) setLive({ id, summary, reconnecting: true });
+          },
+          (error: unknown) => {
+            if (active) setLive((current) => ({ ...own(current), id, error, reconnecting: false }));
+            throw error;
+          },
+        ),
+    });
     return () => {
       active = false;
-      clearTimeout(timer);
-      close();
+      stop();
     };
   }, [id]);
   return live.id === id ? live : { reconnecting: false };

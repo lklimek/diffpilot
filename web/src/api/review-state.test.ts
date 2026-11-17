@@ -37,8 +37,7 @@ function setup() {
       return reply.promise;
     }),
   });
-  const tick = (step: string) =>
-    store.change(ID, (s) => ({ ...s, ticked_steps: [...s.ticked_steps, step] }));
+  const tick = (step: string) => store.change(ID, (s) => ({ ...s, ticked_steps: [...s.ticked_steps, step] }));
   return { store, gets, puts, tick };
 }
 
