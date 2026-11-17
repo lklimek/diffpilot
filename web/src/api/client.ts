@@ -44,6 +44,16 @@ export class ApiError extends Error {
 }
 
 const CSRF_HEADER = "X-CSRF-Token";
+/** Methods retried once when the server answers `unavailable`; a POST is never repeated. */
+const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set(["GET", "PUT", "DELETE"]);
+/** Longest `Retry-After` wait honoured before that one retry. */
+const MAX_RETRY_AFTER_MS = 10_000;
+
+/** The wait an `unavailable` answer asks for (`Retry-After` seconds, 1 s when absent). */
+function retryAfterMs(response: Response): number {
+  const seconds = Number(response.headers.get("Retry-After") ?? "1");
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.min(seconds * 1000, MAX_RETRY_AFTER_MS) : 1000;
+}
 
 /** Path of a route with its `{param}` placeholders filled and encoded. */
 export function routePath(name: RouteName, params: Record<string, string> = {}): string {
@@ -119,6 +129,12 @@ export function createApiClient(baseUrl = "") {
       if (error.code !== "csrf_rejected") throw error;
       await getMe();
       response = await send(name, options, csrfToken ?? null);
+    }
+    if (response.status === 503 && IDEMPOTENT_METHODS.has(routes[name].method)) {
+      const error = await errorOf(response.clone());
+      if (error.code !== "unavailable") throw error;
+      await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response)));
+      response = await send(name, options, needsCsrf ? (csrfToken ?? null) : null);
     }
     if (!response.ok) throw await errorOf(response);
     if (response.status === 204) return undefined as T;

@@ -264,6 +264,17 @@ impl Harness {
         csrf: bool,
         body: Option<Value>,
     ) -> (StatusCode, Value) {
+        json_of(self.respond(method, uri, user, csrf, body).await).await
+    }
+
+    async fn respond(
+        &self,
+        method: &str,
+        uri: &str,
+        user: Option<(&str, &str)>,
+        csrf: bool,
+        body: Option<Value>,
+    ) -> Response {
         let mut request = Request::builder().method(method).uri(uri);
         if let Some((tenant, user)) = user {
             request = request.header(
@@ -281,13 +292,10 @@ impl Harness {
             None => request.body(Body::empty()),
         }
         .expect("request");
-        json_of(
-            api::router(self.state.clone())
-                .oneshot(request)
-                .await
-                .expect("infallible"),
-        )
-        .await
+        api::router(self.state.clone())
+            .oneshot(request)
+            .await
+            .expect("infallible")
     }
 
     async fn get(&self, uri: &str) -> (StatusCode, Value) {
@@ -411,6 +419,33 @@ async fn reads_answer_while_another_connection_holds_the_write_lock() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// A real write that cannot take the write lock within the busy timeout answers 503 `unavailable` with
+/// `Retry-After`, not 500.
+#[tokio::test]
+async fn write_under_a_held_write_lock_is_503_unavailable() {
+    let h = Harness::file_backed(Duration::from_millis(100)).await;
+    let id = h.analysis(true).await;
+    h.tour(id).await;
+    let _lock = hold_write_lock(&h.state.db).await.expect("write lock");
+    let body = serde_json::to_value(state(&[], None)).expect("state");
+    let response = h
+        .respond("PUT", &review_state(id), Some(ALICE), true, Some(body))
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    let (_, body) = json_of(response).await;
+    assert_eq!(
+        body,
+        json!({"code": "unavailable", "message": "The server is busy. Try again in a moment."})
+    );
 }
 
 #[tokio::test]
