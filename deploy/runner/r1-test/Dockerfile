@@ -9,7 +9,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && install -o root -g root -m 4755 /usr/bin/id /usr/local/bin/setuid-id
 
-COPY --chmod=0755 supervisor.py agent.py runner.py /opt/r1-test/
+COPY --chmod=0755 supervisor.py agent.py runner.py entry.sh /opt/r1-test/
 
-ENTRYPOINT ["/usr/bin/python3", "/opt/r1-test/supervisor.py", "serve"]
+# R1_SUPERVISOR=rust runs the checks against the Rust smart-review-supervisor of the base image.
+ENTRYPOINT ["/opt/r1-test/entry.sh"]
 CMD ["/usr/bin/python3", "/opt/r1-test/runner.py"]

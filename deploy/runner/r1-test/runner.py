@@ -15,6 +15,8 @@ import subprocess
 import time
 
 SUP, AGENT, PY = "/opt/r1-test/supervisor.py", "/opt/r1-test/agent.py", "/usr/bin/python3"
+# Helper modes: the Rust supervisor names its own binary in SR_SUPERVISOR_BIN.
+HELPER = [os.environ["SR_SUPERVISOR_BIN"]] if os.environ.get("R1_SUPERVISOR") == "rust" else [PY, SUP]
 STATE = os.environ["SR_RUNNER_STATE_DIR"]
 WORK = os.environ["SR_RUNNER_WORK_DIR"]
 HOMES = os.path.join(STATE, "codex-homes")
@@ -260,7 +262,7 @@ def prepare_job(sup, key, files):
         if path != home:
             os.mkdir(path, 0o700)
         replies.append(sup.call("handover", path=path))
-    copied = [run(sup, [PY, SUP, "copy-in", home, rel], key, data.encode())[0] for rel, data in files.items()]
+    copied = [run(sup, [*HELPER, "copy-in", home, rel], key, data.encode())[0] for rel, data in files.items()]
     return home, job, replies, copied
 
 
@@ -277,7 +279,7 @@ def ipc_objects():
 def cleanup_job(sup, key):
     """After kill_all: per-job dirs and IPC objects emptied as agent, then the empty dirs removed by runner."""
     home, job = os.path.join(HOMES, key), os.path.join(WORK, key)
-    statuses = [run(sup, [PY, SUP, "clear", d], key)[0] for d in (home, f"{job}/home", f"{job}/tmp", "/dev/mqueue")]
+    statuses = [run(sup, [*HELPER, "clear", d], key)[0] for d in (home, f"{job}/home", f"{job}/tmp", "/dev/mqueue")]
     statuses.append(run(sup, ["/usr/bin/ipcrm", "--all"], key, exclusive=True)[0])
     for d in (home, f"{job}/home", f"{job}/tmp"):
         os.rmdir(d)  # empty agent-owned dir in a runner-owned parent
@@ -298,7 +300,7 @@ def signal_group(sup, pgid, sig):
 
 def copy_out(sup, key, rel, cap=COPY_CAP):
     started = time.monotonic()
-    r = run(sup, [PY, SUP, "copy-out", os.path.join(HOMES, key), rel, str(cap)], key)
+    r = run(sup, [*HELPER, "copy-out", os.path.join(HOMES, key), rel, str(cap)], key)
     return r.status, r.out, r.err, time.monotonic() - started
 
 
@@ -641,7 +643,7 @@ def real_codex_job(sup, sup_pid):
     time.sleep(0.3)
     left = [p for p, v in processes().items() if v[0] == AGENT_UID]
     check("real_codex_processes_killed", killed["ok"] and not left, f"sweep={killed} left={left}")
-    names = [e["path"] for e in json.loads(run(sup, [PY, SUP, "list", home], key).out or b"[]")]
+    names = [e["path"] for e in json.loads(run(sup, [*HELPER, "list", home], key).out or b"[]")]
     pattern = re.compile(rf"^sessions/\d{{4}}/\d{{2}}/\d{{2}}/rollout-[0-9T:-]+-{re.escape(thread or '-')}\.jsonl$")
     rollout = next((n for n in names if pattern.match(n)), None)
     rc_roll, data, _, _ = copy_out(sup, key, rollout or "missing", cap=64 << 20)
@@ -677,7 +679,7 @@ def hostile_job(sup, sup_pid):
     time.sleep(1)
     stopped = sum(1 for v in agent_live().values() if v[1] == "T")
     try:
-        spawn(sup, [PY, SUP, "list", home], key)
+        spawn(sup, [*HELPER, "list", home], key)
         refused = None
     except RuntimeError as error:
         refused = str(error)[:160]
