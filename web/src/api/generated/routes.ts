@@ -12,6 +12,8 @@ export const routes = {
   getAnalysis: { method: "GET", path: "/api/v1/analyses/{id}", auth: "session" },
   analysisEvents: { method: "GET", path: "/api/v1/analyses/{id}/events", auth: "session" },
   cancelAnalysis: { method: "POST", path: "/api/v1/analyses/{id}/cancel", auth: "session_csrf" },
+  pauseAnalysis: { method: "POST", path: "/api/v1/analyses/{id}/pause", auth: "session_csrf" },
+  resumeAnalysis: { method: "POST", path: "/api/v1/analyses/{id}/resume", auth: "session_csrf" },
   retryAnalysis: { method: "POST", path: "/api/v1/analyses/{id}/retry", auth: "session_csrf" },
   getTour: { method: "GET", path: "/api/v1/analyses/{id}/tour", auth: "session" },
   getLines: { method: "GET", path: "/api/v1/analyses/{id}/lines", auth: "session" },
@@ -29,6 +31,7 @@ export const routes = {
   deleteComment: { method: "DELETE", path: "/api/v1/analyses/{id}/pending-review/comments/{comment_id}", auth: "session_csrf" },
   getSettings: { method: "GET", path: "/api/v1/settings", auth: "session" },
   setLanguage: { method: "PUT", path: "/api/v1/settings/language", auth: "session_csrf" },
+  setLlm: { method: "PUT", path: "/api/v1/settings/llm", auth: "session_csrf" },
   getRepoSettings: { method: "GET", path: "/api/v1/repos/{owner}/{name}/settings", auth: "session" },
 } as const;
 

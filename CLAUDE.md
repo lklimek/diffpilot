@@ -17,8 +17,8 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - `LlmProvider` is `run` + `resume` + `cancel`: one agent session per pull request, resumed by every analysis and Ask
   job. Codex compacts by itself at 400k tokens; no forced compaction. Each successful useful turn is archived
   per PR; a lost session falls back to a context pack.
-  Model and effort come from `select_model`, a plain Rust function in the server (no table, no setting;
-  v1: Sol, high).
+  Model and effort come from `select_model`, a plain Rust function in the server using the stored
+  installation-wide Settings choice (default Sol, high). Each new job reads the current choice.
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,

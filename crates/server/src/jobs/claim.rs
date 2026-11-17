@@ -684,7 +684,21 @@ mod tests {
             .await
             .expect("session");
         s.db.analyses().request_session_drop(1).await.expect("drop");
-        let claimed = claim_one(&s, Utc::now()).await;
+        let waiting = claim(&s.db, &s.config, &packs(&s), &request(), Utc::now())
+            .await
+            .unwrap();
+        assert!(
+            waiting.claim.is_none(),
+            "do not start a job before archive deletion is acknowledged"
+        );
+        assert_eq!(waiting.drop_sessions, [1]);
+        let mut acknowledged = request();
+        acknowledged.dropped_sessions = vec![1];
+        let response = claim(&s.db, &s.config, &packs(&s), &acknowledged, Utc::now())
+            .await
+            .unwrap();
+        assert!(response.drop_sessions.is_empty());
+        let claimed = response.claim.unwrap();
         assert_eq!(claimed.spec.session, None);
     }
 

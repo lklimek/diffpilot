@@ -10,7 +10,7 @@ it.each(["reachable", "not_reachable", "not_configured", "not_checked"] as const
       </p>,
     );
     expect(screen.getByText(/MemCan:/)).toHaveTextContent(
-      `MemCan: ${state.replaceAll("_", " ")}; last success 2026-11-17T10:00:00Z`,
+      `MemCan: ${state.replaceAll("_", " ")}; last success 17 Nov 2026, 10:00`,
     );
   },
 );

@@ -198,3 +198,20 @@ pub async fn create(
 
 /// A non-blocking heads-up starts at this many additions plus deletions.
 const LARGE_PR_LINES: u64 = 3_000;
+
+/// Refuses to resume a pinned analysis after the PR head moved.
+pub async fn check_head(
+    state: &AppState,
+    session: &Session,
+    summary: &AnalysisSummary,
+) -> Result<(), IngestError> {
+    let pr = PrRef {
+        repo: summary.pr.repo.clone(),
+        number: summary.pr.number,
+    };
+    let (pull, _) = fetch_pull(state, session, &pr).await?;
+    if pull.summary.head_sha != summary.pr.head_sha {
+        return Err(IngestError::HeadMoved);
+    }
+    Ok(())
+}

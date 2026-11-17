@@ -27,7 +27,8 @@
 - **One running job per PR.** The atomic claim excludes another claimed/running job of the same PR, analysis
   or credential. Database triggers also enforce the PR constraint on inserts and updates. Cancelled running
   jobs keep the exclusion until completion or lease expiry; stale results cannot overwrite a newer thread.
-- **Cleanup.** Cancel and Re-analyze preserve the session. Existing runner retention deletes archives after
+- **Cleanup.** Pause preserves the session. Cancel requests deletion of the PR session and its archives;
+  Re-analyze also cancels the old analysis. Existing runner retention deletes archives after
   `SR_RUNNER_SESSION_RETENTION_DAYS` (default 14) without a write. Explicit removal may request a PR-keyed
   drop through `drop_sessions` / `dropped_sessions`; no PR deletion UI/API is added here. A retained DB thread
   whose archive expired takes the normal context-pack fallback. PR keys use SQLite AUTOINCREMENT, so a deleted

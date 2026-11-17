@@ -76,7 +76,7 @@ can judge the PR at project scale, not only line by line.
 | Language | UI English. LLM texts in the user's configured language (default English). |
 | Languages of code | Any, LLM-only. Built-in `generic` tech plugin (path globs and line regexes). |
 | PR size | No limit. Huge PRs (10k+ lines) are split into many agent runs; long runtime is acceptable. |
-| LLM | Codex CLI on a ChatGPT Pro subscription (no 5-hour window). Model Sol at reasoning effort high for every job kind (§5 Model selection). Provider trait designed for a second provider. Usage-limit pause and resume must work but are not a first-stage priority. |
+| LLM | Codex CLI on a ChatGPT Pro subscription (no 5-hour window). Installation-wide model and reasoning effort in Settings, default Sol/high (§5 Model selection). Provider trait designed for a second provider. Usage-limit pause and resume must work but are not a first-stage priority. |
 | Agent access | Read-only checkout, no code execution. MemCan MCP (read and write), the `claudius` plugin, GitHub's `github-mcp-server` in read-only mode with a short-lived read-only installation token, related repos as extra context. |
 | Deployment | docker compose, Portainer-compatible. Public base URL is configuration (`SR_PUBLIC_URL`; the owner's instance: `https://review.klimek.ws`). TLS is terminated by an existing reverse proxy; the server speaks HTTP behind it. |
 
@@ -224,11 +224,15 @@ otherwise "No estimate yet"; a pause shows its resume time instead. No agent act
 |---|---|
 | Planning | overall bar when estimable, otherwise indeterminate; current plan part, Cancel analysis |
 | Running | bar, "k of n flows analysed", Cancel analysis |
-| Paused | "Codex usage limit reached, resumes at HH:MM" |
+| Paused | Usage limit: resume time; user pause: who paused and when, Resume |
 | Failed | which flow failed, or a plain description of what failed before any flow existed; Retry |
 | Finished | "n of n flows analysed", Open review |
 
-The review opens only when the analysis has finished. Cancel discards partial results and returns to Home.
+The review opens only when the analysis has finished. Pause analysis lets the running job finish, keeps
+its result and session, and submits no further job until Resume, including after restarts. A user pause
+is independent of a provider limit and never resumes automatically. Resume checks that the PR head has
+not moved. Home also offers Resume. Cancel has an inline confirmation explaining that it discards the
+plan, completed flows and agent session; Pause keeps them. Confirmed cancellation returns to Home.
 
 ### 4.3 Tour (the review screen)
 
@@ -320,6 +324,9 @@ overrated; (2) a defect in a plain changed line without annotation, commented by
 returning to an interrupted review.
 
 ### 4.4 Settings
+- LLM model and reasoning effort: two selects from a fixed server list, one saved choice for the whole
+  installation. Show who changed it and when; saving is read-only while pending. Changes apply to later
+  submissions, including remaining jobs of running analyses, with Sol/high as the default.
 - LLM status: the outcome of the most recent LLM call — "working" if it succeeded, otherwise "not working"
   with the plain error message — and the time of that call. No on-demand check. Credentials never reach the
   browser. The first Codex login is a one-time manual command in the runner container (runbook); there is no
@@ -327,7 +334,10 @@ returning to an interrupted review.
 - Language of LLM texts.
 - GitHub App installation status.
 - Per repository, read-only: built-in "not analysed" rules (path globs and line regexes), related
-  repositories (auto-detected), project profile source.
+  repositories (auto-detected), project profile source. Use a searchable keyboard-operable repository picker,
+  latest analysis first then name, with per-user browser memory and a `repo=owner/name` URL parameter.
+  Cards take their content height; the built-in rules are collapsed by default. Format MemCan call times
+  like LLM call times, separately from the project-profile line.
 
 ## 5. Architecture
 
@@ -477,9 +487,10 @@ compacting the session. Credential types: `codex_chatgpt` (subscription; owner's
 `api_key` (required for other tenants: Anthropic forbids subscription tokens in multi-user services, OpenAI
 is unclear). See `llm-runtime.md` (Background material).
 
-**Model selection** — a plain Rust function in the server (no table, no setting): job kind and context in,
-model and reasoning effort out. In v1 it returns Sol at high effort for every job kind; it can become a real
-decision function later without changing its callers. The exact Codex model id is verified at implementation.
+**Model selection** — a single plain Rust function in the server: job kind and context in,
+model and reasoning effort out. It reads the installation-wide Settings choice, defaulting to Sol/high.
+Any signed-in allowlisted user may save one of the server's fixed model/effort options. The choice applies
+to newly submitted jobs, including remaining jobs of running analyses; stored specs record actual usage.
 
 **Comments** — the server writes to the user's GitHub pending review with the user's token: the first
 comment creates the pending review, later ones are added, an existing pending review is reused; edit and

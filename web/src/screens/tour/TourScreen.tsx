@@ -480,6 +480,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     block = (
       <PrContextBlock
         usage={tour.analysis.usage}
+        modelsUsed={tour.analysis.models_used}
         onEvidence={showEvidence}
         pr={tour.analysis.pr}
         context={tour.pr_context}

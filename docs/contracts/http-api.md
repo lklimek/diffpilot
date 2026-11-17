@@ -30,6 +30,9 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | POST | `/api/v1/analyses` | session_csrf | `CreateAnalysisRequest` | 201 `AnalysisSummary` |
 | GET | `/api/v1/analyses/{id}` | session | – | `AnalysisSummary` |
 | GET | `/api/v1/analyses/{id}/events` | session | – | SSE (`sse-events.md`) |
+| PUT | `/api/v1/settings/llm` | session_csrf | `ModelChoice` | `LlmSelection` |
+| POST | `/api/v1/analyses/{id}/pause` | session_csrf | – | `AnalysisSummary` |
+| POST | `/api/v1/analyses/{id}/resume` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/cancel` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/retry` | session_csrf | – | `AnalysisSummary` |
 | GET | `/api/v1/analyses/{id}/tour` | session | – | `Tour` (409 `analysis_not_finished` before) |
@@ -393,3 +396,23 @@ so this pre-start estimate uses `lines_only`, `rough: true`. PR metadata include
 an intentionally rough comparison. Missing samples or an estimate above seven days produce null.
 The Home notice makes no time claim without history, never disables Analyze, and adds no dialog.
 Old resolve responses without `size_warning` remain readable.
+
+### Installation LLM choice and user pause
+
+Settings includes optional `llm_selection`: model options `{id,label}`, allowed efforts, `current`
+`{model,reasoning_effort}`, nullable `changed_by` login and `changed_at` UTC timestamp. PUT validates the
+fixed catalog; invalid choices return `invalid_request`. Any signed-in allowlisted user can change it;
+CSRF is required. The setting is read when each new job is submitted, including later jobs of a running
+analysis. Existing job specs stay immutable. `AnalysisSummary.models_used` lists distinct choices in
+first-use order from claimed jobs of all rounds (Ask included); empty means no job has started.
+Settings `repos` is sorted by latest analysis time, then owner/name.
+
+Pause returns `state: {state:"paused", reason:"user", paused_by:"alice", paused_at:"2026-11-17T18:04:00Z",
+resumes_at:null, done:3, total:5}` (existing stage fields remain optional). It is idempotent, retaining the
+original pauser and time. A running job finishes and its result is kept, but no next job is submitted or
+claimed. The pause survives restarts. Provider pauses use `reason:"usage_limit"` (also the meaning of
+an absent reason); a provider deadline never overrides a user pause. Resume clears the user pause;
+if the provider is still limited, its pause remains. Resume checks the pinned head with GitHub and
+returns `conflict` with the existing moved-head sentence if it changed. Neither action discards results or increments the retry round.
+The Tour and Ask still require a finished analysis; this change does not expose partial Tours.
+Cancel requires an inline UI confirmation, then discards documents and requests PR-session deletion.

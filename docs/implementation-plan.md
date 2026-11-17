@@ -219,9 +219,9 @@ tooling breaks: penny's 5.9 line, recorded in an ADR). `github-mcp-server`: vers
   `SR_MEMCAN_TOKEN` — pure configuration, nothing assumes the current MemCan host (it moves before
   deployment). Configurable GitHub API, OAuth and clone base URLs (dev: fake GitHub and a `file://` or
   `git daemon` remote).
-- Model selection is a plain Rust function in the server, `select_model(job kind, context) -> ModelChoice {
-  model, reasoning_effort }` in `server/src/model.rs`, returning Sol at high effort for every kind in v1
-  (exact model id from S1a). No table, no setting.
+- Model selection is a plain Rust function in the server, `select_model(job kind, context, stored choice) -> ModelChoice {model, reasoning_effort}` in
+  `server/src/model.rs`. The owner-approved installation Settings choice is read at submission; default
+  Sol/high, fixed catalog from S1a (ADR-002).
 
 ### 5.3 Design rules for the contracts (binding for WP1-A)
 - Closed enums exactly as brief §3 (classification, fragment kind, annotation type, feedback values, node kind,
@@ -675,7 +675,7 @@ WPs), reporting channel. Brief WHAT, not HOW. WPs over ~1,000 lines are split be
 | GitHub access for the agent | Server mints a read-only installation token per job (pull requests, issues, contents, metadata; PR repository only, ADR-005; 1 h); the runner starts the official `github-mcp-server` read-only with it; no server-side lookup tool; App private key is a server secret | §5.3, §5.4 T3, S4, S5, WP3-APPTOKEN, WP3-RUN |
 | Egress proxy | Squid, chosen because it can later intercept TLS and cache. v1: explicit proxy, allow-all, log of host names (CONNECT host:port, bytes); no TLS interception, no CA, no cache. Later, as configuration of the same Squid (`research/egress-proxy.md`): interception with full-URL logs, splice list (`chatgpt.com`, `openai.com`), CA in the runner image, cache, host allowlist. Open egress is an accepted risk | §5.4 T4/T9, S6, WP3-OPS, §13 |
 | Repository | `lklimek/smart-review` public; GitHub Actions enabled; the owner pushes `main` | §6.1 O1, WP1-C |
-| Codex model | Sol at reasoning effort high for every job kind; `select_model(kind, context)` is a plain Rust function (no table, no setting), later a real decision function; exact id verified in S1a | §5.2, S1a, WP2-INGEST |
+| Codex model | Installation-wide model/effort in Settings; `select_model` stays a plain Rust function, default Sol/high; catalog from S1a (ADR-002) | §5.2, S1a, WP2-INGEST |
 | Agent sessions | One Codex session per PR analysis; batch and Ask jobs resume it; compaction at the end of every job; sub-agents at the agent's discretion for large PRs; loss → new session with a context pack; re-analysis → new session; if `exec` lacks resume or compaction → new session per job with a context pack | §5.3, §5.4 T8, S1b, S7, WP3-RUN, WP3-PIPE, WP3-ASK, WP3-PROMPTS |
 | MemCan | Traefik entrypoint (port 8190) with IP allowlist + shared bearer token; `SR_MEMCAN_URL`/`SR_MEMCAN_TOKEN` as pure configuration (MemCan moves before deployment); the token reaches the agent through the per-job config; full read and write for the agent (accepted risk); server writes feedback and calibration; scope = analysed repository short name; the owner adds the proxy's source address (from S6) to the allowlist himself | §5.2, §5.4 T6, §6.1 O5, WP3-MEMCAN, WP3-RUN |
 | Deployment and URL | `SR_PUBLIC_URL` is configuration; owner's instance `https://review.klimek.ws` (callback `…/auth/github/callback`); TLS at the owner's reverse proxy; server HTTP behind it with trusted-proxy setting and Secure cookies; no built-in TLS/ACME | §5.2, §6.1 O2/O6, WP4-DEPLOY |

@@ -1,7 +1,7 @@
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
 import type { ResolvePrResponse } from "../../api/generated/types";
-import { useCreateAnalysis, useMe, useResolvePr } from "../../api/queries";
+import { useCreateAnalysis, useMe, useResolvePr, useResumeAnalysis } from "../../api/queries";
 import { AnalyzeHelp } from "../../components/analyze-help/AnalyzeHelp";
 import { Banner } from "../../components/banner/Banner";
 import { busyTip, buttonClass } from "../../components/button/button";
@@ -40,6 +40,7 @@ export function HomeScreen() {
   const me = useMe();
   const resolve = useResolvePr();
   const create = useCreateAnalysis();
+  const resume = useResumeAnalysis();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const { cancelledPrUrl } = (useLocation().state ?? {}) as HomeState;
@@ -72,7 +73,7 @@ export function HomeScreen() {
 
   const resolved = resolve.data;
   const outcome = resolved && homeOutcome(resolved);
-  const busy = resolve.isPending || create.isPending;
+  const busy = resolve.isPending || create.isPending || resume.isPending;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -113,6 +114,7 @@ export function HomeScreen() {
                     {errorText(resolve.error)}
                   </Banner>
                 )}
+                {resume.isError && <StatusMessage kind="error">{errorText(resume.error)}</StatusMessage>}
                 {create.isError && (
                   <Banner tone="error" title="Cannot start the analysis.">
                     {errorText(create.error)}
@@ -164,15 +166,35 @@ export function HomeScreen() {
                     tone="info"
                     title="An analysis of this PR is in progress."
                     actions={
-                      <Tooltip tip="Opens the progress of the running analysis.">
-                        <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
-                          Show progress
-                        </Link>
-                      </Tooltip>
+                      <>
+                        {outcome.analysis.state.state === "paused" &&
+                          outcome.analysis.state.reason === "user" && (
+                            <Tooltip tip={busyTip("Continues this analysis with its saved results.", busy)}>
+                              <button
+                                type="button"
+                                aria-disabled={busy || undefined}
+                                className={SMALL_PRIMARY}
+                                onClick={() =>
+                                  !busy &&
+                                  resume.mutate(outcome.analysis.id, {
+                                    onSuccess: (a) => void navigate(analysisHref(a)),
+                                  })
+                                }
+                              >
+                                Resume
+                              </button>
+                            </Tooltip>
+                          )}
+                        <Tooltip tip="Opens the progress of the running analysis.">
+                          <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
+                            Show progress
+                          </Link>
+                        </Tooltip>
+                      </>
                     }
                   >
                     {outcome.analysis.state.state === "paused" &&
-                      `${pausedText(outcome.analysis.state)}. ${PAUSE_REASON} `}
+                      `${pausedText(outcome.analysis.state)}${outcome.analysis.state.reason === "user" ? "" : `. ${PAUSE_REASON}`} `}
                     Nothing new is started.
                   </Banner>
                 )}

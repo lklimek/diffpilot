@@ -97,6 +97,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(onRetry).toHaveBeenCalledOnce();
     await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
+    await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
@@ -410,4 +411,38 @@ it("shows provider-reported usage compactly", () => {
   expect(
     screen.getByText("LLM usage so far: 1.2 M input (0.9 M cached), 45 k output tokens in 7 jobs"),
   ).toBeVisible();
+});
+
+it("user pause resumes without a usage-limit claim and Cancel needs inline confirmation", async () => {
+  const cancel = vi.fn();
+  const resume = vi.fn();
+  render(
+    <AnalysisProgress
+      state={{
+        state: "paused",
+        reason: "user",
+        paused_by: "alice",
+        paused_at: "2026-11-17T18:04:00Z",
+        resumes_at: null,
+        done: 3,
+        total: 5,
+      }}
+      reviewHref="/review"
+      busy={false}
+      onCancel={cancel}
+      onRetry={vi.fn()}
+      onResume={resume}
+    />,
+  );
+  expect(screen.getByText(/Paused by alice/)).toBeVisible();
+  expect(screen.queryByText(/usage limit was reached/)).toBeNull();
+  await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+  expect(resume).toHaveBeenCalledOnce();
+  await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
+  expect(cancel).not.toHaveBeenCalled();
+  expect(screen.getByRole("group", { name: "Confirm cancellation" })).toHaveTextContent(
+    "Cancel discards the plan, the 3 analysed flows and the agent session. Pause keeps them.",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
+  expect(cancel).toHaveBeenCalledOnce();
 });

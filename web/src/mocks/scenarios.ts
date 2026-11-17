@@ -60,6 +60,8 @@ export const REPO_SETTINGS: RepoSettings = {
 };
 
 interface Scenario {
+  llmSaveFails?: boolean;
+  manyRepos?: boolean;
   /** `me` answer. */
   me?: () => MeResponse;
   /** Changes to the `pr/resolve` answer of the fixture PR. */
@@ -233,6 +235,44 @@ const REPORTED_USAGE: UsageTotals = {
 };
 
 const SCENARIOS = {
+  "llm-save-fails": { llmSaveFails: true },
+  "many-repos": {
+    manyRepos: true,
+    settings: {
+      ...SETTINGS,
+      memcan_status: { state: "reachable", last_success_at: "2026-11-17T18:04:00.123456Z" },
+      repos: Array.from({ length: 30 }, (_, i) => ({
+        owner: "acme",
+        name: i === 29 ? "very-long-repository-name-".repeat(4) : `repo-${i}`,
+      })),
+    },
+  },
+  "user-paused": {
+    analysis: {
+      state: "paused",
+      reason: "user",
+      paused_by: "alice",
+      paused_at: "2026-11-17T18:04:00Z",
+      resumes_at: null,
+      done: 3,
+      total: 5,
+    },
+    resolve: (seed) => ({
+      ...seed,
+      analysis: {
+        ...(seedFor("default", "analysis") as AnalysisSummary),
+        state: {
+          state: "paused",
+          reason: "user",
+          paused_by: "alice",
+          paused_at: "2026-11-17T18:04:00Z",
+          resumes_at: null,
+          done: 3,
+          total: 5,
+        },
+      },
+    }),
+  },
   "usage-progress": { analysis: { state: "planning", stage: stage("plan", LOADED) }, usage: REPORTED_USAGE },
   usage: {
     analysis: { state: "finished", total: 5 },

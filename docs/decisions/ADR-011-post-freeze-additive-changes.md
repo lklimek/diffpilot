@@ -121,6 +121,15 @@ not that every tool or profile lookup succeeded.
 | Optional `Settings.llm_usage {today, last_7_days}` | One tenant-scoped aggregate query over existing results, using the server's local calendar days. Each window is nullable without reports. |
 | Nullable `ResolvePrResponse.size_warning {changed_lines, changed_files, estimate}` | Non-blocking warning at 3,000 changed lines; metadata from the existing GitHub PR read and the waiting screen's estimator. |
 
+## Installation settings and user pause (owner approval, 2026-11-17)
+
+| Addition | Reason |
+|---|---|
+| Optional `Settings.llm_selection {models, efforts, current, changed_by, changed_at}`; `PUT /api/v1/settings/llm` with `ModelChoice` | One installation-wide choice, CSRF protected, fixed server catalog, auditable editor and time. |
+| Optional `AnalysisSummary.models_used: ModelChoice[]` | Facts from distinct claimed job specs across all rounds, including Ask. |
+| Optional paused-state `reason: user \| usage_limit`, `paused_by`, `paused_at`; POST `/api/v1/analyses/{id}/pause` and `/resume` | Persistent user pause, independent of provider limits; current job may finish, further submissions and claims wait. Missing reason means usage limit for older clients. |
+| Singleton `llm_selection` table; `analyses.user_paused_by`, `analyses.user_paused_at`, `analyses.cancel_cleanup_done` | Owner-approved rewrite of the single pre-deployment migration; local database must be recreated by the coordinator. Stored documents and runner protocol unchanged. |
+
 ## Consequences
 - The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.
 - Further contract changes still need a change request (ADR-010).
@@ -133,4 +142,4 @@ These remaining statements in `docs/design-brief.md` are superseded:
 | §5 "GitHub access for the agent": token "restricted to the PR's repository and its related repositories" | `repositories` = PR repository only; related repositories are read as public data | ADR-005, threat model T3a |
 | §5 "Job execution interface": `JobExecutor` = `submit`, `events`, `cancel` | adds `cancel_analysis` | this ADR, plan rule A3 |
 | §2 "Agent access": "Read-only checkout, no code execution"; §5 "Security": "only the LLM credential and the job's read-only installation token in the runner", §5: "the agent holds only the job's short-lived read-only installation token" | Codex sandbox off: no code execution is a prompt rule only; the agent uid can read its per-job Codex credential, installation token and MemCan bearer | ADR-002, threat model AR-4, AR-6, §9 |
-| §5 Agent sessions: one per analysis, compact at each job end, new session on moved head; session files persist across one analysis only | One per PR, shared across analyses and Ask; automatic compaction at 400k only; Cancel/Re-analyze preserve archives, retention defaults to 14 days | owner decision 2026-11-17, ADR-004 |
+| §5 Agent sessions: one per analysis, compact at each job end, new session on moved head; session files persist across one analysis only | One per PR, shared across analyses and Ask; automatic compaction at 400k only; Pause preserves archives; Cancel/Re-analyze request their deletion; retention defaults to 14 days | owner decision 2026-11-17, ADR-004 |

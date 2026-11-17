@@ -178,6 +178,10 @@ export function createApiClient(baseUrl = "") {
     cancelAnalysis: (id: AnalysisId) => call<AnalysisSummary>("cancelAnalysis", { params: { id } }),
     retryAnalysis: (id: AnalysisId) => call<AnalysisSummary>("retryAnalysis", { params: { id } }),
     getSettings: () => call<Settings>("getSettings"),
+    setLlm: (body: import("./generated/types").ModelChoice) =>
+      call<import("./generated/types").LlmSelection>("setLlm", { body }),
+    pauseAnalysis: (id: AnalysisId) => call<AnalysisSummary>("pauseAnalysis", { params: { id } }),
+    resumeAnalysis: (id: AnalysisId) => call<AnalysisSummary>("resumeAnalysis", { params: { id } }),
     setLanguage: (body: SetLanguageRequest) => call<void>("setLanguage", { body }),
     getRepoSettings: (repo: RepoRef) =>
       call<RepoSettings>("getRepoSettings", { params: { owner: repo.owner, name: repo.name } }),

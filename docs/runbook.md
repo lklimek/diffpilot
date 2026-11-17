@@ -345,3 +345,17 @@ that PR head. This small, bounded process-local observation is not persisted; af
 or a start without resolve it is absent, never reconstructed as the original prediction. Counts learned
 from diff preparation are also absent if cancellation/failure preceded preparation. Logs contain no
 prompts, answers, PR titles or other source text. No migration or stored-document shape changed.
+
+### Installation model choice and pausing
+
+Settings → LLM model changes the model and effort for everyone. Default: Sol 6.1, high; the fixed catalog
+comes from ADR-002. Saving affects newly submitted jobs, including remaining jobs of running analyses;
+a submitted job retains its spec. The server logs the editor and old/new choice, and the Tour shows
+choices actually used. The owner-approved singleton table and pause columns rewrite `0001_init.sql`;
+the coordinator must recreate the pre-deployment database before running this build against the local
+stack. Do not apply this migration to a database containing a running analysis.
+
+Pause analysis lets the current job finish, retains its result and the PR session, and prevents further
+submissions/claims until Resume. This survives server/runner restarts. A provider limit cannot automatically
+resume a user pause; Resume may still leave the analysis waiting for the provider. The current PR head is
+checked before resume. Cancel instead discards results and requests deletion of the shared PR session.

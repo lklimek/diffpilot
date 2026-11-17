@@ -1114,6 +1114,8 @@ async fn unauthenticated_requests_get_401() {
         ),
         ("POST", "/api/v1/pr/resolve".to_owned()),
         ("POST", "/api/v1/analyses".to_owned()),
+        ("POST", format!("/api/v1/analyses/{id}/pause")),
+        ("POST", format!("/api/v1/analyses/{id}/resume")),
     ] {
         let (status, body) = json_of(h.send(method, &uri, Auth::None, Some(json!({}))).await).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri}");
@@ -1130,6 +1132,8 @@ async fn mutations_without_csrf_get_403() {
         "/api/v1/analyses".to_owned(),
         format!("/api/v1/analyses/{id}/cancel"),
         format!("/api/v1/analyses/{id}/retry"),
+        format!("/api/v1/analyses/{id}/pause"),
+        format!("/api/v1/analyses/{id}/resume"),
     ] {
         let uri = uri.as_str();
         let body = json!({ "url": PR_URL });
@@ -1237,6 +1241,8 @@ async fn other_tenants_analysis_is_not_found() {
         ),
         ("POST", format!("/api/v1/analyses/{id}/cancel")),
         ("POST", format!("/api/v1/analyses/{id}/retry")),
+        ("POST", format!("/api/v1/analyses/{id}/pause")),
+        ("POST", format!("/api/v1/analyses/{id}/resume")),
     ] {
         let request = Request::builder()
             .method(method)
@@ -1904,7 +1910,7 @@ async fn cancel_discards_partial_results() {
         assert!(stored.is_empty(), "{kind:?} kept: {stored:?}");
     }
     let record = h.state.db.analyses().get(analysis).await.expect("analysis");
-    assert_eq!(record.session_state, SessionState::Active);
+    assert_eq!(record.session_state, SessionState::DropRequested);
     let (status, _) = h.post_empty(&format!("/api/v1/analyses/{id}/cancel")).await;
     assert_eq!(
         status,
@@ -2566,4 +2572,176 @@ async fn oversized_mechanical_file_is_not_renderable() {
         .find(|item| item.file == "Cargo.lock" && item.side == contracts::common::LineSide::Head)
         .unwrap();
     assert_eq!(head.renderable, Some(false));
+}
+
+#[tokio::test]
+async fn user_pause_keeps_the_running_result_and_next_job_uses_the_new_model() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    let mut first = None;
+    for _ in 0..200 {
+        first = h.runner_claim().await;
+        if first.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let first = first.unwrap();
+    assert_eq!(first.spec.model.model, "gpt-6.1-sol");
+    let pause = format!("/api/v1/analyses/{id}/pause");
+    let (status, _) = json_of(h.send("POST", &pause, Auth::Session, None).await).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, paused) = h.post(&pause, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{paused}");
+    assert_eq!(paused["state"]["reason"], "user");
+    assert!(paused["state"]["paused_by"].is_string());
+    let result = JobResult {
+        job_id: first.spec.job_id,
+        attempt: first.spec.attempt,
+        outcome: JobOutcome::Succeeded {
+            output: agent_output("plan:1"),
+        },
+        session: None,
+        usage: None,
+        skills_commit: None,
+        llm_call: None,
+    };
+    let uri = RUNNER_RESULT
+        .path
+        .replace("{id}", &first.spec.job_id.to_string());
+    assert_eq!(
+        h.runner(&uri, first.job_token.expose(), json!(result))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).unwrap();
+    assert!(
+        h.state
+            .db
+            .documents()
+            .get::<Value>(analysis, DocumentKind::Plan, "")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        h.state
+            .db
+            .jobs()
+            .list_for_analysis(analysis, &[])
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(h.runner_claim().await.is_none());
+    assert_eq!(
+        h.get(&format!("/api/v1/analyses/{id}/tour")).await.0,
+        StatusCode::CONFLICT
+    );
+    h.state
+        .db
+        .settings()
+        .set_llm_selection(
+            &contracts::job::spec::ModelChoice {
+                model: "gpt-6-astra".into(),
+                reasoning_effort: contracts::job::spec::ReasoningEffort::Low,
+            },
+            "alice",
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    let resume = format!("/api/v1/analyses/{id}/resume");
+    assert_eq!(
+        json_of(h.send("POST", &resume, Auth::Session, None).await)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut moved = read_json(&fixtures().join("github/rest/pull.json"))["response"].clone();
+    moved["head"]["sha"] = json!("f".repeat(40));
+    Mock::given(method("GET"))
+        .and(path("/api/repos/acme/node-client/pulls/482"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(moved))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(&h.github)
+        .await;
+    let (status, refusal) = h.post(&resume, json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    assert_eq!(refusal["code"], "conflict");
+    assert_eq!(
+        refusal["message"],
+        "The pull request changed meanwhile. Open it again."
+    );
+    assert!(h.runner_claim().await.is_none());
+    let (status, resumed) = h.post(&resume, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{resumed}");
+    let mut next = None;
+    for _ in 0..200 {
+        next = h.runner_claim().await;
+        if next.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let next = next.unwrap();
+    assert_eq!(next.spec.kind, JobKind::PrContext);
+    assert_eq!(next.spec.model.model, "gpt-6-astra");
+    assert_eq!(
+        next.spec.model.reasoning_effort,
+        contracts::job::spec::ReasoningEffort::Low
+    );
+    let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(
+        summary["models_used"],
+        json!([
+            {"model":"gpt-6.1-sol","reasoning_effort":"high"},
+            {"model":"gpt-6-astra","reasoning_effort":"low"}
+        ])
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+#[tokio::test]
+async fn restart_leaves_user_paused_analysis_untouched_even_without_a_remote() {
+    let h = harness().await.with_queue();
+    let id = h
+        .seed_unprepared("missing", &"1".repeat(40), &"2".repeat(40))
+        .await;
+    h.state
+        .db
+        .analyses()
+        .pause_by_user(id, "alice", Utc::now() - TimeDelta::days(3))
+        .await
+        .unwrap();
+    server::pipeline::resume_unfinished(&h.state).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let summary = h.state.db.analyses().summary(id).await.unwrap();
+    assert!(
+        matches!(
+            summary.state,
+            AnalysisState::Paused {
+                reason: Some(contracts::api::analyses::PauseReason::User),
+                ..
+            }
+        ),
+        "{:?}",
+        summary.state
+    );
+    assert!(
+        h.state
+            .db
+            .jobs()
+            .list_for_analysis(id, &[])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
 }

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { UsageLine } from "../usage/UsageLine";
 import type { UsageTotals } from "../../api/generated/types";
 import { plural } from "../quiet/labels";
@@ -38,6 +39,8 @@ interface AnalysisProgressProps {
   busy: boolean;
   /** Cancel analysis (discards partial results). */
   onCancel: () => void;
+  onPause?: () => void;
+  onResume?: () => void;
   /** Retry the failed analysis. */
   onRetry: () => void;
   /** Connection and timing as this page saw them; without it, no elapsed time and no activity indicator. */
@@ -198,9 +201,16 @@ export function AnalysisProgress({
   usage,
   busy,
   onCancel,
+  onPause,
+  onResume,
   onRetry,
   activity,
 }: AnalysisProgressProps) {
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const userPaused = state.state === "paused" && state.reason === "user";
+  const done =
+    state.state === "running" || state.state === "paused" ? state.done : (progress?.flows.done ?? 0);
+  const cancelText = `Cancel discards the plan, the ${done} analysed flows and the agent session. Pause keeps them.`;
   const live = state.state !== "finished" && state.state !== "cancelled";
   const stage = stageText(state);
   const started =
@@ -233,15 +243,32 @@ export function AnalysisProgress({
         <div className="min-w-0 flex-1">
           <Bar state={state} working={working} progress={progress} />
         </div>
-        <span className="flex flex-none gap-2">
-          {live && (
+        <span className="flex flex-none flex-wrap gap-2">
+          {live && state.state !== "failed" && (userPaused ? onResume : onPause) && (
             <Tooltip
-              tip={busyTip("Stops the analysis and discards its partial results; you return to Home.", busy)}
+              tip={busyTip(
+                userPaused
+                  ? "Continues with the next job; saved results are kept."
+                  : "The step that is running finishes first. Pause keeps the plan, analysed flows and agent session.",
+                busy,
+              )}
             >
               <button
                 type="button"
                 aria-disabled={busy || undefined}
-                onClick={() => !busy && onCancel()}
+                className={buttonClass("plain")}
+                onClick={() => !busy && (userPaused ? onResume?.() : onPause?.())}
+              >
+                {userPaused ? "Resume" : "Pause analysis"}
+              </button>
+            </Tooltip>
+          )}
+          {live && (
+            <Tooltip tip={busyTip(cancelText, busy)}>
+              <button
+                type="button"
+                aria-disabled={busy || undefined}
+                onClick={() => !busy && setConfirmCancel(true)}
                 className={buttonClass("danger")}
               >
                 Cancel analysis
@@ -291,7 +318,34 @@ export function AnalysisProgress({
         </p>
       )}
       {state.state === "failed" && <p className="mt-2 max-w-[100ch]">{state.message}</p>}
-      {state.state === "paused" && <p className="mt-2 max-w-[100ch]">{PAUSE_REASON}</p>}
+      {confirmCancel && live && (
+        <div role="group" aria-label="Confirm cancellation" className="mt-3 rounded border border-border p-3">
+          <p>{cancelText}</p>
+          <div className="mt-2 flex gap-2">
+            <Tooltip tip={busyTip(cancelText, busy)}>
+              <button
+                type="button"
+                aria-disabled={busy || undefined}
+                className={buttonClass("danger")}
+                onClick={() => !busy && onCancel()}
+              >
+                Confirm cancel
+              </button>
+            </Tooltip>
+            <Tooltip tip="Keeps the analysis and closes this confirmation.">
+              <button
+                type="button"
+                aria-disabled={busy || undefined}
+                className={buttonClass("plain")}
+                onClick={() => !busy && setConfirmCancel(false)}
+              >
+                Keep analysis
+              </button>
+            </Tooltip>
+          </div>
+        </div>
+      )}
+      {state.state === "paused" && !userPaused && <p className="mt-2 max-w-[100ch]">{PAUSE_REASON}</p>}
     </section>
   );
 }

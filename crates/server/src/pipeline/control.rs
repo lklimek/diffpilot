@@ -11,7 +11,7 @@ use db::error::DbError;
 use crate::jobs::executor::ExecutorError;
 use crate::state::AppState;
 
-/// A cancel or retry could not be applied.
+/// A requested analysis state change could not be applied.
 #[derive(Debug, thiserror::Error)]
 pub enum ControlError {
     /// The analysis is not in a state that allows it (e.g. retry of a running analysis).
@@ -68,7 +68,7 @@ pub async fn set_state_if(
             db.analyses().set_state(analysis, next, Utc::now()).await?;
             let summary = db.analyses().summary(analysis).await?;
             if is_live(&current.state)
-                && !is_live(next)
+                && !is_live(&summary.state)
                 && let Err(error) = super::statistics::log_end(state, &summary).await
             {
                 tracing::warn!(%analysis, ?error, "analysis statistics unavailable");
@@ -92,6 +92,87 @@ fn published(written: Result<AnalysisEvent, Guarded>) -> Result<Option<AnalysisS
     }
 }
 
+/// Waits without holding a lock; cancellation still stops a user-paused driver.
+pub async fn wait_for_resume(
+    state: &AppState,
+    analysis: AnalysisId,
+) -> Result<(), super::PipelineError> {
+    loop {
+        let current = state.db.analyses().get(analysis).await?;
+        if !is_live(&current.state) {
+            return Err(super::PipelineError::Stopped);
+        }
+        if !matches!(
+            current.state,
+            AnalysisState::Paused {
+                reason: Some(contracts::api::analyses::PauseReason::User),
+                ..
+            }
+        ) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+/// Pauses future submissions; the claimed job keeps its result and session.
+pub async fn pause(
+    state: &AppState,
+    analysis: AnalysisId,
+    login: &str,
+) -> Result<AnalysisSummary, ControlError> {
+    user_pause(state, analysis, Some(login)).await
+}
+
+/// Resumes without clearing documents or changing the round.
+pub async fn resume(
+    state: &AppState,
+    analysis: AnalysisId,
+) -> Result<AnalysisSummary, ControlError> {
+    let summary = user_pause(state, analysis, None).await?;
+    super::start(state, analysis);
+    Ok(summary)
+}
+
+async fn user_pause(
+    state: &AppState,
+    analysis: AnalysisId,
+    login: Option<&str>,
+) -> Result<AnalysisSummary, ControlError> {
+    let event = state
+        .progress
+        .update(analysis, || async {
+            let changed = match login {
+                Some(login) => {
+                    state
+                        .db
+                        .analyses()
+                        .pause_by_user(analysis, login, Utc::now())
+                        .await?
+                }
+                None => {
+                    state
+                        .db
+                        .analyses()
+                        .resume_by_user(analysis, Utc::now())
+                        .await?
+                }
+            };
+            if !changed {
+                return Err(Guarded::Refused);
+            }
+            Ok(AnalysisEvent::Analysis {
+                summary: state.db.analyses().summary(analysis).await?,
+            })
+        })
+        .await;
+    let summary = published(event)?.ok_or(ControlError::Conflict {
+        action: if login.is_some() { "paused" } else { "resumed" },
+    })?;
+    tracing::info!(%analysis, paused = login.is_some(), login, "analysis user pause changed");
+    Ok(summary)
+}
+
 /// Cancels a live or failed analysis: state `cancelled`, then every unfinished job cancelled, the stored results
 /// deleted and the agent session dropped. A running driver ends when its jobs report `cancelled`.
 pub async fn cancel(
@@ -111,11 +192,11 @@ pub async fn cancel(
     Ok(summary)
 }
 
-/// Cancels the analysis's jobs, deletes its stored documents and preserves the PR's agent session.
+/// Cancels the analysis's jobs, requests deletion of the PR session and deletes its stored documents.
 /// Idempotent: the driver repeats it when it sees the cancellation, so a document it stored meanwhile goes too.
 pub async fn discard(state: &AppState, analysis: AnalysisId) -> Result<(), ControlError> {
     state.executor.cancel_analysis(analysis).await?;
-    let deleted = state.db.documents().delete_for_analysis(analysis).await?;
+    let deleted = state.db.analyses().discard_cancelled(analysis).await?;
     tracing::debug!(%analysis, documents = deleted, "partial analysis results discarded");
     Ok(())
 }
@@ -238,7 +319,7 @@ mod tests {
             .expect("documents");
         assert!(documents.is_empty(), "documents left: {documents:?}");
         let record = db.analyses().get(analysis).await.expect("analysis");
-        assert_eq!(record.session_state, SessionState::Active);
+        assert_eq!(record.session_state, SessionState::DropRequested);
         assert_eq!(record.agent_thread_id.as_deref(), Some("thread-1"));
     }
 
@@ -261,10 +342,10 @@ mod tests {
                     .expect("jobs");
             }
             if done >= 3 {
-                db.documents()
-                    .delete_for_analysis(analysis)
+                db.analyses()
+                    .discard_cancelled(analysis)
                     .await
-                    .expect("documents");
+                    .expect("discard");
             }
 
             let finished = recover_cancellations(&state).await.expect("recover");
@@ -277,6 +358,55 @@ mod tests {
             );
         }
     }
+    #[tokio::test]
+    async fn late_cancel_cleanup_keeps_the_next_analysis_session() {
+        let db = Db::in_memory().await.unwrap();
+        let state = AppState::with_queue(test_config(), db.clone());
+        let (old, _) = live(&db).await;
+        cancel(&state, old).await.unwrap();
+        let record = db.analyses().get(old).await.unwrap();
+        db.analyses()
+            .ack_session_drops(&[record.pull_request_id])
+            .await
+            .unwrap();
+        let fresh = db
+            .analyses()
+            .create(
+                db::repo::analyses::NewAnalysis {
+                    id: AnalysisId::new_random(),
+                    tenant_id: record.tenant_id,
+                    pull_request_id: record.pull_request_id,
+                    base_sha: record.base_sha,
+                    head_sha: record.head_sha,
+                    language: record.language,
+                    created_by: record.created_by,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        db.analyses()
+            .set_session(fresh.id, "fresh-thread", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.analyses().get(fresh.id).await.unwrap().session_state,
+            SessionState::Active
+        );
+        discard(&state, old).await.unwrap();
+        assert_eq!(
+            db.analyses().get(fresh.id).await.unwrap().session_state,
+            SessionState::Active
+        );
+        assert!(
+            db.analyses()
+                .pending_session_drops()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[tokio::test]
     async fn terminal_transition_logs_statistics_once_even_when_cancel_is_repeated() {
         let state = crate::state::tests::test_state().await;

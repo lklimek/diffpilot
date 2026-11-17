@@ -16,7 +16,7 @@ use contracts::api::settings::AppInstallation;
 use contracts::api::settings::{RepoSettings, SetLanguageRequest, Settings};
 use contracts::common::RepoRef;
 use contracts::job::result::{JobFailureKind, LlmCallOutcome, LlmCallStatus};
-use contracts::routes::{GET_REPO_SETTINGS, GET_SETTINGS, SET_LANGUAGE};
+use contracts::routes::{GET_REPO_SETTINGS, GET_SETTINGS, SET_LANGUAGE, SET_LLM};
 use db::error::DbError;
 use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 
@@ -49,6 +49,9 @@ pub enum SettingsApiError {
     /// The repository owner or name is not a valid GitHub name.
     #[error("the repository name is not valid")]
     InvalidRepository,
+    /// Model outside the deployment catalog.
+    #[error("the model is not available")]
+    InvalidModel,
     /// No pre-pass of the repository is stored yet.
     #[error("the repository settings are not known yet")]
     NotKnownYet,
@@ -62,7 +65,7 @@ impl ApiErrorSource for SettingsApiError {
         match self {
             Self::Json(rejection) => rejection.code(),
             Self::Path(rejection) => rejection.code(),
-            Self::InvalidRepository => ApiErrorCode::InvalidRequest,
+            Self::InvalidRepository | Self::InvalidModel => ApiErrorCode::InvalidRequest,
             Self::NotKnownYet => ApiErrorCode::AnalysisNotFinished,
             Self::Db(error) => error.code(),
         }
@@ -73,6 +76,7 @@ impl ApiErrorSource for SettingsApiError {
             Self::Json(rejection) => rejection.public_message(),
             Self::Path(rejection) => rejection.public_message(),
             Self::Db(error) => error.public_message(),
+            Self::InvalidModel => Cow::Borrowed("Choose a model from the available list."),
             Self::InvalidRepository => Cow::Borrowed("The repository name is not valid."),
             Self::NotKnownYet => Cow::Borrowed(
                 "Not known yet: the repository settings are read during an analysis and appear once one has \
@@ -93,6 +97,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route(GET_SETTINGS.path, get(read))
         .route(SET_LANGUAGE.path, put(set_language))
+        .route(SET_LLM.path, put(set_llm))
         .route(GET_REPO_SETTINGS.path, get(read_repo))
 }
 
@@ -114,6 +119,32 @@ async fn set_language(
         .map_err(failure)?;
     tracing::info!(user_id = %session.user_id, language = ?request.language, "LLM text language set");
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_llm(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    body: Result<Json<contracts::job::spec::ModelChoice>, JsonRejection>,
+) -> SettingsResult<Json<contracts::api::settings::LlmSelection>> {
+    let Json(choice) = body.map_err(failure)?;
+    if !crate::model::allowed(&choice) {
+        return Err(failure(SettingsApiError::InvalidModel));
+    }
+    let user = state
+        .db
+        .users()
+        .get(&session.user_id)
+        .await
+        .map_err(failure)?;
+    let (old, saved) = state
+        .db
+        .settings()
+        .set_llm_selection(&choice, &user.profile.login, Utc::now())
+        .await
+        .map_err(failure)?;
+    let old = crate::model::selection(old).current;
+    tracing::info!(login = %user.profile.login, old_model = %old.model, old_effort = ?old.reasoning_effort, new_model = %choice.model, new_effort = ?choice.reasoning_effort, "installation LLM selection changed");
+    Ok(Json(crate::model::selection(Some(saved))))
 }
 
 async fn read_repo(
@@ -150,6 +181,9 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
         .credential_unusable_since(&session.tenant_id)
         .await?;
     Ok(Settings {
+        llm_selection: Some(crate::model::selection(
+            state.db.settings().llm_selection().await?,
+        )),
         llm_usage: Some(
             state
                 .db
@@ -906,5 +940,41 @@ mod tests {
                 assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "{method} {uri}");
             }
         }
+    }
+    #[tokio::test]
+    async fn installation_model_choice_validates_csrf_and_records_the_changer() {
+        let h = harness().await;
+        let (_, initial) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(initial["llm_selection"]["current"]["model"], "gpt-6.1-sol");
+        let route = "/api/v1/settings/llm";
+        let choice = json!({"model":"gpt-6-astra","reasoning_effort":"medium"});
+        let (status, _) = h
+            .send("PUT", route, Some(&h.cookie), false, Some(choice.clone()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        for invalid in [
+            json!({"model":"unlisted","reasoning_effort":"high"}),
+            json!({"model":"gpt-6.1-sol","reasoning_effort":"ultra"}),
+        ] {
+            let (status, _) = h
+                .send("PUT", route, Some(&h.cookie), true, Some(invalid))
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        let (status, _) = h
+            .send("PUT", route, None, false, Some(choice.clone()))
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let logs = LogCapture::start();
+        let (status, saved) = h
+            .send("PUT", route, Some(&h.cookie), true, Some(choice.clone()))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["current"], choice);
+        assert_eq!(saved["changed_by"], "lklimek");
+        assert!(saved["changed_at"].is_string());
+        let (_, read) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(read["llm_selection"], saved);
+        assert!(logs.text().contains("installation LLM selection changed"));
     }
 }

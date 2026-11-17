@@ -25,5 +25,36 @@
   "llm_usage": {
     "today": null,
     "last_7_days": null
+  },
+  "llm_selection": {
+    "models": [
+      {
+        "id": "gpt-6.1-sol",
+        "label": "Sol 6.1"
+      },
+      {
+        "id": "gpt-6-sol",
+        "label": "Sol 6"
+      },
+      {
+        "id": "gpt-5.6-sol",
+        "label": "Sol 5.6"
+      },
+      {
+        "id": "gpt-6-astra",
+        "label": "Astra 6"
+      }
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "current": {
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "high"
+    },
+    "changed_by": null,
+    "changed_at": null
   }
 }
