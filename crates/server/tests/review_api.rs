@@ -106,6 +106,9 @@ impl Harness {
 
     async fn sign_in(&self, tenant: &str, user: &str, github_id: i64) {
         let now = Utc::now();
+        db::repo::tenants::testing::allow_login(&self.state.db, tenant, user, github_id)
+            .await
+            .expect("allowlist");
         self.state
             .db
             .users()

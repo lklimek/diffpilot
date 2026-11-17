@@ -73,6 +73,43 @@ impl Tenants<'_> {
     }
 }
 
+/// Allowlist edits for tests (`test-util` feature); v1 has no API for them (ADR-007).
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing {
+    use super::*;
+
+    /// Puts `login` on the tenant's allowlist, bound to `github_id` (replacing an existing entry's binding).
+    pub async fn allow_login(
+        db: &Db,
+        tenant_id: &str,
+        login: &str,
+        github_id: i64,
+    ) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO tenant_allowed_logins (tenant_id, login, github_id, bound_at) VALUES (?, ?, ?, ?)
+             ON CONFLICT (tenant_id, login) DO UPDATE SET github_id = excluded.github_id,
+                 bound_at = excluded.bound_at",
+        )
+        .bind(tenant_id)
+        .bind(login)
+        .bind(github_id)
+        .bind(timestamp(Utc::now()))
+        .execute(&db.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Removes `login` from the tenant's allowlist, as the owner would by hand.
+    pub async fn remove_login(db: &Db, tenant_id: &str, login: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM tenant_allowed_logins WHERE tenant_id = ? AND login = ?")
+            .bind(tenant_id)
+            .bind(login)
+            .execute(&db.pool)
+            .await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

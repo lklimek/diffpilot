@@ -8,7 +8,11 @@ mapping, query rules and the endpoint × fixture-state inventory.
 - Public listener `SR_LISTEN_ADDR` (behind the reverse proxy): `/healthz`, `/auth/*`, `/api/v1/*`, the web UI.
 - Runner listener `SR_RUNNER_LISTEN_ADDR`: `/runner/v1/*` only (`runner-protocol.md`). Neither router serves the
   other's routes (server test).
-- `session`: session cookie (Secure, HttpOnly, SameSite=Lax; name set by WP2-AUTH), opaque token stored hashed.
+- `session`: session cookie (`__Host-sr_session`, Secure, HttpOnly, SameSite=Lax, Path=/; `sr_session` without
+  Secure only when `SR_PUBLIC_URL` is http and no trusted proxy forwards https), opaque token stored hashed. A
+  session lasts 7 days, ends after 24 h unused, and only while its user stays on the tenant's allowlist (ADR-007
+  addendum). `POST /auth/logout` ends this session (`everywhere`: all of the user's); the stored GitHub tokens end
+  with the user's last session.
 - `session_csrf`: session plus header `X-CSRF-Token` equal to `MeResponse.csrf_token`. Every non-GET public
   route is `session_csrf` (contract test). CSRF applies to cookie-authenticated routes only; runner routes use
   bearer tokens.
@@ -140,7 +144,8 @@ mapping, query rules and the endpoint × fixture-state inventory.
   database and the server log, never in the response. Installations are read from GitHub with the user token
   (`GET /user/installations`, suspended ones left out); when the user token is missing, GitHub rejects it or
   GitHub fails, `app_installations` is `null` ("not checked", no cause given; signing in again may help) and the
-  rest of Settings is still returned, the session stays valid; `[]` means none installed. `PUT …/settings/language` accepts only `en` and `pl`.
+  rest of Settings is still returned, the session stays valid; `[]` means none installed. After a GitHub 401 the
+  next request refreshes the user token; if GitHub rejects the refresh, the sign-in ends (later requests: 401). `PUT …/settings/language` accepts only `en` and `pl`.
 - **Review state**: `PUT` replaces the user's whole state (idempotent; repeated ticks are stored once); concurrent
   writes leave one of them whole. Every ticked step and the last viewed block must be in the analysis's Tour
   (quiet rows only when the Tour shows them), else `invalid_request` and nothing is stored.

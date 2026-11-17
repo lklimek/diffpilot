@@ -3,23 +3,31 @@
 //! A refresh rotates both tokens and kills the old pair at once. Every change of a user's sign-in state (sign-in
 //! store and session creation, refresh, end of sign-in) runs under that user's [`UserLock`] (in-process: one
 //! server process owns the database); the rotated pair is stored with a version compare-and-swap before the new
-//! access token is used, and a rejected refresh ends only the pair it was made for.
+//! access token is used, and a rejected refresh ends only the pair it was made for. The refresh runs in its own
+//! task, so a dropped request does not abandon a pair GitHub has already rotated.
+//!
+//! Residual risk (ADR-007): a server crash, or a lost answer (timeout, connection reset), between GitHub
+//! rotating the pair and the database write loses the new pair; the next refresh then gets `bad_refresh_token`
+//! and the user signs in again. Nothing leaks: the old pair is dead.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use tokio::sync::OwnedMutexGuard;
+use tracing::Instrument;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use contracts::api::error::ApiErrorCode;
 use db::error::DbError;
+use db::repo::sessions::NewSession;
 use db::repo::tokens::{EncryptedTokens, PairCondition, StoredTokens};
 use secrecy::{ExposeSecret, SecretString};
 
+use super::{Session, liveness};
 use crate::api::error::ApiErrorSource;
 use crate::github::oauth::{self, OauthError, TokenGrant};
-use crate::secrets::{Aad, SecretError, TokenCipher};
+use crate::secrets::{Aad, SecretError, TokenCipher, secrets_equal};
 use crate::state::AppState;
 
 /// An access token expiring within this margin is refreshed before use.
@@ -92,6 +100,9 @@ pub enum UserTokenError {
     /// The token store failed.
     #[error("the GitHub token store failed")]
     Db(#[from] DbError),
+    /// The refresh task panicked or the runtime is shutting down.
+    #[error("the GitHub token refresh was interrupted")]
+    Interrupted(#[from] tokio::task::JoinError),
 }
 
 impl ApiErrorSource for UserTokenError {
@@ -100,7 +111,7 @@ impl ApiErrorSource for UserTokenError {
             Self::SignInRequired => ApiErrorCode::Unauthenticated,
             Self::Superseded => ApiErrorCode::Conflict,
             Self::Github(_) => ApiErrorCode::GithubUnavailable,
-            Self::Secret(_) => ApiErrorCode::Internal,
+            Self::Secret(_) | Self::Interrupted(_) => ApiErrorCode::Internal,
             Self::Db(error) => error.code(),
         }
     }
@@ -110,7 +121,7 @@ impl ApiErrorSource for UserTokenError {
             Self::SignInRequired => Cow::Borrowed("Your GitHub sign-in has ended. Sign in again."),
             Self::Superseded => Cow::Borrowed("Your GitHub sign-in changed meanwhile. Try again."),
             Self::Github(_) => Cow::Borrowed("GitHub did not answer as expected. Try again later."),
-            Self::Secret(_) => {
+            Self::Secret(_) | Self::Interrupted(_) => {
                 Cow::Borrowed("Something went wrong on the server. Try again later.")
             }
             Self::Db(error) => error.public_message(),
@@ -150,6 +161,25 @@ pub async fn store_sign_in_tokens(
     Ok(())
 }
 
+/// Stores the new session and the token pair of a sign-in for the locked user in one transaction (neither on
+/// failure), replacing the previous pair.
+pub(crate) async fn store_sign_in(
+    state: &AppState,
+    lock: &UserLock,
+    session: &NewSession<'_>,
+    grant: &TokenGrant,
+    now: DateTime<Utc>,
+) -> Result<(), UserTokenError> {
+    let cipher = TokenCipher::new(&state.config.secret_key);
+    let tokens = encrypt(&cipher, &lock.user_id, grant, now)?;
+    state
+        .db
+        .user_tokens()
+        .put_with_session(session.tenant_id, &tokens, session, now)
+        .await?;
+    Ok(())
+}
+
 /// Ends the user's sign-in (sign-out everywhere): deletes the token pair and every session in one transaction.
 pub async fn end_sign_in(state: &AppState, user_id: &str) -> Result<(), DbError> {
     let _lock = lock_user(user_id).await;
@@ -161,35 +191,86 @@ pub async fn end_sign_in(state: &AppState, user_id: &str) -> Result<(), DbError>
     Ok(())
 }
 
+/// Ends one session (sign-out); the token pair is deleted with the user's last live session.
+pub(crate) async fn end_session(state: &AppState, session: &Session) -> Result<(), DbError> {
+    let _lock = lock_user(&session.user_id).await;
+    state
+        .db
+        .user_tokens()
+        .end_session(&session.user_id, session.token_hash(), liveness(Utc::now()))
+        .await?;
+    Ok(())
+}
+
+/// GitHub answered 401 to the user's access token `rejected`: if the stored pair still holds it, it counts as
+/// expired, so the next [`user_access_token`] refreshes the pair (and a rejected refresh ends the sign-in).
+/// Failures are logged; the caller's request has already failed.
+pub async fn user_token_rejected(state: &AppState, user_id: &str, rejected: &SecretString) {
+    let cipher = TokenCipher::new(&state.config.secret_key);
+    let tokens = state.db.user_tokens();
+    let _lock = lock_user(user_id).await;
+    let marked = match tokens.get(user_id).await {
+        Ok(Some(stored)) => match cipher.decrypt(access_aad(user_id), &stored.tokens.access_ct) {
+            Ok(held) if secrets_equal(held.expose_secret(), rejected.expose_secret()) => tokens
+                .expire_access(user_id, stored.version, Utc::now())
+                .await
+                .map_err(UserTokenError::from),
+            // Already rotated, or unreadable (handled on the next use).
+            Ok(_) | Err(_) => Ok(false),
+        },
+        Ok(None) => Ok(false),
+        Err(error) => Err(error.into()),
+    };
+    match marked {
+        Ok(true) => tracing::info!(
+            user_id,
+            "GitHub rejected the user token; it is refreshed on next use"
+        ),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(
+            user_id,
+            ?error,
+            "a GitHub-rejected user token could not be marked expired"
+        ),
+    }
+}
+
 fn fresh_access(
     cipher: &TokenCipher,
     user_id: &str,
     stored: &StoredTokens,
     now: DateTime<Utc>,
-) -> Result<Option<SecretString>, UserTokenError> {
+) -> Result<Option<SecretString>, SecretError> {
     if stored.tokens.access_expires_at - now > REFRESH_MARGIN {
-        Ok(Some(
-            cipher.decrypt(access_aad(user_id), &stored.tokens.access_ct)?,
-        ))
+        cipher
+            .decrypt(access_aad(user_id), &stored.tokens.access_ct)
+            .map(Some)
     } else {
         Ok(None)
     }
 }
 
 /// The user's GitHub access token, refreshed first when it expires within five minutes. A rejected or
-/// expired refresh token ends the sign-in ([`UserTokenError::SignInRequired`]).
+/// expired refresh token, or a pair that no longer decrypts, ends the sign-in ([`UserTokenError::SignInRequired`]).
 pub async fn user_access_token(
     state: &AppState,
     user_id: &str,
 ) -> Result<SecretString, UserTokenError> {
     let cipher = TokenCipher::new(&state.config.secret_key);
-    let tokens = state.db.user_tokens();
-    if let Some(stored) = tokens.get(user_id).await?
-        && let Some(access) = fresh_access(&cipher, user_id, &stored, Utc::now())?
+    if let Some(stored) = state.db.user_tokens().get(user_id).await?
+        && let Ok(Some(access)) = fresh_access(&cipher, user_id, &stored, Utc::now())
     {
         return Ok(access);
     }
+    // Its own task: a request dropped while GitHub answers must not lose the rotated pair.
+    let (state, user_id) = (state.clone(), user_id.to_owned());
+    tokio::spawn(async move { refresh_if_due(&state, &user_id).await }.in_current_span()).await?
+}
 
+/// Under the user's lock: the stored access token if still fresh, else the refreshed one.
+async fn refresh_if_due(state: &AppState, user_id: &str) -> Result<SecretString, UserTokenError> {
+    let cipher = TokenCipher::new(&state.config.secret_key);
+    let tokens = state.db.user_tokens();
     let _lock = lock_user(user_id).await;
     // Another task may have refreshed or ended the sign-in while this one waited.
     let Some(stored) = tokens.get(user_id).await? else {
@@ -197,11 +278,25 @@ pub async fn user_access_token(
         tokens.end_sign_in(user_id, PairCondition::Absent).await?;
         return Err(UserTokenError::SignInRequired);
     };
-    let now = Utc::now();
-    if let Some(access) = fresh_access(&cipher, user_id, &stored, now)? {
-        return Ok(access);
-    }
     let this_pair = PairCondition::Version(stored.version);
+    let now = Utc::now();
+    let decrypted = match fresh_access(&cipher, user_id, &stored, now) {
+        Ok(Some(access)) => return Ok(access),
+        Ok(None) => cipher.decrypt(refresh_aad(user_id), &stored.tokens.refresh_ct),
+        Err(error) => Err(error),
+    };
+    let refresh_token = match decrypted {
+        Ok(refresh_token) => refresh_token,
+        Err(SecretError::Decrypt) => {
+            tracing::warn!(
+                user_id,
+                "stored GitHub tokens no longer decrypt (SR_SECRET_KEY changed?); ending the sign-in"
+            );
+            tokens.end_sign_in(user_id, this_pair).await?;
+            return Err(UserTokenError::SignInRequired);
+        }
+        Err(error) => return Err(error.into()),
+    };
     if stored.tokens.refresh_expires_at <= now {
         tracing::info!(
             user_id,
@@ -210,7 +305,6 @@ pub async fn user_access_token(
         tokens.end_sign_in(user_id, this_pair).await?;
         return Err(UserTokenError::SignInRequired);
     }
-    let refresh_token = cipher.decrypt(refresh_aad(user_id), &stored.tokens.refresh_ct)?;
     let grant = match oauth::refresh(&state.config.github, &refresh_token).await {
         Ok(grant) => grant,
         Err(OauthError::Rejected { error }) if error == BAD_REFRESH_TOKEN => {

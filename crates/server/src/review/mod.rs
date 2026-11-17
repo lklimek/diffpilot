@@ -11,8 +11,10 @@ use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::user_access_token;
-use crate::github::{checks, rest, threads};
+use crate::auth::{user_access_token, user_token_rejected};
+use crate::github::graphql::GraphqlError;
+use crate::github::rest::{self, GithubError};
+use crate::github::{checks, threads};
 use crate::state::AppState;
 
 pub mod comments;
@@ -69,6 +71,12 @@ pub async fn read_github_snapshot(
         threads::fetch(config, &token, &pr),
         rest::get_pull(config, &token, &pr),
     );
+    if matches!(ci, Err(GithubError::Unauthorized))
+        || matches!(threads, Err(GraphqlError::Unauthorized))
+        || matches!(pull, Err(GithubError::Unauthorized))
+    {
+        user_token_rejected(state, user_id, &token).await;
+    }
     let description = pull.map_or_else(
         |error| {
             tracing::warn!(analysis = %summary.id, ?error,
@@ -255,6 +263,35 @@ pub(crate) mod tests {
         let logs = capture.text();
         assert!(logs.contains("check runs could not be read"), "{logs}");
         assert!(!logs.contains(USER_TOKEN), "{logs}");
+    }
+
+    /// A GitHub 401 for the user token makes its next use refresh the pair (ADR-007 addendum).
+    #[tokio::test]
+    async fn github_401_marks_the_user_token_expired() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                "^/api/repos/acme/node-client/commits/[0-9a-f]+/check-runs$",
+            ))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/graphql"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let (state, analysis) = github_state(&server, true).await;
+        let snapshot = read_github_snapshot(&state, &summary(&state, analysis).await, "u1").await;
+        assert_eq!(snapshot, GithubSnapshot::not_checked());
+        let stored = state
+            .db
+            .user_tokens()
+            .get("u1")
+            .await
+            .expect("lookup")
+            .expect("pair");
+        assert!(stored.tokens.access_expires_at <= Utc::now(), "{stored:?}");
     }
 
     #[tokio::test]
