@@ -106,7 +106,7 @@ tmpfs_allowed="$(run_preflight --tmpfs "$local_tmpfs,noexec" -e SR_CODEX_HOMES_A
   -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL=http://localhost:3000)"
 tmpfs_public="$(run_preflight --tmpfs "$local_tmpfs,noexec" -e SR_CODEX_HOMES_ALLOW_TMPFS=1 \
   -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL=https://review.example.com)"
-tmpfs_exec="$(run_preflight --tmpfs "$local_tmpfs" -e SR_CODEX_HOMES_ALLOW_TMPFS=1 \
+tmpfs_exec="$(run_preflight --tmpfs "$local_tmpfs,exec" -e SR_CODEX_HOMES_ALLOW_TMPFS=1 \
   -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL=http://localhost:3000)"
 if [[ "$no_mount" == "78|"*"not a mount point"* && "$tmpfs_refused" == "78|"*"is a tmpfs"* \
       && "$tmpfs_public" == "78|"*"is not on localhost"* && "$tmpfs_exec" == "78|"*"without noexec"* \
