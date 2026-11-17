@@ -75,12 +75,13 @@ test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, conte
   const response = await created;
   expect(response.status(), await response.text()).toBe(201);
   const { id } = (await response.json()) as { id: string };
-  await expect(page.getByText("The analysis has started.")).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/analyses/${id}/progress$`));
   await shoot(page, "progress");
 
   await waitUntilFinished(page, id);
-  // The thin slice has no progress screen: submitting the URL again opens the finished analysis.
-  await page.getByRole("button", { name: "Analyze" }).click();
+  const openReview = page.getByRole("link", { name: "Open review" });
+  await expect(openReview).toBeVisible({ timeout: FINISH_TIMEOUT_MS });
+  await openReview.click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${id}$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
   await shoot(page, "pr-context");
