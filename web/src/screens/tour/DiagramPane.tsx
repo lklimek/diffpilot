@@ -2,6 +2,7 @@ import { Component, Suspense, lazy, useState, type ComponentType, type ReactNode
 import type { Flow, StepId } from "../../api/generated/types";
 import type { FlowDiagram } from "../../components/flow-diagram/FlowDiagram";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { Tooltip } from "../../components/tooltip/Tooltip";
 
 type DiagramComponent = ComponentType<Parameters<typeof FlowDiagram>[0]>;
 
@@ -74,13 +75,15 @@ export function DiagramPane({
     <div className="grid gap-1.5">
       <p role="alert" className="text-[12.5px]">
         The diagram could not be loaded. The steps of this flow and where each goes next:{" "}
-        <button
-          type="button"
-          onClick={() => setDiagram((d) => ({ attempt: d.attempt + 1, Diagram: lazy(load) }))}
-          className="cursor-pointer rounded border border-border bg-surface px-2 text-text hover:border-accent"
-        >
-          Retry
-        </button>
+        <Tooltip tip="Tries to load the diagram again.">
+          <button
+            type="button"
+            onClick={() => setDiagram((d) => ({ attempt: d.attempt + 1, Diagram: lazy(load) }))}
+            className="cursor-pointer rounded border border-border bg-surface px-2 text-text hover:border-accent"
+          >
+            Retry
+          </button>
+        </Tooltip>
       </p>
       <StepList flow={flow} onSelectStep={onSelectStep} />
     </div>

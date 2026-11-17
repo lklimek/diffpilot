@@ -165,14 +165,16 @@ function Pattern({
                 {site.side === "base" && " (base)"}
               </GithubLink>
               {site.step_id && onSelectStep && (
-                <button
-                  type="button"
-                  aria-label={`Open step for ${where}`}
-                  onClick={() => onSelectStep(site.step_id!)}
-                  className="ml-2 cursor-pointer text-accent underline"
-                >
-                  Open step
-                </button>
+                <Tooltip tip="Goes to the step of this tour that shows these lines." className="ml-2">
+                  <button
+                    type="button"
+                    aria-label={`Open step for ${where}`}
+                    onClick={() => onSelectStep(site.step_id!)}
+                    className="cursor-pointer text-accent underline"
+                  >
+                    Open step
+                  </button>
+                </Tooltip>
               )}
             </li>
           );

@@ -1,4 +1,5 @@
 import type { AskQuestion, StepId } from "../../api/generated/types";
+import { busyTip } from "../button/button";
 import { clockText } from "../format/time";
 import { useAction } from "../inspector/action";
 import { evidenceText } from "../section/format";
@@ -19,14 +20,21 @@ function AskAgain({
   const action = useAction();
   return (
     <>
-      <button
-        type="button"
-        disabled={action.busy}
-        onClick={() => void action.run(() => onAskAgain(question.step_id, question.text))}
-        className="cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text disabled:cursor-wait disabled:opacity-60"
+      <Tooltip
+        tip={busyTip(
+          "Asks the same question about this step again; the answer appears here. Nothing is sent to GitHub.",
+          action.busy,
+        )}
       >
-        {action.busy ? "Asking…" : "Ask again"}
-      </button>
+        <button
+          type="button"
+          aria-disabled={action.busy || undefined}
+          onClick={() => !action.busy && void action.run(() => onAskAgain(question.step_id, question.text))}
+          className="cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text aria-disabled:cursor-wait aria-disabled:opacity-60"
+        >
+          {action.busy ? "Asking…" : "Ask again"}
+        </button>
+      </Tooltip>
       {action.error && (
         <span role="alert" className="basis-full">
           Not asked again: {action.error}

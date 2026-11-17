@@ -21,6 +21,7 @@ import { highlight } from "../../app/highlight";
 import { ClassicDiff } from "../../components/code-view/ClassicDiff";
 import { CodeView } from "../../components/code-view/CodeView";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { Tooltip } from "../../components/tooltip/Tooltip";
 
 /** Plain text of a failed request. */
 export function errorText(error: unknown): string {
@@ -130,14 +131,19 @@ export function ChunkedCode({
         <RangeCode key={`${query.from}-${query.to}`} ctx={ctx} query={query} />
       ))}
       {next && (
-        <button
-          type="button"
-          onClick={() => setShown((n) => n + 1)}
-          className="justify-self-start rounded border border-border bg-surface px-2 py-0.5 text-[12px] text-text hover:border-accent"
+        <Tooltip
+          tip="Loads and shows the next part of these lines; long ranges load in parts."
+          className="justify-self-start"
         >
-          Show lines {next.from}–{next.to} of {path}
-          {side === "base" ? " (base commit)" : ""}
-        </button>
+          <button
+            type="button"
+            onClick={() => setShown((n) => n + 1)}
+            className="cursor-pointer rounded border border-border bg-surface px-2 py-0.5 text-[12px] text-text hover:border-accent"
+          >
+            Show lines {next.from}–{next.to} of {path}
+            {side === "base" ? " (base commit)" : ""}
+          </button>
+        </Tooltip>
       )}
     </div>
   );

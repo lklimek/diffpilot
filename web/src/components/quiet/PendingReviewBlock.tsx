@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { PendingComment, PendingReview } from "../../api/generated/types";
+import { BUSY_NOTE, busyTip } from "../button/button";
 import { codeOf } from "../inspector/action";
 import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -17,7 +18,16 @@ interface PendingReviewBlockProps {
 }
 
 const BUTTON =
-  "cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text hover:border-accent disabled:cursor-not-allowed disabled:opacity-55";
+  "cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text hover:border-accent aria-disabled:cursor-not-allowed aria-disabled:opacity-55";
+
+// Tooltips (brief §4 rule 3): what each button does on GitHub.
+const TIP = {
+  edit: "Edit the text of this comment in your pending review on GitHub.",
+  delete: "Removes this comment from your pending review on GitHub right away; this cannot be undone here.",
+  save: "Replaces the text of this comment in your pending review on GitHub; nothing is published.",
+  empty: "Write the comment text first.",
+  cancel: "Stops editing; the comment on GitHub stays as it was.",
+} as const;
 
 function location(c: PendingComment): string {
   const lines = c.start_line !== null && c.line !== null ? `${c.start_line}–${c.line}` : `${c.line ?? ""}`;
@@ -40,6 +50,9 @@ function Comment({
   const [busy, setBusy] = useState<"saving" | "deleting" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const where = location(comment);
+  // Unavailable controls stay focusable (aria-disabled) so their tip, which says why, can be read.
+  const locked = busy !== null;
+  const empty = draft !== null && draft.trim() === "";
 
   // One request at a time; the editor closes only after GitHub confirmed the save.
   const run = async (kind: "saving" | "deleting", request: () => Promise<void>, failed: string) => {
@@ -80,52 +93,69 @@ function Comment({
         {draft === null ? (
           <>
             {onEdit && (
-              <button
-                type="button"
-                className={BUTTON}
-                aria-label={`Edit comment on ${where}`}
-                disabled={busy !== null}
-                onClick={() => {
-                  setError(null);
-                  setDraft(comment.body);
-                }}
-              >
-                Edit
-              </button>
+              <Tooltip tip={busyTip(TIP.edit, locked)}>
+                <button
+                  type="button"
+                  className={BUTTON}
+                  aria-label={`Edit comment on ${where}`}
+                  aria-disabled={locked || undefined}
+                  onClick={() => {
+                    if (locked) return;
+                    setError(null);
+                    setDraft(comment.body);
+                  }}
+                >
+                  Edit
+                </button>
+              </Tooltip>
             )}
             {onDelete && (
-              <button
-                type="button"
-                className={BUTTON}
-                aria-label={`Delete comment on ${where}`}
-                disabled={busy !== null}
-                onClick={() => void run("deleting", () => onDelete(comment.id), "Not deleted")}
-              >
-                {busy === "deleting" ? "Deleting…" : "Delete"}
-              </button>
+              <Tooltip tip={busyTip(TIP.delete, locked)}>
+                <button
+                  type="button"
+                  className={BUTTON}
+                  aria-label={`Delete comment on ${where}`}
+                  aria-disabled={locked || undefined}
+                  onClick={() => !locked && void run("deleting", () => onDelete(comment.id), "Not deleted")}
+                >
+                  {busy === "deleting" ? "Deleting…" : "Delete"}
+                </button>
+              </Tooltip>
             )}
           </>
         ) : (
           <>
-            <button
-              type="button"
-              className={BUTTON}
-              disabled={busy !== null || draft.trim() === ""}
-              onClick={() => onEdit && void run("saving", () => onEdit(comment.id, draft), "Not saved")}
+            <Tooltip
+              tip={locked ? `${TIP.save} ${BUSY_NOTE}` : empty ? `${TIP.save} ${TIP.empty}` : TIP.save}
             >
-              {busy === "saving" ? "Saving…" : "Save"}
-            </button>
-            <button
-              type="button"
-              className={BUTTON}
-              disabled={busy !== null}
-              onClick={() => {
-                setError(null);
-                setDraft(null);
-              }}
-            >
-              Cancel
-            </button>
+              <button
+                type="button"
+                className={BUTTON}
+                aria-disabled={locked || empty || undefined}
+                onClick={() =>
+                  !locked &&
+                  !empty &&
+                  onEdit &&
+                  void run("saving", () => onEdit(comment.id, draft), "Not saved")
+                }
+              >
+                {busy === "saving" ? "Saving…" : "Save"}
+              </button>
+            </Tooltip>
+            <Tooltip tip={busyTip(TIP.cancel, locked)}>
+              <button
+                type="button"
+                className={BUTTON}
+                aria-disabled={locked || undefined}
+                onClick={() => {
+                  if (locked) return;
+                  setError(null);
+                  setDraft(null);
+                }}
+              >
+                Cancel
+              </button>
+            </Tooltip>
           </>
         )}
       </div>

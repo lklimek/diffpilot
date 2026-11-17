@@ -14,6 +14,7 @@ import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
 import { rangeText } from "../section/format";
 import { Collapsible } from "./Collapsible";
 import { useSectionState, type SectionControl } from "./sectionState";
+import { Tooltip } from "../tooltip/Tooltip";
 import {
   AssessmentSection,
   BehaviourSection,
@@ -222,16 +223,18 @@ export function Inspector(props: InspectorProps) {
         <div className="px-3 pt-2.5 pb-1.5">
           {panel.backTo && onBackToStep && (
             <p className="mb-1 flex flex-wrap items-baseline gap-2 text-[12px]">
-              <button
-                type="button"
-                onClick={() => {
-                  focusHeading.current = true;
-                  onBackToStep();
-                }}
-                className="cursor-pointer text-accent underline"
-              >
-                ← Back to step
-              </button>
+              <Tooltip tip="Shows the whole step again: all its LLM remarks, not only this one.">
+                <button
+                  type="button"
+                  onClick={() => {
+                    focusHeading.current = true;
+                    onBackToStep();
+                  }}
+                  className="cursor-pointer text-accent underline"
+                >
+                  ← Back to step
+                </button>
+              </Tooltip>
               <span className="text-muted">{panel.backTo}</span>
             </p>
           )}
