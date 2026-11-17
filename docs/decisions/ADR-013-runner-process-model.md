@@ -108,8 +108,14 @@ the agent could fill the host disk (no capacity or inode limit). Decision: a ded
 and inode count, separate from the session store (T8b): an ext4 image file created by the owner (e.g. 2 GiB,
 `mkfs.ext4 -N 65536`), loop-mounted on the host (`/etc/fstab`: `loop,nosuid,nodev,noexec`) and bind-mounted at
 `…/codex-homes`. Docker's `local` volume driver cannot loop-mount an image (tried: `loop: invalid argument`), so
-this is host preparation: **WP3-OPS phase 2** (runbook, compose bind mount, start-up check that the mount is the
-bounded filesystem). The test uses a `size=16m,nr_inodes=2048` tmpfs as a stand-in for the bound
+this is host preparation: `deploy/host/prepare-codex-homes.sh` (ext4 image, fstab `loop,nosuid,nodev,noexec`, no
+`lost+found`, fsck pass 0), a compose bind mount, and a start-up check in the image: the CMD runs
+`deploy/runner/preflight.sh` as `runner` before the runner, which exits **78** (the container stops; the restart
+policy retries, the log names the reason) unless `codex-homes` is a mount point on its own filesystem, ext4,
+mounted `nosuid,nodev,noexec`, within `SR_CODEX_HOMES_MAX_BYTES`/`_MAX_INODES`. A tmpfs passes only with
+`SR_CODEX_HOMES_ALLOW_TMPFS=1` and a localhost public URL (`deploy/compose.local.yaml`). `noexec` holds for Codex:
+it only places symlinks to its own binary there (`tmp/arg0-linux/*`), and exec resolves to `/opt/codex`. The check
+moves into the runner binary later (approved follow-up); until then a changed CMD would skip it. The test uses a `size=16m,nr_inodes=2048` tmpfs as a stand-in for the bound
 (`codex_home_exhaustion_fails_job_cleanly`: the agent hits `ENOSPC` for bytes and inodes, the runner still writes
 its state, copies `auth.json` back and cleans up).
 
@@ -121,9 +127,16 @@ is root-owned; the runner sets the modes.
 `init: true`; `restart: unless-stopped` (a fail-closed exit brings a clean container); no `user:` (the image's
 entrypoint is the supervisor as root); `cap_drop: [ALL]`; `cap_add: [CHOWN, SETUID, SETGID, KILL]`;
 `security_opt: [no-new-privileges:true]` and nothing `unconfined`; `read_only: true`; `ipc: none` (no `/dev/shm`);
-`pids_limit` (mandatory); `mem_limit`; the two tmpfs, the state volume and the bounded `codex-homes` mount above;
-no Docker socket; network per T4 (phase 2). Image: `deploy/runner/Dockerfile` (uids 10001/10002, no shared group,
-setuid/setgid bits stripped).
+`pids_limit` (mandatory); `mem_limit`; `cpus` (default 2); the two tmpfs, the state volume and the bounded
+`codex-homes` mount above; no Docker socket. Image: `deploy/runner/Dockerfile` (uids 10001/10002, no shared group,
+setuid/setgid bits stripped, no package manager or interpreter beyond Codex's needs).
+Restart policy: exits 70 (sweep failed), 71 (supervisor setup failed) and 78 (preflight refused) end the
+container; `unless-stopped` restarts it clean, and a repeating exit is visible in the restart count (runbook).
+Network (T4): the runner is only on the `runner` network, `internal: true` **and** bridge gateway mode `isolated`
+(IPv4 and IPv6; Docker Engine 28.0+). `internal` alone removes the route out but keeps a host address on the
+bridge, through which host services listening on that address or `0.0.0.0` stay reachable without the proxy;
+`isolated` assigns no host address. The runner reaches only the server's runner listener and the egress proxy
+(`deploy/test-stack.sh`, `runner_reaches_no_host_service`).
 
 ## Rust implementation (WP3-RUN)
 `smart-review-supervisor` in `crates/runner` (`src/supervisor/`, `src/supervisor_main.rs`); the crate forbids
@@ -219,5 +232,7 @@ token without such a prefix, or one the agent encodes, can appear in live progre
   kill within the deadline) and so force the fail-closed exit 70 and a container restart, once per attempt; the
   job's attempt limit (`max_attempts` = 3, `runner-protocol.md`) bounds the repetitions per job, other jobs of the
   queue are delayed meanwhile.
-- Until phase 2 lands the bounded `codex-homes` filesystem, a plain volume there lets the agent fill the host
-  disk; v1 must not deploy without it.
+- The bounded `codex-homes` check is a shell preflight in the image's CMD, not part of the runner binary: an
+  operator who overrides the command skips it (runner-side check approved as follow-up work).
+- The development smoke (`deploy/dev/real-codex-smoke.sh`, `SR_SMOKE_ISOLATION=supervisor`) keeps a host address
+  on its internal network, because the dev server runs on the host; never a deployment.
