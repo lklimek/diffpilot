@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { PendingComment, PendingReview } from "../../api/generated/types";
+import { codeOf } from "../inspector/action";
+import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Note, QuietCard } from "./QuietCard";
 
@@ -47,7 +49,8 @@ function Comment({
       await request();
       if (kind === "saving") setDraft(null);
     } catch (e) {
-      setError(`${failed}: ${reason(e)}`);
+      // comment_published: the change was applied to the published comment; the server's sentence says so.
+      setError(codeOf(e) === "comment_published" ? reason(e) : `${failed}: ${reason(e)}`);
     } finally {
       setBusy(null);
     }
@@ -140,10 +143,11 @@ export function PendingReviewBlock({ review, prUrl, onEdit, onDelete }: PendingR
     );
   }
   return (
-    <QuietCard title={`Pending review on GitHub (${review.comments.length})`}>
+    <QuietCard title={`Pending review on GitHub (${review.comments.length}${review.incomplete ? "+" : ""})`}>
       <Note>Read from your GitHub pending review. Edit and delete act on GitHub; nothing is kept here.</Note>
+      {review.incomplete && <p>{PENDING_INCOMPLETE}</p>}
       {review.comments.length === 0 ? (
-        <p>Your pending review on GitHub has no comments yet.</p>
+        !review.incomplete && <p>Your pending review on GitHub has no comments yet.</p>
       ) : (
         <ul className="m-0 grid list-none gap-2 p-0">
           {review.comments.map((c) => (

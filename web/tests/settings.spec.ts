@@ -68,3 +68,13 @@ test("signed out: sign-in card", async ({ page }) => {
   await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
   await expect(page.getByRole("region", { name: "LLM status" })).toHaveCount(0);
 });
+
+test("repository settings not known yet: a neutral note", async ({ page }) => {
+  await page.goto("/settings?scenario=repo-not-known");
+  await expect(
+    page.getByText(
+      "Not known yet: the repository settings are read during an analysis and appear once one has run.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});

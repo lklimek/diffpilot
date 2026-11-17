@@ -129,12 +129,20 @@ describe("Home (brief §4.1)", () => {
     expect(within(found).getByRole("link", { name: "Show progress" })).toHaveAttribute("href", PROGRESS);
   });
 
+  it("a paused analysis says until when and how far it got", async () => {
+    setScenario("existing-paused");
+    renderRoute("/");
+    await analyze();
+    const found = await banner("An analysis of this PR is in progress.", "status");
+    expect(found).toHaveTextContent(/Paused until \d\d:\d\d — 2 of 5\./);
+  });
+
   it("a failed analysis shows its plain description and leads to Retry", async () => {
     setScenario("existing-failed");
     renderRoute("/");
     await analyze();
     const failed = await banner("The last analysis of this PR failed.", "alert");
-    expect(failed).toHaveTextContent("Planning the flows failed.");
+    expect(failed).toHaveTextContent("The analysis stopped because of a server error. Retry the analysis.");
     expect(within(failed).getByRole("link", { name: "Show details and retry" })).toHaveAttribute(
       "href",
       PROGRESS,

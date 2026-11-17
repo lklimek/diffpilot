@@ -23,6 +23,15 @@ describe("TopBar", () => {
     expectTrustWording(banner.textContent ?? "");
   });
 
+  it("marks an incomplete pending-review count and says why in the tooltip", () => {
+    render(<TopBar login="alice" pendingCount="1+" onOpenPending={() => {}} />);
+    const button = screen.getByRole("button", { name: /Pending review/ });
+    expect(button).toHaveTextContent("Pending review 1+");
+    expect(button).toHaveAccessibleDescription(
+      /More pending comments exist on GitHub than are listed here\./,
+    );
+  });
+
   it("works without a PR (home)", () => {
     render(<TopBar login={null} />);
     expect(screen.getByRole("link", { name: "smart-review" })).toHaveAttribute("href", "/");

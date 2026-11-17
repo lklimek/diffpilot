@@ -147,6 +147,25 @@ describe("RepoSettingsCard (read-only)", () => {
   });
 });
 
+describe("RepoSettingsCard profile with MemCan not checked", () => {
+  it.each([
+    [[], "No .claudius/project-profile.md on the base ref. Project profile in MemCan: not checked."],
+    [
+      ["repository_file"],
+      ".claudius/project-profile.md on the base ref. Project profile in MemCan: not checked.",
+    ],
+  ] as const)("never implies no MemCan profile exists (sources %j)", (sources, text) => {
+    render(
+      <RepoSettingsCard
+        settings={{ ...repoSettings, project_profile: { sources: [...sources], memcan: "not_checked" } }}
+      />,
+    );
+    const region = screen.getByRole("region", { name: /acme\/node-client/ });
+    expect(region).toHaveTextContent(text);
+    expect(region).not.toHaveTextContent(/nor a MemCan profile/);
+  });
+});
+
 describe("RepoList", () => {
   it("marks the selected repository and reports a choice", async () => {
     const onSelect = vi.fn();

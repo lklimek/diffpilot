@@ -142,6 +142,16 @@ describe("StepBlock", () => {
     expect(within(markers).getByText("◆ 3 LLM remarks")).toHaveAccessibleDescription(/LLM/);
   });
 
+  it("never lets a partial or unchecked thread list read as complete", () => {
+    const { unmount } = render(<StepBlock step={stepOf(tour, "f1.5")} code={null} threadsStatus="partial" />);
+    const markers = () => screen.getByRole("list", { name: "Markers in this step" });
+    expect(markers()).toHaveTextContent("1 GitHub thread (the list from GitHub is incomplete)");
+    unmount();
+    const plain = structuredClone(stepOf(tour, "f2.2"));
+    render(<StepBlock step={plain} code={null} threadsStatus="not_checked" />);
+    expect(markers()).toHaveTextContent("Review threads: not checked");
+  });
+
   it("shows no marker list when the step has no markers", () => {
     const step = structuredClone(stepOf(tour, "f2.2"));
     step.llm.annotations = [];

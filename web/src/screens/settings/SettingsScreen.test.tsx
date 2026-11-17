@@ -56,6 +56,8 @@ describe("Settings (brief §4.4)", () => {
     const note = await screen.findByText(notKnown);
     expect(note).toHaveAttribute("role", "status");
     expect(screen.queryByRole("alert")).toBeNull();
+    // The note sits in the repository's card, like the facts it stands in for.
+    expect(within(await region(/^Repository acme\/node-client/)).getByText(notKnown)).toBe(note);
   });
 
   it("no LLM call yet, no profile, no related repositories: said, not hidden", async () => {
@@ -63,9 +65,10 @@ describe("Settings (brief §4.4)", () => {
     renderRoute("/settings");
     expect(await region("LLM status")).toHaveTextContent("not known yet");
     expect(screen.getByLabelText(/written in/)).toHaveValue("pl");
-    const repo = await region(/acme\/node-client/);
-    await waitFor(() => expect(repo).toHaveTextContent("No project profile"));
-    expect(repo).toHaveTextContent("None detected");
+    // The card shows "Loading…" first, then the facts.
+    const repo = () => screen.getByRole("region", { name: /acme\/node-client/ });
+    await waitFor(() => expect(repo()).toHaveTextContent("No project profile"));
+    expect(repo()).toHaveTextContent("None detected");
   });
 
   it("changing the language saves it", async () => {

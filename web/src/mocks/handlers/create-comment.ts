@@ -7,6 +7,7 @@ import type {
 } from "../../api/generated/types";
 import { fixtureState, linesFor, seedNow } from "../fixtures";
 import { commentResponses, readStore, updateStore } from "../review-store";
+import { scenario } from "../scenarios";
 import { apiError, forAnalysis, route } from "./common";
 
 /** Whether an LLM annotation of the tour covers the line. */
@@ -32,6 +33,13 @@ export const createComment = route(
     const body = (await request.json()) as CreateCommentRequest;
     const first = commentResponses.get(body.idempotency_key);
     if (first) return HttpResponse.json(first, { status: 201 });
+    if (scenario().commentPublished) {
+      return apiError(
+        409,
+        "comment_published",
+        "The pull request changed while the comment was being saved, and your review was published on GitHub in the meantime. The comment had been published on other code and was removed again. Analyse the pull request again to comment.",
+      );
+    }
     if (!readStore("pendingReview").commenting_available) {
       return apiError(
         422,

@@ -345,3 +345,53 @@ test("1440: while a comment is written its line reference stays in view (UX-109)
   await dock.evaluate((el) => el.scrollTo({ top: 0 }));
   await expect(dock.getByText("On src/rpc/client.rs:96")).toBeInViewport({ ratio: 1 });
 });
+
+for (const [scenario, outcome] of [
+  ["", "Saved to calibration memory"],
+  ["&scenario=memcan-failed", "Recorded here; not yet saved to calibration memory (retrying)"],
+] as const) {
+  test(`feedback shows the MemCan write moving from pending to its outcome${scenario}`, async ({ page }) => {
+    await page.goto(`/analyses/${ANALYSIS_ID}?state=wrong${scenario}`);
+    await page
+      .getByRole("navigation")
+      .getByRole("button", { name: /^Flow 3:/ })
+      .click();
+    await page
+      .getByRole("navigation")
+      .getByRole("button", { name: /^Step 1:/ })
+      .click();
+    const memory = page.getByRole("list", { name: "Calibration memory" });
+    await expect(memory).toContainText("wrong: Saved to calibration memory");
+    await expect(memory).toContainText("overrated: Recorded; saving to calibration memory…");
+    await expect(memory).toContainText(`overrated: ${outcome}`, { timeout: 8000 });
+  });
+}
+
+test("review threads not checked or partial never read as complete", async ({ page }) => {
+  await page.goto(`/analyses/${ANALYSIS_ID}?scenario=threads-not-checked`);
+  await expect(page.getByRole("region", { name: "Facts" })).toContainText("Review threads: not checked");
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Flow 1:/ })
+    .click();
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Step 5:/ })
+    .click();
+  await expect(page.getByRole("list", { name: "Markers in this step" })).toContainText(
+    "Review threads: not checked",
+  );
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await expect(inspector).toContainText("Review threads: not checked");
+  await expect(inspector).not.toContainText("No GitHub review threads on these lines.");
+
+  await page.goto(`/analyses/${ANALYSIS_ID}?scenario=threads-partial`);
+  // The review resumes at the last viewed step; the facts in question are on PR context.
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^PR context/ })
+    .click();
+  await expect(page.getByRole("region", { name: "Facts" })).toContainText(
+    "Review threads: the list from GitHub is incomplete",
+  );
+});

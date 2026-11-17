@@ -59,14 +59,14 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
     const resumes = new Date();
     resumes.setHours(23, 58, 0, 0);
     await showAt({ state: "paused", resumes_at: resumes.toISOString(), done: 0, total: null });
-    expect(screen.getByText("Paused: Codex usage limit reached, resumes at 23:58")).toBeVisible();
+    expect(screen.getByText("Paused until 23:58")).toBeVisible();
   });
 
   it("failed before any flow: plain description; Retry asks the server to retry", async () => {
     setScenario("failed-early");
     await showAt(liveAnalysis().state);
     expect(screen.getByText("The analysis failed before any flow was planned")).toBeVisible();
-    expect(screen.getByText(/could not be fetched from GitHub/)).toBeVisible();
+    expect(screen.getByText("The repository could not be fetched. Retry the analysis.")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(liveAnalysis().state).toEqual({ state: "planning" }));
     expect(screen.queryByRole("alert")).toBeNull();

@@ -14,11 +14,16 @@ import { scenario } from "./scenarios";
 /** Delay before a mocked question is answered. */
 export const ANSWER_MS = 300;
 
+/** How long a feedback entry stays `pending` after the mock first listed it, before its MemCan outcome. */
+export const MEMCAN_SYNC_MS = 1500;
+
 interface Store {
   reviewState: ReviewState;
   questions: AskQuestion[];
   feedback: Feedback[];
   pendingReview: PendingReview;
+  /** When the mock first listed each pending feedback entry (ms since epoch). */
+  memorySeenAt: Record<string, number>;
 }
 
 type QuestionListener = (question: AskQuestion) => void;
@@ -35,7 +40,10 @@ function seed(): Store {
     reviewState: seedNow("review-state") as ReviewState,
     questions: (scenario().questions ?? ((q: AskQuestion[]) => q))(seedNow("questions") as AskQuestion[]),
     feedback: seedNow("feedback") as Feedback[],
-    pendingReview: seedNow("pending-review") as PendingReview,
+    pendingReview: (scenario().pendingReview ?? ((r: PendingReview) => r))(
+      seedNow("pending-review") as PendingReview,
+    ),
+    memorySeenAt: {},
   };
 }
 

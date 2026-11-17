@@ -5,6 +5,7 @@ import { useCreateAnalysis, useMe, useResolvePr } from "../../api/queries";
 import { AnalyzeHelp } from "../../components/analyze-help/AnalyzeHelp";
 import { Banner } from "../../components/banner/Banner";
 import { buttonClass } from "../../components/button/button";
+import { PAUSE_REASON, pausedText } from "../../components/progress/paused";
 import { PrUrlForm } from "../../components/pr-form/PrUrlForm";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
@@ -150,6 +151,8 @@ export function HomeScreen() {
                       </Tooltip>
                     }
                   >
+                    {outcome.analysis.state.state === "paused" &&
+                      `${pausedText(outcome.analysis.state)}. ${PAUSE_REASON} `}
                     Nothing new is started.
                   </Banner>
                 )}
