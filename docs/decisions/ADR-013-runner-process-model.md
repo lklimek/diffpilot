@@ -1,8 +1,7 @@
 # ADR-013: Runner process model (decision R1)
 
-- Status: accepted by evidence (WP3-OPS phase 1, 2026-11-17, revised after reviews SEC-001/SEC-002 and
-  SEC-003/QA-001); R1 holds,
-  the two-container fallback is not needed.
+- Status: accepted by evidence (WP3-OPS phase 1, 2026-11-17, revised after its security and correctness
+  reviews); R1 holds, the two-container fallback is not needed.
 - Source: threat model R1, T1a–T1d, T4, T8b, T13; ADR-003 (per-job `CODEX_HOME` persistent); plan §5.4.
 - Evidence: `deploy/runner/r1-test/run.sh` (43 named checks, all PASS); ledger
   `/data/artifacts/smart-review/2026-11-17/wp3-ops/r1-test.log`. Docker 29.9.2, kernel 7.0, default seccomp,

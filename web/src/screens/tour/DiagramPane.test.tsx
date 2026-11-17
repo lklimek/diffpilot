@@ -7,7 +7,7 @@ import { DiagramPane } from "./DiagramPane";
 
 const flow = (seedFor("default", "tour") as Tour).flows[0]!;
 
-describe("DiagramPane (QA-007)", () => {
+describe("DiagramPane", () => {
   it("a failed diagram chunk leaves a text list of the steps and a retry; the rest stays", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const load = vi

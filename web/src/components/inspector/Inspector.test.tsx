@@ -247,7 +247,7 @@ describe("Inspector summaries", () => {
       "Not analysed: 8 files (Tests 4, Docs & comments 3, Mechanical & generated 1)",
     );
     expect(coverage).toHaveTextContent("Moves with identical text: 1");
-    // The LLM's split is not a fact (UX-104); the centre's Facts are not repeated (UX-110).
+    // The LLM's split is not a fact; the centre's Facts are not repeated.
     expect(coverage).not.toHaveTextContent(/flows?|steps?|CI|Project profile|removed from tests|dependenc/);
     const glance = region(/^LLM analysis at a glance/);
     expect(glance).toHaveTextContent("The LLM split this PR into 5 flows with 17 steps.");

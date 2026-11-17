@@ -1,7 +1,6 @@
 # ADR-006: Comments through the GitHub pending review (GraphQL)
 
-- Status: accepted (coordinator, 2026-11-16, after spike S3; amended 2026-11-16 after the WP1-A contract review,
-  ARCH-003)
+- Status: accepted (coordinator, 2026-11-16, after spike S3; amended 2026-11-16 after the WP1-A contract review)
 - Source: `docs/spikes/S3-pending-review.md`; brief §2 Comments, §5 Comments.
 
 ## Decisions

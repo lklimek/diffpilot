@@ -38,7 +38,7 @@ export interface CodeViewProps {
   annotations?: readonly Annotation[];
   /** The step's LLM risk band (`assessment.risk`), styling the bar (ADR-008); null = not rated. */
   band?: RiskBand | null;
-  /** Step kind (`data-kind` hook); `context` with no changed line in the diff gets the hatch and caption (UX-003). */
+  /** Step kind (`data-kind` hook); `context` with no changed line in the diff gets the hatch and caption. */
   kind?: FragmentKind;
   /** GitHub review threads of the PR; those on displayed lines get a marker. */
   threads?: readonly GithubThread[];
@@ -59,7 +59,7 @@ export interface CodeViewProps {
 }
 
 // The bar pattern is the colour-independent signal; an unrated remark gets a thin neutral line of its own, so it
-// never reads as LOW (UX-102). The 5 px border stays reserved (transparent) so nothing shifts.
+// never reads as LOW. The 5 px border stays reserved (transparent) so nothing shifts.
 const BANDS: Record<RiskBand | "none", { label: string | null; pattern: string; bar: string; text: string }> =
   {
     high: {
@@ -88,7 +88,7 @@ const BANDS: Record<RiskBand | "none", { label: string | null; pattern: string; 
     },
   };
 
-// Every segment reserves the same 5 px left bar column, so line numbers and code never shift (UX-002).
+// Every segment reserves the same 5 px left bar column, so line numbers and code never shift.
 const SEGMENT = "border-l-5 min-w-full w-max";
 const STRIP = "sticky left-0 block w-max pr-2 pl-[calc(var(--ln)+var(--gutter))] font-sans";
 

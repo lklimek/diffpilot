@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
 import { SignInCard } from "./SignInCard";
 
-describe("SignInCard (UX-004)", () => {
+describe("SignInCard", () => {
   it("has a primary 'Sign in with GitHub' action with a tooltip, the purpose and the no-submit promise", () => {
     render(<SignInCard loginHref="/auth/github/login" />);
     const signIn = screen.getByRole("link", { name: "Sign in with GitHub" });

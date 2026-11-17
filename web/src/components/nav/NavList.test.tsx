@@ -35,7 +35,7 @@ describe("NavList", () => {
     expect(screen.queryByRole("button", { name: /^Step / })).not.toBeInTheDocument();
   });
 
-  it("draws the PR context row as a menu row like the flow rows, not as a heading (UX-008)", () => {
+  it("draws the PR context row as a menu row like the flow rows, not as a heading", () => {
     renderNav({ current: { block: "flow_intro", flow_id: "f1" } });
     const row = screen.getByRole("button", { name: "PR context" });
     const flowRow = screen.getByRole("button", { name: /^Flow 1/ });

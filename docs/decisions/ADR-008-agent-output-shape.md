@@ -1,7 +1,7 @@
 # ADR-008: Agent-output shape and its API projection
 
 - Status: accepted (coordinator, 2026-11-16, after spike S7 and the WP1-A plan review; amended 2026-11-16 after
-  the WP1-A contract review: ARCH-001, ARCH-002, ARCH-004)
+  the WP1-A contract review)
 - Source: `docs/spikes/S7-llm-capability.md` (WP1-A schema recommendations); brief §1, §3; plan §5.3;
   `docs/contracts/agent-output.md`.
 
@@ -20,7 +20,7 @@
     agent-local; the server assigns API ids `"<flow>.<n>"` and annotation ids `"<step>.a<n>"`.
   - The agent emits only graph **edges** (step id → step id, optional branch label); the server derives nodes,
     numbering and node kind from the steps (`added` → added; `context` → unchanged; other kinds → changed).
-  - **Locations** (ARCH-001). Steps, evidence and pattern sites carry `side: head | base`. `head` is the common
+  - **Locations**. Steps, evidence and pattern sites carry `side: head | base`. `head` is the common
     case (S7: head line ranges work well for the model). `base` is only for removed code without a head line to
     anchor to: a deleted file, an emptied file, a removed block; such a step is `deleted_site` and its lines are
     base lines inside the file's hunks (verify: `BaseSideMisused`). Removed lines next to head lines stay at
@@ -32,7 +32,7 @@
     `DiffResponse`, `FeedbackTarget::Line` and comment targets; one `LineSide` replaces the GitHub-style
     `left | right` (the server maps base = LEFT, head = RIGHT).
   - Annotation types `behaviour | consequence | question | note`; every annotation carries `basis` and
-    evidence. **Every annotation also carries `was` and `is`** (ARCH-002): the behaviour of its highlighted
+    evidence. **Every annotation also carries `was` and `is`**: the behaviour of its highlighted
     range before and after, the only content of the hover tooltip (facts, no risk, no verdict) and of the
     inspector's "Behaviour (was → is)" section for that highlight. `text` holds the consequence, question or
     note and is null exactly for `behaviour` annotations (verify: `BehaviourMissing`, `RemarkMismatch`).
@@ -57,7 +57,7 @@
   `related_work_checked` (false when the GitHub App is not installed on the PR repository, ADR-005).
 - Whitespace-only changes stay in the hunks given to the agent, marked as a fact. Moves with deterministically
   identical text are removed from the agent's hunks and shown as quiet rows. An identical move carries no flow
-  reference (ARCH-004); its row reads "Body text identical" only and never implies unchanged behaviour.
+  reference; its row reads "Body text identical" only and never implies unchanged behaviour.
   For the owner: [deviation] brief §4.3 "call site changed in flow N" is not in v1: there is no deterministic
   producer while the call hierarchy is n/a, and the LLM does not see identical moves.
 - `FlowFacts` has no changed-line counter (no consumer in the brief or mockups).

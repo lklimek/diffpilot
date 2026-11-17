@@ -107,7 +107,7 @@ describe("StepBlock", () => {
     expect(screen.queryByRole("button", { name: /Mark reviewed/ })).not.toBeInTheDocument();
   });
 
-  it("draws a context step's code with a distinct border style, as the LLM's classification (UX-003)", () => {
+  it("draws a context step's code with a distinct border style, as the LLM's classification", () => {
     const { unmount } = render(<StepBlock step={stepOf(tour, "f1.1")} code={<p>ctx code</p>} />);
     const wrap = screen.getByText("ctx code").closest("[data-code-slot]")!;
     expect(wrap).toHaveAttribute("data-context");

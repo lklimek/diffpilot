@@ -51,7 +51,7 @@ describe("review-state store", () => {
     expect(store.view(ID)).toMatchObject({ status: "ready", state: state(["f2.1"], "f1.5") });
   });
 
-  it("a read that finishes after a local tick does not take the tick back (QA-001)", async () => {
+  it("a read that finishes after a local tick does not take the tick back", async () => {
     const { store, gets, puts, tick } = setup();
     const first = store.read(ID);
     gets[0]!.resolve(state(["f2.1"]));
@@ -70,7 +70,7 @@ describe("review-state store", () => {
     expect(store.view(ID).state).toEqual(state(["f2.1", "f1.1"], "f1.1"));
   });
 
-  it("a read that started before a save completed is ignored: the saved tick stays (QA-001)", async () => {
+  it("a read that started before a save completed is ignored: the saved tick stays", async () => {
     const { store, gets, puts, tick } = setup();
     const first = store.read(ID);
     gets[0]!.resolve(state([]));
@@ -87,7 +87,7 @@ describe("review-state store", () => {
     expect(puts.at(-1)!.body.ticked_steps).toEqual(["f1.1", "f1.2"]);
   });
 
-  it("never writes before a read succeeded; then merges the changes made meanwhile and saves them (QA-002, QA-010)", async () => {
+  it("never writes before a read succeeded; then merges the changes made meanwhile and saves them", async () => {
     const { store, gets, puts, tick } = setup();
     const failed = store.read(ID);
     gets[0]!.reject(new Error("down"));
@@ -118,7 +118,7 @@ describe("review-state store", () => {
     expect(puts).toEqual([]);
   });
 
-  it("keeps one queue per analysis: PUTs in order, only the newest waiting state is sent (QA-004)", async () => {
+  it("keeps one queue per analysis: PUTs in order, only the newest waiting state is sent", async () => {
     const { store, gets, puts, tick } = setup();
     const read = store.read(ID);
     gets[0]!.resolve(state([]));

@@ -126,7 +126,7 @@ describe("Tour screen (brief §4.3)", () => {
     expect(within(inspector()).getByRole("heading", { level: 2, name: "Inspector" })).toBeInTheDocument();
   });
 
-  it("Hide on the last visible column is disabled and says why (UX-105)", async () => {
+  it("Hide on the last visible column is disabled and says why", async () => {
     await open();
     await user().click(screen.getByRole("button", { name: "Hide Flows column" }));
     await user().click(screen.getByRole("button", { name: "Hide Inspector column" }));
@@ -142,7 +142,7 @@ describe("Tour screen (brief §4.3)", () => {
     );
   });
 
-  it("says once that the review resumed where it was left; Dismiss and moving on remove it (UX-111)", async () => {
+  it("says once that the review resumed where it was left; Dismiss and moving on remove it", async () => {
     await open("resume");
     expect(blockHeading()).toHaveTextContent("5 Retry allowed?");
     expect(within(main()).getByText("Resumed where you left off: flow 1, step 5.")).toHaveAttribute(
@@ -252,7 +252,7 @@ describe("Tour screen (brief §4.3)", () => {
     expect(await within(answers).findByText("It is not.")).toBeInTheDocument();
   });
 
-  it("a lost answer stream is announced at the pinned answers (QA-008)", async () => {
+  it("a lost answer stream is announced at the pinned answers", async () => {
     await open();
     await openStep("1", "5");
     act(() => FakeEventSource.latest().fail());
@@ -296,7 +296,7 @@ describe("Tour screen (brief §4.3)", () => {
     expect(readStore("reviewState").last_viewed).toEqual({ block: "step", step_id: "f1.5" });
   });
 
-  it("leaving and reopening while a save is slow keeps one queue: the newest block is stored last (QA-004)", async () => {
+  it("leaving and reopening while a save is slow keeps one queue: the newest block is stored last", async () => {
     const finished: ReviewState[] = [];
     server.use(
       http.put("/api/v1/analyses/:id/review-state", async ({ request }) => {
@@ -317,7 +317,7 @@ describe("Tour screen (brief §4.3)", () => {
     expect(finished.map((b) => b.last_viewed?.block)).toEqual(["pr_context", "flow_intro", "step"]);
   });
 
-  it("after a failed read, reopening never writes over the stored ticks (QA-002)", async () => {
+  it("after a failed read, reopening never writes over the stored ticks", async () => {
     const written: ReviewState[] = [];
     server.use(
       http.get(
@@ -342,7 +342,7 @@ describe("Tour screen (brief §4.3)", () => {
     expect(written.every((w) => w.ticked_steps.includes("f2.1"))).toBe(true);
   });
 
-  it("after a failed read, a change made meanwhile is merged with the stored state and saved (QA-010)", async () => {
+  it("after a failed read, a change made meanwhile is merged with the stored state and saved", async () => {
     const written: ReviewState[] = [];
     server.use(
       http.get(
