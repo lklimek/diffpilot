@@ -297,6 +297,15 @@ srl logs -f --since 10m server runner
 srl down               # remove containers and networks; volumes (database, Codex credential) stay
 ```
 
+Codex login (once per runner-state volume): copy an existing login volume to volume, never from the host
+`~/.codex`; afterwards the source volume is retired (the refresh token is single-use, one live copy only):
+
+```sh
+docker run --rm --network none -v sr-spike-codex-home:/src:ro -v smart-review-local_runner-state:/dst ubuntu:26.04 \
+  sh -c 'install -d -o 10001 -g 10001 -m 0700 /dst/credentials /dst/credentials/default &&
+         install -o 10001 -g 10001 -m 0600 /src/auth.json /dst/credentials/default/auth.json'
+```
+
 First sign-in (owner, once per database): open `http://localhost:3000` in a browser on this host (or through an
 SSH tunnel `ssh -L 3000:127.0.0.1:3000 agentic`), choose "Sign in with GitHub", sign in as an allowed login
 (`lklimek`), approve the App. The server binds the login to its GitHub id at this first sign-in.
