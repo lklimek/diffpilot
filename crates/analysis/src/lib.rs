@@ -1,5 +1,6 @@
 //! Deterministic, language-agnostic analysis of a pull request; runs `git` read-only on a given path.
 
+pub mod blob;
 pub mod counters;
 pub mod coverage;
 pub mod diff;

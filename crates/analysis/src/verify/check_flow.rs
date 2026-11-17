@@ -1,6 +1,7 @@
 //! `analyse_flow` checks: locations in the pinned trees, step and annotation rules, references and edges,
 //! thread aliases, move claims and coverage of the flow's changed lines; then the derived graph, step ids,
-//! trimmed ranges and move facts.
+//! trimmed ranges and move facts. The diff, the steps and the moved blocks are indexed once, so every pass is
+//! O(n log n) in the size of the diff and the output.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -9,17 +10,124 @@ use contracts::api::tour::{FlowGraph, GraphEdge, GraphNode, MoveFact};
 use contracts::common::{AnnotationType, Basis, FragmentKind, LineSide, ProvenanceBadge};
 use contracts::ids::StepId;
 
+use super::spans::{self, Span};
 use super::{
-    FlowContext, Issues, VerifiedFlow, VerifyError, VerifyIssueKind, describe_lines, head_path_of,
-    marker_inside, side_name, wording,
+    FileFacts, FlowContext, Issues, VerifiedFlow, VerifyError, VerifyIssueKind, side_name, wording,
 };
-use crate::lines::{changed_lines_within, deletion_markers};
-use crate::moves::MovedBlock;
+use crate::diff::FileDiff;
+use crate::moves::{MovedBlock, MovesReport};
+
+/// Removed base lines, the deletion marker they show at, and the file's head path.
+type Removed<'a> = (Span, u32, Option<&'a str>);
+
+/// A moved block's head lines, the block and its differing head lines, sorted.
+type IndexedBlock<'a> = (Span, &'a MovedBlock, Vec<u32>);
+
+/// The changed lines of the diff, indexed by side and path.
+struct Changes<'a> {
+    /// Changed lines per path: added head lines and removed base lines.
+    lines: HashMap<&'a str, [Vec<Span>; 2]>,
+    /// Deletion markers per head path, ascending.
+    markers: HashMap<&'a str, Vec<u32>>,
+    /// Removed lines per base path with their marker and the file's head path.
+    removed: HashMap<&'a str, Vec<Removed<'a>>>,
+}
+
+impl<'a> Changes<'a> {
+    fn new(files: &'a [FileDiff]) -> Self {
+        let mut changes = Self {
+            lines: HashMap::new(),
+            markers: HashMap::new(),
+            removed: HashMap::new(),
+        };
+        for file in files {
+            let head = file.path_on(LineSide::Head);
+            for hunk in &file.hunks {
+                let added = spans::hunk_spans(hunk, true);
+                let removed = spans::hunk_spans(hunk, false);
+                if let Some(head) = head {
+                    changes.lines.entry(head).or_default()[0].extend(&added);
+                    if !removed.is_empty() {
+                        let markers = changes.markers.entry(head).or_default();
+                        markers.push(spans::marker_of(hunk));
+                    }
+                }
+                if let Some(base) = file.path_on(LineSide::Base) {
+                    changes.lines.entry(base).or_default()[1].extend(&removed);
+                    let marker = spans::marker_of(hunk);
+                    let entries = changes.removed.entry(base).or_default();
+                    entries.extend(removed.iter().map(|&span| (span, marker, head)));
+                }
+            }
+        }
+        for lines in changes.lines.values_mut().flatten() {
+            *lines = spans::merge(std::mem::take(lines));
+        }
+        for markers in changes.markers.values_mut() {
+            markers.sort_unstable();
+            markers.dedup();
+        }
+        changes
+    }
+
+    fn lines(&self, side: LineSide, path: &str) -> &[Span] {
+        let index = usize::from(side == LineSide::Base);
+        self.lines
+            .get(path)
+            .map_or(&[], |lines| lines[index].as_slice())
+    }
+
+    fn markers(&self, path: &str) -> &[u32] {
+        self.markers.get(path).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// Deterministic moved blocks per head path, ascending by head start, with their differing lines sorted.
+struct Moves<'a> {
+    blocks: HashMap<&'a str, Vec<IndexedBlock<'a>>>,
+}
+
+impl<'a> Moves<'a> {
+    fn new(report: &'a MovesReport) -> Self {
+        let mut blocks: HashMap<&str, Vec<_>> = HashMap::new();
+        for block in report
+            .moved
+            .iter()
+            .filter(|block| block.to.side == LineSide::Head)
+        {
+            let to = (block.to.range.start_line, block.to.range.end_line);
+            let mut differing = block.differing_head_lines.clone();
+            differing.sort_unstable();
+            differing.dedup();
+            blocks
+                .entry(block.to.file.as_str())
+                .or_default()
+                .push((to, block, differing));
+        }
+        for list in blocks.values_mut() {
+            list.sort_unstable_by_key(|(to, _, _)| *to);
+        }
+        Self { blocks }
+    }
+
+    /// The moved block whose head lines contain all of a head step's lines.
+    fn containing(&self, step: &AgentStep) -> Option<&IndexedBlock<'a>> {
+        if step.side != LineSide::Head {
+            return None;
+        }
+        let list = self.blocks.get(step.file.as_str())?;
+        let index = list.partition_point(|(to, _, _)| to.0 <= step.start_line);
+        let candidate = list.get(index.checked_sub(1)?)?;
+        (candidate.0.1 >= step.end_line).then_some(candidate)
+    }
+}
 
 pub(super) fn flow(
     output: &FlowAnalysisOutput,
     context: FlowContext<'_>,
 ) -> Result<VerifiedFlow, VerifyError> {
+    let changes = Changes::new(context.diff.files());
+    let moves = Moves::new(context.moves);
     let mut issues = Issues::default();
     let flow_id = &context.planned.id;
     if &output.flow_id != flow_id {
@@ -46,7 +154,7 @@ pub(super) fn flow(
             let message = format!("{at}: step id {} is used twice", step.id);
             issues.push(VerifyIssueKind::DuplicateId, message);
         }
-        check_step(&mut issues, context, &at, step);
+        check_step(&mut issues, context, &changes, &moves, &at, step);
     }
     let unknown_step = |id: &str| !local.contains_key(id);
     for (index, edge) in output.edges.iter().enumerate() {
@@ -67,7 +175,18 @@ pub(super) fn flow(
             issues.push(VerifyIssueKind::UnknownReference, message);
         }
         let lines = (impact.start_line, impact.end_line);
-        issues.location(context.facts, &at, LineSide::Head, &impact.file, lines);
+        if issues.location(context.facts, &at, LineSide::Head, &impact.file, lines) {
+            let inside = spans::intersect(changes.lines(LineSide::Head, &impact.file), &[lines]);
+            if !inside.is_empty() {
+                let changed = spans::describe(&inside);
+                let message = format!(
+                    "{at}: lines {changed} of {} are changed lines of this pull request; impact_refs name \
+                     unchanged code outside the diff (changed lines belong in steps)",
+                    impact.file
+                );
+                issues.push(VerifyIssueKind::ImpactInsideDiff, message);
+            }
+        }
         issues.text(&format!("{at}.reason"), &impact.reason);
     }
     for (index, pattern) in output.pattern_repetitions.iter().enumerate() {
@@ -104,9 +223,9 @@ pub(super) fn flow(
             issues.push(VerifyIssueKind::ThreadStatusMissing, message);
         }
     }
-    for ((side, file), lines) in uncovered(output, context) {
+    for ((side, file), lines) in uncovered(output, context, &changes) {
         let side = side_name(side);
-        let lines = describe_lines(&lines);
+        let lines = spans::describe(&lines);
         let message = format!(
             "{side} lines {lines} of {file} are changed lines of this flow outside every step (removed lines: in a \
              base step or at their deletion marker inside a head step)"
@@ -114,10 +233,17 @@ pub(super) fn flow(
         issues.push(VerifyIssueKind::ChangedLineUncovered, message);
     }
     issues.finish(())?;
-    Ok(verified(output, context))
+    Ok(verified(output, context, &changes, &moves))
 }
 
-fn check_step(issues: &mut Issues, context: FlowContext<'_>, at: &str, step: &AgentStep) {
+fn check_step(
+    issues: &mut Issues,
+    context: FlowContext<'_>,
+    changes: &Changes<'_>,
+    moves: &Moves<'_>,
+    at: &str,
+    step: &AgentStep,
+) {
     let texts = [
         ("title", &step.title),
         ("called_by", &step.called_by),
@@ -138,13 +264,9 @@ fn check_step(issues: &mut Issues, context: FlowContext<'_>, at: &str, step: &Ag
             );
             issues.push(VerifyIssueKind::BaseSideMisused, message);
         } else if located {
-            let files = context.diff.files();
-            let removed = changed_lines_within(files, &step.file, LineSide::Base, start, end);
-            let kept: Vec<u32> = (start..=end)
-                .filter(|line| removed.binary_search(line).is_err())
-                .collect();
+            let kept = spans::subtract(&[(start, end)], changes.lines(LineSide::Base, &step.file));
             if !kept.is_empty() {
-                let lines = describe_lines(&kept);
+                let lines = spans::describe(&kept);
                 let message = format!(
                     "{at}: base lines {lines} of {} were not removed by this pull request; a base-side step holds \
                      removed lines only",
@@ -154,7 +276,7 @@ fn check_step(issues: &mut Issues, context: FlowContext<'_>, at: &str, step: &Ag
             }
         }
     }
-    check_move_claim(issues, context, at, step);
+    check_move_claim(issues, context, moves, at, step);
     for (number, annotation) in step.annotations.iter().enumerate() {
         let at = format!("{at}.annotations[{number}]");
         let (first, last) = (annotation.start_line, annotation.end_line);
@@ -212,9 +334,16 @@ fn check_step(issues: &mut Issues, context: FlowContext<'_>, at: &str, step: &Ag
     }
 }
 
-/// `moved_from` is set exactly on `moved` steps, names base lines that exist and agrees with the deterministic
-/// moved block at the step's lines (a claim without such a block stays an LLM claim).
-fn check_move_claim(issues: &mut Issues, context: FlowContext<'_>, at: &str, step: &AgentStep) {
+/// `moved_from` is set exactly on `moved` steps and names base lines that exist. When a deterministic moved
+/// block contains the whole step, the claim must name that block's file and overlap its base lines; any other
+/// claim (a step wider than a block, across two blocks, without a block) stays an LLM claim without a move fact.
+fn check_move_claim(
+    issues: &mut Issues,
+    context: FlowContext<'_>,
+    moves: &Moves<'_>,
+    at: &str,
+    step: &AgentStep,
+) {
     let moved = step.kind == FragmentKind::Moved;
     let Some(from) = &step.moved_from else {
         if moved {
@@ -233,10 +362,10 @@ fn check_move_claim(issues: &mut Issues, context: FlowContext<'_>, at: &str, ste
     if !issues.location(context.facts, &at_from, LineSide::Base, &from.file, claimed) {
         return;
     }
-    if let Some(block) = moved_block(context, step) {
+    if let Some((_, block, _)) = moves.containing(step) {
         let origin = &block.from;
         let (first, last) = (origin.range.start_line, origin.range.end_line);
-        if origin.file != from.file || !overlaps(claimed, (first, last)) {
+        if origin.file != from.file || !spans::touches(&[(first, last)], claimed) {
             let file = &origin.file;
             let message = format!(
                 "{at_from}: the block moved to these lines comes from {file} base lines {first}-{last}"
@@ -246,50 +375,52 @@ fn check_move_claim(issues: &mut Issues, context: FlowContext<'_>, at: &str, ste
     }
 }
 
-/// The deterministic moved block whose head lines overlap a head step.
-fn moved_block<'a>(context: FlowContext<'a>, step: &AgentStep) -> Option<&'a MovedBlock> {
-    if step.side != LineSide::Head {
+/// The deterministic move fact of a `moved` step: only when one moved block contains every line of the step and
+/// the claimed origin lies inside that block's base lines; the differing lines are counted inside the step.
+fn move_fact(moves: &Moves<'_>, step: &AgentStep) -> Option<MoveFact> {
+    let from = step
+        .moved_from
+        .as_ref()
+        .filter(|_| step.kind == FragmentKind::Moved)?;
+    let (_, block, differing) = moves.containing(step)?;
+    let origin = &block.from;
+    let base = (origin.range.start_line, origin.range.end_line);
+    if origin.file != from.file || !spans::covers(&[base], (from.base_start, from.base_end)) {
         return None;
     }
-    let lines = (step.start_line, step.end_line);
-    context.moves.moved.iter().find(|block| {
-        let to = &block.to;
-        to.side == LineSide::Head
-            && to.file == step.file
-            && overlaps(lines, (to.range.start_line, to.range.end_line))
+    let first = differing.partition_point(|&line| line < step.start_line);
+    let last = differing.partition_point(|&line| line <= step.end_line);
+    Some(MoveFact {
+        from: origin.clone(),
+        badge: block.identical.then_some(ProvenanceBadge::TextIdentical),
+        differing_lines: u32::try_from(last - first).unwrap_or(u32::MAX),
     })
 }
 
-fn overlaps((a_start, a_end): (u32, u32), (b_start, b_end): (u32, u32)) -> bool {
-    a_start <= b_end && b_start <= a_end
-}
-
-/// Planned changed lines of the flow outside every step; blank lines need no step.
+/// Planned changed lines of the flow outside every step; blank lines need no step. Interval arithmetic over the
+/// planned ranges, the merged step ranges and the removed spans: O((P + S + H + B) log) for P planned ranges, S
+/// steps, H hunk spans and B blank lines of the planned files.
 fn uncovered(
     output: &FlowAnalysisOutput,
     context: FlowContext<'_>,
-) -> BTreeMap<(LineSide, String), Vec<u32>> {
-    let files = context.diff.files();
-    let in_step = |side: LineSide, file: &str, line: u32| {
-        output.steps.iter().any(|step| {
-            step.side == side
-                && step.file == file
-                && (step.start_line..=step.end_line).contains(&line)
-        })
+    changes: &Changes<'_>,
+) -> BTreeMap<(LineSide, String), Vec<Span>> {
+    let mut steps: HashMap<(LineSide, String), Vec<Span>> = HashMap::new();
+    for step in &output.steps {
+        let key = (step.side, step.file.clone());
+        steps
+            .entry(key)
+            .or_default()
+            .push((step.start_line, step.end_line));
+    }
+    for spans in steps.values_mut() {
+        *spans = spans::merge(std::mem::take(spans));
+    }
+    let steps_of = |side: LineSide, file: &str| {
+        let key = (side, file.to_owned());
+        steps.get(&key).map_or(&[][..], Vec::as_slice)
     };
-    let at_marker = |base_path: &str, line: u32| {
-        let marker = context.diff.deletion_marker(base_path, line);
-        let head_path = head_path_of(files, base_path);
-        let (Some(marker), Some(head_path)) = (marker, head_path) else {
-            return false;
-        };
-        output.steps.iter().any(|step| {
-            step.side == LineSide::Head
-                && step.file == head_path
-                && marker_inside(marker, step.start_line, step.end_line)
-        })
-    };
-    let mut missing: BTreeMap<(LineSide, String), Vec<u32>> = BTreeMap::new();
+    let mut missing = BTreeMap::new();
     let planned = context
         .plan
         .flow_lines
@@ -297,26 +428,55 @@ fn uncovered(
         .into_iter()
         .flatten();
     for lines in planned {
-        let facts = context.facts.get(lines.side, &lines.file);
-        for range in &lines.ranges {
-            for line in range.start_line..=range.end_line {
-                let covered = facts.is_some_and(|facts| facts.is_blank(line))
-                    || in_step(lines.side, &lines.file, line)
-                    || (lines.side == LineSide::Base && at_marker(&lines.file, line));
-                if !covered {
-                    missing
-                        .entry((lines.side, lines.file.clone()))
-                        .or_default()
-                        .push(line);
-                }
-            }
+        let file = lines.file.as_str();
+        let mut rest = spans::subtract(
+            &spans::from_ranges(&lines.ranges),
+            steps_of(lines.side, file),
+        );
+        if lines.side == LineSide::Base && !rest.is_empty() {
+            let at_markers: Vec<Span> = changes
+                .removed
+                .get(file)
+                .into_iter()
+                .flatten()
+                .filter(|(_, marker, head)| {
+                    head.is_some_and(|head| {
+                        let marker_gap = (*marker, marker.saturating_add(1));
+                        spans::touches(steps_of(LineSide::Head, head), marker_gap)
+                    })
+                })
+                .map(|(span, _, _)| *span)
+                .collect();
+            rest = spans::subtract(&rest, &spans::merge(at_markers));
+        }
+        if let Some(facts) = context
+            .facts
+            .get(lines.side, file)
+            .filter(|_| !rest.is_empty())
+        {
+            rest = spans::subtract(&rest, &blank_spans(facts));
+        }
+        if !rest.is_empty() {
+            missing.insert((lines.side, lines.file.clone()), rest);
         }
     }
     missing
 }
 
+fn blank_spans(facts: &FileFacts) -> Vec<Span> {
+    crate::lines::ranges(&facts.blank_lines)
+        .into_iter()
+        .map(|range| (range.start_line, range.end_line))
+        .collect()
+}
+
 /// The accepted flow: trimmed ranges, server step ids, derived graph, covered lines, move facts, warnings.
-fn verified(output: &FlowAnalysisOutput, context: FlowContext<'_>) -> VerifiedFlow {
+fn verified(
+    output: &FlowAnalysisOutput,
+    context: FlowContext<'_>,
+    changes: &Changes<'_>,
+    moves: &Moves<'_>,
+) -> VerifiedFlow {
     let flow_id = &context.planned.id;
     let step_ids: Vec<StepId> = (1..=output.steps.len())
         .map(|number| StepId(format!("{flow_id}.{number}")))
@@ -350,27 +510,15 @@ fn verified(output: &FlowAnalysisOutput, context: FlowContext<'_>) -> VerifiedFl
             })
         })
         .collect();
-    let moves = output
+    let facts = output
         .steps
         .iter()
         .zip(&step_ids)
-        .filter(|(step, _)| step.kind == FragmentKind::Moved)
-        .filter_map(|(step, id)| {
-            let block = moved_block(context, step)?;
-            Some((
-                id.clone(),
-                MoveFact {
-                    from: block.from.clone(),
-                    badge: block.identical.then_some(ProvenanceBadge::TextIdentical),
-                    differing_lines: u32::try_from(block.differing_head_lines.len())
-                        .unwrap_or(u32::MAX),
-                },
-            ))
-        })
+        .filter_map(|(step, id)| Some((id.clone(), move_fact(moves, step)?)))
         .collect();
     let mut trimmed_output = output.clone();
     for step in &mut trimmed_output.steps {
-        (step.start_line, step.end_line) = trimmed(step, context);
+        (step.start_line, step.end_line) = trimmed(step, context, changes);
     }
     VerifiedFlow {
         flow_id: flow_id.clone(),
@@ -383,47 +531,90 @@ fn verified(output: &FlowAnalysisOutput, context: FlowContext<'_>) -> VerifiedFl
             .get(flow_id)
             .cloned()
             .unwrap_or_default(),
-        moves,
+        moves: facts,
         warnings: wording::flow(output),
     }
 }
 
-/// The step range without blank edge lines; changed lines, annotated lines and deletion markers stay inside.
-fn trimmed(step: &AgentStep, context: FlowContext<'_>) -> (u32, u32) {
+/// The step range without blank edge lines; changed lines, annotated lines and deletion markers stay inside (a
+/// marker after line m stays inside while the range starts at or before m + 1 and ends at or after m). Binary
+/// searches over the blank runs, changed spans and markers: O(log + annotations) per step.
+fn trimmed(step: &AgentStep, context: FlowContext<'_>, changes: &Changes<'_>) -> (u32, u32) {
     let (start, end) = (step.start_line, step.end_line);
     let Some(facts) = context.facts.get(step.side, &step.file) else {
         return (start, end);
     };
-    let files = context.diff.files();
-    let changed = changed_lines_within(files, &step.file, step.side, start, end);
-    let markers: Vec<u32> = match step.side {
-        LineSide::Head => files
-            .iter()
-            .filter(|file| file.path_on(LineSide::Head) == Some(step.file.as_str()))
-            .flat_map(|file| deletion_markers(file, start, end))
-            .map(|marker| marker.after_line)
-            .collect(),
-        LineSide::Base => Vec::new(),
+    let blank = &facts.blank_lines;
+    let changed = changes.lines(step.side, &step.file);
+    let markers = match step.side {
+        LineSide::Head => changes.markers(&step.file),
+        LineSide::Base => &[],
     };
-    // A marker after line m stays inside while the range starts at or before m + 1 and ends at or after m.
-    let kept = |line: u32, marker_pins: &dyn Fn(u32) -> bool| {
-        !facts.is_blank(line)
-            || changed.binary_search(&line).is_ok()
-            || step
-                .annotations
-                .iter()
-                .any(|a| (a.start_line..=a.end_line).contains(&line))
-            || markers.iter().any(|&marker| marker_pins(marker))
+    let annotations = || {
+        step.annotations
+            .iter()
+            .filter(|a| a.start_line <= a.end_line)
+            .map(|a| (a.start_line, a.end_line))
     };
     let mut first = start;
-    while first < end && !kept(first, &|marker| marker.saturating_add(1) == first) {
-        first += 1;
+    if facts.is_blank(start) {
+        first = blank_run(blank, start).1.saturating_add(1).min(end);
+        let next_changed = changed.partition_point(|&(_, last)| last < start);
+        if let Some(&(changed_first, _)) = changed.get(next_changed) {
+            first = first.min(changed_first.max(start));
+        }
+        for (a_first, _) in annotations().filter(|&(_, a_last)| a_last >= start) {
+            first = first.min(a_first.max(start));
+        }
+        let next_marker = markers.partition_point(|&marker| marker.saturating_add(1) < start);
+        if let Some(&marker) = markers.get(next_marker) {
+            first = first.min(marker.saturating_add(1));
+        }
     }
     let mut last = end;
-    while last > first && !kept(last, &|marker| marker == last) {
-        last -= 1;
+    if first < end && facts.is_blank(end) {
+        last = blank_run(blank, end).0.saturating_sub(1).max(first);
+        let before = changed.partition_point(|&(changed_first, _)| changed_first <= end);
+        if let Some(&(_, changed_last)) = before.checked_sub(1).and_then(|i| changed.get(i)) {
+            last = last.max(changed_last.min(end));
+        }
+        for (_, a_last) in annotations().filter(|&(a_first, _)| a_first <= end) {
+            last = last.max(a_last.min(end));
+        }
+        let before = markers.partition_point(|&marker| marker <= end);
+        if let Some(&marker) = before.checked_sub(1).and_then(|i| markers.get(i)) {
+            last = last.max(marker);
+        }
     }
     (first, last)
+}
+
+/// The run of consecutive blank lines around the blank `line`: `blank[j] - j` is non-decreasing and constant
+/// along a run, so both ends are binary searches.
+fn blank_run(blank: &[u32], line: u32) -> Span {
+    let index = blank.partition_point(|&b| b < line);
+    let key = |j: usize| i64::from(blank[j]) - i64::try_from(j).unwrap_or(i64::MAX);
+    let target = key(index);
+    let (mut low, mut high) = (index, blank.len());
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if key(middle) == target {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    let run_last = blank[low - 1];
+    let (mut low, mut high) = (0, index);
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if key(middle) < target {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    (blank[low], run_last)
 }
 
 #[cfg(test)]
@@ -1080,5 +1271,207 @@ mod tests {
             .collect();
         assert_eq!(phrases, ["No risk", "verified"]);
         assert_eq!(verified.warnings[0].location, "steps[1].why");
+    }
+
+    fn file_range(file: &str, side: LineSide, start_line: u32, end_line: u32) -> FileRange {
+        FileRange {
+            file: file.to_owned(),
+            side,
+            range: LineRange {
+                start_line,
+                end_line,
+            },
+        }
+    }
+
+    /// The output plus one `moved` step at head lines `lines` of `src/a.rs` claiming `claim` (file, base lines).
+    fn with_moved_step(lines: (u32, u32), claim: (&str, u32, u32)) -> FlowAnalysisOutput {
+        let mut output = output();
+        let mut moved = step("s4", "src/a.rs", LineSide::Head, lines, FragmentKind::Moved);
+        moved.moved_from = Some(MovedFrom {
+            file: claim.0.to_owned(),
+            base_start: claim.1,
+            base_end: claim.2,
+        });
+        output.steps.push(moved);
+        output
+    }
+
+    #[test]
+    fn move_fact_only_covers_lines_inside_one_moved_block() {
+        let mut setup = Setup::new();
+        // Identical move old.rs 1-10 → a.rs 20-29; a second move old.rs 11-15 → a.rs 30-34 with line 31 changed.
+        setup.moves.moved.push(MovedBlock {
+            from: file_range("src/old.rs", LineSide::Base, 1, 10),
+            to: file_range("src/a.rs", LineSide::Head, 20, 29),
+            identical: true,
+            differing_head_lines: Vec::new(),
+        });
+        setup.moves.moved.push(MovedBlock {
+            from: file_range("src/old.rs", LineSide::Base, 11, 15),
+            to: file_range("src/a.rs", LineSide::Head, 30, 34),
+            identical: false,
+            differing_head_lines: vec![34, 31],
+        });
+        let fact = |lines, claim| {
+            let verified = setup.run(&with_moved_step(lines, claim)).expect("accepted");
+            verified.moves.into_iter().map(|(_, fact)| fact).next()
+        };
+        let identical = MoveFact {
+            from: file_range("src/old.rs", LineSide::Base, 1, 10),
+            badge: Some(ProvenanceBadge::TextIdentical),
+            differing_lines: 0,
+        };
+        assert_eq!(
+            fact((20, 29), ("src/old.rs", 1, 10)),
+            Some(identical.clone())
+        );
+        assert_eq!(
+            fact((22, 27), ("src/old.rs", 3, 8)),
+            Some(identical),
+            "a part of the block"
+        );
+        assert_eq!(
+            fact((18, 25), ("src/old.rs", 1, 10)),
+            None,
+            "starts before the block"
+        );
+        assert_eq!(
+            fact((20, 30), ("src/old.rs", 1, 10)),
+            None,
+            "ends after the identical block: line 30 is not covered by the identical comparison"
+        );
+        assert_eq!(
+            fact((25, 32), ("src/old.rs", 1, 15)),
+            None,
+            "across two blocks"
+        );
+        assert_eq!(
+            fact((22, 27), ("src/old.rs", 1, 12)),
+            None,
+            "claim wider than the block's origin"
+        );
+        assert_eq!(
+            fact((31, 33), ("src/old.rs", 12, 14)),
+            Some(MoveFact {
+                from: file_range("src/old.rs", LineSide::Base, 11, 15),
+                badge: None,
+                differing_lines: 1,
+            }),
+            "differing lines are counted inside the step"
+        );
+
+        let issues = setup.issues(&with_moved_step((22, 27), ("src/old.rs", 20, 25)));
+        assert_eq!(
+            kinds(&issues),
+            [VerifyIssueKind::MoveClaimMismatch],
+            "{issues:#?}"
+        );
+        let issues = setup.issues(&with_moved_step((22, 27), ("src/a.rs", 1, 10)));
+        assert_eq!(
+            kinds(&issues),
+            [VerifyIssueKind::MoveClaimMismatch],
+            "other origin file"
+        );
+    }
+
+    #[test]
+    fn impact_refs_must_be_outside_the_diff() {
+        let setup = Setup::new();
+        let with_impact = |file: &str, lines: (u32, u32)| {
+            let mut output = output();
+            output.impact_refs[0].file = file.to_owned();
+            (
+                output.impact_refs[0].start_line,
+                output.impact_refs[0].end_line,
+            ) = lines;
+            output
+        };
+        assert!(
+            setup.run(&with_impact("src/a.rs", (1, 9))).is_ok(),
+            "outside"
+        );
+        let inside = setup.issues(&with_impact("src/a.rs", (10, 12)));
+        assert_eq!(kinds(&inside), [VerifyIssueKind::ImpactInsideDiff]);
+        let partial = setup.issues(&with_impact("src/a.rs", (12, 15)));
+        assert_eq!(kinds(&partial), [VerifyIssueKind::ImpactInsideDiff]);
+        assert!(
+            partial[0]
+                .message
+                .starts_with("impact_refs[0]: lines 12 of src/a.rs are changed lines")
+        );
+    }
+
+    #[test]
+    fn file_too_large_to_read_is_its_own_issue() {
+        let mut setup = Setup::new();
+        setup
+            .facts
+            .insert_unread(LineSide::Head, "src/big.rs", 9_000_000);
+        let mut output = output();
+        output.impact_refs[0].file = "src/big.rs".to_owned();
+        let issues = setup.issues(&output);
+        assert_eq!(kinds(&issues), [VerifyIssueKind::FileTooLarge]);
+        assert!(
+            issues[0].message.contains("has 9000000 bytes"),
+            "{issues:#?}"
+        );
+    }
+
+    #[test]
+    fn large_deletion_coverage_is_not_quadratic() {
+        // 200,000 removed lines at one marker, covered by one head step; a per-line marker search is ~2·10^10
+        // comparisons, interval accounting is a handful.
+        let removed = 200_000;
+        let mut setup = Setup::new();
+        setup.files = vec![FileDiff {
+            path: "src/big.rs".to_owned(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            hunks: vec![hunk("h1", (1000, removed), (999, 0))],
+        }];
+        let lines = vec![ranges("src/big.rs", LineSide::Base, 1000, 999 + removed)];
+        setup.plan.flow_lines = BTreeMap::from([(FlowId("f1".to_owned()), lines)]);
+        let file = |line_count| FileFacts {
+            line_count,
+            blank_lines: Vec::new(),
+        };
+        setup.facts.insert(LineSide::Head, "src/big.rs", file(2000));
+        setup
+            .facts
+            .insert(LineSide::Base, "src/big.rs", file(300_000));
+        let mut output = output();
+        output.steps.truncate(1);
+        output.steps[0].annotations.clear();
+        output.steps.push(step(
+            "s2",
+            "src/big.rs",
+            LineSide::Head,
+            (990, 1000),
+            FragmentKind::DeletedSite,
+        ));
+        output.edges = vec![edge("s1", "s2")];
+        output.impact_refs.clear();
+        output.pattern_repetitions.clear();
+        let started = std::time::Instant::now();
+        let verified = setup
+            .run(&output)
+            .expect("the marker after line 999 is inside the step");
+        assert_eq!(verified.covered[0].ranges.len(), 1);
+        output.steps.pop();
+        output.edges.clear();
+        let issues = setup.issues(&output);
+        assert_eq!(kinds(&issues), [VerifyIssueKind::ChangedLineUncovered]);
+        assert!(
+            issues[0]
+                .message
+                .starts_with("base lines 1000-200999 of src/big.rs")
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

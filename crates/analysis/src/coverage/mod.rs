@@ -1,11 +1,12 @@
 //! Coverage of every changed line by flows, Not analysed items or Unexplained (brief §1 principle 4).
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use contracts::common::{FileRanges, LineSide};
 
 use crate::diff::FileDiff;
 use crate::verify::VerifiedFlow;
+use crate::verify::spans::{self, Span};
 
 /// Result of the coverage check.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -34,81 +35,73 @@ pub enum CoverageError {
 }
 
 /// Changed lines not covered by `flows` or the deterministic `quiet` lines (Not analysed, identical moves).
-/// Changed lines are added head lines and removed base lines; other lines inside the inputs are ignored.
-/// Each input `FileRanges` holds disjoint ranges. Output follows the diff's file order, head before base.
+/// Changed lines are added head lines and removed base lines; other lines inside the inputs are ignored. Each
+/// input `FileRanges` is one cover (one flow or one quiet item). Output follows the diff's file order, head
+/// before base. Interval arithmetic: O((H + C) log (H + C)) for H hunk spans and C input ranges.
 pub fn check(
     files: &[FileDiff],
     quiet: &[FileRanges],
     flows: &[VerifiedFlow],
 ) -> Result<Coverage, CoverageError> {
-    // (side, path) → changed line → number of flows and quiet items covering it; `order` keeps the diff order.
-    let mut counts: BTreeMap<(LineSide, &str), BTreeMap<u32, u32>> = BTreeMap::new();
     let mut order: Vec<(LineSide, &str)> = Vec::new();
+    let mut changed: HashMap<(LineSide, &str), Vec<Span>> = HashMap::new();
     for file in files {
         for side in [LineSide::Head, LineSide::Base] {
             let Some(path) = file.path_on(side) else {
                 continue;
             };
-            let lines = file.hunks.iter().flat_map(|hunk| match side {
-                LineSide::Head => &hunk.added,
-                LineSide::Base => &hunk.removed,
-            });
-            counts
-                .entry((side, path))
-                .or_default()
-                .extend(lines.map(|&line| (line, 0)));
-            if !order.contains(&(side, path)) {
+            let lines = changed.entry((side, path)).or_insert_with(|| {
                 order.push((side, path));
+                Vec::new()
+            });
+            for hunk in &file.hunks {
+                lines.extend(spans::hunk_spans(hunk, side == LineSide::Head));
             }
         }
     }
+    for lines in changed.values_mut() {
+        *lines = spans::merge(std::mem::take(lines));
+    }
+    // Per (side, path): the lines of each cover, merged within the cover.
+    let mut layers: HashMap<(LineSide, &str), Vec<Vec<Span>>> = HashMap::new();
     let covers = quiet
         .iter()
         .chain(flows.iter().flat_map(|flow| &flow.covered));
     for ranges in covers {
         let key = (ranges.side, ranges.file.as_str());
-        let Some(lines) = counts.get_mut(&key) else {
+        let Some(lines) = changed.get(&key) else {
             return Err(CoverageError::UnknownFile {
                 path: ranges.file.clone(),
             });
         };
-        // `BTreeMap::range` panics on an inverted range; such a range covers no line.
-        for range in ranges.ranges.iter().filter(|r| r.start_line <= r.end_line) {
-            for (_, count) in lines.range_mut(range.start_line..=range.end_line) {
-                *count = count.saturating_add(1);
-            }
+        let cover = spans::intersect(lines, &spans::from_ranges(&ranges.ranges));
+        layers.entry(key).or_default().push(cover);
+    }
+    let mut coverage = Coverage::default();
+    for key in order {
+        let lines = changed.get(&key).map_or(&[][..], Vec::as_slice);
+        let layers = layers.remove(&key).unwrap_or_default();
+        let union = spans::merge(layers.iter().flatten().copied().collect());
+        let file_ranges = |found: Vec<Span>| FileRanges {
+            file: key.1.to_owned(),
+            side: key.0,
+            ranges: spans::to_ranges(&found),
+        };
+        let unexplained = spans::subtract(lines, &union);
+        if !unexplained.is_empty() {
+            coverage.unexplained.push(file_ranges(unexplained));
+        }
+        let twice = spans::covered_twice(&layers);
+        if !twice.is_empty() {
+            coverage.double_covered.push(file_ranges(twice));
         }
     }
-    let collect = |wanted: fn(u32) -> bool| -> Vec<FileRanges> {
-        let mut out = Vec::new();
-        for key in &order {
-            let Some(lines) = counts.get(key) else {
-                continue;
-            };
-            let lines: Vec<u32> = lines
-                .iter()
-                .filter(|(_, count)| wanted(**count))
-                .map(|(line, _)| *line)
-                .collect();
-            if !lines.is_empty() {
-                out.push(FileRanges {
-                    file: key.1.to_owned(),
-                    side: key.0,
-                    ranges: crate::lines::ranges(&lines),
-                });
-            }
-        }
-        out
-    };
-    Ok(Coverage {
-        unexplained: collect(|count| count == 0),
-        double_covered: collect(|count| count > 1),
-    })
+    Ok(coverage)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use contracts::agent::analyse_flow::{FlowAnalysisOutput, FlowIntroduction};
     use contracts::api::tour::FlowGraph;
@@ -270,8 +263,8 @@ mod tests {
     }
 
     proptest! {
-        /// Every changed line is in exactly one place: one flow or one quiet item, Unexplained, or reported as
-        /// double-covered.
+        /// Unexplained is exactly the set of changed lines without a cover, double-covered exactly the set with
+        /// two or more covers (so the rest is in exactly one flow or quiet item).
         #[test]
         fn proptest_coverage_invariant((files, covers) in scenario()) {
             let changed: Vec<(LineSide, String, u32)> = files
@@ -314,14 +307,16 @@ mod tests {
             };
             let unexplained = expand(&coverage.unexplained);
             let double = expand(&coverage.double_covered);
-            for (line, mask) in changed.iter().zip(&covers) {
-                let count = mask.count_ones();
-                let places = usize::from(count == 1)
-                    + usize::from(unexplained.contains(line))
-                    + usize::from(double.contains(line));
-                prop_assert_eq!(places, 1, "{:?} has {} covers", line, count);
-            }
-            prop_assert_eq!(unexplained.len() + double.len(), covers.iter().filter(|m| m.count_ones() != 1).count());
+            let with = |wanted: fn(u32) -> bool| -> BTreeSet<(LineSide, String, u32)> {
+                changed
+                    .iter()
+                    .zip(&covers)
+                    .filter(|(_, mask)| wanted(mask.count_ones()))
+                    .map(|(line, _)| line.clone())
+                    .collect()
+            };
+            prop_assert_eq!(unexplained, with(|count| count == 0), "Unexplained = lines without a cover");
+            prop_assert_eq!(double, with(|count| count >= 2), "double-covered = lines with two or more covers");
         }
     }
 }

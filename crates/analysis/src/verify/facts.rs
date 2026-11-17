@@ -1,27 +1,16 @@
-//! Reads line facts of files at the pinned base and head commits (`git cat-file --batch`, read-only).
+//! Line facts of files at the pinned base and head commits, read through the bounded [`crate::blob`] reader.
 
-use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::thread;
 
 use contracts::common::LineSide;
 use contracts::ids::CommitSha;
 
 use super::{FileFacts, LineFacts, VerifyError};
+use crate::blob::{self, Blob, Limits};
 
-/// Most `git` error output kept.
-const MAX_STDERR_BYTES: u64 = 64 * 1024;
-
-/// A repository-relative path as git stores it in a tree: no absolute path, no `.`/`..`/empty component, no
-/// line break or NUL. Anything else cannot name a file of the pinned trees.
-pub(super) fn is_tree_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.contains(['\n', '\r', '\0'])
-        && path
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
-}
+/// Most bytes one load reads (a file named twice counts twice); with the per-file limit of
+/// [`blob::MAX_BLOB_BYTES`] this bounds the memory of the facts (at most one blank-line entry per byte read).
+pub const MAX_FACTS_BYTES: u64 = 2 * blob::MAX_BLOB_BYTES;
 
 pub(super) fn load(
     repo: &Path,
@@ -29,119 +18,59 @@ pub(super) fn load(
     head: &CommitSha,
     files: &[(LineSide, String)],
 ) -> Result<LineFacts, VerifyError> {
-    let mut wanted: Vec<&(LineSide, String)> = files
-        .iter()
-        .filter(|(_, path)| is_tree_path(path))
-        .collect();
+    let mut wanted: Vec<&(LineSide, String)> = files.iter().collect();
     wanted.sort();
     wanted.dedup();
-    let mut facts = LineFacts::default();
-    if wanted.is_empty() {
-        return Ok(facts);
-    }
-    let requests: String = wanted
+    let requests: Vec<(&CommitSha, &str)> = wanted
         .iter()
         .map(|(side, path)| {
             let commit = match side {
                 LineSide::Head => head,
                 LineSide::Base => base,
             };
-            format!("{}:{path}\n", commit.0)
+            (commit, path.as_str())
         })
         .collect();
-    let mut child = Command::new("git")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .arg("-C")
-        .arg(repo)
-        .args(["cat-file", "--batch"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    // A writer thread: git answers while reading, so writing everything first could fill both pipes.
-    let writer = child.stdin.take().map(|mut stdin| {
-        thread::spawn(move || {
-            let _ = stdin.write_all(requests.as_bytes());
-        })
-    });
-    let stderr_reader = child.stderr.take().map(|pipe| {
-        thread::spawn(move || {
-            let mut text = Vec::new();
-            let _ = pipe.take(MAX_STDERR_BYTES).read_to_end(&mut text);
-            text
-        })
-    });
-    let read = match child.stdout.take() {
-        Some(stdout) => read_answers(&mut BufReader::new(stdout), &wanted, &mut facts),
-        None => Ok(()),
+    let limits = Limits {
+        max_blob_bytes: blob::MAX_BLOB_BYTES,
+        total_bytes: MAX_FACTS_BYTES,
+        timeout: blob::READ_TIMEOUT,
     };
-    if read.is_err() {
-        let _ = child.kill();
+    let answers = blob::read_blobs(repo, &requests, limits)?;
+    let mut facts = LineFacts::default();
+    for ((side, path), answer) in wanted.into_iter().zip(answers) {
+        match answer {
+            Blob::Content(bytes) => facts.insert(*side, path, count_lines(&bytes)),
+            Blob::TooLarge { size } | Blob::OverBudget { size } => {
+                facts.insert_unread(*side, path, size);
+            }
+            Blob::Missing => {}
+        }
     }
-    let status = child.wait()?;
-    if let Some(writer) = writer {
-        let _ = writer.join();
-    }
-    let stderr = stderr_reader
-        .and_then(|reader| reader.join().ok())
-        .unwrap_or_default();
-    if !status.success() {
-        return Err(VerifyError::Git {
-            message: String::from_utf8_lossy(&stderr).trim().to_owned(),
-        });
-    }
-    read?;
     Ok(facts)
-}
-
-/// Reads one answer per request: `<oid> <type> <size>` and the content, or `<name> missing`.
-fn read_answers(
-    stdout: &mut impl BufRead,
-    wanted: &[&(LineSide, String)],
-    facts: &mut LineFacts,
-) -> Result<(), VerifyError> {
-    let mut header = String::new();
-    for (side, path) in wanted {
-        header.clear();
-        if stdout.read_line(&mut header)? == 0 {
-            return Err(VerifyError::Git {
-                message: "git cat-file ended before answering every request".to_owned(),
-            });
-        }
-        let mut fields = header.trim_end().rsplitn(3, ' ');
-        let (size, blob) = (fields.next(), fields.next() == Some("blob"));
-        let Some(size) = size.and_then(|size| size.parse::<u64>().ok()) else {
-            continue; // missing or ambiguous: the path is not in that tree
-        };
-        let file = count_lines(&mut stdout.by_ref().take(size))?;
-        stdout.read_line(&mut header)?; // the newline after the content
-        if blob {
-            facts.insert(*side, path, file);
-        }
-    }
-    Ok(())
 }
 
 /// Line count and blank lines of a file, by the rules of `lines::line_window` (`\n` separated, one trailing
 /// newline ignored, `\r` before it ignored).
-fn count_lines(content: &mut impl BufRead) -> Result<FileFacts, std::io::Error> {
+fn count_lines(bytes: &[u8]) -> FileFacts {
     let mut facts = FileFacts::default();
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        if content.read_until(b'\n', &mut line)? == 0 {
-            return Ok(facts);
-        }
+    if bytes.is_empty() {
+        return facts;
+    }
+    let body = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    for line in body.split(|&byte| byte == b'\n') {
         facts.line_count = facts.line_count.saturating_add(1);
         if line.iter().all(u8::is_ascii_whitespace) {
             facts.blank_lines.push(facts.line_count);
         }
     }
+    facts
 }
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
+
     use super::*;
 
     fn git(repo: &Path, args: &[&str]) -> String {
@@ -183,6 +112,8 @@ mod tests {
         std::fs::write(repo.join("src/a.rs"), "a\n\nb\n\nc\n").expect("write");
         std::fs::write(repo.join("empty.rs"), "").expect("write");
         std::fs::remove_file(repo.join("gone.rs")).expect("remove");
+        let huge = vec![b'\n'; usize::try_from(blob::MAX_BLOB_BYTES).expect("size") + 1];
+        std::fs::write(repo.join("huge.txt"), huge).expect("write");
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-q", "-m", "head"]);
         let head = CommitSha(git(&repo, &["rev-parse", "HEAD"]));
@@ -204,6 +135,7 @@ mod tests {
                 request(LineSide::Head, "/etc/passwd"),
                 request(LineSide::Head, "missing.rs"),
                 request(LineSide::Head, "src/a.rs"),
+                request(LineSide::Head, "huge.txt"),
             ],
         )
         .expect("load");
@@ -225,9 +157,15 @@ mod tests {
             (LineSide::Head, "./src/a.rs"),
             (LineSide::Head, "/etc/passwd"),
             (LineSide::Head, "missing.rs"),
+            (LineSide::Head, "huge.txt"),
         ] {
             assert!(loaded.get(side, path).is_none(), "{side:?} {path}");
         }
+        assert_eq!(
+            loaded.unread_size(LineSide::Head, "huge.txt"),
+            Some(blob::MAX_BLOB_BYTES + 1),
+            "too large to read: recorded, not counted"
+        );
     }
 
     #[test]
@@ -235,18 +173,6 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let sha = CommitSha("0".repeat(40));
         let result = LineFacts::load(dir.path(), &sha, &sha, &[(LineSide::Head, "a".to_owned())]);
-        assert!(matches!(result, Err(VerifyError::Git { .. })), "{result:?}");
-    }
-
-    #[test]
-    fn tree_paths_reject_traversal_and_absolute_paths() {
-        for path in ["src/a.rs", "a", ".github/x.yml", "dir/..x"] {
-            assert!(is_tree_path(path), "{path}");
-        }
-        for path in [
-            "", "/a", "a/../b", "./a", "a//b", "a/", "a\nb", "a\0b", "..",
-        ] {
-            assert!(!is_tree_path(path), "{path:?}");
-        }
+        assert!(matches!(result, Err(VerifyError::Read(_))), "{result:?}");
     }
 }

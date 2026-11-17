@@ -14,7 +14,7 @@ use contracts::ids::{CommitSha, FlowId, HunkId};
 use serde::de::DeserializeOwned;
 
 use super::*;
-use crate::diff::{FileStatus, Hunk, LineSpan, diff};
+use crate::diff::{FileDiff, FileStatus, Hunk, LineSpan, diff};
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/pr-482")
@@ -445,4 +445,234 @@ fn facts_are_kept_per_side() {
         "an emptied file"
     );
     assert!(facts.get(LineSide::Head, "src/rpc/gone.rs").is_none());
+}
+
+/// A flow output whose steps are exactly the flow's planned ranges (head steps for head lines, base
+/// `deleted_site` steps for removed lines).
+fn covering_output(id: &FlowId, lines: &[FileRanges]) -> FlowAnalysisOutput {
+    let text = || "text".to_owned();
+    let mut steps = Vec::new();
+    for ranges in lines {
+        for range in &ranges.ranges {
+            steps.push(contracts::agent::analyse_flow::AgentStep {
+                id: format!("s{}", steps.len() + 1),
+                title: text(),
+                file: ranges.file.clone(),
+                side: ranges.side,
+                start_line: range.start_line,
+                end_line: range.end_line,
+                symbol: None,
+                kind: match ranges.side {
+                    LineSide::Head => contracts::common::FragmentKind::Modified,
+                    LineSide::Base => contracts::common::FragmentKind::DeletedSite,
+                },
+                moved_from: None,
+                called_by: text(),
+                decides: text(),
+                next: text(),
+                why: text(),
+                annotations: Vec::new(),
+                assessment: None,
+            });
+        }
+    }
+    FlowAnalysisOutput {
+        flow_id: id.clone(),
+        introduction: contracts::agent::analyse_flow::FlowIntroduction {
+            problem_before: text(),
+            change: text(),
+            example_before_after: text(),
+        },
+        steps,
+        edges: Vec::new(),
+        impact_refs: Vec::new(),
+        pattern_repetitions: Vec::new(),
+        thread_statuses: Vec::new(),
+    }
+}
+
+fn expand(list: &[FileRanges]) -> Vec<(LineSide, String, u32)> {
+    let mut lines = Vec::new();
+    for ranges in list {
+        for range in &ranges.ranges {
+            for line in range.start_line..=range.end_line {
+                lines.push((ranges.side, ranges.file.clone(), line));
+            }
+        }
+    }
+    lines
+}
+
+proptest::proptest! {
+    /// Through the real entry: a generated diff, quiet hunks, a plan with whole and partial hunk selections
+    /// (three flows and `unassigned`), outputs for some flows. Every changed line is in exactly one of: one
+    /// accepted flow, the quiet lines, Unexplained; nothing is double-covered; Unexplained is exactly the lines
+    /// of `unassigned` and of flows without an output.
+    #[test]
+    fn proptest_analysis_coverage_invariant(
+        hunks in proptest::collection::vec((0usize..3, 1u32..4, 0u32..3, 0u32..4), 1..8),
+        tape in proptest::collection::vec(proptest::prelude::any::<u8>(), 64),
+        answered in proptest::collection::vec(proptest::prelude::any::<bool>(), 3),
+    ) {
+        let mut next = {
+            let mut position = 0;
+            move || {
+                position += 1;
+                tape[position % tape.len()]
+            }
+        };
+        // The diff: hunks grouped by file, ids in path order then file order.
+        let mut per_file: BTreeMap<usize, Vec<(u32, u32, u32)>> = BTreeMap::new();
+        for &(file, gap, removed, added) in &hunks {
+            per_file.entry(file).or_default().push((gap, removed, added.max(u32::from(removed == 0))));
+        }
+        let mut files = Vec::new();
+        let mut number = 0;
+        for (file, spans) in per_file {
+            let (mut base, mut head) = (0, 0);
+            let mut file_hunks = Vec::new();
+            for (gap, removed, added) in spans {
+                let (base_start, head_start) = (base + gap, head + gap);
+                number += 1;
+                file_hunks.push(Hunk {
+                    id: HunkId(format!("h{number}")),
+                    base: LineSpan { start: if removed == 0 { base_start - 1 } else { base_start }, len: removed },
+                    head: LineSpan { start: if added == 0 { head_start - 1 } else { head_start }, len: added },
+                    added: (head_start..head_start + added).collect(),
+                    removed: (base_start..base_start + removed).collect(),
+                });
+                base = base_start + removed;
+                head = head_start + added;
+            }
+            files.push(FileDiff {
+                path: format!("src/f{file}.rs"),
+                old_path: None,
+                status: FileStatus::Modified,
+                binary: false,
+                hunks: file_hunks,
+            });
+        }
+        // Quiet hunks, then a plan over the listed ones: segments of each hunk to flows f1-f3 or unassigned.
+        let mut listed = files.clone();
+        let mut quiet = Vec::new();
+        let mut plan_output = PlanOutput {
+            flows: (1..=3u32)
+                .map(|n| contracts::agent::plan::PlannedFlow {
+                    id: id(&format!("f{n}")),
+                    title: "flow".to_owned(),
+                    classification: Classification::Behavioural,
+                    importance_rank: n,
+                    intent: "intent".to_owned(),
+                    hunks: Vec::new(),
+                    depends_on: Vec::new(),
+                })
+                .collect(),
+            unassigned: Vec::new(),
+        };
+        let mut assign = |owner: u8, hunk_id: &HunkId, range: Option<(u32, u32)>| {
+            let (head_start, head_end) = (range.map(|r| r.0), range.map(|r| r.1));
+            match usize::from(owner % 4) {
+                3 => plan_output.unassigned.push(contracts::agent::plan::UnassignedHunk {
+                    hunk_id: hunk_id.clone(),
+                    head_start,
+                    head_end,
+                    reason: "unused".to_owned(),
+                }),
+                flow => plan_output.flows[flow].hunks.push(contracts::agent::plan::HunkSelection {
+                    hunk_id: hunk_id.clone(),
+                    head_start,
+                    head_end,
+                }),
+            }
+        };
+        for file in &mut listed {
+            let path = file.path.clone();
+            file.hunks.retain(|hunk| {
+                if next() % 5 != 0 {
+                    return true;
+                }
+                for (side, lines) in [(LineSide::Head, &hunk.added), (LineSide::Base, &hunk.removed)] {
+                    if !lines.is_empty() {
+                        quiet.push(FileRanges { file: path.clone(), side, ranges: crate::lines::ranges(lines) });
+                    }
+                }
+                false
+            });
+            for hunk in &file.hunks {
+                let (Some(&first), Some(&last)) = (hunk.added.first(), hunk.added.last()) else {
+                    assign(next(), &hunk.id, None);
+                    continue;
+                };
+                let mut start = first;
+                for line in first..=last {
+                    if line == last || next() % 3 == 0 {
+                        let whole = start == first && line == last && next() % 2 == 0;
+                        assign(next(), &hunk.id, (!whole).then_some((start, line)));
+                        start = line + 1;
+                    }
+                }
+            }
+        }
+        let diff = DiffIndex::new(&files).expect("diff");
+        let listed_index = DiffIndex::new(&listed).expect("listed");
+        let verified_plan = match plan(&plan_output, &listed_index) {
+            Ok(verified) => verified,
+            Err(error) => return Err(proptest::test_runner::TestCaseError::fail(format!("{error:?}"))),
+        };
+        let outputs: Vec<FlowAnalysisOutput> = verified_plan
+            .flow_lines
+            .iter()
+            .zip(&answered)
+            .filter(|(_, answered)| **answered)
+            .map(|((flow, lines), _)| covering_output(flow, lines))
+            .collect();
+        let mut facts = LineFacts::default();
+        for file in &files {
+            for side in [LineSide::Head, LineSide::Base] {
+                facts.insert(side, &file.path, FileFacts { line_count: 1000, blank_lines: Vec::new() });
+            }
+        }
+        let verdict = analysis(AnalysisInput {
+            diff: &diff,
+            listed: &listed_index,
+            quiet: &quiet,
+            facts: &facts,
+            moves: &MovesReport::default(),
+            plan: &plan_output,
+            pr_context: &PrContextOutput {
+                problem: "p".to_owned(),
+                why_needed: "w".to_owned(),
+                what_it_gives: "g".to_owned(),
+                related_work: Vec::new(),
+                fit_questions: Vec::new(),
+            },
+            flows: &outputs,
+            thread_aliases: &BTreeMap::new(),
+        })
+        .expect("verdict");
+        proptest::prop_assert_eq!(&verdict.repairs, &Vec::<Repair>::new());
+        let tour = verdict.tour.expect("tour");
+        proptest::prop_assert_eq!(&tour.coverage.double_covered, &Vec::<FileRanges>::new());
+
+        let mut places: BTreeMap<(LineSide, String, u32), u32> = BTreeMap::new();
+        let flows = tour.flows.iter().map(|flow| expand(&flow.covered));
+        for lines in flows.chain([expand(&quiet), expand(&tour.coverage.unexplained)]) {
+            for line in lines {
+                *places.entry(line).or_default() += 1;
+            }
+        }
+        let changed = expand(&crate::coverage::check(&files, &[], &[]).expect("all lines").unexplained);
+        for line in &changed {
+            proptest::prop_assert_eq!(places.get(line).copied(), Some(1), "{:?}", line);
+        }
+        proptest::prop_assert_eq!(places.len(), changed.len(), "only changed lines are placed");
+        let mut expected: Vec<_> = expand(&verified_plan.unassigned);
+        for id in &tour.unanalysed {
+            expected.extend(expand(&verified_plan.flow_lines[id]));
+        }
+        expected.sort();
+        let mut unexplained = expand(&tour.coverage.unexplained);
+        unexplained.sort();
+        proptest::prop_assert_eq!(unexplained, expected);
+    }
 }

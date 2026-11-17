@@ -1,36 +1,29 @@
 //! `plan` checks: ids, ranks and references; hunk selections inside their hunks; every changed line of the
-//! listed hunks in exactly one flow or `unassigned`.
+//! listed hunks in exactly one flow or `unassigned`. Selections are accounted as intervals per hunk
+//! (O(H + R log R) for H hunks and R selections), so repeated selections of a large hunk cost no extra memory.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fmt;
 
 use contracts::agent::plan::PlanOutput;
 use contracts::common::LineSide;
 use contracts::ids::{FlowId, HunkId};
 
-use super::{
-    Issues, VerifiedPlan, VerifyError, VerifyIssueKind, describe_lines, marker_inside,
-    to_file_ranges,
-};
+use super::spans::{self, Span};
+use super::{Issues, VerifiedPlan, VerifyError, VerifyIssueKind, side_name, to_file_ranges};
 use crate::diff::{DiffIndex, Hunk};
 
-/// Who a selected line belongs to.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Owner {
-    Flow(FlowId),
-    Unassigned,
+/// Owners named in one conflict message at most.
+const MAX_NAMED_OWNERS: usize = 5;
+
+/// A valid selection of a hunk: its owner (a flow index, or the flow count for `unassigned`), its head lines
+/// and whether it takes the hunk's removed lines.
+struct Selection {
+    owner: usize,
+    head: Option<Span>,
+    removed: bool,
 }
 
-impl fmt::Display for Owner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Flow(id) => id.fmt(f),
-            Self::Unassigned => f.write_str("unassigned"),
-        }
-    }
-}
-
-type Lines = BTreeMap<(LineSide, String), BTreeSet<u32>>;
+type Lines = BTreeMap<(LineSide, String), Vec<Span>>;
 
 pub(super) fn plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<VerifiedPlan, VerifyError> {
     let mut issues = Issues::default();
@@ -58,75 +51,86 @@ pub(super) fn plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<Verified
         }
     }
 
-    let mut owners: HashMap<(&HunkId, LineSide, u32), Vec<Owner>> = HashMap::new();
-    let flow_selections = output.flows.iter().enumerate().flat_map(|(index, flow)| {
+    let unassigned_owner = output.flows.len();
+    let owner_name = |owner: usize| {
+        output
+            .flows
+            .get(owner)
+            .map_or_else(|| "unassigned".to_owned(), |flow| flow.id.to_string())
+    };
+    let mut selections: HashMap<&HunkId, Vec<Selection>> = HashMap::new();
+    let flow_selections = output.flows.iter().enumerate().flat_map(|(owner, flow)| {
         flow.hunks
             .iter()
             .enumerate()
             .map(move |(number, selection)| {
-                let at = format!("flows[{index}] \"{}\".hunks[{number}]", flow.id);
+                let at = format!("flows[{owner}] \"{}\".hunks[{number}]", flow.id);
                 let range = (selection.head_start, selection.head_end);
-                (at, Owner::Flow(flow.id.clone()), &selection.hunk_id, range)
+                (at, owner, &selection.hunk_id, range)
             })
     });
     let unassigned_selections = output.unassigned.iter().enumerate().map(|(index, hunk)| {
         let range = (hunk.head_start, hunk.head_end);
-        (
-            format!("unassigned[{index}]"),
-            Owner::Unassigned,
-            &hunk.hunk_id,
-            range,
-        )
+        let at = format!("unassigned[{index}]");
+        (at, unassigned_owner, &hunk.hunk_id, range)
     });
     for (at, owner, id, range) in flow_selections.chain(unassigned_selections) {
-        let Some((hunk, head, base)) = select(diff, &mut issues, &at, id, range) else {
-            continue;
-        };
-        let lines = head.into_iter().map(|line| (LineSide::Head, line));
-        for (side, line) in lines.chain(base.into_iter().map(|line| (LineSide::Base, line))) {
-            owners
-                .entry((&hunk.id, side, line))
-                .or_default()
-                .push(owner.clone());
+        if let Some((hunk, selection)) = select(diff, &mut issues, &at, id, range, owner) {
+            selections.entry(&hunk.id).or_default().push(selection);
         }
     }
     for (index, hunk) in output.unassigned.iter().enumerate() {
         issues.text(&format!("unassigned[{index}].reason"), &hunk.reason);
     }
 
-    let mut flow_lines: BTreeMap<FlowId, Lines> = output
-        .flows
-        .iter()
-        .map(|flow| (flow.id.clone(), Lines::new()))
-        .collect();
-    let mut unassigned = Lines::new();
+    let mut owned: Vec<Lines> = vec![Lines::new(); unassigned_owner + 1];
     for file in diff.files() {
         for hunk in &file.hunks {
-            let mut missing: BTreeMap<LineSide, Vec<u32>> = BTreeMap::new();
-            let mut twice: BTreeMap<LineSide, Vec<u32>> = BTreeMap::new();
-            let mut twice_owners = BTreeSet::new();
-            for (side, lines) in [
-                (LineSide::Head, &hunk.added),
-                (LineSide::Base, &hunk.removed),
-            ] {
-                let Some(path) = file.path_on(side) else {
-                    continue;
-                };
-                for &line in lines {
-                    match owners.get(&(&hunk.id, side, line)).map(Vec::as_slice) {
-                        None | Some([]) => missing.entry(side).or_default().push(line),
-                        Some([owner]) => {
-                            let target = match owner {
-                                Owner::Flow(id) => flow_lines.entry(id.clone()).or_default(),
-                                Owner::Unassigned => &mut unassigned,
-                            };
-                            let key = (side, path.to_owned());
-                            target.entry(key).or_default().insert(line);
+            let chosen = selections.get(&hunk.id).map_or(&[][..], Vec::as_slice);
+            let mut missing: BTreeMap<LineSide, Vec<Span>> = BTreeMap::new();
+            let mut twice: BTreeMap<LineSide, Vec<Span>> = BTreeMap::new();
+            let mut named = BTreeSet::new();
+            if let Some(path) = file.path_on(LineSide::Head) {
+                let changed = spans::hunk_spans(hunk, true);
+                let picked: Vec<(usize, Span)> = chosen
+                    .iter()
+                    .filter_map(|s| s.head.map(|span| (s.owner, span)))
+                    .collect();
+                let union = spans::merge(picked.iter().map(|&(_, span)| span).collect());
+                let gaps = spans::subtract(&changed, &union);
+                if !gaps.is_empty() {
+                    missing.insert(LineSide::Head, gaps);
+                }
+                for (span, owner) in layers(&picked, &mut named) {
+                    let lines = spans::intersect(&changed, &[span]);
+                    match owner {
+                        Some(owner) => {
+                            let key = (LineSide::Head, path.to_owned());
+                            owned[owner].entry(key).or_default().extend(lines);
                         }
-                        Some(many) => {
-                            twice.entry(side).or_default().push(line);
-                            twice_owners.extend(many.iter().map(ToString::to_string));
-                        }
+                        None => twice.entry(LineSide::Head).or_default().extend(lines),
+                    }
+                }
+            }
+            if let Some(path) = file.path_on(LineSide::Base) {
+                let removed = spans::hunk_spans(hunk, false);
+                let takers: Vec<usize> = chosen
+                    .iter()
+                    .filter(|s| s.removed)
+                    .map(|s| s.owner)
+                    .collect();
+                match takers.as_slice() {
+                    _ if removed.is_empty() => {}
+                    [] => {
+                        missing.insert(LineSide::Base, removed);
+                    }
+                    [owner] => {
+                        let key = (LineSide::Base, path.to_owned());
+                        owned[*owner].entry(key).or_default().extend(removed);
+                    }
+                    many => {
+                        named.extend(many.iter().take(MAX_NAMED_OWNERS + 1));
+                        twice.insert(LineSide::Base, removed);
                     }
                 }
             }
@@ -137,40 +141,116 @@ pub(super) fn plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<Verified
                 let message = format!("{at}: {lines} are in no flow and not in unassigned");
                 issues.push(VerifyIssueKind::LineUnassigned, message);
             }
+            twice.retain(|_, lines| !lines.is_empty());
             if !twice.is_empty() {
                 let lines = describe_sides(&twice);
-                let by = twice_owners.into_iter().collect::<Vec<_>>().join(", ");
+                let mut by: Vec<String> = named
+                    .iter()
+                    .take(MAX_NAMED_OWNERS)
+                    .map(|&o| owner_name(o))
+                    .collect();
+                if named.len() > MAX_NAMED_OWNERS {
+                    by.push("and others".to_owned());
+                }
+                let by = by.join(", ");
                 let message = format!("{at}: {lines} are selected more than once (by {by})");
                 issues.push(VerifyIssueKind::LineAssignedTwice, message);
             }
         }
     }
+    let unassigned = owned.pop().unwrap_or_default();
+    let mut flow_lines = BTreeMap::new();
+    for (flow, lines) in output.flows.iter().zip(owned) {
+        flow_lines
+            .entry(flow.id.clone())
+            .or_insert_with(|| to_file_ranges(lines));
+    }
     issues.finish(VerifiedPlan {
         output: output.clone(),
-        flow_lines: flow_lines
-            .into_iter()
-            .map(|(id, lines)| (id, to_file_ranges(lines)))
-            .collect(),
+        flow_lines,
         unassigned: to_file_ranges(unassigned),
     })
 }
 
-/// The head and base lines a selection takes from its hunk, or `None` with an issue.
+/// The regions covered by `picked` (owner, span): `Some(owner)` where exactly one selection covers them, `None`
+/// where several do (their owners, at most `MAX_NAMED_OWNERS + 1`, are added to `named`). A sweep over the
+/// span ends, O(R log R).
+fn layers(picked: &[(usize, Span)], named: &mut BTreeSet<usize>) -> Vec<(Span, Option<usize>)> {
+    let mut events: Vec<(u64, usize, bool)> = Vec::with_capacity(picked.len() * 2);
+    for &(owner, (first, last)) in picked {
+        events.push((u64::from(first), owner, true));
+        events.push((u64::from(last) + 1, owner, false));
+    }
+    events.sort_unstable_by_key(|&(position, _, _)| position);
+    let mut active: BTreeMap<usize, u32> = BTreeMap::new();
+    let mut depth = 0u32;
+    let mut out = Vec::new();
+    let mut index = 0;
+    while let Some(&(position, _, _)) = events.get(index) {
+        while let Some(&(_, owner, opens)) = events.get(index).filter(|event| event.0 == position) {
+            if opens {
+                *active.entry(owner).or_default() += 1;
+                depth += 1;
+            } else if let Some(count) = active.get_mut(&owner) {
+                *count -= 1;
+                depth -= 1;
+                if *count == 0 {
+                    active.remove(&owner);
+                }
+            }
+            index += 1;
+        }
+        let Some(&(next, _, _)) = events.get(index) else {
+            break;
+        };
+        if depth == 0 {
+            continue;
+        }
+        let span = (to_line(position), to_line(next - 1));
+        if depth == 1 {
+            out.push((span, active.keys().next().copied()));
+        } else {
+            if named.len() <= MAX_NAMED_OWNERS {
+                let room = MAX_NAMED_OWNERS + 1 - named.len();
+                named.extend(active.keys().take(room));
+            }
+            out.push((span, None));
+        }
+    }
+    out
+}
+
+fn to_line(position: u64) -> u32 {
+    u32::try_from(position).unwrap_or(u32::MAX)
+}
+
+/// The hunk and the selection, or `None` with an issue.
 fn select<'a>(
     diff: &DiffIndex<'a>,
     issues: &mut Issues,
     at: &str,
     id: &HunkId,
     range: (Option<u32>, Option<u32>),
-) -> Option<(&'a Hunk, Vec<u32>, Vec<u32>)> {
+    owner: usize,
+) -> Option<(&'a Hunk, Selection)> {
     let Some(found) = diff.hunk(id) else {
         let message = format!("{at}: hunk {id} is not in the hunk list");
         issues.push(VerifyIssueKind::UnknownHunk, message);
         return None;
     };
     let hunk = found.hunk;
+    let first = hunk.head.start;
+    let last = first.saturating_add(hunk.head.len).saturating_sub(1);
+    let whole = (hunk.head.len > 0).then_some((first, last));
     let (start, end) = match range {
-        (None, None) => return Some((hunk, hunk.added.clone(), hunk.removed.clone())),
+        (None, None) => {
+            let selection = Selection {
+                owner,
+                head: whole,
+                removed: true,
+            };
+            return Some((hunk, selection));
+        }
         (Some(start), Some(end)) => (start, end),
         _ => {
             let message = format!("{at}: give both head_start and head_end, or neither");
@@ -178,9 +258,7 @@ fn select<'a>(
             return None;
         }
     };
-    let first = hunk.head.start;
-    let last = first.saturating_add(hunk.head.len).saturating_sub(1);
-    if hunk.head.len == 0 {
+    if whole.is_none() {
         let message = format!(
             "{at}: hunk {id} only removes lines; select it whole (head_start and head_end null)"
         );
@@ -194,31 +272,22 @@ fn select<'a>(
         issues.push(VerifyIssueKind::RangeOutsideHunk, message);
         return None;
     }
-    let head = hunk
-        .added
-        .iter()
-        .copied()
-        .filter(|line| (start..=end).contains(line));
     // Removed lines sit at the marker after the head line before the hunk.
-    let marker = first.saturating_sub(1);
-    let base = if marker_inside(marker, start, end) {
-        hunk.removed.clone()
-    } else {
-        Vec::new()
+    let selection = Selection {
+        owner,
+        head: Some((start, end)),
+        removed: spans::marker_inside(spans::marker_of(hunk), (start, end)),
     };
-    Some((hunk, head.collect(), base))
+    Some((hunk, selection))
 }
 
-/// `head lines 3-5; base lines 7` for lines per side.
-fn describe_sides(lines: &BTreeMap<LineSide, Vec<u32>>) -> String {
+/// `head lines 3-5; base lines 7` for spans per side.
+fn describe_sides(lines: &BTreeMap<LineSide, Vec<Span>>) -> String {
     lines
         .iter()
         .map(|(side, lines)| {
-            format!(
-                "{} lines {}",
-                super::side_name(*side),
-                describe_lines(lines)
-            )
+            let lines = spans::describe(&spans::merge(lines.clone()));
+            format!("{} lines {lines}", side_name(*side))
         })
         .collect::<Vec<_>>()
         .join("; ")
@@ -490,6 +559,67 @@ mod tests {
                 VerifyIssueKind::EmptyText,
             ],
             "{issues:#?}"
+        );
+    }
+
+    #[test]
+    fn repeated_selections_of_a_large_hunk_are_bounded() {
+        // 10,000 selections of a 100,000-line hunk: expanding lines per selection would be 10^9 owner entries.
+        let lines = 100_000;
+        let files = vec![FileDiff {
+            path: "src/big.rs".to_owned(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            hunks: vec![hunk("h1", (1, lines), (1, lines))],
+        }];
+        let diff = DiffIndex::new(&files).expect("index");
+        let started = std::time::Instant::now();
+        let mut flows: Vec<PlannedFlow> = (1..=2_000)
+            .map(|n| flow(&format!("f{n}"), n, vec![whole("h1"); 4]))
+            .collect();
+        flows[0].hunks.extend(vec![part("h1", 1, lines); 2_000]);
+        let output = PlanOutput {
+            flows,
+            unassigned: Vec::new(),
+        };
+        let Err(VerifyError::Rejected(issues)) = plan(&output, &diff) else {
+            panic!("rejected");
+        };
+        assert_eq!(
+            issues,
+            [VerifyIssue {
+                kind: VerifyIssueKind::LineAssignedTwice,
+                message: "hunk h1 (src/big.rs): head lines 1-100000; base lines 1-100000 are selected more than \
+                          once (by f1, f2, f3, f4, f5, and others)"
+                    .to_owned(),
+            }]
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn partial_overlaps_are_reported_per_range() {
+        let output = PlanOutput {
+            flows: vec![
+                flow("f1", 1, vec![part("h1", 10, 11), whole("h3"), whole("h5")]),
+                flow("f2", 2, vec![part("h1", 11, 12), whole("h4")]),
+            ],
+            unassigned: vec![unassigned(whole("h2"))],
+        };
+        let issues = run(&output).expect_err("rejected");
+        assert_eq!(
+            issues,
+            [VerifyIssue {
+                kind: VerifyIssueKind::LineAssignedTwice,
+                message:
+                    "hunk h1 (src/a.rs): head lines 11 are selected more than once (by f1, f2)"
+                        .to_owned(),
+            }]
         );
     }
 

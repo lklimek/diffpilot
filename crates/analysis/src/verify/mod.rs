@@ -5,6 +5,7 @@
 mod check_flow;
 mod check_plan;
 mod facts;
+pub(crate) mod spans;
 pub mod wording;
 
 #[cfg(test)]
@@ -20,8 +21,11 @@ use contracts::api::tour::{FlowGraph, MoveFact};
 use contracts::common::{Evidence, FileRanges, LineSide};
 use contracts::ids::{CommitSha, FlowId, StepId};
 
+pub use facts::MAX_FACTS_BYTES;
+
+use crate::blob::BlobError;
 use crate::coverage::{self, Coverage, CoverageError};
-use crate::diff::{DiffIndex, FileDiff};
+use crate::diff::DiffIndex;
 use crate::moves::MovesReport;
 use crate::order::{OrderInput, tour_order};
 
@@ -30,6 +34,8 @@ use crate::order::{OrderInput, tour_order};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LineFacts {
     files: BTreeMap<(LineSide, String), FileFacts>,
+    /// Files of the pinned tree that were not read: larger than the per-file limit or over the budget.
+    unread: BTreeMap<(LineSide, String), u64>,
 }
 
 /// Line facts of one file on one side.
@@ -51,7 +57,9 @@ impl FileFacts {
 impl LineFacts {
     /// Reads the facts of `files` (side, path) at `base` or `head` from the repository at `repo` (read-only).
     /// Paths that are not files of the pinned tree of their side (missing, a directory, absolute, with `.` or
-    /// `..` components) are left out, so verification rejects references to them.
+    /// `..` components) are left out, so verification rejects references to them. Reads are bounded by
+    /// [`crate::blob::MAX_BLOB_BYTES`] per file, [`MAX_FACTS_BYTES`] per load and [`crate::blob::READ_TIMEOUT`];
+    /// files beyond the limits are recorded as unread.
     pub fn load(
         repo: &Path,
         base: &CommitSha,
@@ -66,9 +74,19 @@ impl LineFacts {
         self.files.insert((side, path.to_owned()), facts);
     }
 
-    /// The facts of `path` on `side`, if loaded (absent: the file does not exist on that side).
+    /// The facts of `path` on `side`, if loaded (absent: the file does not exist on that side or was not read).
     pub fn get(&self, side: LineSide, path: &str) -> Option<&FileFacts> {
         self.files.get(&(side, path.to_owned()))
+    }
+
+    /// Records that `path` on `side` is a file of `size` bytes that was not read (over the read limits).
+    pub fn insert_unread(&mut self, side: LineSide, path: &str, size: u64) {
+        self.unread.insert((side, path.to_owned()), size);
+    }
+
+    /// The size of `path` on `side` if it is a file that was not read.
+    pub fn unread_size(&self, side: LineSide, path: &str) -> Option<u64> {
+        self.unread.get(&(side, path.to_owned())).copied()
     }
 }
 
@@ -120,6 +138,10 @@ pub enum VerifyIssueKind {
     MoveClaimMismatch,
     /// A listed thread alias without a status.
     ThreadStatusMissing,
+    /// A file too large to verify (over the per-file read limit or the read budget of one output).
+    FileTooLarge,
+    /// An impact reference on changed lines; impact references name code outside the diff.
+    ImpactInsideDiff,
 }
 
 impl VerifyIssueKind {
@@ -144,6 +166,8 @@ impl VerifyIssueKind {
             Self::EmptyText => "empty_text",
             Self::MoveClaimMismatch => "move_claim_mismatch",
             Self::ThreadStatusMissing => "thread_status_missing",
+            Self::FileTooLarge => "file_too_large",
+            Self::ImpactInsideDiff => "impact_inside_diff",
         }
     }
 }
@@ -157,12 +181,9 @@ pub enum VerifyError {
     /// Reading head files failed.
     #[error("could not read the head files")]
     Io(#[from] std::io::Error),
-    /// `git` could not read the analysed commits.
-    #[error("git could not read the files of the analysed commits: {message}")]
-    Git {
-        /// Plain git error output.
-        message: String,
-    },
+    /// The files of the analysed commits could not be read.
+    #[error("the files of the analysed commits could not be read")]
+    Read(#[from] BlobError),
     /// The coverage inputs do not match the diff.
     #[error("the coverage of the changed lines could not be computed")]
     Coverage(#[from] CoverageError),
@@ -518,10 +539,17 @@ impl Issues {
     ) -> bool {
         let side_name = side_name(side);
         let Some(file) = facts.get(side, path) else {
-            self.push(
-                VerifyIssueKind::UnknownFile,
-                format!("{at}: {path} is not a file of the {side_name} commit"),
-            );
+            if let Some(size) = facts.unread_size(side, path) {
+                let limit = crate::blob::MAX_BLOB_BYTES;
+                let message = format!(
+                    "{at}: {path} on {side_name} has {size} bytes, more than verification reads ({limit} bytes per \
+                     file, {MAX_FACTS_BYTES} per output); refer to fewer or smaller files"
+                );
+                self.push(VerifyIssueKind::FileTooLarge, message);
+            } else {
+                let message = format!("{at}: {path} is not a file of the {side_name} commit");
+                self.push(VerifyIssueKind::UnknownFile, message);
+            }
             return false;
         };
         if start == 0 || start > end || end > file.line_count {
@@ -561,40 +589,14 @@ fn side_name(side: LineSide) -> &'static str {
     }
 }
 
-/// `a-b, c` for sorted lines.
-fn describe_lines(lines: &[u32]) -> String {
-    crate::lines::ranges(lines)
-        .iter()
-        .map(|range| match (range.start_line, range.end_line) {
-            (start, end) if start == end => start.to_string(),
-            (start, end) => format!("{start}-{end}"),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Lines per (side, path) as `FileRanges`, in key order.
-fn to_file_ranges(lines: BTreeMap<(LineSide, String), BTreeSet<u32>>) -> Vec<FileRanges> {
+/// Spans per (side, path) as `FileRanges`, in key order.
+fn to_file_ranges(lines: BTreeMap<(LineSide, String), Vec<spans::Span>>) -> Vec<FileRanges> {
     lines
         .into_iter()
         .map(|((side, file), lines)| FileRanges {
             file,
             side,
-            ranges: crate::lines::ranges(&lines.into_iter().collect::<Vec<_>>()),
+            ranges: spans::to_ranges(&spans::merge(lines)),
         })
         .collect()
-}
-
-/// The head path of the file whose base path is `base_path`, if the file still exists at head.
-fn head_path_of<'a>(files: &'a [FileDiff], base_path: &str) -> Option<&'a str> {
-    files
-        .iter()
-        .find(|file| file.path_on(LineSide::Base) == Some(base_path))
-        .and_then(|file| file.path_on(LineSide::Head))
-}
-
-/// Whether a deletion marker after head line `marker` lies inside head lines `start..=end` (the code view
-/// shows it there: `lines::deletion_markers`).
-fn marker_inside(marker: u32, start: u32, end: u32) -> bool {
-    start <= marker.saturating_add(1) && marker <= end
 }
