@@ -1,0 +1,9 @@
+# Local stack only, on top of deploy/compose.yaml and deploy/compose.local.yaml: runs the server under the host
+# user's uid so it can read a GitHub App key that only that user may read (e.g. ~/.config/smart-review/
+# github-app.pem, mode 0400), without copying or re-permissioning the key. The data volume must belong to that
+# uid once (docs/runbook.md, "Local stack"). Never in a deployment: production gives the key to uid 10010.
+#   docker compose --env-file FILE -f deploy/compose.yaml -f deploy/compose.local.yaml \
+#     -f deploy/dev/compose.host-uid.yaml up -d
+services:
+  server:
+    user: "${SR_SERVER_UID:?set SR_SERVER_UID to the host uid that owns the App key}:${SR_SERVER_GID:?set SR_SERVER_GID}"

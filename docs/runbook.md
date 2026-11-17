@@ -275,18 +275,42 @@ full-URL logs and a host allow-list (`dstdomain` / `ssl::server_name` ACL files)
 ## Local stack (http://localhost)
 
 The same images on one machine, with the per-job `CODEX_HOME` root on a capped tmpfs instead of the loop image
-(`deploy/compose.local.yaml`; no host preparation). Its `.env` needs `SR_PUBLIC_URL=http://localhost:3000`: the
-runner refuses the tmpfs otherwise, and `deploy/check-production-config.sh --env-file .env --local` checks it.
-Sign-in needs a GitHub App callback `http://localhost:3000/auth/github/callback` (the App's LAN development
-callback).
+(`deploy/compose.local.yaml`; no host preparation). Its env file needs `SR_PUBLIC_URL=http://localhost:3000`: the
+runner refuses the tmpfs otherwise, and `deploy/check-production-config.sh --env-file FILE --local` checks it.
+Sign-in needs the GitHub App callback `http://localhost:3000/auth/github/callback` registered on the App.
+
+The development host's instance (compose project `smart-review-local`) takes its generated secrets from
+`~/.config/smart-review-local/stack.env` (mode 0600) and the App and MemCan secrets from
+`~/.config/smart-review/secrets.env`; the App key `~/.config/smart-review/github-app.pem` stays readable by the
+host user only, so `deploy/dev/compose.host-uid.yaml` runs the server under that uid (`SR_SERVER_UID`/`_GID` in
+`stack.env`; the data volume was handed to that uid once).
 
 ```sh
-cd /srv/smart-review/app   # or any checkout
-deploy/check-production-config.sh --env-file .env --local
-docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml up -d --build
-docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml down        # keeps volumes
+cd /data/git-worktrees/home-ubuntu-git-smart-review-wp3-ops   # or any checkout of the same tree
+srl() { docker compose -p smart-review-local --env-file ~/.config/smart-review-local/stack.env \
+  --env-file ~/.config/smart-review/secrets.env -f deploy/compose.yaml -f deploy/compose.local.yaml \
+  -f deploy/dev/compose.host-uid.yaml "$@"; }
+srl ps                 # state and health
+srl stop               # stop, keeping containers, networks and volumes
+srl start              # start again
+srl logs -f --since 10m server runner
+srl down               # remove containers and networks; volumes (database, Codex credential) stay
 ```
+
+Codex login (once per runner-state volume): copy an existing login volume to volume, never from the host
+`~/.codex`; afterwards the source volume is retired (the refresh token is single-use, one live copy only):
+
+```sh
+docker run --rm --network none -v sr-spike-codex-home:/src:ro -v smart-review-local_runner-state:/dst ubuntu:26.04 \
+  sh -c 'install -d -o 10001 -g 10001 -m 0700 /dst/credentials /dst/credentials/default &&
+         install -o 10001 -g 10001 -m 0600 /src/auth.json /dst/credentials/default/auth.json'
+```
+
+First sign-in (owner, once per database): open `http://localhost:3000` in a browser on this host (or through an
+SSH tunnel `ssh -L 3000:127.0.0.1:3000 agentic`), choose "Sign in with GitHub", sign in as an allowed login
+(`lklimek`), approve the App. The server binds the login to its GitHub id at this first sign-in.
 
 Development without containers: `deploy/dev/stack.sh` (fake GitHub, fake provider, no isolation).
 `deploy/dev/real-codex-smoke.sh` with `SR_SMOKE_ISOLATION=supervisor` runs one analysis with the production runner
-image under its supervisor behind the egress proxy.
+image under its supervisor behind the egress proxy; `SR_SMOKE_STATE_VOLUME=smart-review-local_runner-state` (local
+stack's runner stopped first) reuses the stack's Codex credential instead of a second copy.
