@@ -40,6 +40,10 @@ pub struct PrContextBlock {
 /// Deterministic facts of the PR context.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct PrContextFacts {
+    /// Current observed MemCan connection state, separate from the analysis's profile lookup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub memcan_status: Option<crate::api::settings::MemcanStatus>,
     /// CI status of the head commit.
     pub ci: CiStatus,
     /// Whether `Tour.threads` holds every review thread of the pull request.
@@ -60,23 +64,50 @@ pub struct PrContextFacts {
     pub step_count: u32,
 }
 
-/// CI status of the head commit.
+/// CI status of the head commit: its check runs and its commit statuses.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct CiStatus {
     /// Overall state.
     pub state: CiState,
-    /// Number of checks.
+    /// Number of checks read: check runs plus commit statuses.
     pub total: u32,
-    /// Failing checks.
+    /// Failing checks (check runs and commit statuses).
     pub failing: Vec<CiCheck>,
+    /// Check runs by outcome; absent when the check runs were not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub check_runs: Option<CiCounts>,
+    /// Commit statuses (latest per context) by outcome; absent when the statuses were not read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub statuses: Option<CiCounts>,
+}
+
+/// Checks of one CI source by outcome.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct CiCounts {
+    /// Concluded `success`.
+    pub passed: u32,
+    /// Failed: `failure`, `error`, `timed_out`, `cancelled`, `action_required` and any other conclusion.
+    pub failed: u32,
+    /// Not concluded yet (queued, in progress, a `pending` status).
+    pub pending: u32,
+    /// Concluded `skipped` (check runs only): did not run.
+    pub skipped: u32,
+    /// Concluded `neutral` (check runs only).
+    pub neutral: u32,
 }
 
 /// Overall CI state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum CiState {
-    /// Every check passed.
+    /// Both sources were read and every check run and commit status concluded `success`.
     Passing,
+    /// Every check read has concluded and none failed, but not every one succeeded (some skipped or neutral) or
+    /// one source was not read: never "all passing".
+    // TODO(web): handle this state and source counts in PrContextBlock and TopBar.
+    NoFailures,
     /// At least one check failed.
     Failing,
     /// Checks still running.
@@ -113,7 +144,11 @@ pub struct CiCheck {
 /// Counters over material that is not analysed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Counters {
-    /// Lines removed from tests.
+    /// Added diff lines in deterministically classified test files; not an assertion or test-function count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub lines_added_to_tests: Option<u32>,
+    /// Removed diff lines from test files, including replacements; label as "changed or removed".
     pub lines_removed_from_tests: u32,
     /// Names of changed dependencies.
     pub dependencies_changed: Vec<String>,
@@ -505,7 +540,7 @@ pub struct NotAnalysedItem {
     pub ranges: Option<Vec<LineRange>>,
     /// How it was recognised.
     pub badge: ProvenanceBadge,
-    /// The rule (path glob or line regex).
+    /// The matching rule or detector description.
     pub rule: String,
 }
 

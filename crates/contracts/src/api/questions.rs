@@ -25,6 +25,14 @@ impl AskRequest {
 pub struct AskQuestion {
     /// Question id.
     pub id: QuestionId,
+    /// GitHub login of the asker; absent only in older stored payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub asked_by: Option<String>,
+    /// Whether the current reader asked this question.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mine: Option<bool>,
     /// The step.
     pub step_id: StepId,
     /// The question.

@@ -40,6 +40,10 @@
   `failed`. `answered` is sent as soon as the job's output arrives before compaction (runner
   `OutputReady`, ADR-004); if that attempt is later requeued or cancelled, a new `question` event returns it to
   `answering` or `failed`. A usage limit returns it to `pending` with `resumes_at`. No token streaming in v1.
+- Reader fields are projected after the shared broadcast: `question.asked_by` is the asker's GitHub login,
+  `question.mine` compares the asker's stored user id with the subscriber, and `summary.has_my_state` checks
+  that subscriber's saved review state. Neither flag is reused across subscribers. Projection failure closes
+  the stream for a fresh reconnect; it never emits an event with another reader's ownership.
 - Activity events of jobs (commands, tool calls) are not forwarded to the browser (brief: no feed).
 - `heartbeat {at}`: server time, every 15 s while the stream is open (first 15 s after connect; no database read),
   so the client can tell an open but silent stream from a dead one. It replaces the former keep-alive comment.

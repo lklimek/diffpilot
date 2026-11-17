@@ -207,14 +207,24 @@ pub fn rules() -> Vec<NotAnalysedRule> {
     });
     let lines = [
         (
+            RuleKind::Header,
             GENERATED_HEADER_RULE,
             NotAnalysedCategory::GeneratedMechanical,
         ),
-        (LINE_COMMENT_RULE, NotAnalysedCategory::DocsComments),
+        (
+            RuleKind::Lexer,
+            LINE_COMMENT_RULE,
+            NotAnalysedCategory::DocsComments,
+        ),
+        (
+            RuleKind::Binary,
+            "binary content (git diff)",
+            NotAnalysedCategory::GeneratedMechanical,
+        ),
     ]
     .into_iter()
-    .map(|(rule, category)| NotAnalysedRule {
-        kind: RuleKind::LineRegex,
+    .map(|(kind, rule, category)| NotAnalysedRule {
+        kind,
         pattern: rule.to_owned(),
         category,
     });
@@ -853,9 +863,9 @@ mod tests {
         assert!(
             listed
                 .iter()
-                .any(|rule| rule.kind == RuleKind::LineRegex && rule.pattern == LINE_COMMENT_RULE)
+                .any(|rule| rule.kind == RuleKind::Lexer && rule.pattern == LINE_COMMENT_RULE)
         );
-        assert_eq!(listed.len(), PATH_RULES.len() + 2);
+        assert_eq!(listed.len(), PATH_RULES.len() + 3);
         assert!(!is_line_rule(&item("*.md")));
     }
 
@@ -869,5 +879,25 @@ mod tests {
         assert_eq!(Generic.call_hierarchy(&symbol), None);
         assert!(Generic.detect("any/file.ext"));
         assert_eq!(Generic.name(), "generic");
+    }
+}
+
+#[cfg(test)]
+mod rule_kind_regression {
+    #[test]
+    fn rule_kinds_name_the_actual_detector() {
+        let rules = super::rules();
+        let kind = |pattern: &str| {
+            serde_json::to_value(rules.iter().find(|r| r.pattern == pattern).expect("rule"))
+                .expect("wire")["kind"]
+                .clone()
+        };
+        assert_eq!(kind(super::LINE_COMMENT_RULE), "lexer");
+        assert_eq!(kind(super::GENERATED_HEADER_RULE), "header");
+        assert!(
+            rules
+                .iter()
+                .any(|r| serde_json::to_value(r).expect("wire")["kind"] == "binary")
+        );
     }
 }

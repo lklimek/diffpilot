@@ -118,6 +118,7 @@ impl FakeMemcan {
     /// Configuration pointing at the fake with `token`.
     pub(crate) fn config_with_token(&self, token: &str) -> MemcanConfig {
         MemcanConfig {
+            observed: Default::default(),
             url: self.url.clone(),
             token: SecretString::from(token),
         }

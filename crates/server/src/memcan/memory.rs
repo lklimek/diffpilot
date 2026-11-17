@@ -270,6 +270,10 @@ mod tests {
         PendingFeedback {
             analysis_id: AnalysisId::new_random(),
             feedback: Feedback {
+                calibration_example: Some(matches!(
+                    value,
+                    FeedbackValue::Overrated | FeedbackValue::Underrated
+                )),
                 id: FeedbackId::new_random(),
                 target,
                 value,

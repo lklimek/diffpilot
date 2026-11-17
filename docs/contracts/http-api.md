@@ -98,13 +98,29 @@ mapping, query rules and the endpoint × fixture-state inventory.
   comment up by id.
 - **No installation** (ADR-005 addendum): analysis still runs; `PrContextFacts.related_work_checked = false`
   (UI: "Related work: not checked"); commenting disabled.
-- **CI status** (`PrContextFacts.ci`): read from the head commit's check runs with the user token of the analysis
-  creator at ingest. `none` = read, no check runs; `not_checked` = the check runs could not be read (no token,
-  GitHub error, rate limit, or more than 1000 check runs, the read cap). `CiCheck.failing_tests` holds names only
-  from formats that mark a failure unambiguously (libtest `test <name> ... FAILED` and its `failures:` list,
-  pytest `FAILED <file>::<test>`), at most 20 names of at most 200 characters; any other summary gives none (the
-  check still counts as failing, with its link). `CiCheck.url` and `GithubThread.url` are always `https://github.com/…`: any other
-  URL GitHub reports is dropped (`CiCheck.url` null; a thread links to its pull request instead).
+- **CI status** (`PrContextFacts.ci`): read at ingest with the analysis creator's user token from two independent
+  endpoints: check runs and combined commit statuses (latest per context). Each source is capped at 10 pages
+  of 100; refusal (including 403/404), failure, an early empty page or a cut read leaves that source absent
+  (not checked), never zero. `check_runs` and `statuses`, when present, each contain exact counts
+  `{passed, failed, pending, skipped, neutral}`. `passed` means only success; skipped and neutral are separate.
+  `total` and `failing` include both read sources. State precedence: failing, pending, then passing only if
+  both sources were read, at least one result exists and every result succeeded; otherwise `no_failures`
+  for concluded nonfailing results, `none` for two read empty sources, `not_checked` for no results with any
+  unread source. Old stored facts can lack both count fields; clients must not claim “all passing” from such
+  a legacy `state` alone. Example: `{"state":"pending","total":6,"failing":[],"check_runs":{"passed":1,
+  "failed":0,"pending":0,"skipped":4,"neutral":0},"statuses":{"passed":0,"failed":0,"pending":1,
+  "skipped":0,"neutral":0}}`: “1 passed, 4 skipped; 1 status pending. Check runs and commit statuses read.”
+  A single absent source is named explicitly as “not checked”.
+  GitHub documents [checks read permission](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)
+  and [commit statuses read permission](https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference)
+  separately; contents permission alone is not substituted for these endpoint permissions.
+  `CiCheck.failing_tests` extracts only explicit libtest/pytest failure names (at most 20 of 200 characters).
+  `CiCheck.url` and `GithubThread.url` stay restricted to `https://github.com/…`; other check URLs become null.
+- **Test diff churn**: `lines_removed_from_tests` counts removed diff lines in deterministically classified
+  test files, including in-place replacements; `lines_added_to_tests` counts added diff lines on the head
+  side. Neither counts assertions or functions, or establishes weakened coverage. Render together as
+  “4 test lines changed or removed, 57 added”. An absent added count in an old stored pre-pass is unknown,
+  never zero. Pure additions and pure deletions are counted on their respective sides.
 - **Review threads** (`PrContextFacts.threads_status`, `Tour.threads`): read with the same token at ingest.
   `checked` = every thread is listed; `partial` = only the first ones are listed (the 1000-thread read cap, or
   a next page without a cursor); `not_checked` = they could not be read (`Tour.threads` empty, which says
@@ -156,9 +172,20 @@ mapping, query rules and the endpoint × fixture-state inventory.
   it again or its result arrives); only final answers enter later context packs. Logging: the provider's failure
   text appears only in the server's warn log, scrubbed of known secrets; no log line carries a secret, a token or
   the question text, and no response, event or stored question carries the provider's text. `GET …/questions`
-  lists every question of the analysis, oldest first, in any state and of every user of the tenant. Plain text:
+  lists every question of the analysis, oldest first, in any state and of every user of the tenant.
+  Each current HTTP/SSE response carries `asked_by` (GitHub login) and `mine` (reader is asker). These fields
+  are optional only for older payloads. There is no question edit/delete/retry endpoint; another POST is a new
+  question owned by its sender. Plain text:
   HTML-like tags (`<` followed by a letter, `/` or `!`) are allowed only inside code spans and closed fenced
   blocks; a GitHub URL carries no user info and no explicit port.
+- **MemCan status**: Settings and Tour PR-context facts expose `memcan_status {state, last_success_at}`,
+  separate from `project_profile.memcan` (the stored analysis lookup). Read status never calls MemCan.
+  `not_checked` means configured but no completed attempt since startup; `reachable` means the last attempt
+  reached the service; `not_reachable` means connection failure/timeout; `not_configured` means no token
+  (normal startup requires it under ADR-001). `last_success_at` is null before the first successful tool call,
+  retained after failures, and reset on process restart. It is not a live health guarantee.
+  Rule kinds include `lexer` for Rust comment-only lines, `header` for generated markers, and `binary`
+  for git's binary detection, in addition to `path_glob` and `line_regex`.
 - **Settings**: `repos` lists the tenant's repositories with at least one analysis; each opens
   `/api/v1/repos/{owner}/{name}/settings` (owner and name match case-insensitively; any other repository is
   `not_found`). Its rules, related repositories and profile source come from the newest stored pre-pass of the
@@ -174,6 +201,13 @@ mapping, query rules and the endpoint × fixture-state inventory.
   GitHub fails, `app_installations` is `null` ("not checked", no cause given; signing in again may help) and the
   rest of Settings is still returned, the session stays valid; `[]` means none installed. After a GitHub 401 the
   next request refreshes the user token; if GitHub rejects the refresh, the sign-in ends (later requests: 401). `PUT …/settings/language` accepts only `en` and `pl`.
+- **Personal state indicator**: every current HTTP/SSE `AnalysisSummary` includes `has_my_state`, true iff
+  the current reader has a stored `review_states` row (even an explicitly saved empty one). It never derives
+  from another user's state or merely from the existence of the shared analysis. Older payloads may omit it.
+- **Feedback calibration**: every current `Feedback` includes `calibration_example`, true only for
+  `overrated`/`underrated`. “Saved to calibration memory” requires both true and `memory: written`;
+  other written values are “Recorded”. Pending/failed retain their existing delivery meaning. The writer
+  logs each confirmed write/delete at INFO with only the feedback id, never the note or memory text.
 - **Review state**: `PUT` replaces the user's whole state (idempotent; repeated ticks are stored once); concurrent
   writes leave one of them whole. Every ticked step and the last viewed block must be in the analysis's Tour
   (quiet rows only when the Tour shows them), else `invalid_request` and nothing is stored.

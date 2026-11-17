@@ -259,7 +259,7 @@ pub(crate) mod tests {
             "threads read: none exist"
         );
         let logs = capture.text();
-        assert!(logs.contains("check runs could not be read"), "{logs}");
+        assert!(logs.contains("CI source could not be read"), "{logs}");
         assert!(!logs.contains(USER_TOKEN), "{logs}");
     }
 
@@ -322,7 +322,7 @@ pub(crate) mod tests {
         let ingested = ingest_github_snapshot(&state, &summary(&state, analysis).await, "u1")
             .await
             .expect("ingest");
-        assert_eq!(ingested.ci.state, CiState::Passing);
+        assert_eq!(ingested.ci.state, CiState::NoFailures);
         assert_eq!(
             ingested.threads_status,
             ThreadsStatus::NotChecked,

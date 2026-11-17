@@ -25,7 +25,7 @@
     "facts": {
       "ci": {
         "state": "failing",
-        "total": 6,
+        "total": 7,
         "failing": [
           {
             "name": "test (integration)",
@@ -34,7 +34,21 @@
               "sync_headers::slow_peer_2000_headers"
             ]
           }
-        ]
+        ],
+        "check_runs": {
+          "passed": 3,
+          "failed": 1,
+          "pending": 0,
+          "skipped": 1,
+          "neutral": 1
+        },
+        "statuses": {
+          "passed": 0,
+          "failed": 0,
+          "pending": 1,
+          "skipped": 0,
+          "neutral": 0
+        }
       },
       "threads_status": "checked",
       "counters": {
@@ -44,7 +58,8 @@
           "tracing",
           "url"
         ],
-        "dependency_files_not_checked": []
+        "dependency_files_not_checked": [],
+        "lines_added_to_tests": 30
       },
       "project_profile": {
         "sources": [

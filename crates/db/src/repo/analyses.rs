@@ -276,6 +276,17 @@ impl Analyses<'_> {
         record_from_row(&row)
     }
 
+    /// Analysis summary projected for a reader; shared storage never carries personal review state.
+    pub async fn summary_for_user(
+        &self,
+        id: AnalysisId,
+        user: &str,
+    ) -> Result<AnalysisSummary, DbError> {
+        let mut summary = self.summary(id).await?;
+        summary.has_my_state = Some(super::review_state::exists(self.pool, user, id).await?);
+        Ok(summary)
+    }
+
     /// The analysis as the API shows it: state plus the pull request at the analysed head.
     pub async fn summary(&self, id: AnalysisId) -> Result<AnalysisSummary, DbError> {
         let row = sqlx::query(concat!(
@@ -296,6 +307,7 @@ impl Analyses<'_> {
             *stage = self.live_stage(id).await?;
         }
         Ok(AnalysisSummary {
+            has_my_state: None,
             id: record.id,
             pr: PrSummary {
                 repo: RepoRef {

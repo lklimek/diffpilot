@@ -69,3 +69,7 @@ SR_GITHUB_CLONE_URL=file:///data/tmp/fake-github-remotes
 The script builds the fixture repository with `fixtures/pr-482/repo/build-repo.sh` and mirrors it to
 `<DEST>/acme/node-client.git` with all refs (`main`, `feat/retry-timeouts`, `refs/pull/482/head`; commit ids as
 in `fixtures/pr-482/repo/commits.json`).
+
+CI recordings include successful, failed, skipped and neutral check runs plus a pending commit status at
+`GET /repos/acme/node-client/commits/{head}/status`. This lets callers distinguish both CI sources and avoid
+reporting skipped runs as passing. The existing fixture bearer-token checks apply to both endpoints.

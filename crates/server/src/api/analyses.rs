@@ -294,7 +294,12 @@ pub(crate) async fn visible_analysis(
     if record.tenant_id != session.tenant_id {
         return Err(failure(DbError::NotFound));
     }
-    state.db.analyses().summary(id).await.map_err(failure)
+    state
+        .db
+        .analyses()
+        .summary_for_user(id, &session.user_id)
+        .await
+        .map_err(failure)
 }
 
 async fn create(
@@ -326,7 +331,7 @@ async fn cancel(
     let Path(id) = id.map_err(failure)?;
     visible_analysis(&state, &session, id).await?;
     let summary = control::cancel(&state, id).await.map_err(failure)?;
-    Ok(Json(summary))
+    Ok(Json(visible_analysis(&state, &session, summary.id).await?))
 }
 
 async fn retry(
@@ -337,5 +342,5 @@ async fn retry(
     let Path(id) = id.map_err(failure)?;
     visible_analysis(&state, &session, id).await?;
     let summary = control::retry(&state, id).await.map_err(failure)?;
-    Ok(Json(summary))
+    Ok(Json(visible_analysis(&state, &session, summary.id).await?))
 }

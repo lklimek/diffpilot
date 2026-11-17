@@ -150,6 +150,7 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
         .credential_unusable_since(&session.tenant_id)
         .await?;
     Ok(Settings {
+        memcan_status: Some(state.config.memcan.status()),
         llm_status: llm_status(last_call, unusable_since),
         language: user.language,
         app_installations: installations(state, session).await,
@@ -640,6 +641,14 @@ mod tests {
             text.contains("codex_output_schema"),
             "the raw text is logged: {text}"
         );
+    }
+
+    #[tokio::test]
+    async fn memcan_status_is_separate_from_the_project_profile() {
+        let h = harness().await;
+        let (_, settings) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(settings["memcan_status"]["state"], "not_checked");
+        assert_eq!(settings["memcan_status"]["last_success_at"], Value::Null);
     }
 
     #[tokio::test]

@@ -1,5 +1,6 @@
 {
   "analysis": {
+    "has_my_state": false,
     "id": "6d3a2f1e-0482-4c5e-9a7b-000000000482",
     "pr": {
       "repo": {
@@ -23,9 +24,13 @@
   },
   "pr_context": {
     "facts": {
+      "memcan_status": {
+        "state": "not_reachable",
+        "last_success_at": null
+      },
       "ci": {
         "state": "failing",
-        "total": 6,
+        "total": 7,
         "failing": [
           {
             "name": "test (integration)",
@@ -34,10 +39,25 @@
               "sync_headers::slow_peer_2000_headers"
             ]
           }
-        ]
+        ],
+        "check_runs": {
+          "passed": 3,
+          "failed": 1,
+          "pending": 0,
+          "skipped": 1,
+          "neutral": 1
+        },
+        "statuses": {
+          "passed": 0,
+          "failed": 0,
+          "pending": 1,
+          "skipped": 0,
+          "neutral": 0
+        }
       },
       "threads_status": "checked",
       "counters": {
+        "lines_added_to_tests": 30,
         "lines_removed_from_tests": 12,
         "dependencies_changed": [
           "tokio",

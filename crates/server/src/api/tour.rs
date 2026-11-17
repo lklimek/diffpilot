@@ -25,6 +25,7 @@ async fn read(
 ) -> ApiResult<Json<Tour>> {
     let Path(id) = id.map_err(failure)?;
     let summary = visible_analysis(&state, &session, id).await?;
-    let tour = tour::load(&state, &summary).await.map_err(failure)?;
+    let mut tour = tour::load(&state, &summary).await.map_err(failure)?;
+    tour.pr_context.facts.memcan_status = Some(state.config.memcan.status());
     Ok(Json(tour))
 }

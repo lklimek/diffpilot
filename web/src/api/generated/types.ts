@@ -94,6 +94,10 @@ total: number, } | { "state": "cancelled" };
  */
 export type AnalysisSummary = {
 /**
+ * Whether this reader has saved review state (including explicitly empty state).
+ */
+has_my_state?: boolean,
+/**
  * Analysis id.
  */
 id: AnalysisId,
@@ -217,6 +221,14 @@ export type AskQuestion = {
  * Question id.
  */
 id: QuestionId,
+/**
+ * GitHub login of the asker; absent only in older stored payloads.
+ */
+asked_by?: string,
+/**
+ * Whether the current reader asked this question.
+ */
+mine?: boolean,
 /**
  * The step.
  */
@@ -377,12 +389,37 @@ url: string | null,
 failing_tests: Array<string>, };
 
 /**
- * Overall CI state.
+ * Checks of one CI source by outcome.
  */
-export type CiState = "passing" | "failing" | "pending" | "none" | "not_checked";
+export type CiCounts = {
+/**
+ * Concluded `success`.
+ */
+passed: number,
+/**
+ * Failed: `failure`, `error`, `timed_out`, `cancelled`, `action_required` and any other conclusion.
+ */
+failed: number,
+/**
+ * Not concluded yet (queued, in progress, a `pending` status).
+ */
+pending: number,
+/**
+ * Concluded `skipped` (check runs only): did not run.
+ */
+skipped: number,
+/**
+ * Concluded `neutral` (check runs only).
+ */
+neutral: number, };
 
 /**
- * CI status of the head commit.
+ * Overall CI state.
+ */
+export type CiState = "passing" | "no_failures" | "failing" | "pending" | "none" | "not_checked";
+
+/**
+ * CI status of the head commit: its check runs and its commit statuses.
  */
 export type CiStatus = {
 /**
@@ -390,13 +427,21 @@ export type CiStatus = {
  */
 state: CiState,
 /**
- * Number of checks.
+ * Number of checks read: check runs plus commit statuses.
  */
 total: number,
 /**
- * Failing checks.
+ * Failing checks (check runs and commit statuses).
  */
-failing: Array<CiCheck>, };
+failing: Array<CiCheck>,
+/**
+ * Check runs by outcome; absent when the check runs were not read.
+ */
+check_runs?: CiCounts,
+/**
+ * Commit statuses (latest per context) by outcome; absent when the statuses were not read.
+ */
+statuses?: CiCounts, };
 
 /**
  * Classification of a flow (brief §3, closed list).
@@ -448,7 +493,11 @@ export type CommitSha = string;
  */
 export type Counters = {
 /**
- * Lines removed from tests.
+ * Added diff lines in deterministically classified test files; not an assertion or test-function count.
+ */
+lines_added_to_tests?: number,
+/**
+ * Removed diff lines from test files, including replacements; label as "changed or removed".
  */
 lines_removed_from_tests: number,
 /**
@@ -611,6 +660,10 @@ export type Feedback = {
  * Feedback id.
  */
 id: FeedbackId,
+/**
+ * Whether this value is a severity calibration example; saved only when `memory` is `written`.
+ */
+calibration_example?: boolean,
 /**
  * What it is about.
  */
@@ -1157,6 +1210,24 @@ user: Me | null,
 csrf_token: string | null, };
 
 /**
+ * What the server knows about MemCan connectivity.
+ */
+export type MemcanState = "not_configured" | "not_checked" | "reachable" | "not_reachable";
+
+/**
+ * Most recent observed MemCan connectivity; never an on-demand health probe.
+ */
+export type MemcanStatus = {
+/**
+ * Outcome observed by the server's client.
+ */
+state: MemcanState,
+/**
+ * Last successful tool call in this server process, retained after a later failure.
+ */
+last_success_at: string | null, };
+
+/**
  * Result of the deterministic move check.
  */
 export type MoveFact = {
@@ -1234,7 +1305,7 @@ ranges: Array<LineRange> | null,
  */
 badge: ProvenanceBadge,
 /**
- * The rule (path glob or line regex).
+ * The matching rule or detector description.
  */
 rule: string, };
 
@@ -1243,11 +1314,11 @@ rule: string, };
  */
 export type NotAnalysedRule = {
 /**
- * Path glob or line regex.
+ * Detector used to classify the material.
  */
 kind: RuleKind,
 /**
- * The glob or regex.
+ * The pattern or detector description.
  */
 pattern: string,
 /**
@@ -1390,6 +1461,10 @@ llm: PrContextOutput, };
  * Deterministic facts of the PR context.
  */
 export type PrContextFacts = {
+/**
+ * Current observed MemCan connection state, separate from the analysis's profile lookup.
+ */
+memcan_status?: MemcanStatus,
 /**
  * CI status of the head commit.
  */
@@ -1680,7 +1755,7 @@ export type RiskBand = "low" | "medium" | "high";
 /**
  * Kind of rule.
  */
-export type RuleKind = "path_glob" | "line_regex";
+export type RuleKind = "path_glob" | "line_regex" | "lexer" | "header" | "binary";
 
 /**
  * Body of `PUT /api/v1/settings/language`.
@@ -1699,6 +1774,10 @@ export type Settings = {
  * Outcome of the most recent LLM call; null before the first call. No on-demand check.
  */
 llm_status: LlmCallOutcome | null,
+/**
+ * Observed MemCan connection state, without an on-demand probe.
+ */
+memcan_status?: MemcanStatus,
 /**
  * Language of LLM texts.
  */

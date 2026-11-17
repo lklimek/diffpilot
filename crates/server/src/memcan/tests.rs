@@ -957,3 +957,64 @@ async fn absent_profile_is_checked_and_unreachable_memcan_is_not_checked() {
         "recorded once"
     );
 }
+
+#[tokio::test]
+async fn feedback_reports_calibration_per_value_and_logs_confirmed_operations() {
+    let capture = LogCapture::start();
+    let fake = FakeMemcan::start();
+    let (state, analysis) = analysis_with_flow().await;
+    for (value, calibration) in [
+        (UserFeedbackValue::Correct, false),
+        (UserFeedbackValue::Wrong, false),
+        (UserFeedbackValue::Irrelevant, false),
+        (UserFeedbackValue::Overrated, true),
+        (UserFeedbackValue::Underrated, true),
+    ] {
+        let entry = post(&state, analysis, on_step(value, "feedback-text-canary"), 1).await;
+        assert_eq!(
+            serde_json::to_value(&entry).expect("wire")["calibration_example"],
+            calibration
+        );
+    }
+    sweep(&state.db, &fake.config(), at(3))
+        .await
+        .expect("sweep");
+    let entry = post(
+        &state,
+        analysis,
+        on_step(UserFeedbackValue::Correct, "feedback-text-canary"),
+        4,
+    )
+    .await;
+    remove(&state.db, "u1", analysis, entry.id, at(5))
+        .await
+        .expect("remove");
+    sweep(&state.db, &fake.config(), at(6))
+        .await
+        .expect("sweep");
+    let logs = capture.text();
+    assert!(logs.contains("MemCan feedback write confirmed"), "{logs}");
+    assert!(logs.contains("MemCan feedback delete confirmed"), "{logs}");
+    assert!(!logs.contains("feedback-text-canary"), "{logs}");
+}
+
+#[tokio::test]
+async fn memcan_observations_retain_last_success_after_failure() {
+    use contracts::api::settings::MemcanState;
+    let fake = FakeMemcan::start();
+    let config = fake.config();
+    assert_eq!(config.status().state, MemcanState::NotChecked);
+    project_profile(&config, "node-client")
+        .await
+        .expect("profile lookup");
+    let success = config.status();
+    assert_eq!(success.state, MemcanState::Reachable);
+    assert!(success.last_success_at.is_some());
+    fake.set_mode(Mode::EchoToken);
+    assert!(project_profile(&config, "node-client").await.is_err());
+    assert_eq!(config.status().state, MemcanState::NotReachable);
+    assert_eq!(config.status().last_success_at, success.last_success_at);
+    let mut disabled = fake.config();
+    disabled.token = secrecy::SecretString::from("");
+    assert_eq!(disabled.status().state, MemcanState::NotConfigured);
+}

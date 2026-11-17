@@ -109,6 +109,8 @@ pub struct GithubConfig {
 /// MemCan connection settings.
 #[derive(Debug)]
 pub struct MemcanConfig {
+    /// Observations shared by all calls using this configuration.
+    pub observed: crate::memcan::status::ObservedStatus,
     /// MCP endpoint URL.
     pub url: Url,
     /// Bearer token.
@@ -323,6 +325,7 @@ impl Config {
                 )?,
             },
             memcan: MemcanConfig {
+                observed: Default::default(),
                 url: parse_http_url(MEMCAN_URL, &require(MEMCAN_URL)?)?,
                 token: SecretString::from(secret(MEMCAN_TOKEN, MEMCAN_TOKEN_FILE)?),
             },

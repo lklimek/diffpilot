@@ -17,5 +17,9 @@
       "owner": "acme",
       "name": "node-client"
     }
-  ]
+  ],
+  "memcan_status": {
+    "state": "not_checked",
+    "last_success_at": null
+  }
 }

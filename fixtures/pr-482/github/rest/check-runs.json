@@ -286,7 +286,7 @@
         "html_url": "https://github.com/acme/node-client/runs/3000000005",
         "details_url": "https://github.com/acme/node-client/actions/runs/3000000005",
         "status": "completed",
-        "conclusion": "success",
+        "conclusion": "skipped",
         "started_at": "2026-11-10T14:36:00Z",
         "completed_at": "2026-11-10T14:44:00Z",
         "output": {
@@ -353,7 +353,7 @@
         "html_url": "https://github.com/acme/node-client/runs/3000000006",
         "details_url": "https://github.com/acme/node-client/actions/runs/3000000006",
         "status": "completed",
-        "conclusion": "success",
+        "conclusion": "neutral",
         "started_at": "2026-11-10T14:36:00Z",
         "completed_at": "2026-11-10T14:44:00Z",
         "output": {

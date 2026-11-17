@@ -13,6 +13,10 @@ use crate::job::result::LlmCallOutcome;
 pub struct Settings {
     /// Outcome of the most recent LLM call; null before the first call. No on-demand check.
     pub llm_status: Option<LlmCallOutcome>,
+    /// Observed MemCan connection state, without an on-demand probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub memcan_status: Option<MemcanStatus>,
     /// Language of LLM texts.
     pub language: LlmLanguage,
     /// GitHub App installations the user can access; null = not checked (GitHub could not be reached or the
@@ -54,9 +58,9 @@ pub struct RepoSettings {
 /// A built-in "not analysed" rule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct NotAnalysedRule {
-    /// Path glob or line regex.
+    /// Detector used to classify the material.
     pub kind: RuleKind,
-    /// The glob or regex.
+    /// The pattern or detector description.
     pub pattern: String,
     /// Section it fills.
     pub category: NotAnalysedCategory,
@@ -66,8 +70,38 @@ pub struct NotAnalysedRule {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleKind {
+    // TODO(web): render lexer/header/binary labels in RepoSettingsCard.
     /// Matches file paths.
     PathGlob,
     /// Matches lines.
     LineRegex,
+    /// Comment-only lines recognised by a language lexer.
+    Lexer,
+    /// A generated-file marker in the header.
+    Header,
+    /// Git's binary-content detection.
+    Binary,
+}
+
+/// Most recent observed MemCan connectivity; never an on-demand health probe.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MemcanStatus {
+    /// Outcome observed by the server's client.
+    pub state: MemcanState,
+    /// Last successful tool call in this server process, retained after a later failure.
+    pub last_success_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// What the server knows about MemCan connectivity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MemcanState {
+    /// No connection configuration.
+    NotConfigured,
+    /// Configured, but no completed attempt since this server started.
+    NotChecked,
+    /// The most recent attempt reached MemCan.
+    Reachable,
+    /// The most recent attempt could not reach MemCan or timed out.
+    NotReachable,
 }

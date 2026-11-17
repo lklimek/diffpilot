@@ -391,6 +391,15 @@ async fn harness_with_app(app: bool) -> Harness {
         .mount(&github)
         .await;
 
+    let statuses = read_json(&fixtures().join("github/rest/commit-status.json"));
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/repos/acme/node-client/commits/{head}/status"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&statuses["response"]))
+        .mount(&github)
+        .await;
+
     let db = Db::in_memory().await.expect("db");
     let executor = Arc::new(ScriptedExecutor::default());
     let app_key = app.then(|| {
@@ -1577,7 +1586,10 @@ async fn tour_has_no_uncomputed_fact() {
         json!("not_checked"),
         "CI read from the snapshot"
     );
-    assert_eq!(facts["ci"]["total"], json!(runs));
+    assert_eq!(facts["ci"]["total"], json!(runs + 1));
+    assert_eq!(facts["ci"]["statuses"]["pending"], 1);
+    assert_eq!(facts["ci"]["check_runs"]["skipped"], 1);
+    assert_eq!(facts["ci"]["check_runs"]["neutral"], 1);
     assert_eq!(facts["threads_status"], json!("checked"));
     let recorded = read_json(&fixtures().join("github/graphql/review-threads.json"));
     let nodes = recorded["response"]["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
