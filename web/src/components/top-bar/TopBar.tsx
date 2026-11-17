@@ -20,6 +20,8 @@ function ciText(ci: CiStatus): string {
       return "CI: running";
     case "none":
       return "CI: no checks";
+    case "not_checked":
+      return "CI: not checked";
   }
 }
 
