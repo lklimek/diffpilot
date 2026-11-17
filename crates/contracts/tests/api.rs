@@ -19,7 +19,7 @@ use contracts::api::feedback::{
     Feedback, FeedbackRequest, FeedbackTarget, FeedbackValue, UserFeedbackValue,
 };
 use contracts::api::pr::{PrSummary, ResolvePrResponse};
-use contracts::api::questions::{AskQuestion, AskState};
+use contracts::api::questions::{AskQuestion, AskRequest, AskState};
 use contracts::api::review::{BlockRef, QuietRowRef, ReviewState};
 use contracts::api::settings::{AppInstallation, RepoSettings, Settings};
 use contracts::api::tour::{
@@ -391,6 +391,7 @@ fn sse_event_name_is_the_tag() {
         }),
         failure: None,
         created_at: Utc::now(),
+        resumes_at: None,
     };
     for event in [
         AnalysisEvent::Analysis { summary: summary() },
@@ -399,6 +400,33 @@ fn sse_event_name_is_the_tag() {
         let json = serde_json::to_value(&event).expect("serialises");
         assert_eq!(json["event"], json!(event.name()));
     }
+}
+
+/// `resumes_at` is on the wire only while a question waits for the usage limit; a question without it
+/// (every stored fixture) keeps its JSON.
+#[test]
+fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
+    let at = Utc::now();
+    let mut question = AskQuestion {
+        id: QuestionId::new_random(),
+        step_id: StepId("f1.1".to_owned()),
+        text: "q".to_owned(),
+        state: AskState::Pending,
+        answer: None,
+        failure: None,
+        created_at: at,
+        resumes_at: None,
+    };
+    let json = serde_json::to_value(&question).expect("serialises");
+    assert!(json.get("resumes_at").is_none(), "{json}");
+    assert_eq!(
+        serde_json::from_value::<AskQuestion>(json).expect("deserialises"),
+        question
+    );
+    question.resumes_at = Some(at);
+    let json = serde_json::to_value(&question).expect("serialises");
+    assert_eq!(json["resumes_at"], serde_json::to_value(at).expect("time"));
+    assert!(AskRequest::MAX_TEXT_CHARS >= 500);
 }
 
 #[test]
