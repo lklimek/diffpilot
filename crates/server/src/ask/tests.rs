@@ -1127,9 +1127,11 @@ async fn ask_never_preempts_a_running_job_and_questions_of_one_analysis_run_one_
     let later_batch = f.batch_job(f.other, "f2").await;
     let running = f.claim().await.expect("the batch job");
     assert_eq!(running.spec.job_id, batch);
+    // Jobs queue in submission order; each follower submits on its own, so the second is asked once the first
+    // job is queued.
     let first = f.asked("f1.5", "first?").await;
-    let second = f.asked("f1.5", "second?").await;
     let first_job = f.queued_job(first).await;
+    let second = f.asked("f1.5", "second?").await;
     let second_job = f.queued_job(second).await;
     assert_eq!(
         f.claim().await.map(|claim| claim.spec.job_id),
