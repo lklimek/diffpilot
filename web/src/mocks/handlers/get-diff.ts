@@ -19,24 +19,36 @@ export function diffFor(path: string, side: LineSide, from: number, to: number):
     const text = file.lines[line - 1] ?? "";
     if (side === "base") {
       if (inRange(line)) {
-        lines.push({ kind: changed.has(line) ? "removed" : "context", old_line: line, new_line: null, text });
+        lines.push({
+          kind: changed.has(line) ? "removed" : "context",
+          old_line: line,
+          new_line: null,
+          text,
+          eol: null,
+        });
       }
       continue;
     }
     for (const block of file.deleted.filter((d) => d.after_line === line - 1)) {
       block.lines.forEach((removed, i) => {
         if (inRange(line) || inRange(line - 1)) {
-          lines.push({ kind: "removed", old_line: block.base_start + i, new_line: null, text: removed });
+          lines.push({
+            kind: "removed",
+            old_line: block.base_start + i,
+            new_line: null,
+            text: removed,
+            eol: null,
+          });
         }
       });
       old = block.base_start + block.total_lines - 1;
     }
     if (line > file.total_lines) break;
     if (changed.has(line)) {
-      if (inRange(line)) lines.push({ kind: "added", old_line: null, new_line: line, text });
+      if (inRange(line)) lines.push({ kind: "added", old_line: null, new_line: line, text, eol: null });
     } else {
       old += 1;
-      if (inRange(line)) lines.push({ kind: "context", old_line: old, new_line: line, text });
+      if (inRange(line)) lines.push({ kind: "context", old_line: old, new_line: line, text, eol: null });
     }
   }
   if (lines.every((l) => l.kind === "context")) return { path, side, hunks: [] };
