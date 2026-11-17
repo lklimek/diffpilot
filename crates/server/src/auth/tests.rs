@@ -1089,6 +1089,90 @@ async fn unreadable_tokens_ask_to_sign_in_again() {
     assert_eq!(me_login(&h, &signed_in.cookie).await, None, "session ended");
 }
 
+/// GitHub answers `/user/installations` with 401 for `rejected` and with no installations for `accepted`.
+async fn mock_installations(h: &Harness, rejected: &str, accepted: &str) {
+    for (token, response) in [
+        (rejected, ResponseTemplate::new(401)),
+        (
+            accepted,
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"total_count": 0, "installations": []})),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/api/user/installations"))
+            .and(header("authorization", format!("Bearer {token}").as_str()))
+            .respond_with(response)
+            .mount(&h.github)
+            .await;
+    }
+}
+
+async fn settings_installations(h: &Harness, cookie: &str) -> (StatusCode, Value) {
+    let response = h.send(get_with_cookie("/api/v1/settings", cookie)).await;
+    let status = response.status();
+    (
+        status,
+        json_body(response).await["app_installations"].clone(),
+    )
+}
+
+/// A GitHub 401 for a token the server still holds as fresh marks it expired: the next use refreshes the pair.
+#[tokio::test]
+async fn github_401_refreshes_the_pair_on_next_use() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    h.github.reset().await;
+    mock_installations(&h, ACCESS, "ghu_after_401").await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .and(body_string_contains(format!("refresh_token={REFRESH}")))
+        .respond_with(token_response("ghu_after_401", "ghr_after_401"))
+        .expect(1)
+        .mount(&h.github)
+        .await;
+    assert_eq!(
+        settings_installations(&h, &signed_in.cookie).await,
+        (StatusCode::OK, Value::Null),
+        "not checked"
+    );
+    assert_eq!(
+        settings_installations(&h, &signed_in.cookie).await,
+        (StatusCode::OK, json!([])),
+        "read with the refreshed token"
+    );
+}
+
+/// After a GitHub 401, a refresh GitHub rejects ends the sign-in: the user is asked to sign in again.
+#[tokio::test]
+async fn github_401_then_rejected_refresh_asks_to_sign_in_again() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    h.github.reset().await;
+    mock_installations(&h, ACCESS, "unused").await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"error": "bad_refresh_token"})),
+        )
+        .expect(1)
+        .mount(&h.github)
+        .await;
+    assert_eq!(
+        settings_installations(&h, &signed_in.cookie).await,
+        (StatusCode::OK, Value::Null)
+    );
+    assert_eq!(
+        settings_installations(&h, &signed_in.cookie).await,
+        (StatusCode::OK, Value::Null)
+    );
+    let response = h
+        .send(get_with_cookie("/api/v1/settings", &signed_in.cookie))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json_body(response).await["message"], "Sign in to continue.");
+}
+
 #[tokio::test]
 async fn bad_refresh_token_ends_sign_in() {
     let h = harness().await;

@@ -26,7 +26,7 @@ use secrecy::{ExposeSecret, SecretString};
 use super::{Session, liveness};
 use crate::api::error::ApiErrorSource;
 use crate::github::oauth::{self, OauthError, TokenGrant};
-use crate::secrets::{Aad, SecretError, TokenCipher};
+use crate::secrets::{Aad, SecretError, TokenCipher, secrets_equal};
 use crate::state::AppState;
 
 /// An access token expiring within this margin is refreshed before use.
@@ -180,6 +180,39 @@ pub(crate) async fn end_session(state: &AppState, session: &Session) -> Result<(
         .end_session(&session.user_id, session.token_hash(), liveness(Utc::now()))
         .await?;
     Ok(())
+}
+
+/// GitHub answered 401 to the user's access token `rejected`: if the stored pair still holds it, it counts as
+/// expired, so the next [`user_access_token`] refreshes the pair (and a rejected refresh ends the sign-in).
+/// Failures are logged; the caller's request has already failed.
+pub async fn user_token_rejected(state: &AppState, user_id: &str, rejected: &SecretString) {
+    let cipher = TokenCipher::new(&state.config.secret_key);
+    let tokens = state.db.user_tokens();
+    let _lock = lock_user(user_id).await;
+    let marked = match tokens.get(user_id).await {
+        Ok(Some(stored)) => match cipher.decrypt(access_aad(user_id), &stored.tokens.access_ct) {
+            Ok(held) if secrets_equal(held.expose_secret(), rejected.expose_secret()) => tokens
+                .expire_access(user_id, stored.version, Utc::now())
+                .await
+                .map_err(UserTokenError::from),
+            // Already rotated, or unreadable (handled on the next use).
+            Ok(_) | Err(_) => Ok(false),
+        },
+        Ok(None) => Ok(false),
+        Err(error) => Err(error.into()),
+    };
+    match marked {
+        Ok(true) => tracing::info!(
+            user_id,
+            "GitHub rejected the user token; it is refreshed on next use"
+        ),
+        Ok(false) => {}
+        Err(error) => tracing::warn!(
+            user_id,
+            ?error,
+            "a GitHub-rejected user token could not be marked expired"
+        ),
+    }
 }
 
 fn fresh_access(

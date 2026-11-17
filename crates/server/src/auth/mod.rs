@@ -40,6 +40,7 @@ mod tokens;
 pub(crate) use tokens::end_session;
 pub use tokens::{
     UserLock, UserTokenError, end_sign_in, lock_user, store_sign_in_tokens, user_access_token,
+    user_token_rejected,
 };
 
 /// Lifetime of a session (absolute; the user signs in again afterwards).
