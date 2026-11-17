@@ -5,6 +5,7 @@ import type { FlowGraph, Tour } from "../../api/generated/types";
 import { expectTrustWording, toursByState } from "../../__tests__/wording";
 import { seedFor } from "../../mocks/fixtures";
 import { FlowDiagram } from "./FlowDiagram";
+import { LABEL_MAX_CHARS, MAX_LISTED_EDGES, MAX_LISTED_STEPS, TEXT_MAX_CHARS } from "./layout";
 import { syntheticGraph } from "./syntheticGraph";
 
 const tour = seedFor("default", "tour") as Tour;
@@ -240,6 +241,63 @@ describe("FlowDiagram text alternative", () => {
     expect(summary.closest("details")).not.toHaveAttribute("open");
     await userEvent.click(summary);
     expect(summary.closest("details")).toHaveAttribute("open");
+  });
+});
+
+describe("FlowDiagram limits", () => {
+  it("draws a multi-megabyte label as a few lines with a truncation mark and bounds its accessible name", () => {
+    const label = "x".repeat(3_200_000);
+    renderDiagram({ nodes: [{ step_id: "a", number: 1, kind: "added", label }], edges: [] }, "a");
+    const node = nodes()[0]!;
+    expect(node.textContent).toContain("…");
+    expect(node.textContent!.length).toBeLessThan(LABEL_MAX_CHARS + 20);
+    expect(node.getAttribute("aria-label")!.length).toBeLessThan(TEXT_MAX_CHARS + 40);
+    const item = within(screen.getByRole("list", { name: "Flow steps and edges" })).getByRole("listitem");
+    expect(item.textContent).toContain("…");
+    expect(item.textContent!.length).toBeLessThan(TEXT_MAX_CHARS + 60);
+  });
+
+  it("shows a flow with thousands of steps and edges as text with a plain note instead of drawing it", () => {
+    const graph = syntheticGraph(3000);
+    graph.edges.push(...graph.edges.map((e) => ({ ...e, label: null })));
+    const start = performance.now();
+    renderDiagram(graph, "s1.17");
+    expect(performance.now() - start).toBeLessThan(3000);
+    expect(screen.queryByRole("group", { name: /^Flow diagram/ })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `This flow has 3000 steps and ${graph.edges.length} edges: too many to draw. The list below shows it as text.`,
+      ),
+    ).toBeInTheDocument();
+    const list = screen.getByRole("list", { name: "Flow steps and edges" });
+    expect(list.closest("details")).toHaveAttribute("open");
+    expect(within(list).getAllByRole("listitem")).toHaveLength(MAX_LISTED_STEPS);
+    expect(screen.getByText(`${3000 - MAX_LISTED_STEPS} more steps are not listed.`)).toBeInTheDocument();
+  });
+
+  it("lists at most a bounded number of outgoing edges per step", () => {
+    const graph = syntheticGraph(MAX_LISTED_EDGES + 5);
+    graph.edges = graph.nodes.slice(1).map((n) => ({ from: "s1.1", to: n.step_id, label: null }));
+    renderDiagram(graph, null);
+    const first = within(screen.getByRole("list", { name: "Flow steps and edges" })).getAllByRole(
+      "listitem",
+    )[0]!;
+    expect(first.textContent).toContain(`and ${MAX_LISTED_EDGES + 4 - MAX_LISTED_EDGES} more`);
+  });
+
+  it("draws a self-loop with its branch label", () => {
+    renderDiagram(
+      {
+        nodes: [{ step_id: "a", number: 1, kind: "changed", label: "Repeat until done" }],
+        edges: [{ from: "a", to: "a", label: "retry" }],
+      },
+      "a",
+    );
+    expect(diagram().querySelectorAll("[data-edge]")).toHaveLength(1);
+    expect(diagram().querySelector("[data-edge-label]")).toHaveTextContent("retry");
+    expect(screen.getByRole("list", { name: "Flow steps and edges" })).toHaveTextContent(
+      "Step 1, changed: Repeat until done — goes to step 1 (retry)",
+    );
   });
 });
 

@@ -1,14 +1,32 @@
 import { graphlib, layout as dagreLayout } from "@dagrejs/dagre";
-import type { FlowGraph, NodeKind, StepId } from "../../api/generated/types";
+import type { FlowGraph, GraphEdge, NodeKind, StepId } from "../../api/generated/types";
+import { estimateWidth, type Measure } from "./measure";
 
-/** Longest line of a node label, in characters. */
-export const NODE_LABEL_CHARS = 24;
-/** Longest line of a branch label, in characters. */
-export const EDGE_LABEL_CHARS = 24;
+// Caps: labels are LLM text without a length limit in the schema; the drawing stays bounded.
+/** Widest line of a node label, px. */
+export const NODE_TEXT_WIDTH = 160;
+/** Widest line of a branch label, px. */
+export const EDGE_TEXT_WIDTH = 150;
+/** Most lines drawn for a node label; more end in "…". */
+export const NODE_MAX_LINES = 5;
+/** Most lines drawn for a branch label; more end in "…". */
+export const EDGE_MAX_LINES = 3;
+/** Most characters of a node label that are drawn. */
+export const LABEL_MAX_CHARS = 160;
+const EDGE_LABEL_MAX_CHARS = 80;
+/** Most characters of a label in accessible names and the text alternative. */
+export const TEXT_MAX_CHARS = 1000;
+/** Largest flow that is drawn; larger flows are shown only as text. */
+export const MAX_DRAWN_STEPS = 150;
+/** Most edges of a flow that is drawn. */
+export const MAX_DRAWN_EDGES = 300;
 
-// Text is measured by character count (no DOM): widths are generous averages of the 12 px / 11 px fonts.
-const NODE_CHAR_WIDTH = 6.5;
-const EDGE_CHAR_WIDTH = 7;
+/** Most steps listed in the text alternative. */
+export const MAX_LISTED_STEPS = 500;
+/** Most outgoing edges listed per step in the text alternative. */
+export const MAX_LISTED_EDGES = 20;
+const LISTED_EDGE_LABEL_CHARS = 200;
+
 /** Line height of node text, px. */
 export const NODE_LINE_HEIGHT = 16;
 /** Line height of branch-label text, px. */
@@ -17,7 +35,12 @@ export const EDGE_LINE_HEIGHT = 14;
 export const NODE_PADDING = { x: 10, y: 8 } as const;
 /** How far the pointed ends of a branching step reach beyond its text box, px. */
 export const BRANCH_INSET = 12;
+/** Space for the kind glyph in front of the step number, px. */
+export const GLYPH_WIDTH = 14;
 const EDGE_LABEL_PADDING = 4;
+const LOOP_GAP = 14;
+const LOOP_STEP = 8;
+const ELLIPSIS = "…";
 
 /** Axis-aligned box; `x`, `y` is the top-left corner. */
 export interface Box {
@@ -27,13 +50,16 @@ export interface Box {
   height: number;
 }
 
+type Point = { x: number; y: number };
+
 /** A positioned step. */
 export interface DiagramNode extends Box {
   stepId: StepId;
   number: number;
   kind: NodeKind;
+  /** The label, cut to `TEXT_MAX_CHARS`. */
   label: string;
-  /** The label wrapped to lines. */
+  /** The drawn label wrapped to lines. */
   lines: string[];
   /** Width of the glyph and number in front of the label, px. */
   prefixWidth: number;
@@ -49,7 +75,7 @@ export interface DiagramEdge {
   to: StepId;
   label: string | null;
   labelLines: string[];
-  points: { x: number; y: number }[];
+  points: Point[];
   /** Where the branch label goes; null without a label. */
   labelBox: Box | null;
 }
@@ -66,101 +92,233 @@ export interface DiagramLayout {
   edges: DiagramEdge[];
 }
 
-/** Wraps `text` on spaces into lines of at most `maxChars`; longer words are split. */
-export function wrapText(text: string, maxChars: number): string[] {
+/** `text` cut to `max` UTF-16 units with "…" when longer; never splits a surrogate pair. */
+export function boundText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  return `${last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut}${ELLIPSIS}`;
+}
+
+/** Whether `graph` is small enough to lay out and draw. */
+export function drawable(graph: FlowGraph): boolean {
+  return graph.nodes.length <= MAX_DRAWN_STEPS && graph.edges.length <= MAX_DRAWN_EDGES;
+}
+
+const widest = (values: number[]) => values.reduce((a, b) => Math.max(a, b), 0);
+
+/**
+ * Wraps bounded `text` on spaces into lines no wider than `maxWidth`; wider words are split. Beyond
+ * `maxLines` the last line ends in "…".
+ */
+export function wrapText(
+  text: string,
+  maxWidth: number,
+  width: (s: string) => number,
+  maxLines: number,
+): string[] {
   const lines: string[] = [];
   let line = "";
-  for (let word of text.trim().split(/\s+/).filter(Boolean)) {
-    while (word.length > maxChars) {
+  for (const word of text.trim().split(/\s+/).filter(Boolean)) {
+    let chars = [...word];
+    while (width(chars.join("")) > maxWidth) {
       if (line) lines.push(line);
-      lines.push(word.slice(0, maxChars));
-      word = word.slice(maxChars);
       line = "";
+      let n = 1;
+      while (n < chars.length && width(chars.slice(0, n + 1).join("")) <= maxWidth) n += 1;
+      lines.push(chars.slice(0, n).join(""));
+      chars = chars.slice(n);
     }
-    if (!line) line = word;
-    else if (line.length + 1 + word.length <= maxChars) line = `${line} ${word}`;
+    const rest = chars.join("");
+    if (!rest) continue;
+    if (!line) line = rest;
+    else if (width(`${line} ${rest}`) <= maxWidth) line = `${line} ${rest}`;
     else {
       lines.push(line);
-      line = word;
+      line = rest;
     }
   }
   if (line || lines.length === 0) lines.push(line);
-  return lines;
+  if (lines.length <= maxLines) return lines;
+  let last = [...lines[maxLines - 1]!];
+  while (last.length > 0 && width(`${last.join("").trimEnd()}${ELLIPSIS}`) > maxWidth)
+    last = last.slice(0, -1);
+  return [...lines.slice(0, maxLines - 1), `${last.join("").trimEnd()}${ELLIPSIS}`];
 }
 
-const longest = (lines: string[]) => Math.max(...lines.map((l) => l.length));
+/** Where the line from `from` to the centre of `box` crosses the border of `box`. */
+function clipToBox(box: Box, from: Point): Point {
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const dx = from.x - cx;
+  const dy = from.y - cy;
+  if (dx === 0 && dy === 0) return { x: cx, y: box.y };
+  if (Math.abs(dy) * box.width > Math.abs(dx) * box.height) {
+    const sy = dy < 0 ? -box.height / 2 : box.height / 2;
+    return { x: cx + (sy * dx) / dy, y: cy + sy };
+  }
+  const sx = dx < 0 ? -box.width / 2 : box.width / 2;
+  return { x: cx + sx, y: cy + (sx * dy) / dx };
+}
 
 /** Lays out `graph` in `direction`; edges whose ends are not nodes of the graph are left out. */
-export function layoutFlow(graph: FlowGraph, direction: Direction): DiagramLayout {
+export function layoutFlow(
+  graph: FlowGraph,
+  direction: Direction,
+  measure: Measure = estimateWidth,
+): DiagramLayout {
+  const nodeWidth = (s: string) => measure(s, "node");
+  const edgeWidth = (s: string) => measure(s, "edge");
   const ids = new Set(graph.nodes.map((n) => n.step_id));
   const edges = graph.edges.filter((e) => ids.has(e.from) && ids.has(e.to));
   const outDegree = new Map<StepId, number>();
   for (const edge of edges) outDegree.set(edge.from, (outDegree.get(edge.from) ?? 0) + 1);
 
-  const g = new graphlib.Graph({ multigraph: true });
-  g.setGraph({ rankdir: direction, nodesep: 16, ranksep: 32, edgesep: 12, marginx: 8, marginy: 8 });
-  const nodes = graph.nodes.map((node) => {
-    const lines = wrapText(node.label, NODE_LABEL_CHARS);
-    const prefixWidth = 22 + String(node.number).length * 8;
-    const branching = (outDegree.get(node.step_id) ?? 0) >= 2;
-    const width =
-      2 * NODE_PADDING.x +
-      prefixWidth +
-      longest(lines) * NODE_CHAR_WIDTH +
-      (branching ? 2 * BRANCH_INSET : 0);
-    const height = 2 * NODE_PADDING.y + lines.length * NODE_LINE_HEIGHT;
-    g.setNode(node.step_id, { width, height });
-    return { node, lines, prefixWidth, branching };
-  });
-  const labelled = edges.map((edge, i) => {
-    const labelLines = edge.label === null ? [] : wrapText(edge.label, EDGE_LABEL_CHARS);
-    const key = String(i);
-    g.setEdge(
-      { v: edge.from, w: edge.to, name: key },
+  const prepared = edges.map((edge: GraphEdge, i) => {
+    const lines =
+      edge.label === null
+        ? []
+        : wrapText(boundText(edge.label, EDGE_LABEL_MAX_CHARS), EDGE_TEXT_WIDTH, edgeWidth, EDGE_MAX_LINES);
+    const size =
       edge.label === null
         ? { width: 0, height: 0 }
         : {
-            width: longest(labelLines) * EDGE_CHAR_WIDTH + 2 * EDGE_LABEL_PADDING,
-            height: labelLines.length * EDGE_LINE_HEIGHT + EDGE_LABEL_PADDING,
-            labelpos: "c",
-          },
-    );
-    return { edge, key, labelLines };
+            width: widest(lines.map(edgeWidth)) + 2 * EDGE_LABEL_PADDING,
+            height: lines.length * EDGE_LINE_HEIGHT + EDGE_LABEL_PADDING,
+          };
+    return {
+      edge,
+      key: String(i),
+      lines,
+      size,
+      label: edge.label === null ? null : boundText(edge.label, TEXT_MAX_CHARS),
+    };
   });
+  // Self-loops are drawn here, not by dagre (3.1.3 returns them detached from the node): the node's layout
+  // box is enlarged around its centre to hold the loops and their labels.
+  const loopsOf = new Map<StepId, typeof prepared>();
+  for (const item of prepared) {
+    if (item.edge.from === item.edge.to)
+      loopsOf.set(item.edge.from, [...(loopsOf.get(item.edge.from) ?? []), item]);
+  }
+
+  const g = new graphlib.Graph({ multigraph: true });
+  g.setGraph({ rankdir: direction, nodesep: 16, ranksep: 32, edgesep: 12, marginx: 8, marginy: 8 });
+  const nodes = graph.nodes.map((node) => {
+    const lines = wrapText(
+      boundText(node.label, LABEL_MAX_CHARS),
+      NODE_TEXT_WIDTH,
+      nodeWidth,
+      NODE_MAX_LINES,
+    );
+    const prefixWidth = GLYPH_WIDTH + measure(String(node.number), "number") + 6;
+    const branching = (outDegree.get(node.step_id) ?? 0) >= 2;
+    const width =
+      2 * NODE_PADDING.x + prefixWidth + widest(lines.map(nodeWidth)) + (branching ? 2 * BRANCH_INSET : 0);
+    const height = 2 * NODE_PADDING.y + lines.length * NODE_LINE_HEIGHT;
+    const loops = loopsOf.get(node.step_id) ?? [];
+    const reach = loops.length === 0 ? 0 : LOOP_GAP + LOOP_STEP * (loops.length - 1);
+    const labels = loops.filter((l) => l.label !== null).map((l) => l.size);
+    const labelsWidth = widest(labels.map((l) => l.width));
+    const labelsHeight = labels.reduce((sum, l) => sum + l.height + 2, 0);
+    const half =
+      loops.length === 0
+        ? { w: width / 2, h: height / 2 }
+        : direction === "TB"
+          ? { w: width / 2 + reach + 4 + labelsWidth, h: Math.max(height / 2 + reach, labelsHeight / 2) }
+          : { w: Math.max(width / 2, labelsWidth / 2), h: height / 2 + reach + 4 + labelsHeight };
+    g.setNode(node.step_id, { width: 2 * half.w, height: 2 * half.h });
+    return { node, lines, prefixWidth, branching, width, height, loops, reach, labelsHeight };
+  });
+  for (const { edge, key, size, label } of prepared) {
+    if (edge.from !== edge.to) {
+      g.setEdge({ v: edge.from, w: edge.to, name: key }, label === null ? size : { ...size, labelpos: "c" });
+    }
+  }
 
   dagreLayout(g);
 
+  const routed = new Map<string, DiagramEdge>();
+  const laidOut = nodes.map(
+    ({ node, lines, prefixWidth, branching, width, height, loops, reach, labelsHeight }) => {
+      const centre = g.node(node.step_id);
+      const box: DiagramNode = {
+        stepId: node.step_id,
+        number: node.number,
+        kind: node.kind,
+        label: boundText(node.label, TEXT_MAX_CHARS),
+        lines,
+        prefixWidth,
+        branching,
+        x: (centre.x ?? 0) - width / 2,
+        y: (centre.y ?? 0) - height / 2,
+        width,
+        height,
+      };
+      const { x, y } = box;
+      let labelAt = direction === "TB" ? (centre.y ?? 0) - labelsHeight / 2 : y + height + reach + 4;
+      loops.forEach(({ edge, key, lines: labelLines, size, label }, i) => {
+        const o = LOOP_GAP + LOOP_STEP * i;
+        let points: Point[];
+        if (direction === "TB") {
+          const xs = Math.max(x + width / 2, x + width - BRANCH_INSET - 8 - 6 * i);
+          points = [
+            { x: xs, y },
+            { x: xs, y: y - o },
+            { x: x + width + o, y: y - o },
+            { x: x + width + o, y: y + height + o },
+            { x: xs, y: y + height + o },
+            { x: xs, y: y + height },
+          ];
+        } else {
+          const inset = Math.min(BRANCH_INSET + 8 + 6 * i, width * 0.4);
+          points = [
+            { x: x + inset, y: y + height },
+            { x: x + inset, y: y + height + o },
+            { x: x + width - inset, y: y + height + o },
+            { x: x + width - inset, y: y + height },
+          ];
+        }
+        let labelBox: Box | null = null;
+        if (label !== null) {
+          labelBox =
+            direction === "TB"
+              ? { x: x + width + reach + 4, y: labelAt, ...size }
+              : { x: (centre.x ?? 0) - size.width / 2, y: labelAt, ...size };
+          labelAt += size.height + 2;
+        }
+        routed.set(key, { key, from: edge.from, to: edge.to, label, labelLines, points, labelBox });
+      });
+      return box;
+    },
+  );
+
+  const byId = new Map(laidOut.map((n) => [n.stepId, n]));
   return {
     direction,
     width: g.graph().width ?? 0,
     height: g.graph().height ?? 0,
-    nodes: nodes.map(({ node, lines, prefixWidth, branching }) => {
-      const { x, y, width, height } = g.node(node.step_id);
-      return {
-        stepId: node.step_id,
-        number: node.number,
-        kind: node.kind,
-        label: node.label,
-        lines,
-        prefixWidth,
-        branching,
-        x: (x ?? 0) - width / 2,
-        y: (y ?? 0) - height / 2,
-        width,
-        height,
-      };
-    }),
-    edges: labelled.map(({ edge, key, labelLines }) => {
-      const routed = g.edge({ v: edge.from, w: edge.to, name: key });
-      const { width = 0, height = 0, x = 0, y = 0 } = routed;
+    nodes: laidOut,
+    edges: prepared.map(({ edge, key, lines, label }) => {
+      const loop = routed.get(key);
+      if (loop) return loop;
+      const routedEdge = g.edge({ v: edge.from, w: edge.to, name: key });
+      const points = [...(routedEdge.points ?? [])];
+      // Ends at an enlarged layout box (a step with self-loops) are moved onto the drawn node.
+      if (points.length >= 2) {
+        if (loopsOf.has(edge.from)) points[0] = clipToBox(byId.get(edge.from)!, points[1]!);
+        if (loopsOf.has(edge.to))
+          points[points.length - 1] = clipToBox(byId.get(edge.to)!, points[points.length - 2]!);
+      }
+      const { width = 0, height = 0, x = 0, y = 0 } = routedEdge;
       return {
         key,
         from: edge.from,
         to: edge.to,
-        label: edge.label,
-        labelLines,
-        points: routed.points ?? [],
-        labelBox: edge.label === null ? null : { x: x - width / 2, y: y - height / 2, width, height },
+        label,
+        labelLines: lines,
+        points,
+        labelBox: label === null ? null : { x: x - width / 2, y: y - height / 2, width, height },
       };
     }),
   };
@@ -169,4 +327,49 @@ export function layoutFlow(graph: FlowGraph, direction: Direction): DiagramLayou
 /** The left-to-right drawing when it fits `width` (uses wide screens), else top to bottom. */
 export function pickLayout(layouts: Record<Direction, DiagramLayout>, width: number): DiagramLayout {
   return layouts.LR.width <= width ? layouts.LR : layouts.TB;
+}
+
+/** One step of the text alternative. */
+export interface StepText {
+  stepId: StepId;
+  number: number;
+  kind: NodeKind;
+  /** The label, cut to `TEXT_MAX_CHARS`. */
+  label: string;
+  branching: boolean;
+  /** Outgoing edges, at most `MAX_LISTED_EDGES`: "step 4 (Ok)". */
+  next: string[];
+  /** Outgoing edges not in `next`. */
+  moreNext: number;
+}
+
+/** The steps of `graph` in number order with their outgoing edges, for the text alternative. */
+export function describeSteps(graph: FlowGraph): StepText[] {
+  const numberOf = new Map(graph.nodes.map((n) => [n.step_id, n.number]));
+  const outgoing = new Map<StepId, GraphEdge[]>();
+  for (const edge of graph.edges) {
+    if (!numberOf.has(edge.from) || !numberOf.has(edge.to)) continue;
+    const list = outgoing.get(edge.from);
+    if (list) list.push(edge);
+    else outgoing.set(edge.from, [edge]);
+  }
+  return [...graph.nodes]
+    .sort((a, b) => a.number - b.number)
+    .map((node) => {
+      const edges = outgoing.get(node.step_id) ?? [];
+      return {
+        stepId: node.step_id,
+        number: node.number,
+        kind: node.kind,
+        label: boundText(node.label, TEXT_MAX_CHARS),
+        branching: edges.length >= 2,
+        next: edges
+          .slice(0, MAX_LISTED_EDGES)
+          .map(
+            (e) =>
+              `step ${numberOf.get(e.to)}${e.label === null ? "" : ` (${boundText(e.label, LISTED_EDGE_LABEL_CHARS)})`}`,
+          ),
+        moreNext: Math.max(0, edges.length - MAX_LISTED_EDGES),
+      };
+    });
 }
