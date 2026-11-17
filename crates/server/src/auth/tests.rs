@@ -556,6 +556,79 @@ async fn browser_transport_from_peer_and_forwarded_proto() {
     );
 }
 
+/// Redirects and the OAuth callback come from `SR_PUBLIC_URL`, never from request headers.
+#[tokio::test]
+async fn callback_url_ignores_host_headers() {
+    let h = harness().await;
+    h.mock_github_user("lklimek", 1001).await;
+    let mut request = get("/auth/github/login");
+    for (name, value) in [
+        ("host", "evil.example"),
+        ("x-forwarded-host", "evil.example"),
+        ("x-forwarded-proto", "http"),
+        ("forwarded", "host=evil.example;proto=http"),
+    ] {
+        request
+            .headers_mut()
+            .insert(name, value.parse().expect("header"));
+    }
+    let response = h.send(request).await;
+    let authorize = Url::parse(&location(&response)).expect("authorize URL");
+    let redirect_uri = authorize
+        .query_pairs()
+        .find(|(key, _)| key == "redirect_uri")
+        .map(|(_, value)| value.into_owned());
+    assert_eq!(redirect_uri.as_deref(), Some(CALLBACK));
+    let cookie = cookie_pair(&response, "__Host-sr_oauth_state").expect("state cookie");
+    let state = authorize
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .expect("state");
+    let mut callback = get_with_cookie(
+        &format!("/auth/github/callback?code={CODE}&state={state}"),
+        &cookie,
+    );
+    callback
+        .headers_mut()
+        .insert("host", "evil.example".parse().expect("header"));
+    assert_eq!(
+        location(&h.send(callback).await),
+        "/",
+        "relative to the page's own origin"
+    );
+}
+
+/// Local development over plain HTTP works only by configuring an `http://` public URL; cookies then lack Secure.
+#[tokio::test]
+async fn localhost_development_by_explicit_public_url() {
+    let h = harness_with("http://localhost:3000", &[]).await;
+    h.mock_github_user("lklimek", 1001).await;
+    let response = h.send(get("/auth/github/login")).await;
+    let authorize = Url::parse(&location(&response)).expect("authorize URL");
+    let query: std::collections::HashMap<String, String> =
+        authorize.query_pairs().into_owned().collect();
+    assert_eq!(
+        query["redirect_uri"],
+        "http://localhost:3000/auth/github/callback"
+    );
+    let cookie = cookie_pair(&response, "sr_oauth_state").expect("plain state cookie");
+    let response = h
+        .send(get_with_cookie(
+            &format!("/auth/github/callback?code={CODE}&state={}", query["state"]),
+            &cookie,
+        ))
+        .await;
+    assert_eq!(location(&response), "/");
+    let session = set_cookie(&response, "sr_session").expect("session cookie");
+    assert!(
+        !session.contains("Secure") && session.contains("HttpOnly"),
+        "{session}"
+    );
+    let cookie = cookie_pair(&response, "sr_session").expect("session");
+    assert_eq!(me_login(&h, &cookie).await.as_deref(), Some("lklimek"));
+}
+
 #[tokio::test]
 async fn csrf_required_for_cookie_mutations() {
     let h = harness().await;

@@ -113,7 +113,8 @@ impl Cookie {
 }
 
 /// How the browser reached the server: HTTPS when the public URL is https, or when a trusted reverse proxy
-/// (`SR_TRUSTED_PROXIES`) forwarded the request with `X-Forwarded-Proto: https`.
+/// (`SR_TRUSTED_PROXIES`, matched against the TCP peer) forwarded the request with `X-Forwarded-Proto: https`.
+/// No other forwarding header is read; redirect and callback URLs come from `SR_PUBLIC_URL` only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BrowserTransport {
     /// Cookies are Secure and `__Host-` prefixed.
