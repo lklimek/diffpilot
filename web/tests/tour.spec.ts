@@ -254,3 +254,22 @@ test("every top-bar control explains itself in a tooltip", async ({ page }) => {
     /Settings/,
   );
 });
+
+test("widths stored on a 21:9 screen leave the centre usable at 1440 px and after a window resize", async ({
+  page,
+}) => {
+  await page.addInitScript(() =>
+    window.localStorage.setItem(
+      "smart-review.tour.layout",
+      JSON.stringify({ widths: { nav: 1800, inspector: 620 } }),
+    ),
+  );
+  await page.setViewportSize({ width: 3440, height: 1000 });
+  await openTour(page);
+  expect((await page.getByRole("main").boundingBox())!.width).toBeGreaterThan(900);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect
+    .poll(async () => (await page.getByRole("main").boundingBox())!.width)
+    .toBeGreaterThanOrEqual(320);
+  await expect(page.getByRole("main").getByRole("heading", { level: 2 }).first()).toBeVisible();
+});

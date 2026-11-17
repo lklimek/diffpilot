@@ -34,12 +34,21 @@ export const DEFAULT_LAYOUT: TourLayout = {
 export const STRIP_PX = 34;
 /** Smallest widths in px while resizing (the centre keeps `MIN_MAIN_PX`). */
 export const MIN_WIDTH_PX = { nav: 200, inspector: 300 } as const;
-const MIN_MAIN_PX = 320;
-const GUTTERS_PX = 12;
+/** Room the centre keeps whenever the window allows it. */
+export const MIN_MAIN_PX = 320;
+const GUTTER_PX = 6;
+const GUTTERS_PX = 2 * GUTTER_PX;
+// Larger stored widths are not a preference but damage (no screen is that wide).
+const MAX_STORED_PX = 8192;
 
 const isColumn = (value: unknown): value is Column => COLUMNS.includes(value as Column);
-const width = (value: unknown) =>
-  typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+const width = (column: "nav" | "inspector", value: unknown) =>
+  typeof value === "number" &&
+  Number.isFinite(value) &&
+  value >= MIN_WIDTH_PX[column] &&
+  value <= MAX_STORED_PX
+    ? Math.round(value)
+    : null;
 
 /** The stored layout; the default when storage is unavailable or holds something else. */
 export function loadLayout(): TourLayout {
@@ -53,7 +62,7 @@ export function loadLayout(): TourLayout {
     const layout: TourLayout = {
       hidden,
       full: isColumn(raw.full) ? raw.full : null,
-      widths: { nav: width(raw.widths?.nav), inspector: width(raw.widths?.inspector) },
+      widths: { nav: width("nav", raw.widths?.nav), inspector: width("inspector", raw.widths?.inspector) },
       diagram: raw.diagram === true,
     };
     return COLUMNS.some((c) => !layout.hidden[c]) ? layout : { ...layout, hidden: DEFAULT_LAYOUT.hidden };
@@ -102,4 +111,29 @@ export function toggleFull(layout: TourLayout, column: Column): TourLayout {
 export function clampWidth(column: "nav" | "inspector", value: number, total: number, other: number): number {
   const max = total - other - GUTTERS_PX - MIN_MAIN_PX;
   return Math.round(Math.max(MIN_WIDTH_PX[column], Math.min(value, max)));
+}
+
+/** Default width of a side column in a workspace `total` px wide (mockup: 17 % and 27 %, clamped). */
+export function defaultWidth(column: "nav" | "inspector", total: number): number {
+  return column === "nav"
+    ? Math.max(270, Math.min(400, Math.round(total * 0.17)))
+    : Math.max(370, Math.min(620, Math.round(total * 0.27)));
+}
+
+/**
+ * Widths of the side columns as drawn in a workspace `total` px wide: the stored preference (or the default),
+ * shrunk in proportion when the centre would get less than `MIN_MAIN_PX`; hidden columns are strips.
+ * The stored preference itself stays untouched.
+ */
+export function sideWidths(layout: TourLayout, total: number): { nav: number; inspector: number } {
+  const shown = shownColumns(layout);
+  const want = (c: "nav" | "inspector") =>
+    shown[c] ? (layout.widths[c] ?? defaultWidth(c, total)) : STRIP_PX;
+  const widths = { nav: want("nav"), inspector: want("inspector") };
+  const sides = (["nav", "inspector"] as const).filter((c) => shown[c]);
+  const strips = (shown.nav ? 0 : STRIP_PX) + (shown.inspector ? 0 : STRIP_PX);
+  const room = Math.max(0, total - sides.length * GUTTER_PX - MIN_MAIN_PX - strips);
+  const wanted = sides.reduce((n, c) => n + widths[c], 0);
+  if (wanted > room) for (const c of sides) widths[c] = Math.floor((widths[c] * room) / wanted);
+  return widths;
 }

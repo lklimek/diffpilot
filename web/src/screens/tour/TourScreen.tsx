@@ -12,13 +12,7 @@ import type {
   StepId,
   Tour,
 } from "../../api/generated/types";
-import {
-  useCommentActions,
-  useLines,
-  useMe,
-  usePendingReview,
-  useTour,
-} from "../../api/queries";
+import { useCommentActions, useLines, useMe, usePendingReview, useTour } from "../../api/queries";
 import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
 import type { LineRef } from "../../components/code-view/CodeView";
@@ -95,15 +89,7 @@ export function TourScreen() {
     );
   }
   // Session state (block, comment line, unconfirmed posts) belongs to one analysis.
-  return (
-    <TourView
-      key={analysisId}
-      analysisId={analysisId}
-      tour={tour.data}
-      review={review}
-      login={login}
-    />
-  );
+  return <TourView key={analysisId} analysisId={analysisId} tour={tour.data} review={review} login={login} />;
 }
 
 interface TourViewProps {

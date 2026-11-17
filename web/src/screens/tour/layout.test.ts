@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_LAYOUT,
   LAYOUT_STORAGE_KEY,
+  MIN_MAIN_PX,
+  STRIP_PX,
   clampWidth,
   hideColumn,
   loadLayout,
   saveLayout,
   showColumn,
   shownColumns,
+  sideWidths,
   toggleFull,
 } from "./layout";
 
@@ -63,5 +66,38 @@ describe("Tour layout (brief §4.3 columns)", () => {
     expect(clampWidth("nav", 50, 1440, 400)).toBe(200);
     expect(clampWidth("inspector", 100, 1440, 300)).toBe(300);
     expect(clampWidth("nav", 1200, 1440, 400)).toBe(1440 - 400 - 12 - 320);
+  });
+
+  it("drops stored widths that are not plausible (hostile or broken storage)", () => {
+    for (const bad of [1e9, -5, 0, 120, "400", null, { px: 400 }, Number.NaN, "Infinity"]) {
+      window.localStorage.setItem(
+        LAYOUT_STORAGE_KEY,
+        JSON.stringify({ widths: { nav: bad, inspector: bad } }),
+      );
+      expect(loadLayout().widths).toEqual({ nav: null, inspector: null });
+    }
+    window.localStorage.setItem(LAYOUT_STORAGE_KEY, '{"widths":{"nav":1e999}}');
+    expect(loadLayout().widths.nav).toBeNull();
+  });
+
+  it("widths stored on a wide screen leave the centre usable on a narrow one; the preference stays (QA-003)", () => {
+    const wide = { ...DEFAULT_LAYOUT, widths: { nav: 1800, inspector: 620 } };
+    const drawn = sideWidths(wide, 1440);
+    expect(1440 - 12 - drawn.nav - drawn.inspector).toBeGreaterThanOrEqual(MIN_MAIN_PX);
+    expect(drawn.nav).toBeGreaterThan(drawn.inspector);
+    expect(wide.widths).toEqual({ nav: 1800, inspector: 620 });
+    expect(sideWidths(wide, 3440)).toEqual({ nav: 1800, inspector: 620 });
+  });
+
+  it("restoring a hidden column after the other grew still leaves the centre its room", () => {
+    const grown = { ...hideColumn(DEFAULT_LAYOUT, "inspector"), widths: { nav: 1000, inspector: null } };
+    expect(sideWidths(grown, 1440)).toEqual({ nav: 1000, inspector: STRIP_PX });
+    const restored = sideWidths(showColumn(grown, "inspector"), 1440);
+    expect(1440 - 12 - restored.nav - restored.inspector).toBeGreaterThanOrEqual(MIN_MAIN_PX);
+  });
+
+  it("uses the default widths when nothing is stored", () => {
+    expect(sideWidths(DEFAULT_LAYOUT, 1440)).toEqual({ nav: 270, inspector: 389 });
+    expect(sideWidths(DEFAULT_LAYOUT, 3440)).toEqual({ nav: 400, inspector: 620 });
   });
 });

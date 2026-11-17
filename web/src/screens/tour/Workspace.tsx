@@ -1,12 +1,22 @@
-import { useRef, type KeyboardEvent, type PointerEvent, type ReactNode, type RefObject } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import {
   MIN_WIDTH_PX,
   STRIP_PX,
   clampWidth,
+  defaultWidth,
   hideColumn,
   showColumn,
   shownColumns,
+  sideWidths,
   toggleFull,
   type Column,
   type TourLayout,
@@ -25,11 +35,25 @@ interface WorkspaceProps {
 
 const TITLE: Record<Column, string> = { nav: "Flows", main: "Review", inspector: "Inspector" };
 const DEFAULT_WIDTH = { nav: "var(--width-nav)", inspector: "clamp(370px, 27vw, 620px)" } as const;
-/** The default widths of `DEFAULT_WIDTH` in px, for the separators' value. */
-const defaultPx = (column: "nav" | "inspector") =>
-  column === "nav"
-    ? Math.max(270, Math.min(400, Math.round(window.innerWidth * 0.17)))
-    : Math.max(370, Math.min(620, Math.round(window.innerWidth * 0.27)));
+
+/** Width of the element in px, kept current on resize; 0 until measured. */
+function useWidth(ref: RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setWidth(el.getBoundingClientRect().width);
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
+}
 const KEY_STEP_PX = 24;
 const SMALL_BUTTON =
   "cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] text-text hover:border-accent aria-pressed:border-accent aria-pressed:bg-accent-bg";
@@ -92,15 +116,20 @@ function Strip({
 export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: WorkspaceProps) {
   const grid = useRef<HTMLDivElement>(null);
   const dragging = useRef<"nav" | "inspector" | null>(null);
+  const total = useWidth(grid);
   const shown = shownColumns(layout);
+  // Until the workspace is measured (first paint, or no layout engine) the CSS defaults apply.
+  const drawn = total > 0 ? sideWidths(layout, total) : null;
   const side = (column: "nav" | "inspector") =>
     !shown[column]
       ? `${STRIP_PX}px`
       : !shown.main
         ? "minmax(0,1fr)"
-        : layout.widths[column] !== null
-          ? `${layout.widths[column]}px`
-          : DEFAULT_WIDTH[column];
+        : drawn
+          ? `${drawn[column]}px`
+          : layout.widths[column] !== null
+            ? `${layout.widths[column]}px`
+            : DEFAULT_WIDTH[column];
   const template = [
     side("nav"),
     shown.nav && shown.main ? "6px" : "0px",
@@ -126,7 +155,7 @@ export function Workspace({ layout, onChange, nav, main, inspector, mainRef }: W
         aria-orientation="vertical"
         tabIndex={0}
         aria-label={`Resize the ${TITLE[column]} column: drag, or use the arrow keys; double-click resets`}
-        aria-valuenow={layout.widths[column] ?? defaultPx(column)}
+        aria-valuenow={drawn?.[column] ?? layout.widths[column] ?? defaultWidth(column, window.innerWidth)}
         aria-valuemin={MIN_WIDTH_PX[column]}
         onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
           dragging.current = column;
