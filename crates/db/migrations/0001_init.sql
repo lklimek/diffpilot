@@ -240,8 +240,10 @@ CREATE TABLE questions (
 
 CREATE INDEX questions_by_analysis ON questions (analysis_id, created_at);
 
--- One entry per user and target; later feedback replaces it and increments revision. memcan_state tracks the
--- MemCan write of the current revision; an ack for an older revision leaves the row pending.
+-- One entry per user, target and value (several values may coexist on a target); posting the value again
+-- replaces its note and increments revision. A removed entry stays as a tombstone (removed_at) until MemCan has
+-- deleted its memory. memcan_state tracks the MemCan write of the current revision; an ack for an older revision
+-- leaves the row pending.
 CREATE TABLE feedback (
     id           TEXT NOT NULL PRIMARY KEY,
     tenant_id    TEXT NOT NULL REFERENCES tenants (id),
@@ -255,8 +257,11 @@ CREATE TABLE feedback (
     revision     INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL,
-    UNIQUE (user_id, analysis_id, target_kind, target_key)
+    removed_at   TEXT,
+    UNIQUE (user_id, analysis_id, target_kind, target_key, value)
 ) STRICT;
+
+CREATE INDEX feedback_memcan_queue ON feedback (memcan_state, updated_at) WHERE memcan_state != 'written';
 
 -- Idempotency of pending-review comment creation (ADR-006).
 CREATE TABLE comment_requests (
