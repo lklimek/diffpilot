@@ -45,6 +45,7 @@ export function ProgressScreen() {
         {summary && (
           <AnalysisProgress
             state={summary.state}
+            progress={summary.progress}
             reviewHref={`/analyses/${summary.id}`}
             busy={cancel.isPending || retry.isPending}
             onCancel={() =>

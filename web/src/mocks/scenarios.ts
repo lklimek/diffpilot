@@ -1,6 +1,8 @@
 // Screen scenarios of the msw mocks (Home, progress, Settings), selected with `?scenario=<name>`; orthogonal to
 // the fixture states of fixtures.ts. Default settings come from the api-seed; repository settings have none yet.
 import type {
+  AnalysisProgress,
+  EstimateBasis,
   AnalysisStage,
   AnalysisState,
   AnalysisSummary,
@@ -63,6 +65,8 @@ interface Scenario {
   resolve?: (seed: ResolvePrResponse) => ResolvePrResponse;
   /** The analysis stays in this state (no scripted run after Analyze). */
   analysis?: AnalysisState;
+  /** Waiting facts, projected on each scripted stage change. */
+  progress?: (state: AnalysisState) => AnalysisProgress;
   /** States made and published, each after its delay (ms), once the first event stream opens; the last one stays. */
   script?: [number, () => AnalysisState][];
   /** No heartbeats, and every event stream after the first stays silent (a dead server behind an open socket). */
@@ -193,7 +197,56 @@ const withAnalysis = (state: AnalysisState) => (seed: ResolvePrResponse) => ({
   analysis: analysisAt(state),
 });
 
+const partState = (index: number, at: string): AnalysisState => ({
+  state: "planning",
+  stage: { kind: "plan", started_at: at, part: { index, total: 23 } },
+});
+const waitingProgress = (basis: EstimateBasis | null, state: AnalysisState): AnalysisProgress => {
+  const part = "stage" in state ? (state.stage?.part?.index ?? 6) : 6;
+  const running = state.state === "running";
+  return {
+    started_at: new Date(Date.parse(LOADED) - 40 * 60_000).toISOString(),
+    planning: { done: running ? 23 : part - 1, total: 23, state: running ? "done" : "current" },
+    pr_context: { done: running ? 1 : 0, total: 1, state: running ? "done" : "pending" },
+    flows: {
+      done: running ? state.done : 0,
+      total: running ? state.total : null,
+      state: running ? "current" : "pending",
+    },
+    finishing: { done: 0, total: 1, state: "pending" },
+    percent: basis ? 12 : null,
+    estimate:
+      basis && state.state !== "paused"
+        ? { remaining_seconds: 2400, basis, rough: basis !== "recent_runs" }
+        : null,
+  };
+};
+
 const SCENARIOS = {
+  "plan-parts": {
+    analysis: partState(6, new Date(Date.parse(LOADED) - 5 * 60_000).toISOString()),
+    progress: (state) => waitingProgress("this_analysis", state),
+    script: [[60_000, () => partState(7, now())]],
+  },
+  "estimate-recent": {
+    analysis: { state: "running", done: 2, total: 6, stage: flowStage(3, LOADED) },
+    progress: (state) => waitingProgress("recent_runs", state),
+  },
+  "estimate-lines": {
+    analysis: partState(6, LOADED),
+    progress: (state) => waitingProgress("lines_only", state),
+  },
+  "estimate-none": { analysis: partState(6, LOADED), progress: (state) => waitingProgress(null, state) },
+  "estimate-paused": {
+    analysis: {
+      state: "paused",
+      done: 0,
+      total: null,
+      resumes_at: "2026-11-17T14:20:00Z",
+      stage: { kind: "plan", started_at: LOADED, part: { index: 6, total: 23 } },
+    },
+    progress: (state) => waitingProgress("this_analysis", state),
+  },
   "signed-out": { me: () => ({ user: null, csrf_token: null }) },
   "head-moved": {
     resolve: (seed: ResolvePrResponse) => ({

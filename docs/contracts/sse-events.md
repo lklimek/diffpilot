@@ -25,14 +25,17 @@
   job) or its credential's, paused by any job (another analysis, an earlier round; `paused_until` of the
   credential). When `resumes_at` passes, the state returns to planning/running. The stream stays open after a terminal state
   (re-analysis and Ask still emit) until the client closes it.
-- **Stage** (`planning`, `running`, `paused`: optional `stage {kind, flow?, started_at}`): the stage of the
+- **Stage** (`planning`, `running`, `paused`: optional `stage {kind, flow?, part?, started_at}`): the stage of the
   analysis's live job, read from the jobs table on every summary (REST and SSE alike, so a reconnect snapshot
   shows the same). Live job = the claimed or running pipeline job of the current round, else the next queued
   or paused one in claim order; `ask` jobs are no stage. `kind` = `plan` | `pr_context` | `flow`; `flow
   {index, title}` (1-based position in the stored plan, its title) only for `flow` and only when the stored plan
   lists it. `started_at` = claim time of the job; null while it waits for the runner (queued, e.g. behind another
   analysis, or paused). `stage` absent = no live job (e.g. between a job's end and the next submit). Facts only:
-  no estimate, no percentage, no provider activity. An `analysis` event is also sent whenever a job of the
+  no provider activity. Multi-batch planning also includes `part {index, total}` (1-based; total fixed).
+  `summary.progress` carries the whole-run start, stage counters, nullable percentage and labelled estimate
+  described in `http-api.md`; these measure analysis processing, never review completion or confidence.
+  An `analysis` event is also sent whenever a job of the
   analysis changes state (submitted, claimed, ended, requeued after a lease expiry or a released claim, paused,
   resumed): the job's follower publishes the summary within its poll interval (250 ms), and the claim route at
   once. A summary equal to the one published last is not sent again.

@@ -23,13 +23,17 @@ export function liveAnalysis(): AnalysisSummary {
   if (stored) return structuredClone(stored);
   const seed = seedNow("analysis") as AnalysisSummary;
   const pinned = scenario().analysis;
-  return pinned ? { ...seed, state: pinned, finished_at: null } : seed;
+  const summary = pinned ? { ...seed, state: pinned, finished_at: null } : seed;
+  const progress = scenario().progress;
+  return progress ? { ...summary, progress: progress(summary.state) } : summary;
 }
 
 /** Publishes a new state. */
 export function setLiveState(state: AnalysisState): AnalysisSummary {
   const terminal = ["finished", "failed", "cancelled"].includes(state.state);
   stored = { ...liveAnalysis(), state, finished_at: terminal ? new Date().toISOString() : null };
+  const progress = scenario().progress;
+  if (progress) stored.progress = progress(state);
   for (const listener of listeners) listener(structuredClone(stored));
   return liveAnalysis();
 }

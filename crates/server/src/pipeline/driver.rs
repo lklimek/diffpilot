@@ -151,6 +151,8 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
             })
         })?
     };
+    tracing::info!(%analysis, plan_batches = fitted.batches.len(), agent_files = listed.len(),
+        changed_lines = changed_line_count(&files), "analysis work planned");
     let results = StoredResults::load(&state.db, analysis).await?;
     let facts = Arc::new(Facts {
         mirror,
@@ -561,7 +563,11 @@ impl Driver<'_> {
                 attempt: generation + 1,
             };
             match self.prompt(&stage, Some(&repair)) {
-                Ok(prompt) => return self.submit(updates, stage, generation + 1, prompt).await,
+                Ok(prompt) => {
+                    return self
+                        .submit(updates, stage, generation + 1, prompt, &codes)
+                        .await;
+                }
                 // A rejected output too large to quote cannot be repaired: the stage ends as if exhausted.
                 Err(PipelineError::Prompt(PromptError::OverBudget {
                     kind: "repair",
@@ -773,7 +779,7 @@ impl Driver<'_> {
             self.load_calibration(id).await;
         }
         let prompt = self.prompt(&stage, None)?;
-        self.submit(updates, stage, 0, prompt).await
+        self.submit(updates, stage, 0, prompt, &[]).await
     }
 
     /// Submits the stage's job at `generation` (idempotent per stage and generation) and follows its updates.
@@ -784,6 +790,7 @@ impl Driver<'_> {
         stage: JobStage,
         generation: u32,
         prompt: String,
+        issue_names: &[&str],
     ) -> Result<(), PipelineError> {
         let kind = stage.kind();
         let pr = &self.summary.pr;
@@ -827,8 +834,14 @@ impl Driver<'_> {
                 pr_repo: pr.repo.clone(),
             })
             .await?;
-        tracing::debug!(analysis = %self.analysis, stage = %stage.key(), generation, job = %handle.job_id,
-            "pipeline job submitted");
+        log_submitted(
+            self.analysis,
+            &stage,
+            generation,
+            handle.job_id,
+            self.batches.len(),
+            issue_names,
+        );
         self.live.insert(stage.clone(), generation);
         self.in_flight = Some(stage.clone());
         self.follow(updates, stage, generation, handle);
@@ -990,5 +1003,60 @@ fn prompt_calibration(example: &CalibrationExample) -> prompts::Calibration<'_> 
             CalibrationDirection::Underrated => prompts::CalibrationDirection::Underrated,
         },
         text: &example.text,
+    }
+}
+
+/// Submission facts, without agent input or output text.
+fn log_submitted(
+    analysis: AnalysisId,
+    stage: &JobStage,
+    generation: u32,
+    job: JobId,
+    parts: usize,
+    issue_names: &[&str],
+) {
+    let reason = if generation > 0 {
+        format!("repair of {}", stage.key())
+    } else {
+        match stage {
+            JobStage::Plan { batch } => format!("plan part {batch} of {parts}"),
+            _ => stage.key(),
+        }
+    };
+    tracing::info!(%analysis, stage = %stage.key(), generation, %job, %reason, issues = ?issue_names,
+        "pipeline job submitted");
+}
+
+#[cfg(test)]
+mod progress_log_tests {
+    use super::*;
+
+    #[test]
+    fn each_job_logs_its_purpose_at_info_and_repairs_name_the_issues() {
+        let capture = crate::test_support::logs::LogCapture::start();
+        let analysis = AnalysisId::new_random();
+        let job = JobId::new_random();
+        for (stage, generation, issues, expected) in [
+            (JobStage::Plan { batch: 6 }, 0, vec![], "plan part 6 of 23"),
+            (JobStage::PrContext, 0, vec![], "pr_context"),
+            (JobStage::Flow(FlowId("f1".into())), 0, vec![], "flow:f1"),
+            (
+                JobStage::Flow(FlowId("f2".into())),
+                1,
+                vec!["missing_assessment"],
+                "repair of flow:f2",
+            ),
+        ] {
+            log_submitted(analysis, &stage, generation, job, 23, &issues);
+            let text = capture.text();
+            let line = text.lines().last().expect("log line");
+            assert!(
+                line.contains("INFO") && line.contains(expected) && line.contains(&job.to_string()),
+                "{line}"
+            );
+            if generation > 0 {
+                assert!(line.contains("missing_assessment"), "{line}");
+            }
+        }
     }
 }

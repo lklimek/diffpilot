@@ -317,7 +317,8 @@ impl Analyses<'_> {
         {
             *stage = self.live_stage(id).await?;
         }
-        Ok(AnalysisSummary {
+        let mut summary = AnalysisSummary {
+            progress: None,
             has_my_state: None,
             id: record.id,
             pr: PrSummary {
@@ -336,7 +337,9 @@ impl Analyses<'_> {
             state: record.state,
             created_at: record.created_at,
             finished_at: record.finished_at,
-        })
+        };
+        self.add_progress(&mut summary).await?;
+        Ok(summary)
     }
 
     /// The stage of the analysis's live job: the claimed or running pipeline job of its current round, else the
@@ -382,6 +385,7 @@ impl Analyses<'_> {
         let position: Option<u32> = row.try_get("position")?;
         let title: Option<String> = row.try_get("title")?;
         Ok(Some(AnalysisStage {
+            part: None,
             kind,
             flow: position
                 .zip(title)
@@ -1136,6 +1140,7 @@ mod tests {
 
     fn waiting(kind: StageKind, flow: Option<(u32, &str)>) -> AnalysisStage {
         AnalysisStage {
+            part: None,
             kind,
             flow: flow.map(|(index, title)| StageFlow {
                 index,

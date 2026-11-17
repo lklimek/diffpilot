@@ -308,3 +308,43 @@ personal progress on Home only for `has_my_state: true`. Test deletion counts in
 labelled "test lines changed or removed" alongside additions. MemCan connection status is separate from profile
 availability. Written feedback says "Saved to calibration memory" only for `calibration_example: true`;
 other written feedback says "Recorded".
+
+### Whole-analysis waiting progress
+
+`AnalysisSummary.progress` is optional for old responses and present on current HTTP/SSE snapshots:
+
+```json
+{
+  "state": {"state": "planning", "stage": {"kind": "plan", "started_at": "2026-11-17T10:35:00Z", "part": {"index": 6, "total": 23}}},
+  "progress": {
+    "started_at": "2026-11-17T10:00:00Z",
+    "planning": {"done": 5, "total": 23, "state": "current"},
+    "pr_context": {"done": 0, "total": 1, "state": "pending"},
+    "flows": {"done": 0, "total": null, "state": "pending"},
+    "finishing": {"done": 0, "total": 1, "state": "pending"},
+    "estimate": {"remaining_seconds": 7320, "basis": "this_analysis", "rough": true},
+    "percent": 17
+  }
+}
+```
+
+Stage states are `pending`, `current`, `done`. Plan `part` is omitted for one batch. Its fixed total comes
+from the server-written batch header in existing first-generation job prompts, excluding quoted input.
+Accepted plan documents count completed parts; repair jobs do not add parts. `started_at` is analysis creation
+(or the first job of the current retry round). A stage timer still starts at the runner's claim.
+
+ETA sums remaining plan parts times this run's mean completed plan duration (fallback: recent plan seconds
+per changed agent line), one recent mean PR-context duration if needed, and remaining flows times this run's
+mean flow duration (fallback: recent mean). Before planning ends, flow time uses recent seconds per changed
+agent line and is `rough`. History is at most 30 completed analyses in the same tenant, current-round successful
+jobs lasting 1 second to 3 hours. Completed generations of a stage (including repairs) contribute to its
+one duration; this analysis supplies samples only once the stage's document is accepted. Missing data for any remaining kind, or an estimate over
+7 days, yields null. Basis prefers `this_analysis`, otherwise `lines_only` before planning ends, else
+`recent_runs`. Queue delay and future repair runs are unknown. Paused and terminal analyses have no ETA.
+
+After planning, `percent` counts completed plan parts, PR context, flows and finishing out of their total.
+Before planning ends it uses completed measured work / (completed measured work + estimated remaining time);
+without an estimate it is null. It stays below 100 until finished. SSE publishes the same projection on stage
+changes; the browser does not poll for estimates. A null percentage means an indeterminate bar.
+
+There is no precise agent-start event in the runner protocol; claim time includes repository preparation.

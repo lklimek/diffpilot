@@ -97,12 +97,20 @@ not that every tool or profile lookup succeeded.
 | Flow schema rejections enter the existing two-repair budget | A missing or null required assessment requests correction before acceptance; exhausted repairs leave the flow Unexplained. |
 | `Blocking::NoActionProposed` (`no_action_proposed`) | Rate bounded exposure without inventing a defect, blocking action or follow-up; never suppress the assessment to represent absence of an action. |
 
+## Waiting progress (owner approval, 2026-11-17)
+
+| Addition | Reason |
+|---|---|
+| Optional `AnalysisStage.part {index, total}` | Fixed count of plan batches, including jobs already stored before this change. |
+| Optional `AnalysisSummary.progress` with `started_at`, four stage counters, `percent` and nullable `estimate` | Processing progress and ETA on the waiting screen; never a review score. Derived from existing jobs and documents without a migration or stored-document change. |
+| `AnalysisEstimate {remaining_seconds, basis, rough}`; basis `this_analysis`, `recent_runs`, `lines_only` | Show the source and uncertainty of an estimate; null when history is insufficient. |
+
 ## Consequences
 - The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.
 - Further contract changes still need a change request (ADR-010).
 
 ## Known deviations from the brief
-`docs/design-brief.md` stays unchanged; these statements in it are superseded:
+These remaining statements in `docs/design-brief.md` are superseded:
 
 | Brief statement | Now | Reference |
 |---|---|---|
