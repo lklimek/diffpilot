@@ -224,7 +224,7 @@
         "completed_at": "2026-11-10T14:44:00Z",
         "output": {
           "title": "1 test failed",
-          "summary": "sync_headers::slow_peer_2000_headers: timed out after 5 s",
+          "summary": "failures:\n    sync_headers::slow_peer_2000_headers\n\ntest result: FAILED. 41 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.02s",
           "text": null,
           "annotations_count": 0,
           "annotations_url": "https://api.github.com/repos/acme/node-client/check-runs/3000000004/annotations"

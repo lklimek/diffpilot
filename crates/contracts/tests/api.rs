@@ -25,7 +25,7 @@ use contracts::api::settings::{AppInstallation, RepoSettings, Settings};
 use contracts::api::tour::{
     Annotation, CiState, CiStatus, Counters, Flow, FlowFacts, FlowGraph, FlowGroup, FlowLlm,
     GraphEdge, GraphNode, PrContextBlock, PrContextFacts, ProjectProfileStatus, QuietRows, Step,
-    StepFacts, StepLlm, Tour,
+    StepFacts, StepLlm, ThreadsStatus, Tour,
 };
 use contracts::common::{
     AnnotationType, Basis, Blocking, Classification, Evidence, FileRanges, FragmentKind, LineRange,
@@ -69,6 +69,7 @@ fn tour() -> Tour {
                     total: 6,
                     failing: vec![],
                 },
+                threads_status: ThreadsStatus::Checked,
                 counters: Counters {
                     lines_removed_from_tests: 12,
                     dependencies_changed: vec!["tokio".to_owned()],
@@ -212,6 +213,7 @@ fn error_codes_map_to_statuses() {
         ("conflict", 409),
         ("pr_head_changed", 409),
         ("position_rejected", 422),
+        ("comment_published", 409),
         ("range_too_large", 400),
         ("not_rendered", 422),
         ("github_unavailable", 502),
