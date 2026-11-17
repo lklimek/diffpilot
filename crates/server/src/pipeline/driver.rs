@@ -33,6 +33,7 @@ use super::verdict::{self, Facts, Outputs};
 use super::{CREDENTIAL_ID, JobFailure, PipelineError, control, diff_files, prepare, prepass};
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
+use crate::memcan::calibration::{CalibrationDirection, CalibrationExample, calibration_examples};
 use crate::model::{ModelContext, select_model};
 use crate::prompts::{
     self, FlowInput, JobContext, PlanBatch, PlanInput, PrContextInput, Profile, PromptError,
@@ -76,6 +77,10 @@ struct Driver<'a> {
     ended: BTreeMap<FlowId, FlowEnd>,
     /// The generation each submitted stage is at.
     live: HashMap<JobStage, u32>,
+    /// MemCan severity calibration examples per flow; `None` = not checked (MemCan unreachable).
+    calibration: HashMap<FlowId, Option<Vec<CalibrationExample>>>,
+    /// MemCan failed once in this run: later flows do not wait for it again.
+    memcan_down: bool,
     /// Stages whose job waits for the usage limit to reset, with when it is queued again if known.
     paused: BTreeMap<String, Option<DateTime<Utc>>>,
 }
@@ -113,6 +118,8 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
         results,
         ended: BTreeMap::new(),
         live: HashMap::new(),
+        calibration: HashMap::new(),
+        memcan_down: false,
         paused: BTreeMap::new(),
     };
     driver.run().await
@@ -490,7 +497,7 @@ impl Driver<'_> {
             sub_agents: prompts::SUB_AGENTS_DEFAULT,
             prepass,
         };
-        // TODO(WP3-MEMCAN merge): the MemCan profile memory and calibration examples (bounded MemCan read).
+        // TODO(WP3-MEMCAN merge): the MemCan profile memory; `server::memcan` has no profile read yet.
         let profile = Profile {
             file: prepass.profile_file.as_deref(),
             memcan: None,
@@ -546,13 +553,18 @@ impl Driver<'_> {
                             .collect()
                     })
                     .unwrap_or_default();
+                let calibration: Option<Vec<prompts::Calibration<'_>>> = self
+                    .calibration
+                    .get(id)
+                    .and_then(Option::as_ref)
+                    .map(|examples| examples.iter().map(prompt_calibration).collect());
                 let input = FlowInput {
                     job,
                     files: &self.facts.files,
                     flow,
                     profile,
                     threads: &threads,
-                    calibration: None,
+                    calibration: calibration.as_deref(),
                 };
                 finish(RepairOf::Flow(&input), &|| prompts::analyse_flow(&input))?
             }
@@ -561,12 +573,42 @@ impl Driver<'_> {
         Ok(prompt)
     }
 
+    /// Reads the flow's severity calibration examples from MemCan once (bounded read; an error means "not
+    /// checked", never "no examples"). Their text is untrusted data, quoted as such by the prompt.
+    async fn load_calibration(&mut self, id: &FlowId) {
+        if self.calibration.contains_key(id) {
+            return;
+        }
+        let Some(flow) = self.planned(id) else {
+            return;
+        };
+        let examples = if self.memcan_down {
+            None
+        } else {
+            let query = format!("{} {}", flow.title, flow.intent);
+            let project = &self.summary.pr.repo.name;
+            match calibration_examples(&self.state.config.memcan, project, &query).await {
+                Ok(examples) => Some(examples),
+                Err(error) => {
+                    tracing::warn!(analysis = %self.analysis, flow = %id, %error,
+                        "MemCan calibration examples not readable; the flow runs without them (not checked)");
+                    self.memcan_down = true;
+                    None
+                }
+            }
+        };
+        self.calibration.insert(id.clone(), examples);
+    }
+
     /// Submits the stage's first run (generation 0).
     async fn submit_first(
         &mut self,
         updates: &mut Updates,
         stage: JobStage,
     ) -> Result<(), PipelineError> {
+        if let JobStage::Flow(id) = &stage {
+            self.load_calibration(id).await;
+        }
         let prompt = self.prompt(&stage, None)?;
         self.submit(updates, stage, 0, prompt).await
     }
@@ -744,5 +786,16 @@ impl Driver<'_> {
             .await?
             .map(|_| ())
             .ok_or(PipelineError::Stopped)
+    }
+}
+
+/// A MemCan calibration example as the prompt quotes it.
+fn prompt_calibration(example: &CalibrationExample) -> prompts::Calibration<'_> {
+    prompts::Calibration {
+        direction: match example.direction {
+            CalibrationDirection::Overrated => prompts::CalibrationDirection::Overrated,
+            CalibrationDirection::Underrated => prompts::CalibrationDirection::Underrated,
+        },
+        text: &example.text,
     }
 }

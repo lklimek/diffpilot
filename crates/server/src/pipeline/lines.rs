@@ -8,6 +8,7 @@ use analysis::diff::FileDiff;
 use analysis::lines::{
     LineWindow, changed_lines_within, deleted_blocks, deletion_markers, line_window, thread_ranges,
 };
+use analysis::prepass::Prepass;
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::code::{CommentScope, DeletedBlock, LinesResponse, RangeQuery};
 use contracts::common::LineSide;
@@ -40,19 +41,19 @@ pub enum LinesError {
 
 /// Refuses a file side the pre-pass lists as never rendered (generated or binary, brief §7). The pre-pass is
 /// computed and stored here when the driver has not stored it yet (it is deterministic). `mirror` and `files`
-/// come from [`pr_diff`] of the same analysis.
+/// come from [`pr_diff`] of the same analysis. Returns the pre-pass.
 pub async fn ensure_rendered(
     state: &AppState,
     summary: &AnalysisSummary,
     (mirror, files): (&Path, &[FileDiff]),
     side: LineSide,
     path: &str,
-) -> Result<(), LinesError> {
+) -> Result<Prepass, LinesError> {
     let prepass = prepass::ensure(state, summary, mirror, files).await?;
     if prepass.is_not_rendered(side, path) {
         return Err(LinesError::NotRendered);
     }
-    Ok(())
+    Ok(prepass)
 }
 
 /// Lines `query.from..=query.to` (clamped to the file) of `query.path` on `query.side` of the analysis, with
@@ -63,7 +64,8 @@ pub async fn read(
     query: RangeQuery,
 ) -> Result<LinesResponse, LinesError> {
     let (mirror, files) = pr_diff(state, summary).await?;
-    ensure_rendered(state, summary, (&mirror, &files), query.side, &query.path).await?;
+    let prepass =
+        ensure_rendered(state, summary, (&mirror, &files), query.side, &query.path).await?;
     let commit = match query.side {
         LineSide::Head => &summary.pr.head_sha,
         LineSide::Base => &summary.pr.base_sha,
@@ -104,8 +106,11 @@ pub async fn read(
         lines,
         changed,
         deleted,
-        // TODO(WP3-PREPASS): moved blocks from the deterministic move detection.
-        moved: Vec::new(),
+        // Moved blocks are detected on head lines (their target); base ranges have none.
+        moved: match query.side {
+            LineSide::Head => prepass.moves.moved_lines(&query.path, from, to),
+            LineSide::Base => Vec::new(),
+        },
         comments,
     })
 }
