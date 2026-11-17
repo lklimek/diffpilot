@@ -169,8 +169,8 @@ async fn follow(state: &AppState, question: QuestionId) -> Followed {
 
 async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), FollowError> {
     let (id, analysis) = (record.question.id, record.analysis_id);
-    // An answered question is followed on only while its job runs (`unanswered`): the result is authoritative.
-    if record.question.state == AskState::Failed {
+    // A provisional answer is followed on: the job's result is authoritative.
+    if record.question.state == AskState::Failed || record.answered_at.is_some() {
         return Ok(());
     }
     let summary = state.db.analyses().summary(analysis).await?;
@@ -213,7 +213,7 @@ async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), F
             }
             // Published at once (ADR-004); the result is authoritative and may replace it.
             JobUpdate::OutputReady(output) => match check(state, &summary, output).await? {
-                Ok(answer) => Some(QuestionUpdate::Answered(answer)),
+                Ok(answer) => Some(QuestionUpdate::Provisional(answer)),
                 Err(unfit) => {
                     tracing::debug!(question = %id, reasons = ?unfit.codes(),
                         "ready answer not shown; the job's result decides");

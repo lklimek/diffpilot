@@ -884,61 +884,78 @@ async fn restart_follows_open_questions_to_their_end() {
     assert_eq!(failed.failure.as_deref(), Some(job::SERVER_ERROR));
 }
 
+impl Fixture {
+    /// The state a stopped server left: a question on its claimed `ask` job, and no follower.
+    async fn stopped_on_a_claimed_job(&self) -> (QuestionId, Claim) {
+        let Asked::Stored(record) = self
+            .state
+            .db
+            .questions()
+            .create(
+                NewQuestion {
+                    id: QuestionId::new_random(),
+                    analysis_id: self.analysis,
+                    step_id: StepId("f1.5".to_owned()),
+                    user_id: "u1".to_owned(),
+                    text: QUESTION.to_owned(),
+                },
+                QuestionLimits {
+                    per_analysis: 10,
+                    per_user: 10,
+                    user_window_start: Utc::now(),
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("create")
+        else {
+            panic!("stored");
+        };
+        let id = record.question.id;
+        let mut spec = job_spec(self.analysis, contracts::agent::JobKind::Ask);
+        spec.credential.id = CREDENTIAL_ID.to_owned();
+        let handle = self
+            .state
+            .executor
+            .submit(JobRequest {
+                spec,
+                priority: JobPriority::Interactive,
+                stage: JobStage::Ask(id),
+                generation: 0,
+                pr_repo: contracts::common::RepoRef {
+                    owner: "acme".to_owned(),
+                    name: "node-client".to_owned(),
+                },
+            })
+            .await
+            .expect("submit");
+        self.state
+            .db
+            .questions()
+            .set_job(id, handle.job_id)
+            .await
+            .expect("link");
+        let claim = self.claim().await.expect("the ask job");
+        assert_eq!(claim.spec.job_id, handle.job_id);
+        (id, claim)
+    }
+
+    /// Stores what the follower stores for a ready output that passed the checks.
+    async fn provisionally_answered(&self, id: QuestionId, output: Value) {
+        let output = serde_json::from_value(output).expect("ask output");
+        self.state
+            .db
+            .questions()
+            .update(id, &QuestionUpdate::Provisional(output), Utc::now())
+            .await
+            .expect("provisional answer");
+    }
+}
+
 #[tokio::test]
 async fn restart_with_the_real_queue_follows_the_running_job_without_resubmitting() {
     let f = fixture(true).await;
-    // The state a stopped server left: a question answering on a claimed job, and no follower.
-    let Asked::Stored(record) = f
-        .state
-        .db
-        .questions()
-        .create(
-            NewQuestion {
-                id: QuestionId::new_random(),
-                analysis_id: f.analysis,
-                step_id: StepId("f1.5".to_owned()),
-                user_id: "u1".to_owned(),
-                text: QUESTION.to_owned(),
-            },
-            QuestionLimits {
-                per_analysis: 10,
-                per_user: 10,
-                user_window_start: Utc::now(),
-            },
-            Utc::now(),
-        )
-        .await
-        .expect("create")
-    else {
-        panic!("stored");
-    };
-    let id = record.question.id;
-    let mut spec = job_spec(f.analysis, contracts::agent::JobKind::Ask);
-    spec.credential.id = CREDENTIAL_ID.to_owned();
-    let handle = f
-        .state
-        .executor
-        .submit(JobRequest {
-            spec,
-            priority: JobPriority::Interactive,
-            stage: JobStage::Ask(id),
-            generation: 0,
-            pr_repo: contracts::common::RepoRef {
-                owner: "acme".to_owned(),
-                name: "node-client".to_owned(),
-            },
-        })
-        .await
-        .expect("submit");
-    f.state
-        .db
-        .questions()
-        .set_job(id, handle.job_id)
-        .await
-        .expect("link");
-    let claim = f.claim().await.expect("the ask job");
-    assert_eq!(claim.spec.job_id, handle.job_id);
-
+    let (id, claim) = f.stopped_on_a_claimed_job().await;
     assert_eq!(resume_unanswered(&f.state).await.expect("resume"), 1);
     f.post_result(
         &claim,
@@ -960,6 +977,44 @@ async fn restart_with_the_real_queue_follows_the_running_job_without_resubmittin
         1,
         "the running job is followed, not submitted again"
     );
+}
+
+#[tokio::test]
+async fn restart_after_the_job_result_replaces_a_provisional_answer_with_the_final_one() {
+    let f = fixture(true).await;
+    let (id, claim) = f.stopped_on_a_claimed_job().await;
+    f.provisionally_answered(id, answer("Is the ready answer final?", json!([])))
+        .await;
+    // The result arrived; the server stopped before the follower applied it.
+    f.post_result(
+        &claim,
+        JobOutcome::Succeeded {
+            output: good_answer(),
+        },
+    )
+    .await;
+    resume_unanswered(&f.state).await.expect("resume");
+    let expected = serde_json::from_value(good_answer()).expect("output");
+    let done = f
+        .wait_for(id, |q| q.answer.as_ref() == Some(&expected))
+        .await;
+    assert_eq!(done.state, AskState::Answered);
+    let record = f.state.db.questions().get(id, Utc::now()).await.expect("q");
+    assert!(record.answered_at.is_some(), "final");
+}
+
+#[tokio::test]
+async fn restart_after_a_cancelled_result_withdraws_a_provisional_answer() {
+    let f = fixture(true).await;
+    let (id, claim) = f.stopped_on_a_claimed_job().await;
+    f.provisionally_answered(id, good_answer()).await;
+    f.post_result(&claim, JobOutcome::Cancelled).await;
+    resume_unanswered(&f.state).await.expect("resume");
+    let failed = f.wait_for(id, |q| q.state == AskState::Failed).await;
+    assert_eq!(failed.answer, None);
+    assert_eq!(failed.failure.as_deref(), Some(job::SUPERSEDED));
+    let (_, listed) = f.list().await;
+    assert_eq!(listed[0]["answer"], Value::Null, "withdrawn from the list");
 }
 
 // --- Acceptance 3: claim order, one ask at a time ----------------------------------------------------------

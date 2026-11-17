@@ -146,9 +146,11 @@ mapping, query rules and the endpoint × fixture-state inventory.
   that did not pass the checks, a re-analysis that cancelled it, a server error); a failed question is asked again
   as a new one. An answer is shown only after its schema, the wording rules of brief §1, plain text (no markup, no
   link other than `https://github.com/…`), at most 8000 characters and 50 evidence lines inside their file of the
-  pinned tree; otherwise the question fails and the answer is never shown. After a server restart every `pending`
-  or `answering` question is followed again to its end. `GET …/questions` lists every question of the analysis,
-  oldest first, in any state and of every user of the tenant.
+  pinned tree; otherwise the question fails and the answer is never shown. After a server restart every `pending`,
+  `answering` or provisionally `answered` question (a ready output whose job result was not applied yet) is
+  followed again to its end; only final answers enter later context packs. `GET …/questions` lists every question
+  of the analysis, oldest first, in any state and of every user of the tenant. Plain text: HTML-like tags (`<`
+  followed by a letter, `/` or `!`) are allowed only inside code spans and closed fenced blocks.
 - **Settings**: `repos` lists the tenant's repositories with at least one analysis; each opens
   `/api/v1/repos/{owner}/{name}/settings` (owner and name match case-insensitively; any other repository is
   `not_found`). Its rules, related repositories and profile source come from the newest stored pre-pass of the

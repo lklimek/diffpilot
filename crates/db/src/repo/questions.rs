@@ -72,7 +72,7 @@ pub struct QuestionRecord {
     pub user_id: String,
     /// The `ask` job, once submitted.
     pub job_id: Option<JobId>,
-    /// When it was answered.
+    /// When the job's result confirmed the answer; `None` while an `answered` question shows a ready output.
     pub answered_at: Option<DateTime<Utc>>,
 }
 
@@ -83,7 +83,9 @@ pub enum QuestionUpdate {
     Pending,
     /// The agent works on it.
     Answering,
-    /// Answered with a checked output.
+    /// Answered with a checked ready output before the job's result, which may still replace or withdraw it.
+    Provisional(AskOutput),
+    /// Answered with the checked output of the job's result: final.
     Answered(AskOutput),
     /// Failed with a plain sentence for the user.
     Failed(String),
@@ -208,13 +210,13 @@ impl Questions<'_> {
             .collect()
     }
 
-    /// Questions of every tenant whose end is not stored yet, oldest first: `pending`, `answering`, or `answered`
-    /// from a ready output while their job has not ended (its result may still replace the answer).
+    /// Questions of every tenant whose end is not stored yet, oldest first: `pending`, `answering`, or answered
+    /// provisionally (the job's result, possibly already recorded, decides).
     pub async fn unanswered(&self, now: DateTime<Utc>) -> Result<Vec<QuestionRecord>, DbError> {
         let rows = sqlx::query(concat!(
             question_select!(),
             " WHERE q.state IN ('pending', 'answering')
-                 OR (q.state = 'answered' AND j.state IN ('queued', 'claimed', 'running', 'paused'))
+                 OR (q.state = 'answered' AND q.answered_at IS NULL)
              ORDER BY q.created_at, q.rowid"
         ))
         .bind(ts(now))
@@ -223,7 +225,7 @@ impl Questions<'_> {
         rows.iter().map(record_from_row).collect()
     }
 
-    /// Answered questions of `step` asked before `question`, oldest first, with their answers.
+    /// Finally answered questions of `step` asked before `question`, oldest first, with their answers.
     pub async fn answered_before(
         &self,
         analysis: AnalysisId,
@@ -233,7 +235,7 @@ impl Questions<'_> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT q.text, q.answer FROM questions q, questions asked
              WHERE asked.id = ?3 AND q.analysis_id = ?1 AND q.step_id = ?2 AND q.state = 'answered'
-                 AND q.answer IS NOT NULL AND q.rowid < asked.rowid
+                 AND q.answer IS NOT NULL AND q.answered_at IS NOT NULL AND q.rowid < asked.rowid
              ORDER BY q.rowid",
         )
         .bind(analysis.to_string())
@@ -269,6 +271,12 @@ impl Questions<'_> {
         let (state, answer, failure, answered_at) = match update {
             QuestionUpdate::Pending => (AskState::Pending, None, None, None),
             QuestionUpdate::Answering => (AskState::Answering, None, None, None),
+            QuestionUpdate::Provisional(output) => (
+                AskState::Answered,
+                Some(serde_json::to_string(output)?),
+                None,
+                None,
+            ),
             QuestionUpdate::Answered(output) => (
                 AskState::Answered,
                 Some(serde_json::to_string(output)?),
@@ -634,28 +642,45 @@ mod tests {
             .await
             .expect("answering");
         assert_eq!(resumes(at(33)).await, None, "only a pending question waits");
-        // Answered from a ready output while its job has not ended: still open.
-        db.questions()
-            .update(id, &QuestionUpdate::Answered(output("Q?")), at(34))
-            .await
-            .expect("answered");
-        let open = |now| {
-            let db = db.clone();
-            async move {
-                db.questions()
-                    .unanswered(now)
-                    .await
-                    .expect("open")
-                    .iter()
-                    .map(|record| record.question.id)
-                    .collect::<Vec<_>>()
-            }
+    }
+
+    #[tokio::test]
+    async fn provisional_answer_stays_open_and_out_of_context_until_the_result_is_applied() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let first = ask(&db, analysis, "f1.1", "first", at(0)).await;
+        let later = ask(&db, analysis, "f1.1", "later", at(1)).await;
+        let questions = db.questions();
+        let open = || async {
+            let records = questions.unanswered(at(5)).await.expect("open");
+            records
+                .iter()
+                .map(|record| record.question.id)
+                .collect::<Vec<_>>()
         };
-        assert_eq!(open(at(34)).await, [id]);
-        db.jobs()
-            .request_cancel(claimed.id, at(35))
+        let earlier = || async {
+            let step = StepId("f1.1".to_owned());
+            let before = questions.answered_before(analysis, &step, later);
+            before.await.expect("earlier")
+        };
+        questions
+            .update(first, &QuestionUpdate::Provisional(output("Ready?")), at(2))
             .await
-            .expect("cancel");
-        assert!(open(at(35)).await.is_empty(), "its job ended");
+            .expect("provisional");
+        let record = questions.get(first, at(2)).await.expect("get");
+        assert_eq!(record.question.state, AskState::Answered, "shown at once");
+        assert_eq!(record.answered_at, None, "not final");
+        // Its job may have ended already (a restart between the job result and the question update).
+        assert_eq!(open().await, [first, later]);
+        assert!(
+            earlier().await.is_empty(),
+            "not context for later questions"
+        );
+        questions
+            .update(first, &QuestionUpdate::Answered(output("Final?")), at(3))
+            .await
+            .expect("final");
+        assert_eq!(open().await, [later]);
+        assert_eq!(earlier().await, [("first".to_owned(), output("Final?"))]);
     }
 }
