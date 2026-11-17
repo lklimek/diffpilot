@@ -60,6 +60,9 @@ mapping, query rules and the endpoint × fixture-state inventory.
 - **Commenting** (ADR-006): `LinesResponse.comments` is `in_diff {line_thread_ranges}` or `not_in_diff`; a create
   request for a `not_in_diff` target is `position_rejected` without a GitHub call. `commenting_available` is
   false (and comment routes answer `app_not_installed`) when the GitHub App is not installed on the PR repo.
+  Every write (create, edit, delete) is serialised per (user, PR) and first compares the PR head with the
+  analysis head (`pr_head_changed`); edit and delete act only on the user's own pending comments of this PR
+  (any other id is `not_found`).
 - **No installation** (ADR-005 addendum): analysis still runs; `PrContextFacts.related_work_checked = false`
   (UI: "Related work: not checked"); commenting disabled.
 - **CI status** (`PrContextFacts.ci`): read from the head commit's check runs with the user token of the analysis
