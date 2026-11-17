@@ -1,6 +1,6 @@
 //! The driver of one analysis: stages, generations (repair runs), progress and the end of the analysis.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 use analysis::diff::FileDiff;
@@ -81,6 +81,11 @@ struct Driver<'a> {
     ended: BTreeMap<FlowId, FlowEnd>,
     /// The generation each submitted stage is at.
     live: HashMap<JobStage, u32>,
+    /// Stages not submitted yet, in order: plan batches, PR context, then the flows in plan order.
+    waiting: VecDeque<JobStage>,
+    /// The one stage whose job runs now: the next is submitted only once its result is verified and stored (or
+    /// the stage ended), so every job's context pack holds the results of all earlier stages.
+    in_flight: Option<JobStage>,
     /// MemCan severity calibration examples per flow; `None` = not checked (MemCan unreachable).
     calibration: HashMap<FlowId, Option<Vec<CalibrationExample>>>,
     /// MemCan failed once in this run: later flows do not wait for it again.
@@ -147,6 +152,8 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
         results,
         ended: BTreeMap::new(),
         live: HashMap::new(),
+        waiting: VecDeque::new(),
+        in_flight: None,
         calibration: HashMap::new(),
         memcan_down: false,
         paused: BTreeMap::new(),
@@ -174,18 +181,9 @@ async fn snapshot(
 impl Driver<'_> {
     async fn run(&mut self) -> Result<(), PipelineError> {
         let mut updates = Updates::new();
-        if let Some(plan) = self.results.plan.clone() {
-            self.plan_known(&mut updates, plan, false).await?;
-        } else if self.batches.is_empty() {
-            // Nothing for the agent to plan: every change is quiet material or fits no prompt.
-            let empty = PlanOutput {
-                flows: Vec::new(),
-                unassigned: Vec::new(),
-            };
-            let plan = self.with_unfit(empty);
-            self.plan_known(&mut updates, plan, true).await?;
-        } else {
-            self.set_progress().await?;
+        self.set_progress().await?;
+        let plan_stored = self.results.plan.is_some();
+        if !plan_stored {
             for batch in self.batch_numbers() {
                 let key = batch.to_string();
                 let stored: Option<PlanOutput> = self.get(DocumentKind::Plan, &key).await?;
@@ -193,17 +191,27 @@ impl Driver<'_> {
                     Some(plan) if self.batches.len() > 1 => {
                         self.batch_plans.insert(batch, plan);
                     }
-                    _ => {
-                        self.submit_first(&mut updates, JobStage::Plan { batch })
-                            .await?
-                    }
+                    _ => self.waiting.push_back(JobStage::Plan { batch }),
                 }
             }
-            self.merge_when_planned(&mut updates).await?;
         }
         if self.results.pr_context.is_none() {
-            self.submit_first(&mut updates, JobStage::PrContext).await?;
+            self.waiting.push_back(JobStage::PrContext);
         }
+        if let Some(plan) = self.results.plan.clone() {
+            self.plan_known(plan, false).await?;
+        } else if self.batches.is_empty() {
+            // Nothing for the agent to plan: every change is quiet material or fits no prompt.
+            let empty = PlanOutput {
+                flows: Vec::new(),
+                unassigned: Vec::new(),
+            };
+            let plan = self.with_unfit(empty);
+            self.plan_known(plan, true).await?;
+        } else {
+            self.merge_when_planned().await?;
+        }
+        self.advance(&mut updates).await?;
         while let Some((stage, generation, item)) = updates.next().await {
             // Any update after a pause means the job runs (or ended) again.
             if !matches!(item, Some(Ok(JobUpdate::Paused { .. })))
@@ -215,6 +223,14 @@ impl Driver<'_> {
             match item {
                 Some(Ok(JobUpdate::Finished(result))) => {
                     self.finish(&mut updates, stage, generation, result).await?;
+                    if self
+                        .in_flight
+                        .as_ref()
+                        .is_some_and(|live| self.resolved(live))
+                    {
+                        self.in_flight = None;
+                    }
+                    self.advance(&mut updates).await?;
                 }
                 Some(Ok(JobUpdate::Paused { resumes_at })) => {
                     tracing::info!(analysis = %self.analysis, stage = %stage.key(), ?resumes_at,
@@ -231,6 +247,19 @@ impl Driver<'_> {
             }
         }
         self.finish_analysis().await
+    }
+
+    /// Submits the next waiting stage once no job runs; stages resolved meanwhile are skipped.
+    async fn advance(&mut self, updates: &mut Updates) -> Result<(), PipelineError> {
+        while self.in_flight.is_none() {
+            let Some(stage) = self.waiting.pop_front() else {
+                return Ok(());
+            };
+            if !self.resolved(&stage) {
+                self.submit_first(updates, stage).await?;
+            }
+        }
+        Ok(())
     }
 
     fn batch_numbers(&self) -> Vec<u32> {
@@ -289,14 +318,9 @@ impl Driver<'_> {
         Ok(())
     }
 
-    /// The plan is known (stored, merged or empty): verify it against the agent hunks, then submit the flows
-    /// without a stored analysis.
-    async fn plan_known(
-        &mut self,
-        updates: &mut Updates,
-        plan: PlanOutput,
-        store: bool,
-    ) -> Result<(), PipelineError> {
+    /// The plan is known (stored, merged or empty): verify it against the agent hunks, then queue the flows
+    /// without a stored analysis, in plan order.
+    async fn plan_known(&mut self, plan: PlanOutput, store: bool) -> Result<(), PipelineError> {
         let verified = match verdict::plan(&plan, &self.facts.listed)? {
             Ok(verified) => verified,
             Err(issues) => {
@@ -326,14 +350,14 @@ impl Driver<'_> {
         self.set_progress().await?;
         for id in ids {
             if !self.ended.contains_key(&id) {
-                self.submit_first(updates, JobStage::Flow(id)).await?;
+                self.waiting.push_back(JobStage::Flow(id));
             }
         }
         Ok(())
     }
 
     /// Merges the batch plans once every batch is planned.
-    async fn merge_when_planned(&mut self, updates: &mut Updates) -> Result<(), PipelineError> {
+    async fn merge_when_planned(&mut self) -> Result<(), PipelineError> {
         if self.batches.len() < 2 || self.batch_plans.len() < self.batches.len() {
             return Ok(());
         }
@@ -341,7 +365,7 @@ impl Driver<'_> {
         let merged = self.with_unfit(merge_plans(&plans));
         tracing::info!(analysis = %self.analysis, batches = plans.len(), flows = merged.flows.len(),
             "batch plans merged");
-        self.plan_known(updates, merged, true).await
+        self.plan_known(merged, true).await
     }
 
     /// Handles a job's result: schema, verification, then storage, a repair run or the stage's end.
@@ -379,7 +403,7 @@ impl Driver<'_> {
                 let files = self.batch_files(*batch);
                 match verdict::plan(&plan, &files)? {
                     Ok(_) => {
-                        self.plan_accepted(updates, *batch, plan).await?;
+                        self.plan_accepted(*batch, plan).await?;
                         None
                     }
                     Err(issues) => Some(issues),
@@ -472,20 +496,15 @@ impl Driver<'_> {
     }
 
     /// Stores an accepted batch plan; with one batch it is the plan.
-    async fn plan_accepted(
-        &mut self,
-        updates: &mut Updates,
-        batch: u32,
-        plan: PlanOutput,
-    ) -> Result<(), PipelineError> {
+    async fn plan_accepted(&mut self, batch: u32, plan: PlanOutput) -> Result<(), PipelineError> {
         if self.batches.len() < 2 {
             let plan = self.with_unfit(plan);
-            return self.plan_known(updates, plan, true).await;
+            return self.plan_known(plan, true).await;
         }
         self.put(DocumentKind::Plan, &batch.to_string(), &plan)
             .await?;
         self.batch_plans.insert(batch, plan);
-        self.merge_when_planned(updates).await
+        self.merge_when_planned().await
     }
 
     /// `plan` with the hunks no plan prompt could hold, listed as unassigned with their reason.
@@ -704,6 +723,7 @@ impl Driver<'_> {
         tracing::debug!(analysis = %self.analysis, stage = %stage.key(), generation, job = %handle.job_id,
             "pipeline job submitted");
         self.live.insert(stage.clone(), generation);
+        self.in_flight = Some(stage.clone());
         self.follow(updates, stage, generation, handle);
         // A cancel between the state check of the last write and this submit: stop and cancel the new job too.
         let current = self.state.db.analyses().summary(self.analysis).await?;

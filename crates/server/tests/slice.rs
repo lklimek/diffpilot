@@ -17,9 +17,11 @@ use contracts::agent::JobKind;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::pr::PrSummary;
 use contracts::ids::{AnalysisId, CommitSha, JobId};
+use contracts::job::protocol::{Claim, ClaimResponse};
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::JobState;
+use contracts::routes::{RUNNER_CLAIM, RUNNER_RESULT};
 use db::repo::analyses::{NewAnalysis, SessionState};
 use db::repo::documents::DocumentKind;
 use db::repo::jobs::JobStage;
@@ -504,6 +506,52 @@ impl Harness {
             .await;
         assert_eq!(status, StatusCode::CREATED, "{created}");
         created["id"].as_str().expect("id").to_owned()
+    }
+
+    /// The harness with the real job queue as executor; runner calls go through [`Harness::runner`].
+    fn with_queue(self) -> Self {
+        let queue = Arc::new(QueueExecutor::new(self.state.db.clone()));
+        let state = AppState::new(
+            config(self._dir.path(), &self.github, None),
+            self.state.db.clone(),
+            queue,
+        );
+        Self { state, ..self }
+    }
+
+    /// A runner request with `bearer` (the runner secret or a job token).
+    async fn runner(&self, uri: &str, bearer: &str, body: Value) -> (StatusCode, Value) {
+        let request = Request::post(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .expect("request");
+        json_of(
+            api::runner_router(self.state.clone())
+                .oneshot(request)
+                .await
+                .expect("infallible"),
+        )
+        .await
+    }
+
+    /// One claim of the pipeline credential, as the runner sends it.
+    async fn runner_claim(&self) -> Option<Claim> {
+        let request = json!({
+            "runner_id": "runner-1",
+            "credentials": [{
+                "credential": { "id": server::pipeline::CREDENTIAL_ID, "kind": "codex_chatgpt" },
+                "usable": true,
+            }],
+            "dropped_sessions": [],
+        });
+        let (status, body) = self
+            .runner(RUNNER_CLAIM.path, "fake-runner-secret", request)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        serde_json::from_value::<ClaimResponse>(body)
+            .expect("claim response")
+            .claim
     }
 
     async fn post_empty(&self, uri: &str) -> (StatusCode, Value) {
@@ -1293,9 +1341,6 @@ async fn lines_caps_deleted_blocks() {
 
 async fn fail_flow_2(h: &Harness, script: Script) -> AnalysisSummary {
     h.executor.script("flow:f2", script);
-    for flow in ["flow:f3", "flow:f4", "flow:f5"] {
-        h.executor.script(flow, Script::Pending);
-    }
     let (status, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
     assert_eq!(status, StatusCode::OK, "{resolved}");
     let (status, created) = h
@@ -1312,7 +1357,8 @@ async fn fail_flow_2(h: &Harness, script: Script) -> AnalysisSummary {
         .await
 }
 
-fn assert_failed_in_f2_and_rest_cancelled(h: &Harness, summary: &AnalysisSummary, message: &str) {
+/// Jobs run one at a time: a failure in f2 ends the analysis before any later flow is submitted.
+fn assert_failed_in_f2_and_nothing_after_it(h: &Harness, summary: &AnalysisSummary, message: &str) {
     match &summary.state {
         AnalysisState::Failed {
             flow: Some(flow),
@@ -1323,28 +1369,28 @@ fn assert_failed_in_f2_and_rest_cancelled(h: &Harness, summary: &AnalysisSummary
         }
         other => panic!("expected a failure in f2, got {other:?}"),
     }
-    let cancelled = h.executor.cancelled();
+    let submitted = h.executor.submitted();
     for flow in ["flow:f3", "flow:f4", "flow:f5"] {
         assert!(
-            cancelled.contains(&flow.to_owned()),
-            "{flow} not cancelled: {cancelled:?}"
+            !submitted.contains(&flow.to_owned()),
+            "{flow} submitted: {submitted:?}"
         );
     }
-    assert!(!cancelled.contains(&"flow:f2".to_owned()));
+    assert!(!h.executor.cancelled().contains(&"flow:f2".to_owned()));
 }
 
 #[tokio::test]
-async fn failed_job_cancels_the_other_jobs() {
+async fn failed_job_ends_the_analysis_before_later_jobs() {
     let h = harness().await;
     let summary = fail_flow_2(&h, Script::Fail).await;
-    assert_failed_in_f2_and_rest_cancelled(&h, &summary, "The agent run failed");
+    assert_failed_in_f2_and_nothing_after_it(&h, &summary, "The agent run failed");
 }
 
 #[tokio::test]
-async fn schema_invalid_output_fails_and_cancels_the_other_jobs() {
+async fn schema_invalid_output_ends_the_analysis_before_later_jobs() {
     let h = harness().await;
     let summary = fail_flow_2(&h, Script::Output(json!({ "flow_id": "f2" }))).await;
-    assert_failed_in_f2_and_rest_cancelled(&h, &summary, "did not have the expected structure");
+    assert_failed_in_f2_and_nothing_after_it(&h, &summary, "did not have the expected structure");
 }
 
 #[tokio::test]
@@ -1676,9 +1722,7 @@ async fn failure_before_any_flow_offers_retry() {
 #[tokio::test]
 async fn cancel_discards_partial_results() {
     let h = harness().await;
-    for flow in ["flow:f3", "flow:f4", "flow:f5"] {
-        h.executor.script(flow, Script::Pending);
-    }
+    h.executor.script("flow:f3", Script::Pending);
     let id = h.create_fixture_analysis().await;
     h.wait_for_state(&id, |state| {
         matches!(state, AnalysisState::Running { done: 2, .. })
@@ -1695,9 +1739,9 @@ async fn cancel_discards_partial_results() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], json!({ "state": "cancelled" }));
     let cancelled = h.executor.cancelled();
-    for flow in ["flow:f3", "flow:f4", "flow:f5"] {
-        assert!(cancelled.contains(&flow.to_owned()), "{cancelled:?}");
-    }
+    assert_eq!(cancelled, ["flow:f3"], "the running job is cancelled");
+    let submitted = h.executor.submitted();
+    assert!(!submitted.contains(&"flow:f4".to_owned()), "{submitted:?}");
     let documents = h.state.db.documents();
     for kind in [
         DocumentKind::Plan,
@@ -1735,7 +1779,7 @@ async fn usage_limit_pauses_and_resumes() {
             matches!(
                 state,
                 AnalysisState::Paused {
-                    done: 4,
+                    done: 1,
                     total: Some(5),
                     ..
                 }
@@ -2075,5 +2119,88 @@ async fn huge_pull_request_is_planned_in_batches() {
         unexplained,
         ["a/big.txt", "b/big.txt"],
         "flows without accepted output"
+    );
+}
+
+/// What a context pack holds of a stage's stored result.
+fn pack_marker(stage: &str) -> String {
+    match stage {
+        "plan:1" => "plan output: flows".to_owned(),
+        "pr_context" => "pr_context output".to_owned(),
+        flow => format!(
+            "\"flow_id\":\"{}\"",
+            flow.strip_prefix("flow:").expect("flow stage")
+        ),
+    }
+}
+
+/// Pipeline jobs are queued one at a time, each once the previous result is verified and stored: a runner asking
+/// right after posting a result gets nothing until then, and the next job's context pack holds every earlier
+/// result (the pack a lost session starts from).
+#[tokio::test]
+async fn each_job_is_claimable_only_after_the_previous_result_is_stored() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    let mut done: Vec<String> = Vec::new();
+    'jobs: loop {
+        let mut claimed = None;
+        for _ in 0..1000 {
+            if let Some(claim) = h.runner_claim().await {
+                claimed = Some(claim);
+                break;
+            }
+            let (_, body) = h.get(&format!("/api/v1/analyses/{id}")).await;
+            let summary: AnalysisSummary = serde_json::from_value(body).expect("summary");
+            match summary.state {
+                AnalysisState::Finished { .. } => break 'jobs,
+                AnalysisState::Failed { .. } | AnalysisState::Cancelled => {
+                    panic!("analysis ended as {:?}", summary.state)
+                }
+                _ => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+        let claim = claimed.expect("a job or the end of the analysis");
+        let job = h.state.db.jobs().get(claim.spec.job_id).await.expect("job");
+        let stage = job.stage.key();
+        assert_eq!(job.generation, 0, "{stage}: the fixture outputs pass");
+        let pack = claim.spec.context_pack.clone().unwrap_or_default();
+        for earlier in &done {
+            assert!(
+                pack.contains(&pack_marker(earlier)),
+                "{stage} was claimable before the result of {earlier} was stored"
+            );
+        }
+        let result = JobResult {
+            job_id: claim.spec.job_id,
+            attempt: claim.spec.attempt,
+            outcome: JobOutcome::Succeeded {
+                output: agent_output(&stage),
+            },
+            session: None,
+            usage: None,
+            skills_commit: None,
+            llm_call: None,
+        };
+        let uri = RUNNER_RESULT
+            .path
+            .replace("{id}", &claim.spec.job_id.to_string());
+        let (status, body) = h
+            .runner(&uri, claim.job_token.expose(), json!(result))
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        done.push(stage);
+    }
+    assert_eq!(
+        done,
+        [
+            "plan:1",
+            "pr_context",
+            "flow:f1",
+            "flow:f2",
+            "flow:f3",
+            "flow:f4",
+            "flow:f5"
+        ],
+        "plan, PR context, then the flows in plan order"
     );
 }

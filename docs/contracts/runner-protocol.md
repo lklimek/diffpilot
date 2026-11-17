@@ -151,6 +151,11 @@ Durable state only; no in-memory handle is needed after a restart.
   unfinished jobs in the same transaction; jobs are enqueued in the current round and `submit` finds only jobs of
   that round, so a Retry calls the agent again while a restart (same round) re-uses stored outputs. Accepted
   results of an earlier round are re-used only as verified documents.
+- **One job at a time.** The driver submits an analysis's pipeline jobs one at a time, in order: plan batches,
+  PR context, then the flows in plan order. The next job is submitted only after the previous result was verified
+  and its document stored (or the stage ended), so a claim never overtakes the previous result and every context
+  pack holds all earlier results. A restart re-submits the first unresolved stage (an idempotent submit returns
+  its live job).
 - **Repair.** When verification rejects the output of a succeeded job of generation g, the pipeline submits
   generation g + 1 with the repair prompt; with g = 2 repair is exhausted: a flow ends without output (its lines
   are Unexplained, the analysis goes on), a plan or PR context fails the analysis. The rejection
