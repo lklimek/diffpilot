@@ -153,6 +153,13 @@ setuid/setgid bits stripped).
   sweep scoped to its own descendants outside the runner; ignored as root); `R1_FAULT_SWEEP_FAILS=1` (every sweep
   fails) and `R1_FAULT_CLEAR_FAILS=<name>` (`clear` of a directory with that name is refused, so it gets
   quarantined) are refused unless `SR_SUPERVISOR_TEST_FAULTS=1`. The image sets none of them.
+- **codex-homes check:** under the supervisor, before recovery and the first claim, the runner refuses to start
+  (exit 78, as the image's preflight, so a changed command does not bypass it) unless `<state>/codex-homes` is on
+  another filesystem than the state directory, ext4 (a tmpfs only with `SR_CODEX_HOMES_ALLOW_TMPFS=1` and
+  `SR_CODEX_HOMES_TMPFS_PUBLIC_URL` on localhost: local stack, never set by the image), mounted
+  `nosuid,nodev,noexec`, with a finite capacity and inode count of at most `SR_CODEX_HOMES_MAX_BYTES` (default
+  16 GiB) and `SR_CODEX_HOMES_MAX_INODES` (default 1048576). Its root-owned `lost+found` is never treated as a job
+  home nor removed.
 - **Runner without a supervisor:** refuses to start unless `SR_RUNNER_DEV_NO_ISOLATION=1` (dev stack, smoke),
   then warns on every job; the image never sets it.
 - **Runner layout:** the provider works on a runner-private staging `CODEX_HOME` (`<state>/codex-staging/<key>`,
