@@ -235,9 +235,10 @@ mod tests {
 
     #[test]
     fn many_disjoint_changes_with_separate_covers_are_not_quadratic() {
-        // 50,000 one-line hunks, each with its own quiet cover, then 50,000 covers of the whole file: rescanning
-        // the file's changes per cover is 2.5·10^9 steps per shape, one pass per file a few hundred thousand.
-        const HUNKS: u32 = 50_000;
+        // 200,000 one-line hunks, each with its own quiet cover, then 200,000 covers of the whole file: rescanning
+        // the file's changes per cover is 4·10^10 steps per shape (75 s measured for the first), one pass per file
+        // a few million (well under a second).
+        const HUNKS: u32 = 200_000;
         let spans: Vec<Span> = (1..=HUNKS).map(|n| ((2 * n, 1), (2 * n, 1))).collect();
         let files = [file("src/big.rs", FileStatus::Modified, &spans)];
         let single = |line| file_ranges("src/big.rs", LineSide::Head, &[line]);
