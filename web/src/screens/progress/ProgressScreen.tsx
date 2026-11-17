@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import { useAnalysisLive, useCancelAnalysis, useMe, useRetryAnalysis } from "../../api/queries";
+import { useNow } from "../../app/now";
 import { AnalysisProgress } from "../../components/progress/AnalysisProgress";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { TopBar } from "../../components/top-bar/TopBar";
@@ -19,6 +20,7 @@ export function ProgressScreen() {
   const retry = useRetryAnalysis();
   const navigate = useNavigate();
   const summary = live.summary;
+  const now = useNow();
 
   const cancelledPrUrl = summary?.state.state === "cancelled" ? summary.pr.html_url : null;
   useEffect(() => {
@@ -54,6 +56,17 @@ export function ProgressScreen() {
               })
             }
             onRetry={() => retry.mutate(analysisId)}
+            activity={
+              live.stageSince && live.updatedAt !== undefined
+                ? {
+                    // A summary newer than the last tick must not read as "in the future".
+                    now: Math.max(now, live.updatedAt),
+                    stageSince: live.stageSince,
+                    lastUpdateAt: live.updatedAt,
+                    connected: !live.reconnecting,
+                  }
+                : undefined
+            }
           />
         )}
         {summary && live.reconnecting && (

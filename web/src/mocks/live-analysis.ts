@@ -11,6 +11,7 @@ type Listener = (summary: AnalysisSummary) => void;
 
 let stored: AnalysisSummary | null = null;
 let timer: ReturnType<typeof setTimeout> | undefined;
+let scriptPlayed = false;
 const listeners = new Set<Listener>();
 
 /** The analysis now: the scenario's pinned state, else the fixture seed, until something changes it. */
@@ -51,6 +52,24 @@ export function startRun(done = 0, total = 5): void {
   step(done);
 }
 
+/** Publishes `states` one per `RUN_STEP_MS`; the last one stays. */
+export function playScript(states: readonly AnalysisState[]): void {
+  clearTimeout(timer);
+  const [next, ...rest] = states;
+  if (!next) return;
+  timer = setTimeout(() => {
+    setLiveState(next);
+    playScript(rest);
+  }, RUN_STEP_MS);
+}
+
+/** `playScript` the first time only (the scenario's script, on the first event stream). */
+export function playScriptOnce(states: readonly AnalysisState[]): void {
+  if (scriptPlayed) return;
+  scriptPlayed = true;
+  playScript(states);
+}
+
 /** Stops the scripted run. */
 export function stopRun(): void {
   clearTimeout(timer);
@@ -59,6 +78,7 @@ export function stopRun(): void {
 /** Back to the seed: no run, no stored state, no listeners (tests). */
 export function resetLive(): void {
   stopRun();
+  scriptPlayed = false;
   stored = null;
   listeners.clear();
 }

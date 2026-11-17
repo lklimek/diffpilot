@@ -1,7 +1,8 @@
 import { HttpResponse } from "msw";
 import type { AnalysisEvent } from "../../api/generated/types";
-import { liveAnalysis, subscribeLive } from "../live-analysis";
+import { liveAnalysis, playScriptOnce, subscribeLive } from "../live-analysis";
 import { readStore, subscribeQuestions } from "../review-store";
+import { scenario } from "../scenarios";
 import { forAnalysis, route } from "./common";
 
 /** `GET /api/v1/analyses/{id}/events` (sse-events.md): snapshot (analysis, every question), then live events. */
@@ -27,6 +28,8 @@ export const analysisEvents = route(
         };
         send({ event: "analysis", summary: liveAnalysis() });
         for (const question of readStore("questions")) send({ event: "question", question });
+        const script = scenario().script;
+        if (script) playScriptOnce(script);
         request.signal.addEventListener("abort", () => unsubscribe());
       },
       cancel() {
