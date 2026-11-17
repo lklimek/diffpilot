@@ -28,7 +28,8 @@ the same attempt; 400 malformed body.
     when the App is unusable as configured (key file, key or App id; logged as an error). Any other mint
     failure, a minted token that differs from the request (permissions, repository, visibility, expiry outside
     the job's runtime cap and GitHub's hour), or GitHub's part of the claim exceeding its 6 s budget fails the
-    claim (`github_unavailable`); the job is retried after its lease. A rejected token is never handed out: it
+    claim (`github_unavailable`); the job is retried after its lease, and a token received after the budget is
+    still stored and revoked by the worker once that lease expires. A rejected token is never handed out: it
     is stored encrypted like any other and revoked;
   - `memcan`: URL and token from configuration (runner config limits the MCP to search and `add_memory`).
 - `drop_sessions`: analyses whose session files the runner deletes (cancelled or superseded, ADR-004); it

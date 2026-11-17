@@ -82,7 +82,9 @@ impl ApiErrorSource for RunnerError {
                 | ClaimError::TokenRejected(_)
                 | ClaimError::GithubTimeout,
             ) => ApiErrorCode::GithubUnavailable,
-            Self::Claim(ClaimError::Random(_) | ClaimError::StoreToken(_))
+            Self::Claim(
+                ClaimError::Random(_) | ClaimError::StoreToken(_) | ClaimError::GithubTask(_),
+            )
             | Self::InstallationToken(_) => ApiErrorCode::Internal,
         }
     }
@@ -98,7 +100,9 @@ impl ApiErrorSource for RunnerError {
                 | ClaimError::TokenRejected(_)
                 | ClaimError::GithubTimeout,
             ) => Cow::Borrowed("GitHub did not answer as expected. Try again later."),
-            Self::Claim(ClaimError::Random(_) | ClaimError::StoreToken(_))
+            Self::Claim(
+                ClaimError::Random(_) | ClaimError::StoreToken(_) | ClaimError::GithubTask(_),
+            )
             | Self::InstallationToken(_) => {
                 Cow::Borrowed("Something went wrong on the server. Try again later.")
             }

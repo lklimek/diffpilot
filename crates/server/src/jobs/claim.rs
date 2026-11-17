@@ -1,5 +1,6 @@
 //! Job claiming for runners: job tokens, lease, credentials and session drops (`runner-protocol.md` Claim).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
@@ -21,7 +22,8 @@ use crate::jobs::queue::expire_leases;
 /// Random bytes of a job token.
 const TOKEN_BYTES: usize = 32;
 
-/// Budget for the GitHub part of a claim (lookup, mint, storage); below the runner's 10 s request timeout.
+/// Budget for the GitHub part of a claim's response; below the runner's 10 s request timeout. It bounds only the
+/// answer: the task that received a token always stores or revokes it.
 const CLAIM_GITHUB_BUDGET: Duration = Duration::from_secs(6);
 
 /// A claim could not be served.
@@ -39,12 +41,16 @@ pub enum ClaimError {
     /// GitHub minted a token that differs from the request; it is stored and revoked, never handed out.
     #[error("GitHub minted an installation token that differs from the request")]
     TokenRejected(#[source] Rejection),
-    /// GitHub did not answer within the claim's budget; the job is retried after its lease.
+    /// GitHub did not answer within the claim's budget; the job is retried after its lease, and a token minted
+    /// meanwhile is stored and revoked by the worker.
     #[error("GitHub did not mint the job's installation token in time")]
     GithubTimeout,
     /// The minted installation token could not be stored for revocation; it was revoked.
     #[error("the job's GitHub installation token could not be stored")]
     StoreToken(#[source] TokenStoreError),
+    /// The task minting the job's installation token ended abnormally.
+    #[error("the task minting the job's GitHub installation token failed")]
+    GithubTask(#[source] tokio::task::JoinError),
 }
 
 /// SHA-256 of a bearer value; only this hash of a job token is stored.
@@ -75,7 +81,7 @@ pub fn lease_until(now: DateTime<Utc>) -> DateTime<Utc> {
 /// its read-only installation token (`runner-protocol.md` Claim).
 pub async fn claim(
     db: &Db,
-    config: &Config,
+    config: &Arc<Config>,
     request: &ClaimRequest,
     now: DateTime<Utc>,
 ) -> Result<ClaimResponse, ClaimError> {
@@ -121,10 +127,21 @@ pub async fn claim(
                 runner = %request.runner_id,
                 "runner claimed a job"
             );
-            let github =
-                tokio::time::timeout(CLAIM_GITHUB_BUDGET, github_access(db, config, &job, now))
-                    .await
-                    .map_err(|_| ClaimError::GithubTimeout)??;
+            // Spawned, so a token received after the budget (or after the runner hung up) is still stored or
+            // revoked; the unanswered attempt's lease then expires and the worker revokes the stored token.
+            let access = tokio::spawn(github_access(db.clone(), config.clone(), job.clone(), now));
+            let github = match tokio::time::timeout(CLAIM_GITHUB_BUDGET, access).await {
+                Ok(Ok(access)) => access?,
+                Ok(Err(error)) => return Err(ClaimError::GithubTask(error)),
+                Err(_) => {
+                    tracing::warn!(
+                        job = %job.id,
+                        attempt = job.attempt,
+                        "GitHub did not mint the installation token within the claim budget; the job waits for its lease"
+                    );
+                    return Err(ClaimError::GithubTimeout);
+                }
+            };
             let mut spec = job.spec;
             // TODO(WP3-RUN): fill `access.memcan` from `Config::memcan`; the stage-2 slice runs without MemCan.
             spec.access = AgentAccess {
@@ -150,11 +167,12 @@ pub async fn claim(
 /// fail the claim, so the job is retried after its lease instead of running without the access its prompt
 /// expects. A rejected token is stored first and then revoked, so a failed revocation is retried by the worker.
 async fn github_access(
-    db: &Db,
-    config: &Config,
-    job: &JobRecord,
+    db: Db,
+    config: Arc<Config>,
+    job: JobRecord,
     now: DateTime<Utc>,
 ) -> Result<Option<InstallationToken>, ClaimError> {
+    let (db, config, job) = (&db, config.as_ref(), &job);
     let repo = db.analyses().summary(job.analysis_id).await?.pr.repo;
     let runtime = TimeDelta::seconds(i64::from(job.spec.limits.max_runtime_secs));
     let token = match app_token::mint_for_job(&config.github, &repo, now, runtime).await {
@@ -264,7 +282,7 @@ mod tests {
 
     struct Setup {
         db: Db,
-        config: Config,
+        config: Arc<Config>,
         github: MockServer,
         _dir: TempDir,
     }
@@ -276,10 +294,21 @@ mod tests {
         config.github = github_config(&github, write_key(dir.path()));
         Setup {
             db: Db::in_memory().await.expect("db"),
-            config,
+            config: Arc::new(config),
             github,
             _dir: dir,
         }
+    }
+
+    /// Handler state over the setup's database and configuration.
+    fn state_with(s: &Setup) -> AppState {
+        let mut state = AppState::new(
+            test_config(),
+            s.db.clone(),
+            Arc::new(QueueExecutor::new(s.db.clone())),
+        );
+        state.config = s.config.clone();
+        state
     }
 
     async fn enqueue(db: &Db) -> JobId {
@@ -375,7 +404,10 @@ mod tests {
     async fn claim_without_usable_app_key_runs_without_github_access() {
         let capture = LogCapture::start();
         let mut s = setup().await;
-        s.config.github.private_key_file = s._dir.path().join("missing.pem");
+        Arc::get_mut(&mut s.config)
+            .expect("unshared")
+            .github
+            .private_key_file = s._dir.path().join("missing.pem");
         enqueue(&s.db).await;
         let claimed = claim_one(&s, Utc::now()).await;
         assert_eq!(claimed.spec.access.github, None);
@@ -514,11 +546,7 @@ mod tests {
             installed(&s, now).await;
             mount_revoke(&s.github, 204, 1).await;
             let claimed = claim_one(&s, now).await;
-            let state = AppState::new(
-                s.config,
-                s.db.clone(),
-                Arc::new(QueueExecutor::new(s.db.clone())),
-            );
+            let state = state_with(&s);
             let worker = tokio::spawn(github_tokens::run_worker(
                 state.db.clone(),
                 state.config.clone(),
@@ -641,7 +669,7 @@ mod tests {
         .expect("record");
 
         mount_revoke(&s.github, 204, 1).await;
-        let start = tokio::spawn(github_tokens::run_worker(s.db.clone(), Arc::new(s.config)));
+        let start = tokio::spawn(github_tokens::run_worker(s.db.clone(), s.config.clone()));
         for _ in 0..100 {
             let left = s.db.jobs().github_tokens_to_revoke().await.expect("list");
             if left.is_empty() {
@@ -794,11 +822,7 @@ mod tests {
             .expect("backlog");
         }
         let claimed = claim_one(&s, now).await;
-        let state = AppState::new(
-            s.config,
-            s.db.clone(),
-            Arc::new(QueueExecutor::new(s.db.clone())),
-        );
+        let state = state_with(&s);
         let started = std::time::Instant::now();
         let response = crate::api::runner_router(state.clone())
             .oneshot(
@@ -945,6 +969,105 @@ mod tests {
             None,
             "revoked at once and confirmed"
         );
+    }
+
+    /// The claim's budget ends while the store of a received token waits for the database: the claim answers
+    /// `github_unavailable`, yet the token is stored afterwards and revoked (accepted: after the lease by the
+    /// sweep; rejected: at once).
+    #[tokio::test]
+    async fn token_received_after_budget_is_stored_then_revoked() {
+        for rejected in [false, true] {
+            let s = setup().await;
+            let job = enqueue(&s.db).await;
+            let now = Utc::now();
+            let mut answer = minted(now);
+            if rejected {
+                answer["permissions"]["issues"] = json!("write");
+            }
+            mount_installation(&s.github).await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(201)
+                        .set_body_json(answer)
+                        .set_delay(Duration::from_secs(1)),
+                )
+                .expect(1)
+                .mount(&s.github)
+                .await;
+            mount_revoke(&s.github, 204, 1).await;
+            // Once the mint request is in flight, take the database's only connection past the budget.
+            let blocker = async {
+                while !s
+                    .github
+                    .received_requests()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|request| request.method.as_str() == "POST")
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                let held = db::repo::analyses::testing::hold_connection(&s.db)
+                    .await
+                    .expect("hold");
+                tokio::time::sleep(CLAIM_GITHUB_BUDGET + Duration::from_secs(1)).await;
+                drop(held);
+            };
+            let claim_request = request();
+            let (result, ()) = tokio::join!(claim(&s.db, &s.config, &claim_request, now), blocker);
+            assert!(
+                matches!(result, Err(ClaimError::GithubTimeout)),
+                "rejected {rejected}: {result:?}"
+            );
+            let deleted = || async {
+                s.github
+                    .received_requests()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|request| request.method.as_str() == "DELETE")
+                    .count()
+            };
+            if rejected {
+                assert!(revoked_soon(&s.db, job, 1).await);
+                for _ in 0..250 {
+                    if deleted().await == 1 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                assert_eq!(deleted().await, 1, "the rejected token was revoked at once");
+            } else {
+                let mut stored = false;
+                for _ in 0..250 {
+                    if s.db
+                        .jobs()
+                        .github_token(job, 1)
+                        .await
+                        .expect("read")
+                        .is_some()
+                    {
+                        stored = true;
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                assert!(stored, "the received token is stored after the budget");
+                assert_eq!(deleted().await, 0);
+                let lease =
+                    s.db.jobs()
+                        .get(job)
+                        .await
+                        .expect("job")
+                        .lease_expires_at
+                        .expect("claimed");
+                github_tokens::sweep(&s.db, &s.config, lease + TimeDelta::seconds(1))
+                    .await
+                    .expect("sweep after the unanswered claim's lease");
+                assert_eq!(s.db.jobs().github_token(job, 1).await.expect("read"), None);
+                assert_eq!(deleted().await, 1);
+            }
+        }
     }
 
     #[test]
