@@ -65,9 +65,14 @@ function ciLine(ci: CiStatus): string {
 }
 
 function profileLine(profile: ProjectProfileStatus): string {
-  if (profile.sources.length === 0) return "No project profile — ratings are component-level";
+  const unchecked = profile.memcan === "not_checked";
+  if (profile.sources.length === 0) {
+    return unchecked
+      ? "No project profile file; a MemCan profile was not checked"
+      : "No project profile — ratings are component-level";
+  }
   const names = profile.sources.map((s) => (s === "repository_file" ? "repository file" : "MemCan"));
-  return `Project profile: ${names.join(" and ")}`;
+  return `Project profile: ${names.join(" and ")}${unchecked ? "; a MemCan profile was not checked" : ""}`;
 }
 
 function Fact({ children }: { children: ReactNode }) {

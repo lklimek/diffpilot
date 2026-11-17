@@ -96,10 +96,17 @@ describe("useAnalysisLive (sse-events.md)", () => {
 
   it("reads the analysis and opens a new stream later when the stream fails but the analysis is readable", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    getAnalysis = () => HttpResponse.json(at({ state: "paused", resumes_at: null }));
+    getAnalysis = () => HttpResponse.json(at({ state: "paused", resumes_at: null, done: 0, total: null }));
     const { result } = renderHook(() => useAnalysisLive(ID));
     act(() => FakeEventSource.latest().fail());
-    await waitFor(() => expect(result.current.summary?.state).toEqual({ state: "paused", resumes_at: null }));
+    await waitFor(() =>
+      expect(result.current.summary?.state).toEqual({
+        state: "paused",
+        resumes_at: null,
+        done: 0,
+        total: null,
+      }),
+    );
     expect(result.current.reconnecting).toBe(true);
     await act(() => vi.advanceTimersByTimeAsync(ANALYSIS_RECONNECT_MS));
     expect(FakeEventSource.instances).toHaveLength(2);

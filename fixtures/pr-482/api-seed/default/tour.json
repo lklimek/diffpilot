@@ -43,12 +43,14 @@
           "tokio",
           "tracing",
           "url"
-        ]
+        ],
+        "dependency_files_not_checked": []
       },
       "project_profile": {
         "sources": [
           "repository_file"
-        ]
+        ],
+        "memcan": "not_checked"
       },
       "agent_instruction_files": [],
       "related_work_checked": true,
@@ -2103,7 +2105,7 @@
               }
             ],
             "badge": "classified_by_line_rule",
-            "rule": "^\\s*//"
+            "rule": "comment-only lines (Rust, by the compiler's lexer)"
           },
           {
             "file": "src/rpc/client.rs",
@@ -2115,7 +2117,7 @@
               }
             ],
             "badge": "classified_by_line_rule",
-            "rule": "^\\s*//"
+            "rule": "comment-only lines (Rust, by the compiler's lexer)"
           }
         ]
       },

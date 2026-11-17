@@ -36,7 +36,7 @@ describe("homeOutcome (brief §4.1)", () => {
     for (const state of [
       { state: "planning" },
       { state: "running", done: 1, total: 2 },
-      { state: "paused", resumes_at: null },
+      { state: "paused", resumes_at: null, done: 0, total: null },
     ] as AnalysisState[]) {
       expect(homeOutcome(resolved(state))).toMatchObject({ kind: "in_progress" });
     }

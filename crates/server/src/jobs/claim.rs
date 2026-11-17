@@ -6,11 +6,16 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, TimeDelta, Utc};
-use contracts::job::access::{AgentAccess, InstallationToken, Secret};
+use contracts::ids::AnalysisId;
+use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::protocol::{Claim, ClaimRequest, ClaimResponse, LeaseTiming};
+use contracts::job::spec::SessionRef;
 use db::error::DbError;
-use db::repo::jobs::{ClaimParams, JobRecord};
+use db::repo::analyses::SessionState;
+use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
 use db::repo::{DEFAULT_TENANT, Db};
+use futures::future::BoxFuture;
+use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -18,6 +23,7 @@ use crate::config::Config;
 use crate::github::app_token::{self, AppTokenError, Minted, Rejection};
 use crate::jobs::github_tokens::{self, TokenStoreError};
 use crate::jobs::queue::expire_leases;
+use crate::prompts::PromptError;
 
 /// Random bytes of a job token.
 const TOKEN_BYTES: usize = 32;
@@ -51,6 +57,9 @@ pub enum ClaimError {
     /// The task minting the job's installation token ended abnormally.
     #[error("the task minting the job's GitHub installation token failed")]
     GithubTask(#[source] tokio::task::JoinError),
+    /// The job's context pack could not be built; the job was not handed out and stays queued.
+    #[error("the job's context pack could not be built")]
+    ContextPack(#[source] ContextPackError),
 }
 
 /// SHA-256 of a bearer value; only this hash of a job token is stored.
@@ -77,11 +86,32 @@ pub fn lease_until(now: DateTime<Utc>) -> DateTime<Utc> {
     now + TimeDelta::seconds(i64::from(LeaseTiming::V1.lease_secs))
 }
 
+/// A context pack could not be built.
+#[derive(Debug, thiserror::Error)]
+pub enum ContextPackError {
+    /// The stored results could not be read.
+    #[error("the stored results could not be read")]
+    Db(#[from] DbError),
+    /// The pack could not be rendered.
+    #[error("the context pack could not be rendered")]
+    Prompt(#[from] PromptError),
+}
+
+/// Builds the context pack of an analysis from the results stored at claim time (`pipeline::context`): the
+/// claim path stays free of pipeline internals.
+pub trait ContextPacks: Send + Sync {
+    /// The pack of `analysis`; `None` when nothing is stored yet.
+    fn pack(&self, analysis: AnalysisId)
+    -> BoxFuture<'_, Result<Option<String>, ContextPackError>>;
+}
+
 /// Serves one runner claim: housekeeping, credential registration, then the next runnable job, if any, with
-/// its read-only installation token (`runner-protocol.md` Claim).
+/// its read-only installation token, the analysis's session and the context pack of the results stored now
+/// (`runner-protocol.md` Claim).
 pub async fn claim(
     db: &Db,
     config: &Arc<Config>,
+    packs: &dyn ContextPacks,
     request: &ClaimRequest,
     now: DateTime<Utc>,
 ) -> Result<ClaimResponse, ClaimError> {
@@ -127,6 +157,17 @@ pub async fn claim(
                 runner = %request.runner_id,
                 "runner claimed a job"
             );
+            // Session and pack first: a job whose context cannot be prepared is released before any token is
+            // minted, so it stays claimable and nothing needs revoking.
+            let mut spec = match prepare_spec(db, packs, &job).await {
+                Ok(spec) => spec,
+                Err(error) => {
+                    tracing::warn!(job = %job.id, attempt = job.attempt, %error,
+                        "the job's context could not be prepared; the claim is released");
+                    db.jobs().release_claim(job.id, job.attempt).await?;
+                    return Err(error);
+                }
+            };
             // Spawned, so a token received after the budget (or after the runner hung up) is still stored or
             // revoked; the unanswered attempt's lease then expires and the worker revokes the stored token.
             let access = tokio::spawn(github_access(db.clone(), config.clone(), job.clone(), now));
@@ -142,11 +183,15 @@ pub async fn claim(
                     return Err(ClaimError::GithubTimeout);
                 }
             };
-            let mut spec = job.spec;
-            // TODO(WP3-RUN): fill `access.memcan` from `Config::memcan`; the stage-2 slice runs without MemCan.
+            db.jobs()
+                .record_github_access(job.id, job.attempt, github.is_some())
+                .await?;
             spec.access = AgentAccess {
                 github,
-                memcan: None,
+                memcan: Some(McpHttpEndpoint {
+                    url: config.memcan.url.to_string(),
+                    token: Secret::new(config.memcan.token.expose_secret()),
+                }),
             };
             Some(Claim {
                 job_token: token,
@@ -159,6 +204,38 @@ pub async fn claim(
     Ok(ClaimResponse {
         claim,
         drop_sessions,
+    })
+}
+
+/// The claimed job's spec with the analysis's session and, for pipeline jobs, the context pack of the results
+/// stored now: only the runner knows whether the session files survived, so every pipeline job carries the pack
+/// used when a new session is started. Ask jobs bring their own.
+async fn prepare_spec(
+    db: &Db,
+    packs: &dyn ContextPacks,
+    job: &JobRecord,
+) -> Result<contracts::job::spec::JobSpec, ClaimError> {
+    let mut spec = job.spec.clone();
+    spec.session = analysis_session(db, job.analysis_id).await?;
+    if !matches!(job.stage, JobStage::Ask(_)) {
+        spec.context_pack = packs
+            .pack(job.analysis_id)
+            .await
+            .map_err(ClaimError::ContextPack)?;
+    }
+    Ok(spec)
+}
+
+/// The analysis's agent session at claim time (ADR-004): one running job per analysis, so the session a job
+/// resumes is the one the previous job of the analysis reported; none before the first report or once dropped.
+async fn analysis_session(db: &Db, analysis: AnalysisId) -> Result<Option<SessionRef>, DbError> {
+    let record = db.analyses().get(analysis).await?;
+    Ok(match (record.session_state, record.agent_thread_id) {
+        (SessionState::Active, Some(thread_id)) => Some(SessionRef {
+            analysis_id: analysis,
+            thread_id,
+        }),
+        _ => None,
     })
 }
 
@@ -261,7 +338,7 @@ mod tests {
     use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
     use contracts::routes::RUNNER_RESULT;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
-    use db::repo::jobs::{JobStage, NewJob};
+    use db::repo::jobs::NewJob;
     use secrecy::ExposeSecret;
     use serde_json::json;
     use tempfile::TempDir;
@@ -277,8 +354,10 @@ mod tests {
     };
     use crate::jobs::executor::JobExecutor;
     use crate::jobs::queue::QueueExecutor;
+    use crate::pipeline::context::StoredPacks;
     use crate::state::AppState;
     use crate::test_support::logs::LogCapture;
+    use db::repo::documents::DocumentKind;
 
     struct Setup {
         db: Db,
@@ -328,6 +407,63 @@ mod tests {
             .id
     }
 
+    fn packs(s: &Setup) -> StoredPacks {
+        StoredPacks { db: s.db.clone() }
+    }
+
+    /// Packs of a database without stored results.
+    fn no_packs() -> NoPacks {
+        NoPacks
+    }
+
+    struct NoPacks;
+
+    impl ContextPacks for NoPacks {
+        fn pack(&self, _: AnalysisId) -> BoxFuture<'_, Result<Option<String>, ContextPackError>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    /// Packs whose stored results cannot be read.
+    struct FailingPacks;
+
+    impl ContextPacks for FailingPacks {
+        fn pack(&self, _: AnalysisId) -> BoxFuture<'_, Result<Option<String>, ContextPackError>> {
+            Box::pin(async { Err(ContextPackError::Db(DbError::NotFound)) })
+        }
+    }
+
+    /// A pack that cannot be built fails the claim before any installation token is minted (the mock allows
+    /// exactly one mint, for the later claim); the job stays queued with its attempt unspent.
+    #[tokio::test]
+    async fn failed_context_pack_fails_the_claim_and_keeps_the_job_claimable() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let now = Utc::now();
+        installed(&s, now).await;
+        let result = claim(&s.db, &s.config, &FailingPacks, &request(), now).await;
+        assert!(
+            matches!(result, Err(ClaimError::ContextPack(_))),
+            "{result:?}"
+        );
+        let stored = s.db.jobs().get(job).await.expect("job");
+        assert_eq!(stored.state, contracts::job::state::JobState::Queued);
+        assert_eq!(stored.attempt, 0, "the attempt is not spent");
+        assert_eq!(stored.lease_expires_at, None);
+        assert_eq!(s.db.jobs().token_hash(job).await.expect("read"), None);
+        assert_eq!(s.db.jobs().github_token(job, 1).await.expect("read"), None);
+        let claimed = claim_one(&s, now).await;
+        assert_eq!(claimed.spec.job_id, job);
+        assert_eq!(claimed.spec.attempt, 1);
+    }
+
+    fn agent_fixture(name: &str) -> serde_json::Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/pr-482/agent")
+            .join(name);
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("JSON")
+    }
+
     fn request() -> ClaimRequest {
         ClaimRequest {
             runner_id: "runner-1".to_owned(),
@@ -343,7 +479,7 @@ mod tests {
     }
 
     async fn claim_one(s: &Setup, now: DateTime<Utc>) -> Claim {
-        claim(&s.db, &s.config, &request(), now)
+        claim(&s.db, &s.config, &packs(s), &request(), now)
             .await
             .expect("claim")
             .claim
@@ -383,6 +519,170 @@ mod tests {
         let logs = capture.text();
         assert!(logs.contains("installation token minted"), "{logs}");
         assert!(!logs.contains(MINTED_TOKEN), "{logs}");
+    }
+
+    /// The pack is built when the job is claimed: results stored while it waited are in it.
+    #[tokio::test]
+    async fn lost_session_uses_context_pack() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        let now = Utc::now();
+        let documents = s.db.documents();
+        documents
+            .put(
+                analysis,
+                DocumentKind::Plan,
+                "",
+                &agent_fixture("plan.json"),
+                now,
+            )
+            .await
+            .expect("plan");
+        let pr_context = agent_fixture("pr_context.json");
+        documents
+            .put(analysis, DocumentKind::PrContext, "", &pr_context, now)
+            .await
+            .expect("pr context");
+        for flow in ["f1", "f2"] {
+            let output = agent_fixture(&format!("flow-{}.json", &flow[1..]));
+            documents
+                .put(analysis, DocumentKind::Flow, flow, &output, now)
+                .await
+                .expect("flow");
+        }
+        let stored = s.db.jobs().get(job).await.expect("job");
+        assert_eq!(
+            stored.spec.context_pack, None,
+            "nothing is packed at enqueue"
+        );
+        installed(&s, now).await;
+        let claimed = claim_one(&s, now).await;
+        assert_eq!(claimed.spec.session, None, "the session is lost");
+        let pack = claimed.spec.context_pack.expect("context pack");
+        for flow in ["\"flow_id\":\"f1\"", "\"flow_id\":\"f2\""] {
+            assert!(pack.contains(flow), "{flow} missing: {pack}");
+        }
+        let problem = pr_context["problem"].as_str().expect("problem");
+        assert!(pack.contains(problem), "pr_context missing: {pack}");
+    }
+
+    #[tokio::test]
+    async fn claim_records_whether_the_job_got_github_access() {
+        let s = setup().await;
+        let with = enqueue(&s.db).await;
+        let now = Utc::now();
+        installed(&s, now).await;
+        claim_one(&s, now).await;
+        assert!(
+            s.db.jobs()
+                .get(with)
+                .await
+                .expect("job")
+                .github_access_granted
+        );
+
+        let s = setup().await;
+        let without = enqueue(&s.db).await;
+        Mock::given(method("GET"))
+            .and(path("/api/repos/acme/node-client/installation"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&s.github)
+            .await;
+        let claimed = claim_one(&s, now).await;
+        assert!(claimed.spec.access.github.is_none());
+        assert!(
+            !s.db
+                .jobs()
+                .get(without)
+                .await
+                .expect("job")
+                .github_access_granted
+        );
+    }
+
+    #[tokio::test]
+    async fn claim_skips_jobs_of_a_cancelled_analysis() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        s.db.analyses()
+            .set_state(
+                analysis,
+                &contracts::api::analyses::AnalysisState::Cancelled,
+                Utc::now(),
+            )
+            .await
+            .expect("cancelled");
+        let response = claim(&s.db, &s.config, &packs(&s), &request(), Utc::now())
+            .await
+            .expect("claim");
+        assert!(
+            response.claim.is_none(),
+            "a cancelled analysis's job is never run"
+        );
+    }
+
+    #[tokio::test]
+    async fn jobs_carry_installation_token() {
+        let capture = LogCapture::start();
+        let s = setup().await;
+        enqueue(&s.db).await;
+        let now = Utc::now();
+        installed(&s, now).await;
+        let claimed = claim_one(&s, now).await;
+        let github = claimed.spec.access.github.expect("installation token");
+        assert_eq!(github.token.expose(), MINTED_TOKEN);
+        let memcan = claimed.spec.access.memcan.expect("MemCan endpoint");
+        assert_eq!(memcan.url, s.config.memcan.url.to_string());
+        let memcan_token = s.config.memcan.token.expose_secret();
+        assert_eq!(memcan.token.expose(), memcan_token);
+        let logs = capture.text();
+        assert!(!logs.contains(memcan_token), "{logs}");
+        assert!(!logs.contains(MINTED_TOKEN), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn jobs_carry_analysis_session() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        let now = Utc::now();
+        installed(&s, now).await;
+        s.db.analyses()
+            .set_session(analysis, "thread-7", None)
+            .await
+            .expect("session");
+        let claimed = claim_one(&s, now).await;
+        assert_eq!(
+            claimed.spec.session,
+            Some(SessionRef {
+                analysis_id: analysis,
+                thread_id: "thread-7".to_owned(),
+            })
+        );
+        let stored = s.db.jobs().get(job).await.expect("job");
+        assert_eq!(
+            stored.spec.session, None,
+            "the session is set at claim, not stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_session_is_not_resumed() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        s.db.analyses()
+            .set_session(analysis, "thread-7", None)
+            .await
+            .expect("session");
+        s.db.analyses()
+            .request_session_drop(analysis)
+            .await
+            .expect("drop");
+        let claimed = claim_one(&s, Utc::now()).await;
+        assert_eq!(claimed.spec.session, None);
     }
 
     #[tokio::test]
@@ -434,7 +734,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(502))
             .mount(&s.github)
             .await;
-        let result = claim(&s.db, &s.config, &request(), Utc::now()).await;
+        let result = claim(&s.db, &s.config, &packs(&s), &request(), Utc::now()).await;
         assert!(
             matches!(result, Err(ClaimError::GithubAccess(_))),
             "{result:?}"
@@ -594,7 +894,7 @@ mod tests {
                         ..request()
                     };
                     let after_lease = claimed.lease_expires_at + TimeDelta::seconds(1);
-                    claim(&state.db, &state.config, &idle, after_lease)
+                    claim(&state.db, &state.config, &no_packs(), &idle, after_lease)
                         .await
                         .expect("claim after the lease");
                 }
@@ -631,6 +931,7 @@ mod tests {
         claim(
             &s.db,
             &s.config,
+            &packs(&s),
             &idle,
             claimed.lease_expires_at + TimeDelta::seconds(1),
         )
@@ -784,7 +1085,7 @@ mod tests {
             .mount(&s.github)
             .await;
         let started = std::time::Instant::now();
-        let result = claim(&s.db, &s.config, &request(), now).await;
+        let result = claim(&s.db, &s.config, &packs(&s), &request(), now).await;
         let took = started.elapsed();
         assert!(
             matches!(result, Err(ClaimError::GithubTimeout)),
@@ -842,7 +1143,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert!(started.elapsed() < Duration::from_secs(1), "result waited");
 
-        let second = claim(&state.db, &state.config, &request(), now)
+        let second = claim(&state.db, &state.config, &no_packs(), &request(), now)
             .await
             .expect("claim")
             .claim
@@ -855,6 +1156,7 @@ mod tests {
         claim(
             &state.db,
             &state.config,
+            &no_packs(),
             &idle,
             second.lease_expires_at + TimeDelta::seconds(1),
         )
@@ -918,7 +1220,7 @@ mod tests {
                 .expect(1)
                 .mount_as_scoped(&s.github)
                 .await;
-            let result = claim(&s.db, &s.config, &request(), now).await;
+            let result = claim(&s.db, &s.config, &packs(&s), &request(), now).await;
             assert!(
                 matches!(
                     result,
@@ -959,7 +1261,7 @@ mod tests {
         mount_installation(&s.github).await;
         mount_mint(&s.github, long, 1).await;
         mount_revoke(&s.github, 204, 1).await;
-        let result = claim(&s.db, &s.config, &request(), now).await;
+        let result = claim(&s.db, &s.config, &packs(&s), &request(), now).await;
         assert!(
             matches!(result, Err(ClaimError::TokenRejected(Rejection::Expiry))),
             "{result:?}"
@@ -1014,7 +1316,11 @@ mod tests {
                 drop(held);
             };
             let claim_request = request();
-            let (result, ()) = tokio::join!(claim(&s.db, &s.config, &claim_request, now), blocker);
+            let packs = packs(&s);
+            let (result, ()) = tokio::join!(
+                claim(&s.db, &s.config, &packs, &claim_request, now),
+                blocker
+            );
             assert!(
                 matches!(result, Err(ClaimError::GithubTimeout)),
                 "rejected {rejected}: {result:?}"

@@ -82,6 +82,7 @@ pub fn compute<'t>(
         counters: Counters {
             lines_removed_from_tests: lines_removed,
             dependencies_changed: dependencies.keys().cloned().collect(),
+            dependency_files_not_checked: not_checked.clone(),
         },
         removed_test_lines,
         dependencies: dependencies

@@ -129,7 +129,7 @@ impl Fixture {
             diff: &diff,
             listed: &listed,
             quiet: &self.quiet,
-            facts,
+            facts: &|_| Ok(facts.clone()),
             moves: &self.moves,
             plan: &self.plan,
             pr_context: &self.pr_context,
@@ -237,7 +237,7 @@ fn foreign_pr_output_is_rejected() {
             diff: &diff,
             listed: &diff,
             quiet: &[],
-            facts: &facts,
+            facts: &|_| Ok(facts.clone()),
             moves: &MovesReport::default(),
             plan: &fixture.plan,
             pr_context: &fixture.pr_context,
@@ -466,6 +466,97 @@ fn facts_are_kept_per_side() {
 
 /// A flow output whose steps are exactly the flow's planned ranges (head steps for head lines, base
 /// `deleted_site` steps for removed lines).
+/// Three flows, each in its own 6 MiB file: each output fits the per-output read budget, all three together do
+/// not. The final check reads per output, so none is rejected for the others' files.
+#[test]
+fn each_output_is_verified_with_its_own_bounded_read() {
+    const SIZE: u64 = 6 * 1024 * 1024;
+    let files: Vec<FileDiff> = (1..=3)
+        .map(|n| FileDiff {
+            path: format!("src/big{n}.rs"),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            hunks: vec![Hunk {
+                id: HunkId(format!("h{n}")),
+                base: LineSpan { start: 10, len: 1 },
+                head: LineSpan { start: 10, len: 1 },
+                added: vec![10],
+                removed: vec![10],
+            }],
+        })
+        .collect();
+    let plan_output = PlanOutput {
+        flows: (1..=3u32)
+            .map(|n| contracts::agent::plan::PlannedFlow {
+                id: id(&format!("f{n}")),
+                title: "flow".to_owned(),
+                classification: Classification::Behavioural,
+                importance_rank: n,
+                intent: "intent".to_owned(),
+                hunks: vec![contracts::agent::plan::HunkSelection {
+                    hunk_id: HunkId(format!("h{n}")),
+                    head_start: None,
+                    head_end: None,
+                }],
+                depends_on: Vec::new(),
+            })
+            .collect(),
+        unassigned: Vec::new(),
+    };
+    let diff = DiffIndex::new(&files).expect("diff");
+    let verified_plan = plan(&plan_output, &diff).expect("plan");
+    let outputs: Vec<FlowAnalysisOutput> = verified_plan
+        .flow_lines
+        .iter()
+        .map(|(flow, lines)| covering_output(flow, lines))
+        .collect();
+    // A loader with the real per-load budget: files past MAX_FACTS_BYTES are unread.
+    let load = |wanted: &[(LineSide, String)]| {
+        let mut facts = LineFacts::default();
+        let mut used = 0u64;
+        for (side, path) in wanted {
+            used += SIZE;
+            if used > MAX_FACTS_BYTES {
+                facts.insert_unread(*side, path, SIZE);
+            } else {
+                facts.insert(
+                    *side,
+                    path,
+                    FileFacts {
+                        line_count: 1000,
+                        blank_lines: Vec::new(),
+                    },
+                );
+            }
+        }
+        Ok(facts)
+    };
+    let verdict = analysis(AnalysisInput {
+        diff: &diff,
+        listed: &diff,
+        quiet: &[],
+        facts: &load,
+        moves: &MovesReport::default(),
+        plan: &plan_output,
+        pr_context: &PrContextOutput {
+            problem: "p".to_owned(),
+            why_needed: "w".to_owned(),
+            what_it_gives: "g".to_owned(),
+            related_work: Vec::new(),
+            fit_questions: Vec::new(),
+        },
+        flows: &outputs,
+        thread_aliases: &BTreeMap::new(),
+    })
+    .expect("verdict");
+    assert_eq!(verdict.repairs, Vec::<Repair>::new());
+    assert_eq!(
+        flow_ids(&verdict.tour.expect("tour").flows),
+        ["f1", "f2", "f3"]
+    );
+}
+
 fn covering_output(id: &FlowId, lines: &[FileRanges]) -> FlowAnalysisOutput {
     let text = || "text".to_owned();
     let mut steps = Vec::new();
@@ -653,7 +744,7 @@ proptest::proptest! {
             diff: &diff,
             listed: &listed_index,
             quiet: &quiet,
-            facts: &facts,
+            facts: &|_| Ok(facts.clone()),
             moves: &MovesReport::default(),
             plan: &plan_output,
             pr_context: &PrContextOutput {

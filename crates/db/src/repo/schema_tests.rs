@@ -180,7 +180,11 @@ async fn check_lists_match_contract_enums() {
     let analysis_states = [
         AnalysisState::Planning,
         AnalysisState::Running { done: 0, total: 0 },
-        AnalysisState::Paused { resumes_at: None },
+        AnalysisState::Paused {
+            resumes_at: None,
+            done: 0,
+            total: None,
+        },
         AnalysisState::Failed {
             flow: None,
             message: String::new(),

@@ -24,8 +24,8 @@ use contracts::api::review::{BlockRef, QuietRowRef, ReviewState};
 use contracts::api::settings::{AppInstallation, RepoSettings, Settings};
 use contracts::api::tour::{
     Annotation, CiState, CiStatus, Counters, Flow, FlowFacts, FlowGraph, FlowGroup, FlowLlm,
-    GraphEdge, GraphNode, PrContextBlock, PrContextFacts, ProjectProfileStatus, QuietRows, Step,
-    StepFacts, StepLlm, ThreadsStatus, Tour,
+    GraphEdge, GraphNode, PrContextBlock, PrContextFacts, ProjectProfileStatus, QuietRows,
+    SourceCheck, Step, StepFacts, StepLlm, ThreadsStatus, Tour,
 };
 use contracts::common::{
     AnnotationType, Basis, Blocking, Classification, Evidence, FileRanges, FragmentKind, LineRange,
@@ -73,8 +73,12 @@ fn tour() -> Tour {
                 counters: Counters {
                     lines_removed_from_tests: 12,
                     dependencies_changed: vec!["tokio".to_owned()],
+                    dependency_files_not_checked: vec!["package-lock.json".to_owned()],
                 },
-                project_profile: ProjectProfileStatus { sources: vec![] },
+                project_profile: ProjectProfileStatus {
+                    sources: vec![],
+                    memcan: SourceCheck::NotChecked,
+                },
                 agent_instruction_files: vec!["AGENTS.md".to_owned()],
                 related_work_checked: true,
                 flow_count: 1,

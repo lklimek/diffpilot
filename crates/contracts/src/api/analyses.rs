@@ -52,6 +52,10 @@ pub enum AnalysisState {
     Paused {
         /// When it resumes, if known.
         resumes_at: Option<DateTime<Utc>>,
+        /// Flows analysed before the pause.
+        done: u32,
+        /// Flows in total; null while planning (the number of flows is not known yet).
+        total: Option<u32>,
     },
     /// Failed; Retry is offered.
     Failed {

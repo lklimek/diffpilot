@@ -5,11 +5,12 @@ use contracts::api::analyses::{AnalysisState, AnalysisSummary, FlowRef};
 use contracts::api::pr::PrSummary;
 use contracts::common::{LlmLanguage, RepoRef};
 use contracts::ids::{AnalysisId, CommitSha, FlowId};
+use contracts::job::result::JobOutcome;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
 use crate::error::DbError;
-use crate::repo::jobs::{parse_ts, parse_wire, ts, wire_name};
+use crate::repo::jobs::{parse_ts, parse_wire, server_result, ts, wire_name};
 
 /// Access to analyses.
 #[derive(Debug)]
@@ -132,9 +133,15 @@ impl StateColumns {
                 columns.flows_done = *done;
                 columns.flows_total = Some(*total);
             }
-            AnalysisState::Paused { resumes_at } => {
+            AnalysisState::Paused {
+                resumes_at,
+                done,
+                total,
+            } => {
                 columns.state = "paused";
                 columns.paused_until = resumes_at.map(ts);
+                columns.flows_done = *done;
+                columns.flows_total = *total;
             }
             AnalysisState::Failed { flow, message } => {
                 columns.state = "failed";
@@ -169,6 +176,8 @@ fn state_from_row(row: &SqliteRow) -> Result<AnalysisState, DbError> {
             total: total.ok_or(corrupt)?,
         },
         "paused" => AnalysisState::Paused {
+            done: row.try_get("flows_done")?,
+            total,
             resumes_at: row
                 .try_get::<Option<String>, _>("paused_until")?
                 .map(|at| parse_ts(&at, "analyses.paused_until"))
@@ -328,6 +337,70 @@ impl Analyses<'_> {
         .iter()
         .map(record_from_row)
         .collect()
+    }
+
+    /// Starts a new round of a failed analysis (explicit Retry): state `planning` and the round incremented, and in
+    /// the same transaction every unfinished job of earlier rounds cancelled (queued and paused ones at once,
+    /// claimed and running ones flagged), so no submit of the new round re-uses them. `false` when the analysis is
+    /// not failed (nothing changed).
+    pub async fn retry(&self, id: AnalysisId, now: DateTime<Utc>) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let updated = sqlx::query(
+            "UPDATE analyses SET state = 'planning', flows_total = NULL, flows_done = 0, paused_until = NULL,
+                 failure_flow_id = NULL, failure_flow_title = NULL, failure_message = NULL, finished_at = NULL,
+                 round = round + 1
+             WHERE id = ? AND state = 'failed'",
+        )
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() == 0 {
+            return Ok(false);
+        }
+        let waiting: Vec<(String, u32)> = sqlx::query_as(
+            "SELECT id, attempt FROM jobs WHERE analysis_id = ? AND state IN ('queued', 'paused')",
+        )
+        .bind(id.to_string())
+        .fetch_all(&mut *tx)
+        .await?;
+        for (job, attempt) in waiting {
+            let result =
+                server_result(parse_wire(&job, "jobs.id")?, attempt, JobOutcome::Cancelled);
+            sqlx::query(
+                "UPDATE jobs SET state = 'cancelled', cancel_requested = 1, result = ?, finished_at = ?,
+                     resumes_at = NULL, ready_output = NULL, ready_output_attempt = NULL
+                 WHERE id = ?",
+            )
+            .bind(serde_json::to_string(&result)?)
+            .bind(ts(now))
+            .bind(&job)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query(
+            "UPDATE jobs SET cancel_requested = 1 WHERE analysis_id = ? AND state IN ('claimed', 'running')",
+        )
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Cancelled analyses whose clean-up may be unfinished (a crash after the state was stored): an unfinished
+    /// job not yet flagged for cancellation, a stored document, or a session not asked to be dropped.
+    pub async fn cancellations_to_finish(&self) -> Result<Vec<AnalysisId>, DbError> {
+        let ids: Vec<String> = sqlx::query_scalar(
+            "SELECT a.id FROM analyses a WHERE a.state = 'cancelled' AND (
+                 a.session_state IN ('none', 'active')
+                 OR EXISTS (SELECT 1 FROM documents d WHERE d.analysis_id = a.id)
+                 OR EXISTS (SELECT 1 FROM jobs j WHERE j.analysis_id = a.id AND j.cancel_requested = 0
+                     AND j.state IN ('queued', 'claimed', 'running', 'paused')))
+             ORDER BY a.created_at, a.rowid",
+        )
+        .fetch_all(self.pool)
+        .await?;
+        ids.iter().map(|id| parse_wire(id, "analyses.id")).collect()
     }
 
     /// Stores a new state (progress included); terminal states set `finished_at`.
@@ -676,10 +749,19 @@ mod tests {
             (
                 AnalysisState::Paused {
                     resumes_at: Some(at(30)),
+                    done: 2,
+                    total: Some(5),
                 },
                 false,
             ),
-            (AnalysisState::Paused { resumes_at: None }, false),
+            (
+                AnalysisState::Paused {
+                    resumes_at: None,
+                    done: 0,
+                    total: None,
+                },
+                false,
+            ),
             (
                 AnalysisState::Failed {
                     flow: Some(FlowRef {

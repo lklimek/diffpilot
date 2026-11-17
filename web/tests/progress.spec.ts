@@ -29,7 +29,10 @@ test("running: k of n, no Open review", async ({ page }) => {
 
 test("paused: usage limit with resume time", async ({ page }) => {
   await open(page, "paused");
-  await expect(page.getByText(/^Paused: Codex usage limit reached, resumes at .*\d\d:\d\d$/)).toBeVisible();
+  await expect(
+    page.getByText(/^Paused, 2 of 5 flows analysed: Codex usage limit reached, resumes at .*\d\d:\d\d$/),
+  ).toBeVisible();
+  await expect(bar(page)).toHaveAttribute("aria-valuenow", "2");
   await expect(openReview(page)).toHaveCount(0);
   await expectTrustWording(page);
 

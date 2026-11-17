@@ -48,6 +48,7 @@ aws-lc-rs.workspace = true
 db = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 http-body-util.workspace = true
+regex.workspace = true
 # The fake MemCan of the tests is a real MCP server.
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
 serde.workspace = true

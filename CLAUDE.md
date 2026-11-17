@@ -45,6 +45,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   Format: `cargo fmt --all`.
 - Checked-in schemas and TS types: `UPDATE_GENERATED=1 $W nextest run -p contracts -E 'test(generated_artifacts_are_current)'`.
 - Tour golden: `UPDATE_GOLDEN=1 $W nextest run -p server --test slice -E 'test(slice_pipeline)'`.
+- Prompt goldens: `UPDATE_GOLDEN=1 $W nextest run -p server -E 'test(golden_prompts_of_fixture_pr_482)'`.
 - Web, in `web/`: `npm ci`, `npm run lint`, `npm test`, `npm run build`; Playwright (msw): once
   `npx playwright install --with-deps chromium`, then `npm run test:e2e`.
 - Checks: `scripts/check-architecture.sh`, `scripts/check-wording.sh` (after `npm ci` in `web/`; both take

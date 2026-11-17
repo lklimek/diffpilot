@@ -2654,6 +2654,7 @@ dependencies = [
  "jsonschema",
  "jsonwebtoken",
  "mime_guess",
+ "regex",
  "reqwest",
  "rmcp",
  "rust-embed",

@@ -2,7 +2,7 @@
 //! the recorded Codex streams of the fixture PR (`fixtures/pr-482/codex/`) through the Codex stream parser.
 //!
 //! The recording is chosen by the call's output schema (job kind) and, for `analyse_flow`, by the first flow
-//! id token `f<n>` in the prompt (the prompts start with "Job: analyse_flow f<n>."). `ask` has no recording.
+//! id token `f<n>` of the prompt's `Job: analyse_flow f<n>.` line. `ask` has no recording.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -208,9 +208,12 @@ fn recording_name(call: &ProviderCall) -> Result<String, ProviderError> {
     }
 }
 
-/// The number of the first `f<n>` token in `prompt`.
+/// The number of the first `f<n>` token of the prompt's `Job:` line (a context pack before it may name other
+/// flows).
 fn flow_number(prompt: &str) -> Option<u32> {
     prompt
+        .lines()
+        .find(|line| line.starts_with("Job: "))?
         .split(|ch: char| !ch.is_ascii_alphanumeric())
         .find_map(|token| token.strip_prefix('f')?.parse().ok())
 }
@@ -242,7 +245,12 @@ mod tests {
             Some(3)
         );
         assert_eq!(flow_number("Job: plan"), None);
-        assert_eq!(flow_number("of fx f12"), Some(12));
+        assert_eq!(flow_number("Job: of fx f12"), Some(12));
+        assert_eq!(
+            flow_number("Context pack\n{\"flow_id\":\"f1\"}\n\nJob: repair analyse_flow f4.\nf2"),
+            Some(4),
+            "the context pack before the Job line names other flows"
+        );
     }
 
     #[test]

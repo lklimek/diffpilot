@@ -8,8 +8,8 @@ use crate::agent::analyse_flow::{AgentAnnotation, Assessment, FlowIntroduction, 
 use crate::agent::pr_context::PrContextOutput;
 use crate::api::analyses::AnalysisSummary;
 use crate::common::{
-    AnnotationType, Basis, Classification, Evidence, FileRange, FileRanges, FragmentKind,
-    LineRange, LineSide, NodeKind, NotAnalysedCategory, ProvenanceBadge, RiskBand, ThreadLlmStatus,
+    AnnotationType, Basis, Classification, Evidence, FileRange, FragmentKind, LineRange, LineSide,
+    NodeKind, NotAnalysedCategory, ProvenanceBadge, RiskBand, ThreadLlmStatus,
 };
 use crate::ids::{AnnotationId, FlowId, StepId};
 
@@ -117,13 +117,29 @@ pub struct Counters {
     pub lines_removed_from_tests: u32,
     /// Names of changed dependencies.
     pub dependencies_changed: Vec<String>,
+    /// Changed dependency files whose dependencies were not checked (other ecosystems, unreadable or unparsable
+    /// files); their changes are not counted in `dependencies_changed`.
+    pub dependency_files_not_checked: Vec<String>,
 }
 
-/// Sources of the project profile; empty means no profile (ratings are component-level).
+/// Sources of the project profile; empty with MemCan `checked` means no profile (ratings are component-level).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ProjectProfileStatus {
     /// Where the profile came from.
     pub sources: Vec<ProfileSource>,
+    /// Whether MemCan was searched for a `type: project-profile` memory; `not_checked` means a MemCan profile
+    /// may exist that `sources` does not list.
+    pub memcan: SourceCheck,
+}
+
+/// Whether a source was checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceCheck {
+    /// The source was read.
+    Checked,
+    /// The source was not read; nothing is claimed about it.
+    NotChecked,
 }
 
 /// A source of the project profile.
@@ -421,11 +437,37 @@ pub struct PatternSite {
 pub struct QuietRows {
     /// Changed lines no flow explains ("Unexplained — read these yourself"); listed first. Removed lines
     /// without a head location are base-side entries.
-    pub unexplained: Vec<FileRanges>,
+    pub unexplained: Vec<UnexplainedRanges>,
     /// Moves whose text is deterministically identical.
     pub moves: Vec<IdenticalMove>,
     /// Material recognised by path or line rules.
     pub not_analysed: Vec<NotAnalysedSection>,
+}
+
+/// Unexplained lines of one file on one side, with why the server left them out when it decided so.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct UnexplainedRanges {
+    /// Repository-relative path on that side.
+    pub file: String,
+    /// Commit the lines refer to.
+    pub side: LineSide,
+    /// The lines, ascending and disjoint.
+    pub ranges: Vec<LineRange>,
+    /// Why the server did not send these lines to the LLM (deterministic); absent when the LLM did not
+    /// explain them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reason: Option<UnexplainedReason>,
+}
+
+/// Why the server left Unexplained lines out of every LLM request.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, TS,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum UnexplainedReason {
+    /// Not sent to the LLM: the request holding them would be larger than one prompt may be.
+    TooLargeForPrompt,
 }
 
 /// A moved block whose text is identical after whitespace normalisation. The UI says "Body text identical"
