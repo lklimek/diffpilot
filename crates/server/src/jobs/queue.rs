@@ -50,6 +50,7 @@ pub async fn expire_leases(db: &Db, now: DateTime<Utc>) -> Result<Vec<ExpiredLea
 impl JobExecutor for QueueExecutor {
     fn submit(&self, request: JobRequest) -> BoxFuture<'_, Result<JobHandle, ExecutorError>> {
         Box::pin(async move {
+            tracing::info!(job = %request.spec.job_id, skills = ?request.spec.skills, "job agent skills requested");
             let analysis = request.spec.analysis_id;
             let stage = request.stage.clone();
             let generation = request.generation;
@@ -345,6 +346,22 @@ mod tests {
             QueueExecutor::new(db, ProgressHub::default()),
             analysis,
         )
+    }
+
+    #[tokio::test]
+    async fn submitted_job_logs_requested_skill_names() {
+        let capture = crate::test_support::logs::LogCapture::start();
+        let (_, executor, analysis) = setup().await;
+        let mut request = request(analysis, "f1");
+        request.spec.skills = vec!["severity".to_owned()];
+        let job = request.spec.job_id;
+        executor.submit(request).await.unwrap();
+        let logs = capture.text();
+        assert!(logs.contains("job agent skills requested"), "{logs}");
+        assert!(
+            logs.contains("INFO") && logs.contains("severity") && logs.contains(&job.to_string()),
+            "{logs}"
+        );
     }
 
     async fn claim(db: &Db, lease_secs: i64) {

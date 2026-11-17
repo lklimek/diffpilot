@@ -221,6 +221,8 @@ pub enum Origin {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Blocking {
+    /// No blocking action or follow-up proposed; this is not an assurance of safety.
+    NoActionProposed,
     /// Should be resolved before this pull request merges.
     BlocksThisPr,
     /// Can be handled in a follow-up.

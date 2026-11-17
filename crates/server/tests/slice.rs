@@ -1455,10 +1455,23 @@ async fn failed_job_ends_the_analysis_before_later_jobs() {
 }
 
 #[tokio::test]
-async fn schema_invalid_output_ends_the_analysis_before_later_jobs() {
+async fn schema_invalid_flow_exhausts_repairs_and_leaves_lines_unexplained() {
     let h = harness().await;
-    let summary = fail_flow_2(&h, Script::Output(json!({ "flow_id": "f2" }))).await;
-    assert_failed_in_f2_and_nothing_after_it(&h, &summary, "did not have the expected structure");
+    h.executor
+        .script("flow:f2", Script::Output(json!({ "flow_id": "f2" })));
+    let id = h.create_fixture_analysis().await;
+    let summary = h.wait_until_finished(&id).await;
+    assert_eq!(summary.state, AnalysisState::Finished { total: 5 });
+    assert_eq!(h.executor.specs_of("flow:f2").len(), 3);
+    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert!(
+        !tour["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|flow| flow["id"] == "f2")
+    );
+    assert!(!tour["quiet"]["unexplained"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1672,6 +1685,38 @@ fn rejected_flow(stage: &str) -> Value {
     output["steps"][0]["start_line"] = json!(9990);
     output["steps"][0]["end_line"] = json!(9999);
     output
+}
+
+#[tokio::test]
+async fn missing_step_assessments_trigger_repair_and_restore_flow_risk() {
+    for absent in [false, true] {
+        let h = harness().await;
+        let mut output = agent_output("flow:f2");
+        if absent {
+            output["steps"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("assessment");
+        } else {
+            output["steps"][0]["assessment"] = Value::Null;
+        }
+        h.executor.script("flow:f2#0", Script::Output(output));
+        let id = h.create_fixture_analysis().await;
+        let finished = h.wait_until_finished(&id).await;
+        assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+        assert!(h.executor.submitted().contains(&"flow:f2#1".to_owned()));
+        let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+        for flow in tour["flows"].as_array().unwrap() {
+            assert!(flow["llm"]["risk"].is_string());
+            assert!(
+                flow["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|step| step["llm"]["assessment"]["basis_note"].is_string())
+            );
+        }
+    }
 }
 
 #[tokio::test]

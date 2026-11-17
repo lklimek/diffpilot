@@ -132,7 +132,16 @@
           "evidence": []
         }
       ],
-      "assessment": null
+      "assessment": {
+        "headline": "Wallet users may see a generic RPC error after exhausted retries.",
+        "risk": "low",
+        "reason": "This existing wildcard branch receives the new variant; its changed exposure is assessed at the variant definition.",
+        "basis_note": "Read src/wallet/mod.rs and the flow's caller context; nothing executed.",
+        "not_checked": "Downstream matches outside this repository.",
+        "origin": "introduced",
+        "blocking": "no_action_proposed",
+        "smallest_correction": null
+      }
     }
   ],
   "edges": [

@@ -90,6 +90,13 @@ not that every tool or profile lookup succeeded.
 | `JobFailureKind::Configuration`, `ApiErrorCode::Configuration`, `AnalysisState::Failed.reason?: ApiErrorCode` | Required skills fail closed with an administrator-action message and no UI Retry. |
 | `analyses.failure_reason`, `llm_credentials.last_call_failure` accepts `configuration` (`0001_init.sql`) | Preserve the typed cause through stored analysis state and Settings; follows the pre-deployment single-schema convention. |
 
+### Required step assessments (2026-11-17 regression follow-up)
+| Change | Reason |
+|---|---|
+| `AgentStep.assessment` required and non-null in the agent schema; verifier rejects missing assessments | Brief §3 requires a per-step rating with reason and basis, also for LOW. The flow band is derived from the highest step band. Older documents remain deserializable for verification and repair. |
+| Flow schema rejections enter the existing two-repair budget | A missing or null required assessment requests correction before acceptance; exhausted repairs leave the flow Unexplained. |
+| `Blocking::NoActionProposed` (`no_action_proposed`) | Rate bounded exposure without inventing a defect, blocking action or follow-up; never suppress the assessment to represent absence of an action. |
+
 ## Consequences
 - The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.
 - Further contract changes still need a change request (ADR-010).

@@ -197,3 +197,18 @@ test("Ask Lines read opens code on its cited step or in the standalone range", a
   await expect(page).toHaveURL(/#lines\?file=/);
   await expect(page.getByRole("button", { name: "Comment on line 1286" })).toBeVisible();
 });
+
+test("long Ask prose and fenced code wrap inside the inspector", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto(`/analyses/${ANALYSIS_ID}?scenario=long-answer#f1.5`);
+  const answers = page.getByRole("region", { name: "Ask: pinned answers" });
+  const prose = answers.getByText("longword".repeat(100));
+  await expect(prose).toBeVisible();
+  await expect(prose).toHaveCSS("overflow-wrap", "anywhere");
+  const code = answers.locator("pre");
+  await expect(code).toHaveCSS("white-space", "pre-wrap");
+  for (const element of [answers, prose, code]) {
+    const size = await element.evaluate((node) => ({ width: node.clientWidth, scroll: node.scrollWidth }));
+    expect(size.scroll).toBeLessThanOrEqual(size.width + 1);
+  }
+});

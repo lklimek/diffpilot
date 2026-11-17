@@ -9,7 +9,7 @@ use url::Url;
 /// Why a text is not plain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Unplain {
-    /// An HTML-like tag outside code.
+    /// HTML or Markdown markup outside code.
     Markup,
     /// A link that is not `https://github.com/…`.
     Link,
@@ -21,7 +21,7 @@ impl Unplain {
     /// Plain description for the repair prompt.
     pub(super) fn describe(self) -> &'static str {
         match self {
-            Self::Markup => "HTML markup",
+            Self::Markup => "HTML or Markdown markup",
             Self::Link => "a link outside https://github.com/",
             Self::Unchecked => "text that could not be checked",
         }
@@ -41,6 +41,10 @@ struct Patterns {
     target: Regex,
     /// A scheme-relative URL (`//host…`).
     relative: Regex,
+    /// Plain sentences permit code spans and fences, but no list, heading, emphasis or reference link.
+    markdown: Regex,
+    /// A common bare hostname link without a scheme.
+    bare: Regex,
 }
 
 static PATTERNS: LazyLock<Option<Patterns>> = LazyLock::new(|| {
@@ -50,6 +54,8 @@ static PATTERNS: LazyLock<Option<Patterns>> = LazyLock::new(|| {
         autolink: Regex::new(r"<([A-Za-z][A-Za-z0-9+.-]*:[^\s<>]*)>").ok()?,
         tag: Regex::new(r"<[A-Za-z/!]").ok()?,
         target: Regex::new(r"(?m)\]\(\s*<?([^\s)>]*)|^\s*\[[^\]]+\]:\s*<?([^\s>]*)").ok()?,
+        markdown: Regex::new(r"(?m)^\s*(?:[-+*]\s|[0-9]+[.)]\s|#{1,6}\s|>\s)|(?:^|[^\w])(?:\*[^*\n]+\*|_[^_\n]+_|~~[^~\n]+~~)|\[[^\]\n]+\]\[[^\]\n]*\]").ok()?,
+        bare: Regex::new(r"(?i)\bwww\.[a-z0-9-]+\.[a-z]{2,}").ok()?,
         relative: Regex::new(r#"(?:^|[\s(\[<"'=])//[A-Za-z0-9]"#).ok()?,
     })
 });
@@ -73,12 +79,10 @@ pub(super) fn check(text: &str) -> Option<Unplain> {
     if patterns.tag.is_match(&prose) {
         return Some(Unplain::Markup);
     }
-    let targets = patterns.target.captures_iter(&prose);
-    if targets
-        .filter_map(|captures| captures.get(1).or_else(|| captures.get(2)))
-        .any(foreign)
-        || patterns.relative.is_match(&prose)
-    {
+    if patterns.target.is_match(&prose) || patterns.markdown.is_match(&prose) {
+        return Some(Unplain::Markup);
+    }
+    if patterns.relative.is_match(&prose) || patterns.bare.is_match(&prose) {
         return Some(Unplain::Link);
     }
     None

@@ -154,6 +154,16 @@ describe("AskForm", () => {
 });
 
 describe("AskAnswers", () => {
+  it("wraps long answer words and code inside the inspector", () => {
+    const questions = structuredClone(seedFor("resume", "questions") as AskQuestion[]);
+    const long = "x".repeat(500);
+    questions[0]!.answer!.answer = `${long}\n\n\`\`\`text\n${long}\n\`\`\``;
+    render(<AskAnswers questions={questions} />);
+    const text = screen.getByText(long, { selector: "div" });
+    expect(text).toHaveClass("[overflow-wrap:anywhere]");
+    expect(text).toHaveClass("[&_pre]:whitespace-pre-wrap");
+  });
+
   it("says that nothing was asked yet", () => {
     render(<AskAnswers questions={[]} />);
     expect(screen.getByText(/No questions asked about this step yet/)).toBeInTheDocument();

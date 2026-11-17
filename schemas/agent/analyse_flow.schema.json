@@ -228,11 +228,8 @@
             }
           },
           "assessment": {
-            "description": "Assessment, or null unless a production user or operator would notice something.",
-            "type": [
-              "object",
-              "null"
-            ],
+            "description": "Required assessment of the change, including low risk; nullable only when reading older stored output.",
+            "type": "object",
             "properties": {
               "headline": {
                 "description": "What a production user or operator would notice.",
@@ -269,9 +266,10 @@
                 ]
               },
               "blocking": {
-                "description": "Whether it blocks this pull request or is a follow-up. `blocks_this_pr`: Should be resolved before this pull request merges. `follow_up`: Can be handled in a follow-up.",
+                "description": "Whether an action is proposed before merge, as a follow-up, or neither. `no_action_proposed`: No blocking action or follow-up proposed; this is not an assurance of safety. `blocks_this_pr`: Should be resolved before this pull request merges. `follow_up`: Can be handled in a follow-up.",
                 "type": "string",
                 "enum": [
+                  "no_action_proposed",
                   "blocks_this_pr",
                   "follow_up"
                 ]

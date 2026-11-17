@@ -26,9 +26,18 @@ export interface FeedbackButtonsProps {
 }
 
 const VALUES: [UserFeedbackValue, string][] = [
-  ["correct", "The remark or rating is right."],
-  ["wrong", "The remark is factually wrong."],
-  ["irrelevant", "True, but not worth a reviewer's attention."],
+  [
+    "correct",
+    "The remark or rating is right. When reachable, stored in MemCan as feedback, not as a severity calibration example.",
+  ],
+  [
+    "wrong",
+    "The remark is factually wrong. When reachable, stored in MemCan as feedback, not as a severity calibration example.",
+  ],
+  [
+    "irrelevant",
+    "True, but not worth a reviewer's attention. When reachable, stored in MemCan as feedback, not as a severity calibration example.",
+  ],
   [
     "overrated",
     "The risk level is too high. Kept with your feedback; when MemCan is reachable, also stored there as a severity calibration example.",

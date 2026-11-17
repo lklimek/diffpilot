@@ -64,7 +64,16 @@
           ]
         }
       ],
-      "assessment": null
+      "assessment": {
+        "headline": "A caller may see a repeated request after a timeout.",
+        "risk": "low",
+        "reason": "This context step submits one request; repetition is introduced by the downstream retry decision.",
+        "basis_note": "Read src/mempool/mod.rs and the flow's caller context; nothing executed.",
+        "not_checked": "Downstream handling of repeated requests.",
+        "origin": "introduced",
+        "blocking": "no_action_proposed",
+        "smallest_correction": null
+      }
     },
     {
       "id": "s2",
@@ -118,7 +127,16 @@
           "evidence": []
         }
       ],
-      "assessment": null
+      "assessment": {
+        "headline": "A rebuilt request may carry different data on a later attempt.",
+        "risk": "low",
+        "reason": "The attempt counter and request construction are local; the retry decision controls whether another request is sent.",
+        "basis_note": "Read src/rpc/client.rs and the flow's caller context; nothing executed.",
+        "not_checked": "Request equality across attempts.",
+        "origin": "introduced",
+        "blocking": "no_action_proposed",
+        "smallest_correction": null
+      }
     },
     {
       "id": "s3",
@@ -152,7 +170,16 @@
           ]
         }
       ],
-      "assessment": null
+      "assessment": {
+        "headline": "Callers receive the result selected by this branch.",
+        "risk": "low",
+        "reason": "Only timeouts take the new path; success and other errors return directly.",
+        "basis_note": "Read src/rpc/client.rs and the flow's caller context; nothing executed.",
+        "not_checked": "Transport error classification at runtime.",
+        "origin": "introduced",
+        "blocking": "no_action_proposed",
+        "smallest_correction": null
+      }
     },
     {
       "id": "s4",
@@ -186,7 +213,16 @@
           ]
         }
       ],
-      "assessment": null
+      "assessment": {
+        "headline": "The caller receives the successful response.",
+        "risk": "low",
+        "reason": "This unchanged return exits the loop immediately without another send.",
+        "basis_note": "Read src/rpc/client.rs and the flow's caller context; nothing executed.",
+        "not_checked": "Runtime response decoding.",
+        "origin": "introduced",
+        "blocking": "no_action_proposed",
+        "smallest_correction": null
+      }
     },
     {
       "id": "s5",
@@ -463,7 +499,16 @@
           ]
         }
       ],
-      "assessment": null
+      "assessment": {
+        "headline": "The caller receives a transport error without another attempt.",
+        "risk": "low",
+        "reason": "The existing error return remains separate from the timeout retry path.",
+        "basis_note": "Read src/rpc/client.rs and the flow's caller context; nothing executed.",
+        "not_checked": "Other transport error variants at runtime.",
+        "origin": "introduced",
+        "blocking": "no_action_proposed",
+        "smallest_correction": null
+      }
     },
     {
       "id": "s9",
@@ -518,7 +563,16 @@
           ]
         }
       ],
-      "assessment": null
+      "assessment": {
+        "headline": "New clients use the default retry limits.",
+        "risk": "low",
+        "reason": "Policy construction is bounded to client setup; retry exposure is assessed at the decision step.",
+        "basis_note": "Read src/rpc/client.rs and the flow's caller context; nothing executed.",
+        "not_checked": "Configuration in downstream clients.",
+        "origin": "introduced",
+        "blocking": "no_action_proposed",
+        "smallest_correction": null
+      }
     },
     {
       "id": "s10",
@@ -593,7 +647,16 @@
           ]
         }
       ],
-      "assessment": null
+      "assessment": {
+        "headline": "The policy controls how long the caller waits.",
+        "risk": "low",
+        "reason": "The default attempt limit bounds the loop; the send and jitter steps carry the concrete concerns.",
+        "basis_note": "Read src/rpc/retry.rs and the flow's caller context; nothing executed.",
+        "not_checked": "Runtime delays and custom policy use.",
+        "origin": "introduced",
+        "blocking": "no_action_proposed",
+        "smallest_correction": null
+      }
     }
   ],
   "edges": [

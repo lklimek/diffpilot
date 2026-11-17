@@ -87,7 +87,7 @@ function Answer({
               LLM answer
             </span>
           </Tooltip>
-          <div className="mt-0.5 whitespace-pre-wrap">
+          <div className="mt-0.5 min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap">
             <CodeText text={answer.answer} />
           </div>
           {answer.evidence.length > 0 && (
@@ -110,7 +110,7 @@ export function AskAnswers({ questions, onAskAgain, onEvidence }: AskAnswersProp
   return (
     <ol aria-label="Questions asked about this step" className="m-0 grid list-none gap-2.5 p-0">
       {newestFirst.map((q) => (
-        <li key={q.id} className="grid gap-1">
+        <li key={q.id} className="grid min-w-0 gap-1 [overflow-wrap:anywhere]">
           <p className="font-semibold whitespace-pre-wrap">
             <span className="text-muted">Asked by {q.mine ? "you" : (q.asked_by ?? "unknown author")}: </span>
             {q.text}

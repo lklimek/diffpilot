@@ -202,7 +202,11 @@ const ORIGIN = {
   pre_existing: "pre-existing",
   unclear: "unclear",
 } as const;
-const BLOCKING = { blocks_this_pr: "blocks this PR", follow_up: "follow-up" } as const;
+const BLOCKING = {
+  no_action_proposed: "no action proposed",
+  blocks_this_pr: "blocks this PR",
+  follow_up: "follow-up",
+} as const;
 
 /** The assessment fields of brief §3 (shared by the inspector and the step block). */
 export function AssessmentFields({ assessment }: { assessment: Assessment }) {

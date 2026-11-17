@@ -105,7 +105,16 @@
           ]
         }
       ],
-      "assessment": null
+      "assessment": {
+        "headline": "Consumers may need the new module path.",
+        "risk": "low",
+        "reason": "The module declarations wire the moved implementation; there is no runtime branch here.",
+        "basis_note": "Read src/lib.rs and the flow's caller context; nothing executed.",
+        "not_checked": "External imports of the old module path.",
+        "origin": "introduced",
+        "blocking": "no_action_proposed",
+        "smallest_correction": null
+      }
     }
   ],
   "edges": [
