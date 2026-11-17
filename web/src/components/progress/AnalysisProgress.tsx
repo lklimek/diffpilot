@@ -1,22 +1,22 @@
-import type { AnalysisState } from "../../api/generated/types";
+import type { AnalysisStage, AnalysisState } from "../../api/generated/types";
 import { busyTip, buttonClass } from "../button/button";
 import { PAUSE_REASON, pausedText } from "./paused";
 import { Tooltip } from "../tooltip/Tooltip";
 
-/** What this page observed of the event stream (not server data); the screen ticks `now`. */
+/** What this page knows of the event stream; the screen ticks `now`. */
 export interface ProgressActivity {
-  /** Current time, ms since the epoch. */
+  /** Browser time, ms since the epoch. */
   now: number;
-  /** When this page first saw the current state; `exact` false when a (re)connection already showed it. */
-  stageSince: { at: number; exact: boolean };
-  /** When the last update from the server arrived. */
-  lastUpdateAt: number;
+  /** Browser minus server clock (ms), from the last heartbeat; null before the first one. */
+  clockOffset: number | null;
+  /** Browser time when the last event of the stream (heartbeat or other) arrived. */
+  lastSignalAt: number;
   /** The event stream is open. */
   connected: boolean;
 }
 
-/** Silence from the server after which the page says so instead of showing activity. */
-export const STALE_MS = 5 * 60_000;
+/** Silence after which the stream counts as lost (heartbeats come every 15 s). */
+export const SILENT_MS = 45_000;
 
 interface AnalysisProgressProps {
   /** State of the analysis (brief §4.2). */
@@ -52,16 +52,39 @@ function label(state: AnalysisState): string {
   }
 }
 
-/**
- * What runs now, from the state alone: the server plans, then reads the PR context, then analyses the flows one at
- * a time in order, so with `done` flows ended flow `done + 1` runs (or the PR context while none has ended).
- */
+/** An LLM flow title as one plain line of at most 80 characters. */
+function titleText(title: string): string {
+  const line = title.replace(/\s+/g, " ").trim();
+  return line.length > 80 ? `${line.slice(0, 79).trimEnd()}…` : line;
+}
+
+/** What a stage does, in plain words; `total` names the flow's place when known. */
+function stageWork(stage: AnalysisStage, done: number | null, total: number | null): string {
+  switch (stage.kind) {
+    case "plan":
+      return "planning the review.";
+    case "pr_context":
+      return "reading the PR context.";
+    case "flow":
+      if (stage.flow) {
+        const of = total === null ? "" : ` of ${total}`;
+        return `analysing flow ${stage.flow.index}${of}: ${titleText(stage.flow.title)}`;
+      }
+      return done !== null && total !== null
+        ? `analysing a flow (${total - done} of ${total} still to do).`
+        : "analysing a flow.";
+  }
+}
+
+/** The stage line of a planning or running analysis, from the server's `stage` only. */
 function stageText(state: AnalysisState): string | null {
-  if (state.state === "planning") return "Planning the review: grouping the changes into flows.";
-  if (state.state !== "running") return null;
-  if (state.done >= state.total) return "Finishing the review: every flow is done.";
-  if (state.done === 0) return `Reading the PR context, then analysing flow 1 of ${state.total}.`;
-  return `Analysing flow ${state.done + 1} of ${state.total}.`;
+  if (state.state !== "planning" && state.state !== "running") return null;
+  const { stage } = state;
+  if (!stage) return "Between two jobs: the server starts the next one.";
+  const [done, total] = state.state === "running" ? [state.done, state.total] : [null, null];
+  const work = stageWork(stage, done, total);
+  if (stage.started_at === null) return `Waiting for the runner; next: ${work}`;
+  return work.charAt(0).toUpperCase() + work.slice(1);
 }
 
 /** `less than a minute`, `12 min`, `1 h 5 min`. */
@@ -73,13 +96,20 @@ function durationText(ms: number): string {
   return rest === 0 ? `${Math.floor(minutes / 60)} h` : `${Math.floor(minutes / 60)} h ${rest} min`;
 }
 
-/** Real time since the stage started; from a (re)connection on only a lower bound, so none under a minute. */
-function elapsedText({ now, stageSince }: ProgressActivity, working: boolean): string {
-  const elapsed = now - stageSince.at;
-  if (!stageSince.exact && elapsed < 60_000) return working ? "Working" : "";
-  const since = `stage started ${stageSince.exact ? "" : "at least "}${durationText(elapsed)} ago`;
+/**
+ * Time since the stage's `started_at`, on the server's clock: browser time minus the offset measured by the last
+ * heartbeat; never negative (clock jitter). Without a heartbeat yet the offset is unknown and no time is claimed.
+ */
+function elapsedText(started: string | null, activity: ProgressActivity, working: boolean): string {
+  const at = started === null ? NaN : Date.parse(started);
+  if (Number.isNaN(at) || activity.clockOffset === null) return working ? "Working" : "";
+  const since = `stage started ${durationText(Math.max(0, activity.now - activity.clockOffset - at))} ago`;
   return working ? `Working · this ${since}` : `This ${since}`;
 }
+
+/** `52 s` under two minutes, then whole minutes. */
+const silenceText = (ms: number) =>
+  ms < 120_000 ? `${Math.floor(ms / 1000)} s` : `${Math.floor(ms / 60_000)} min`;
 
 const BAR_LOOK: Record<AnalysisState["state"], string> = {
   planning: "border-border",
@@ -142,20 +172,23 @@ export function AnalysisProgress({
 }: AnalysisProgressProps) {
   const live = state.state !== "finished" && state.state !== "cancelled";
   const stage = stageText(state);
-  const stale = stage !== null && activity !== undefined && activity.now - activity.lastUpdateAt > STALE_MS;
-  // Activity is shown only while the stream is open and the server spoke recently: never a loop on its own.
-  const working = stage !== null && activity !== undefined && activity.connected && !stale;
-  const elapsed = stage !== null && activity !== undefined ? elapsedText(activity, working) : "";
+  const started =
+    (state.state === "planning" || state.state === "running") && state.stage ? state.stage.started_at : null;
+  const silence = activity ? activity.now - activity.lastSignalAt : 0;
+  const silent = activity !== undefined && silence > SILENT_MS;
+  // Activity only while a job runs and heartbeats arrive: never a loop on its own.
+  const working = started !== null && activity !== undefined && activity.connected && !silent;
+  const elapsed = stage !== null && activity !== undefined ? elapsedText(started, activity, working) : "";
   return (
     <section aria-label="Analysis progress" className="w-3/5 max-w-[1400px] min-w-[min(100vw_-_4rem,480px)]">
-      {/* Changes with the server's state only (one per stage or flow); the ticking time stays outside. */}
+      {/* Changes with the server's state and stage, and the silence notice every tick at most; the time stays outside. */}
       <div aria-live="polite" className="mb-2 grid gap-0.5">
         <p className="text-[15px] font-semibold">{label(state)}</p>
         {stage && <p className="text-[13px]">{stage}</p>}
-        {stale && (
-          <p className="text-[13px]">
-            No update from the server for more than 5 min; the analysis may still be running.
-          </p>
+        {silent ? (
+          <p className="text-[13px]">{`No signal from the server for ${silenceText(silence)}; reconnecting…`}</p>
+        ) : (
+          activity && !activity.connected && <p className="text-[13px]">Connection lost; reconnecting…</p>
         )}
       </div>
       <div className="flex items-center gap-4">

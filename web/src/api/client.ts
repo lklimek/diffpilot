@@ -185,16 +185,26 @@ export function createApiClient(baseUrl = "") {
     subscribeAnalysis(id: AnalysisId, handlers: AnalysisStreamHandlers): () => void {
       const source = new EventSource(baseUrl + routePath("analysisEvents", { id }));
       const onMessage = (message: MessageEvent<string>) => {
-        let event: AnalysisEvent;
+        let event: unknown;
         try {
-          event = JSON.parse(message.data) as AnalysisEvent;
+          event = JSON.parse(message.data);
         } catch {
           return;
         }
-        handlers.onEvent(event);
+        // Only an object tagged like its SSE event name; anything else is dropped, the stream stays open.
+        if (
+          typeof event !== "object" ||
+          event === null ||
+          (event as { event?: unknown }).event !== message.type
+        ) {
+          return;
+        }
+        handlers.onEvent(event as AnalysisEvent);
       };
-      source.addEventListener("analysis", onMessage);
-      source.addEventListener("question", onMessage);
+      // Named events only reach listeners of their name: any other type is ignored by the browser.
+      for (const name of ["analysis", "question", "heartbeat"] satisfies AnalysisEvent["event"][]) {
+        source.addEventListener(name, onMessage);
+      }
       source.onerror = () => handlers.onError(source.readyState === EventSource.CLOSED);
       return () => source.close();
     },

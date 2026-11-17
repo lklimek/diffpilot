@@ -74,40 +74,63 @@ test("unknown analysis: plain error and a way back", async ({ page }) => {
   await expect(page.getByRole("link", { name: "Back to Home" })).toHaveAttribute("href", "/");
 });
 
-// Owner: a one-flow PR stayed at "0 of 1 flows analysed" for minutes and looked frozen.
-test.describe("activity while nothing is counted yet", () => {
+// Owner: a one-flow PR stayed at "0 of 1 flows analysed" for minutes and looked frozen. Stage and heartbeat come
+// from the server (sse-events.md); the mocks send a heartbeat every 15 s.
+test.describe("stage and liveness", () => {
   const indicator = (page: Page) => page.locator("[data-activity]");
 
-  test("the screen changes during planning and before any flow is done; times are real; silence is said", async ({
+  test("the stage line follows the server: planning, PR context, flow 1 with its title; time is real", async ({
     page,
   }) => {
     await page.clock.install();
     await open(page, "first-flow");
     await expect(page.getByText("Planning flows…")).toBeVisible();
-    await expect(page.getByText("Planning the review: grouping the changes into flows.")).toBeVisible();
-    // The plan arrives: the count is still 0, the stage line moves on.
-    await expect(page.getByText("Reading the PR context, then analysing flow 1 of 1.")).toBeVisible();
+    await expect(page.getByText("Reading the PR context.")).toBeVisible();
     await expect(page.getByText("0 of 1 flows analysed")).toBeVisible();
+    // The first heartbeat gives the server's clock; only then is a time shown.
+    await expect(indicator(page)).toHaveText("Working");
+    await page.clock.runFor(16_000);
     await expect(indicator(page)).toHaveText("Working · this stage started less than a minute ago");
+    await page.clock.runFor(15_000);
+    await expect(page.getByText("Analysing flow 1 of 1: Send an RPC request with retry")).toBeVisible();
     await expectTrustWording(page);
     await expectAccessible(page);
+  });
 
-    await page.clock.fastForward("02:00");
-    await expect(indicator(page)).toHaveText("Working · this stage started 2 min ago");
+  test("a long flow with heartbeats stays Working", async ({ page }) => {
+    await page.clock.install();
+    await open(page, "running");
+    await expect(page.getByText(/^Analysing flow 3 of 5: /)).toBeVisible();
+    for (let i = 0; i < 41; i += 1) await page.clock.runFor(15_000);
+    await expect(indicator(page)).toHaveText("Working · this stage started 10 min ago");
+    await expect(page.getByText(/No signal from the server/)).toHaveCount(0);
+  });
 
-    await page.clock.fastForward("04:00");
-    await expect(
-      page.getByText("No update from the server for more than 5 min; the analysis may still be running."),
-    ).toBeVisible();
+  test("waiting for the runner, and between two jobs", async ({ page }) => {
+    await open(page, "waiting");
+    await expect(page.getByText("Waiting for the runner; next: planning the review.")).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
-    await expect(page.getByText("This stage started 6 min ago")).toBeVisible();
+    await expectTrustWording(page);
+    await open(page, "between-jobs");
+    await expect(page.getByText("Between two jobs: the server starts the next one.")).toBeVisible();
+    await expect(indicator(page)).toHaveCount(0);
+  });
+
+  test("no heartbeat: the notice says so with the real time and the indicator stops", async ({ page }) => {
+    await page.clock.install();
+    await open(page, "signal-lost");
+    await expect(indicator(page)).toBeVisible();
+    await page.clock.runFor(60_000);
+    await expect(page.getByText(/^No signal from the server for \d+ s; reconnecting…$/)).toBeVisible();
+    await expect(indicator(page)).toHaveCount(0);
+    await expect(page.getByText(/^Analysing flow 3 of 5: /)).toBeVisible();
     await expectTrustWording(page);
     await expectAccessible(page);
   });
 
   test("reduced motion: the indicator does not move and says Working in text", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await open(page, "first-flow");
+    await open(page, "running");
     await expect(indicator(page)).toContainText("Working");
     const dot = indicator(page).locator("span[aria-hidden]");
     await expect(dot).toHaveCSS("animation-name", "none");
@@ -115,26 +138,26 @@ test.describe("activity while nothing is counted yet", () => {
     await expect(dot).not.toHaveCSS("animation-name", "none");
   });
 
-  // Light and dark at 1440 with SCREENSHOT_DIR set, e.g. /data/artifacts/smart-review/<date>/wp3-tour-7.
+  // Light and dark at 1440 with SCREENSHOT_DIR set, e.g. /data/artifacts/smart-review/<date>/wp3-tour-9.
   for (const colorScheme of ["light", "dark"] as const) {
     test(`screenshots ${colorScheme} 1440`, async ({ browser }) => {
       const dir = process.env.SCREENSHOT_DIR;
       test.skip(!dir, "SCREENSHOT_DIR not set");
       const page = await browser.newPage({ colorScheme, viewport: { width: 1440, height: 900 } });
       await page.clock.install();
-      await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=planning`);
-      await expect(indicator(page)).toBeVisible();
-      await page.clock.fastForward("01:30");
-      await expect(indicator(page)).toHaveText(/at least 1 min/);
-      await page.screenshot({ path: `${dir}/progress-planning-${colorScheme}-1440.png` });
-      await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=first-flow`);
-      await expect(page.getByText("Reading the PR context, then analysing flow 1 of 1.")).toBeVisible();
-      await page.clock.fastForward("02:00");
-      await expect(indicator(page)).toHaveText(/2 min ago/);
-      await page.screenshot({ path: `${dir}/progress-first-flow-${colorScheme}-1440.png` });
-      await page.clock.fastForward("04:00");
-      await expect(page.getByText(/^No update from the server/)).toBeVisible();
-      await page.screenshot({ path: `${dir}/progress-no-update-${colorScheme}-1440.png` });
+      const shoot = async (scenario: string, name: string, wait: number, expected: RegExp) => {
+        await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=${scenario}`);
+        await expect(
+          page.getByText(/^(Planning the review|Analysing flow|Waiting for the runner)/),
+        ).toBeVisible();
+        for (let t = 0; t < wait; t += 15_000) await page.clock.runFor(15_000);
+        await expect(page.locator("section[aria-label='Analysis progress']")).toContainText(expected);
+        await page.screenshot({ path: `${dir}/progress-${name}-${colorScheme}-1440.png` });
+      };
+      await shoot("planning", "planning", 90_000, /stage started 1 min ago/);
+      await shoot("running", "long-flow", 615_000, /stage started 10 min ago/);
+      await shoot("waiting", "waiting", 0, /Waiting for the runner/);
+      await shoot("signal-lost", "signal-lost", 60_000, /No signal from the server/);
       await page.close();
     });
   }

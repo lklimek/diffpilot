@@ -6,7 +6,7 @@ import { FakeEventSource } from "../__tests__/fake-event-source";
 import { seedFor } from "../mocks/fixtures";
 import type { AnalysisState, AnalysisSummary } from "./generated/types";
 import { ApiError } from "./client";
-import { ANALYSIS_RECONNECT_MS, useAnalysisLive } from "./queries";
+import { ANALYSIS_RECONNECT_MS, ANALYSIS_SILENCE_MS, useAnalysisLive } from "./queries";
 
 const base = seedFor("default", "analysis") as AnalysisSummary;
 const ID = base.id;
@@ -113,37 +113,59 @@ describe("useAnalysisLive (sse-events.md)", () => {
     expect(FakeEventSource.instances[0]!.readyState).toBe(FakeEventSource.CLOSED);
   });
 
-  it("dates the current state: exact when seen changing live, a lower bound when a (re)connection showed it", () => {
+  it("tracks the last signal (any event, heartbeats too) and the browser−server clock offset from heartbeats", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const t0 = Date.parse("2026-11-17T10:00:00Z");
     vi.setSystemTime(t0);
     const { result } = renderHook(() => useAnalysisLive(ID));
     const source = FakeEventSource.latest();
     act(() => source.emit({ event: "analysis", summary: at({ state: "planning" }) }));
-    expect(result.current.stageSince).toEqual({ at: t0, exact: false });
-    expect(result.current.updatedAt).toBe(t0);
+    expect(result.current.lastSignalAt).toBe(t0);
+    expect(result.current.clockOffset).toBeNull();
+    vi.setSystemTime(t0 + 15_000);
+    // The server's clock is 2 min behind the browser's.
+    act(() => source.emit({ event: "heartbeat", at: new Date(t0 + 15_000 - 120_000).toISOString() }));
+    expect(result.current.lastSignalAt).toBe(t0 + 15_000);
+    expect(result.current.clockOffset).toBe(120_000);
+    expect(result.current.summary?.state).toEqual({ state: "planning" });
+  });
 
-    vi.setSystemTime(t0 + 30_000);
-    act(() => source.emit({ event: "analysis", summary: at({ state: "planning" }) }));
-    expect(result.current.stageSince).toEqual({ at: t0, exact: false });
-    expect(result.current.updatedAt).toBe(t0 + 30_000);
-
-    vi.setSystemTime(t0 + 60_000);
-    act(() => source.emit({ event: "analysis", summary: at({ state: "running", done: 0, total: 1 }) }));
-    expect(result.current.stageSince).toEqual({ at: t0 + 60_000, exact: true });
-
-    vi.setSystemTime(t0 + 90_000);
-    act(() => source.drop());
-    vi.setSystemTime(t0 + 120_000);
+  it("ignores an unknown event type and a heartbeat without a valid time", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse("2026-11-17T10:00:00Z"));
+    const { result } = renderHook(() => useAnalysisLive(ID));
+    const source = FakeEventSource.latest();
     act(() => {
-      source.open();
-      source.emit({ event: "analysis", summary: at({ state: "running", done: 1, total: 1 }) });
+      source.emit({ event: "analysis", summary: at({ state: "planning" }) });
+      source.emit({ event: "something-new", data: JSON.stringify({ event: "something-new", x: 1 }) });
+      source.emit({ event: "heartbeat", data: JSON.stringify({ event: "heartbeat", at: "not a time" }) });
+      source.emit({ event: "analysis", summary: at({ state: "running", done: 1, total: 2 }) });
     });
-    // Changed while disconnected: only known to have started by now.
-    expect(result.current.stageSince).toEqual({ at: t0 + 120_000, exact: false });
-    vi.setSystemTime(t0 + 150_000);
-    act(() => source.emit({ event: "analysis", summary: at({ state: "finished", total: 1 }) }));
-    expect(result.current.stageSince).toEqual({ at: t0 + 150_000, exact: true });
+    expect(result.current.summary?.state).toEqual({ state: "running", done: 1, total: 2 });
+    expect(result.current.clockOffset).toBeNull();
+  });
+
+  it("reopens a stream that stays silent for longer than ANALYSIS_SILENCE_MS; the new snapshot restores it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const { result } = renderHook(() => useAnalysisLive(ID));
+    const first = FakeEventSource.latest();
+    act(() => first.emit({ event: "analysis", summary: at({ state: "planning" }) }));
+    act(() => vi.advanceTimersByTime(ANALYSIS_SILENCE_MS - 1000));
+    act(() => first.emit({ event: "heartbeat", at: new Date().toISOString() }));
+    act(() => vi.advanceTimersByTime(ANALYSIS_SILENCE_MS - 1000));
+    expect(FakeEventSource.instances).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(2000));
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(first.readyState).toBe(FakeEventSource.CLOSED);
+    expect(result.current.reconnecting).toBe(true);
+    act(() =>
+      FakeEventSource.latest().emit({
+        event: "analysis",
+        summary: at({ state: "running", done: 0, total: 1 }),
+      }),
+    );
+    expect(result.current.reconnecting).toBe(false);
+    expect(result.current.summary?.state).toEqual({ state: "running", done: 0, total: 1 });
   });
 
   it("closes the stream on unmount", () => {

@@ -249,11 +249,14 @@ export interface AnalysisLive {
   error?: unknown;
   /** The connection broke and is being re-established; `summary` may be stale until the next snapshot. */
   reconnecting: boolean;
-  /** When this page first saw the current state; `exact` false when a (re)connection snapshot showed it. */
-  stageSince?: { at: number; exact: boolean };
-  /** When the last summary arrived from the server (event or read). */
-  updatedAt?: number;
+  /** Browser time when the last event of the stream arrived (heartbeats included), or the analysis was read. */
+  lastSignalAt?: number;
+  /** Browser minus server clock (ms) from the last heartbeat (`at` vs. arrival); null before the first one. */
+  clockOffset?: number | null;
 }
+
+/** A stream without any event (heartbeats come every 15 s) for this long is reopened. */
+export const ANALYSIS_SILENCE_MS = 45_000;
 
 /** What to do with an analysis event stream (`followAnalysisEvents`). */
 export interface FollowHandlers {
@@ -265,14 +268,36 @@ export interface FollowHandlers {
   onClosed: () => Promise<unknown>;
 }
 
-/** Opens the analysis event stream and reopens it after the browser gave up; returns the function that stops. */
-export function followAnalysisEvents(id: AnalysisId, handlers: FollowHandlers): () => void {
+/**
+ * Opens the analysis event stream and reopens it after the browser gave up; with `silenceMs`, also when no event
+ * (heartbeats included) arrived for that long (an open but dead connection). Returns the function that stops.
+ */
+export function followAnalysisEvents(
+  id: AnalysisId,
+  handlers: FollowHandlers,
+  silenceMs?: number,
+): () => void {
   let active = true;
   let close = () => {};
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  const watch = () => {
+    if (silenceMs === undefined) return;
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => {
+      if (!active) return;
+      handlers.onDrop?.();
+      close();
+      connect();
+    }, silenceMs);
+  };
   const connect = () => {
+    watch();
     close = api.subscribeAnalysis(id, {
-      onEvent: handlers.onEvent,
+      onEvent: (event) => {
+        watch();
+        handlers.onEvent(event);
+      },
       onError: (closed) => {
         if (!closed) {
           handlers.onDrop?.();
@@ -292,6 +317,7 @@ export function followAnalysisEvents(id: AnalysisId, handlers: FollowHandlers): 
   return () => {
     active = false;
     clearTimeout(timer);
+    clearTimeout(watchdog);
     close();
   };
 }
@@ -309,47 +335,53 @@ export function useAnalysisLive(id: AnalysisId): AnalysisLive {
     // State kept across an error only when it is this analysis's own.
     const own = (current: AnalysisLive & { id?: AnalysisId }): Partial<AnalysisLive> =>
       current.id === id ? current : {};
-    // The first summary of a connection is a snapshot: a change it shows happened at some unknown earlier time.
-    let snapshotNext = true;
-    const arrived = (summary: AnalysisSummary, reconnecting: boolean, exact: boolean) => {
+    const arrived = (summary: AnalysisSummary, reconnecting: boolean) => {
       const now = Date.now();
-      setLive((current) => {
-        const previous = own(current);
-        const same =
-          previous.summary !== undefined &&
-          JSON.stringify(previous.summary.state) === JSON.stringify(summary.state);
-        return {
-          id,
-          summary,
-          reconnecting,
-          stageSince: same && previous.stageSince ? previous.stageSince : { at: now, exact },
-          updatedAt: now,
-        };
-      });
+      setLive((current) => ({
+        clockOffset: null,
+        ...own(current),
+        id,
+        summary,
+        reconnecting,
+        lastSignalAt: now,
+      }));
     };
-    const stop = followAnalysisEvents(id, {
-      onEvent: (event) => {
-        if (event.event === "analysis" && event.summary.id === id) {
-          arrived(event.summary, false, !snapshotNext);
-          snapshotNext = false;
-        }
+    const stop = followAnalysisEvents(
+      id,
+      {
+        onEvent: (event) => {
+          const now = Date.now();
+          if (event.event === "analysis") {
+            if (event.summary.id === id) arrived(event.summary, false);
+          } else if (event.event === "heartbeat") {
+            const at = Date.parse(event.at);
+            setLive((current) => ({
+              clockOffset: null,
+              ...own(current),
+              id,
+              reconnecting: false,
+              lastSignalAt: now,
+              ...(Number.isNaN(at) ? {} : { clockOffset: now - at }),
+            }));
+          } else {
+            // Any other event (questions, or a type this client does not know) still shows the stream is alive.
+            setLive((current) => ({ ...own(current), id, reconnecting: false, lastSignalAt: now }));
+          }
+        },
+        onDrop: () => setLive((current) => ({ ...own(current), id, reconnecting: true })),
+        onClosed: () =>
+          api.getAnalysis(id).then(
+            (summary) => {
+              if (active) arrived(summary, true);
+            },
+            (error: unknown) => {
+              if (active) setLive((current) => ({ ...own(current), id, error, reconnecting: false }));
+              throw error;
+            },
+          ),
       },
-      onDrop: () => {
-        snapshotNext = true;
-        setLive((current) => ({ ...own(current), id, reconnecting: true }));
-      },
-      onClosed: () =>
-        api.getAnalysis(id).then(
-          (summary) => {
-            snapshotNext = true;
-            if (active) arrived(summary, true, false);
-          },
-          (error: unknown) => {
-            if (active) setLive((current) => ({ ...own(current), id, error, reconnecting: false }));
-            throw error;
-          },
-        ),
-    });
+      ANALYSIS_SILENCE_MS,
+    );
     return () => {
       active = false;
       stop();

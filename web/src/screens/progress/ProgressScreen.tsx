@@ -57,20 +57,16 @@ export function ProgressScreen() {
             }
             onRetry={() => retry.mutate(analysisId)}
             activity={
-              live.stageSince && live.updatedAt !== undefined
+              live.lastSignalAt !== undefined
                 ? {
-                    // A summary newer than the last tick must not read as "in the future".
-                    now: Math.max(now, live.updatedAt),
-                    stageSince: live.stageSince,
-                    lastUpdateAt: live.updatedAt,
+                    now,
+                    clockOffset: live.clockOffset ?? null,
+                    lastSignalAt: live.lastSignalAt,
                     connected: !live.reconnecting,
                   }
                 : undefined
             }
           />
-        )}
-        {summary && live.reconnecting && (
-          <StatusMessage kind="loading">Connection lost; reconnecting…</StatusMessage>
         )}
         {failure && <StatusMessage kind="error">{errorText(failure)}</StatusMessage>}
       </main>
