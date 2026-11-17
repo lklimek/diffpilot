@@ -124,6 +124,18 @@ describe("NotAnalysedBlock", () => {
     expect(block).not.toHaveTextContent(/removed from tests|dependencies changed/);
   });
 
+  it("states dependency files that were not checked instead of a zero count", () => {
+    const counters = {
+      ...tour.pr_context.facts.counters,
+      dependencies_changed: [],
+      dependency_files_not_checked: ["Cargo.lock"],
+    };
+    render(<NotAnalysedBlock section={section(tour, "generated_mechanical")} counters={counters} />);
+    const block = screen.getByRole("article");
+    expect(block).toHaveTextContent("Dependency files not checked: Cargo.lock");
+    expect(block).not.toHaveTextContent(/0 dependencies/);
+  });
+
   it("shows the dependency counter with mechanical and generated material", () => {
     render(
       <NotAnalysedBlock

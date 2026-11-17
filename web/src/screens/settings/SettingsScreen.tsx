@@ -6,6 +6,7 @@ import { useMe, useRepoSettings, useSetLanguage, useSettings } from "../../api/q
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
 import { LanguageCard } from "../../components/settings/LanguageCard";
 import { LlmStatusCard } from "../../components/settings/LlmStatusCard";
+import { SettingsCard } from "../../components/settings/Card";
 import { RepoList } from "../../components/settings/RepoList";
 import { RepoSettingsCard } from "../../components/settings/RepoSettingsCard";
 import { SignInCard } from "../../components/sign-in/SignInCard";
@@ -29,15 +30,29 @@ function RepoSection({ repos }: { repos: RepoRef[] }) {
   return (
     <div className="grid content-start gap-2">
       {repos.length > 1 && <RepoList repos={repos} selected={selected} onSelect={setChosen} />}
-      {settings.isPending && <StatusMessage kind="loading">Loading the repository settings…</StatusMessage>}
-      {settings.isError &&
-        (settings.error instanceof ApiError && settings.error.code === "analysis_not_finished" ? (
-          // Not known yet is an expected state before the first analysis, not a failure.
-          <StatusMessage kind="empty">{settings.error.message}</StatusMessage>
-        ) : (
-          <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>
-        ))}
-      {settings.data && <RepoSettingsCard settings={settings.data} />}
+      {settings.data ? (
+        <RepoSettingsCard settings={settings.data} />
+      ) : (
+        // Loading, not known yet and failures sit in the repository's card, where its facts would be.
+        <SettingsCard
+          title={
+            <>
+              Repository <code>{`${selected.owner}/${selected.name}`}</code>
+            </>
+          }
+        >
+          {settings.isPending && (
+            <StatusMessage kind="loading">Loading the repository settings…</StatusMessage>
+          )}
+          {settings.isError &&
+            (settings.error instanceof ApiError && settings.error.code === "analysis_not_finished" ? (
+              // Not known yet is an expected state before the first analysis, not a failure.
+              <StatusMessage kind="empty">{settings.error.message}</StatusMessage>
+            ) : (
+              <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>
+            ))}
+        </SettingsCard>
+      )}
     </div>
   );
 }

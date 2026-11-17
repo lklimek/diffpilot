@@ -1,6 +1,6 @@
 import type { AnalysisState } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
-import { clockText } from "../format/time";
+import { PAUSE_REASON, pausedText } from "./paused";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface AnalysisProgressProps {
@@ -22,12 +22,8 @@ function label(state: AnalysisState): string {
       return "Planning flows…";
     case "running":
       return `${state.done} of ${state.total} flows analysed`;
-    case "paused": {
-      const count = state.total === null ? "" : `, ${state.done} of ${state.total} flows analysed`;
-      return state.resumes_at
-        ? `Paused${count}: Codex usage limit reached, resumes at ${clockText(state.resumes_at)}`
-        : `Paused${count}: Codex usage limit reached; the resume time is not known`;
-    }
+    case "paused":
+      return pausedText(state);
     case "failed":
       return state.flow
         ? `Analysis of flow “${state.flow.title}” failed`
@@ -126,6 +122,7 @@ export function AnalysisProgress({ state, reviewHref, busy, onCancel, onRetry }:
         </span>
       </div>
       {state.state === "failed" && <p className="mt-2 max-w-[100ch]">{state.message}</p>}
+      {state.state === "paused" && <p className="mt-2 max-w-[100ch]">{PAUSE_REASON}</p>}
     </section>
   );
 }

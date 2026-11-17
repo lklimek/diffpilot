@@ -24,7 +24,7 @@ import {
 import { AskAnswers } from "../../components/ask/AskAnswers";
 import { AskForm } from "../../components/ask/AskForm";
 import { CommentComposer, type UnresolvedPosts } from "../../components/comment/CommentComposer";
-import { commentPlacement } from "../../components/comment/placement";
+import { commentPlacement, isChangedLine } from "../../components/comment/placement";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
 import { Inspector } from "../../components/inspector/Inspector";
 import { StatusMessage } from "../../components/status/StatusMessage";
@@ -76,11 +76,16 @@ export function InspectorPane(props: InspectorPaneProps) {
   const annotation = step?.llm.annotations.find((a) => a.id === annotationId);
 
   const onAsk = (stepId: StepId, text: string) => ask.mutateAsync({ step: stepId, text });
+  // Feedback on a plain line only where the server takes it: a changed line of the diff on its side.
+  const line =
+    commentLine && isChangedLine(commentLine.lines, commentLine.target) ? commentLine.target : null;
   const target: FeedbackTarget | null = annotation
     ? { target: "annotation", annotation_id: annotation.id }
-    : step
-      ? { target: "step", step_id: step.id }
-      : null;
+    : line
+      ? { target: "line", path: line.path, side: line.side, line: line.line }
+      : step
+        ? { target: "step", step_id: step.id }
+        : null;
 
   const diff = step && (
     <DiffCode
@@ -157,7 +162,15 @@ export function InspectorPane(props: InspectorPaneProps) {
           />
           <FeedbackButtons
             target={target}
-            subject={annotation ? "this annotation" : step ? `step ${step.number}` : "this block"}
+            subject={
+              annotation
+                ? "this annotation"
+                : line
+                  ? `line ${line.line}`
+                  : step
+                    ? `step ${step.number}`
+                    : "this block"
+            }
             feedback={feedback.data ?? []}
             onSubmit={postFeedback.mutateAsync}
             onRemove={deleteFeedback.mutateAsync}

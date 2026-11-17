@@ -7,7 +7,7 @@ import { setFixtureState } from "./fixtures";
 import { handlers } from "./handlers";
 import { setMockLanguage } from "./handlers/get-settings";
 import { RUN_STEP_MS, resetLive, setLiveState } from "./live-analysis";
-import { resetStore } from "./review-store";
+import { MEMCAN_SYNC_MS, resetStore } from "./review-store";
 import { MOVED_HEAD, setScenario } from "./scenarios";
 
 const BASE = location.origin;
@@ -69,6 +69,28 @@ describe("msw handlers from fixtures/pr-482", () => {
       code: "not_found",
     });
   });
+
+  it.each([
+    [null, "written"],
+    ["memcan-failed", "failed"],
+  ] as const)(
+    "move a new feedback value from pending to its MemCan outcome (scenario %s)",
+    async (name, outcome) => {
+      setScenario(name);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const api = createApiClient(BASE);
+      const created = await api.postFeedback(ID, {
+        target: { target: "step", step_id: "f1.5" },
+        value: "correct",
+        note: null,
+      });
+      expect(created.memory).toBe("pending");
+      const memoryOf = async () => (await api.listFeedback(ID)).find((f) => f.id === created.id)!.memory;
+      expect(await memoryOf()).toBe("pending");
+      vi.setSystemTime(Date.now() + MEMCAN_SYNC_MS);
+      expect(await memoryOf()).toBe(outcome);
+    },
+  );
 
   it("answer the slice flow: resolve, create, tour", async () => {
     const api = createApiClient(BASE);

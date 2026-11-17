@@ -366,6 +366,17 @@ describe("Tour screen (brief §4.3)", () => {
     expect(blockHeading()).not.toHaveTextContent("Retry allowed?");
   });
 
+  it("offers feedback on a line only for a changed line of the diff; elsewhere feedback stays on the step", async () => {
+    await open();
+    await openStep("1", "2");
+    const code = await within(main()).findByRole("region", { name: /lines 88 to 96/ });
+    await user().click(within(code).getByRole("button", { name: "Comment on line 96" }));
+    expect(within(inspector()).getByRole("group", { name: "Feedback on line 96" })).toBeInTheDocument();
+    await user().click(within(code).getByRole("button", { name: "Comment on line 88" }));
+    expect(within(inspector()).queryByRole("group", { name: /Feedback on line/ })).toBeNull();
+    expect(within(inspector()).getByRole("group", { name: "Feedback on step 2" })).toBeInTheDocument();
+  });
+
   it("keeps the trust wording in every fixture state", async () => {
     for (const state of ["default", "wrong", "missed", "noq", "noprofile", "resume"] as const) {
       await open(state);

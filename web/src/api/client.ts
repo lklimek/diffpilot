@@ -1,5 +1,5 @@
 // The only fetch layer of the web app: typed calls to the routes of crates/contracts.
-import { routes, type RouteName } from "./routes";
+import { routes, type RouteName } from "./generated/routes";
 import type {
   AnalysisEvent,
   AnalysisId,

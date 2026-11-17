@@ -225,7 +225,66 @@ describe("FeedbackButtons", () => {
       />,
     );
     expect(screen.getByText(/Recorded automatically: missed by the LLM/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Feedback on line 96" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /missed/ })).toBeNull();
+  });
+
+  it.each([
+    ["written", "Saved to calibration memory"],
+    ["pending", "Recorded; saving to calibration memory…"],
+    ["failed", "Recorded here; not yet saved to calibration memory (retrying)"],
+  ] as const)("shows the calibration-memory state %s of each stored value", (memory, text) => {
+    const stored: Feedback[] = [
+      {
+        id: "fb1",
+        target: step31,
+        value: "overrated",
+        note: null,
+        created_at: "2026-11-16T10:05:30Z",
+        memory,
+      },
+    ];
+    render(
+      <FeedbackButtons
+        target={step31}
+        subject="step 1"
+        feedback={stored}
+        onSubmit={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    const states = screen.getByRole("list", { name: "Calibration memory" });
+    expect(states).toHaveTextContent(`overrated: ${text}`);
+    // "Saved" only when MemCan confirmed the write.
+    if (memory !== "written") expect(document.body).not.toHaveTextContent("Saved to calibration memory");
+  });
+
+  it("shows the calibration-memory state of the automatic missed-by-the-LLM entry", () => {
+    render(
+      <FeedbackButtons
+        target={line96}
+        subject="line 96"
+        feedback={feedbackOf("missed")}
+        onSubmit={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    expect(screen.getByRole("list", { name: "Calibration memory" })).toHaveTextContent(
+      "missed by the LLM: Recorded; saving to calibration memory…",
+    );
+  });
+
+  it("lists no calibration-memory state without stored feedback", () => {
+    render(
+      <FeedbackButtons
+        target={step31}
+        subject="step 1"
+        feedback={[]}
+        onSubmit={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("list", { name: "Calibration memory" })).toBeNull();
   });
 
   it("explains where feedback applies when there is no target", () => {

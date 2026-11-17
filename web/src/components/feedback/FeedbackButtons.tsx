@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import type {
   Feedback,
   FeedbackId,
+  FeedbackMemory,
   FeedbackRequest,
   FeedbackTarget,
   UserFeedbackValue,
@@ -37,6 +38,13 @@ const VALUES: [UserFeedbackValue, string][] = [
   ],
 ];
 
+/** The server's MemCan write of an entry (`Feedback.memory`); "saved" only once MemCan confirmed it. */
+const MEMORY: Record<FeedbackMemory, string> = {
+  written: "Saved to calibration memory",
+  pending: "Recorded; saving to calibration memory…",
+  failed: "Recorded here; not yet saved to calibration memory (retrying)",
+};
+
 function sameTarget(a: FeedbackTarget, b: FeedbackTarget): boolean {
   if (a.target === "step" && b.target === "step") return a.step_id === b.step_id;
   if (a.target === "annotation" && b.target === "annotation") return a.annotation_id === b.annotation_id;
@@ -54,6 +62,12 @@ export function FeedbackButtons({ target, subject, feedback, onSubmit, onRemove 
   const heading = (
     <h3 id={`${id}-h`} className="text-[10.5px] font-bold tracking-wide text-muted uppercase">
       Feedback
+      {target && (
+        <>
+          {" "}
+          <span className="text-[12px] font-normal tracking-normal normal-case">on {subject}</span>
+        </>
+      )}
     </h3>
   );
   if (target === null) {
@@ -118,8 +132,6 @@ function FeedbackForm({
       <div role="group" aria-label={`Feedback on ${subject}`} className="flex flex-wrap gap-1.5">
         {VALUES.map(([value, tip]) => {
           const stored = chosen.find((f) => f.value === value);
-          // TODO(WP3-MEMCAN merge): show the entry's MemCan sync state (`Feedback.memory`: not_applicable |
-          // pending | written | failed) on a pressed button instead of the conditional wording of the tooltip.
           return (
             <Tooltip key={value} tip={stored ? `${tip} Pressed: press again to remove it.` : tip}>
               <button
@@ -139,6 +151,15 @@ function FeedbackForm({
         <p className="mt-1 text-[12px] text-muted">
           Recorded automatically: missed by the LLM (you commented on a changed line that has no LLM remark).
         </p>
+      )}
+      {mine.length > 0 && (
+        <ul aria-label="Calibration memory" className="mt-1 list-none p-0 text-[12px] text-muted">
+          {mine.map((f) => (
+            <li key={f.id}>
+              {f.value === "missed_by_llm" ? "missed by the LLM" : f.value}: {MEMORY[f.memory]}
+            </li>
+          ))}
+        </ul>
       )}
       <div className="mt-1.5 flex items-start gap-2">
         <textarea

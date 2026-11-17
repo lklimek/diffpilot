@@ -8,7 +8,7 @@ import type {
   RelatedWork,
   RelatedWorkKind,
 } from "../../api/generated/types";
-import { evidenceText } from "../section/format";
+import { dependencyFacts, evidenceText } from "../section/format";
 import { LlmLine, Section, Subhead } from "../section/Section";
 
 /** The PR context as rendered. */
@@ -64,15 +64,16 @@ function ciLine(ci: CiStatus): string {
   }
 }
 
-function profileLine(profile: ProjectProfileStatus): string {
+function profileLines(profile: ProjectProfileStatus): string[] {
   const unchecked = profile.memcan === "not_checked";
-  if (profile.sources.length === 0) {
-    return unchecked
-      ? "No project profile file; a MemCan profile was not checked"
-      : "No project profile — ratings are component-level";
-  }
   const names = profile.sources.map((s) => (s === "repository_file" ? "repository file" : "MemCan"));
-  return `Project profile: ${names.join(" and ")}${unchecked ? "; a MemCan profile was not checked" : ""}`;
+  const sources =
+    names.length > 0
+      ? `Project profile: ${names.join(" and ")}`
+      : unchecked
+        ? "No project profile file in the repository"
+        : "No project profile — ratings are component-level";
+  return unchecked ? [sources, "Project profile in MemCan: not checked"] : [sources];
 }
 
 function Fact({ children }: { children: ReactNode }) {
@@ -169,12 +170,12 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
               )}
             </Fact>
             <Fact>{facts.counters.lines_removed_from_tests} lines removed from tests</Fact>
-            <Fact>
-              {facts.counters.dependencies_changed.length} dependencies changed
-              {facts.counters.dependencies_changed.length > 0 &&
-                `: ${facts.counters.dependencies_changed.join(", ")}`}
-            </Fact>
-            <Fact>{profileLine(facts.project_profile)}</Fact>
+            {dependencyFacts(facts.counters).map((line) => (
+              <Fact key={line}>{line}</Fact>
+            ))}
+            {profileLines(facts.project_profile).map((line) => (
+              <Fact key={line}>{line}</Fact>
+            ))}
           </ul>
         </Section>
       </div>

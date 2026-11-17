@@ -29,25 +29,19 @@ test("running: k of n, no Open review", async ({ page }) => {
 
 test("paused: usage limit with resume time", async ({ page }) => {
   await open(page, "paused");
-  await expect(
-    page.getByText(/^Paused, 2 of 5 flows analysed: Codex usage limit reached, resumes at .*\d\d:\d\d$/),
-  ).toBeVisible();
+  await expect(page.getByText(/^Paused until \d\d:\d\d — 2 of 5$/)).toBeVisible();
   await expect(bar(page)).toHaveAttribute("aria-valuenow", "2");
   await expect(openReview(page)).toHaveCount(0);
   await expectTrustWording(page);
 
   await open(page, "paused-unknown");
-  await expect(
-    page.getByText("Paused: Codex usage limit reached; the resume time is not known"),
-  ).toBeVisible();
+  await expect(page.getByText("Paused; the resume time is not known")).toBeVisible();
 });
 
 test("failed in a flow: names it; Retry runs the analysis to finished", async ({ page }) => {
   await open(page, "failed");
   await expect(page.getByText("Analysis of flow “Classify RPC errors” failed")).toBeVisible();
-  await expect(
-    page.getByText("The LLM answer did not match the expected format after 2 repairs."),
-  ).toBeVisible();
+  await expect(page.getByText("The agent's answer did not have the expected structure.")).toBeVisible();
   await expect(openReview(page)).toHaveCount(0);
   await expectTooltips(page);
   await expectTrustWording(page);
@@ -60,7 +54,7 @@ test("failed in a flow: names it; Retry runs the analysis to finished", async ({
 test("failed before any flow: plain description and Retry", async ({ page }) => {
   await open(page, "failed-early");
   await expect(page.getByText("The analysis failed before any flow was planned")).toBeVisible();
-  await expect(page.getByText(/could not be fetched from GitHub/)).toBeVisible();
+  await expect(page.getByText("The repository could not be fetched. Retry the analysis.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
   await expectTrustWording(page);
 });

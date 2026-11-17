@@ -1,4 +1,10 @@
-import type { NotAnalysedCategory, ProfileSource, RepoSettings, RuleKind } from "../../api/generated/types";
+import type {
+  NotAnalysedCategory,
+  ProfileSource,
+  ProjectProfileStatus,
+  RepoSettings,
+  RuleKind,
+} from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SettingsCard } from "./Card";
 
@@ -18,7 +24,13 @@ const COLUMNS = [
   ["Section", "The Not analysed section that matching material goes to."],
 ] as const;
 
-function profileText(sources: ProfileSource[]): string {
+function profileText({ sources, memcan }: ProjectProfileStatus): string {
+  if (memcan === "not_checked") {
+    const file = sources.includes("repository_file")
+      ? SOURCE.repository_file
+      : "No .claudius/project-profile.md on the base ref";
+    return `${file}. Project profile in MemCan: not checked.`;
+  }
   if (sources.length === 0) {
     return "No project profile: neither .claudius/project-profile.md on the base ref nor a MemCan profile. Analyses run without it.";
   }
@@ -88,7 +100,7 @@ export function RepoSettingsCard({ settings }: { settings: RepoSettings }) {
         </ul>
       )}
       <h3 className="mt-2 text-sm font-semibold">Project profile source</h3>
-      <p className="text-xs">{profileText(project_profile.sources)}</p>
+      <p className="text-xs">{profileText(project_profile)}</p>
     </SettingsCard>
   );
 }

@@ -345,3 +345,24 @@ test("1440: while a comment is written its line reference stays in view (UX-109)
   await dock.evaluate((el) => el.scrollTo({ top: 0 }));
   await expect(dock.getByText("On src/rpc/client.rs:96")).toBeInViewport({ ratio: 1 });
 });
+
+for (const [scenario, outcome] of [
+  ["", "Saved to calibration memory"],
+  ["&scenario=memcan-failed", "Recorded here; not yet saved to calibration memory (retrying)"],
+] as const) {
+  test(`feedback shows the MemCan write moving from pending to its outcome${scenario}`, async ({ page }) => {
+    await page.goto(`/analyses/${ANALYSIS_ID}?state=wrong${scenario}`);
+    await page
+      .getByRole("navigation")
+      .getByRole("button", { name: /^Flow 3:/ })
+      .click();
+    await page
+      .getByRole("navigation")
+      .getByRole("button", { name: /^Step 1:/ })
+      .click();
+    const memory = page.getByRole("list", { name: "Calibration memory" });
+    await expect(memory).toContainText("wrong: Saved to calibration memory");
+    await expect(memory).toContainText("overrated: Recorded; saving to calibration memory…");
+    await expect(memory).toContainText(`overrated: ${outcome}`, { timeout: 8000 });
+  });
+}

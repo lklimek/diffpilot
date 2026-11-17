@@ -103,7 +103,9 @@ test("analysis in progress and failed analysis lead to the progress screen", asy
 
   await page.goto("/?scenario=existing-failed");
   await analyze(page);
-  await expect(page.getByRole("alert")).toContainText("Planning the flows failed.");
+  await expect(page.getByRole("alert")).toContainText(
+    "The analysis stopped because of a server error. Retry the analysis.",
+  );
   await page.getByRole("link", { name: "Show details and retry" }).click();
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
 });

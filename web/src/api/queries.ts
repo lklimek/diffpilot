@@ -125,9 +125,18 @@ export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
   return { lost };
 }
 
+/** Interval of re-reading feedback while a MemCan write is pending. */
+export const FEEDBACK_POLL_MS = 2000;
+
 /** Stored feedback of the analysis (user values and `missed_by_llm`). */
 export const useFeedback = (id: AnalysisId) =>
-  useQuery({ queryKey: ["feedback", id], queryFn: () => api.listFeedback(id) });
+  useQuery({
+    queryKey: ["feedback", id],
+    queryFn: () => api.listFeedback(id),
+    // MemCan writes run after the response: read again while one is pending.
+    refetchInterval: (query) =>
+      query.state.data?.some((f) => f.memory === "pending") ? FEEDBACK_POLL_MS : false,
+  });
 
 /** Stores a feedback value; the list is read again (the server merges values per target). */
 export const usePostFeedback = (id: AnalysisId) => {

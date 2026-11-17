@@ -255,6 +255,38 @@ describe("Inspector summaries", () => {
     expect(glance).toHaveTextContent(/fit questions? to check/);
   });
 
+  it("counts the unexplained ranges that were not sent to the LLM", () => {
+    const t = structuredClone(tour);
+    t.quiet.unexplained = [
+      ...t.quiet.unexplained,
+      {
+        file: "src/huge.rs",
+        side: "head",
+        ranges: [
+          { start_line: 1, end_line: 900 },
+          { start_line: 950, end_line: 990 },
+        ],
+        reason: "too_large_for_prompt",
+      },
+    ];
+    render(<Inspector tour={t} block={{ block: "pr_context" }} />);
+    expect(region(/^Coverage/)).toHaveTextContent("2 ranges not sent to the LLM: too large");
+  });
+
+  it("states dependency files that were not checked in the Mechanical & generated summary", () => {
+    const t = structuredClone(tour);
+    t.pr_context.facts.counters.dependencies_changed = [];
+    t.pr_context.facts.counters.dependency_files_not_checked = ["Cargo.lock"];
+    render(
+      <Inspector
+        tour={t}
+        block={{ block: "quiet", row: { row: "not_analysed", category: "generated_mechanical" } }}
+      />,
+    );
+    expect(document.body).toHaveTextContent("Dependency files not checked: Cargo.lock");
+    expect(document.body).not.toHaveTextContent(/0 dependencies/);
+  });
+
   it("counts flows the LLM did not rate as not rated", () => {
     const t = structuredClone(tour);
     t.flows[0]!.llm.risk = null;

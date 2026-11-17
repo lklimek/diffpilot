@@ -22,3 +22,16 @@ export function commentPlacement(lines: LinesResponse, target: CommentTarget): C
   const inOneHunk = scope.line_thread_ranges.some((r) => r.start_line <= first && target.line <= r.end_line);
   return inOneHunk ? "line" : "file";
 }
+
+/**
+ * Whether `target` is a changed line of the diff on its side (added on head, removed on base), as the server
+ * requires for feedback on a line.
+ */
+export function isChangedLine(lines: LinesResponse, target: CommentTarget): boolean {
+  if (target.path !== lines.path) return false;
+  if (target.side === lines.side) return lines.changed.includes(target.line);
+  return (
+    target.side === "base" &&
+    lines.deleted.some((d) => d.base_start <= target.line && target.line < d.base_start + d.total_lines)
+  );
+}

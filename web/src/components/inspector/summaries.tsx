@@ -10,7 +10,7 @@ import type {
 } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { KindLabel } from "../badge/LlmLabel";
-import { rangeText } from "../section/format";
+import { dependencyFacts, rangeText } from "../section/format";
 import { Collapsible } from "./Collapsible";
 import type { SectionControl } from "./sectionState";
 import { Empty } from "./text";
@@ -122,6 +122,9 @@ export function PrContextSummary({
     (n, f) => n + f.ranges.reduce((m, r) => m + r.end_line - r.start_line + 1, 0),
     0,
   );
+  const tooLarge = quiet.unexplained
+    .filter((f) => f.reason === "too_large_for_prompt")
+    .reduce((n, f) => n + f.ranges.length, 0);
   const notAnalysed = quiet.not_analysed.filter((s) => s.file_count > 0);
   const files = notAnalysed.reduce((n, s) => n + s.file_count, 0);
   const risks = RISK_ORDER.map(
@@ -148,6 +151,7 @@ export function PrContextSummary({
             {notAnalysed.length > 0 &&
               ` (${notAnalysed.map((s) => `${CATEGORY[s.category]} ${s.file_count}`).join(", ")})`}
           </li>
+          {tooLarge > 0 && <li>{plural(tooLarge, "range")} not sent to the LLM: too large</li>}
           <li>Moves with identical text: {quiet.moves.length}</li>
         </ul>
       </Collapsible>
@@ -262,9 +266,8 @@ export function QuietSummary({
           {row.category === "tests" && (
             <p>{plural(counters.lines_removed_from_tests, "line")} removed from tests.</p>
           )}
-          {row.category === "generated_mechanical" && (
-            <p>{plural(counters.dependencies_changed.length, "dependency", "dependencies")} changed.</p>
-          )}
+          {row.category === "generated_mechanical" &&
+            dependencyFacts(counters).map((line) => <p key={line}>{line}.</p>)}
           <ul className="m-0 grid list-none gap-1 p-0">
             {section.items.map((item) => (
               <li key={`${item.side}:${item.file}`}>
