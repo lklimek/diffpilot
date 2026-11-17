@@ -109,7 +109,7 @@ impl UserTokens<'_> {
         session: &NewSession<'_>,
         now: DateTime<Utc>,
     ) -> Result<(), DbError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::write_tx(self.pool).await?;
         insert_session(session, now).execute(&mut *tx).await?;
         put_query(session.user_id, tenant_id, tokens, now)
             .execute(&mut *tx)
@@ -182,7 +182,7 @@ impl UserTokens<'_> {
         user_id: &str,
         condition: PairCondition,
     ) -> Result<bool, DbError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::write_tx(self.pool).await?;
         let matched = match condition {
             PairCondition::Any => {
                 sqlx::query("DELETE FROM user_tokens WHERE user_id = ?")
@@ -235,7 +235,7 @@ impl UserTokens<'_> {
         token_hash: &[u8],
         live: Liveness,
     ) -> Result<bool, DbError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::write_tx(self.pool).await?;
         sqlx::query("DELETE FROM sessions WHERE token_hash = ? AND user_id = ?")
             .bind(token_hash)
             .bind(user_id)

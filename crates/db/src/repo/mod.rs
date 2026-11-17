@@ -7,9 +7,9 @@ use std::fmt;
 use std::path::Path;
 use std::time::Duration;
 
-use sqlx::SqlSafeStr;
 use sqlx::migrate::{Migration, MigrationType, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions};
+use sqlx::{SqlSafeStr, Sqlite, Transaction};
 
 use crate::error::DbError;
 
@@ -31,10 +31,49 @@ pub mod tokens;
 pub mod users;
 
 #[cfg(test)]
+mod concurrency_tests;
+#[cfg(test)]
 mod schema_tests;
+
+/// Test helpers shared by dependent crates.
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing {
+    use std::path::Path;
+
+    use super::Db;
+    use crate::error::DbError;
+
+    /// A file-backed WAL database in `dir` with the production pool (several connections), for tests where
+    /// connections run concurrently; [`Db::in_memory`] has a single connection and never sees lock contention.
+    pub async fn file_backed(dir: &Path) -> Result<Db, DbError> {
+        Db::open(&dir.join("smart-review.sqlite")).await
+    }
+}
 
 /// The single schema file, rewritten in place until deployment.
 const INIT_SQL: &str = include_str!("../../migrations/0001_init.sql");
+
+/// Starts a transaction that may write: `BEGIN IMMEDIATE` takes the write lock at once and waits on the busy
+/// timeout. A deferred transaction that reads and then writes fails at once with `SQLITE_BUSY` when another
+/// connection writes meanwhile, because SQLite cannot upgrade its read snapshot.
+pub(crate) async fn write_tx(pool: &SqlitePool) -> Result<Transaction<'static, Sqlite>, DbError> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one place that starts a write transaction"
+    )]
+    let tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    Ok(tx)
+}
+
+/// Starts a read-only transaction (one consistent snapshot); it must not write, use [`write_tx`] for that.
+pub(crate) async fn read_tx(pool: &SqlitePool) -> Result<Transaction<'static, Sqlite>, DbError> {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one place that starts a read-only transaction"
+    )]
+    let tx = pool.begin_with("BEGIN DEFERRED").await?;
+    Ok(tx)
+}
 
 /// The tenant every v1 row belongs to.
 pub const DEFAULT_TENANT: &str = "default";
