@@ -1,7 +1,7 @@
-//! MemCan: feedback stored as memories and severity calibration examples read back for the prompts (brief §5
-//! Calibration memory; `project` = the analysed repository's short name). MemCan is optional at run time: when
-//! it is unreachable, feedback stays stored locally and queued; nothing is reported as saved to MemCan unless
-//! MemCan confirmed it.
+//! MemCan: feedback stored as memories, severity calibration examples and the project profile read back for the
+//! prompts (brief §5 Calibration memory, §2 Project profile; `project` = the analysed repository's short name).
+//! MemCan is optional at run time: when it is unreachable, feedback stays stored locally and queued; nothing is
+//! reported as saved to MemCan unless MemCan confirmed it.
 //!
 //! Leaves the server (AR-1, threat model T6), per feedback entry, as one memory keyed by the feedback id: the
 //! repository `owner/name`, pull request number and title, the value, the reviewer's note, the target (step
@@ -12,6 +12,7 @@ pub mod calibration;
 mod client;
 pub mod feedback;
 mod memory;
+pub mod profile;
 pub mod writer;
 
 #[cfg(test)]

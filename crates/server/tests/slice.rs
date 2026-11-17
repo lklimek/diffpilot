@@ -896,6 +896,47 @@ async fn pipeline_resumes_unfinished_analysis_from_stored_documents() {
     assert_eq!(h.executor.submitted(), ["flow:f2", "flow:f4", "flow:f5"]);
 }
 
+/// The analysis's one MemCan profile lookup reaches every prompt (fenced as data) and the Tour's facts.
+#[tokio::test]
+async fn memcan_profile_lookup_reaches_every_prompt_and_the_tour() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let profile = "MemCan-profile-CANARY: payments service; risk lives in src/ledger.";
+    h.state
+        .db
+        .documents()
+        .put(
+            id,
+            DocumentKind::MemcanProfile,
+            "",
+            &json!({"memcan": "checked", "text": profile}),
+            Utc::now(),
+        )
+        .await
+        .expect("lookup");
+
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    let finished = h.wait_until_finished(&id.to_string()).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    for stage in ["plan:1", "pr_context", "flow:f1"] {
+        let runs = h.executor.specs_of(stage);
+        let prompt = &runs.first().expect(stage).1.prompt;
+        let fenced = prompt
+            .split("<<<DATA ")
+            .find(|block| block.contains("project profile: MemCan memory"))
+            .unwrap_or_default();
+        assert!(fenced.contains(profile), "{stage}: {prompt}");
+    }
+    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(
+        tour["pr_context"]["facts"]["project_profile"],
+        json!({"sources": ["repository_file", "memcan"], "memcan": "checked"}),
+        "the fixture repository has a profile file too"
+    );
+}
+
 #[tokio::test]
 async fn lines_match_the_seed_for_whole_files() {
     let h = harness().await;

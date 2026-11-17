@@ -39,6 +39,7 @@ use super::{CREDENTIAL_ID, PipelineError, control, diff_files, prepare, prepass}
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::memcan::calibration::{CalibrationDirection, CalibrationExample, calibration_examples};
+use crate::memcan::profile::{self, ProfileLookup};
 use crate::model::{ModelContext, select_model};
 use crate::prompts::{
     self, FlowInput, JobContext, PlanBatch, PlanInput, PrContextInput, Profile, PromptError,
@@ -100,6 +101,8 @@ struct Driver<'a> {
     /// The one stage whose job runs now: the next is submitted only once its result is verified and stored (or
     /// the stage ended), so every job's context pack holds the results of all earlier stages.
     in_flight: Option<JobStage>,
+    /// The analysis's MemCan project profile lookup (made once, stored).
+    memcan_profile: ProfileLookup,
     /// MemCan severity calibration examples per flow; `None` = not checked (MemCan unreachable).
     calibration: HashMap<FlowId, Option<Vec<CalibrationExample>>>,
     /// MemCan failed once in this run: later flows do not wait for it again.
@@ -118,6 +121,7 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
     let files = diff_files(mirror.clone(), &summary).await?;
     let snapshot = snapshot(state, &summary).await?;
     let prepass = prepass::ensure(state, &summary, &mirror, &files).await?;
+    let memcan_profile = profile::ensure(&state.db, &state.config.memcan, &summary).await?;
     let listed = prepass.agent_files(&files);
     let fitted = {
         let job = JobContext {
@@ -128,7 +132,7 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
         };
         let profile = Profile {
             file: prepass.profile_file.as_deref(),
-            memcan: None,
+            memcan: memcan_profile.text(),
         };
         // The largest batch numbers bound the rendered size of every batch's prompt.
         let largest = PlanBatch {
@@ -168,6 +172,7 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
         live: HashMap::new(),
         waiting: VecDeque::new(),
         in_flight: None,
+        memcan_profile,
         calibration: HashMap::new(),
         memcan_down: false,
         paused: BTreeMap::new(),
@@ -649,10 +654,9 @@ impl Driver<'_> {
             sub_agents: prompts::SUB_AGENTS_DEFAULT,
             prepass,
         };
-        // TODO(WP3-MEMCAN merge): the MemCan profile memory; `server::memcan` has no profile read yet.
         let profile = Profile {
             file: prepass.profile_file.as_deref(),
-            memcan: None,
+            memcan: self.memcan_profile.text(),
         };
         let finish = |of: RepairOf<'_>, task: &dyn Fn() -> Result<String, prompts::PromptError>| {
             match repair {

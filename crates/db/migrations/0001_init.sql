@@ -132,7 +132,8 @@ CREATE UNIQUE INDEX analyses_one_live_per_head ON analyses (pull_request_id, hea
 CREATE TABLE documents (
     analysis_id TEXT NOT NULL REFERENCES analyses (id) ON DELETE CASCADE,
     tenant_id   TEXT NOT NULL REFERENCES tenants (id),
-    kind        TEXT NOT NULL CHECK (kind IN ('prepass', 'plan', 'pr_context', 'flow', 'github_snapshot', 'unsent')),
+    kind        TEXT NOT NULL CHECK (kind IN ('prepass', 'plan', 'pr_context', 'flow', 'github_snapshot', 'unsent',
+                                          'memcan_profile')),
     key         TEXT NOT NULL DEFAULT '',
     body        TEXT NOT NULL CHECK (json_valid(body)),
     -- An agent output's attempt ran with a GitHub installation token; NULL for documents the server built.
