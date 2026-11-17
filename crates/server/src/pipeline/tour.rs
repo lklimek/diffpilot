@@ -116,7 +116,7 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
     let snapshot = stored_github_snapshot(state, summary.id).await?;
     let (mirror, files) = pr_diff(state, summary).await?;
     // Stored by the driver; computed here for an analysis finished without one (deterministic).
-    let prepass = prepass::ensure(state, summary, &mirror, &files).await?;
+    let prepass = prepass::ensure_for_read(state, summary, &mirror, &files).await?;
     let facts = Arc::new(Facts {
         mirror,
         base: summary.pr.base_sha.clone(),

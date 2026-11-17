@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -21,6 +22,7 @@ use contracts::ids::{AnalysisId, CommitSha, FlowId, StepId};
 use db::repo::analyses::NewAnalysis;
 use db::repo::documents::DocumentKind;
 use db::repo::sessions::NewSession;
+use db::repo::testing::{file_backed_with_busy_timeout, hold_write_lock};
 use db::repo::users::GithubProfile;
 use db::repo::{DEFAULT_TENANT, Db};
 use http_body_util::BodyExt;
@@ -78,6 +80,15 @@ fn config(dir: &Path) -> Config {
 
 impl Harness {
     async fn new() -> Self {
+        Self::build(None).await
+    }
+
+    /// On a file-backed database whose writers give up after `busy_timeout`.
+    async fn file_backed(busy_timeout: Duration) -> Self {
+        Self::build(Some(busy_timeout)).await
+    }
+
+    async fn build(busy_timeout: Option<Duration>) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let repo = dir.path().join("remotes/acme/node-client.git");
         let built = Command::new(fixtures().join("repo/build-repo.sh"))
@@ -85,7 +96,11 @@ impl Harness {
             .output()
             .expect("build-repo.sh");
         assert!(built.status.success(), "{built:?}");
-        let db = Db::in_memory().await.expect("db");
+        let db = match busy_timeout {
+            None => Db::in_memory().await,
+            Some(timeout) => file_backed_with_busy_timeout(dir.path(), timeout).await,
+        }
+        .expect("db");
         let executor = Arc::new(QueueExecutor::new(db.clone()));
         let state = AppState::new(config(dir.path()), db, executor);
         let pr: PrSummary = serde_json::from_value(
@@ -383,6 +398,19 @@ async fn review_state_round_trip_is_idempotent_and_per_user() {
             state(&["f1.1", "f5.2"], block)
         );
     }
+}
+
+/// Another connection holds the write lock past the busy timeout: reading a finished analysis and its tour (whose
+/// pre-pass is computed on read, as for an analysis finished without one) still answers.
+#[tokio::test]
+async fn reads_answer_while_another_connection_holds_the_write_lock() {
+    let h = Harness::file_backed(Duration::from_millis(100)).await;
+    let id = h.analysis(true).await;
+    let _lock = hold_write_lock(&h.state.db).await.expect("write lock");
+    let (status, body) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]

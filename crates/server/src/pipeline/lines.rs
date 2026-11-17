@@ -50,7 +50,7 @@ pub async fn ensure_rendered(
     side: LineSide,
     path: &str,
 ) -> Result<Prepass, LinesError> {
-    let prepass = prepass::ensure(state, summary, mirror, files).await?;
+    let prepass = prepass::ensure_for_read(state, summary, mirror, files).await?;
     if prepass.is_not_rendered(side, path) {
         return Err(LinesError::NotRendered);
     }

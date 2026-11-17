@@ -57,13 +57,41 @@ pub async fn ensure(
         return Ok(prepass);
     }
     let prepass = compute(summary, mirror, files).await?;
+    store(state, summary.id, &prepass).await?;
+    Ok(prepass)
+}
+
+/// [`ensure`] for a read request: a failed store (e.g. the database is busy) is logged and the computed pre-pass
+/// served, since the next read computes the same one again.
+pub async fn ensure_for_read(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    mirror: &Path,
+    files: &[FileDiff],
+) -> Result<Prepass, PrepassRunError> {
+    if let Some(prepass) = stored(state, summary.id).await? {
+        return Ok(prepass);
+    }
+    let prepass = compute(summary, mirror, files).await?;
+    if let Err(error) = store(state, summary.id, &prepass).await {
+        tracing::warn!(
+            analysis = %summary.id,
+            sqlite_code = ?error.sqlite_code(),
+            ?error,
+            "the pre-pass computed for a read could not be stored; the next read computes it again"
+        );
+    }
+    Ok(prepass)
+}
+
+async fn store(state: &AppState, analysis: AnalysisId, prepass: &Prepass) -> Result<(), DbError> {
     state
         .db
         .documents()
-        .put(summary.id, DocumentKind::Prepass, "", &prepass, Utc::now())
+        .put(analysis, DocumentKind::Prepass, "", prepass, Utc::now())
         .await?;
-    tracing::debug!(analysis = %summary.id, hunks = prepass.hunks.len(), "pre-pass stored");
-    Ok(prepass)
+    tracing::debug!(%analysis, hunks = prepass.hunks.len(), "pre-pass stored");
+    Ok(())
 }
 
 async fn compute(
