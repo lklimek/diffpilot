@@ -134,9 +134,9 @@ mapping, query rules and the endpoint × fixture-state inventory.
   needed; the provider rejected the request; the answer was not in the expected format; the call took too long;
   the call failed for another reason (also when no cause is stored). The provider's raw text stays in the
   database and the server log, never in the response. Installations are read from GitHub with the user token
-  (`GET /user/installations`, suspended ones left out); when the user's GitHub sign-in is not usable or GitHub
-  fails, `app_installations` is `null` ("not checked") and the rest of Settings is still returned; `[]` means
-  none installed. `PUT …/settings/language` accepts only `en` and `pl`.
+  (`GET /user/installations`, suspended ones left out); when the user token is missing, GitHub rejects it or
+  GitHub fails, `app_installations` is `null` ("not checked", no cause given; signing in again may help) and the
+  rest of Settings is still returned, the session stays valid; `[]` means none installed. `PUT …/settings/language` accepts only `en` and `pl`.
 - **Review state**: `PUT` replaces the user's whole state (idempotent; repeated ticks are stored once); concurrent
   writes leave one of them whole. Every ticked step and the last viewed block must be in the analysis's Tour
   (quiet rows only when the Tour shows them), else `invalid_request` and nothing is stored.

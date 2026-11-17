@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ApiError } from "../../api/client";
+import { routes } from "../../api/generated/routes";
 import type { RepoRef } from "../../api/generated/types";
 import { useMe, useRepoSettings, useSetLanguage, useSettings } from "../../api/queries";
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
@@ -56,7 +57,7 @@ function SettingsContent() {
           busy={setLanguage.isPending}
           onChange={(l) => setLanguage.mutate(l)}
         />
-        <AppInstallationsCard installations={app_installations} />
+        <AppInstallationsCard installations={app_installations} signInHref={routes.authLogin.path} />
         <RepoSection repos={repos} />
       </div>
       {setLanguage.isError && (

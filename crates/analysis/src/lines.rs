@@ -832,6 +832,28 @@ mod tests {
                 "{base:?} -> {head:?}"
             );
         }
+        // A CR before a missing final newline is text, not half of a CR LF.
+        let diff = classic_diff(&one, LineSide::Head, texts("x\r", "x\r\n"), 1, 1, 100);
+        let rows = vec![
+            (
+                DiffLineKind::Removed,
+                Some(1),
+                None,
+                "x\r".to_owned(),
+                Some(LineEnding::NoNewline),
+            ),
+            (
+                DiffLineKind::Added,
+                None,
+                Some(1),
+                "x".to_owned(),
+                Some(LineEnding::Crlf),
+            ),
+        ];
+        assert_eq!(
+            diff.map(|h| shape(&h)),
+            Ok(vec![("@@ -1,1 +1,1 @@".to_owned(), rows)])
+        );
         // A last line without newline as unchanged context on both sides keeps its marker.
         let file = modified(vec![hunk((1, 1), (1, 1))]);
         let diff = classic_diff(&file, LineSide::Head, texts("a\nb", "A\nb"), 1, 2, 100);

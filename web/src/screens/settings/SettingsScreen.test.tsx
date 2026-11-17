@@ -35,8 +35,11 @@ describe("Settings (brief §4.4)", () => {
   it("installations not checked: said plainly, the rest still shown", async () => {
     setScenario("installations-not-checked");
     renderRoute("/settings");
-    expect(await region("GitHub App")).toHaveTextContent(
-      "GitHub App installations: not checked — GitHub could not be reached",
+    const app = await region("GitHub App");
+    expect(app).toHaveTextContent("GitHub App installations: not checked. Signing in again may help.");
+    expect(within(app).getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute(
+      "href",
+      "/auth/github/login",
     );
     expect(await region("LLM status")).toHaveTextContent("working");
   });

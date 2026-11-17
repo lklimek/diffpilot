@@ -743,6 +743,9 @@ mod tests {
         let (status, settings) = h.get(GET_SETTINGS.path).await;
         assert_eq!(status, StatusCode::OK, "{settings}");
         assert_eq!(settings["app_installations"], Value::Null);
+        // GitHub's 401 does not end the session: the same cookie still reads Settings.
+        let (status, settings) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(status, StatusCode::OK, "{settings}");
         // A user without a usable GitHub sign-in: not checked either.
         h.state
             .db

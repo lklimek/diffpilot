@@ -37,8 +37,11 @@ test("LLM not working: plain message", async ({ page }) => {
 
 test("GitHub App installations not checked", async ({ page }) => {
   await page.goto("/settings?scenario=installations-not-checked");
-  await expect(page.getByRole("region", { name: "GitHub App" })).toContainText(
-    "GitHub App installations: not checked — GitHub could not be reached",
+  const app = page.getByRole("region", { name: "GitHub App" });
+  await expect(app).toContainText("GitHub App installations: not checked. Signing in again may help.");
+  await expect(app.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute(
+    "href",
+    "/auth/github/login",
   );
   await expectTrustWording(page);
   await expectAccessible(page);

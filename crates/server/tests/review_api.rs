@@ -511,12 +511,15 @@ fn git_diff(repo: &Path, base: &str, head: &str, path: &str) -> Vec<GitHunk> {
                 let last = lines.last_mut().expect("a line before the marker");
                 last.2 = Some("no_newline".to_owned());
             } else if let Some(marker @ (' ' | '-' | '+')) = line.chars().next() {
-                let text = &line[1..];
-                lines.push(match text.strip_suffix('\r') {
-                    Some(text) => (marker, text.to_owned(), Some("crlf".to_owned())),
-                    None => (marker, text.to_owned(), None),
-                });
+                lines.push((marker, line[1..].to_owned(), None));
             }
+        }
+    }
+    // Only a line followed by LF can end in CR LF: a CR before "\ No newline at end of file" is text.
+    for (_, text, eol) in hunks.iter_mut().flat_map(|(_, lines)| lines.iter_mut()) {
+        if eol.is_none() && text.ends_with('\r') {
+            text.pop();
+            *eol = Some("crlf".to_owned());
         }
     }
     hunks
@@ -747,6 +750,7 @@ async fn diff_keeps_line_endings_refuses_binary_files_and_waits_for_the_merge_ba
             ("image.bin", &[0, 1, 2, 0, 255]),
             ("eof.txt", b"1\n2\n3\nlast"),
             ("crlf.txt", b"1\r\n2\r\n3\r\n"),
+            ("cr.txt", b"1\nx\r"),
         ],
         "fork point",
     );
@@ -758,6 +762,7 @@ async fn diff_keeps_line_endings_refuses_binary_files_and_waits_for_the_merge_ba
             ("image.bin", &[0, 9, 9, 0, 255]),
             ("eof.txt", b"1\n2\n3\nlast\n"),
             ("crlf.txt", b"1\r\n2\n3\r\n"),
+            ("cr.txt", b"1\nx\r\n"),
         ],
         "change",
     );
@@ -782,6 +787,8 @@ async fn diff_keeps_line_endings_refuses_binary_files_and_waits_for_the_merge_ba
         ("eof.txt", "base"),
         ("crlf.txt", "head"),
         ("crlf.txt", "base"),
+        ("cr.txt", "head"),
+        ("cr.txt", "base"),
     ] {
         let (status, body) = h.get(&diff(prepared, path, side, 1, 10)).await;
         assert_eq!(status, StatusCode::OK, "{path}: {body}");
@@ -812,6 +819,22 @@ async fn diff_keeps_line_endings_refuses_binary_files_and_waits_for_the_merge_ba
         .map(|line| &line["eol"])
         .collect();
     assert_eq!(changed, [&json!("crlf"), &Value::Null]);
+    // A last line "x\r" without LF keeps its CR as text; with LF added it is "x" ending in CR LF.
+    let (_, body) = h.get(&diff(prepared, "cr.txt", "head", 2, 2)).await;
+    let changed: Vec<(&Value, &Value)> = body["hunks"][0]["lines"]
+        .as_array()
+        .expect("lines")
+        .iter()
+        .filter(|line| line["kind"] != json!("context"))
+        .map(|line| (&line["text"], &line["eol"]))
+        .collect();
+    assert_eq!(
+        changed,
+        [
+            (&json!("x\r"), &json!("no_newline")),
+            (&json!("x"), &json!("crlf"))
+        ]
+    );
     // b.txt changed only on the base branch: not part of the pull request.
     let (status, body) = h.get(&diff(prepared, "b.txt", "head", 1, 1)).await;
     assert_eq!(

@@ -66,6 +66,7 @@ describe("AppInstallationsCard", () => {
           { account: "acme", all_repositories: false },
           { account: "beta", all_repositories: true },
         ]}
+        signInHref="/auth/github/login"
       />,
     );
     const region = screen.getByRole("region", { name: "GitHub App" });
@@ -77,15 +78,20 @@ describe("AppInstallationsCard", () => {
     );
   });
 
-  it("not checked: says so, not that the App is missing", () => {
-    render(<AppInstallationsCard installations={null} />);
+  it("not checked: says so without inventing a cause, offers signing in again", () => {
+    render(<AppInstallationsCard installations={null} signInHref="/auth/github/login" />);
     const region = screen.getByRole("region", { name: "GitHub App" });
-    expect(region).toHaveTextContent("GitHub App installations: not checked — GitHub could not be reached");
+    expect(region).toHaveTextContent("GitHub App installations: not checked. Signing in again may help.");
     expect(region).not.toHaveTextContent("not installed");
+    expect(region).not.toHaveTextContent("could not be reached");
+    expect(within(region).getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute(
+      "href",
+      "/auth/github/login",
+    );
   });
 
   it("not installed anywhere: says what does not work", () => {
-    render(<AppInstallationsCard installations={[]} />);
+    render(<AppInstallationsCard installations={[]} signInHref="/auth/github/login" />);
     expect(screen.getByRole("region", { name: "GitHub App" })).toHaveTextContent(
       "not installed on any account",
     );
