@@ -88,12 +88,6 @@ pub enum DiffError {
         /// The limit in seconds.
         seconds: u64,
     },
-    /// Declared but not implemented yet.
-    #[error("the analysis operation {operation} is not implemented yet")]
-    NotImplemented {
-        /// The operation.
-        operation: &'static str,
-    },
 }
 
 impl FileDiff {
