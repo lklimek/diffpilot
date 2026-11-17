@@ -324,3 +324,24 @@ Development without containers: `deploy/dev/stack.sh` (fake GitHub, fake provide
 `deploy/dev/real-codex-smoke.sh` with `SR_SMOKE_ISOLATION=supervisor` runs one analysis with the production runner
 image under its supervisor behind the egress proxy; `SR_SMOKE_STATE_VOLUME=smart-review-local_runner-state` (local
 stack's runner stopped first) reuses the stack's Codex credential instead of a second copy.
+
+
+### Usage and analysis statistics logs
+
+Each accepted terminal runner result emits one `job token usage` info event with job id, kind and
+provider input, cached-input and output counts. Counts are absent when the provider did not report them;
+reasoning counts are unavailable in the retained result. Duplicate completion posts do not duplicate it.
+
+Each live-to-terminal analysis transition emits one `analysis statistics` info event: analysis id,
+changed lines/files, agent files, plan batches, flows, submitted jobs/repair generations, summed finished
+job seconds (`plan_seconds`, `pr_context_seconds`, `flow_seconds`, `ask_seconds`), wall-clock
+`total_seconds`, the usage totals/report count, and `initial_estimate_seconds` when known. It includes
+all rounds; wall time includes pauses. Cancelled or failed jobs without a finish timestamp contribute
+no execution duration. It is a snapshot at the transition: later Ask jobs and late runner completion
+after cancellation remain visible in usage summaries but cannot change this single event.
+
+The initial estimate is the first pre-start estimate actually returned to the initiating reader for
+that PR head. This small, bounded process-local observation is not persisted; after restart, eviction,
+or a start without resolve it is absent, never reconstructed as the original prediction. Counts learned
+from diff preparation are also absent if cancellation/failure preceded preparation. Logs contain no
+prompts, answers, PR titles or other source text. No migration or stored-document shape changed.

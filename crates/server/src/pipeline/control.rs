@@ -67,6 +67,12 @@ pub async fn set_state_if(
             }
             db.analyses().set_state(analysis, next, Utc::now()).await?;
             let summary = db.analyses().summary(analysis).await?;
+            if is_live(&current.state)
+                && !is_live(next)
+                && let Err(error) = super::statistics::log_end(state, &summary).await
+            {
+                tracing::warn!(%analysis, ?error, "analysis statistics unavailable");
+            }
             Ok(AnalysisEvent::Analysis { summary })
         })
         .await;
@@ -270,5 +276,26 @@ mod tests {
                 "idempotent"
             );
         }
+    }
+    #[tokio::test]
+    async fn terminal_transition_logs_statistics_once_even_when_cancel_is_repeated() {
+        let state = crate::state::tests::test_state().await;
+        let (id, _) = live(&state.db).await;
+        let logs = crate::test_support::logs::LogCapture::start();
+        cancel(&state, id).await.unwrap();
+        assert!(cancel(&state, id).await.is_err());
+        let text = logs.text();
+        let lines: Vec<_> = text
+            .lines()
+            .filter(|line| line.contains("analysis statistics"))
+            .collect();
+        assert_eq!(lines.len(), 1, "{text}");
+        assert!(
+            lines[0].contains("INFO")
+                && lines[0].contains("jobs=2")
+                && lines[0].contains("total_seconds="),
+            "{}",
+            lines[0]
+        );
     }
 }

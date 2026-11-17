@@ -7,7 +7,10 @@ import td1578 from "./td1578-tour.json";
 import td1578Questions from "./td1578-questions.json";
 
 /** The real tours by scenario name. */
-export const REAL_TOURS = { "real-small": td1578 as Tour, "real-tiny": det1169 as Tour } as const;
+export const REAL_TOURS = {
+  "real-small": { ...td1578, analysis: { ...td1578.analysis, usage: null } } as Tour,
+  "real-tiny": { ...det1169, analysis: { ...det1169.analysis, usage: null } } as Tour,
+} as const;
 
 /** Questions asked on #1578 (one answered, with structured evidence). */
 export const REAL_QUESTIONS = td1578Questions as AskQuestion[];

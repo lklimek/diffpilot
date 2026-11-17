@@ -1,3 +1,5 @@
+import { UsageLine } from "../usage/UsageLine";
+import type { UsageTotals } from "../../api/generated/types";
 import { plural } from "../quiet/labels";
 import type {
   AnalysisProgress as RunProgress,
@@ -29,6 +31,7 @@ interface AnalysisProgressProps {
   state: AnalysisState;
   /** Whole-run facts; absent on older servers. */
   progress?: RunProgress;
+  usage?: UsageTotals | null;
   /** Where "Open review" leads once the analysis has finished. */
   reviewHref: string;
   /** A cancel or retry request is running: the actions are disabled. */
@@ -192,6 +195,7 @@ export function AnalysisProgress({
   state,
   progress,
   reviewHref,
+  usage,
   busy,
   onCancel,
   onRetry,
@@ -274,6 +278,7 @@ export function AnalysisProgress({
       {analysisElapsed && (
         <p className="mt-2 text-[12.5px] text-muted">Analysis started {analysisElapsed} ago</p>
       )}
+      <UsageLine usage={usage} />
       {elapsed && (
         <p
           data-activity={working || undefined}

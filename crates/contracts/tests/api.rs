@@ -41,6 +41,7 @@ use serde_json::{Value, json};
 
 fn summary() -> AnalysisSummary {
     AnalysisSummary {
+        usage: None,
         progress: None,
         has_my_state: None,
         id: AnalysisId::new_random(),
@@ -698,6 +699,7 @@ fn annotation_projection_keeps_was_is_and_remark() {
 #[test]
 fn settings_lists_known_repositories() {
     let settings = Settings {
+        llm_usage: None,
         memcan_status: None,
         llm_status: None,
         language: LlmLanguage::En,
@@ -727,6 +729,7 @@ fn flow_facts_have_no_changed_line_counter() {
 #[test]
 fn settings_installations_not_checked_is_null_not_empty() {
     let mut settings = Settings {
+        llm_usage: None,
         memcan_status: None,
         llm_status: None,
         language: LlmLanguage::En,
@@ -756,4 +759,46 @@ fn diff_line_ending_is_null_for_lf_and_named_otherwise() {
         .map(|eol| serde_json::to_value(line(eol)).expect("serialises")["eol"].clone())
         .collect();
     assert_eq!(names, [json!(null), json!("crlf"), json!("no_newline")]);
+}
+
+#[test]
+fn usage_and_size_warning_are_additive_json_numbers() {
+    use contracts::api::usage::UsageTotals;
+    let mut analysis = summary();
+    analysis.usage = Some(UsageTotals {
+        input_tokens: 1_200_000,
+        cached_input_tokens: 900_000,
+        output_tokens: 45_000,
+        reasoning_output_tokens: None,
+        jobs: 7,
+    });
+    let mut wire = serde_json::to_value(&analysis).unwrap();
+    assert_eq!(
+        wire["usage"],
+        json!({"input_tokens":1200000,"cached_input_tokens":900000,"output_tokens":45000,"reasoning_output_tokens":null,"jobs":7})
+    );
+    wire.as_object_mut().unwrap().remove("usage");
+    assert_eq!(
+        serde_json::from_value::<AnalysisSummary>(wire)
+            .unwrap()
+            .usage,
+        None
+    );
+    let mut wire =
+        json!({"pr": analysis.pr, "commenting_available":true,"analysis":null,"head_moved":false});
+    assert_eq!(
+        serde_json::from_value::<ResolvePrResponse>(wire.clone())
+            .unwrap()
+            .size_warning,
+        None
+    );
+    wire["size_warning"] = json!({"changed_lines":27081,"changed_files":371,"estimate":null});
+    assert_eq!(
+        serde_json::from_value::<ResolvePrResponse>(wire)
+            .unwrap()
+            .size_warning
+            .unwrap()
+            .changed_lines,
+        27081
+    );
 }

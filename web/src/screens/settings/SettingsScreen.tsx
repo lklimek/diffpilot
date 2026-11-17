@@ -67,7 +67,7 @@ function SettingsContent() {
   return (
     <>
       <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(420px,1fr))]">
-        <LlmStatusCard status={llm_status} />
+        <LlmStatusCard status={llm_status} usage={settings.data.llm_usage} />
         <SettingsCard title="Memory">
           <p>
             <MemcanStatusLine status={settings.data.memcan_status} />

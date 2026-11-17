@@ -202,3 +202,16 @@ it("names lexer, header and binary detectors with their actual checks", () => {
   expect(screen.getByText("generated-file header")).toHaveAccessibleDescription(/generated-file header/);
   expect(screen.getByText("binary content")).toHaveAccessibleDescription(/Git identifies binary/);
 });
+
+it("shows today's and seven-day provider totals separately", () => {
+  const usage = {
+    input_tokens: 3_400_000,
+    cached_input_tokens: 2_900_000,
+    output_tokens: 120_000,
+    reasoning_output_tokens: null,
+    jobs: 23,
+  };
+  render(<LlmStatusCard status={null} usage={{ today: usage, last_7_days: usage }} />);
+  expect(screen.getByText("Today: 3.4 M input (2.9 M cached), 120 k output tokens in 23 jobs")).toBeVisible();
+  expect(screen.getByText(/^Last 7 days:/)).toHaveAccessibleDescription(/Reported by the provider/);
+});

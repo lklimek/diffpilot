@@ -23,7 +23,8 @@ export function liveAnalysis(): AnalysisSummary {
   if (stored) return structuredClone(stored);
   const seed = seedNow("analysis") as AnalysisSummary;
   const pinned = scenario().analysis;
-  const summary = pinned ? { ...seed, state: pinned, finished_at: null } : seed;
+  const usageSeed = { ...seed, usage: scenario().usage ?? seed.usage };
+  const summary = pinned ? { ...usageSeed, state: pinned, finished_at: null } : usageSeed;
   const progress = scenario().progress;
   return progress ? { ...summary, progress: progress(summary.state) } : summary;
 }

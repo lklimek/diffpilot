@@ -1,6 +1,7 @@
 // Screen scenarios of the msw mocks (Home, progress, Settings), selected with `?scenario=<name>`; orthogonal to
 // the fixture states of fixtures.ts. Default settings come from the api-seed; repository settings have none yet.
 import type {
+  UsageTotals,
   AnalysisProgress,
   EstimateBasis,
   AnalysisStage,
@@ -65,6 +66,7 @@ interface Scenario {
   resolve?: (seed: ResolvePrResponse) => ResolvePrResponse;
   /** The analysis stays in this state (no scripted run after Analyze). */
   analysis?: AnalysisState;
+  usage?: UsageTotals;
   /** Waiting facts, projected on each scripted stage change. */
   progress?: (state: AnalysisState) => AnalysisProgress;
   /** States made and published, each after its delay (ms), once the first event stream opens; the last one stays. */
@@ -222,7 +224,54 @@ const waitingProgress = (basis: EstimateBasis | null, state: AnalysisState): Ana
   };
 };
 
+const REPORTED_USAGE: UsageTotals = {
+  input_tokens: 1_200_000,
+  cached_input_tokens: 900_000,
+  output_tokens: 45_000,
+  reasoning_output_tokens: null,
+  jobs: 7,
+};
+
 const SCENARIOS = {
+  "usage-progress": { analysis: { state: "planning", stage: stage("plan", LOADED) }, usage: REPORTED_USAGE },
+  usage: {
+    analysis: { state: "finished", total: 5 },
+    usage: REPORTED_USAGE,
+    tour: (seed) => ({ ...seed, analysis: { ...seed.analysis, usage: REPORTED_USAGE } }),
+    settings: {
+      ...SETTINGS,
+      llm_usage: {
+        today: REPORTED_USAGE,
+        last_7_days: {
+          ...REPORTED_USAGE,
+          input_tokens: 3_400_000,
+          cached_input_tokens: 2_900_000,
+          output_tokens: 120_000,
+          jobs: 23,
+        },
+      },
+    },
+  },
+  "large-pr": {
+    resolve: (seed) => ({
+      ...seed,
+      analysis: null,
+      commenting_available: true,
+      size_warning: {
+        changed_lines: 27081,
+        changed_files: 371,
+        estimate: { remaining_seconds: 14400, basis: "lines_only", rough: true },
+      },
+    }),
+  },
+  "large-pr-no-history": {
+    resolve: (seed) => ({
+      ...seed,
+      analysis: null,
+      commenting_available: true,
+      size_warning: { changed_lines: 3000, changed_files: 24, estimate: null },
+    }),
+  },
   "plan-parts": {
     analysis: partState(6, new Date(Date.parse(LOADED) - 5 * 60_000).toISOString()),
     progress: (state) => waitingProgress("this_analysis", state),

@@ -151,6 +151,13 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
             })
         })?
     };
+    state.statistics.planned(
+        analysis,
+        u64::from(changed_line_count(&files)),
+        files.len() as u64,
+        listed.len() as u64,
+        fitted.batches.len() as u64,
+    );
     tracing::info!(%analysis, plan_batches = fitted.batches.len(), agent_files = listed.len(),
         changed_lines = changed_line_count(&files), "analysis work planned");
     let results = StoredResults::load(&state.db, analysis).await?;
