@@ -10,7 +10,7 @@ test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ 
   await page.getByRole("button", { name: "Analyze" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress$`));
   await page.getByRole("link", { name: "Open review" }).click();
-  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}$`));
+  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
 
   await page.keyboard.press("j");
@@ -217,8 +217,16 @@ test("reload keeps the position and the ticks", async ({ page }) => {
   await openTour(page);
   await page.keyboard.press("j");
   await page.keyboard.press("j");
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/review-state") &&
+      response.request().method() === "PUT" &&
+      response.status() === 204 &&
+      response.request().postDataJSON().ticked_steps.includes("f1.1"),
+  );
   await page.keyboard.press("x");
   await expect(heading(page)).toHaveText("1 Trigger: callers of send");
+  await saved;
   await page.reload();
   await expect(heading(page)).toHaveText("1 Trigger: callers of send");
   await expect(

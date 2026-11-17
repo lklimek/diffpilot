@@ -1,3 +1,4 @@
+import { plural } from "../quiet/labels";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { FlowGraph, NodeKind, StepId } from "../../api/generated/types";
 import {
@@ -178,7 +179,7 @@ export function FlowDiagram({ graph, title, currentStepId, onSelectStep }: FlowD
       <div ref={scroller} className="min-h-0 flex-1 overflow-auto">
         {!layout && (
           <p className="text-[13px] text-muted">
-            {`This flow has ${graph.nodes.length} steps and ${graph.edges.length} edges: too many to draw. The list below shows it as text.`}
+            {`This flow has ${plural(graph.nodes.length, "step")} and ${plural(graph.edges.length, "edge")}: too many to draw. The list below shows it as text.`}
           </p>
         )}
         {layout && (

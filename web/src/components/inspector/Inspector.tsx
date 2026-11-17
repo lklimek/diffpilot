@@ -4,6 +4,7 @@ import type {
   AnnotationId,
   AnnotationType,
   BlockRef,
+  Evidence,
   GithubThread,
   PendingReview,
   Step,
@@ -56,6 +57,7 @@ export interface InspectorProps {
   onBackToStep?: () => void;
   /** Opens a step (from the flow summary). */
   onSelectStep?: (step: StepId) => void;
+  onEvidence?: (evidence: Evidence) => void;
 }
 
 const ANNOTATION: Record<AnnotationType, string> = {
@@ -96,6 +98,7 @@ function stepPanel(
   annotation: Annotation | undefined,
   diff: ReactNode,
   sections: SectionControl,
+  onEvidence?: (evidence: Evidence) => void,
 ): Panel {
   const anns = annotation ? [annotation] : step.llm.annotations;
   const byType = (type: AnnotationType) => anns.filter((a) => a.type === type);
@@ -120,11 +123,19 @@ function stepPanel(
     body: (
       <>
         <DiffSection diff={diff} ofRange={annotation !== undefined} sections={sections} />
-        <BehaviourSection annotations={annotation ? anns : byType("behaviour")} sections={sections} />
-        <WhySection why={step.llm.why} notes={byType("note")} sections={sections} />
-        <ConsequencesSection annotations={byType("consequence")} sections={sections} />
+        <BehaviourSection
+          onEvidence={onEvidence}
+          annotations={annotation ? anns : byType("behaviour")}
+          sections={sections}
+        />
+        <WhySection onEvidence={onEvidence} why={step.llm.why} notes={byType("note")} sections={sections} />
+        <ConsequencesSection
+          onEvidence={onEvidence}
+          annotations={byType("consequence")}
+          sections={sections}
+        />
         <CallHierarchySection hierarchy={step.facts.call_hierarchy} sections={sections} />
-        <QuestionsSection questions={byType("question")} sections={sections} />
+        <QuestionsSection onEvidence={onEvidence} questions={byType("question")} sections={sections} />
         <AssessmentSection assessment={step.llm.assessment} sections={sections} />
         <ThreadsSection
           threads={annotation ? stepThreads.filter((t) => overlaps(t, step, annotation)) : stepThreads}
@@ -144,7 +155,7 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
       const found = findStep(tour, block.step_id);
       if (!found) break;
       const annotation = found.step.llm.annotations.find((a) => a.id === annotationId);
-      return stepPanel(tour, found.step, annotation, diff, sections);
+      return stepPanel(tour, found.step, annotation, diff, sections, props.onEvidence);
     }
     case "flow_intro": {
       const flow = tour.flows.find((f) => f.id === block.flow_id);
@@ -219,7 +230,7 @@ export function Inspector(props: InspectorProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface">
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div tabIndex={0} className="min-h-0 flex-1 overflow-auto overscroll-contain">
         <div className="px-3 pt-2.5 pb-1.5">
           {panel.backTo && onBackToStep && (
             <p className="mb-1 flex flex-wrap items-baseline gap-2 text-[12px]">

@@ -1,6 +1,6 @@
 import { HttpResponse } from "msw";
 import type { DiffLine, DiffResponse, LineSide } from "../../api/generated/types";
-import { fixtureState, linesFor } from "../fixtures";
+import { mockLines } from "../lines";
 import { apiError, forAnalysis, route } from "./common";
 
 /**
@@ -8,7 +8,7 @@ import { apiError, forAnalysis, route } from "./common";
  * (removed on the base side), deletion blocks are removed lines at their marker, the rest is context.
  */
 export function diffFor(path: string, side: LineSide, from: number, to: number): DiffResponse | undefined {
-  const file = linesFor(fixtureState(), path, side, 1, Number.MAX_SAFE_INTEGER);
+  const file = mockLines(path, side, 1, Number.MAX_SAFE_INTEGER);
   if (!file) return undefined;
   const changed = new Set(file.changed);
   const lines: DiffLine[] = [];

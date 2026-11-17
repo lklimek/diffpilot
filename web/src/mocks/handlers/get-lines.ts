@@ -1,5 +1,5 @@
 import { HttpResponse } from "msw";
-import { fixtureState, linesFor } from "../fixtures";
+import { mockLines } from "../lines";
 import { apiError, forAnalysis, route } from "./common";
 
 const MAX_LINES = 2000;
@@ -20,7 +20,7 @@ export const getLines = route(
     if (to - from + 1 > MAX_LINES) {
       return apiError(400, "range_too_large", `At most ${MAX_LINES} lines can be shown at once.`);
     }
-    const answer = linesFor(fixtureState(), path, side, from, to);
+    const answer = mockLines(path, side, from, to);
     if (!answer) return apiError(404, "not_found", "This file is not part of the analysis.");
     return HttpResponse.json(answer);
   }),

@@ -5,7 +5,8 @@ import type {
   PendingComment,
   Tour,
 } from "../../api/generated/types";
-import { fixtureState, linesFor, seedNow } from "../fixtures";
+import { seedNow } from "../fixtures";
+import { mockLines } from "../lines";
 import { commentResponses, readStore, updateStore } from "../review-store";
 import { scenario } from "../scenarios";
 import { apiError, forAnalysis, route } from "./common";
@@ -48,7 +49,7 @@ export const createComment = route(
       );
     }
     const { path, side, start_line, line } = body.target;
-    const file = linesFor(fixtureState(), path, side, 1, Number.MAX_SAFE_INTEGER);
+    const file = mockLines(path, side, 1, Number.MAX_SAFE_INTEGER);
     if (!file || file.comments.scope === "not_in_diff") {
       return apiError(422, "position_rejected", "GitHub does not accept review comments on this file.");
     }

@@ -262,7 +262,7 @@ export function QuietSummary({
     >
       {section ? (
         <>
-          <p>{plural(section.file_count, "file")}. Shown as a count only; the content was not analysed.</p>
+          <p>{plural(section.file_count, "file")}. The content was not analysed.</p>
           {row.category === "tests" && (
             <p>{plural(counters.lines_removed_from_tests, "line")} removed from tests.</p>
           )}
