@@ -50,6 +50,7 @@ Values are trimmed; an empty value counts as unset. Error messages name the vari
 | `SR_GITHUB_CLONE_URL` | no | `https://github.com` | Clone base; any scheme, so dev can use `file://` or a `git daemon` remote. |
 | `SR_MEMCAN_URL` | yes | — | MemCan MCP endpoint. Pure configuration: nothing assumes the current MemCan host. |
 | `SR_MEMCAN_TOKEN` | yes | — | MemCan bearer token. |
+| `SR_SECRET_KEY_FILE`, `SR_RUNNER_SECRET_FILE`, `SR_GITHUB_CLIENT_SECRET_FILE`, `SR_MEMCAN_TOKEN_FILE` | instead of the variable without `_FILE` | — | Path of a regular file holding that secret (read-only mount, 0400). Exactly one of `VAR` and `VAR_FILE` may be set; the file is read once at start, trailing newlines removed; a file every user may read is logged as a warning. The runner reads `SR_RUNNER_SECRET_FILE` the same way. |
 
 `SR_RUNNER_LISTEN_ADDR` was added by WP1-A (coordinator change request after the threat model, 2026-11-16).
 `SR_LISTEN_ADDR`, `SR_DATA_DIR`, `SR_RUNNER_SECRET` and `SR_TRUSTED_PROXIES` are not spelled out in §5.2 but

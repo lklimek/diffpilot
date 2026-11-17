@@ -97,7 +97,7 @@ Secrets in env → T2. Secrets in `CODEX_HOME` → not compensated, and would no
 | AR-4 | Same-uid readable job secrets: per-job `auth.json`, `config.toml` (installation token, MemCan bearer) | ChatGPT account: up to 240 h of attacker use + refresh-family takeover and runner outage until the owner logs in again; installation: 1 h public reads and rate-limit exhaustion; MemCan key: see AR-1 | Codex holds the credential in-process; no credential-injecting model proxy exists; v1 public data only | detection now (T13); later an `api_key` credential with spend limit, or the AR-3 allowlist so the stolen value cannot leave |
 | AR-5 | PR author steers the analysis content | misleading LLM text on one PR | inherent; every changed line shown, LLM text labelled, T14 notice; humans review the code | code view shows bidi controls and zero-width/tag characters visibly (deferred after v1) |
 | AR-6 | Sandbox off: arbitrary command execution as `agent` (brief §2 "no code execution" is a prompt rule only) | uid `agent` inside the container: AR-4 secrets, network per AR-3; kernel attack surface (default seccomp kept) | S1b: the Codex sandbox needs seccomp + AppArmor unconfined, a larger loss | per-job containers |
-| AR-7 | Secrets in env of server and runner (`SR_SECRET_KEY`, client secret, runner secret, MemCan token) | anyone with Docker/Portainer access | owner is the sole operator (ADR-001) | `*_FILE` variants on read-only mounts |
+| AR-7 | Secrets in env of server and runner (`SR_SECRET_KEY`, client secret, runner secret, MemCan token) | anyone with Docker/Portainer access | owner is the sole operator (ADR-001) | use the `*_FILE` variants (ADR-001) on read-only mounts |
 
 ## 6. Must never happen (release criteria for WP4-SEC)
 
