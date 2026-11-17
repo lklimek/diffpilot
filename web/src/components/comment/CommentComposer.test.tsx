@@ -89,7 +89,7 @@ describe("CommentComposer", () => {
     expect(addButton()).toBeInTheDocument();
   });
 
-  it("offers the GitHub link instead of a field for a file outside the PR diff, without the raw URL (UX-112)", () => {
+  it("offers the GitHub link instead of a field for a file outside the PR diff, without the raw URL", () => {
     const permalink = "https://github.com/acme/node-client/blob/52d2da1/src/sync/peers.rs#L20";
     setup({
       line: {
@@ -183,7 +183,7 @@ describe("CommentComposer", () => {
     expect(await screen.findByRole("status")).toBeInTheDocument();
   });
 
-  it("keeps an unresolved post after a failure: whitespace cannot change it, Retry reuses key and payload (QA-002)", async () => {
+  it("keeps an unresolved post after a failure: whitespace cannot change it, Retry reuses key and payload", async () => {
     const onCreate = vi
       .fn()
       .mockRejectedValueOnce(new Error("GitHub is not reachable. Try again."))
@@ -207,7 +207,7 @@ describe("CommentComposer", () => {
     expect(field()).toHaveValue("");
   });
 
-  it("keeps the unresolved post when leaving and re-entering the line (QA-002)", async () => {
+  it("keeps the unresolved post when leaving and re-entering the line", async () => {
     const onCreate = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(created());
     const { user, rerender, ...props } = setup({ onCreate });
     await user.type(field(), "text");
@@ -225,7 +225,7 @@ describe("CommentComposer", () => {
     expect(keys[1]).toBe(keys[0]);
   });
 
-  it("offers an unresolved post again after the composer was unmounted and remounted (QA-002)", async () => {
+  it("offers an unresolved post again after the composer was unmounted and remounted", async () => {
     const onCreate = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(created());
     const { user, rerender, ...props } = setup({ onCreate });
     await user.type(field(), "text");
@@ -240,7 +240,7 @@ describe("CommentComposer", () => {
     expect(second).toEqual(first);
   });
 
-  it("keeps a post that was pending at unmount locked after remount, never posting it with a new key (QA-002)", async () => {
+  it("keeps a post that was pending at unmount locked after remount, never posting it with a new key", async () => {
     let reject!: (e: unknown) => void;
     const onCreate = vi
       .fn()
@@ -263,7 +263,7 @@ describe("CommentComposer", () => {
     expect(second).toEqual(first);
   });
 
-  it("discards an unresolved post into an editable draft that posts with a new key (QA-002)", async () => {
+  it("discards an unresolved post into an editable draft that posts with a new key", async () => {
     const onCreate = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(created());
     const { user } = setup({ onCreate });
     await user.type(field(), "text");
@@ -289,7 +289,7 @@ describe("CommentComposer", () => {
     expect(keys[1]).not.toBe(keys[0]);
   });
 
-  it("keeps the field read-only while posting and clears only what was sent (QA-001)", async () => {
+  it("keeps the field read-only while posting and clears only what was sent", async () => {
     let resolve!: (r: CreateCommentResponse) => void;
     const onCreate = vi.fn().mockReturnValue(new Promise<CreateCommentResponse>((r) => (resolve = r)));
     const { user } = setup({ onCreate });
@@ -303,7 +303,7 @@ describe("CommentComposer", () => {
     expect(field()).toHaveValue("");
   });
 
-  it("ignores a completion for a line that is no longer current (QA-001)", async () => {
+  it("ignores a completion for a line that is no longer current", async () => {
     let resolve!: (r: CreateCommentResponse) => void;
     const onCreate = vi.fn().mockReturnValue(new Promise<CreateCommentResponse>((r) => (resolve = r)));
     const { user, rerender, ...props } = setup({ onCreate });
@@ -320,7 +320,7 @@ describe("CommentComposer", () => {
     expect(other).toHaveValue("B");
   });
 
-  it("drops the draft when the line changes, also through null (QA-003)", async () => {
+  it("drops the draft when the line changes, also through null", async () => {
     const { user, rerender, ...props } = setup();
     await user.type(field(), "for 96");
     rerender(<Harness {...props} line={{ ...line96, target: { ...target96, line: 97 } }} />);
@@ -331,7 +331,7 @@ describe("CommentComposer", () => {
     expect(field()).toHaveValue("");
   });
 
-  it("treats a change of only start_line as another target with its own key (QA-005)", async () => {
+  it("treats a change of only start_line as another target with its own key", async () => {
     const range = (start: number): CommentLine => ({ ...line96, target: { ...target96, start_line: start } });
     const onCreate = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(created());
     const { user, rerender, ...props } = setup({ onCreate, line: range(90) });
@@ -349,14 +349,14 @@ describe("CommentComposer", () => {
     expect(b!.target.start_line).toBe(93);
   });
 
-  it("says the placement is decided on posting when the preview cannot know it (QA-006)", () => {
+  it("says the placement is decided on posting when the preview cannot know it", () => {
     setup({ line: { ...line96, placement: "on_post" } });
     expect(document.body).toHaveTextContent(
       "Whether this becomes a line comment or a file comment is decided when it is posted.",
     );
   });
 
-  it("shows the server's placement when it differs from the preview (QA-006)", async () => {
+  it("shows the server's placement when it differs from the preview", async () => {
     const onCreate = vi.fn().mockResolvedValue(created({ comment: { ...missedComments[0]!, kind: "file" } }));
     const { user } = setup({ onCreate });
     await user.type(field(), "text");

@@ -307,7 +307,7 @@ test("widths stored on a 21:9 screen leave the centre usable at 1440 px and afte
   await expect(page.locator("main h2:not([data-column-title])").first()).toBeVisible();
 });
 
-test("1440: the inspector's classic diff stays inside the column and scrolls on its own (UX-108)", async ({
+test("1440: the inspector's classic diff stays inside the column and scrolls on its own", async ({
   page,
 }) => {
   await openTour(page, "wrong");
@@ -328,7 +328,7 @@ test("1440: the inspector's classic diff stays inside the column and scrolls on 
   expect(overflow).toBe(true);
 });
 
-test("1440: while a comment is written its line reference stays in view (UX-109)", async ({ page }) => {
+test("1440: while a comment is written its line reference stays in view", async ({ page }) => {
   await openTour(page, "missed");
   await page
     .getByRole("navigation")

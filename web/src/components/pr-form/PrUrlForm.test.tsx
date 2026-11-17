@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { PrUrlForm } from "./PrUrlForm";
 
-describe("PrUrlForm (UX-005)", () => {
+describe("PrUrlForm", () => {
   it("submits the trimmed URL; shows an example URL bound to the field", async () => {
     const onSubmit = vi.fn();
     render(<PrUrlForm busy={false} onSubmit={onSubmit} />);

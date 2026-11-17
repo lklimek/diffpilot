@@ -61,7 +61,7 @@ function show(node: ReactNode) {
   render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
 }
 
-describe("code of long and disjoint ranges (QA-005)", () => {
+describe("code of long and disjoint ranges", () => {
   it("splits ranges into requests of at most the server limit, never joining disjoint ranges", () => {
     expect(
       rangeChunks("a.rs", "head", [
@@ -111,7 +111,7 @@ describe("code of long and disjoint ranges (QA-005)", () => {
   });
 });
 
-describe("the line being commented on (QA-009)", () => {
+describe("the line being commented on", () => {
   it("is marked only in the view of its own file", async () => {
     const target = { path: "a.rs", side: "head" as const, start_line: null, line: 10 };
     show(

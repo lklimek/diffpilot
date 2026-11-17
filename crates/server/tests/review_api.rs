@@ -802,7 +802,7 @@ async fn diff_keeps_line_endings_refuses_binary_files_and_waits_for_the_merge_ba
     let (status, body) = h.get(&diff(prepared, "a.txt", "head", 1, 1)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["hunks"][0]["header"], json!("@@ -1,1 +1,1 @@"));
-    // Line-ending changes stay visible and match git byte for byte (QA-001): LF <-> none, CRLF <-> LF.
+    // Line-ending changes stay visible and match git byte for byte: LF <-> none, CRLF <-> LF.
     for (path, side) in [
         ("eof.txt", "head"),
         ("eof.txt", "base"),

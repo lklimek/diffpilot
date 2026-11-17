@@ -29,10 +29,13 @@ use crate::github::mirror::{self, MirrorError};
 use crate::github::oauth::endpoint;
 use crate::jobs::claim::ContextPackError;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
+use crate::memcan::profile;
 use crate::model::{ModelContext, select_model};
 use crate::pipeline::context::{StoredResults, pack};
 use crate::pipeline::{self, CREDENTIAL_ID, PrDiffError};
-use crate::prompts::{self, AnsweredQuestion, AskContext, AskInput, JobContext, PromptError};
+use crate::prompts::{
+    self, AnsweredQuestion, AskContext, AskInput, JobContext, Profile, PromptError,
+};
 use crate::state::AppState;
 
 /// Failure sentence of an answer that did not pass the checks; it is never shown.
@@ -340,6 +343,7 @@ async fn submit(
     let prepass = pipeline::prepass::stored(state, summary.id)
         .await?
         .ok_or(FollowError::NoPrepass)?;
+    let memcan_profile = profile::stored(&state.db, summary.id).await?;
     let (_, files) = pipeline::pr_diff(state, summary).await?;
     let pr = &summary.pr;
     let prompt = prompts::ask(&AskInput {
@@ -352,6 +356,10 @@ async fn submit(
         step_id: &question.step_id,
         step: &step,
         question: &question.text,
+        profile: Profile {
+            file: prepass.profile_file.as_deref(),
+            memcan: memcan_profile.text(),
+        },
     })?;
     let spec = JobSpec {
         job_id: JobId::new_random(),

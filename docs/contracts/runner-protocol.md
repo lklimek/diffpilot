@@ -97,7 +97,7 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - `summary` ≤ 200 characters, plain text; never raw command output, file contents or prompt text.
 - `EventsAck.cancel_requested`: stop the agent (`LlmProvider::cancel`) and post `cancelled`.
 
-## Output before compaction (ARCH-005)
+## Output before compaction
 - When the model turn ends, the provider emits `ProviderEvent::OutputReady` and the runner posts
   `OutputReady {attempt, output}` **before** compaction, for every job kind. `output` is the parsed final JSON
   (Codex enforced the output schema); the server validates and verifies it exactly as a result.

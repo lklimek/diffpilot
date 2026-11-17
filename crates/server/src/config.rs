@@ -2,7 +2,8 @@
 
 use std::net::{AddrParseError, IpAddr, SocketAddr};
 use std::num::ParseIntError;
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -43,6 +44,14 @@ pub const GITHUB_CLONE_URL: &str = "SR_GITHUB_CLONE_URL";
 pub const MEMCAN_URL: &str = "SR_MEMCAN_URL";
 /// MemCan bearer token.
 pub const MEMCAN_TOKEN: &str = "SR_MEMCAN_TOKEN";
+/// Path of a file holding `SR_SECRET_KEY`; exactly one of the two may be set.
+pub const SECRET_KEY_FILE: &str = "SR_SECRET_KEY_FILE";
+/// Path of a file holding `SR_RUNNER_SECRET`; exactly one of the two may be set.
+pub const RUNNER_SECRET_FILE: &str = "SR_RUNNER_SECRET_FILE";
+/// Path of a file holding `SR_GITHUB_CLIENT_SECRET`; exactly one of the two may be set.
+pub const GITHUB_CLIENT_SECRET_FILE: &str = "SR_GITHUB_CLIENT_SECRET_FILE";
+/// Path of a file holding `SR_MEMCAN_TOKEN`; exactly one of the two may be set.
+pub const MEMCAN_TOKEN_FILE: &str = "SR_MEMCAN_TOKEN_FILE";
 
 const DEFAULT_LISTEN_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 3000);
@@ -52,6 +61,8 @@ const DEFAULT_DATA_DIR: &str = "data";
 const DEFAULT_GITHUB_API_URL: &str = "https://api.github.com";
 const DEFAULT_GITHUB_WEB_URL: &str = "https://github.com";
 const SECRET_KEY_LEN: usize = 32;
+/// Largest secret file read.
+const MAX_SECRET_FILE_BYTES: u64 = 64 * 1024;
 
 /// Complete server configuration; secrets are redacted in `Debug`.
 #[derive(Debug)]
@@ -180,6 +191,35 @@ pub enum ConfigError {
         /// The other variable.
         other: &'static str,
     },
+    /// A secret is given both directly and as a file.
+    #[error("set only one of {key} and {file_key}")]
+    BothSet {
+        /// Variable name.
+        key: &'static str,
+        /// Name of its file variant.
+        file_key: &'static str,
+    },
+    /// A secret file cannot be read.
+    #[error("the file named by {key} ({}) cannot be read", path.display())]
+    SecretFileUnreadable {
+        /// Variable name.
+        key: &'static str,
+        /// The file.
+        path: PathBuf,
+        /// Read error (never the contents).
+        #[source]
+        source: std::io::Error,
+    },
+    /// A secret file is not a regular file, is empty or is larger than any secret.
+    #[error("the file named by {key} ({}) is {problem}", path.display())]
+    SecretFileInvalid {
+        /// Variable name.
+        key: &'static str,
+        /// The file.
+        path: PathBuf,
+        /// What is wrong.
+        problem: &'static str,
+    },
     /// The secret key does not decode to 32 bytes.
     #[error("environment variable {key} must decode to exactly 32 bytes, got {len}")]
     SecretKeyLength {
@@ -211,6 +251,14 @@ impl Config {
                 .filter(|value| !value.is_empty()))
         };
         let require = |key| get(key)?.ok_or(ConfigError::Missing { key });
+        let secret = |key, file_key| -> Result<String, ConfigError> {
+            match (get(key)?, get(file_key)?) {
+                (Some(_), Some(_)) => Err(ConfigError::BothSet { key, file_key }),
+                (Some(value), None) => Ok(value),
+                (None, Some(path)) => read_secret_file(file_key, Path::new(&path)),
+                (None, None) => Err(ConfigError::Missing { key }),
+            }
+        };
         let or_default = |key, default: &'static str| -> Result<String, ConfigError> {
             Ok(get(key)?.unwrap_or_else(|| default.to_owned()))
         };
@@ -246,8 +294,8 @@ impl Config {
             runner_listen_addr,
             trusted_proxies,
             data_dir: PathBuf::from(or_default(DATA_DIR, DEFAULT_DATA_DIR)?),
-            secret_key: parse_secret_key(&require(SECRET_KEY)?)?,
-            runner_secret: SecretString::from(require(RUNNER_SECRET)?),
+            secret_key: parse_secret_key(&secret(SECRET_KEY, SECRET_KEY_FILE)?)?,
+            runner_secret: SecretString::from(secret(RUNNER_SECRET, RUNNER_SECRET_FILE)?),
             github: GithubConfig {
                 app_id: require(GITHUB_APP_ID)?.parse().map_err(|source| {
                     ConfigError::InvalidNumber {
@@ -256,7 +304,10 @@ impl Config {
                     }
                 })?,
                 client_id: require(GITHUB_CLIENT_ID)?,
-                client_secret: SecretString::from(require(GITHUB_CLIENT_SECRET)?),
+                client_secret: SecretString::from(secret(
+                    GITHUB_CLIENT_SECRET,
+                    GITHUB_CLIENT_SECRET_FILE,
+                )?),
                 private_key_file: PathBuf::from(require(GITHUB_APP_PRIVATE_KEY_FILE)?),
                 api_url: parse_http_url(
                     GITHUB_API_URL,
@@ -273,10 +324,43 @@ impl Config {
             },
             memcan: MemcanConfig {
                 url: parse_http_url(MEMCAN_URL, &require(MEMCAN_URL)?)?,
-                token: SecretString::from(require(MEMCAN_TOKEN)?),
+                token: SecretString::from(secret(MEMCAN_TOKEN, MEMCAN_TOKEN_FILE)?),
             },
         })
     }
+}
+
+/// Reads a secret file once (a regular file, symlinks followed); trailing newlines are removed. Errors name the
+/// variable and the path, never the contents; a file every user may read is reported with `warn!`.
+fn read_secret_file(key: &'static str, path: &Path) -> Result<String, ConfigError> {
+    let invalid = |problem| ConfigError::SecretFileInvalid {
+        key,
+        path: path.to_path_buf(),
+        problem,
+    };
+    let unreadable = |source| ConfigError::SecretFileUnreadable {
+        key,
+        path: path.to_path_buf(),
+        source,
+    };
+    let metadata = std::fs::metadata(path).map_err(unreadable)?;
+    if !metadata.is_file() {
+        return Err(invalid("not a regular file"));
+    }
+    if metadata.len() > MAX_SECRET_FILE_BYTES {
+        return Err(invalid("larger than any secret"));
+    }
+    if metadata.permissions().mode() & 0o004 != 0 {
+        tracing::warn!(variable = key, path = %path.display(),
+            "secret file is readable by every user; restrict it to mode 0400 or 0600");
+    }
+    let mut value = std::fs::read_to_string(path).map_err(unreadable)?;
+    let kept = value.trim_end_matches(['\n', '\r']).len();
+    value.truncate(kept);
+    if value.is_empty() {
+        return Err(invalid("empty"));
+    }
+    Ok(value)
 }
 
 fn parse_url(key: &'static str, value: &str) -> Result<Url, ConfigError> {
@@ -619,6 +703,126 @@ pub(crate) mod tests {
             }
             other => panic!("expected InvalidTrustedProxy, got {other:?}"),
         }
+    }
+
+    const FILE_VARIANTS: [(&str, &str); 4] = [
+        (SECRET_KEY, SECRET_KEY_FILE),
+        (RUNNER_SECRET, RUNNER_SECRET_FILE),
+        (GITHUB_CLIENT_SECRET, GITHUB_CLIENT_SECRET_FILE),
+        (MEMCAN_TOKEN, MEMCAN_TOKEN_FILE),
+    ];
+
+    /// Writes `contents` to a 0600 file named `name` in `dir`.
+    fn secret_file(dir: &std::path::Path, name: &str, contents: &str) -> String {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join(name);
+        std::fs::write(&path, contents).expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("mode");
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn secrets_can_be_read_from_files() {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut env = required_env();
+        for (key, file_key) in FILE_VARIANTS {
+            let value = env.remove(key).expect("required");
+            env.insert(
+                file_key,
+                secret_file(dir.path(), key, &format!("{value}\n")),
+            );
+        }
+        let config = parse(&env).expect("valid");
+        let expected_key: Vec<u8> = (0u8..32).collect();
+        assert_eq!(
+            config.secret_key.expose_secret().as_slice(),
+            expected_key.as_slice()
+        );
+        assert_eq!(config.runner_secret.expose_secret(), RUNNER_SECRET_VALUE);
+        assert_eq!(config.github.client_secret.expose_secret(), CLIENT_SECRET);
+        assert_eq!(config.memcan.token.expose_secret(), MEMCAN_TOKEN_VALUE);
+    }
+
+    #[test]
+    fn secret_and_its_file_variable_together_are_refused() {
+        let dir = tempfile::tempdir().expect("dir");
+        for (key, file_key) in FILE_VARIANTS {
+            let mut env = required_env();
+            let value = env[key].clone();
+            env.insert(file_key, secret_file(dir.path(), key, &value));
+            let error = parse(&env).expect_err("both set");
+            assert!(
+                matches!(error, ConfigError::BothSet { key: k, file_key: f } if k == key && f == file_key),
+                "{error:?}"
+            );
+            let message = error.to_string();
+            assert!(
+                message.contains(key) && message.contains(file_key),
+                "{message}"
+            );
+            assert!(!message.contains(&value), "value leaked: {message}");
+        }
+    }
+
+    #[test]
+    fn secret_file_must_be_a_readable_non_empty_regular_file() {
+        let dir = tempfile::tempdir().expect("dir");
+        let missing = dir.path().join("absent").to_string_lossy().into_owned();
+        let empty = secret_file(dir.path(), "empty", "\n");
+        let directory = dir.path().to_string_lossy().into_owned();
+        let large = secret_file(dir.path(), "large", &"k".repeat(65 * 1024));
+        for (path, expected) in [
+            (missing, "cannot be read"),
+            (empty, "is empty"),
+            (directory, "not a regular file"),
+            (large, "larger than"),
+        ] {
+            let mut env = required_env();
+            env.remove(MEMCAN_TOKEN);
+            env.insert(MEMCAN_TOKEN_FILE, path.clone());
+            let message = parse(&env).expect_err("refused").to_string();
+            assert!(
+                message.contains(MEMCAN_TOKEN_FILE) && message.contains(expected),
+                "{path}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_file_contents_never_reach_errors() {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut env = required_env();
+        env.remove(SECRET_KEY);
+        env.insert(
+            SECRET_KEY_FILE,
+            secret_file(dir.path(), "key", "not-base64-CANARY-9931\n"),
+        );
+        let error = parse(&env).expect_err("not base64");
+        let rendered = format!("{error} {error:?}");
+        assert!(!rendered.contains("CANARY"), "contents leaked: {rendered}");
+    }
+
+    #[test]
+    fn world_readable_secret_file_is_named_in_a_warning() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let capture = crate::test_support::logs::LogCapture::start();
+        let dir = tempfile::tempdir().expect("dir");
+        let path = secret_file(dir.path(), "token", "memcan-file-CANARY-5521\n");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        let mut env = required_env();
+        env.remove(MEMCAN_TOKEN);
+        env.insert(MEMCAN_TOKEN_FILE, path.clone());
+        let config = parse(&env).expect("valid");
+        assert_eq!(
+            config.memcan.token.expose_secret(),
+            "memcan-file-CANARY-5521"
+        );
+        let logs = capture.text();
+        assert!(
+            logs.contains("WARN") && logs.contains(&path) && logs.contains(MEMCAN_TOKEN_FILE),
+            "{logs}"
+        );
+        assert!(!logs.contains("CANARY"), "contents leaked: {logs}");
     }
 
     #[test]

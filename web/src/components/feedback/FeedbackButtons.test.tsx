@@ -30,7 +30,7 @@ describe("FeedbackButtons", () => {
       expect(b).toHaveAttribute("aria-pressed", "false");
       expect(b).toHaveAccessibleDescription(/.+/);
     }
-    // MemCan may be unreachable: the tooltip never claims it was stored there (UX-103).
+    // MemCan may be unreachable: the tooltip never claims it was stored there.
     expect(screen.getByRole("button", { name: "overrated" })).toHaveAccessibleDescription(
       "The risk level is too high. Kept with your feedback; when MemCan is reachable, also stored there as a severity calibration example.",
     );
@@ -150,7 +150,7 @@ describe("FeedbackButtons", () => {
     expect(onSubmit).toHaveBeenCalledWith({ target: step31, value: "wrong", note: "see error.rs:7" });
   });
 
-  it("ignores a save that completes after the target changed (QA-001)", async () => {
+  it("ignores a save that completes after the target changed", async () => {
     let resolve!: () => void;
     const onSubmit = vi.fn().mockReturnValue(new Promise<void>((r) => (resolve = r)));
     const other: FeedbackTarget = { target: "step", step_id: "f1.5" };
@@ -179,7 +179,7 @@ describe("FeedbackButtons", () => {
     expect(screen.queryByRole("status")).toBeNull();
   });
 
-  it("keeps the note read-only while the feedback is saved (QA-001)", async () => {
+  it("keeps the note read-only while the feedback is saved", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockReturnValue(new Promise(() => {}));
     render(

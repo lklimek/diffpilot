@@ -48,7 +48,7 @@ describe("wrapText", () => {
     for (const line of lines) expect(nodeWidth(line)).toBeLessThanOrEqual(120);
   });
 
-  it("splits an identifier after _, ::, . or / before splitting inside a word (UX-107)", () => {
+  it("splits an identifier after _, ::, . or / before splitting inside a word", () => {
     for (const [word, width] of [
       ["RpcClient::send_with_retry_policy_and_backoff", 120],
       ["MAX_CONCURRENT_REQUESTS", 120],

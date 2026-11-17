@@ -32,7 +32,7 @@ describe("PrContextBlock", () => {
     expect(facts).toHaveTextContent("Project profile in MemCan: not checked");
   });
 
-  it("puts the counts of the LLM's split into flows and steps under the LLM analysis (UX-007)", () => {
+  it("puts the counts of the LLM's split into flows and steps under the LLM analysis", () => {
     renderBlock(tour);
     expect(screen.getByRole("region", { name: "Facts" })).not.toHaveTextContent(/flows|steps/);
     expect(screen.getByRole("region", { name: "LLM analysis" })).toHaveTextContent(
@@ -60,7 +60,7 @@ describe("PrContextBlock", () => {
     expect(screen.getByRole("region", { name: "Facts" })).toHaveTextContent(text);
   });
 
-  it("names the kind of related work with a label map (UX-009)", () => {
+  it("names the kind of related work with a label map", () => {
     renderBlock(tour);
     const llm = screen.getByRole("region", { name: "LLM analysis" });
     expect(within(llm).getByText("Stacked PR")).toBeInTheDocument();

@@ -23,6 +23,7 @@ use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf, user_access_token, user_token_rejected};
 use crate::github::rest::{self, GithubError, is_valid_repo};
+use crate::memcan::profile;
 use crate::pipeline;
 use crate::state::AppState;
 
@@ -238,8 +239,7 @@ async fn repo_facts(state: &AppState, repo: AnalysedRepo) -> Result<Option<RepoS
         repo: repo.repo,
         rules: analysis::tech::rules(),
         related_repos: prepass.related_repos.clone(),
-        // TODO(WP3-MEMCAN merge): the MemCan profile check; `server::memcan` has no profile read yet.
-        project_profile: prepass.profile_status(None),
+        project_profile: prepass.profile_status(profile::stored(&state.db, id).await?.found()),
     }))
 }
 
@@ -719,6 +719,43 @@ mod tests {
         assert_eq!(settings.related_repos, Vec::new());
         assert_eq!(settings.project_profile, prepass.profile_status(None));
         assert_eq!(settings.project_profile.memcan, SourceCheck::NotChecked);
+    }
+
+    #[tokio::test]
+    async fn repo_settings_report_the_stored_memcan_profile_lookup() {
+        let h = harness().await;
+        let id = seed_analysis(&h.state.db).await.expect("analysis");
+        let repo = RepoRef {
+            owner: "acme".to_owned(),
+            name: "node-client".to_owned(),
+        };
+        let prepass = analysis::prepass::prepass(&repo, &[], &[], &|_, _| None).expect("prepass");
+        let documents = h.state.db.documents();
+        documents
+            .put(id, DocumentKind::Prepass, "", &prepass, Utc::now())
+            .await
+            .expect("stored");
+        for (lookup, found) in [
+            (
+                json!({"memcan": "checked", "text": "Payments service."}),
+                Some(true),
+            ),
+            (json!({"memcan": "checked", "text": null}), Some(false)),
+            (json!({"memcan": "not_checked"}), None),
+        ] {
+            documents
+                .put(id, DocumentKind::MemcanProfile, "", &lookup, Utc::now())
+                .await
+                .expect("lookup stored");
+            let (status, settings) = h.get("/api/v1/repos/acme/node-client/settings").await;
+            assert_eq!(status, StatusCode::OK, "{settings}");
+            let settings: RepoSettings = serde_json::from_value(settings).expect("settings");
+            assert_eq!(
+                settings.project_profile,
+                prepass.profile_status(found),
+                "{lookup}"
+            );
+        }
     }
 
     #[tokio::test]

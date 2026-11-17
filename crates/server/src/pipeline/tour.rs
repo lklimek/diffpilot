@@ -24,6 +24,7 @@ use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use url::Url;
 
+use crate::memcan::profile;
 use crate::pipeline::context::StoredResults;
 use crate::pipeline::prepass::{self, PrepassRunError};
 use crate::pipeline::unsent::{self, Unsent};
@@ -163,6 +164,7 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         aliases: &aliases,
         related_work_checked,
         unsent: &unsent,
+        memcan_profile: profile::stored(&state.db, summary.id).await?.found(),
     }))
 }
 
@@ -186,6 +188,8 @@ pub struct Projection<'a> {
     pub related_work_checked: bool,
     /// Lines the server did not send to the LLM, with the reason (Unexplained rows show it).
     pub unsent: &'a [Unsent],
+    /// The analysis's MemCan profile lookup: `None` not checked, else whether a profile was found.
+    pub memcan_profile: Option<bool>,
 }
 
 /// Builds the Tour of a finished analysis.
@@ -229,8 +233,7 @@ pub fn project(input: &Projection<'_>) -> Tour {
                 ci: input.snapshot.ci.clone(),
                 threads_status: input.snapshot.threads_status,
                 counters: prepass.counters.counters.clone(),
-                // TODO(WP3-MEMCAN merge): search MemCan for a `type: project-profile` memory (bounded read).
-                project_profile: prepass.profile_status(None),
+                project_profile: prepass.profile_status(input.memcan_profile),
                 agent_instruction_files: prepass.agent_instruction_files.clone(),
                 related_work_checked,
                 flow_count: u32::try_from(flows.len()).unwrap_or(u32::MAX),

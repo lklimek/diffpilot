@@ -24,7 +24,7 @@ describe("FlowIntroBlock", () => {
     expect(screen.queryByText("Was wrong")).not.toBeInTheDocument();
   });
 
-  it("lists the steps and files of the LLM's split under the LLM analysis, not under a no-LLM subtitle (UX-007)", () => {
+  it("lists the steps and files of the LLM's split under the LLM analysis, not under a no-LLM subtitle", () => {
     render(<FlowIntroBlock flow={f1} dependencies={[]} ticked={[]} />);
     expect(screen.queryByText(/no LLM/)).not.toBeInTheDocument();
     const llm = screen.getByRole("region", { name: "LLM analysis" });

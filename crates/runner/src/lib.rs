@@ -1,6 +1,7 @@
 //! Job runner: `execute(JobSpec, EventSink) -> JobResult`, the polling loop around it and the LLM providers.
 
 pub mod client;
+pub mod codex_homes;
 pub mod config;
 pub mod execute;
 pub mod git;

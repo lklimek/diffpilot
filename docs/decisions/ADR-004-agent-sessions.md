@@ -1,7 +1,7 @@
 # ADR-004: Agent sessions — archive, resume, compaction, loss, deletion
 
 - Status: accepted (coordinator, 2026-11-16, after spikes S1b, S7; amended 2026-11-16 after the WP1-A contract
-  review, ARCH-005)
+  review)
 - Source: `docs/spikes/S1b-codex-sessions-isolation.md` findings 1, 3; `S7-llm-capability.md` finding 7;
   brief §5 Agent sessions; plan §5.3, §5.4 T8.
 
@@ -15,7 +15,7 @@
 - **Compaction** at the end of every job: one extra `exec resume <id> -c model_auto_compact_token_limit=<small>`
   with a trivial prompt. It runs inside the provider (`LlmProvider::run`/`resume` end with it). S7: context 50–95k
   → 17–24k, about 1.5–2 minutes per job; it counts against the 45-minute job cap (ADR-005).
-- **Output before compaction** (ARCH-005). Compaction takes 47–130 s (S7), so the answer must not wait for it.
+- **Output before compaction**. Compaction takes 47–130 s (S7), so the answer must not wait for it.
   When the model turn ends, the provider sends `ProviderEvent::OutputReady(output)` and the runner posts it to
   `POST /runner/v1/jobs/{id}/output` (`OutputReady {attempt, output}`, scrubbed like a result) before
   compaction starts, for every job kind. The server stores it per attempt and may publish it (e.g. an Ask answer

@@ -31,6 +31,9 @@ pub enum DocumentKind {
     GithubSnapshot,
     /// Lines the server did not send to the LLM, with the reason (key `plan`, or a flow id).
     Unsent,
+    /// The MemCan project profile lookup of the analysis, made once per round (key `""`; body `{"memcan":
+    /// "not_checked"}` or `{"memcan": "checked", "text": …}`; a Retry deletes a `not_checked` one).
+    MemcanProfile,
 }
 
 impl DocumentKind {
@@ -43,6 +46,7 @@ impl DocumentKind {
             Self::Flow => "flow",
             Self::GithubSnapshot => "github_snapshot",
             Self::Unsent => "unsent",
+            Self::MemcanProfile => "memcan_profile",
         }
     }
 }
@@ -198,6 +202,22 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 11, 16, 12, minute, 0)
             .single()
             .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn memcan_profile_lookup_is_stored_per_analysis() {
+        let db = Db::in_memory().await.expect("db");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let docs = db.documents();
+        let body = json!({"memcan": "checked", "text": null});
+        docs.put(analysis, DocumentKind::MemcanProfile, "", &body, at(1))
+            .await
+            .expect("put");
+        let stored: Option<Value> = docs
+            .get(analysis, DocumentKind::MemcanProfile, "")
+            .await
+            .expect("get");
+        assert_eq!(stored, Some(body));
     }
 
     /// GitHub access is kept with an agent output, replaced with it, and absent for server-built documents.
