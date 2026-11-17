@@ -37,7 +37,7 @@ export interface CodeViewProps {
   annotations?: readonly Annotation[];
   /** The step's LLM risk band (`assessment.risk`), styling the bar (ADR-008); null = not rated. */
   band?: RiskBand | null;
-  /** Step kind; `context` without changed lines gets the "unchanged" style (UX-003). */
+  /** Step kind (`data-kind` hook); `context` with no changed line in the diff gets the hatch and caption (UX-003). */
   kind?: FragmentKind;
   /** GitHub review threads of the PR; those on displayed lines get a marker. */
   threads?: readonly GithubThread[];
@@ -413,16 +413,16 @@ export function CodeView({
       data-kind={kind}
       onKeyDown={moveLineFocus}
       style={{ "--ln": `${String(maxLine).length + 2}ch`, "--gutter": "46px" } as CSSProperties}
-      className={`overflow-auto rounded-md bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${
+      className={`overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${
         unchangedContext
-          ? "border-2 border-dotted border-mv-bd bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]"
-          : "border border-border"
+          ? "bg-[repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]"
+          : ""
       }`}
     >
       {base && <p className={`${STRIP} m-0 text-[11px] text-muted`}>Removed code at the base commit</p>}
       {unchangedContext && (
         <p className={`${STRIP} m-0 text-[11px] font-semibold text-muted`}>
-          Unchanged code connecting the flow
+          Unchanged code: no changed lines in this range (from the diff).
         </p>
       )}
       {lines.lines.length === 0 && <p className={`${STRIP} m-0 text-muted`}>No lines in this range.</p>}

@@ -243,15 +243,25 @@ describe("CodeView", () => {
     expect(region.querySelectorAll("[data-changed]")).toHaveLength(10);
   });
 
-  it("gives a context step its own style hook and caption (UX-003)", () => {
+  it("gives a context step a style hook and a caption from the diff only when no line changed (UX-003)", () => {
+    const caption = "Unchanged code: no changed lines in this range (from the diff).";
     const { unmount } = render(<CodeView {...stepProps("f1.1")} />);
     const region = screen.getByRole("region", { name: /src\/mempool\/mod.rs/ });
     expect(region).toHaveAttribute("data-kind", "context");
-    expect(within(region).getByText("Unchanged code connecting the flow")).toBeInTheDocument();
+    expect(within(region).getByText(caption)).toBeInTheDocument();
     unmount();
+    // The LLM calls it context, but the diff changed a line in it: no "unchanged" caption.
+    const props = stepProps("f1.1");
+    const { unmount: unmount2 } = render(<CodeView {...props} lines={{ ...props.lines, changed: [128] }} />);
+    expect(screen.getByRole("region", { name: /src\/mempool\/mod.rs/ })).toHaveAttribute(
+      "data-kind",
+      "context",
+    );
+    expect(screen.queryByText(/Unchanged code/)).toBeNull();
+    unmount2();
     render(<CodeView {...stepProps("f1.2")} />);
     expect(screen.getByRole("region", { name: /lines 88 to 96/ })).toHaveAttribute("data-kind", "modified");
-    expect(screen.queryByText("Unchanged code connecting the flow")).toBeNull();
+    expect(screen.queryByText(/Unchanged code/)).toBeNull();
   });
 
   it("offers a keyboard-reachable comment action on every displayed line with one tab stop", async () => {
