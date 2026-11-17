@@ -69,6 +69,7 @@ export const createComment = route(
           value: "missed_by_llm",
           note: null,
           created_at: new Date().toISOString(),
+          memory: "pending",
         });
       }
     });
