@@ -1,12 +1,15 @@
 //! Repository access for a job: a bare mirror per clone URL in the runner's cache, fetched by commit id, and a
 //! fresh checkout of the head commit in the job directory. The runner never reads checkout content.
+//! Each git step runs in its own process group, killed whole when the step is dropped (job runtime limit).
 
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 
+use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 /// `PATH` for git; never inherited.
@@ -120,12 +123,9 @@ pub async fn checkout(
 
 async fn has_commits(mirror: &Path, commits: &[&str]) -> Result<bool, GitError> {
     for commit in commits {
-        let status = command(Some(mirror))
-            .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await?;
+        let mut command = command(Some(mirror));
+        command.args(["cat-file", "-e", &format!("{commit}^{{commit}}")]);
+        let (status, _) = run(command).await?;
         if !status.success() {
             return Ok(false);
         }
@@ -134,23 +134,56 @@ async fn has_commits(mirror: &Path, commits: &[&str]) -> Result<bool, GitError> 
 }
 
 async fn git(step: &'static str, dir: Option<&Path>, args: &[OsString]) -> Result<(), GitError> {
-    let output = command(dir)
-        .args(args)
-        .stdin(Stdio::null())
-        .output()
-        .await?;
-    if output.status.success() {
+    let mut command = command(dir);
+    command.args(args);
+    let (status, stderr) = run(command).await?;
+    if status.success() {
         return Ok(());
     }
     tracing::debug!(
         step,
-        stderr = %crate::scrub::clip(&String::from_utf8_lossy(&output.stderr), 500),
+        stderr = %crate::scrub::clip(&String::from_utf8_lossy(&stderr), 500),
         "git step failed"
     );
-    Err(GitError::Failed {
-        step,
-        status: output.status,
-    })
+    Err(GitError::Failed { step, status })
+}
+
+/// Runs `command` to its exit and returns its status and stderr. Dropped early, it kills the whole process
+/// group (helpers such as `git-remote-https` included) while the leader is not yet reaped.
+async fn run(mut command: Command) -> io::Result<(ExitStatus, Vec<u8>)> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut group = KillGroupOnDrop(
+        child
+            .id()
+            .and_then(|pid| i32::try_from(pid).ok())
+            .and_then(Pid::from_raw),
+    );
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        pipe.read_to_end(&mut stderr).await?;
+    }
+    let status = child.wait().await?;
+    // Reaped: the id may be reused from here on.
+    group.0 = None;
+    Ok((status, stderr))
+}
+
+/// SIGKILL to a git step's process group on drop, unless disarmed after its leader was reaped.
+struct KillGroupOnDrop(Option<Pid>);
+
+impl Drop for KillGroupOnDrop {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0
+            && let Err(error) = kill_process_group(pid, Signal::KILL)
+            && error != rustix::io::Errno::SRCH
+        {
+            tracing::warn!(%error, "cannot kill a git step's process group");
+        }
+    }
 }
 
 /// git with a constructed environment: no user or system config (no filters, hooks paths or LFS from the
@@ -164,6 +197,7 @@ fn command(dir: Option<&Path>) -> Command {
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LANG", "C")
+        .process_group(0)
         .kill_on_drop(true);
     for key in PROXY_VARS {
         if let Some(value) = std::env::var_os(key) {
