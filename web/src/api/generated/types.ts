@@ -570,12 +570,22 @@ note: string | null,
 /**
  * When it was recorded.
  */
-created_at: string, };
+created_at: string,
+/**
+ * The copy of this entry's current revision in MemCan (calibration memory for `overrated` /
+ * `underrated`); only `written` means MemCan confirmed it.
+ */
+memory: FeedbackMemory, };
 
 /**
  * Identifier of a feedback entry.
  */
 export type FeedbackId = string;
+
+/**
+ * State of the MemCan copy of a feedback entry's current revision.
+ */
+export type FeedbackMemory = "pending" | "written" | "failed";
 
 /**
  * Body of `POST /api/v1/analyses/{id}/feedback`: one entry per user, target and value, so several values may

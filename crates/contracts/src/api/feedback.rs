@@ -110,4 +110,19 @@ pub struct Feedback {
     pub note: Option<String>,
     /// When it was recorded.
     pub created_at: DateTime<Utc>,
+    /// The copy of this entry's current revision in MemCan (calibration memory for `overrated` /
+    /// `underrated`); only `written` means MemCan confirmed it.
+    pub memory: FeedbackMemory,
+}
+
+/// State of the MemCan copy of a feedback entry's current revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackMemory {
+    /// Not confirmed yet (queued, or waiting until an earlier unconfirmed write can no longer land).
+    Pending,
+    /// MemCan confirmed the copy.
+    Written,
+    /// The last attempt failed; it is retried later.
+    Failed,
 }

@@ -2,7 +2,7 @@
 //! [`FeedbackRepo::upsert`], WP3-MEMCAN the rest). One entry per (user, analysis, target, value) (CCR-F1).
 
 use chrono::{DateTime, Utc};
-use contracts::api::feedback::{Feedback, FeedbackTarget, FeedbackValue};
+use contracts::api::feedback::{Feedback, FeedbackMemory, FeedbackTarget, FeedbackValue};
 use contracts::common::LineSide;
 use contracts::ids::{AnalysisId, AnnotationId, FeedbackId, StepId};
 use sqlx::sqlite::SqliteRow;
@@ -45,6 +45,8 @@ pub struct PendingFeedback {
     pub revision: u32,
     /// The user removed the entry: its memory is to be deleted from MemCan.
     pub removed: bool,
+    /// Failed attempts for the current revision.
+    pub attempts: u32,
 }
 
 /// Whether a MemCan outcome was recorded.
@@ -56,30 +58,29 @@ pub enum MemcanAck {
     Superseded,
 }
 
-/// State of the MemCan write of a feedback entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum MemcanState {
-    /// Not written yet.
-    Pending,
-    /// Written.
-    Written,
-    /// The write failed; retried later.
-    Failed,
-}
-
-impl MemcanState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Written => "written",
-            Self::Failed => "failed",
-        }
-    }
+/// Outcome of one MemCan operation (write or delete) for a revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemcanOutcome {
+    /// MemCan confirmed it (stored, or deleted / absent for a removed entry).
+    Confirmed,
+    /// MemCan answered with a refusal; nothing was done. Retried at `retry_at`.
+    Failed {
+        /// Next attempt.
+        retry_at: DateTime<Utc>,
+    },
+    /// No usable answer: the operation may still take effect until `settles_at`. Retried at `retry_at`.
+    Unknown {
+        /// Next attempt.
+        retry_at: DateTime<Utc>,
+        /// Time after which the operation can no longer land.
+        settles_at: DateTime<Utc>,
+    },
 }
 
 macro_rules! columns {
     () => {
-        "id, analysis_id, target_kind, target_key, value, note, created_at, revision, removed_at"
+        "id, analysis_id, target_kind, target_key, value, note, created_at, revision, removed_at, memcan_state,
+         attempts"
     };
 }
 
@@ -132,6 +133,8 @@ fn from_row(row: &SqliteRow) -> Result<PendingFeedback, DbError> {
     let created_at: String = row.try_get("created_at")?;
     let revision: i64 = row.try_get("revision")?;
     let removed_at: Option<String> = row.try_get("removed_at")?;
+    let memory: String = row.try_get("memcan_state")?;
+    let attempts: i64 = row.try_get("attempts")?;
     Ok(PendingFeedback {
         analysis_id: parse_wire(&analysis, "feedback.analysis_id")?,
         feedback: Feedback {
@@ -140,11 +143,15 @@ fn from_row(row: &SqliteRow) -> Result<PendingFeedback, DbError> {
             value: parse_wire(&value, "feedback.value")?,
             note: row.try_get("note")?,
             created_at: parse_ts(&created_at, "feedback.created_at")?,
+            memory: parse_wire::<FeedbackMemory>(&memory, "feedback.memcan_state")?,
         },
         revision: u32::try_from(revision).map_err(|_| DbError::Corrupt {
             column: "feedback.revision",
         })?,
         removed: removed_at.is_some(),
+        attempts: u32::try_from(attempts).map_err(|_| DbError::Corrupt {
+            column: "feedback.attempts",
+        })?,
     })
 }
 
@@ -175,7 +182,8 @@ impl FeedbackRepo<'_> {
                  created_at, updated_at)
              SELECT ?, tenant_id, id, ?, ?, ?, ?, ?, ?, ? FROM analyses WHERE id = ?
              ON CONFLICT (user_id, analysis_id, target_kind, target_key, value) DO UPDATE SET
-                 note = excluded.note, revision = revision + 1, memcan_state = 'pending',
+                 note = excluded.note, revision = revision + 1, memcan_state = 'pending', attempts = 0,
+                 next_attempt_at = NULL,
                  created_at = CASE WHEN removed_at IS NULL THEN created_at ELSE excluded.created_at END,
                  removed_at = NULL, updated_at = excluded.updated_at
              RETURNING ",
@@ -197,7 +205,7 @@ impl FeedbackRepo<'_> {
         if let Some(excluded) = excluded_by(feedback.value) {
             sqlx::query(
                 "UPDATE feedback SET removed_at = ?, revision = revision + 1, memcan_state = 'pending',
-                     updated_at = ?
+                     attempts = 0, next_attempt_at = NULL, updated_at = ?
                  WHERE user_id = ? AND analysis_id = ? AND target_kind = ? AND target_key = ? AND value = ?
                      AND removed_at IS NULL",
             )
@@ -247,7 +255,8 @@ impl FeedbackRepo<'_> {
     ) -> Result<(), DbError> {
         let now = ts(now);
         let removed = sqlx::query(
-            "UPDATE feedback SET removed_at = ?, revision = revision + 1, memcan_state = 'pending', updated_at = ?
+            "UPDATE feedback SET removed_at = ?, revision = revision + 1, memcan_state = 'pending', attempts = 0,
+                 next_attempt_at = NULL, updated_at = ?
              WHERE id = ? AND analysis_id = ? AND user_id = ? AND removed_at IS NULL",
         )
         .bind(&now)
@@ -263,45 +272,86 @@ impl FeedbackRepo<'_> {
         Ok(())
     }
 
-    /// Entries whose current revision is not yet written to MemCan: pending before failed, oldest first.
-    pub async fn pending_memcan(&self, limit: u32) -> Result<Vec<PendingFeedback>, DbError> {
+    /// Entries whose current revision is not yet confirmed in MemCan and whose next attempt is due at `now`:
+    /// fewest failed attempts first, then oldest.
+    pub async fn pending_memcan(
+        &self,
+        now: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<PendingFeedback>, DbError> {
         let rows = sqlx::query(concat!(
             "SELECT ",
             columns!(),
-            " FROM feedback WHERE memcan_state != 'written'
-             ORDER BY memcan_state = 'failed', updated_at, id LIMIT ?"
+            " FROM feedback WHERE memcan_state != 'written' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+             ORDER BY attempts, updated_at, id LIMIT ?"
         ))
+        .bind(ts(now))
         .bind(i64::from(limit))
         .fetch_all(self.pool)
         .await?;
         rows.iter().map(from_row).collect()
     }
 
-    /// Records the outcome of writing `revision` to MemCan, only if `revision` is still current; a written
-    /// removal deletes the tombstone. `NotFound` if the entry does not exist.
-    pub async fn set_memcan_state(
+    /// Records the outcome of a MemCan operation for `revision`, sent at `now`.
+    ///
+    /// An `Unknown` outcome extends the entry's unsettled period even when `revision` is no longer current (the
+    /// operation may still land over a newer one). Everything else applies only to the current revision
+    /// (`Superseded` otherwise). `Confirmed` while an earlier unknown operation may still land keeps the entry
+    /// pending until the period ends (re-assert); otherwise it marks the entry written, or deletes a removed
+    /// entry's tombstone. `Failed` / `Unknown` count an attempt and schedule the retry. `NotFound` if the entry
+    /// does not exist.
+    pub async fn record_memcan_outcome(
         &self,
         id: FeedbackId,
         revision: u32,
-        state: MemcanState,
+        outcome: MemcanOutcome,
+        now: DateTime<Utc>,
     ) -> Result<MemcanAck, DbError> {
         let id = id.to_string();
+        let now = ts(now);
         let mut tx = self.pool.begin().await?;
-        let (current, removed_at): (i64, Option<String>) =
-            sqlx::query_as("SELECT revision, removed_at FROM feedback WHERE id = ?")
-                .bind(&id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or(DbError::NotFound)?;
+        if let MemcanOutcome::Unknown { settles_at, .. } = outcome {
+            sqlx::query(
+                "UPDATE feedback SET unsettled_until = MAX(COALESCE(unsettled_until, ''), ?) WHERE id = ?",
+            )
+            .bind(ts(settles_at))
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let (current, removed_at, unsettled_until): (i64, Option<String>, Option<String>) =
+            sqlx::query_as(
+                "SELECT revision, removed_at, unsettled_until FROM feedback WHERE id = ?",
+            )
+            .bind(&id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(DbError::NotFound)?;
         if current != i64::from(revision) {
+            tx.commit().await?;
             return Ok(MemcanAck::Superseded);
         }
-        let query = if state == MemcanState::Written && removed_at.is_some() {
-            sqlx::query("DELETE FROM feedback WHERE id = ?").bind(&id)
-        } else {
-            sqlx::query("UPDATE feedback SET memcan_state = ? WHERE id = ?")
-                .bind(state.as_str())
-                .bind(&id)
+        let query = match outcome {
+            MemcanOutcome::Confirmed => match unsettled_until.filter(|until| *until > now) {
+                Some(until) => sqlx::query(
+                    "UPDATE feedback SET memcan_state = 'pending', attempts = 0, next_attempt_at = ? WHERE id = ?",
+                )
+                .bind(until)
+                .bind(&id),
+                None if removed_at.is_some() => sqlx::query("DELETE FROM feedback WHERE id = ?").bind(&id),
+                None => sqlx::query(
+                    "UPDATE feedback SET memcan_state = 'written', attempts = 0, next_attempt_at = NULL,
+                         unsettled_until = NULL
+                     WHERE id = ?",
+                )
+                .bind(&id),
+            },
+            MemcanOutcome::Failed { retry_at } | MemcanOutcome::Unknown { retry_at, .. } => sqlx::query(
+                "UPDATE feedback SET memcan_state = 'failed', attempts = attempts + 1, next_attempt_at = ?
+                 WHERE id = ?",
+            )
+            .bind(ts(retry_at))
+            .bind(&id),
         };
         query.execute(&mut *tx).await?;
         tx.commit().await?;
@@ -321,6 +371,10 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 11, 17, 12, minute, 0)
             .single()
             .unwrap_or_default()
+    }
+
+    fn failed(retry_at: DateTime<Utc>) -> MemcanOutcome {
+        MemcanOutcome::Failed { retry_at }
     }
 
     fn step(id: &str) -> FeedbackTarget {
@@ -373,7 +427,7 @@ mod tests {
             .upsert(new(analysis, "u1", FeedbackValue::Wrong, "one"), at(1))
             .await
             .expect("first");
-        repo.set_memcan_state(first.id, 1, MemcanState::Written)
+        repo.record_memcan_outcome(first.id, 1, MemcanOutcome::Confirmed, at(30))
             .await
             .expect("ack");
         let second = repo
@@ -490,7 +544,7 @@ mod tests {
             .await
             .expect("remove");
         assert!(repo.list(analysis, "u1").await.expect("list").is_empty());
-        let pending = repo.pending_memcan(10).await.expect("pending");
+        let pending = repo.pending_memcan(at(59), 10).await.expect("pending");
         assert_eq!(pending.len(), 1);
         assert!(pending[0].removed);
         assert_eq!(pending[0].revision, 2);
@@ -499,7 +553,7 @@ mod tests {
             Err(DbError::NotFound)
         ));
         assert_eq!(
-            repo.set_memcan_state(entry.id, 2, MemcanState::Written)
+            repo.record_memcan_outcome(entry.id, 2, MemcanOutcome::Confirmed, at(30))
                 .await
                 .expect("ack"),
             MemcanAck::Recorded
@@ -537,7 +591,7 @@ mod tests {
             .await
             .expect("replace");
         assert_eq!(
-            repo.set_memcan_state(entry.id, 1, MemcanState::Written)
+            repo.record_memcan_outcome(entry.id, 1, MemcanOutcome::Confirmed, at(30))
                 .await
                 .expect("ack"),
             MemcanAck::Superseded
@@ -550,7 +604,7 @@ mod tests {
             .await
             .expect("remove");
         assert_eq!(
-            repo.set_memcan_state(entry.id, 2, MemcanState::Written)
+            repo.record_memcan_outcome(entry.id, 2, MemcanOutcome::Confirmed, at(30))
                 .await
                 .expect("ack"),
             MemcanAck::Superseded,
@@ -558,14 +612,19 @@ mod tests {
         );
         assert!(state_of(&db, entry.id).await.is_some());
         assert!(matches!(
-            repo.set_memcan_state(FeedbackId::new_random(), 1, MemcanState::Written)
-                .await,
+            repo.record_memcan_outcome(
+                FeedbackId::new_random(),
+                1,
+                MemcanOutcome::Confirmed,
+                at(30)
+            )
+            .await,
             Err(DbError::NotFound)
         ));
     }
 
     #[tokio::test]
-    async fn pending_lists_pending_before_failed_oldest_first() {
+    async fn pending_lists_fresh_entries_before_retries_oldest_first() {
         let (db, analysis) = setup().await;
         let repo = db.feedback();
         let mut ids = Vec::new();
@@ -580,17 +639,20 @@ mod tests {
                 .expect("entry");
             ids.push(entry.id);
         }
-        repo.set_memcan_state(ids[0], 1, MemcanState::Failed)
+        repo.record_memcan_outcome(ids[0], 1, failed(at(40)), at(30))
             .await
             .expect("failed");
-        repo.set_memcan_state(ids[1], 1, MemcanState::Written)
+        repo.record_memcan_outcome(ids[1], 1, MemcanOutcome::Confirmed, at(30))
             .await
             .expect("written");
-        let pending = repo.pending_memcan(10).await.expect("pending");
+        let pending = repo.pending_memcan(at(59), 10).await.expect("pending");
         let order: Vec<FeedbackId> = pending.iter().map(|p| p.feedback.id).collect();
         assert_eq!(order, [ids[2], ids[0]]);
         assert_eq!(pending[0].analysis_id, analysis);
-        assert_eq!(repo.pending_memcan(1).await.expect("limit").len(), 1);
+        assert_eq!(
+            repo.pending_memcan(at(59), 1).await.expect("limit").len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -624,5 +686,157 @@ mod tests {
             )
             .await;
         assert!(matches!(result, Err(DbError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn entries_carry_the_state_of_their_memcan_copy() {
+        let (db, analysis) = setup().await;
+        let repo = db.feedback();
+        let entry = repo
+            .upsert(new(analysis, "u1", FeedbackValue::Overrated, "o"), at(1))
+            .await
+            .expect("entry");
+        assert_eq!(entry.memory, FeedbackMemory::Pending);
+        repo.record_memcan_outcome(entry.id, 1, failed(at(5)), at(2))
+            .await
+            .expect("failed");
+        let listed = repo.list(analysis, "u1").await.expect("list");
+        assert_eq!(listed[0].memory, FeedbackMemory::Failed);
+        repo.record_memcan_outcome(entry.id, 1, MemcanOutcome::Confirmed, at(5))
+            .await
+            .expect("written");
+        let listed = repo.list(analysis, "u1").await.expect("list");
+        assert_eq!(listed[0].memory, FeedbackMemory::Written);
+    }
+
+    #[tokio::test]
+    async fn retries_wait_for_their_own_schedule_without_blocking_others() {
+        let (db, analysis) = setup().await;
+        let repo = db.feedback();
+        let broken = repo
+            .upsert(new(analysis, "u1", FeedbackValue::Wrong, "b"), at(1))
+            .await
+            .expect("broken");
+        repo.record_memcan_outcome(broken.id, 1, failed(at(10)), at(2))
+            .await
+            .expect("failed");
+        let fresh = repo
+            .upsert(new(analysis, "u1", FeedbackValue::Correct, "c"), at(3))
+            .await
+            .expect("fresh");
+        let db = &db;
+        let due = |now| async move {
+            db.feedback()
+                .pending_memcan(now, 10)
+                .await
+                .expect("pending")
+                .iter()
+                .map(|entry| (entry.feedback.id, entry.attempts))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            due(at(4)).await,
+            [(fresh.id, 0)],
+            "not due before its retry"
+        );
+        assert_eq!(
+            due(at(10)).await,
+            [(fresh.id, 0), (broken.id, 1)],
+            "fresh entries first"
+        );
+        repo.upsert(new(analysis, "u1", FeedbackValue::Wrong, "b2"), at(11))
+            .await
+            .expect("new revision");
+        assert_eq!(
+            due(at(11)).await,
+            [(fresh.id, 0), (broken.id, 0)],
+            "a new revision is due at once"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_confirmation_before_an_unknown_write_settles_is_re_asserted() {
+        let (db, analysis) = setup().await;
+        let repo = db.feedback();
+        let entry = repo
+            .upsert(new(analysis, "u1", FeedbackValue::Overrated, "a"), at(1))
+            .await
+            .expect("entry");
+        let unknown = MemcanOutcome::Unknown {
+            retry_at: at(3),
+            settles_at: at(20),
+        };
+        repo.record_memcan_outcome(entry.id, 1, unknown, at(2))
+            .await
+            .expect("unknown");
+        repo.remove(analysis, "u1", entry.id, at(4))
+            .await
+            .expect("remove");
+        assert_eq!(
+            repo.record_memcan_outcome(entry.id, 2, MemcanOutcome::Confirmed, at(5))
+                .await
+                .expect("deleted"),
+            MemcanAck::Recorded
+        );
+        assert_eq!(
+            state_of(&db, entry.id).await,
+            Some(("pending".to_owned(), 2, true)),
+            "tombstone kept: the unknown write may still land"
+        );
+        assert!(
+            repo.pending_memcan(at(19), 10)
+                .await
+                .expect("due")
+                .is_empty()
+        );
+        assert_eq!(repo.pending_memcan(at(20), 10).await.expect("due").len(), 1);
+        repo.record_memcan_outcome(entry.id, 2, MemcanOutcome::Confirmed, at(21))
+            .await
+            .expect("deleted again");
+        assert_eq!(state_of(&db, entry.id).await, None, "settled: dropped");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_write_of_an_old_revision_still_unsettles_the_entry() {
+        let (db, analysis) = setup().await;
+        let repo = db.feedback();
+        let entry = repo
+            .upsert(new(analysis, "u1", FeedbackValue::Wrong, "a"), at(1))
+            .await
+            .expect("entry");
+        repo.upsert(new(analysis, "u1", FeedbackValue::Wrong, "b"), at(2))
+            .await
+            .expect("revision 2");
+        let unknown = MemcanOutcome::Unknown {
+            retry_at: at(3),
+            settles_at: at(20),
+        };
+        assert_eq!(
+            repo.record_memcan_outcome(entry.id, 1, unknown, at(2))
+                .await
+                .expect("unknown"),
+            MemcanAck::Superseded
+        );
+        repo.record_memcan_outcome(entry.id, 2, MemcanOutcome::Confirmed, at(4))
+            .await
+            .expect("written");
+        assert_eq!(
+            repo.list(analysis, "u1").await.expect("list")[0].memory,
+            FeedbackMemory::Pending,
+            "re-asserted after the old write settles"
+        );
+        assert!(
+            repo.pending_memcan(at(19), 10)
+                .await
+                .expect("due")
+                .is_empty()
+        );
+        repo.record_memcan_outcome(entry.id, 2, MemcanOutcome::Confirmed, at(20))
+            .await
+            .expect("written");
+        assert_eq!(
+            repo.list(analysis, "u1").await.expect("list")[0].memory,
+            FeedbackMemory::Written
+        );
     }
 }

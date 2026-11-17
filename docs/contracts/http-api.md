@@ -69,10 +69,13 @@ mapping, query rules and the endpoint × fixture-state inventory.
   removes the other, one transaction); `DELETE …/feedback/{feedback_id}` removes one value of the user's own
   entries (`not_found` otherwise). `missed_by_llm` is recorded only by the server (a comment on a changed line
   without annotation) and rejected from clients (`invalid_request`, it is not a `UserFeedbackValue`). A step or
-  annotation target must exist in the analysis's flows, a line target needs a path and a line ≥ 1, the note at
-  most `FeedbackRequest::MAX_NOTE_CHARS` (2000) characters, else `invalid_request`; a blank note is stored as
-  none. Feedback is stored locally at once and written to MemCan asynchronously; no response claims it is in
-  MemCan.
+  annotation target must exist in the analysis's flows under its canonical Tour id (`f3.1`, `f3.1.a2`; aliases
+  such as `f3.01` are rejected), a line target must be a changed line of the analysed diff on its side (added on
+  `head`, removed on `base`), the note at most `FeedbackRequest::MAX_NOTE_CHARS` (2000) characters, else
+  `invalid_request`; a blank note is stored as none. Feedback is stored locally at once and written to MemCan
+  asynchronously; `Feedback.memory` is the state of the current revision's copy there (`pending`, `written` =
+  MemCan confirmed it and no earlier write of unknown outcome can still land, `failed` = the last attempt failed,
+  retried on a back-off). Only `written` may be shown as "saved to calibration memory".
 - **Settings**: `repos` lists the tenant's known repositories (from `repos`); each opens
   `/api/v1/repos/{owner}/{name}/settings`.
 - Ids in paths are UUIDs (`analysis`, `question`) or server ids (`f1.2` steps); unknown or another tenant's →
