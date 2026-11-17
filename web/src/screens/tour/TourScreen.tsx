@@ -264,7 +264,9 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const pendingComments = pending.data?.comments ?? [];
   const pendingCount = pending.isSuccess
     ? pending.data.commenting_available
-      ? pending.data.comments.length
+      ? pending.data.incomplete
+        ? (`${pending.data.comments.length}+` as const)
+        : pending.data.comments.length
       : ("unavailable" as const)
     : pending.isPending
       ? ("loading" as const)
@@ -298,6 +300,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
       <StepBlock
         key={step.id}
         step={step}
+        threadsStatus={tour.pr_context.facts.threads_status}
         code={
           oldCode ? (
             <DiffCode analysisId={analysisId} query={stepQuery(step)} />
@@ -363,7 +366,9 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
       <StatusMessage kind="loading">Loading your pending review…</StatusMessage>
     );
   } else if (current.block === "pr_context") {
-    block = <PrContextBlock pr={tour.analysis.pr} context={tour.pr_context} />;
+    block = (
+      <PrContextBlock pr={tour.analysis.pr} context={tour.pr_context} threadCount={tour.threads.length} />
+    );
   }
 
   const progressAlert =

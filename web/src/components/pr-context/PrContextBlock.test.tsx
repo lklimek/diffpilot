@@ -7,7 +7,7 @@ import { PrContextBlock, type PrContextView } from "./PrContextBlock";
 
 const tour = seedFor("default", "tour") as Tour;
 const renderBlock = (t: Tour, context: PrContextView = t.pr_context) =>
-  render(<PrContextBlock pr={t.analysis.pr} context={context} />);
+  render(<PrContextBlock pr={t.analysis.pr} context={context} threadCount={t.threads.length} />);
 
 describe("PrContextBlock", () => {
   it("separates the LLM analysis from the deterministic facts", () => {
@@ -28,7 +28,8 @@ describe("PrContextBlock", () => {
     expect(facts).toHaveTextContent("sync_headers::slow_peer_2000_headers");
     expect(facts).toHaveTextContent("12 lines removed from tests");
     expect(facts).toHaveTextContent("3 dependencies changed: tokio, tracing, url");
-    expect(facts).toHaveTextContent("Project profile: repository file; a MemCan profile was not checked");
+    expect(facts).toHaveTextContent("Project profile: repository file");
+    expect(facts).toHaveTextContent("Project profile in MemCan: not checked");
   });
 
   it("puts the counts of the LLM's split into flows and steps under the LLM analysis (UX-007)", () => {
@@ -71,6 +72,48 @@ describe("PrContextBlock", () => {
     expect(screen.getByRole("region", { name: "Facts" })).toHaveTextContent(
       "No project profile — ratings are component-level",
     );
+  });
+
+  it("never implies there is no profile when MemCan was not checked", () => {
+    const t = structuredClone(tour);
+    t.pr_context.facts.project_profile = { sources: [], memcan: "not_checked" };
+    renderBlock(t);
+    const facts = screen.getByRole("region", { name: "Facts" });
+    expect(facts).toHaveTextContent("No project profile file in the repository");
+    expect(facts).toHaveTextContent("Project profile in MemCan: not checked");
+    expect(facts).not.toHaveTextContent(/No project profile —|component-level/);
+  });
+
+  it("states dependency files that were not checked, never as zero dependencies", () => {
+    const t = structuredClone(tour);
+    t.pr_context.facts.counters.dependencies_changed = [];
+    t.pr_context.facts.counters.dependency_files_not_checked = ["Cargo.lock", "web/package-lock.json"];
+    renderBlock(t);
+    const facts = screen.getByRole("region", { name: "Facts" });
+    expect(facts).toHaveTextContent("Dependency files not checked: Cargo.lock, web/package-lock.json");
+    expect(facts).not.toHaveTextContent(/0 dependencies/);
+  });
+
+  it("states both the changed dependencies and the files that were not checked", () => {
+    const t = structuredClone(tour);
+    t.pr_context.facts.counters.dependency_files_not_checked = ["Cargo.lock"];
+    renderBlock(t);
+    const facts = screen.getByRole("region", { name: "Facts" });
+    expect(facts).toHaveTextContent("3 dependencies changed: tokio, tracing, url");
+    expect(facts).toHaveTextContent("Dependency files not checked: Cargo.lock");
+  });
+
+  it.each([
+    ["checked", "3 review threads on GitHub"],
+    ["partial", "3 review threads listed. Review threads: the list from GitHub is incomplete"],
+    ["not_checked", "Review threads: not checked"],
+  ] as const)("states the review threads as a fact (%s)", (status, text) => {
+    const t = structuredClone(tour);
+    t.pr_context.facts.threads_status = status;
+    render(<PrContextBlock pr={t.analysis.pr} context={t.pr_context} threadCount={3} />);
+    const facts = screen.getByRole("region", { name: "Facts" });
+    expect(facts).toHaveTextContent(text);
+    if (status === "not_checked") expect(facts).not.toHaveTextContent(/\d+ review threads?|no open threads/);
   });
 
   it("says related work was not checked when it could not be looked up", () => {

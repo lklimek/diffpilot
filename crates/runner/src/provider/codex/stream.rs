@@ -194,8 +194,29 @@ impl CodexStream {
         self.cumulative_usage
     }
 
-    /// The outcome of the run once the process exited with `exit`.
-    pub(crate) fn finish(self, exit: Exit) -> Result<Finished, ProviderError> {
+    /// The thread id announced by `thread.started`, if any.
+    pub(crate) fn thread_id(&self) -> Option<&str> {
+        self.thread_id.as_deref()
+    }
+
+    /// The outcome of the run once the process exited with `exit`: the final structured output.
+    pub(crate) fn finish(mut self, exit: Exit) -> Result<Finished, ProviderError> {
+        let thread_id = self.thread_id.take();
+        let last_message = self.last_message.take();
+        let cumulative_usage = self.finish_turn(exit)?;
+        let text = last_message.ok_or(ProviderError::OutputNotJson)?;
+        let output =
+            serde_json::from_str::<Value>(&text).map_err(|_| ProviderError::OutputNotJson)?;
+        Ok(Finished {
+            output,
+            thread_id,
+            cumulative_usage,
+        })
+    }
+
+    /// Whether the turn completed once the process exited with `exit`, whatever its answer (compaction);
+    /// returns the thread's cumulative usage.
+    pub(crate) fn finish_turn(self, exit: Exit) -> Result<Usage, ProviderError> {
         if let Some(message) = self.failure {
             return Err(classify_failure(&message));
         }
@@ -205,14 +226,7 @@ impl CodexStream {
                     message: format!("Codex finished the turn but exited with {}", describe(exit)),
                 });
             }
-            let text = self.last_message.ok_or(ProviderError::OutputNotJson)?;
-            let output =
-                serde_json::from_str::<Value>(&text).map_err(|_| ProviderError::OutputNotJson)?;
-            return Ok(Finished {
-                output,
-                thread_id: self.thread_id,
-                cumulative_usage: self.cumulative_usage.unwrap_or_default(),
-            });
+            return Ok(self.cumulative_usage.unwrap_or_default());
         }
         if exit.terminated() {
             return Err(ProviderError::Cancelled);
@@ -253,7 +267,7 @@ fn classify_failure(message: &str) -> ProviderError {
         .iter()
         .any(|prefix| message.trim_start().starts_with(prefix))
     {
-        // The text has no machine-readable reset time; WP3 takes it from the rollout (ADR-003).
+        // The text has no machine-readable reset time; the provider takes it from the rollout (ADR-003).
         return ProviderError::UsageLimit { resets_at: None };
     }
     if REFRESH_FAILURES.iter().any(|code| message.contains(code)) {

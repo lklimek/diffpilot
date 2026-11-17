@@ -5,10 +5,11 @@ import type {
   CallHierarchy,
   CallSite,
   GithubThread,
+  ThreadsStatus,
   ThreadLlmStatus,
 } from "../../api/generated/types";
 import { RiskLabel } from "../badge/LlmLabel";
-import { rangeText } from "../section/format";
+import { rangeText, threadsNote } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Collapsible } from "./Collapsible";
 import type { SectionControl } from "./sectionState";
@@ -269,7 +270,12 @@ function Thread({ thread }: { thread: GithubThread }) {
 }
 
 /** Section 8: GitHub review threads at this location, with the LLM status where the flow analysis gave one. */
-export function ThreadsSection({ threads, sections }: { threads: readonly GithubThread[] } & Sections) {
+export function ThreadsSection({
+  threads,
+  status,
+  sections,
+}: { threads: readonly GithubThread[]; status: ThreadsStatus } & Sections) {
+  const note = threadsNote(status);
   return (
     <Collapsible
       sectionKey="threads"
@@ -278,8 +284,9 @@ export function ThreadsSection({ threads, sections }: { threads: readonly Github
       source="From GitHub; a status label is LLM analysis."
       sections={sections}
     >
+      {note && <p>{note}.</p>}
       {threads.length === 0 ? (
-        <Empty>No GitHub review threads on these lines.</Empty>
+        !note && <Empty>No GitHub review threads on these lines.</Empty>
       ) : (
         <ul className="m-0 grid list-none gap-1.5 p-0">
           {threads.map((t) => (

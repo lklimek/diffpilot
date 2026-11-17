@@ -39,11 +39,20 @@ enum Behaviour {
     Hang,
     Leak,
     Straddle,
+    /// Succeeds and leaves a session file holding the sink's secret.
+    WriteSession,
+    /// Runs until cancelled, then needs a while to stop (sweep, copy-back) before it ends as cancelled.
+    StopsOnCancel,
 }
 
 struct Stub {
     behaviour: Behaviour,
     seen: Mutex<Option<Seen>>,
+    /// Whether `resume` succeeds; the (thread, prompt) of every resume.
+    resumable: bool,
+    resumed: Mutex<Vec<(String, String)>>,
+    cancelled: tokio::sync::Notify,
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 impl Stub {
@@ -51,6 +60,17 @@ impl Stub {
         Arc::new(Self {
             behaviour,
             seen: Mutex::new(None),
+            resumable: false,
+            resumed: Mutex::new(Vec::new()),
+            cancelled: tokio::sync::Notify::new(),
+            stopped: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    fn resumable() -> Arc<Self> {
+        Arc::new(Self {
+            resumable: true,
+            ..Arc::into_inner(Self::new(Behaviour::Succeed)).unwrap()
         })
     }
 
@@ -102,7 +122,23 @@ impl LlmProvider for Stub {
                     Ok(outcome(json!({"ok": true})))
                 }
                 Behaviour::Fail(error) => Err(error()),
+                Behaviour::WriteSession => {
+                    fs::create_dir_all(&call.session_dir).unwrap();
+                    fs::write(
+                        call.session_dir.join("rollout.jsonl"),
+                        format!("{{\"leak\":\"{SINK_SECRET}\"}}\n"),
+                    )
+                    .unwrap();
+                    Ok(outcome(json!({"ok": true})))
+                }
                 Behaviour::Hang => std::future::pending().await,
+                Behaviour::StopsOnCancel => {
+                    self.cancelled.notified().await;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    self.stopped
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    Err(ProviderError::Cancelled)
+                }
                 Behaviour::Straddle => {
                     for secret in [TOKEN_CANARY, SINK_SECRET] {
                         events
@@ -137,14 +173,25 @@ impl LlmProvider for Stub {
 
     fn resume<'a>(
         &'a self,
-        _session_id: &'a str,
-        _call: &'a ProviderCall,
+        session_id: &'a str,
+        call: &'a ProviderCall,
         _events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        Box::pin(async { Err(ProviderError::SessionUnavailable) })
+        Box::pin(async move {
+            self.resumed
+                .lock()
+                .unwrap()
+                .push((session_id.to_owned(), call.prompt.clone()));
+            if self.resumable {
+                Ok(outcome(json!({"resumed": true})))
+            } else {
+                Err(ProviderError::SessionUnavailable)
+            }
+        })
     }
 
     fn cancel(&self, _job: contracts::ids::JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
+        self.cancelled.notify_one();
         Box::pin(async { Ok(()) })
     }
 }
@@ -383,6 +430,74 @@ async fn requested_session_counts_as_lost_and_the_context_pack_seeds_the_new_one
             thread_id: "thread-1".to_owned(),
             outcome: SessionOutcome::StartedAfterLoss
         })
+    );
+}
+
+#[tokio::test]
+async fn own_session_is_resumed_without_the_context_pack() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::resumable();
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.session = Some(SessionRef {
+        analysis_id: spec.analysis_id,
+        thread_id: "thread-1".to_owned(),
+    });
+    spec.context_pack = Some("CONTEXT PACK".to_owned());
+    let prompt = spec.prompt.clone();
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert_eq!(
+        *stub.resumed.lock().unwrap(),
+        [("thread-1".to_owned(), prompt)]
+    );
+    assert!(stub.seen.lock().unwrap().is_none(), "no new session");
+    assert_eq!(
+        result.session,
+        Some(SessionReport {
+            thread_id: "thread-1".to_owned(),
+            outcome: SessionOutcome::Resumed
+        })
+    );
+}
+
+#[tokio::test]
+async fn session_of_another_analysis_is_never_resumed() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::resumable();
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.session = Some(SessionRef {
+        analysis_id: contracts::ids::AnalysisId::new_random(),
+        thread_id: "thread-of-another-analysis".to_owned(),
+    });
+    spec.context_pack = Some("CONTEXT PACK".to_owned());
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(stub.resumed.lock().unwrap().is_empty());
+    assert!(stub.seen().prompt.starts_with("CONTEXT PACK\n\n"));
+    assert_eq!(
+        result.session.map(|s| s.outcome),
+        Some(SessionOutcome::StartedAfterLoss)
+    );
+}
+
+#[tokio::test]
+async fn stored_session_is_scrubbed_of_the_sink_secrets() {
+    let root = TempDir::new().unwrap();
+    let executor = Executor::new(
+        Stub::new(Behaviour::WriteSession),
+        dirs(root.path()),
+        credential(),
+    );
+    let spec = spec(JobKind::Plan, shared_repo());
+    let stored = executor
+        .sessions()
+        .dir(spec.analysis_id)
+        .join("rollout.jsonl");
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(result.session.is_some());
+    assert_eq!(
+        fs::read_to_string(stored).unwrap(),
+        "{\"leak\":\"[redacted]\"}\n"
     );
 }
 
@@ -705,4 +820,53 @@ async fn hanging_fetch_ends_with_timeout_and_kills_the_whole_git_group() {
             .unwrap(),
         "git-remote-http (in git's process group) still holds the connection"
     );
+}
+
+#[tokio::test]
+async fn runtime_cap_stops_a_detached_attempt_through_the_provider_and_awaits_it() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::StopsOnCancel);
+    let executor =
+        Executor::new(stub.clone(), dirs(root.path()), credential()).with_detached_attempts();
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.limits.max_runtime_secs = 1;
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(
+        matches!(
+            result.outcome,
+            JobOutcome::Failed {
+                kind: JobFailureKind::Timeout,
+                ..
+            }
+        ),
+        "{result:?}"
+    );
+    assert!(
+        stub.stopped.load(std::sync::atomic::Ordering::SeqCst),
+        "the result waited for the provider's stop sequence"
+    );
+    assert_removed(&stub.seen());
+}
+
+#[tokio::test]
+async fn dropped_detached_attempt_holds_settled_until_it_has_stopped() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::StopsOnCancel);
+    let executor =
+        Executor::new(stub.clone(), dirs(root.path()), credential()).with_detached_attempts();
+    let spec = spec(JobKind::Plan, shared_repo());
+    let (tx, _rx) = mpsc::channel(64);
+    let running = executor.execute(spec, EventSink::new(tx, Scrubber::default()));
+    tokio::select! {
+        _ = running => panic!("the attempt ended without a cancel"),
+        () = async {
+            while stub.seen.lock().unwrap().is_none() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        } => {}
+    }
+    // `execute` was dropped: the attempt is cancelled, and the runner may go on only once it stopped.
+    executor.settled().await;
+    assert!(stub.stopped.load(std::sync::atomic::Ordering::SeqCst));
+    assert_removed(&stub.seen());
 }

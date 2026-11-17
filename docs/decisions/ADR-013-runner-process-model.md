@@ -26,9 +26,10 @@ per datagram, `id` echoed in the reply; replies may arrive out of order (`wait`)
 | Request | Effect |
 |---|---|
 | `spawn {argv, env, cwd, exclusive}` + `SCM_RIGHTS` [stdin, stdout, stderr] → `{pid}` | refused while any agent thread is alive (same test as `sweep`) when `exclusive` is set or argv starts this binary's helper mode; then fork; child: `oom_score_adj` 1000 (OOM killer takes agents first), `setsid()`, `setgroups(0)`, `setresgid(agent)`, `setresuid(agent)`, `umask 077`, `chdir(cwd)`, dup2 the three fds, close the rest, default signals and empty mask, `execve(argv[0], argv, env)` with exactly `env` (T2). `argv[0]` and `cwd` absolute. The supervisor is the parent. A failed fork (pids exhausted) is an error reply. |
-| `wait {pid}` → `{status}` | answered when the supervisor reaps that spawned pid |
+| `wait {pid}` → `{status}` | answered when the supervisor reaps that spawned pid; `status` is the exit code, or the negated signal number (`-9` for SIGKILL), so a signal never reads as an exit code. The supervisor's own exit code for the runner uses 128 + signal. |
 | `signal {pid, signal}` → `{signalled}` | `pid` must be a spawned pid (= its process group, `setsid`); the signal goes to each thread group of that process group whose live threads all have the four uids = `agent`, through a pidfd (below). Used for the graceful SIGTERM to Codex. |
 | `sweep` → `{rounds, killed, ms}` | loop: for every thread group in `/proc`, read `/proc/<tgid>/task/*/status`; a group is live when **any thread** is neither zombie nor dead, whatever the leader's state (a leader that called `pthread_exit()` is a zombie while its other threads run); every live group with any of real/effective/saved/fs uid = `agent` on a live thread gets SIGKILL through a pidfd (kills the whole group); reap (a zombie leader is reaped after its last thread); until no live agent thread exists in `/proc/*/task/*`. In-process: no fork, no exec, so a full `pids_limit` cannot stop it. Hard deadline (default 5 s): past it, or on any error, the supervisor logs and exits 70 — init then ends the container and every process in it, the restart policy brings a clean one (fail closed). Never `kill(-1)` as root. |
+| `quarantine {path}` | same path forms and open as `handover`; refused while an agent thread lives or a spawned child is unreaped; owner `agent` or `runner`; a `lock` helper as that owner sets mode 0700 (root without `CAP_FOWNER` cannot), `fstat` on the supervisor's fd checks 0700 on the same inode, then `fchownat(fd, "", runner, runner, AT_EMPTY_PATH)` and a final `fstat` (runner, 0700), all before the reply; the client checks again. Mode before owner: an interruption leaves a 0700 directory of its old owner, never a runner-owned open one. For a per-job directory that `clear` could not empty: the agent uid can no longer enter it (fail closed). Idempotent; start-up recovery repeats it. |
 | `handover {path}` | `path` normalised and either `<state>/codex-homes/<name>` or `<work>/<name>/{home,tmp}`; opened with `openat2(O_PATH\|O_DIRECTORY\|O_NOFOLLOW, RESOLVE_NO_SYMLINKS)`; must be owned by `runner`, mode 0700 and empty (listed by a runner-uid child, same dev/ino, because root without `DAC_READ_SEARCH` cannot list it); then `fchownat(fd, "", agent, agent, AT_EMPTY_PATH)`. The only use of `CHOWN`. |
 
 pidfd rule (no reused pid is ever hit): `pidfd_open(tgid)` (works on a zombie leader with live threads), then read
@@ -37,14 +38,15 @@ pidfd rule (no reused pid is ever hit): `pidfd_open(tgid)` (works on a zombie le
 the new owner and skips it; if it dies after the read, `pidfd_send_signal` fails with `ESRCH`.
 
 The supervisor is a subreaper (`PR_SET_CHILD_SUBREAPER`) and reaps everything; when the runner exits it sweeps and
-exits with the runner's status. On SIGTERM it forwards SIGTERM to the runner (not covered by the test yet).
+exits with the runner's status. On SIGTERM (and SIGINT) it forwards the signal to the runner
+(`sigterm_forwarded_to_runner`, Rust test).
 
 Unprivileged **helper modes of the supervisor binary**, started by the runner through `spawn` (uid `agent`;
 refused as root), because they read or write agent-owned files:
 
 | Helper | Does |
 |---|---|
-| `copy-in ROOT REL` | stdin → `ROOT/REL`: `mkdirat` 0700 parents, `openat2(O_CREAT\|O_EXCL, 0600, RESOLVE_BENEATH\|NO_SYMLINKS\|NO_MAGICLINKS\|NO_XDEV)` |
+| `copy-in ROOT REL` | stdin → `ROOT/REL`: `mkdirat` 0700 parents, `openat2(O_CREAT\|O_EXCL, 0600, RESOLVE_BENEATH\|NO_SYMLINKS\|NO_MAGICLINKS\|NO_XDEV)` of `REL.sr-new`, then `renameat` over `REL` (replaces a planted link, never follows it; the config is rewritten before the compaction turn) |
 | `copy-out ROOT REL MAX` | `openat2(rootfd, REL, O_RDONLY\|O_NONBLOCK, same resolve flags)`; `fstat`: regular file, `st_nlink == 1`, size ≤ MAX; read at most MAX+1 bytes; stdout |
 | `list ROOT` | entries below ROOT without following symlinks (to find `sessions/YYYY/MM/DD/rollout-*-<thread>.jsonl`) |
 | `clear ROOT` | removes everything below ROOT with fd-relative calls, no symlink followed; ROOT stays |
@@ -123,21 +125,66 @@ entrypoint is the supervisor as root); `cap_drop: [ALL]`; `cap_add: [CHOWN, SETU
 no Docker socket; network per T4 (phase 2). Image: `deploy/runner/Dockerfile` (uids 10001/10002, no shared group,
 setuid/setgid bits stripped).
 
-## Rust implementation notes (WP3-RUN)
-- Supervisor: a second binary in `crates/runner` (`smart-review-supervisor`), single-threaded, no tokio, `rustix`
-  (`net` feature for `socketpair`/`sendmsg`/`recvmsg` with `ScmRights` and `RecvFlags::CMSG_CLOEXEC`;
-  `process` for `pidfd_open`/`pidfd_send_signal`). `spawn` may use `std::process::Command` with
-  `.uid(10002).gid(10002)` (std calls `setgroups(0)` then `setuid` when a uid is set), `.env_clear().envs(..)`,
-  `Stdio::from(OwnedFd)` and `pre_exec(setsid)`; reap with `waitpid(-1, WNOHANG)`, not `Child::wait`. `sweep` and
-  `signal` run in the supervisor process and decide liveness per thread (`/proc/<tgid>/task/*`), never by the
-  leader's state; helpers are subcommands of the same binary, and `spawn` refuses them (and `exclusive` requests)
-  while an agent thread lives.
-- Runner: `kill_on_drop` and `kill_process_group` on Codex no longer work (different uid); every drop/cancel path
-  must go through `signal` + `sweep`, and the supervisor's final sweep covers a runner crash. Reading an agent
-  command's output and receiving its `wait` reply share one deadline, then `sweep`; the socket `recv` is bounded
-  too. `RemoveOnDrop` cannot delete agent-owned
-  contents: use `clear` + `rmdir`. Job dir mode 0755 (today 0700).
-- Port the checks of `deploy/runner/r1-test/` to the Rust supervisor: same scenarios, same check names.
+## Rust implementation (WP3-RUN)
+`smart-review-supervisor` in `crates/runner` (`src/supervisor/`, `src/supervisor_main.rs`); the crate forbids
+`unsafe`, which fixes these choices:
+- **Event loop:** a current-thread tokio runtime (safe signal handling for SIGTERM, SIGINT, SIGCHLD); requests
+  are handled synchronously in it. The control socket is wrapped as `tokio::net::UnixDatagram` for readiness only
+  (`AsyncFd::new` is deprecated as unsound, `AsyncFd::register` is unsafe); every receive is `recvmsg` with
+  `SCM_RIGHTS`.
+- **Control fd:** the runner's end is its stdin, `SR_SUPERVISOR_FD=0` (no `pre_exec` to place it); the
+  supervisor names its own binary in `SR_SUPERVISOR_BIN` for the helper modes.
+- **Spawn:** `std::process::Command` (`env_clear`, `Stdio::from(OwnedFd)`) of the binary's
+  `exec-agent CWD UID:GID -- ARGV` mode, still as root; it writes `oom_score_adj` 1000, calls `setsid()`, then
+  `exec`s `ARGV` through `Command` with `uid`/`gid`/`current_dir` (std: `setgroups(0)`, gid, uid, then `chdir`
+  as the agent). The uid switch is in the wrapper, not in the forked child, because std's `spawn` blocks until
+  the child `exec`s: an agent that SIGSTOPs every process of its uid stopped a child that had already switched,
+  and the supervisor hung (container test, hostile agent). The wrapper is root until its `exec`, so the
+  supervisor treats every unreaped spawned child as running: `exclusive` spawns are refused while one exists,
+  `sweep` SIGKILLs them by pid first (an unreaped child's pid cannot be reused), and `signal` to a spawned pid
+  that is not an agent group yet goes to that child. umask 077 is set around the spawn. Reaping:
+  `waitpid(-1, WNOHANG)` as subreaper, statuses kept while a sweep reaps.
+- **Helper exit codes:** 0 ok; `copy-out` 2 = open refused (link, mount, escape, missing), 3 = not a regular file
+  with one link, 4 = larger than MAX; 1 = any other error; 2 also for usage errors. A helper first restores its
+  own access to entries the agent locked (mode 000) through an `O_PATH` no-follow descriptor, so `clear` and
+  `copy-out` are not defeated by `chmod 000`.
+- **Configuration:** `SR_RUNNER_UID`/`SR_AGENT_UID` (10001/10002), `SR_SUPERVISOR_SWEEP_DEADLINE_MS` (default
+  5000, at least 100). Test-only: `SR_SUPERVISOR_UNPRIVILEGED=1` lets a non-root supervisor run (no uid switch,
+  sweep scoped to its own descendants outside the runner; ignored as root); `R1_FAULT_SWEEP_FAILS=1` (every sweep
+  fails) and `R1_FAULT_CLEAR_FAILS=<name>` (`clear` of a directory with that name is refused, so it gets
+  quarantined) are refused unless `SR_SUPERVISOR_TEST_FAULTS=1`. The image sets none of them.
+- **Runner without a supervisor:** refuses to start unless `SR_RUNNER_DEV_NO_ISOLATION=1` (dev stack, smoke),
+  then warns on every job; the image never sets it.
+- **Runner layout:** the provider works on a runner-private staging `CODEX_HOME` (`<state>/codex-staging/<key>`,
+  0700); the agent's `<state>/codex-homes/<key>` is filled by `copy-in` and read back by `copy-out`, so the T13
+  CAS and T8b validation run on runner-owned copies.
+
+Invariant: an attempt is finished only when signal → sweep → reap → copy-back → cleanup have completed or failed
+closed. Nothing publishes a terminal result, releases the credential or claims the next job before that:
+- the runtime cap and a cancel start the stop sequence through the provider and await it; a supervised call is
+  never dropped (the compaction turn is bounded by its own deadline inside the run, not by dropping it);
+- attempts run as their own task holding a per-runner gate; the worker waits for the gate before posting a
+  terminal result and before the next claim;
+- `auth.json` that cannot be copied back (missing, link, oversized, not a single regular file) means the
+  credential state is unknown: the master is marked unusable (a new login is needed), the old staged copy proves
+  nothing;
+- the job loop stops reading the attempt's events (closes the channel) before it waits for the gate, so
+  back-pressure never blocks the attempt's signal/sweep/clean-up; events already buffered are still posted;
+- a per-job directory that `clear` cannot empty is quarantined; if that fails too, the runner takes no further
+  job (its credential is reported unusable);
+- start-up recovery, before the first claim, handles every leftover the same way (remove, else quarantine and
+  verify runner-owned 0700, an already quarantined one included); any failure stops start-up. A leftover agent
+  `auth.json` that cannot be copied back marks the master the job started from unusable (`<key>.unknown`), unless
+  the owner signed in again since (another digest).
+
+Live text (events, stderr) is scrubbed of the known secrets and, because a token rotated by the agent is known
+only after the copy-back, of token shapes: JWTs (`eyJ…` with three base64url segments, the first two at least 10
+characters) and, for every known secret with a prefix up to its first `_` or `-` within 8 characters (`ghs_`,
+`codex-`, `sk-`), that prefix followed by at least 20 token characters including an upper-case letter or a digit
+(so lowercase identifiers stay). Shapes are found anywhere in a word, also glued to other characters
+(`x<token>`); each segment is tried once, so the cost stays linear. Everything stored or returned (output,
+result text, session rollout) is scrubbed with the exact rotated values after the copy-back. Residual: a rotated
+token without such a prefix, or one the agent encodes, can appear in live progress text only (AR-4).
 
 ## Alternatives rejected
 - Runner holding `SETUID`/`SETGID`/`KILL` (permitted or ambient): violates CapEff 0 for `runner` (T1b).
@@ -163,8 +210,9 @@ setuid/setgid bits stripped).
   `CAP_SETPCAP`); harmless under NNP with no setuid or file-capability binary (`cap_kill_not_inherited`).
 - `/proc/*/cmdline` and `/proc/*/status` of every process are world-readable: never put a secret in argv.
 - POSIX message queues and SysV IPC survive the sweep; step 5 clears them (`ipc_objects_cleared_at_job_end`).
-- The agent may delete its files or make them unreadable (`chmod 000`); copy-back then fails closed (T13 marks
-  the credential unusable): a denial of service for an attacker who already holds the credential (AR-4).
+- The agent may delete or replace its `auth.json`; copy-back then fails closed (T13 marks the credential unusable):
+  a denial of service for an attacker who already holds the credential (AR-4). `chmod 000` alone is undone by
+  the helper (owner access restored).
 - A crashed run's per-job dirs stay agent-owned until start-up recovery (order step 1), which must finish before
   the first job: a later agent could traverse into a guessed `<job>-<attempt>` name.
 - **Accepted denial of service:** a hostile job can make a sweep fail (for example a process the kernel cannot

@@ -3,11 +3,14 @@
 import type {
   AnalysisState,
   AnalysisSummary,
+  FeedbackMemory,
+  PendingReview,
   AskQuestion,
   MeResponse,
   RepoSettings,
   ResolvePrResponse,
   Settings,
+  ThreadsStatus,
   Tour,
 } from "../api/generated/types";
 import { seedFor, seedNow } from "./fixtures";
@@ -40,12 +43,44 @@ interface Scenario {
   analysis?: AnalysisState;
   /** `settings` answer. */
   settings?: Settings;
-  /** `repos/{owner}/{name}/settings` answer. */
-  repoSettings?: RepoSettings;
+  /** `repos/{owner}/{name}/settings` answer; null = not known yet (409 `analysis_not_finished`). */
+  repoSettings?: RepoSettings | null;
   /** Changes to the `tour` answer. */
   tour?: (seed: Tour) => Tour;
   /** Changes to the stored questions. */
   questions?: (seed: AskQuestion[]) => AskQuestion[];
+  /** Outcome of the MemCan write of feedback (default `written`). */
+  memcan?: FeedbackMemory;
+  /** Changes to the seeded pending review. */
+  pendingReview?: (seed: PendingReview) => PendingReview;
+  /** Comment writes answer 409 `comment_published` (the review was published meanwhile). */
+  commentPublished?: true;
+}
+
+/** The seed tour with review threads read partly, or not at all (no threads listed then). */
+function withThreads(seed: Tour, status: ThreadsStatus): Tour {
+  const tour = structuredClone(seed);
+  tour.pr_context.facts.threads_status = status;
+  if (status === "not_checked") {
+    tour.threads = [];
+    for (const step of tour.flows.flatMap((f) => f.steps)) step.facts.thread_ids = [];
+  }
+  return tour;
+}
+
+/** Facts the server could not establish: dependency files not checked, ranges too large for the LLM. */
+function withUncheckedFacts(seed: Tour): Tour {
+  const tour = structuredClone(seed);
+  tour.pr_context.facts.counters.dependencies_changed = [];
+  tour.pr_context.facts.counters.dependency_files_not_checked = ["Cargo.lock"];
+  tour.pr_context.facts.project_profile = { sources: [], memcan: "not_checked" };
+  tour.quiet.unexplained.push({
+    file: "src/rpc/generated_codes.rs",
+    side: "head",
+    ranges: [{ start_line: 1, end_line: 2400 }],
+    reason: "too_large_for_prompt",
+  });
+  return tour;
 }
 
 /** Markup and a script URL in agent output (threat model T12): the page must show them as text. */
@@ -127,10 +162,22 @@ const SCENARIOS = {
     analysis: { state: "running", done: 2, total: 5 },
   },
   "existing-failed": {
-    resolve: withAnalysis({ state: "failed", flow: null, message: "Planning the flows failed." }),
-    analysis: { state: "failed", flow: null, message: "Planning the flows failed." },
+    resolve: withAnalysis({
+      state: "failed",
+      flow: null,
+      message: "The analysis stopped because of a server error. Retry the analysis.",
+    }),
+    analysis: {
+      state: "failed",
+      flow: null,
+      message: "The analysis stopped because of a server error. Retry the analysis.",
+    },
   },
   "existing-cancelled": { resolve: withAnalysis({ state: "cancelled" }) },
+  "existing-paused": {
+    resolve: withAnalysis({ state: "paused", resumes_at: "2026-11-17T14:20:00Z", done: 2, total: 5 }),
+    analysis: { state: "paused", resumes_at: "2026-11-17T14:20:00Z", done: 2, total: 5 },
+  },
   "installations-not-checked": { settings: { ...SETTINGS, app_installations: null } },
   "no-app": {
     resolve: (seed: ResolvePrResponse) => ({ ...seed, commenting_available: false }),
@@ -144,14 +191,14 @@ const SCENARIOS = {
     analysis: {
       state: "failed",
       flow: { id: "f3", title: "Classify RPC errors" },
-      message: "The LLM answer did not match the expected format after 2 repairs.",
+      message: "The agent's answer did not have the expected structure.",
     },
   },
   "failed-early": {
     analysis: {
       state: "failed",
       flow: null,
-      message: "The pull request could not be fetched from GitHub. GitHub answered with an error.",
+      message: "The repository could not be fetched. Retry the analysis.",
     },
   },
   finished: { analysis: { state: "finished", total: 5 } },
@@ -165,6 +212,13 @@ const SCENARIOS = {
     },
   },
   xss: { tour: withXss, questions: xssQuestions },
+  "memcan-failed": { memcan: "failed" },
+  "repo-not-known": { repoSettings: null },
+  "comment-published": { commentPublished: true },
+  "pending-incomplete": { pendingReview: (seed) => ({ ...seed, incomplete: true }) },
+  "threads-partial": { tour: (seed) => withThreads(seed, "partial") },
+  "threads-not-checked": { tour: (seed) => withThreads(seed, "not_checked") },
+  "unchecked-facts": { tour: withUncheckedFacts },
   "llm-unknown": {
     settings: { ...SETTINGS, llm_status: null, language: "pl" },
     repoSettings: {

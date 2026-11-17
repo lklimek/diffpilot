@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CommentTarget, LinesResponse } from "../../api/generated/types";
 import { seedFor } from "../../mocks/fixtures";
-import { commentPlacement } from "./placement";
+import { commentPlacement, isChangedLine } from "./placement";
 
 const lines = (comments: LinesResponse["comments"]): LinesResponse => ({
   path: "src/rpc/client.rs",
@@ -71,5 +71,30 @@ describe("commentPlacement (ADR-006)", () => {
   it("matches the seeded lines of src/rpc/client.rs", () => {
     const seeded = seedFor("default", "lines/head/src/rpc/client.rs") as LinesResponse;
     expect(commentPlacement(seeded, at(96))).toBe("line");
+  });
+});
+
+describe("isChangedLine", () => {
+  const shown: LinesResponse = {
+    ...inDiff,
+    changed: [89, 96],
+    deleted: [{ after_line: 90, base_start: 101, lines: ["a", "b", "c"], total_lines: 3 }],
+  };
+  const at = (side: "head" | "base", line: number): CommentTarget => ({
+    path: "src/rpc/client.rs",
+    side,
+    start_line: null,
+    line,
+  });
+
+  it("is true for a changed line on its side and for a removed line at a deletion marker", () => {
+    expect(isChangedLine(shown, at("head", 96))).toBe(true);
+    expect(isChangedLine(shown, at("base", 103))).toBe(true);
+  });
+
+  it("is false for an unchanged line, a line outside the deletion, and another file", () => {
+    expect(isChangedLine(shown, at("head", 88))).toBe(false);
+    expect(isChangedLine(shown, at("base", 104))).toBe(false);
+    expect(isChangedLine(shown, { ...at("head", 96), path: "src/other.rs" })).toBe(false);
   });
 });

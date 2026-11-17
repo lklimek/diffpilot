@@ -19,6 +19,7 @@ const STATES: [string, (page: Page) => Promise<unknown>][] = [
   ["home-resume", (p) => p.goto("/?state=resume").then(() => analyze(p))],
   ["home-head-moved", (p) => p.goto("/?scenario=head-moved").then(() => analyze(p))],
   ["home-in-progress", (p) => p.goto("/?scenario=existing-running").then(() => analyze(p))],
+  ["home-paused", (p) => p.goto("/?scenario=existing-paused").then(() => analyze(p))],
   ["home-failed", (p) => p.goto("/?scenario=existing-failed").then(() => analyze(p))],
   ["home-no-app", (p) => p.goto("/?scenario=no-app").then(() => analyze(p))],
   [
@@ -39,6 +40,8 @@ const STATES: [string, (page: Page) => Promise<unknown>][] = [
   ["settings-llm-error", (p) => p.goto("/settings?scenario=llm-error")],
   ["settings-llm-unknown", (p) => p.goto("/settings?scenario=llm-unknown")],
   ["settings-no-app", (p) => p.goto("/settings?scenario=no-app")],
+  ["settings-installations-not-checked", (p) => p.goto("/settings?scenario=installations-not-checked")],
+  ["settings-repo-not-known", (p) => p.goto("/settings?scenario=repo-not-known")],
 ];
 
 for (const colorScheme of ["light", "dark"] as const) {

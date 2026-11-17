@@ -1,6 +1,6 @@
 import type { Counters, NotAnalysedItem, NotAnalysedSection } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
-import { rangeText } from "../section/format";
+import { dependencyFacts, rangeText } from "../section/format";
 import { NOT_ANALYSED_LABEL, plural } from "./labels";
 import { Note, QuietCard } from "./QuietCard";
 
@@ -29,13 +29,7 @@ function Counter({ section, counters }: NotAnalysedBlockProps) {
     return <p>{plural(counters.lines_removed_from_tests, "line")} removed from tests</p>;
   }
   if (section.category === "generated_mechanical") {
-    const deps = counters.dependencies_changed;
-    return (
-      <p>
-        {deps.length} dependencies changed{deps.length > 0 && `: ${deps.join(", ")}`}. Dependency changes are
-        counted, not interpreted.
-      </p>
-    );
+    return <p>{dependencyFacts(counters).join(". ")}. Dependency changes are counted, not interpreted.</p>;
   }
   return null;
 }

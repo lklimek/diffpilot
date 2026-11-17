@@ -7,7 +7,7 @@ import { setFixtureState } from "./fixtures";
 import { handlers } from "./handlers";
 import { setMockLanguage } from "./handlers/get-settings";
 import { RUN_STEP_MS, resetLive, setLiveState } from "./live-analysis";
-import { resetStore } from "./review-store";
+import { MEMCAN_SYNC_MS, resetStore } from "./review-store";
 import { MOVED_HEAD, setScenario } from "./scenarios";
 
 const BASE = location.origin;
@@ -68,6 +68,49 @@ describe("msw handlers from fixtures/pr-482", () => {
       status: 404,
       code: "not_found",
     });
+  });
+
+  it.each([
+    [null, "written"],
+    ["memcan-failed", "failed"],
+  ] as const)(
+    "move a new feedback value from pending to its MemCan outcome (scenario %s)",
+    async (name, outcome) => {
+      setScenario(name);
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const api = createApiClient(BASE);
+      const created = await api.postFeedback(ID, {
+        target: { target: "step", step_id: "f1.5" },
+        value: "correct",
+        note: null,
+      });
+      expect(created.memory).toBe("pending");
+      const memoryOf = async () => (await api.listFeedback(ID)).find((f) => f.id === created.id)!.memory;
+      expect(await memoryOf()).toBe("pending");
+      vi.setSystemTime(Date.now() + MEMCAN_SYNC_MS);
+      expect(await memoryOf()).toBe(outcome);
+    },
+  );
+
+  it("serve the thread, pending-review and comment_published scenarios", async () => {
+    const api = createApiClient(BASE);
+    setScenario("threads-not-checked");
+    const unchecked = await api.getTour(ID);
+    expect(unchecked.pr_context.facts.threads_status).toBe("not_checked");
+    expect(unchecked.threads).toEqual([]);
+    setScenario("threads-partial");
+    expect((await api.getTour(ID)).pr_context.facts.threads_status).toBe("partial");
+    resetStore();
+    setScenario("pending-incomplete");
+    expect((await api.getPendingReview(ID)).incomplete).toBe(true);
+    setScenario("comment-published");
+    await expect(
+      api.createComment(ID, {
+        idempotency_key: crypto.randomUUID(),
+        target: { path: "src/rpc/client.rs", side: "head", start_line: null, line: 96 },
+        body: "x",
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "comment_published" });
   });
 
   it("answer the slice flow: resolve, create, tour", async () => {

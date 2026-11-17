@@ -124,6 +124,18 @@ describe("NotAnalysedBlock", () => {
     expect(block).not.toHaveTextContent(/removed from tests|dependencies changed/);
   });
 
+  it("states dependency files that were not checked instead of a zero count", () => {
+    const counters = {
+      ...tour.pr_context.facts.counters,
+      dependencies_changed: [],
+      dependency_files_not_checked: ["Cargo.lock"],
+    };
+    render(<NotAnalysedBlock section={section(tour, "generated_mechanical")} counters={counters} />);
+    const block = screen.getByRole("article");
+    expect(block).toHaveTextContent("Dependency files not checked: Cargo.lock");
+    expect(block).not.toHaveTextContent(/0 dependencies/);
+  });
+
   it("shows the dependency counter with mechanical and generated material", () => {
     render(
       <NotAnalysedBlock
@@ -140,6 +152,15 @@ describe("NotAnalysedBlock", () => {
 
 describe("PendingReviewBlock", () => {
   const missed = seedFor("missed", "pending-review") as PendingReview;
+
+  it("says when more pending comments exist on GitHub than are listed", () => {
+    const review = { ...structuredClone(missed), incomplete: true };
+    render(<PendingReviewBlock review={review} prUrl={PR_URL} />);
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Pending review on GitHub (1+)");
+    expect(screen.getByRole("article")).toHaveTextContent(
+      "More pending comments exist on GitHub than are listed here.",
+    );
+  });
 
   it("lists the pending comments with their location; bodies are text, never HTML", () => {
     const review = structuredClone(missed);
@@ -206,6 +227,19 @@ describe("PendingReviewBlock", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Not saved: The pull request head changed.");
     expect(screen.getByRole("textbox")).toHaveValue("My new text.");
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("a delete answered comment_published shows the server's sentence, not 'Not deleted'", async () => {
+    const sentence =
+      "This comment was published on GitHub in the meantime; the published comment was deleted.";
+    const onDelete = vi.fn(() =>
+      Promise.reject(Object.assign(new Error(sentence), { code: "comment_published" })),
+    );
+    render(<PendingReviewBlock review={missed} prUrl={PR_URL} onDelete={onDelete} />);
+    await userEvent.click(screen.getByRole("button", { name: `Delete comment on ${WHERE}` }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(sentence);
+    expect(alert).not.toHaveTextContent("Not deleted");
   });
 
   it("deletes through the callback, blocks a second delete and shows a failure", async () => {

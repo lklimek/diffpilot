@@ -48,9 +48,8 @@ describe("AnalysisProgress (brief §4.2)", () => {
     const resumes = new Date();
     resumes.setHours(23, 59, 0, 0);
     show({ state: "paused", resumes_at: resumes.toISOString(), done: 2, total: 5 });
-    expect(
-      screen.getByText("Paused, 2 of 5 flows analysed: Codex usage limit reached, resumes at 23:59"),
-    ).toBeVisible();
+    expect(screen.getByText("Paused until 23:59 — 2 of 5")).toBeVisible();
+    expect(screen.getByText("The LLM provider's usage limit was reached.")).toBeVisible();
     expect(bar()).toHaveAttribute("aria-valuenow", "2");
     expect(bar()).toHaveAttribute("aria-valuemax", "5");
     const [filled, empty] = Array.from(bar().children) as HTMLElement[];
@@ -58,9 +57,16 @@ describe("AnalysisProgress (brief §4.2)", () => {
     expect(buttons()).toEqual(["Cancel analysis"]);
   });
 
+  it("paused while planning with a resume time: no count", () => {
+    const resumes = new Date();
+    resumes.setHours(14, 20, 0, 0);
+    show({ state: "paused", resumes_at: resumes.toISOString(), done: 0, total: null });
+    expect(screen.getByText("Paused until 14:20")).toBeVisible();
+  });
+
   it("paused while planning: no count, indeterminate bar", () => {
     show({ state: "paused", resumes_at: null, done: 0, total: null });
-    expect(screen.getByText("Paused: Codex usage limit reached; the resume time is not known")).toBeVisible();
+    expect(screen.getByText("Paused; the resume time is not known")).toBeVisible();
     expect(bar()).not.toHaveAttribute("aria-valuenow");
   });
 
@@ -80,9 +86,13 @@ describe("AnalysisProgress (brief §4.2)", () => {
   });
 
   it("failed before any flow: plain description and Retry", () => {
-    show({ state: "failed", flow: null, message: "The pull request could not be fetched from GitHub." });
+    show({
+      state: "failed",
+      flow: null,
+      message: "The repository could not be fetched. Retry the analysis.",
+    });
     expect(screen.getByText("The analysis failed before any flow was planned")).toBeVisible();
-    expect(screen.getByText("The pull request could not be fetched from GitHub.")).toBeVisible();
+    expect(screen.getByText("The repository could not be fetched. Retry the analysis.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
   });
 

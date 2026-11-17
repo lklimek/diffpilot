@@ -7,8 +7,9 @@ import type {
   ProjectProfileStatus,
   RelatedWork,
   RelatedWorkKind,
+  ThreadsStatus,
 } from "../../api/generated/types";
-import { evidenceText } from "../section/format";
+import { dependencyFacts, evidenceText, threadsNote } from "../section/format";
 import { LlmLine, Section, Subhead } from "../section/Section";
 
 /** The PR context as rendered. */
@@ -19,6 +20,8 @@ interface PrContextBlockProps {
   pr: PrSummary;
   /** Deterministic facts and LLM content of the PR context. */
   context: PrContextView;
+  /** Review threads of the PR as listed (`Tour.threads`); read with `facts.threads_status`. */
+  threadCount: number;
 }
 
 const FIT_TOPIC: Record<FitTopic, string> = {
@@ -64,15 +67,23 @@ function ciLine(ci: CiStatus): string {
   }
 }
 
-function profileLine(profile: ProjectProfileStatus): string {
+function profileLines(profile: ProjectProfileStatus): string[] {
   const unchecked = profile.memcan === "not_checked";
-  if (profile.sources.length === 0) {
-    return unchecked
-      ? "No project profile file; a MemCan profile was not checked"
-      : "No project profile — ratings are component-level";
-  }
   const names = profile.sources.map((s) => (s === "repository_file" ? "repository file" : "MemCan"));
-  return `Project profile: ${names.join(" and ")}${unchecked ? "; a MemCan profile was not checked" : ""}`;
+  const sources =
+    names.length > 0
+      ? `Project profile: ${names.join(" and ")}`
+      : unchecked
+        ? "No project profile file in the repository"
+        : "No project profile — ratings are component-level";
+  return unchecked ? [sources, "Project profile in MemCan: not checked"] : [sources];
+}
+
+function threadsFact(status: ThreadsStatus, count: number): string {
+  const note = threadsNote(status);
+  const listed = `${count} review ${count === 1 ? "thread" : "threads"}`;
+  if (status === "not_checked") return note!;
+  return note ? `${listed} listed. ${note}` : `${listed} on GitHub`;
 }
 
 function Fact({ children }: { children: ReactNode }) {
@@ -80,7 +91,7 @@ function Fact({ children }: { children: ReactNode }) {
 }
 
 /** PR context block: LLM analysis (problem, why, what it gives, related work, fit questions) and facts. */
-export function PrContextBlock({ pr, context }: PrContextBlockProps) {
+export function PrContextBlock({ pr, context, threadCount }: PrContextBlockProps) {
   const headingId = useId();
   const { facts, llm } = context;
   return (
@@ -168,13 +179,14 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
                 </ul>
               )}
             </Fact>
+            <Fact>{threadsFact(facts.threads_status, threadCount)}</Fact>
             <Fact>{facts.counters.lines_removed_from_tests} lines removed from tests</Fact>
-            <Fact>
-              {facts.counters.dependencies_changed.length} dependencies changed
-              {facts.counters.dependencies_changed.length > 0 &&
-                `: ${facts.counters.dependencies_changed.join(", ")}`}
-            </Fact>
-            <Fact>{profileLine(facts.project_profile)}</Fact>
+            {dependencyFacts(facts.counters).map((line) => (
+              <Fact key={line}>{line}</Fact>
+            ))}
+            {profileLines(facts.project_profile).map((line) => (
+              <Fact key={line}>{line}</Fact>
+            ))}
           </ul>
         </Section>
       </div>

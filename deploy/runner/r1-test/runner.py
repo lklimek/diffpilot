@@ -15,6 +15,8 @@ import subprocess
 import time
 
 SUP, AGENT, PY = "/opt/r1-test/supervisor.py", "/opt/r1-test/agent.py", "/usr/bin/python3"
+# Helper modes: the Rust supervisor names its own binary in SR_SUPERVISOR_BIN.
+HELPER = [os.environ["SR_SUPERVISOR_BIN"]] if os.environ.get("R1_SUPERVISOR") == "rust" else [PY, SUP]
 STATE = os.environ["SR_RUNNER_STATE_DIR"]
 WORK = os.environ["SR_RUNNER_WORK_DIR"]
 HOMES = os.path.join(STATE, "codex-homes")
@@ -260,7 +262,7 @@ def prepare_job(sup, key, files):
         if path != home:
             os.mkdir(path, 0o700)
         replies.append(sup.call("handover", path=path))
-    copied = [run(sup, [PY, SUP, "copy-in", home, rel], key, data.encode())[0] for rel, data in files.items()]
+    copied = [run(sup, [*HELPER, "copy-in", home, rel], key, data.encode())[0] for rel, data in files.items()]
     return home, job, replies, copied
 
 
@@ -277,7 +279,7 @@ def ipc_objects():
 def cleanup_job(sup, key):
     """After kill_all: per-job dirs and IPC objects emptied as agent, then the empty dirs removed by runner."""
     home, job = os.path.join(HOMES, key), os.path.join(WORK, key)
-    statuses = [run(sup, [PY, SUP, "clear", d], key)[0] for d in (home, f"{job}/home", f"{job}/tmp", "/dev/mqueue")]
+    statuses = [run(sup, [*HELPER, "clear", d], key)[0] for d in (home, f"{job}/home", f"{job}/tmp", "/dev/mqueue")]
     statuses.append(run(sup, ["/usr/bin/ipcrm", "--all"], key, exclusive=True)[0])
     for d in (home, f"{job}/home", f"{job}/tmp"):
         os.rmdir(d)  # empty agent-owned dir in a runner-owned parent
@@ -298,7 +300,7 @@ def signal_group(sup, pgid, sig):
 
 def copy_out(sup, key, rel, cap=COPY_CAP):
     started = time.monotonic()
-    r = run(sup, [PY, SUP, "copy-out", os.path.join(HOMES, key), rel, str(cap)], key)
+    r = run(sup, [*HELPER, "copy-out", os.path.join(HOMES, key), rel, str(cap)], key)
     return r.status, r.out, r.err, time.monotonic() - started
 
 
@@ -641,7 +643,7 @@ def real_codex_job(sup, sup_pid):
     time.sleep(0.3)
     left = [p for p, v in processes().items() if v[0] == AGENT_UID]
     check("real_codex_processes_killed", killed["ok"] and not left, f"sweep={killed} left={left}")
-    names = [e["path"] for e in json.loads(run(sup, [PY, SUP, "list", home], key).out or b"[]")]
+    names = [e["path"] for e in json.loads(run(sup, [*HELPER, "list", home], key).out or b"[]")]
     pattern = re.compile(rf"^sessions/\d{{4}}/\d{{2}}/\d{{2}}/rollout-[0-9T:-]+-{re.escape(thread or '-')}\.jsonl$")
     rollout = next((n for n in names if pattern.match(n)), None)
     rc_roll, data, _, _ = copy_out(sup, key, rollout or "missing", cap=64 << 20)
@@ -677,7 +679,7 @@ def hostile_job(sup, sup_pid):
     time.sleep(1)
     stopped = sum(1 for v in agent_live().values() if v[1] == "T")
     try:
-        spawn(sup, [PY, SUP, "list", home], key)
+        spawn(sup, [*HELPER, "list", home], key)
         refused = None
     except RuntimeError as error:
         refused = str(error)[:160]
@@ -820,6 +822,75 @@ def zombie_leader_job(sup):
     cleanup_job(sup, key)
 
 
+def agent_reach(sup, key, path):
+    """What an agent of job `key` gets when it lists `path` and reads `path/left`."""
+    r = run(sup, ["/bin/sh", "-c", f"ls {path} && cat {path}/left"], key)
+    text = [v.decode(errors="replace") if isinstance(v, bytes) else str(v) for v in (r.out, r.err)]
+    return r.status, text[0].strip()[:80], text[1].strip()[:120]
+
+
+def quarantine_state(path):
+    st = os.lstat(path)
+    return st.st_uid, oct(st.st_mode & 0o7777)
+
+
+def quarantine_job(sup):
+    """Rust supervisor only (R1_FAULT_CLEAR_FAILS=quarantine-1): a per-job dir that `clear` cannot empty is
+    quarantined (mode 0700, then owner runner, in one supervisor operation) and the next job's agent cannot
+    enter it; the states an interruption can leave (a runner-owned 0755 dir, an agent-owned dir) are brought
+    to the same verified state by the quarantine that start-up recovery repeats."""
+    key = "quarantine-1"
+    home, _, _, _ = prepare_job(sup, key, {"config.toml": "# quarantine\n"})
+    run(sup, ["/bin/sh", "-c", f"echo agent-left > {home}/left; chmod 755 {home}"], key)
+    kill_all(sup)
+    try:
+        run(sup, [*HELPER, "clear", home], key)
+        clear = "ran"
+    except RuntimeError as error:
+        clear = str(error)[:120]
+    try:
+        os.rmdir(home)
+        rmdir = "removed"
+    except OSError as error:
+        rmdir = error.strerror
+    reply = sup.call("quarantine", path=home)
+    state = quarantine_state(home)
+    prepare_job(sup, "quarantine-2", {})
+    reach = agent_reach(sup, "quarantine-2", home)
+    check(
+        "quarantined_dir_unreachable_by_next_agent",
+        bool("test fault" in clear
+        and rmdir != "removed"
+        and reply.get("ok")
+        and state == (RUNNER_UID, "0o700")
+        and reach[0] != 0
+        and "agent-left" not in reach[1]),
+        f"clear={clear!r} rmdir={rmdir!r} quarantine={reply} owner/mode={state} next agent ls+cat={reach}",
+    )
+    # Interrupted states: runner-owned but still open (0755, readable content), and agent-owned.
+    open_dir = os.path.join(HOMES, "quarantine-3")
+    os.mkdir(open_dir, 0o755)
+    os.chmod(open_dir, 0o755)
+    write_private(os.path.join(open_dir, "left"), "runner-left\n", 0o644)
+    os.chmod(os.path.join(open_dir, "left"), 0o644)
+    before = agent_reach(sup, "quarantine-2", open_dir)
+    agent_dir, _, _, _ = prepare_job(sup, "quarantine-4", {})
+    run(sup, ["/bin/sh", "-c", f"echo agent-left > {agent_dir}/left; chmod 755 {agent_dir}"], "quarantine-4")
+    kill_all(sup)
+    replies = [sup.call("quarantine", path=d) for d in (open_dir, agent_dir)]
+    states = [quarantine_state(d) for d in (open_dir, agent_dir)]
+    after = [agent_reach(sup, "quarantine-2", d) for d in (open_dir, agent_dir)]
+    kill_all(sup)
+    check(
+        "interrupted_quarantine_completed_by_recovery",
+        bool(before[0] == 0
+        and all(r.get("ok") for r in replies)
+        and states == [(RUNNER_UID, "0o700")] * 2
+        and all(a[0] != 0 and "left" not in a[1] for a in after)),
+        f"open dir readable before={before} quarantine={replies} owner/mode={states} next agent after={after}",
+    )
+
+
 def main():
     sup = Supervisor()
     if os.environ.get("R1_SCENARIO") == "sweep-failure":
@@ -836,6 +907,8 @@ def main():
     codex_home_exhaustion_job(sup)
     if os.environ.get("R1_SKIP_CODEX") != "1":
         real_codex_job(sup, sup_pid)
+    if os.environ.get("R1_SUPERVISOR") == "rust":
+        quarantine_job(sup)
     print(f"RESULT pass={sum(results)} fail={len(results) - sum(results)}", flush=True)
     raise SystemExit(0 if all(results) else 1)
 

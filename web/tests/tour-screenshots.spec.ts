@@ -1,5 +1,5 @@
 import { test, type Page } from "@playwright/test";
-import { openTour } from "./support";
+import { ANALYSIS_ID, openTour } from "./support";
 
 // The six fixture states in light and dark at 1440 and 3440 px for the comparison with docs/mockups
 // (plan §12.5). Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/smart-review/<date>/wp3-tour.
@@ -118,6 +118,28 @@ const EXTRA: Record<string, [string, (page: Page) => Promise<void>]> = {
       await page.getByRole("textbox", { name: /comment/i }).fill("Each attempt gets the full timeout.");
       await page.getByRole("button", { name: "Add to GitHub pending review" }).click();
       await page.getByText(/Also recorded as missed by the LLM/).waitFor();
+    },
+  ],
+  "feedback-memory": [
+    "wrong",
+    async (page) => {
+      await openStep(page, 3, 1);
+      await page.getByRole("list", { name: "Calibration memory" }).waitFor();
+    },
+  ],
+  "line-feedback": [
+    "default",
+    async (page) => {
+      await openStep(page, 1, 2);
+      await page.getByRole("button", { name: "Comment on line 96" }).click();
+      await page.getByRole("group", { name: "Feedback on line 96" }).waitFor();
+    },
+  ],
+  "unchecked-facts": [
+    "default",
+    async (page) => {
+      await page.goto(`/analyses/${ANALYSIS_ID}?scenario=unchecked-facts`);
+      await page.getByText("Dependency files not checked: Cargo.lock").first().waitFor();
     },
   ],
   "focus-visible": [

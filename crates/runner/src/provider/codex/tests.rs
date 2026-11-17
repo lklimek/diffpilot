@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use chrono::Utc;
 use contracts::common::RepoRef;
@@ -25,6 +25,13 @@ const PROMPT_CANARY: &str = "PROMPT-CANARY-0003";
 const ACCESS_CANARY: &str = "codex-access-CANARY-0004";
 const REFRESH_CANARY: &str = "codex-refresh-CANARY-0005";
 const RUNNER_SECRET_CANARY: &str = "runner-secret-CANARY-0006";
+/// The thread of the recorded fixture session.
+const THREAD: &str = "019a8f2c-4820-7000-8000-000000000482";
+
+/// The rollout path of `thread` below `sessions/`.
+fn rollout_rel(thread: &str) -> String {
+    format!("2026/11/16/rollout-2026-11-16T10-00-00-{thread}.jsonl")
+}
 
 /// The stand-in `codex`: writes argv, env and stdin into the job dir, replays `scenario.jsonl` and exits with
 /// the code in `scenario-exit`. Written once per process, so no test executes a file another thread still
@@ -37,10 +44,29 @@ fn fake_codex() -> &'static Path {
         fs::write(
             &path,
             r#"#!/bin/sh
-env > "$PWD/child-env.txt"
-for arg in "$@"; do printf '%s\n' "$arg"; done > "$PWD/child-args.txt"
-cat > "$PWD/child-stdin.txt"
+case " $* " in *model_auto_compact_token_limit*) mode=compaction ;; *) mode=child ;; esac
+env > "$PWD/$mode-env.txt"
+for arg in "$@"; do printf '%s\n' "$arg"; done > "$PWD/$mode-args.txt"
+cat > "$PWD/$mode-stdin.txt"
+cp "$CODEX_HOME/config.toml" "$PWD/$mode-config.toml" 2>/dev/null
+find "$CODEX_HOME/sessions" -type f > "$PWD/$mode-sessions.txt" 2>/dev/null
+if [ -f "$PWD/rollout-rel" ]; then
+  rollout="$CODEX_HOME/sessions/$(cat "$PWD/rollout-rel")"
+  mkdir -p "$(dirname "$rollout")"
+  if [ -f "$PWD/$mode-rollout" ]; then cat "$PWD/$mode-rollout" >> "$rollout"; else echo '{"type":"turn"}' >> "$rollout"; fi
+fi
+if [ "$mode" = compaction ]; then
+  while [ -f "$PWD/hold-compaction" ] && [ ! -f "$PWD/release" ]; do sleep 0.05; done
+  cat "$PWD/compaction.jsonl"
+  exit "$(cat "$PWD/compaction-exit" 2>/dev/null || echo 0)"
+fi
+if [ -f "$PWD/ignore-term" ]; then trap '' TERM; fi
+if [ -f "$PWD/tamper" ]; then printf '\n[mcp_servers.evil]\ncommand = "/bin/evil"\n' >> "$CODEX_HOME/config.toml"; fi
 if [ -f "$PWD/rotate" ]; then cat "$PWD/rotate" > "$CODEX_HOME/auth.json"; fi
+if [ -f "$PWD/stderr" ]; then cat "$PWD/stderr" >&2; fi
+if [ -f "$PWD/chmod-auth" ]; then chmod 000 "$CODEX_HOME/auth.json"; fi
+if [ -f "$PWD/lock-home" ]; then mkdir -p "$HOME/locked/deeper"; echo left > "$HOME/locked/deeper/x"; chmod 000 "$HOME/locked/deeper" "$HOME/locked"; fi
+if [ -f "$PWD/symlink-auth" ]; then rm -f "$CODEX_HOME/auth.json"; ln -s "$(cat "$PWD/symlink-auth")" "$CODEX_HOME/auth.json"; fi
 if [ -f "$PWD/background" ]; then sleep 300 </dev/null >/dev/null 2>&1 & echo $! > "$PWD/background.pid"; fi
 cat "$PWD/scenario.jsonl"
 if [ -f "$PWD/hang" ]; then sleep 300; fi
@@ -79,6 +105,12 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
     )
     .unwrap();
     fs::write(job_dir.join("scenario-exit"), exit_code.to_string()).unwrap();
+    fs::copy(
+        fixture("codex/compaction-after-plan.jsonl"),
+        job_dir.join("compaction.jsonl"),
+    )
+    .unwrap();
+    fs::write(job_dir.join("rollout-rel"), rollout_rel(THREAD)).unwrap();
     let master_auth = dir.path().join("credentials").join("auth.json");
     fs::create_dir(master_auth.parent().unwrap()).unwrap();
     fs::write(
@@ -91,7 +123,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
         job_id: JobId::new_random(),
         job_dir,
         codex_home,
-        session_dir: dir.path().join("sessions"),
+        session_dir: dir.path().join("sessions").join("analysis-a"),
         prompt: format!("Job: plan. {PROMPT_CANARY}"),
         output_schema: json!({"type": "object", "additionalProperties": false, "properties": {}, "required": []}),
         model: ModelChoice {
@@ -117,8 +149,12 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
     };
     let provider = CodexProvider::new(CodexSettings {
         binary: fake_codex().to_path_buf(),
-        master_auth: master_auth.clone(),
+        credential: Arc::new(CodexCredential::new(master_auth.clone())),
         egress_proxy: Some(PROXY.to_owned()),
+        term_grace: Duration::from_secs(10),
+        github_mcp: PathBuf::from("/opt/github-mcp/github-mcp-server"),
+        skills: None,
+        isolation: None,
     });
     Harness {
         _dir: dir,
@@ -163,8 +199,8 @@ async fn recorded_success_returns_the_structured_output() {
         Some("019a8f2c-4820-7000-8000-000000000482")
     );
     assert_eq!(
-        outcome.usage.input_tokens, 48210,
-        "a new thread's usage is its cumulative total"
+        outcome.usage.input_tokens, 109_232,
+        "a new thread's usage is its cumulative total after compaction"
     );
     assert_eq!(
         events.last(),
@@ -257,6 +293,11 @@ async fn codex_env_has_no_secret() {
     assert_eq!(
         value("TMPDIR").map(PathBuf::from),
         Some(h.call.job_dir.join("tmp"))
+    );
+    assert_eq!(
+        value("PWD").map(PathBuf::from),
+        Some(h.call.job_dir.clone()),
+        "Codex runs above the checkout, so repository config is never discovered (T5)"
     );
 }
 
@@ -352,7 +393,6 @@ async fn per_job_codex_home_has_lean_config_and_private_files() {
     ] {
         assert!(config.lines().any(|l| l == line), "missing {line}");
     }
-    assert!(!config.contains("mcp_servers"), "no MCP servers in stage 2");
     assert!(
         !config.contains("trust_level"),
         "the project is never trusted"
@@ -400,21 +440,17 @@ fn rotated_auth() -> String {
         .to_string()
 }
 
-fn kept_copy(h: &Harness) -> PathBuf {
-    h.master_auth
-        .with_file_name(format!("auth.json.rotated-{}", h.call.job_id))
+fn usable(h: &Harness) -> bool {
+    h.provider.settings.credential.usable()
 }
 
 #[tokio::test]
-async fn rotated_credential_is_kept_and_the_credential_blocked() {
+async fn rotated_credential_is_written_back_to_the_master() {
     let h = harness("plan.jsonl", 0);
     fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
     run(&h).await.0.expect("success");
-    assert_eq!(fs::read_to_string(kept_copy(&h)).unwrap(), rotated_auth());
-    assert!(
-        !credential_usable(&h.master_auth),
-        "a rotation blocks the credential"
-    );
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), rotated_auth());
+    assert!(usable(&h), "a refresh keeps the credential usable");
 }
 
 #[tokio::test]
@@ -461,7 +497,7 @@ async fn secret_straddling_the_summary_limit_is_scrubbed_whole() {
 }
 
 #[tokio::test]
-async fn rotated_credential_survives_a_dropped_call() {
+async fn rotated_credential_is_written_back_when_the_call_is_dropped() {
     let h = harness("plan.jsonl", 0);
     fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
     fs::write(h.call.job_dir.join("hang"), "").unwrap();
@@ -472,15 +508,19 @@ async fn rotated_credential_survives_a_dropped_call() {
         dropped.is_err(),
         "the hanging call is dropped like at the runtime cap"
     );
-    assert_eq!(fs::read_to_string(kept_copy(&h)).unwrap(), rotated_auth());
-    assert!(!credential_usable(&h.master_auth));
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), rotated_auth());
+    assert!(usable(&h));
 }
 
 #[tokio::test]
-async fn blocked_credential_refuses_the_next_call_without_starting_codex() {
-    let h = harness("plan.jsonl", 0);
-    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
-    run(&h).await.0.expect("success");
+async fn unusable_credential_refuses_the_next_call_without_starting_codex() {
+    let h = harness("plan.jsonl", 1);
+    fs::write(
+        h.call.job_dir.join("scenario.jsonl"),
+        json!({"type": "turn.failed", "error": {"message": "refresh failed: refresh_token_reused"}}).to_string(),
+    )
+    .unwrap();
+    let _ = run(&h).await;
     fs::remove_file(h.call.job_dir.join("child-args.txt")).unwrap();
     fs::remove_file(h.call.codex_home.join("auth.json")).unwrap();
     let (result, _) = run(&h).await;
@@ -495,7 +535,7 @@ async fn blocked_credential_refuses_the_next_call_without_starting_codex() {
 }
 
 #[tokio::test]
-async fn refresh_failure_blocks_the_credential() {
+async fn refresh_reused_marks_credential_unusable() {
     let h = harness("plan.jsonl", 1);
     fs::write(
         h.call.job_dir.join("scenario.jsonl"),
@@ -507,7 +547,7 @@ async fn refresh_failure_blocks_the_credential() {
         matches!(result, Err(ProviderError::CredentialUnusable)),
         "{result:?}"
     );
-    assert!(!credential_usable(&h.master_auth));
+    assert!(!usable(&h));
 }
 
 /// Whether `pid` still runs (a zombie counts as gone).
@@ -598,11 +638,6 @@ async fn missing_binary_is_an_io_error() {
     assert!(matches!(result, Err(ProviderError::Io(_))), "{result:?}");
 }
 
-#[test]
-fn toml_string_escapes_quotes_backslashes_and_controls() {
-    assert_eq!(toml_string("a\"b\\c\nd"), r#""a\"b\\c\u000Ad""#);
-}
-
 #[tokio::test]
 async fn oversized_line_is_skipped_and_the_next_one_read() {
     let mut input = vec![b'x'; MAX_LINE_BYTES + 1];
@@ -639,33 +674,36 @@ async fn kill_and_disarm_unregisters_before_the_leader_is_reaped() {
         .spawn()
         .expect("spawn sleep");
     let mut group = ProcessGroup::register(&running, job, child.id());
-    assert!(running.lock().unwrap().contains_key(&job));
+    assert!(running.lock().unwrap()[&job].group.is_some());
     assert!(!group.leader_exited());
     group.kill_and_disarm();
     assert!(
         group.pid.is_none(),
         "disarmed: a later drop signals nothing"
     );
-    assert!(running.lock().unwrap().is_empty());
+    assert!(running.lock().unwrap()[&job].group.is_none());
     let status = child.wait().await.expect("reap");
     assert!(!status.success(), "the group was killed");
     drop(group);
 }
 
 #[tokio::test]
-async fn rotation_with_a_stalled_settle_ends_the_call_without_agent_text() {
+async fn unreadable_copy_ends_the_call_without_agent_text() {
     let h = harness("plan.jsonl", 1);
-    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
+    // The agent rotates the copy, then replaces it with a symlink: its new tokens stay unknown to the scrubber.
+    let elsewhere = h.call.job_dir.join("elsewhere.json");
+    fs::write(&elsewhere, rotated_auth()).unwrap();
     fs::write(
         h.call.job_dir.join("scenario.jsonl"),
         json!({"type": "turn.failed", "error": {"message": format!("boom {NEW_REFRESH_CANARY}")}})
             .to_string(),
     )
     .unwrap();
-    super::credential::STALL_SETTLE
-        .lock()
-        .unwrap()
-        .push(h.master_auth.clone());
+    fs::write(
+        h.call.job_dir.join("symlink-auth"),
+        elsewhere.to_str().unwrap(),
+    )
+    .unwrap();
     let (result, events) = run(&h).await;
     let all = format!("{result:?} {events:?}");
     assert!(!all.contains(NEW_REFRESH_CANARY), "{all}");
@@ -673,4 +711,813 @@ async fn rotation_with_a_stalled_settle_ends_the_call_without_agent_text() {
         matches!(result, Err(ProviderError::CredentialUnusable)),
         "an uncertain settle ends the call with the fixed error: {result:?}"
     );
+    assert!(!usable(&h));
+}
+
+/// A token_count rollout record with the thread's cumulative input tokens and one rate-limit window.
+fn token_count_line(input: u64, used_percent: f64, resets_at: i64) -> String {
+    json!({"type": "event_msg", "payload": {"type": "token_count",
+        "info": {"total_token_usage": {"input_tokens": input, "cached_input_tokens": 0, "output_tokens": 1}},
+        "rate_limits": {"primary": {"used_percent": used_percent, "window_minutes": 300, "resets_at": resets_at}}}})
+    .to_string()
+}
+
+/// Puts a rollout of the fixture thread into the analysis's store, as an earlier job left it.
+fn store_session(h: &Harness, cumulative_input: u64) -> PathBuf {
+    let path = h.call.session_dir.join(rollout_rel(THREAD));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        format!(
+            "{{\"type\":\"session_meta\"}}\n{}\n",
+            token_count_line(cumulative_input, 10.0, 0)
+        ),
+    )
+    .unwrap();
+    path
+}
+
+async fn resume(h: &Harness) -> (Result<ProviderOutcome, ProviderError>, Vec<ProviderEvent>) {
+    let (tx, mut rx) = mpsc::channel(1024);
+    let result = h.provider.resume(THREAD, &h.call, tx).await;
+    let mut events = Vec::new();
+    while let Some(event) = rx.recv().await {
+        events.push(event);
+    }
+    (result, events)
+}
+
+fn lines(h: &Harness, name: &str) -> Vec<String> {
+    child_file(h, name).lines().map(str::to_owned).collect()
+}
+
+#[tokio::test]
+async fn resume_restores_the_session_and_runs_exec_resume() {
+    let h = harness("pr-context.jsonl", 0);
+    store_session(&h, 50_000);
+    let outcome = resume(&h).await.0.expect("success");
+    let schema = h.call.codex_home.join("output-schema.json");
+    assert_eq!(
+        lines(&h, "child-args.txt"),
+        [
+            "exec",
+            "resume",
+            "--json",
+            "--skip-git-repo-check",
+            "--ignore-rules",
+            "--output-schema",
+            schema.to_str().unwrap(),
+            THREAD,
+            "-",
+        ]
+    );
+    let restored = h.call.codex_home.join("sessions").join(rollout_rel(THREAD));
+    assert_eq!(
+        lines(&h, "child-sessions.txt"),
+        [restored.to_str().unwrap()],
+        "only the analysis's rollout is in CODEX_HOME when Codex starts"
+    );
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    assert_eq!(
+        outcome.usage.input_tokens,
+        109_232 - 50_000,
+        "usage is the delta of the thread's cumulative totals"
+    );
+}
+
+#[tokio::test]
+async fn compaction_issued_at_job_end() {
+    let h = harness("plan.jsonl", 0);
+    let outcome = run(&h).await.0.expect("success");
+    assert_eq!(
+        lines(&h, "compaction-args.txt"),
+        [
+            "exec",
+            "resume",
+            "--json",
+            "--skip-git-repo-check",
+            "--ignore-rules",
+            "-c",
+            "model_auto_compact_token_limit=1000",
+            THREAD,
+            "-",
+        ]
+    );
+    assert_eq!(child_file(&h, "compaction-stdin.txt"), COMPACTION_PROMPT);
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    assert!(
+        h.call.session_dir.join(rollout_rel(THREAD)).exists(),
+        "the compacted session is stored for the next job"
+    );
+}
+
+#[tokio::test]
+async fn output_is_ready_before_compaction_ends() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(h.call.job_dir.join("hold-compaction"), "").unwrap();
+    let (tx, mut rx) = mpsc::channel(1024);
+    let release = h.call.job_dir.join("release");
+    let watch = async {
+        while let Some(event) = rx.recv().await {
+            if matches!(event, ProviderEvent::OutputReady(_)) {
+                fs::write(&release, "").unwrap();
+            }
+        }
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(h.provider.run(&h.call, tx), watch)
+    })
+    .await
+    .expect("the output is announced while compaction still runs");
+    result.expect("success");
+}
+
+#[tokio::test]
+async fn config_regenerated_before_compaction() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(h.call.job_dir.join("tamper"), "").unwrap();
+    run(&h).await.0.expect("success");
+    let compaction = child_file(&h, "compaction-config.toml");
+    assert!(!compaction.contains("evil"), "{compaction}");
+    assert_eq!(
+        compaction,
+        config::config_toml(
+            &h.call.model,
+            Purpose::Compaction,
+            &h.call.access,
+            &h.provider.settings.github_mcp,
+            AGENT_NO_PROXY
+        )
+    );
+    let job = child_file(&h, "child-config.toml");
+    assert!(job.contains("[mcp_servers.github]") && job.contains("[mcp_servers.memcan]"));
+}
+
+#[tokio::test]
+async fn failed_compaction_keeps_the_output_and_loses_the_session() {
+    let h = harness("plan.jsonl", 0);
+    store_session(&h, 1);
+    fs::write(h.call.job_dir.join("compaction-exit"), "1").unwrap();
+    fs::write(
+        h.call.job_dir.join("compaction.jsonl"),
+        json!({"type": "turn.failed", "error": {"message": "stream disconnected"}}).to_string(),
+    )
+    .unwrap();
+    let outcome = run(&h).await.0.expect("the job still succeeds");
+    assert_eq!(outcome.session_id, None);
+    assert!(
+        !h.call.session_dir.exists(),
+        "a lost session is not kept in the store"
+    );
+}
+
+#[tokio::test]
+async fn lost_session_is_session_unavailable_before_codex_starts() {
+    let h = harness("pr-context.jsonl", 0);
+    let (result, events) = resume(&h).await;
+    assert!(
+        matches!(result, Err(ProviderError::SessionUnavailable)),
+        "{result:?}"
+    );
+    assert!(events.is_empty());
+    assert!(!h.call.job_dir.join("child-args.txt").exists());
+}
+
+#[tokio::test]
+async fn session_codex_cannot_resume_is_session_unavailable() {
+    let h = harness("pr-context.jsonl", 1);
+    store_session(&h, 1);
+    fs::write(
+        h.call.job_dir.join("scenario.jsonl"),
+        json!({"type": "error", "message": "no rollout found for thread id"}).to_string(),
+    )
+    .unwrap();
+    let (result, _) = resume(&h).await;
+    assert!(
+        matches!(result, Err(ProviderError::SessionUnavailable)),
+        "{result:?}"
+    );
+    assert!(
+        h.call.session_dir.join(rollout_rel(THREAD)).exists(),
+        "a failed job leaves the stored session as it was"
+    );
+}
+
+#[tokio::test]
+async fn stored_session_is_scrubbed_and_has_no_auth() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(
+        h.call.job_dir.join("child-rollout"),
+        format!("{{\"cmd\":\"echo {GITHUB_CANARY} {MEMCAN_CANARY} {REFRESH_CANARY}\"}}\n"),
+    )
+    .unwrap();
+    run(&h).await.0.expect("success");
+    let mut stored = Vec::new();
+    let mut dirs = vec![h.call.session_dir.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                stored.push(path);
+            }
+        }
+    }
+    assert_eq!(stored, [h.call.session_dir.join(rollout_rel(THREAD))]);
+    let text = fs::read_to_string(&stored[0]).unwrap();
+    for canary in [GITHUB_CANARY, MEMCAN_CANARY, REFRESH_CANARY] {
+        assert!(!text.contains(canary), "{text}");
+    }
+    assert!(text.contains("[redacted]"));
+}
+
+#[tokio::test]
+async fn usage_limit_carries_resets_at_from_the_rollout() {
+    let h = harness("usage-limit.jsonl", 1);
+    store_session(&h, 1);
+    fs::write(
+        h.call.job_dir.join("child-rollout"),
+        token_count_line(2, 100.0, 1_794_990_905) + "\n",
+    )
+    .unwrap();
+    let (result, _) = resume(&h).await;
+    match result {
+        Err(ProviderError::UsageLimit { resets_at }) => {
+            assert_eq!(
+                resets_at,
+                chrono::DateTime::from_timestamp(1_794_990_905, 0)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        !h.call.job_dir.join("compaction-args.txt").exists(),
+        "no further turn after the limit"
+    );
+}
+
+#[tokio::test]
+async fn cancel_kills_codex_that_ignores_sigterm_after_the_grace() {
+    let mut h = harness("cancelled.jsonl", 0);
+    h.provider.settings.term_grace = Duration::from_millis(300);
+    fs::write(h.call.job_dir.join("ignore-term"), "").unwrap();
+    fs::write(h.call.job_dir.join("hang"), "").unwrap();
+    let (tx, _rx) = mpsc::channel(1024);
+    let run = h.provider.run(&h.call, tx);
+    let cancel = async {
+        while !h.call.job_dir.join("child-stdin.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        h.provider.cancel(h.call.job_id).await
+    };
+    let (result, cancelled) =
+        tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, cancel) })
+            .await
+            .expect("the grace ends the call");
+    cancelled.expect("cancel");
+    assert!(
+        matches!(result, Err(ProviderError::Cancelled)),
+        "{result:?}"
+    );
+    assert!(!h.call.job_dir.join("compaction-args.txt").exists());
+}
+
+/// Unknown event types and item types a newer Codex may print; they must be skipped, never fail the call.
+const UNKNOWN_EVENTS: [&str; 5] = [
+    r#"{"type":"turn.plan_updated","plan":[{"step":"read","status":"in_progress"}]}"#,
+    r#"{"type":"item.completed","item":{"id":"u1","type":"web_search","query":"node-client retry"}}"#,
+    r#"{"type":"item.completed","item":{"id":"u2","type":"collab_tool_call","tool":"wait","status":"completed"}}"#,
+    r#"{"type":"thread.tokens_updated","usage":{"input_tokens":1}}"#,
+    r#"{"type":"item.started","item":{"id":"u3","type":"future_item_kind"}}"#,
+];
+
+/// Golden normalised events of a resumed session (`pr-context.jsonl`, recorded as a resume of the fixture
+/// thread) with unknown events interleaved. `UPDATE_GOLDEN=1` rewrites the golden file.
+#[tokio::test]
+async fn golden_resumed_session_with_unknown_events() {
+    let h = harness("pr-context.jsonl", 0);
+    store_session(&h, 1);
+    let recorded = fs::read_to_string(fixture("codex/pr-context.jsonl")).unwrap();
+    let mut scenario: Vec<&str> = recorded.lines().collect();
+    for (index, unknown) in UNKNOWN_EVENTS.iter().enumerate() {
+        scenario.insert(1 + index * 3, unknown);
+    }
+    fs::write(h.call.job_dir.join("scenario.jsonl"), scenario.join("\n")).unwrap();
+    let (result, events) = resume(&h).await;
+    let outcome = result.expect("unknown events do not fail the call");
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    let normalised: Vec<Value> = events
+        .iter()
+        .map(|event| match event {
+            ProviderEvent::Activity(event) => {
+                json!({"activity": event.activity, "summary": event.summary})
+            }
+            ProviderEvent::OutputReady(_) => json!({"output_ready": true}),
+        })
+        .collect();
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/provider/codex/golden/resumed-pr-context.events.json");
+    let actual = serde_json::to_string_pretty(&normalised).unwrap() + "\n";
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        fs::create_dir_all(golden.parent().unwrap()).unwrap();
+        fs::write(&golden, &actual).unwrap();
+    }
+    assert_eq!(
+        actual,
+        fs::read_to_string(&golden).expect("golden file; run with UPDATE_GOLDEN=1"),
+        "normalised events differ from the golden file"
+    );
+}
+
+#[tokio::test]
+async fn allowed_skills_are_copied_into_the_agent_home_with_their_commit() {
+    let mut h = harness("plan.jsonl", 0);
+    let repo = h._dir.path().join("claudius");
+    fs::create_dir_all(repo.join("skills/severity")).unwrap();
+    fs::create_dir_all(repo.join("skills/delegate")).unwrap();
+    fs::write(repo.join("skills/severity/SKILL.md"), "severity skill\n").unwrap();
+    fs::write(repo.join("skills/delegate/SKILL.md"), "delegate skill\n").unwrap();
+    for args in [
+        &["init", "--quiet", "-b", "main"][..],
+        &["add", "-A"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "-m",
+            "s",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let skills = Arc::new(Skills::new(
+        format!("file://{}", repo.display()),
+        "main".to_owned(),
+        h._dir.path().join("checkout"),
+        vec!["severity".to_owned()],
+        Duration::from_secs(3600),
+    ));
+    skills.refresh_if_due().await;
+    h.provider.settings.skills = Some(skills);
+    h.call.skills = vec!["severity".to_owned(), "delegate".to_owned()];
+    let outcome = run(&h).await.0.expect("success");
+    assert_eq!(outcome.skills_commit.as_deref().map(str::len), Some(40));
+    let root = h.call.job_dir.join("home/.agents/skills");
+    assert_eq!(
+        fs::read_to_string(root.join("severity/SKILL.md")).unwrap(),
+        "severity skill\n"
+    );
+    assert!(
+        !root.join("delegate").exists(),
+        "skills outside the allow-list are never given"
+    );
+}
+
+/// The supervisor binary next to this test binary (built with the package's tests).
+fn supervisor_binary() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let binary = exe
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join("smart-review-supervisor");
+    assert!(
+        binary.exists(),
+        "build the smart-review-supervisor binary first: {}",
+        binary.display()
+    );
+    binary
+}
+
+/// The harness under an in-process unprivileged supervisor (ADR-013 layout below the temp dir).
+fn isolated(h: &mut Harness) -> PathBuf {
+    isolated_with(h, None)
+}
+
+/// [`isolated`] with `clear` refused for directories named `fail_clears` (test-only fault injection).
+fn isolated_with(h: &mut Harness, fail_clears: Option<&str>) -> PathBuf {
+    let root = h._dir.path().to_path_buf();
+    let agent_homes = root.join("codex-homes");
+    fs::create_dir(&agent_homes).unwrap();
+    let socket = crate::supervisor::serve::in_process(crate::supervisor::serve::ServeConfig {
+        runner: crate::supervisor::serve::Ids {
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+        },
+        agent: crate::supervisor::serve::Ids {
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+        },
+        privileged: false,
+        state_dir: root.clone(),
+        work_dir: root.clone(),
+        sweep_deadline: Duration::from_secs(5),
+        fail_sweeps: false,
+        fail_clears: fail_clears.map(str::to_owned),
+        binary: supervisor_binary(),
+    })
+    .unwrap();
+    let supervisor = crate::supervisor::client::Supervisor::connect(
+        socket,
+        supervisor_binary(),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    h.provider.settings.isolation = Some(Isolation::new(supervisor, agent_homes.clone()));
+    agent_homes.join("codex-home")
+}
+
+#[tokio::test]
+async fn isolated_call_copies_back_and_removes_the_agent_dirs() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    let rotated = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "rotated-access", "refresh_token": "rotated-refresh", "account_id": "acct-1"}});
+    fs::write(h.call.job_dir.join("rotate"), rotated.to_string()).unwrap();
+    let outcome = run(&h).await.0.expect("success");
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    let env = fs::read_to_string(h.call.job_dir.join("child-env.txt")).unwrap();
+    assert!(
+        env.lines()
+            .any(|line| line == format!("CODEX_HOME={}", agent_home.display()))
+    );
+    assert!(!env.contains("SR_SUPERVISOR"), "{env}");
+    assert!(
+        fs::read_to_string(&h.master_auth)
+            .unwrap()
+            .contains("rotated-refresh"),
+        "the rotated credential was copied back and written to the master"
+    );
+    let stored = fs::read_dir(&h.call.session_dir).unwrap().count();
+    assert!(stored > 0, "the rollout was copied back and stored");
+    assert!(!agent_home.exists(), "the agent CODEX_HOME is removed");
+    assert!(!h.call.job_dir.join("home").exists() && !h.call.job_dir.join("tmp").exists());
+    assert_eq!(
+        fs::metadata(&h.call.job_dir).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+}
+
+#[tokio::test]
+async fn isolated_cancel_stops_codex_ignoring_sigterm_with_a_sweep() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    h.provider.settings.term_grace = Duration::from_millis(300);
+    fs::write(h.call.job_dir.join("ignore-term"), "").unwrap();
+    fs::write(h.call.job_dir.join("hang"), "").unwrap();
+    let job = h.call.job_id;
+    let started = std::time::Instant::now();
+    let (result, ()) = tokio::join!(run(&h), async {
+        while !h.call.job_dir.join("child-stdin.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        h.provider.cancel(job).await.unwrap();
+    });
+    assert!(
+        matches!(result.0, Err(ProviderError::Cancelled)),
+        "{:?}",
+        result.0
+    );
+    assert!(started.elapsed() < Duration::from_secs(60));
+}
+
+const ROTATED_ACCESS: &str = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyb3RhdGVkIn0.c2lnbmF0dXJlLXJvdGF0ZWQ";
+/// Same shape as the master's refresh token (prefix `codex-`), as a rotation by the same issuer is.
+const ROTATED_REFRESH: &str = "codex-refresh-ROTATEDtokenABCDEFGHIJ0123";
+
+fn rotate_to_new_tokens(h: &Harness) {
+    let rotated = json!({"auth_mode": "chatgpt", "tokens": {"access_token": ROTATED_ACCESS, "refresh_token": ROTATED_REFRESH, "account_id": "acct-1"}});
+    fs::write(h.call.job_dir.join("rotate"), rotated.to_string()).unwrap();
+}
+
+#[tokio::test]
+async fn isolated_rotated_tokens_never_leave_in_events_or_output() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    rotate_to_new_tokens(&h);
+    let command = format!("curl -H 'Authorization: Bearer {ROTATED_ACCESS}' -d {ROTATED_REFRESH}");
+    let answer = json!({"note": format!("refresh {ROTATED_REFRESH}")}).to_string();
+    let lines = [
+        json!({"type": "thread.started", "thread_id": THREAD}),
+        json!({"type": "turn.started"}),
+        json!({"type": "item.completed", "item": {"id": "i1", "type": "command_execution", "command": command, "aggregated_output": "", "exit_code": 0, "status": "completed"}}),
+        json!({"type": "item.completed", "item": {"id": "i2", "type": "agent_message", "text": answer}}),
+        json!({"type": "turn.completed", "usage": {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5, "reasoning_output_tokens": 0}}),
+    ];
+    let scenario: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    fs::write(h.call.job_dir.join("scenario.jsonl"), scenario).unwrap();
+    let (result, events) = run(&h).await;
+    let outcome = result.expect("success");
+    let seen = format!("{events:?} {:?}", outcome.output);
+    assert!(
+        !seen.contains(ROTATED_ACCESS) && !seen.contains(ROTATED_REFRESH),
+        "{seen}"
+    );
+    assert!(seen.contains("[redacted]"));
+}
+
+#[tokio::test]
+async fn isolated_failed_auth_copy_back_marks_the_credential_unusable() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    fs::write(h.call.job_dir.join("symlink-auth"), "/etc/passwd").unwrap();
+    let (result, _) = run(&h).await;
+    assert!(
+        matches!(result, Err(ProviderError::CredentialUnusable)),
+        "{result:?}"
+    );
+    assert!(
+        !h.provider.settings.credential.usable(),
+        "the credential state is unknown, so it is unusable"
+    );
+}
+
+#[tokio::test]
+async fn isolated_locked_auth_is_unlocked_and_copied_back() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    fs::write(h.call.job_dir.join("chmod-auth"), "").unwrap();
+    run(&h).await.0.expect("success");
+    assert!(h.provider.settings.credential.usable());
+}
+
+#[tokio::test]
+async fn isolated_locked_agent_dirs_are_removed_and_the_next_job_runs() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    fs::write(h.call.job_dir.join("lock-home"), "").unwrap();
+    run(&h).await.0.expect("success");
+    assert!(
+        !h.call.job_dir.join("home").exists(),
+        "the locked leftovers are gone"
+    );
+    assert!(h.provider.settings.isolation.as_ref().unwrap().healthy());
+    fs::remove_file(h.call.job_dir.join("lock-home")).unwrap();
+    fs::remove_file(h.call.job_dir.join("child-args.txt")).unwrap();
+    run(&h).await.0.expect("the next job runs");
+    assert!(
+        h.call.job_dir.join("child-args.txt").exists(),
+        "Codex ran for the next job"
+    );
+}
+
+#[tokio::test]
+async fn isolated_runtime_cap_stops_codex_and_still_copies_back() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    h.provider.settings.term_grace = Duration::from_millis(300);
+    h.call.limits.max_runtime_secs = 6;
+    rotate_to_new_tokens(&h);
+    fs::write(h.call.job_dir.join("ignore-term"), "").unwrap();
+    fs::write(h.call.job_dir.join("hang"), "").unwrap();
+    let started = std::time::Instant::now();
+    let (result, _) = run(&h).await;
+    assert!(matches!(result, Err(ProviderError::Timeout)), "{result:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(6),
+        "stopped before the cap"
+    );
+    assert!(
+        fs::read_to_string(&h.master_auth)
+            .unwrap()
+            .contains(ROTATED_REFRESH),
+        "the rotated credential was copied back at the cap"
+    );
+    assert!(!agent_home.exists());
+}
+
+#[tokio::test]
+async fn isolated_compaction_stops_at_its_budget_and_still_copies_back() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    h.provider.settings.term_grace = Duration::from_millis(300);
+    // Budget = runtime - END_MARGIN = 31 s; the run stops 5.3 s before it.
+    h.call.limits.max_runtime_secs = 46;
+    fs::write(h.call.job_dir.join("hold-compaction"), "").unwrap();
+    let started = std::time::Instant::now();
+    let outcome = run(&h)
+        .await
+        .0
+        .expect("the job output survives a failed compaction");
+    assert_eq!(outcome.session_id, None, "the session counts as lost");
+    assert!(started.elapsed() < Duration::from_secs(45));
+    assert!(!agent_home.exists());
+    assert!(h.provider.settings.credential.usable());
+}
+
+/// One Codex run whose command line carries the rotated tokens glued to a preceding character.
+fn glued_token_scenario(h: &Harness) {
+    let command = format!("echo x{ROTATED_ACCESS} x{ROTATED_REFRESH}");
+    let lines = [
+        json!({"type": "thread.started", "thread_id": THREAD}),
+        json!({"type": "turn.started"}),
+        json!({"type": "item.completed", "item": {"id": "i1", "type": "command_execution", "command": command, "aggregated_output": "", "exit_code": 0, "status": "completed"}}),
+        json!({"type": "item.completed", "item": {"id": "i2", "type": "agent_message", "text": "{}"}}),
+        json!({"type": "turn.completed", "usage": {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5, "reasoning_output_tokens": 0}}),
+    ];
+    let scenario: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    fs::write(h.call.job_dir.join("scenario.jsonl"), scenario).unwrap();
+}
+
+#[tokio::test]
+async fn isolated_glued_rotated_tokens_never_leave_in_events() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    rotate_to_new_tokens(&h);
+    glued_token_scenario(&h);
+    let (result, events) = run(&h).await;
+    result.expect("success");
+    let seen = format!("{events:?}");
+    assert!(
+        !seen.contains(ROTATED_ACCESS) && !seen.contains(ROTATED_REFRESH),
+        "{seen}"
+    );
+    assert!(seen.contains("x[redacted]"), "{seen}");
+}
+
+#[tokio::test]
+async fn isolated_glued_rotated_tokens_never_leave_in_stderr() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let sink = Arc::clone(&log);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_writer(move || Captured(Arc::clone(&sink)))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    rotate_to_new_tokens(&h);
+    glued_token_scenario(&h);
+    fs::write(
+        h.call.job_dir.join("stderr"),
+        format!("refresh failed for x{ROTATED_REFRESH} with x{ROTATED_ACCESS}\n"),
+    )
+    .unwrap();
+    run(&h).await.0.expect("success");
+    let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    assert!(logged.contains("Codex stderr tail"), "{logged}");
+    assert!(
+        !logged.contains(ROTATED_ACCESS) && !logged.contains(ROTATED_REFRESH),
+        "{logged}"
+    );
+}
+
+fn mode_and_owner(path: &Path) -> (u32, u32) {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = fs::symlink_metadata(path).unwrap();
+    (meta.mode() & 0o7777, meta.uid())
+}
+
+#[tokio::test]
+async fn isolated_uncleared_agent_dirs_are_quarantined_0700_by_the_supervisor() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated_with(&mut h, Some("codex-home"));
+    run(&h).await.0.expect("success");
+    let me = rustix::process::getuid().as_raw();
+    assert_eq!(
+        mode_and_owner(&agent_home),
+        (0o700, me),
+        "quarantined, not removed"
+    );
+    assert!(h.provider.settings.isolation.as_ref().unwrap().healthy());
+}
+
+#[tokio::test]
+async fn quarantine_sets_the_mode_in_the_supervisor_before_replying() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    fs::create_dir(&agent_home).unwrap();
+    fs::write(agent_home.join("left"), "x").unwrap();
+    fs::set_permissions(&agent_home, fs::Permissions::from_mode(0o755)).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    let reply = isolation
+        .supervisor
+        .request_for_tests(crate::supervisor::protocol::Op::Quarantine {
+            path: agent_home.to_string_lossy().into_owned(),
+        })
+        .await;
+    assert!(reply.is_ok(), "{reply:?}");
+    assert_eq!(
+        mode_and_owner(&agent_home).0,
+        0o700,
+        "set by the supervisor itself"
+    );
+}
+
+#[tokio::test]
+async fn recovery_quarantines_a_reachable_leftover_and_verifies_it() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated_with(&mut h, Some("stale-1"));
+    // A crash left a directory the agent can still enter (mode 0755, content inside).
+    let stale = agent_home.with_file_name("stale-1");
+    fs::create_dir(&stale).unwrap();
+    fs::write(stale.join("left"), "x").unwrap();
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o755)).unwrap();
+    let staging = h._dir.path().join("staging");
+    fs::create_dir(&staging).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    isolation
+        .recover(&staging, &h._dir.path().join("work"))
+        .await
+        .expect("recovered");
+    let me = rustix::process::getuid().as_raw();
+    assert_eq!(mode_and_owner(&stale), (0o700, me));
+}
+
+#[tokio::test]
+async fn recovery_stops_when_a_leftover_cannot_be_quarantined() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    std::os::unix::fs::symlink("/etc", agent_home.with_file_name("linked-1")).unwrap();
+    let staging = h._dir.path().join("staging");
+    fs::create_dir(&staging).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    let result = isolation
+        .recover(&staging, &h._dir.path().join("work"))
+        .await;
+    assert!(result.is_err(), "start-up must stop: {result:?}");
+}
+
+/// A crash left `<staging>/<key>.cas` and the old staged copy; the agent-side `auth.json` is a link.
+fn crashed_job_with_rejected_auth(h: &Harness, agent_homes: &Path) -> PathBuf {
+    use sha2::Digest as _;
+    let staging = h._dir.path().join("staging");
+    let key = "job-1";
+    fs::create_dir_all(staging.join(key)).unwrap();
+    let master = fs::read(&h.master_auth).unwrap();
+    fs::write(staging.join(key).join("auth.json"), &master).unwrap();
+    let digest: String = sha2::Sha256::digest(&master)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    fs::write(staging.join(format!("{key}.cas")), digest).unwrap();
+    let agent = agent_homes.join(key);
+    fs::create_dir(&agent).unwrap();
+    std::os::unix::fs::symlink(&h.master_auth, agent.join("auth.json")).unwrap();
+    staging
+}
+
+#[tokio::test]
+async fn recovery_with_a_rejected_agent_auth_marks_the_credential_unusable() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    let staging = crashed_job_with_rejected_auth(&h, agent_home.parent().unwrap());
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    isolation
+        .recover(&staging, &h._dir.path().join("work"))
+        .await
+        .expect("recovered");
+    h.provider.settings.credential.recover(&staging).unwrap();
+    assert!(
+        !h.provider.settings.credential.usable(),
+        "the old staged copy proves nothing after a crash"
+    );
+}
+
+#[tokio::test]
+async fn recovery_with_a_rejected_agent_auth_keeps_a_newer_login() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    let staging = crashed_job_with_rejected_auth(&h, agent_home.parent().unwrap());
+    // The owner signed in again after the crash.
+    let newer = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "new-access", "refresh_token": "new-refresh", "account_id": "acct-1"}});
+    fs::write(&h.master_auth, newer.to_string()).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    isolation
+        .recover(&staging, &h._dir.path().join("work"))
+        .await
+        .expect("recovered");
+    h.provider.settings.credential.recover(&staging).unwrap();
+    assert!(h.provider.settings.credential.usable());
+    assert_eq!(
+        fs::read_to_string(&h.master_auth).unwrap(),
+        newer.to_string()
+    );
+}
+
+/// A log writer appending to a shared buffer.
+struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
