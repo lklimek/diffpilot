@@ -1251,6 +1251,39 @@ async fn ask_never_preempts_a_running_job_and_questions_of_one_analysis_run_one_
     assert!(f.state.db.jobs().get(later_batch).await.expect("job").state == JobState::Queued);
 }
 
+/// After a lost session the runner starts a new one with the context pack and the prompt: the stored project
+/// profile must be in that input, as data.
+#[tokio::test]
+async fn ask_after_a_lost_session_still_has_the_project_profile() {
+    let f = fixture(true).await;
+    let marker = "PROFILE-ONLY-MARKER-7193: the ledger is the risky part";
+    f.state
+        .db
+        .documents()
+        .put(
+            f.analysis,
+            DocumentKind::MemcanProfile,
+            "",
+            &json!({"memcan": "checked", "text": marker}),
+            Utc::now(),
+        )
+        .await
+        .expect("profile lookup");
+    let question = f.asked("f1.5", QUESTION).await;
+    f.queued_job(question).await;
+    let claim = f.claim().await.expect("ask");
+    let input = format!(
+        "{}\n{}",
+        claim.spec.context_pack.as_deref().unwrap_or_default(),
+        claim.spec.prompt
+    );
+    let fenced = input
+        .split("<<<DATA ")
+        .find(|block| block.contains("project profile: MemCan memory"))
+        .unwrap_or_default();
+    assert!(fenced.contains(marker), "{input}");
+}
+
 #[tokio::test]
 async fn ask_resumes_analysis_session_with_a_context_pack_of_the_step() {
     let f = fixture(true).await;

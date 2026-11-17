@@ -194,6 +194,7 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
         step_id: &step_id,
         step: &f.flows[0].steps[4],
         question: QUESTION,
+        profile: profile(f),
     };
     let issues = issues();
     let rejected = serde_json::to_value(&f.flows[0]).expect("flow JSON");
@@ -642,6 +643,7 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
         step_id: &step_id,
         step: &f.flows[0].steps[0],
         question: QUESTION,
+        profile: profile(f),
     };
     let issues = issues();
     let rejected = serde_json::json!({});
@@ -1304,6 +1306,7 @@ fn ask_keeps_the_full_asked_step_after_a_lost_session() {
         step_id: &step_id,
         step: flow.steps.last().expect("step"),
         question,
+        profile: Profile::default(),
     })
     .expect("ask");
     let (_, blocks) = split(&prompt);
