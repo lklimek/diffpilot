@@ -159,6 +159,22 @@ impl Documents<'_> {
             .collect()
     }
 
+    /// Deletes one document, if stored.
+    pub async fn delete(
+        &self,
+        analysis: AnalysisId,
+        kind: DocumentKind,
+        key: &str,
+    ) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM documents WHERE analysis_id = ? AND kind = ? AND key = ?")
+            .bind(analysis.to_string())
+            .bind(kind.as_str())
+            .bind(key)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Deletes every document of an analysis (cancel discards partial results); returns the count.
     pub async fn delete_for_analysis(&self, analysis: AnalysisId) -> Result<u64, DbError> {
         let deleted = sqlx::query("DELETE FROM documents WHERE analysis_id = ?")
@@ -224,6 +240,14 @@ mod tests {
                 .expect("read"),
             None
         );
+        docs.delete(analysis, DocumentKind::PrContext, "")
+            .await
+            .expect("delete");
+        let gone: Option<Value> = docs
+            .get(analysis, DocumentKind::PrContext, "")
+            .await
+            .expect("read");
+        assert_eq!(gone, None);
     }
 
     #[tokio::test]

@@ -297,6 +297,14 @@ impl Driver<'_> {
                 continue;
             }
             match (self.submit_first(updates, stage.clone()).await, &stage) {
+                // Sent now (a Retry may fit what did not fit before): no stale reason stays behind.
+                (Ok(()), JobStage::Flow(id)) => {
+                    self.state
+                        .db
+                        .documents()
+                        .delete(self.analysis, DocumentKind::Unsent, &id.0)
+                        .await?;
+                }
                 (Ok(()), _) => {}
                 // A flow whose prompt is over budget is not sent: its lines are Unexplained with that reason.
                 (
