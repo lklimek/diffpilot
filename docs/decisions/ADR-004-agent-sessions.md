@@ -6,32 +6,37 @@
   brief §5 Agent sessions; plan §5.3, §5.4 T8.
 
 ## Decisions
-- **One session per analysis.** The session archive is the set of Codex rollout files of the thread, stored by
-  the runner per analysis id under uid `runner`. Only that analysis's files are copied into a job's
-  `CODEX_HOME`; `auth.json` is never part of the archive.
-- **Every job of the analysis resumes the session** (`codex exec resume <thread_id>`): `plan`, `pr_context`,
-  each `analyse_flow` and every `ask`. `JobSpec.session` carries `{analysis_id, thread_id}`; the first job has
-  none. `JobResult.session` returns the thread id and `resumed | started | started_after_loss`.
-- **Compaction** at the end of every job: one extra `exec resume <id> -c model_auto_compact_token_limit=<small>`
-  with a trivial prompt. It runs inside the provider (`LlmProvider::run`/`resume` end with it). S7: context 50–95k
-  → 17–24k, about 1.5–2 minutes per job; it counts against the 45-minute job cap (ADR-005).
-- **Output before compaction**. Compaction takes 47–130 s (S7), so the answer must not wait for it.
-  When the model turn ends, the provider sends `ProviderEvent::OutputReady(output)` and the runner posts it to
-  `POST /runner/v1/jobs/{id}/output` (`OutputReady {attempt, output}`, scrubbed like a result) before
-  compaction starts, for every job kind. The server stores it per attempt and may publish it (e.g. an Ask answer
-  shown as ready); `JobResult` stays authoritative and idempotent. Ordering, retry and reconciliation rules:
-  `docs/contracts/runner-protocol.md`. A failed compaction after a valid output does not fail the job: the
-  result is `succeeded` and the session counts as lost (the next job uses the context pack).
-  For the owner: [deviation] brief §5 says Ask streams the answer; Codex `exec` delivers the structured output
-  only at the end, so v1 has no token streaming: the answer appears in one piece as soon as the model turn ends.
-- **Loss.** A missing or unusable archive is a cache miss: the job starts a new session seeded with
-  `JobSpec.context_pack` (always sent with a resumed job) and reports `started_after_loss`.
-- **One running job per session**, enforced at claim (database partial unique index on running jobs per
-  analysis).
-- **Deletion.** When an analysis is cancelled or superseded by a re-analysis the server marks its session for
-  deletion; the runner learns it from `ClaimResponse.drop_sessions`, deletes the files and acknowledges with
-  `ClaimRequest.dropped_sessions` (at-least-once, idempotent). Retention deletion is runner-local.
-- A re-analysis on a moved head starts a new session.
+- **One session per pull request**, shared across heads, Retry rounds, languages and Ask on any analysis.
+  `pull_requests.id` (unique for repository + PR number, never reused) is the archive key:
+  `<state>/sessions/<pull_request_id>/YYYY/MM/DD/rollout-…-<thread>.jsonl`, owned by uid `runner`.
+  `auth.json` is never archived. `JobSpec.pull_request_id` carries the key, and `SessionRef` is
+  `{pull_request_id, thread_id}`. The server resolves the current thread at claim time.
+- **Automatic compaction only.** Every useful new or resumed Codex turn sets
+  `model_auto_compact_token_limit = 400000`. No extra turn, trivial prompt or deadline reserve.
+  Measured forced compaction cost was 35–147 s per job; the owner approved removing it on 2026-11-17.
+- **Checkpoint each successful useful turn.** After process cleanup and credential settlement, archive the
+  rollout independently of compaction. Usage is the useful turn's cumulative-token delta, including cached
+  input. A failed useful turn leaves the previous checkpoint. Failed archival after valid output leaves the
+  job succeeded with no session reference, so the next job can recover through its context pack.
+- **Output before archival.** `ProviderEvent::OutputReady` still publishes parsed output when the useful turn
+  ends. The final result is authoritative; ordering and retries are in `docs/contracts/runner-protocol.md`.
+  [deviation] Brief §5 describes streaming Ask answers; Codex exec returns one final structured answer.
+- **Loss.** Missing or unusable archives fall back to a new session seeded with `JobSpec.context_pack` and
+  report `started_after_loss`. Every prompt states the current base/head and tells the agent to re-read code
+  when the remembered head differs. The checkout is the source of truth.
+- **One running job per PR.** The atomic claim excludes another claimed/running job of the same PR, analysis
+  or credential. Database triggers also enforce the PR constraint on inserts and updates. Cancelled running
+  jobs keep the exclusion until completion or lease expiry; stale results cannot overwrite a newer thread.
+- **Cleanup.** Cancel and Re-analyze preserve the session. Existing runner retention deletes archives after
+  `SR_RUNNER_SESSION_RETENTION_DAYS` (default 14) without a write. Explicit removal may request a PR-keyed
+  drop through `drop_sessions` / `dropped_sessions`; no PR deletion UI/API is added here. A retained DB thread
+  whose archive expired takes the normal context-pack fallback. PR keys use SQLite AUTOINCREMENT, so a deleted
+  PR's retained archive cannot be attached to a newly inserted PR.
+- **Logs.** One runner info summary per job identifies new/resumed/context-pack-after-loss, job id and kind,
+  completed session turns when available in rollout records, and input/cached-input/output tokens. No new
+  protocol fields are needed for logging.
 
 ## Consequences
-- The server never needs the session files; per-job containers later ship the archive with the job.
+- The server stores the thread reference at PR level; only the runner handles the files.
+- The single rewritable migration moves thread/lifecycle columns from analyses to pull_requests; local
+  databases must be recreated. Analysis documents, review state and skills commit remain per analysis.

@@ -777,7 +777,7 @@ impl Driver<'_> {
     }
 
     /// Submits the stage's job at `generation` (idempotent per stage and generation) and follows its updates.
-    /// Jobs carry a context pack of the stored results; the analysis's session is set when a runner claims it.
+    /// Jobs carry a context pack of the stored results; the PR's session is set when a runner claims it.
     async fn submit(
         &mut self,
         updates: &mut Updates,
@@ -793,6 +793,13 @@ impl Driver<'_> {
             attempt: 0,
             kind,
             analysis_id: self.analysis,
+            pull_request_id: self
+                .state
+                .db
+                .analyses()
+                .get(self.analysis)
+                .await?
+                .pull_request_id,
             repo: RepoCheckout {
                 clone_url: endpoint(
                     &self.state.config.github.clone_url,

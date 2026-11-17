@@ -165,8 +165,7 @@ pub async fn resume_unanswered(state: &AppState) -> Result<usize, DbError> {
     Ok(open.len())
 }
 
-/// A finished analysis whose session was dropped was replaced by a re-analysis (only a cancel drops it otherwise,
-/// and a finished analysis cannot be cancelled).
+/// A PR whose session was explicitly removed cannot accept new questions.
 fn superseded(record: &AnalysisRecord) -> bool {
     matches!(
         record.session_state,

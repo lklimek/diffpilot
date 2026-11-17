@@ -1,12 +1,10 @@
 //! The agent-session store on the runner's private volume (ADR-004, threat model T8a): one directory per
-//! analysis, filled and read only by the provider for that analysis's jobs, deleted when the server drops the
-//! session (cancel, re-analysis) or after the retention period.
+//! pull request, filled and read only by the provider for that pull request's jobs, deleted when the server drops the
+//! session (explicit removal) or after the retention period.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
-
-use contracts::ids::AnalysisId;
 
 use crate::scrub::Scrubber;
 
@@ -22,14 +20,14 @@ impl SessionStore {
         Self { root }
     }
 
-    /// The directory of `analysis`'s session.
-    pub fn dir(&self, analysis: AnalysisId) -> PathBuf {
-        self.root.join(analysis.to_string())
+    /// The directory of `pull_request`'s session.
+    pub fn dir(&self, pull_request: i64) -> PathBuf {
+        self.root.join(pull_request.to_string())
     }
 
-    /// Deletes `analysis`'s session; an absent one counts as deleted.
-    pub fn remove(&self, analysis: AnalysisId) -> io::Result<()> {
-        match std::fs::remove_dir_all(self.dir(analysis)) {
+    /// Deletes `pull_request`'s session; an absent one counts as deleted.
+    pub fn remove(&self, pull_request: i64) -> io::Result<()> {
+        match std::fs::remove_dir_all(self.dir(pull_request)) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             other => other,
         }
@@ -56,10 +54,10 @@ impl SessionStore {
         Ok(removed)
     }
 
-    /// Replaces every value `scrubber` knows in the files of `analysis`'s session (secrets only the caller
+    /// Replaces every value `scrubber` knows in the files of `pull_request`'s session (secrets only the caller
     /// holds, such as the job token and the runner secret).
-    pub fn scrub(&self, analysis: AnalysisId, scrubber: &Scrubber) -> io::Result<()> {
-        scrub_tree(&self.dir(analysis), scrubber)
+    pub fn scrub(&self, pull_request: i64, scrubber: &Scrubber) -> io::Result<()> {
+        scrub_tree(&self.dir(pull_request), scrubber)
     }
 }
 
@@ -128,31 +126,30 @@ fn scrub_file(path: &Path, scrubber: &Scrubber) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use contracts::ids::AnalysisId;
     use tempfile::TempDir;
 
     use super::*;
 
-    fn store_with(analysis: AnalysisId) -> (TempDir, SessionStore) {
+    fn store_with(pull_request: i64) -> (TempDir, SessionStore) {
         let root = TempDir::new().unwrap();
         let store = SessionStore::new(root.path().join("sessions"));
-        let dir = store.dir(analysis).join("2026/11/16");
+        let dir = store.dir(pull_request).join("2026/11/16");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("rollout-x-t.jsonl"), "{}\n").unwrap();
         (root, store)
     }
 
     #[test]
-    fn session_deleted_on_cancel_supersede_retention() {
-        let analysis = AnalysisId::new_random();
+    fn session_deleted_on_explicit_removal_or_retention() {
+        let analysis = 1;
         let (_root, store) = store_with(analysis);
         store.remove(analysis).unwrap();
         assert!(!store.dir(analysis).exists(), "dropped by the server");
         store.remove(analysis).unwrap();
 
-        let old = AnalysisId::new_random();
+        let old = 1;
         let (_root, store) = store_with(old);
-        let fresh = AnalysisId::new_random();
+        let fresh = 2;
         std::fs::create_dir_all(store.dir(fresh)).unwrap();
         std::thread::sleep(Duration::from_millis(20));
         let keep_recent = Duration::from_secs(3600);
@@ -163,7 +160,7 @@ mod tests {
 
     #[test]
     fn retention_counts_the_newest_file_of_a_session() {
-        let analysis = AnalysisId::new_random();
+        let analysis = 1;
         let (_root, store) = store_with(analysis);
         std::thread::sleep(Duration::from_millis(50));
         std::fs::write(
@@ -176,7 +173,7 @@ mod tests {
 
     #[test]
     fn scrub_replaces_secrets_in_stored_files() {
-        let analysis = AnalysisId::new_random();
+        let analysis = 1;
         let (_root, store) = store_with(analysis);
         let file = store.dir(analysis).join("2026/11/16/rollout-x-t.jsonl");
         std::fs::write(&file, "{\"a\":\"job-token-CANARY\"}\n").unwrap();

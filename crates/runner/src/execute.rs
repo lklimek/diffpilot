@@ -52,7 +52,7 @@ pub struct RunnerDirs {
     pub codex_homes: PathBuf,
     /// Bare mirrors by clone URL.
     pub mirrors: PathBuf,
-    /// Agent-session store, one directory per analysis.
+    /// Agent-session store, one directory per pull request.
     pub sessions: PathBuf,
 }
 
@@ -211,7 +211,7 @@ impl Executor {
             job_id: spec.job_id,
             job_dir: job_dir.to_path_buf(),
             codex_home: codex_home.to_path_buf(),
-            session_dir: self.sessions().dir(spec.analysis_id),
+            session_dir: self.sessions().dir(spec.pull_request_id),
             prompt: spec.prompt.clone(),
             output_schema: spec.output_schema.clone(),
             model: spec.model.clone(),
@@ -242,9 +242,9 @@ impl Executor {
         let ((outcome, session_outcome), ()) = tokio::join!(run, pump(rx, sink, &scrubber));
         let outcome = match outcome {
             Ok(mut done) if done.session_id.is_some() && !sink.secrets.is_empty() => {
-                if let Err(error) = self.sessions().scrub(spec.analysis_id, &sink.secrets) {
+                if let Err(error) = self.sessions().scrub(spec.pull_request_id, &sink.secrets) {
                     tracing::warn!(job = %spec.job_id, %error, "cannot scrub the stored agent session; it is discarded");
-                    if let Err(error) = self.sessions().remove(spec.analysis_id) {
+                    if let Err(error) = self.sessions().remove(spec.pull_request_id) {
                         tracing::warn!(job = %spec.job_id, %error, "cannot remove an unscrubbed agent session");
                     }
                     done.session_id = None;
@@ -253,11 +253,24 @@ impl Executor {
             }
             other => other,
         };
+        let (usage, turns) = match &outcome {
+            Ok(done) => (Some(done.usage), done.session_turns),
+            Err(_) => (None, None),
+        };
+        let origin = match session_outcome {
+            SessionOutcome::Started => "new session",
+            SessionOutcome::Resumed => "resumed session",
+            SessionOutcome::StartedAfterLoss => "context pack after a lost session",
+        };
+        tracing::info!(job = %spec.job_id, kind = ?spec.kind, session = origin,
+            session_turns = %turns.map_or_else(|| "unknown".to_owned(), |n| n.to_string()),
+            input_tokens = usage.map(|u| u.input_tokens), cached_input_tokens = usage.map(|u| u.cached_input_tokens),
+            output_tokens = usage.map(|u| u.output_tokens), "job agent session summary");
         to_result(spec, outcome, session_outcome, &scrubber)
     }
 
-    /// Resumes the analysis's own session (ADR-004) or starts a new one; a lost session, or one of another
-    /// analysis, starts a new session seeded with the context pack.
+    /// Resumes the pull request's own session (ADR-004) or starts a new one; a lost session, or one of another
+    /// pull request, starts a new session seeded with the context pack.
     async fn run_session(
         &self,
         spec: &JobSpec,
@@ -265,19 +278,19 @@ impl Executor {
         events: mpsc::Sender<ProviderEvent>,
     ) -> (Result<ProviderOutcome, ProviderError>, SessionOutcome) {
         if let Some(session) = &spec.session {
-            if session.analysis_id == spec.analysis_id {
+            if session.pull_request_id == spec.pull_request_id {
                 match self
                     .provider
                     .resume(&session.thread_id, &call, events.clone())
                     .await
                 {
                     Err(ProviderError::SessionUnavailable) => {
-                        tracing::info!(job = %spec.job_id, "the analysis's agent session is unavailable; starting a new one with the context pack");
+                        tracing::info!(job = %spec.job_id, "the pull request's agent session is unavailable; starting a new one with the context pack");
                     }
                     other => return (other, SessionOutcome::Resumed),
                 }
             } else {
-                tracing::warn!(job = %spec.job_id, "the job names another analysis's session; starting a new one");
+                tracing::warn!(job = %spec.job_id, "the job names another pull request's session; starting a new one");
             }
         }
         if let Some(pack) = &spec.context_pack {

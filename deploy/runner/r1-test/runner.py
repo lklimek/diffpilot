@@ -159,6 +159,9 @@ def agent_env(key):
         f"CODEX_HOME={HOMES}/{key}",
         "PATH=/usr/local/bin:/usr/bin:/bin",
         "LANG=C.UTF-8",
+        "GIT_CONFIG_COUNT=1",
+        "GIT_CONFIG_KEY_0=safe.directory",
+        f"GIT_CONFIG_VALUE_0={WORK}/{key}/repo",
     ]
 
 
@@ -891,6 +894,65 @@ def quarantine_job(sup):
     )
 
 
+def plain_git_job(sup):
+    """A runner-owned independent checkout must support ordinary Git commands as the agent uid."""
+    import shutil
+
+    key = "plain-git-1"
+    _, job, _, _ = prepare_job(sup, key, {})
+    repo = os.path.join(job, "repo")
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-C", repo, *args], stderr=subprocess.STDOUT, text=True
+        ).strip()
+
+    git("init", "--quiet")
+    git("add", "README.md")
+    git(
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "base",
+    )
+    base = git("rev-parse", "HEAD")
+    with open(os.path.join(repo, "README.md"), "a") as file:
+        file.write("changed at head\n")
+    git("add", "README.md")
+    git(
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "head",
+    )
+    head = git("rev-parse", "HEAD")
+    commands = [
+        ["diff", base, head, "--", "README.md"],
+        ["log", "-2"],
+        ["show", base],
+        ["blame", head, "--", "README.md"],
+    ]
+    script = "import json,os,subprocess; os.chdir('repo'); commands=json.loads(input()); print(json.dumps({'uid':os.getuid(),'codes':[subprocess.run(['git',*args],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode for args in commands]}))"
+    called = run(sup, [PY, "-c", script], key, (json.dumps(commands) + "\n").encode())
+    result = json.loads(called.out) if called.status == 0 else {}
+    check(
+        "plain_git_in_runner_owned_checkout",
+        called.status == 0 and result == {"uid": AGENT_UID, "codes": [0, 0, 0, 0]},
+        result,
+    )
+    kill_all(sup)
+    shutil.rmtree(os.path.join(repo, ".git"))
+    cleanup_job(sup, key)
+
+
 def main():
     sup = Supervisor()
     if os.environ.get("R1_SCENARIO") == "sweep-failure":
@@ -898,6 +960,7 @@ def main():
     assert JOB_TOKEN  # held in memory for the /proc/<runner>/mem read attempt
     sup_pid, me = identity_checks()
     layout()
+    plain_git_job(sup)
     key, home = stand_in_job(sup, sup_pid, me)
     copy_back_checks(sup, key, home)
     zombie_leader_job(sup)

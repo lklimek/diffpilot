@@ -97,6 +97,13 @@ not that every tool or profile lookup succeeded.
 | Flow schema rejections enter the existing two-repair budget | A missing or null required assessment requests correction before acceptance; exhausted repairs leave the flow Unexplained. |
 | `Blocking::NoActionProposed` (`no_action_proposed`) | Rate bounded exposure without inventing a defect, blocking action or follow-up; never suppress the assessment to represent absence of an action. |
 
+### Owner-approved PR session lifecycle (2026-11-17)
+| Change | Reason |
+|---|---|
+| `JobSpec.pull_request_id`; `SessionRef { pull_request_id, thread_id }`; numeric PR keys in `drop_sessions` / `dropped_sessions` | One agent session across every head, language, Retry and Ask of a PR (ADR-004). |
+| Move `agent_thread_id`, `session_state` to `pull_requests`; AUTOINCREMENT PR ids; running-job exclusion per PR | Stable, non-reused archive key; serialize shared-session jobs even with different credentials. Single rewritable migration, no compatibility. |
+| Codex auto-compaction at 400000; archive each successful useful turn | Remove the extra compaction turn and its latency; usage remains the useful turn's delta. |
+
 ## Consequences
 - The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.
 - Further contract changes still need a change request (ADR-010).
@@ -109,3 +116,4 @@ not that every tool or profile lookup succeeded.
 | §5 "GitHub access for the agent": token "restricted to the PR's repository and its related repositories" | `repositories` = PR repository only; related repositories are read as public data | ADR-005, threat model T3a |
 | §5 "Job execution interface": `JobExecutor` = `submit`, `events`, `cancel` | adds `cancel_analysis` | this ADR, plan rule A3 |
 | §2 "Agent access": "Read-only checkout, no code execution"; §5 "Security": "only the LLM credential and the job's read-only installation token in the runner", §5: "the agent holds only the job's short-lived read-only installation token" | Codex sandbox off: no code execution is a prompt rule only; the agent uid can read its per-job Codex credential, installation token and MemCan bearer | ADR-002, threat model AR-4, AR-6, §9 |
+| §5 Agent sessions: one per analysis, compact at each job end, new session on moved head; session files persist across one analysis only | One per PR, shared across analyses and Ask; automatic compaction at 400k only; Cancel/Re-analyze preserve archives, retention defaults to 14 days | owner decision 2026-11-17, ADR-004 |

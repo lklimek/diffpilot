@@ -105,13 +105,12 @@ pub async fn cancel(
     Ok(summary)
 }
 
-/// Cancels the analysis's jobs, deletes its stored documents and asks the runner to delete its agent session.
+/// Cancels the analysis's jobs, deletes its stored documents and preserves the PR's agent session.
 /// Idempotent: the driver repeats it when it sees the cancellation, so a document it stored meanwhile goes too.
 pub async fn discard(state: &AppState, analysis: AnalysisId) -> Result<(), ControlError> {
     state.executor.cancel_analysis(analysis).await?;
     let deleted = state.db.documents().delete_for_analysis(analysis).await?;
-    state.db.analyses().request_session_drop(analysis).await?;
-    tracing::debug!(%analysis, documents = deleted, "partial results and agent session discarded");
+    tracing::debug!(%analysis, documents = deleted, "partial analysis results discarded");
     Ok(())
 }
 
@@ -233,13 +232,14 @@ mod tests {
             .expect("documents");
         assert!(documents.is_empty(), "documents left: {documents:?}");
         let record = db.analyses().get(analysis).await.expect("analysis");
-        assert_eq!(record.session_state, SessionState::DropRequested);
+        assert_eq!(record.session_state, SessionState::Active);
+        assert_eq!(record.agent_thread_id.as_deref(), Some("thread-1"));
     }
 
     /// A crash after any durable step of a cancel (state, jobs, documents, session) is completed at start-up.
     #[tokio::test]
     async fn restart_after_each_cancel_step_finishes_the_clean_up() {
-        for done in 1..=4 {
+        for done in 1..=3 {
             let db = Db::in_memory().await.expect("db");
             let state = AppState::with_queue(test_config(), db.clone());
             let (analysis, jobs) = live(&db).await;
@@ -260,14 +260,9 @@ mod tests {
                     .await
                     .expect("documents");
             }
-            if done >= 4 {
-                db.analyses()
-                    .request_session_drop(analysis)
-                    .await
-                    .expect("session");
-            }
+
             let finished = recover_cancellations(&state).await.expect("recover");
-            assert_eq!(finished, usize::from(done < 4), "after step {done}");
+            assert_eq!(finished, usize::from(done < 3), "after step {done}");
             assert_cleaned(&db, analysis, &jobs).await;
             assert_eq!(
                 recover_cancellations(&state).await.expect("again"),

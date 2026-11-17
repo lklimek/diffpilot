@@ -17,8 +17,10 @@ pub struct JobSpec {
     pub attempt: u32,
     /// Job kind.
     pub kind: JobKind,
-    /// The analysis the job belongs to; keys the agent-session store.
+    /// The analysis the job belongs to.
     pub analysis_id: AnalysisId,
+    /// Stable database key of the pull request; keys the shared agent-session archive.
+    pub pull_request_id: i64,
     /// The repository to check out.
     pub repo: RepoCheckout,
     /// The full prompt, built by the server.
@@ -31,7 +33,7 @@ pub struct JobSpec {
     pub limits: JobLimits,
     /// The LLM credential to run with; jobs are serialised per credential (ADR-003).
     pub credential: LlmCredentialRef,
-    /// The analysis's agent session to resume, or none for the first job.
+    /// The pull request's agent session to resume, or none for the first job.
     pub session: Option<SessionRef>,
     /// Context to seed a new session when `session` is missing or unusable.
     pub context_pack: Option<String>,
@@ -76,7 +78,7 @@ pub enum ReasoningEffort {
 /// Limits of one job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobLimits {
-    /// Wall-clock cap in seconds, compaction included; below the 1-hour installation token lifetime.
+    /// Wall-clock cap in seconds; below the 1-hour installation token lifetime.
     pub max_runtime_secs: u32,
 }
 
@@ -110,11 +112,11 @@ pub enum CredentialKind {
     CodexChatgpt,
 }
 
-/// The agent session of an analysis (ADR-004).
+/// The agent session of a pull request (ADR-004).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionRef {
-    /// The analysis that owns the session.
-    pub analysis_id: AnalysisId,
+    /// The pull request that owns the session.
+    pub pull_request_id: i64,
     /// Provider session (Codex thread) id.
     pub thread_id: String,
 }

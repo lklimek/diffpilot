@@ -136,12 +136,6 @@ pub async fn create(
         return Err(IngestError::HeadMoved);
     }
     let user = state.db.users().get(&session.user_id).await?;
-    let superseded = state
-        .db
-        .analyses()
-        .latest_for_pr(pr_id, user.language)
-        .await?
-        .filter(|old| old.head_sha != pull.summary.head_sha);
     let created = state
         .db
         .analyses()
@@ -164,15 +158,6 @@ pub async fn create(
         Err(DbError::Conflict) => return Err(IngestError::AnalysisExists),
         Err(error) => return Err(error.into()),
     };
-    // A re-analysis on a moved head starts a new agent session; the old analysis's session files are deleted.
-    if let Some(old) = superseded {
-        state.db.analyses().request_session_drop(old.id).await?;
-        tracing::debug!(analysis = %record.id, superseded = %old.id, "agent session of the superseded analysis dropped");
-        // Its open Ask jobs are cancelled; their questions fail with a plain sentence.
-        if let Err(error) = state.executor.cancel_analysis(old.id).await {
-            tracing::error!(superseded = %old.id, ?error, "could not cancel the jobs of the superseded analysis");
-        }
-    }
     tracing::info!(
         analysis = %record.id,
         user_id = %session.user_id,

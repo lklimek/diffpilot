@@ -214,7 +214,7 @@ impl CodexStream {
         })
     }
 
-    /// Whether the turn completed once the process exited with `exit`, whatever its answer (compaction);
+    /// Whether the turn completed once the process exited with `exit`, whatever its answer;
     /// returns the thread's cumulative usage.
     pub(crate) fn finish_turn(self, exit: Exit) -> Result<Usage, ProviderError> {
         if let Some(message) = self.failure {

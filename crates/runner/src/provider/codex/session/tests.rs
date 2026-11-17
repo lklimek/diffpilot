@@ -244,3 +244,22 @@ fn thread_ids_are_hex_and_dashes_only() {
         assert!(!valid_thread_id(bad), "{bad}");
     }
 }
+
+#[test]
+fn archived_turn_count_uses_completed_tasks_not_token_events() {
+    let d = dirs();
+    let complete = r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#;
+    write(
+        &home_rollout(&d, THREAD),
+        &format!("{complete}\n{}\n{complete}\n", token_count(50, 1.0, 0)),
+    );
+    assert_eq!(
+        save(&d.home, THREAD, &d.store, &Scrubber::default()).unwrap(),
+        Some(2)
+    );
+    write(&home_rollout(&d, THREAD), &token_count(50, 1.0, 0));
+    assert_eq!(
+        save(&d.home, THREAD, &d.store, &Scrubber::default()).unwrap(),
+        None
+    );
+}

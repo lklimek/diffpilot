@@ -556,3 +556,26 @@ async fn installation_tokens_survive_until_revocation_is_confirmed() {
         Some(b"ciphertext-2".to_vec())
     );
 }
+
+#[tokio::test]
+async fn one_running_job_per_pull_request_across_credentials() {
+    let db = db().await;
+    seed(&db).await;
+    insert_job(&db, "j1", "a1", "cred-1", "running")
+        .await
+        .unwrap();
+    assert!(
+        insert_job(&db, "j2", "a2", "cred-2", "claimed")
+            .await
+            .is_err()
+    );
+    insert_job(&db, "j3", "a2", "cred-2", "queued")
+        .await
+        .unwrap();
+    assert!(
+        sqlx::query("UPDATE jobs SET state = 'claimed' WHERE id = 'j3'")
+            .execute(&db.pool)
+            .await
+            .is_err()
+    );
+}

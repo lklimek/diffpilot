@@ -88,7 +88,7 @@ CREATE TABLE repos (
 ) STRICT;
 
 CREATE TABLE pull_requests (
-    id         INTEGER NOT NULL PRIMARY KEY,
+    id         INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     tenant_id  TEXT NOT NULL REFERENCES tenants (id),
     repo_id    INTEGER NOT NULL REFERENCES repos (id),
     number     INTEGER NOT NULL CHECK (number > 0),
@@ -98,6 +98,8 @@ CREATE TABLE pull_requests (
     base_sha   TEXT NOT NULL,
     head_sha   TEXT NOT NULL,
     fetched_at TEXT NOT NULL,
+    agent_thread_id     TEXT,
+    session_state       TEXT NOT NULL DEFAULT 'none' CHECK (session_state IN ('none', 'active', 'drop_requested', 'dropped')),
     UNIQUE (repo_id, number)
 ) STRICT;
 
@@ -116,8 +118,6 @@ CREATE TABLE analyses (
     failure_flow_title  TEXT,
     failure_message     TEXT,
     failure_reason      TEXT,
-    agent_thread_id     TEXT,
-    session_state       TEXT NOT NULL DEFAULT 'none' CHECK (session_state IN ('none', 'active', 'drop_requested', 'dropped')),
     skills_commit       TEXT,
     round               INTEGER NOT NULL DEFAULT 0 CHECK (round >= 0), -- incremented by each explicit Retry
     created_by          TEXT NOT NULL REFERENCES users (id),
@@ -200,6 +200,24 @@ CREATE INDEX jobs_claim_order ON jobs (state, priority, created_at);
 CREATE UNIQUE INDEX jobs_one_live_per_stage ON jobs (analysis_id, stage, generation, round)
     WHERE state NOT IN ('failed', 'cancelled');
 CREATE INDEX jobs_by_analysis ON jobs (analysis_id, state);
+
+-- Different analyses of one PR share a single agent thread, even across credentials.
+CREATE TRIGGER jobs_one_running_per_pr_insert BEFORE INSERT ON jobs
+WHEN NEW.state IN ('claimed', 'running') AND EXISTS (
+    SELECT 1 FROM jobs j JOIN analyses a ON a.id = j.analysis_id
+    WHERE j.id <> NEW.id AND j.state IN ('claimed', 'running')
+      AND a.pull_request_id = (SELECT pull_request_id FROM analyses WHERE id = NEW.analysis_id)
+)
+BEGIN SELECT RAISE(ABORT, 'one running job per pull request'); END;
+
+-- Different analyses of one PR share a single agent thread, even across credentials.
+CREATE TRIGGER jobs_one_running_per_pr_update BEFORE UPDATE OF state, analysis_id ON jobs
+WHEN NEW.state IN ('claimed', 'running') AND EXISTS (
+    SELECT 1 FROM jobs j JOIN analyses a ON a.id = j.analysis_id
+    WHERE j.id <> NEW.id AND j.state IN ('claimed', 'running')
+      AND a.pull_request_id = (SELECT pull_request_id FROM analyses WHERE id = NEW.analysis_id)
+)
+BEGIN SELECT RAISE(ABORT, 'one running job per pull request'); END;
 
 -- Encrypted installation tokens per job attempt, kept until their revocation is confirmed (ADR-005).
 CREATE TABLE installation_tokens (

@@ -70,14 +70,14 @@ pub struct AnalysisRecord {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-/// Lifecycle of an analysis's agent-session files on the runner (ADR-004).
+/// Lifecycle of a pull request's agent-session files on the runner (ADR-004).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SessionState {
     /// No job has run yet.
     None,
     /// The session exists and is resumed by later jobs.
     Active,
-    /// Cancelled or superseded: the runner is asked to delete the files.
+    /// Explicit removal: the runner is asked to delete the files.
     DropRequested,
     /// The runner confirmed the deletion.
     Dropped,
@@ -91,7 +91,7 @@ impl SessionState {
             "drop_requested" => Ok(Self::DropRequested),
             "dropped" => Ok(Self::Dropped),
             _ => Err(DbError::Corrupt {
-                column: "analyses.session_state",
+                column: "pull_requests.session_state",
             }),
         }
     }
@@ -102,7 +102,8 @@ macro_rules! columns {
     () => {
         "a.id, a.tenant_id, a.pull_request_id, a.base_sha, a.head_sha, a.language, a.state,
     a.flows_total, a.flows_done, a.paused_until, a.failure_flow_id, a.failure_flow_title, a.failure_message, a.failure_reason,
-    a.agent_thread_id, a.session_state, a.skills_commit, a.created_by, a.created_at, a.finished_at"
+    (SELECT agent_thread_id FROM pull_requests WHERE id = a.pull_request_id) AS agent_thread_id,
+    (SELECT session_state FROM pull_requests WHERE id = a.pull_request_id) AS session_state, a.skills_commit, a.created_by, a.created_at, a.finished_at"
     };
 }
 
@@ -482,12 +483,11 @@ impl Analyses<'_> {
     }
 
     /// Cancelled analyses whose clean-up may be unfinished (a crash after the state was stored): an unfinished
-    /// job not yet flagged for cancellation, a stored document, or a session not asked to be dropped.
+    /// job not yet flagged for cancellation, or a stored document.
     pub async fn cancellations_to_finish(&self) -> Result<Vec<AnalysisId>, DbError> {
         let ids: Vec<String> = sqlx::query_scalar(
             "SELECT a.id FROM analyses a WHERE a.state = 'cancelled' AND (
-                 a.session_state IN ('none', 'active')
-                 OR EXISTS (SELECT 1 FROM documents d WHERE d.analysis_id = a.id)
+                 EXISTS (SELECT 1 FROM documents d WHERE d.analysis_id = a.id)
                  OR EXISTS (SELECT 1 FROM jobs j WHERE j.analysis_id = a.id AND j.cancel_requested = 0
                      AND j.state IN ('queued', 'claimed', 'running', 'paused')))
              ORDER BY a.created_at, a.rowid",
@@ -562,27 +562,28 @@ impl Analyses<'_> {
         thread_id: &str,
         skills_commit: Option<&str>,
     ) -> Result<(), DbError> {
-        // A session already asked to be dropped stays dropped: a late job report must not revive it.
+        let mut tx = super::write_tx(self.pool).await?;
         let updated = sqlx::query(
-            "UPDATE analyses SET agent_thread_id = ?, skills_commit = COALESCE(?, skills_commit),
+            "UPDATE pull_requests SET agent_thread_id = ?,
                  session_state = CASE WHEN session_state IN ('none', 'active') THEN 'active' ELSE session_state END
-             WHERE id = ?",
-        )
-        .bind(thread_id)
-        .bind(skills_commit)
-        .bind(id.to_string())
-        .execute(self.pool)
-        .await?;
+             WHERE id = (SELECT pull_request_id FROM analyses WHERE id = ?)",
+        ).bind(thread_id).bind(id.to_string()).execute(&mut *tx).await?;
         if updated.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
+        sqlx::query("UPDATE analyses SET skills_commit = COALESCE(?, skills_commit) WHERE id = ?")
+            .bind(skills_commit)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
-    /// Asks the runner to delete the session files (analysis cancelled or superseded).
-    pub async fn request_session_drop(&self, id: AnalysisId) -> Result<(), DbError> {
+    /// Asks the runner to delete the PR session files on explicit removal.
+    pub async fn request_session_drop(&self, id: i64) -> Result<(), DbError> {
         let updated = sqlx::query(
-            "UPDATE analyses SET session_state = CASE WHEN session_state = 'dropped' THEN 'dropped'
+            "UPDATE pull_requests SET session_state = CASE WHEN session_state = 'dropped' THEN 'dropped'
                  ELSE 'drop_requested' END
              WHERE id = ?",
         )
@@ -595,23 +596,23 @@ impl Analyses<'_> {
         Ok(())
     }
 
-    /// Analyses whose session files the runner must delete.
-    pub async fn pending_session_drops(&self) -> Result<Vec<AnalysisId>, DbError> {
-        let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM analyses WHERE session_state = 'drop_requested' ORDER BY created_at, rowid",
+    /// Pull-request keys whose session files the runner must delete.
+    pub async fn pending_session_drops(&self) -> Result<Vec<i64>, DbError> {
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT id FROM pull_requests WHERE session_state = 'drop_requested' ORDER BY id",
         )
         .fetch_all(self.pool)
         .await?;
-        ids.iter().map(|id| parse_wire(id, "analyses.id")).collect()
+        Ok(ids)
     }
 
     /// Marks session files as deleted, as acknowledged by a runner.
-    pub async fn ack_session_drops(&self, ids: &[AnalysisId]) -> Result<(), DbError> {
+    pub async fn ack_session_drops(&self, ids: &[i64]) -> Result<(), DbError> {
         if ids.is_empty() {
             return Ok(());
         }
         let mut query = QueryBuilder::<Sqlite>::new(
-            "UPDATE analyses SET session_state = 'dropped' WHERE session_state = 'drop_requested' AND id IN (",
+            "UPDATE pull_requests SET session_state = 'dropped' WHERE session_state = 'drop_requested' AND id IN (",
         );
         let mut list = query.separated(", ");
         for id in ids {
@@ -699,6 +700,7 @@ pub mod testing {
             attempt: 0,
             kind,
             analysis_id: analysis,
+            pull_request_id: 1,
             repo: RepoCheckout {
                 clone_url: "https://github.com/acme/node-client.git".to_owned(),
                 base_sha: CommitSha("1".repeat(40)),
@@ -1023,6 +1025,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_is_shared_by_new_heads_and_languages() {
+        let db = db().await;
+        let first = seed_analysis(&db).await.unwrap();
+        db.analyses()
+            .set_session(first, "shared-thread", None)
+            .await
+            .unwrap();
+        let mut next = new_analysis("b");
+        next.language = LlmLanguage::Pl;
+        let second = db.analyses().create(next, at(1)).await.unwrap();
+        assert_eq!(second.agent_thread_id.as_deref(), Some("shared-thread"));
+        db.analyses()
+            .set_session(second.id, "new-thread", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.analyses()
+                .get(first)
+                .await
+                .unwrap()
+                .agent_thread_id
+                .as_deref(),
+            Some("new-thread")
+        );
+    }
+
+    #[tokio::test]
     async fn session_lifecycle_is_acknowledged_once_and_never_revived() {
         let db = db().await;
         let id = seed_analysis(&db).await.expect("seed");
@@ -1039,13 +1068,13 @@ mod tests {
         assert_eq!(record.agent_thread_id.as_deref(), Some("thread-1"));
         assert_eq!(record.skills_commit.as_deref(), Some("abc123"));
 
-        db.analyses().request_session_drop(id).await.expect("drop");
+        db.analyses().request_session_drop(1).await.expect("drop");
         assert_eq!(
             db.analyses()
                 .pending_session_drops()
                 .await
                 .expect("pending"),
-            [id]
+            [1]
         );
         db.analyses()
             .set_session(id, "thread-2", None)
@@ -1056,15 +1085,12 @@ mod tests {
             SessionState::DropRequested
         );
         db.analyses()
-            .ack_session_drops(&[id, AnalysisId::new_random()])
+            .ack_session_drops(&[1, 999])
             .await
             .expect("ack");
+        db.analyses().ack_session_drops(&[1]).await.expect("re-ack");
         db.analyses()
-            .ack_session_drops(&[id])
-            .await
-            .expect("re-ack");
-        db.analyses()
-            .request_session_drop(id)
+            .request_session_drop(1)
             .await
             .expect("drop again");
         assert_eq!(

@@ -19,7 +19,7 @@ the same attempt; 400 malformed body.
 - The runner polls `claim` every 5 s while idle, reporting the credentials it holds (`usable` false after a
   failed refresh, ADR-003) and the sessions it deleted (`dropped_sessions`).
 - The server picks the next runnable job: `queued`, credential usable, not paused and idle, no running job of
-  the same analysis (partial unique indexes), Ask (`priority` 0) before batch (1), then oldest. It increments
+  the same PR (claim exclusion and triggers), analysis or credential (partial unique indexes), Ask (`priority` 0) before batch (1), then oldest. It increments
   `attempt` (every claim, including after a pause or a lease expiry), mints a random job token (stored hashed),
   sets the lease, and fills `spec.access` at claim time:
   - `github`: an installation token for the **PR repository only** (explicit `repositories` and read-only
@@ -32,7 +32,7 @@ the same attempt; 400 malformed body.
     still stored and revoked by the worker once that lease expires. A rejected token is never handed out: it
     is stored encrypted like any other and revoked;
   - `memcan`: URL and token from configuration (runner config limits the MCP to search and `add_memory`).
-- `drop_sessions`: analyses whose session files the runner deletes (cancelled or superseded, ADR-004); it
+- `drop_sessions`: PR database keys whose session files the runner deletes on explicit removal (ADR-004); it
   acknowledges in the next claim's `dropped_sessions` (at least once; idempotent).
 - The job token is for the runner only: never placed in the agent's environment, config, logs or events.
 
@@ -81,7 +81,7 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
   "Installation-token revocation" below); claims and results never wait for revocations.
 
 ## Credential home (ADR-003)
-- The per-job `CODEX_HOME` (copy of `auth.json`, generated config, the analysis's session files, CAS data)
+- The per-job `CODEX_HOME` (copy of `auth.json`, generated config, the PR's session files, CAS data)
   lives on the runner's **persistent private volume** in a per-job directory (uid `runner`, 0700; the agent
   uid gets access only to its own job's directory), never on tmpfs or under `/tmp`. Only the checkout / work
   directory may be tmpfs.
@@ -97,9 +97,9 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - `summary` ≤ 200 characters, plain text; never raw command output, file contents or prompt text.
 - `EventsAck.cancel_requested`: stop the agent (`LlmProvider::cancel`) and post `cancelled`.
 
-## Output before compaction
+## Output before archival
 - When the model turn ends, the provider emits `ProviderEvent::OutputReady` and the runner posts
-  `OutputReady {attempt, output}` **before** compaction, for every job kind. `output` is the parsed final JSON
+  `OutputReady {attempt, output}` **before** session archival, for every job kind. `output` is the parsed final JSON
   (Codex enforced the output schema); the server validates and verifies it exactly as a result.
 - Ordering: after every event of that turn; at most once per attempt; before the result.
 - Retry: on a network error or 5xx the runner retries with the same body (backoff 1, 2, 4 s, within the local
@@ -112,7 +112,7 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
   server uses the result's output and republishes. A requeued attempt (lease expiry) or a `cancelled` result
   discards the ready output and its publication. When cancel was requested before the output arrived the
   output is stored but not published (`OutputRecorded::Stored {cancel_requested: true}`).
-- A failed compaction after the output does not fail the job: the result is `succeeded` with
+- Failed archival after the output does not fail the job: the result is `succeeded` with
   `session: null` (lost; the next job uses the context pack).
 
 ## Result
@@ -123,10 +123,11 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - `llm_call` (last provider call outcome) updates the LLM status in Settings; `usage` is the job's own delta.
 
 ## Agent session (ADR-004)
-- One session per analysis. The server sets `spec.session` at claim from the analysis's recorded session (none
+- One session per PR. `JobSpec.pull_request_id` is the PR database key and the runner archive directory name.
+  `SessionRef` carries `{pull_request_id, thread_id}`. The server sets `spec.session` at claim from the PR's recorded session (none
   before the first report, none once a drop was requested); the stored spec never holds it. One running job per
-  analysis, so queued jobs never fork the session.
-- The result's `session` is recorded as the analysis's session in the transaction that completes the job, only
+  PR, so queued jobs never fork the session.
+- The result's `session` is recorded as the PR's session in the transaction that completes the job, only
   for the first effective, not cancelled result of the current attempt (a repeat or a result after a cancel
   request changes nothing); a session already asked to be dropped stays dropped.
 - `context_pack` is built at claim from the plan, PR context and accepted flow analyses stored at that moment
@@ -140,9 +141,15 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - `jobs.github_access_granted` records whether the attempt's claim got an installation token; the executor
   reports it with the result (`JobUpdate::Finished { github_access }`), the pipeline stores it with the accepted
   PR context (`documents.github_access`), and the Tour's `related_work_checked` reads only that stored fact.
-- Cancel and a re-analysis on a moved head request the drop of the analysis's session (`drop_sessions`).
+- Cancel and Re-analyze keep the session, including Ask on older analyses. The runner retains archives for
+  `SR_RUNNER_SESSION_RETENTION_DAYS` (default 14) after their latest write; only retention or explicit PR removal
+  deletes them. PR row ids are never reused.
+- New and resumed useful turns set `model_auto_compact_token_limit = 400000`; there is no forced compaction
+  turn or reserved deadline budget. Each successful useful turn is archived; usage counts only its delta.
+- The prompt identifies the current base/head and the `./repo` checkout. Git trusts exactly that runner-owned
+  checkout through the agent environment; plain diff/log/show/blame work without overriding `--git-dir`.
 - Claims skip jobs of cancelled analyses. At start-up, before claims are served, the server finishes cancellations
-  a crash interrupted (jobs cancelled, documents deleted, session drop requested; idempotent).
+  a crash interrupted (jobs cancelled, documents deleted; idempotent).
 - `access.memcan` is filled at claim from the server configuration (never stored, never logged).
 
 ## Pipeline recovery (server restart)

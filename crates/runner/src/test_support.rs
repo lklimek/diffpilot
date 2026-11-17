@@ -71,6 +71,7 @@ pub(crate) fn spec(kind: JobKind, repo: &Path) -> JobSpec {
         attempt: 1,
         kind,
         analysis_id: AnalysisId::new_random(),
+        pull_request_id: 1,
         repo: RepoCheckout {
             clone_url: format!("file://{}", repo.display()),
             base_sha: CommitSha(commits.base),

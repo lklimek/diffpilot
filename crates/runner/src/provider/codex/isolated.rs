@@ -20,9 +20,8 @@ use tokio::time::{Duration, Instant, timeout};
 
 use super::credential::{JobCredential, UNKNOWN_SUFFIX};
 use super::{
-    AGENT_PATH, CONFIG_FILE, CodexProvider, CodexStream, DRAIN_AFTER_EXIT, EXIT_POLL, Exit,
-    Invocation, Lines, SKILLS_ROOT, agent_home, agent_tmp, forward, replace_private, session,
-    stderr_tail,
+    AGENT_PATH, CodexProvider, CodexStream, DRAIN_AFTER_EXIT, EXIT_POLL, Exit, Invocation, Lines,
+    SKILLS_ROOT, agent_home, agent_tmp, forward, replace_private, session, stderr_tail,
 };
 use crate::provider::{ProviderCall, ProviderError, ProviderEvent};
 use crate::supervisor::client::{Supervisor, SupervisorError};
@@ -180,19 +179,6 @@ impl Isolation {
                 .map_err(io_error)?;
         }
         Ok(())
-    }
-
-    /// Copies the regenerated `config.toml` in (before the compaction turn, T1d).
-    pub(super) async fn push_config(&self, call: &ProviderCall) -> Result<(), ProviderError> {
-        let contents = std::fs::read(call.codex_home.join(CONFIG_FILE))?;
-        self.supervisor
-            .copy_in(
-                &self.codex_home(&call.codex_home),
-                Path::new(CONFIG_FILE),
-                &contents,
-            )
-            .await
-            .map_err(io_error)
     }
 
     /// Copy-back after a sweep (ADR-013 step 5): `auth.json` and the rollout of `thread` into the staging home.
@@ -428,7 +414,7 @@ impl CodexProvider {
             tracing::debug!(job = %call.job_id, stderr = %credential.scrubber().text_and_token_shapes(&tail), "Codex stderr tail");
         }
         let thread = parsed.thread_id().map(str::to_owned).or(match invocation {
-            Invocation::Resume(thread) | Invocation::Compaction(thread) => Some(thread.to_owned()),
+            Invocation::Resume(thread) => Some(thread.to_owned()),
             Invocation::New => None,
         });
         if let Err(error) = isolation.pull(call, thread.as_deref()).await {
