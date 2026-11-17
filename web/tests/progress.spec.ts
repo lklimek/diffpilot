@@ -74,7 +74,7 @@ test("unknown analysis: plain error and a way back", async ({ page }) => {
   await expect(page.getByRole("link", { name: "Back to Home" })).toHaveAttribute("href", "/");
 });
 
-// Owner: a one-flow PR stayed at "0 of 1 flows analysed" for minutes and looked frozen. Stage and heartbeat come
+// Owner: a one-flow PR stayed at "0 of 1 flow analysed" for minutes and looked frozen. Stage and heartbeat come
 // from the server (sse-events.md); the mocks send a heartbeat every 15 s.
 test.describe("stage and liveness", () => {
   const indicator = (page: Page) => page.locator("[data-activity]");
@@ -86,7 +86,7 @@ test.describe("stage and liveness", () => {
     await open(page, "first-flow");
     await expect(page.getByText("Planning flows…")).toBeVisible();
     await expect(page.getByText("Reading the PR context.")).toBeVisible();
-    await expect(page.getByText("0 of 1 flows analysed")).toBeVisible();
+    await expect(page.getByText("0 of 1 flow analysed")).toBeVisible();
     // The first heartbeat gives the server's clock; only then is a time shown.
     await expect(indicator(page)).toHaveText("Working");
     await page.clock.runFor(16_000);

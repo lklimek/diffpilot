@@ -1,3 +1,4 @@
+import { plural } from "../quiet/labels";
 import type { AnalysisStage, AnalysisState } from "../../api/generated/types";
 import { busyTip, buttonClass } from "../button/button";
 import { PAUSE_REASON, pausedText } from "./paused";
@@ -38,7 +39,7 @@ function label(state: AnalysisState): string {
     case "planning":
       return "Planning flows…";
     case "running":
-      return `${state.done} of ${state.total} flows analysed`;
+      return `${state.done} of ${plural(state.total, "flow")} analysed`;
     case "paused":
       return pausedText(state);
     case "failed":
@@ -46,7 +47,7 @@ function label(state: AnalysisState): string {
         ? `Analysis of flow “${state.flow.title}” failed`
         : "The analysis failed before any flow was planned";
     case "finished":
-      return `${state.total} of ${state.total} flows analysed`;
+      return `${state.total} of ${plural(state.total, "flow")} analysed`;
     case "cancelled":
       return "Analysis cancelled";
   }

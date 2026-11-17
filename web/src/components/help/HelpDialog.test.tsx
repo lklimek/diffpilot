@@ -20,9 +20,9 @@ describe("HelpDialog", () => {
       .getAllByRole("row")
       .map((row) => row.textContent);
     expect(keys).toEqual([
-      "jnext block (flow introduction or step)",
+      "jnext block (including Not analysed and pending review)",
       "kprevious block",
-      "nnext flow",
+      "nnext flow; after the last flow, next quiet block",
       "pprevious flow",
       "xtick the current step as reviewed",
       "dshow / hide old code of the current step",

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Navigate, useParams } from "react-router";
+import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
 import { ApiError } from "../../api/client";
 import type {
   AnalysisId,
   AnnotationId,
   BlockRef,
   CommentTarget,
+  Evidence,
   LinesResponse,
   PendingComment,
   Step,
@@ -35,7 +36,17 @@ import { ChunkedCode, DiffCode, LinesCode, errorText, type CodeContext } from ".
 import { DiagramPane } from "./DiagramPane";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
-import { blockTitle, buildSequence, findStep, flowJump, sameBlock, stepQuery } from "./sequence";
+import {
+  blockTitle,
+  buildSequence,
+  findStep,
+  flowJump,
+  sameBlock,
+  stepQuery,
+  blockFragment,
+  blockFromHash,
+  evidenceFromHash,
+} from "./sequence";
 import { Workspace } from "./Workspace";
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
@@ -124,16 +135,26 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const ticked = state.ticked_steps;
 
   const sequence = useMemo(() => buildSequence(tour), [tour]);
-  const [current, setCurrent] = useState<BlockRef>(() => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const navigationType = useNavigationType();
+  const [locationKey, setLocationKey] = useState(location.key);
+  const [resumeBlock] = useState<BlockRef>(() => {
     const last = state.last_viewed;
     const known =
       last &&
       (sequence.some((b) => sameBlock(b, last)) || last.block === "quiet" || last.block === "pending_review");
     return known ? last : PR_CONTEXT;
   });
+  const current = useMemo(
+    () => blockFromHash(tour, location.hash) ?? (location.hash ? PR_CONTEXT : resumeBlock),
+    [tour, location.hash, resumeBlock],
+  );
+  const evidence = useMemo(() => evidenceFromHash(location.hash), [location.hash]);
+  const lineView = location.hash.startsWith("#lines?") ? evidence : undefined;
   // A review opened elsewhere than at its start says once where it resumed (mockup "returning to a review").
   const [resumed, setResumed] = useState<BlockRef | null>(() =>
-    current.block === "pr_context" ? null : current,
+    location.hash || current.block === "pr_context" ? null : current,
   );
   const [annotationId, setAnnotationId] = useState<AnnotationId | null>(null);
   const [oldCode, setOldCode] = useState(false);
@@ -172,7 +193,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
 
   const go = (block: BlockRef | undefined) => {
     if (!block) return;
-    setCurrent(block);
+    void navigate({ ...location, hash: blockFragment(block) }, { flushSync: true });
     setResumed(null);
     setAnnotationId(null);
     setOldCode(false);
@@ -180,6 +201,42 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     setRevealComment(null);
     mainRef.current?.scrollTo?.({ top: 0 });
   };
+
+  const showEvidence = (item: Evidence) => {
+    const found = tour.flows
+      .flatMap((f) => f.steps)
+      .find(
+        (s) =>
+          s.facts.file === item.file &&
+          s.facts.side === item.side &&
+          item.line >= s.facts.range.start_line &&
+          item.line <= s.facts.range.end_line,
+      );
+    const target: BlockRef = found ? { block: "step", step_id: found.id } : PR_CONTEXT;
+    setResumed(null);
+    setAnnotationId(null);
+    setOldCode(false);
+    setCommentLine(null);
+    setRevealComment(null);
+    mainRef.current?.scrollTo?.({ top: 0 });
+    const query = new URLSearchParams({ file: item.file, side: item.side, line: String(item.line) });
+    void navigate(
+      { ...location, hash: `${found ? blockFragment(target) : "lines"}?${query}` },
+      { flushSync: true },
+    );
+  };
+
+  // Browser history changes bypass go(); discard controls belonging to the old block before rendering.
+  if (locationKey !== location.key) {
+    setLocationKey(location.key);
+    if (navigationType === "POP") {
+      setResumed(null);
+      setAnnotationId(null);
+      setOldCode(false);
+      setCommentLine(null);
+      setRevealComment(null);
+    }
+  }
 
   // The review screen never scrolls the page: no reserved scrollbar gutter, the columns get the full width.
   useEffect(() => {
@@ -190,6 +247,11 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
       style.scrollbarGutter = before;
     };
   }, []);
+
+  // Make a resumed position immediately shareable; the server remains the fallback without a fragment.
+  useEffect(() => {
+    if (!location.hash) void navigate({ ...location, hash: blockFragment(current) }, { replace: true });
+  }, [current, location, navigate]);
 
   // The last viewed block is part of the stored review state (resume).
   const lastViewed = state.last_viewed;
@@ -303,7 +365,22 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const selectStep = (id: StepId) => go({ block: "step", step_id: id });
 
   let block: ReactNode;
-  if (current.block === "flow_intro" && flow) {
+  if (lineView) {
+    block = (
+      <section aria-label="Evidence code">
+        <h2>
+          Code: {lineView.file}:{lineView.line}
+        </h2>
+        <ChunkedCode
+          key={location.hash}
+          ctx={ctx}
+          path={lineView.file}
+          side={lineView.side}
+          ranges={[{ start_line: Math.max(1, lineView.line - 3), end_line: lineView.line + 6 }]}
+        />
+      </section>
+    );
+  } else if (current.block === "flow_intro" && flow) {
     block = (
       <FlowIntroBlock
         flow={flow}
@@ -328,7 +405,11 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
             <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
           ) : (
             <LinesCode
+              key={location.key}
               ctx={ctx}
+              revealLine={
+                evidence?.line ?? step.facts.changed_lines[0]?.start_line ?? step.facts.range.start_line
+              }
               lines={stepLines}
               annotations={step.llm.annotations}
               band={step.llm.assessment?.risk ?? null}
@@ -372,7 +453,14 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
       );
     } else {
       const section = tour.quiet.not_analysed.find((s) => s.category === row.category);
-      block = section && <NotAnalysedBlock section={section} counters={tour.pr_context.facts.counters} />;
+      block = section && (
+        <NotAnalysedBlock
+          key={section.category}
+          section={section}
+          counters={tour.pr_context.facts.counters}
+          code={(item, range) => <ChunkedCode ctx={ctx} path={item.file} side={item.side} ranges={[range]} />}
+        />
+      );
     }
   } else if (current.block === "pending_review") {
     block = pending.isSuccess ? (
@@ -390,7 +478,12 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     );
   } else if (current.block === "pr_context") {
     block = (
-      <PrContextBlock pr={tour.analysis.pr} context={tour.pr_context} threadCount={tour.threads.length} />
+      <PrContextBlock
+        onEvidence={showEvidence}
+        pr={tour.analysis.pr}
+        context={tour.pr_context}
+        threadCount={tour.threads.length}
+      />
     );
   }
 
@@ -450,9 +543,14 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   );
 
   return (
-    <div className="flex h-screen flex-col">
+    // Exactly the viewport: only the columns scroll, never the document (Space, PageDown, wheel on the top bar).
+    <div className="flex h-dvh flex-col overflow-hidden">
       <a
         href="#main"
+        onClick={(event) => {
+          event.preventDefault();
+          mainRef.current?.focus();
+        }}
         className="absolute -left-[999px] z-[100] bg-surface px-2.5 py-1.5 focus:top-2 focus:left-2"
       >
         Skip to content
@@ -493,6 +591,10 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
             annotationId={annotationId}
             onBackToStep={() => setAnnotationId(null)}
             onSelectStep={selectStep}
+            onEvidence={showEvidence}
+            codeShown={
+              !!step || !!lineView || (current.block === "quiet" && current.row.row !== "not_analysed")
+            }
             pending={pending}
             comments={comments}
             commentLine={commentLine}

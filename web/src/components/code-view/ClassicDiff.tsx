@@ -155,7 +155,7 @@ export function ClassicDiff({
       role="region"
       aria-label={`Classic diff of ${diff.path}`}
       tabIndex={0}
-      className="overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55]"
+      className="min-w-0 max-w-full overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55]"
     >
       {diff.hunks.length === 0 && <p className="m-0 px-2 font-sans text-muted">No change in this range.</p>}
       <div className="w-max min-w-full">

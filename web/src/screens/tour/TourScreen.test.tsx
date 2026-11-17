@@ -50,6 +50,52 @@ async function openStep(flow: string, step: string) {
 }
 
 describe("Tour screen (brief §4.3)", () => {
+  it("walks beyond the last step into quiet rows and pending review", async () => {
+    setScenario("real-small");
+    await open();
+    await openStep("1", "6");
+    await user().keyboard("n");
+    expect(blockHeading()).toHaveTextContent("Tests");
+    await user().keyboard("j");
+    expect(blockHeading()).toHaveTextContent("Pending review");
+    expect(within(main()).getByRole("button", { name: "Next →" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("opens Not analysed ranges with line commenting and no premature dock hint", async () => {
+    setScenario("real-tiny");
+    await open();
+    await user().click(within(nav()).getByRole("button", { name: /Docs & comments/ }));
+    expect(inspector()).not.toHaveTextContent("Click a line number");
+    expect(inspector()).not.toHaveTextContent("count only");
+    await user().click(within(main()).getByRole("button", { name: "Show lines 24–27" }));
+    const line = await within(main()).findByRole("button", { name: "Comment on line 24" });
+    await user().click(line);
+    expect(within(inspector()).getByRole("textbox", { name: /^Comment on/ })).toBeVisible();
+  });
+
+  it("stores blocks in the URL and follows Back and Forward", async () => {
+    const router = await open();
+    await user().keyboard("jj");
+    expect(router.state.location.hash).toBe("#f1.1");
+    await act(() => router.navigate(-1));
+    expect(blockHeading()).toHaveTextContent("Send an RPC request with retry");
+    await act(() => router.navigate(1));
+    expect(blockHeading()).toHaveTextContent("Trigger: callers of send");
+  });
+
+  it("a deep link takes precedence over the server resume position", async () => {
+    setFixtureState("resume");
+    renderRoute(`/analyses/${ID}#f1.2`);
+    await waitFor(() => expect(blockHeading()).toHaveTextContent("2"));
+    expect(blockHeading()).not.toHaveTextContent("Retry allowed?");
+  });
+
+  it("opens structured fit evidence as code when no step shows it", async () => {
+    await open();
+    await user().click(within(main()).getByRole("button", { name: "Show src/config.rs:23" }));
+    expect(await within(main()).findByRole("button", { name: "Comment on line 23" })).toBeVisible();
+  });
+
   it("sends an analysis that has not finished to its progress screen", async () => {
     setScenario("running");
     const router = renderRoute(`/analyses/${ID}`);

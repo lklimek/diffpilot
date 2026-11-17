@@ -21,7 +21,7 @@ test("sign in → analyze → progress → open review", async ({ page }) => {
   await expectTrustWording(page);
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("link", { name: "Open review" }).click();
-  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}$`));
+  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
   await expect(page.locator("main h2:not([data-column-title])").first()).toHaveText(
     "PR context: acme/node-client #482",
   );
@@ -69,14 +69,14 @@ for (const [url, message] of [
   });
 }
 
-test("existing analysis: Resume review opens the review", async ({ page }) => {
+test("existing analysis: Open review opens the review", async ({ page }) => {
   await page.goto("/?state=resume");
   await analyze(page);
   const banner = page.getByRole("status").filter({ hasText: "Analysis found." });
-  await expect(banner).toContainText("Your ticks, answers and last viewed block are kept");
+  await expect(banner).toContainText("This PR head is already analysed. Open review.");
   await expectTooltips(page);
-  await banner.getByRole("link", { name: "Resume review" }).click();
-  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}$`));
+  await banner.getByRole("link", { name: "Open review" }).click();
+  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#f1\\.5$`));
 });
 
 test("head moved: banner, Re-analyze starts a fresh analysis", async ({ page }) => {
