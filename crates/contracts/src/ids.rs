@@ -84,6 +84,20 @@ string_id!(
     /// Identifier of an annotation, assigned by the server: `"<step>.a<n>"`, e.g. `f2.3.a1`.
     AnnotationId
 );
+impl StepId {
+    /// The id of step `number` (1-based, in step order) of `flow`: `f2.3`.
+    pub fn of(flow: &FlowId, number: u32) -> Self {
+        Self(format!("{flow}.{number}"))
+    }
+}
+
+impl AnnotationId {
+    /// The id of annotation `number` (1-based, in annotation order) of `step`: `f2.3.a1`.
+    pub fn of(step: &StepId, number: u32) -> Self {
+        Self(format!("{step}.a{number}"))
+    }
+}
+
 string_id!(
     /// Identifier of a diff hunk from the server's pre-pass: `h1`, `h2`, ….
     HunkId
@@ -92,3 +106,18 @@ string_id!(
     /// A full 40-character hexadecimal git commit id.
     CommitSha
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_and_annotation_ids_follow_the_server_rule() {
+        let step = StepId::of(&FlowId("f2".to_owned()), 3);
+        assert_eq!(step, StepId("f2.3".to_owned()));
+        assert_eq!(
+            AnnotationId::of(&step, 1),
+            AnnotationId("f2.3.a1".to_owned())
+        );
+    }
+}
