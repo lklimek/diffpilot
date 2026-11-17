@@ -108,6 +108,61 @@ jobs:
       - name: Wording check
         run: scripts/check-wording.sh
 
+  # Images are built, never pushed. Plain `docker build` (BuildKit, docker driver): the runner and server builds
+  # share the cargo cache mounts within the job; apt, Codex and node layers come from the runner's layer cache.
+  images:
+    name: Images (server, runner, egress proxy) and container tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    env:
+      DOCKER_BUILDKIT: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: No development or test switch in the production files
+        run: |
+          deploy/check-production-config.sh --self-test
+          deploy/check-production-config.sh
+      - name: Build the egress proxy image
+        run: docker build -t smart-review-egress-proxy:local deploy/egress-proxy
+      - name: Egress proxy test (SSRF guard, MemCan exception, host-only log)
+        run: PROXY_SKIP_BUILD=1 deploy/egress-proxy/test.sh "$RUNNER_TEMP/egress-proxy-test.log"
+      # Builds the runner image (targets base and runner) and the test image; the real-Codex job needs a login and
+      # is skipped (the suite prints the skip).
+      - name: Runner container suite (Rust supervisor, production image checks)
+        env:
+          R1_SUPERVISOR: rust
+          R1_SKIP_CODEX: "1"
+        run: R1_TMP="$RUNNER_TEMP" deploy/runner/r1-test/run.sh "$RUNNER_TEMP/r1-test.log"
+      - name: Build the server image
+        run: docker build -f deploy/server/Dockerfile -t smart-review-server:local .
+      - name: Server image answers its healthcheck
+        run: |
+          key="$(mktemp)"
+          echo placeholder > "$key"
+          chmod 0444 "$key"
+          docker run -d --name sr-ci-server --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp -v "$key:/run/secrets/github-app.pem:ro" \
+            -e SR_PUBLIC_URL=http://localhost:3000 -e SR_SECRET_KEY="$(head -c 32 /dev/urandom | base64)" \
+            -e SR_RUNNER_SECRET=ci-runner-secret -e SR_GITHUB_APP_ID=1 -e SR_GITHUB_CLIENT_ID=ci \
+            -e SR_GITHUB_CLIENT_SECRET=ci -e SR_GITHUB_APP_PRIVATE_KEY_FILE=/run/secrets/github-app.pem \
+            -e SR_MEMCAN_URL=http://127.0.0.1:9/ -e SR_MEMCAN_TOKEN=ci \
+            --mount type=volume,target=/var/lib/smart-review smart-review-server:local
+          for _ in $(seq 60); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' sr-ci-server)"
+            [ "$status" = healthy ] && break
+            sleep 2
+          done
+          docker logs sr-ci-server
+          docker exec sr-ci-server id
+          [ "$status" = healthy ]
+      - name: Remove test containers
+        if: always()
+        run: docker rm -f -v sr-ci-server || true
+
   web:
     name: Web (lint, tests, build, Playwright)
     runs-on: ubuntu-24.04
