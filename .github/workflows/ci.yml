@@ -128,7 +128,7 @@ jobs:
           deploy/check-production-config.sh
       - name: Build the egress proxy image
         run: docker build -t smart-review-egress-proxy:local deploy/egress-proxy
-      - name: Egress proxy test (SSRF guard, MemCan exception, host-only log)
+      - name: Egress proxy test (SSRF guard, MemCan exception, no request data in logs)
         run: PROXY_SKIP_BUILD=1 deploy/egress-proxy/test.sh "$RUNNER_TEMP/egress-proxy-test.log"
       # Builds the runner image (targets base and runner) and the test image; the real-Codex job needs a login and
       # is skipped (the suite prints the skip).
