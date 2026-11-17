@@ -124,7 +124,7 @@ describe("CommentComposer", () => {
     expect(await screen.findByRole("status")).toBeInTheDocument();
   });
 
-  it("reuses the idempotency key when retrying a failed post of the same text", async () => {
+  it("keeps an unresolved post after a failure: whitespace cannot change it, Retry reuses key and payload (QA-002)", async () => {
     const onCreate = vi
       .fn()
       .mockRejectedValueOnce(new Error("GitHub is not reachable. Try again."))
@@ -133,27 +133,157 @@ describe("CommentComposer", () => {
     await user.type(field(), "text");
     await user.click(addButton());
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Not added: GitHub is not reachable. Try again.",
+      "Not confirmed: GitHub is not reachable. Try again.",
     );
+    expect(document.body).toHaveTextContent("The comment may already be in your GitHub pending review");
+    expect(field()).toHaveAttribute("readonly");
+    await user.type(field(), " ");
     expect(field()).toHaveValue("text");
-    await user.click(addButton());
-    const [first, second] = onCreate.mock.calls.map((c) => (c[0] as CreateCommentRequest).idempotency_key);
-    expect(second).toBe(first);
+    expect(screen.queryByRole("button", { name: "Add to GitHub pending review" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    const [first, second] = onCreate.mock.calls.map((c) => c[0] as CreateCommentRequest);
+    expect(second).toEqual(first);
+    expect(await screen.findByRole("status")).toHaveTextContent("Added to your GitHub pending review");
+    expect(field()).not.toHaveAttribute("readonly");
+    expect(field()).toHaveValue("");
   });
 
-  it("uses a new key once the text changed after a failure, and after a success", async () => {
-    const onCreate = vi.fn().mockRejectedValueOnce(new Error("failed")).mockResolvedValue(created());
+  it("keeps the unresolved post when leaving and re-entering the line (QA-002)", async () => {
+    const onCreate = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(created());
+    const { user, rerender, ...props } = setup({ onCreate });
+    await user.type(field(), "text");
+    await user.click(addButton());
+    await screen.findByRole("alert");
+    rerender(
+      <CommentComposer
+        {...props}
+        onCreate={onCreate}
+        line={{ ...line96, target: { ...target96, line: 97 } }}
+      />,
+    );
+    expect(screen.getByRole("textbox", { name: /client\.rs:97/ })).toHaveValue("");
+    rerender(<CommentComposer {...props} onCreate={onCreate} line={null} />);
+    rerender(<CommentComposer {...props} onCreate={onCreate} line={line96} />);
+    expect(field()).toHaveValue("text");
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    const keys = onCreate.mock.calls.map((c) => (c[0] as CreateCommentRequest).idempotency_key);
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("discards an unresolved post into an editable draft that posts with a new key (QA-002)", async () => {
+    const onCreate = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(created());
     const { user } = setup({ onCreate });
     await user.type(field(), "text");
     await user.click(addButton());
     await screen.findByRole("alert");
-    await user.type(field(), " more");
-    await user.click(addButton());
-    await screen.findByRole("status");
-    await user.type(field(), "next");
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    expect(field()).not.toHaveAttribute("readonly");
+    expect(field()).toHaveValue("text");
     await user.click(addButton());
     const keys = onCreate.mock.calls.map((c) => (c[0] as CreateCommentRequest).idempotency_key);
-    expect(new Set(keys).size).toBe(3);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it("uses a new key for the next comment after a success", async () => {
+    const onCreate = vi.fn().mockResolvedValue(created());
+    const { user } = setup({ onCreate });
+    await user.type(field(), "one");
+    await user.click(addButton());
+    await screen.findByRole("status");
+    await user.type(field(), "two");
+    await user.click(addButton());
+    const keys = onCreate.mock.calls.map((c) => (c[0] as CreateCommentRequest).idempotency_key);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it("keeps the field read-only while posting and clears only what was sent (QA-001)", async () => {
+    let resolve!: (r: CreateCommentResponse) => void;
+    const onCreate = vi.fn().mockReturnValue(new Promise<CreateCommentResponse>((r) => (resolve = r)));
+    const { user } = setup({ onCreate });
+    await user.type(field(), "A");
+    await user.click(addButton());
+    expect(field()).toHaveAttribute("readonly");
+    await user.type(field(), "B");
+    expect(field()).toHaveValue("A");
+    resolve(created());
+    expect(await screen.findByRole("status")).toBeInTheDocument();
+    expect(field()).toHaveValue("");
+  });
+
+  it("ignores a completion for a line that is no longer current (QA-001)", async () => {
+    let resolve!: (r: CreateCommentResponse) => void;
+    const onCreate = vi.fn().mockReturnValue(new Promise<CreateCommentResponse>((r) => (resolve = r)));
+    const { user, rerender, ...props } = setup({ onCreate });
+    await user.type(field(), "A");
+    await user.click(addButton());
+    rerender(
+      <CommentComposer
+        {...props}
+        onCreate={onCreate}
+        line={{ ...line96, target: { ...target96, line: 97 } }}
+      />,
+    );
+    const other = screen.getByRole("textbox", { name: /client\.rs:97/ });
+    await user.type(other, "B");
+    resolve(created());
+    await Promise.resolve();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(other).toHaveValue("B");
+  });
+
+  it("drops the draft when the line changes, also through null (QA-003)", async () => {
+    const { user, rerender, ...props } = setup();
+    await user.type(field(), "for 96");
+    rerender(<CommentComposer {...props} line={{ ...line96, target: { ...target96, line: 97 } }} />);
+    expect(screen.getByRole("textbox", { name: /client\.rs:97/ })).toHaveValue("");
+    await user.type(screen.getByRole("textbox"), "for 97");
+    rerender(<CommentComposer {...props} line={null} />);
+    rerender(<CommentComposer {...props} line={line96} />);
+    expect(field()).toHaveValue("");
+  });
+
+  it("treats a change of only start_line as another target with its own key (QA-005)", async () => {
+    const range = (start: number): CommentLine => ({ ...line96, target: { ...target96, start_line: start } });
+    const onCreate = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(created());
+    const { user, rerender, ...props } = setup({ onCreate, line: range(90) });
+    await user.type(screen.getByRole("textbox"), "range");
+    await user.click(addButton());
+    await screen.findByRole("alert");
+    rerender(<CommentComposer {...props} onCreate={onCreate} line={range(93)} />);
+    const fresh = screen.getByRole("textbox", { name: /client\.rs:93–96/ });
+    expect(fresh).not.toHaveAttribute("readonly");
+    expect(fresh).toHaveValue("");
+    await user.type(fresh, "range");
+    await user.click(addButton());
+    const [a, b] = onCreate.mock.calls.map((c) => c[0] as CreateCommentRequest);
+    expect(b!.idempotency_key).not.toBe(a!.idempotency_key);
+    expect(b!.target.start_line).toBe(93);
+  });
+
+  it("says the placement is decided on posting when the preview cannot know it (QA-006)", () => {
+    setup({ line: { ...line96, placement: "on_post" } });
+    expect(document.body).toHaveTextContent(
+      "Whether this becomes a line comment or a file comment is decided when it is posted.",
+    );
+  });
+
+  it("shows the server's placement when it differs from the preview (QA-006)", async () => {
+    const onCreate = vi.fn().mockResolvedValue(created({ comment: { ...missedComments[0]!, kind: "file" } }));
+    const { user } = setup({ onCreate });
+    await user.type(field(), "text");
+    await user.click(addButton());
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("as a file comment that links to the line");
+    expect(status).toHaveTextContent("not as the line comment previewed");
+  });
+
+  it("keeps an edited pending comment read-only while it is saved", async () => {
+    const onEdit = vi.fn().mockReturnValue(new Promise(() => {}));
+    const { user } = setup({ comments: missedComments, onEdit });
+    const list = screen.getByRole("list", { name: "Your pending comments on this line" });
+    await user.click(within(list).getByRole("button", { name: "Edit" }));
+    await user.click(within(list).getByRole("button", { name: "Save" }));
+    expect(within(list).getByRole("textbox", { name: "Edit comment" })).toHaveAttribute("readonly");
   });
 
   it("cancels on Escape and with the Cancel button", async () => {

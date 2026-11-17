@@ -1,4 +1,5 @@
-import type { AskQuestion } from "../../api/generated/types";
+import type { AskQuestion, StepId } from "../../api/generated/types";
+import { useAction } from "../inspector/action";
 import { evidenceText } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 
@@ -6,11 +7,35 @@ import { Tooltip } from "../tooltip/Tooltip";
 export interface AskAnswersProps {
   /** Questions of the current step, any order (`GET …/questions` and `question` SSE events). */
   questions: readonly AskQuestion[];
-  /** Asks a failed question again; no button without it. */
-  onAskAgain?: (text: string) => Promise<unknown> | void;
+  /** Asks a failed question again on its step; no button without it. One request at a time per question. */
+  onAskAgain?: (step: StepId, text: string) => Promise<unknown> | void;
 }
 
-function Answer({ question, onAskAgain }: { question: AskQuestion; onAskAgain?: (text: string) => unknown }) {
+function AskAgain({
+  question,
+  onAskAgain,
+}: { question: AskQuestion } & Required<Pick<AskAnswersProps, "onAskAgain">>) {
+  const action = useAction();
+  return (
+    <>
+      <button
+        type="button"
+        disabled={action.busy}
+        onClick={() => void action.run(() => onAskAgain(question.step_id, question.text))}
+        className="cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text disabled:cursor-wait disabled:opacity-60"
+      >
+        {action.busy ? "Asking…" : "Ask again"}
+      </button>
+      {action.error && (
+        <span role="alert" className="basis-full">
+          Not asked again: {action.error}
+        </span>
+      )}
+    </>
+  );
+}
+
+function Answer({ question, onAskAgain }: { question: AskQuestion } & Pick<AskAnswersProps, "onAskAgain">) {
   switch (question.state) {
     case "pending":
       return (
@@ -28,15 +53,7 @@ function Answer({ question, onAskAgain }: { question: AskQuestion; onAskAgain?: 
       return (
         <p className="flex flex-wrap items-baseline gap-2 text-high">
           No answer: {question.failure ?? "the job failed."}
-          {onAskAgain && (
-            <button
-              type="button"
-              onClick={() => onAskAgain(question.text)}
-              className="cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-xs text-text"
-            >
-              Ask again
-            </button>
-          )}
+          {onAskAgain && <AskAgain question={question} onAskAgain={onAskAgain} />}
         </p>
       );
     case "answered": {

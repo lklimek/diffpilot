@@ -84,6 +84,33 @@ describe("FeedbackButtons", () => {
     expect(onSubmit).toHaveBeenCalledWith({ target: step31, value: "wrong", note: "see error.rs:7" });
   });
 
+  it("ignores a save that completes after the target changed (QA-001)", async () => {
+    let resolve!: () => void;
+    const onSubmit = vi.fn().mockReturnValue(new Promise<void>((r) => (resolve = r)));
+    const other: FeedbackTarget = { target: "step", step_id: "f1.5" };
+    const { rerender } = render(
+      <FeedbackButtons target={step31} subject="step 1" feedback={[]} onSubmit={onSubmit} />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "wrong" }));
+    rerender(<FeedbackButtons target={other} subject="step 5" feedback={[]} onSubmit={onSubmit} />);
+    expect(screen.getByRole("button", { name: "correct" })).toBeEnabled();
+    resolve();
+    await Promise.resolve();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("keeps the note read-only while the feedback is saved (QA-001)", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn().mockReturnValue(new Promise(() => {}));
+    render(<FeedbackButtons target={step31} subject="step 1" feedback={[]} onSubmit={onSubmit} />);
+    const note = screen.getByRole("textbox", { name: "Optional note" });
+    await user.type(note, "why");
+    await user.click(screen.getByRole("button", { name: "wrong" }));
+    expect(note).toHaveAttribute("readonly");
+    await user.type(note, "!");
+    expect(note).toHaveValue("why");
+  });
+
   it("shows why feedback was not saved", async () => {
     const onSubmit = vi.fn().mockRejectedValue(new Error("Not signed in."));
     render(<FeedbackButtons target={step31} subject="step 1" feedback={[]} onSubmit={onSubmit} />);

@@ -37,18 +37,6 @@ const BUTTON =
 /** correct / wrong / irrelevant / overrated / underrated with an optional note (brief §3 Feedback). */
 export function FeedbackButtons({ target, subject, feedback, onSubmit }: FeedbackButtonsProps) {
   const id = useId();
-  const action = useAction();
-  const key = target ? JSON.stringify(target) : "";
-  const [seenKey, setSeenKey] = useState(key);
-  const [draft, setDraft] = useState<string | null>(null);
-  const [saved, setSaved] = useState<string | null>(null);
-  if (seenKey !== key) {
-    setSeenKey(key);
-    setDraft(null);
-    setSaved(null);
-    action.setError(null);
-  }
-
   const heading = (
     <h3 id={`${id}-h`} className="text-[10.5px] font-bold tracking-wide text-muted uppercase">
       Feedback
@@ -64,7 +52,30 @@ export function FeedbackButtons({ target, subject, feedback, onSubmit }: Feedbac
       </section>
     );
   }
+  // Note draft, error and confirmation belong to one target: another target starts afresh, an old outcome is dropped.
+  return (
+    <section aria-labelledby={`${id}-h`}>
+      {heading}
+      <FeedbackForm
+        key={JSON.stringify(target)}
+        target={target}
+        subject={subject}
+        feedback={feedback}
+        onSubmit={onSubmit}
+      />
+    </section>
+  );
+}
 
+function FeedbackForm({
+  target,
+  subject,
+  feedback,
+  onSubmit,
+}: FeedbackButtonsProps & { target: FeedbackTarget }) {
+  const action = useAction();
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
   const mine = feedback.filter((f) => sameTarget(f.target, target));
   const chosen = mine.filter(
     (f): f is Feedback & { value: UserFeedbackValue } => f.value !== "missed_by_llm",
@@ -80,8 +91,7 @@ export function FeedbackButtons({ target, subject, feedback, onSubmit }: Feedbac
   };
 
   return (
-    <section aria-labelledby={`${id}-h`}>
-      {heading}
+    <>
       <div role="group" aria-label={`Feedback on ${subject}`} className="flex flex-wrap gap-1.5">
         {VALUES.map(([value, tip]) => (
           <Tooltip key={value} tip={tip}>
@@ -106,6 +116,7 @@ export function FeedbackButtons({ target, subject, feedback, onSubmit }: Feedbac
         <textarea
           rows={1}
           value={note}
+          readOnly={action.busy}
           aria-label="Optional note"
           placeholder="Optional note (why?)"
           onChange={(event) => {
@@ -135,6 +146,6 @@ export function FeedbackButtons({ target, subject, feedback, onSubmit }: Feedbac
           Feedback saved: {saved}.
         </p>
       )}
-    </section>
+    </>
   );
 }

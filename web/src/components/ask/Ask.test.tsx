@@ -29,21 +29,69 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 
+const step5 = { id: "f1.5", label: "Step 5" };
+const step6 = { id: "f1.6", label: "Step 6" };
+
 describe("AskForm", () => {
+  it("keeps the field read-only while sending and clears only what was sent (QA-001)", async () => {
+    const user = userEvent.setup();
+    const pending = deferred();
+    render(<AskForm step={step5} onAsk={() => pending.promise} />);
+    const field = screen.getByRole("textbox");
+    await user.type(field, "A{Enter}");
+    expect(field).toHaveAttribute("readonly");
+    await user.type(field, "B");
+    expect(field).toHaveValue("A");
+    pending.resolve();
+    await vi.waitFor(() => expect(field).toHaveValue(""));
+    expect(field).not.toHaveAttribute("readonly");
+  });
+
+  it("ignores the outcome of a question sent from a step that is no longer current (QA-001)", async () => {
+    const user = userEvent.setup();
+    const pending = deferred();
+    const { rerender } = render(<AskForm step={step5} onAsk={() => pending.promise} />);
+    await user.type(screen.getByRole("textbox"), "A{Enter}");
+    rerender(<AskForm step={step6} onAsk={() => pending.promise} />);
+    const field = screen.getByRole("textbox", { name: /Step 6/ });
+    await user.type(field, "B");
+    pending.reject(new Error("failed"));
+    await Promise.resolve();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(field).toHaveValue("B");
+  });
+
+  it("drops the draft and the error on a step change, also through null (QA-003)", async () => {
+    const user = userEvent.setup();
+    const onAsk = vi.fn().mockRejectedValue(new Error("failed"));
+    const { rerender } = render(<AskForm step={step5} onAsk={onAsk} />);
+    await user.type(screen.getByRole("textbox"), "A{Enter}");
+    await screen.findByRole("alert");
+    rerender(<AskForm step={step6} onAsk={onAsk} />);
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    expect(screen.queryByRole("alert")).toBeNull();
+    await user.type(screen.getByRole("textbox"), "for 6");
+    rerender(<AskForm step={null} onAsk={onAsk} />);
+    rerender(<AskForm step={step6} onAsk={onAsk} />);
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    await user.type(screen.getByRole("textbox"), "Q{Enter}");
+    expect(onAsk).toHaveBeenLastCalledWith("f1.6", "Q");
+  });
+
   it("sends the trimmed question on Enter and clears the field when it was accepted", async () => {
     const user = userEvent.setup();
     const onAsk = vi.fn().mockResolvedValue(undefined);
-    render(<AskForm subject="Step 5 · Retry allowed?" onAsk={onAsk} />);
+    render(<AskForm step={{ id: "f1.5", label: "Step 5 · Retry allowed?" }} onAsk={onAsk} />);
     const field = screen.getByRole("textbox", { name: /Ask the LLM about Step 5 · Retry allowed\?/ });
     await user.type(field, "  Is it idempotent?  {Enter}");
-    expect(onAsk).toHaveBeenCalledWith("Is it idempotent?");
+    expect(onAsk).toHaveBeenCalledWith("f1.5", "Is it idempotent?");
     expect(field).toHaveValue("");
   });
 
   it("adds a line on Shift+Enter instead of sending", async () => {
     const user = userEvent.setup();
     const onAsk = vi.fn();
-    render(<AskForm subject="Step 5" onAsk={onAsk} />);
+    render(<AskForm step={step5} onAsk={onAsk} />);
     const field = screen.getByRole("textbox");
     await user.type(field, "one{Shift>}{Enter}{/Shift}two");
     expect(onAsk).not.toHaveBeenCalled();
@@ -52,7 +100,7 @@ describe("AskForm", () => {
 
   it("asks for text instead of sending an empty question", async () => {
     const onAsk = vi.fn();
-    render(<AskForm subject="Step 5" onAsk={onAsk} />);
+    render(<AskForm step={step5} onAsk={onAsk} />);
     await userEvent.click(screen.getByRole("button", { name: /^Ask/ }));
     expect(onAsk).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent("Write a question first.");
@@ -63,7 +111,7 @@ describe("AskForm", () => {
     const user = userEvent.setup();
     const pending = deferred();
     const onAsk = vi.fn().mockReturnValue(pending.promise);
-    render(<AskForm subject="Step 5" onAsk={onAsk} />);
+    render(<AskForm step={step5} onAsk={onAsk} />);
     const field = screen.getByRole("textbox");
     await user.type(field, "Why?");
     await user.click(screen.getByRole("button", { name: /^Ask/ }));
@@ -78,7 +126,7 @@ describe("AskForm", () => {
   });
 
   it("grows the one-line field while typing", async () => {
-    render(<AskForm subject="Step 5" onAsk={() => {}} />);
+    render(<AskForm step={step5} onAsk={() => {}} />);
     const field = screen.getByRole("textbox");
     expect(field).toHaveAttribute("rows", "1");
     Object.defineProperty(field, "scrollHeight", { configurable: true, value: 64 });
@@ -88,13 +136,13 @@ describe("AskForm", () => {
 
   it("exposes the field for the `a` shortcut", () => {
     const ref = createRef<HTMLTextAreaElement>();
-    render(<AskForm subject="Step 5" onAsk={() => {}} inputRef={ref} />);
+    render(<AskForm step={step5} onAsk={() => {}} inputRef={ref} />);
     ref.current!.focus();
     expect(screen.getByRole("textbox")).toHaveFocus();
   });
 
   it("explains that Ask needs a step when none is open, without a field", () => {
-    render(<AskForm subject={null} onAsk={() => {}} />);
+    render(<AskForm step={null} onAsk={() => {}} />);
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByText(/Ask works on a step/)).toBeInTheDocument();
   });
@@ -135,7 +183,21 @@ describe("AskAnswers", () => {
     );
     expect(screen.getByRole("listitem")).toHaveTextContent("No answer: The LLM usage limit was reached.");
     await userEvent.click(screen.getByRole("button", { name: "Ask again" }));
-    expect(onAskAgain).toHaveBeenCalledWith("Is the reply deduplicated?");
+    expect(onAskAgain).toHaveBeenCalledWith("f1.5", "Is the reply deduplicated?");
+  });
+
+  it("asks again once while pending and shows a rejection (QA-004)", async () => {
+    const user = userEvent.setup();
+    const pending = deferred();
+    const onAskAgain = vi.fn().mockReturnValue(pending.promise);
+    render(<AskAnswers questions={[question({ state: "failed", failure: "x" })]} onAskAgain={onAskAgain} />);
+    const button = screen.getByRole("button", { name: "Ask again" });
+    await user.dblClick(button);
+    expect(onAskAgain).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: /Asking/ })).toBeDisabled();
+    pending.reject(new Error("The analysis is busy."));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Not asked again: The analysis is busy.");
+    expect(screen.getByRole("button", { name: "Ask again" })).toBeEnabled();
   });
 
   it("lists the newest question first", () => {
@@ -169,7 +231,7 @@ describe("AskAnswers", () => {
     const { container } = render(
       <>
         <AskAnswers questions={[...questions, question({ state: "failed", failure: "x" })]} />
-        <AskForm subject="Step 5" onAsk={() => {}} />
+        <AskForm step={step5} onAsk={() => {}} />
       </>,
     );
     expectTrustWording(container.textContent ?? "");

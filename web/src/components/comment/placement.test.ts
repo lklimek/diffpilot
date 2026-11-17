@@ -22,6 +22,13 @@ const inDiff = lines({
     { start_line: 104, end_line: 106 },
   ],
 });
+const withDeleted: LinesResponse = {
+  ...inDiff,
+  deleted: [
+    { after_line: 90, base_start: 10, lines: ["a", "b"], total_lines: 2 },
+    { after_line: 101, base_start: 30, lines: ["c", "d"], total_lines: 2 },
+  ],
+};
 const at = (line: number, over: Partial<CommentTarget> = {}): CommentTarget => ({
   path: "src/rpc/client.rs",
   side: "head",
@@ -44,8 +51,17 @@ describe("commentPlacement (ADR-006)", () => {
     expect(commentPlacement(inDiff, at(105, { start_line: 98 }))).toBe("file");
   });
 
-  it("gives a line thread to a removed line shown at a deletion marker", () => {
-    expect(commentPlacement(inDiff, at(55, { side: "base" }))).toBe("line");
+  it("gives a line thread to removed lines inside one deletion block", () => {
+    expect(commentPlacement(withDeleted, at(11, { side: "base" }))).toBe("line");
+    expect(commentPlacement(withDeleted, at(11, { side: "base", start_line: 10 }))).toBe("line");
+  });
+
+  it("leaves a removed range spanning two deletion blocks to the server, never previewing a line thread", () => {
+    expect(commentPlacement(withDeleted, at(31, { side: "base", start_line: 10 }))).toBe("on_post");
+  });
+
+  it("leaves a removed line outside every deletion block of the response to the server", () => {
+    expect(commentPlacement(withDeleted, at(20, { side: "base" }))).toBe("on_post");
   });
 
   it("does not comment on a file outside the PR diff", () => {

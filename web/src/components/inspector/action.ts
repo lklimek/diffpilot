@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type Ref } from "react";
 
 /** Plain message of a rejected callback; API errors carry user-facing text (http-api.md § Errors). */
 export function messageOf(error: unknown): string {
@@ -33,4 +33,10 @@ export function useAction() {
     }
   };
   return { ...state, run, setError: (error: string | null) => setState((s) => ({ ...s, error })) };
+}
+
+/** Sets a ref passed in by the caller (callback or object ref). */
+export function assignRef<T>(ref: Ref<T> | undefined, value: T | null): void {
+  if (typeof ref === "function") ref(value);
+  else if (ref) ref.current = value;
 }
