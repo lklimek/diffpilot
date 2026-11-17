@@ -136,6 +136,45 @@ describe("NotAnalysedBlock", () => {
     expect(block).not.toHaveTextContent(/0 dependencies/);
   });
 
+  it("lists a binary file with its badge, tooltip and how it was recognised", () => {
+    const mechanical = structuredClone(section(tour, "generated_mechanical"));
+    mechanical.items.push({
+      file: "assets/logo.png",
+      side: "head",
+      ranges: null,
+      badge: "binary_content",
+      rule: "binary file (git)",
+    });
+    mechanical.file_count += 1;
+    render(<NotAnalysedBlock section={mechanical} counters={tour.pr_context.facts.counters} />);
+    const block = screen.getByRole("article");
+    const badge = within(block).getByText("binary file");
+    expect(badge.closest("[data-badge]")).toHaveAttribute("data-badge", "binary_content");
+    expect(badge.closest("[aria-describedby]") ?? badge).toHaveAccessibleDescription(
+      "Git treats this file as binary; it is not shown or analysed.",
+    );
+    expect(block).toHaveTextContent("assets/logo.png whole file · rule binary file (git)");
+    expect(block).toHaveTextContent("Recognised by file path and git's binary check, no LLM.");
+  });
+
+  it("names git's binary check alone for a section of binary files only", () => {
+    const binaries = {
+      category: "generated_mechanical" as const,
+      file_count: 1,
+      items: [
+        {
+          file: "assets/logo.png",
+          side: "head" as const,
+          ranges: null,
+          badge: "binary_content" as const,
+          rule: "binary file (git)",
+        },
+      ],
+    };
+    render(<NotAnalysedBlock section={binaries} counters={tour.pr_context.facts.counters} />);
+    expect(screen.getByRole("article")).toHaveTextContent("Recognised by git's binary check, no LLM.");
+  });
+
   it("shows the dependency counter with mechanical and generated material", () => {
     render(
       <NotAnalysedBlock

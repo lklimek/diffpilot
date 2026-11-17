@@ -53,4 +53,53 @@ describe("Tooltip", () => {
     await user.hover(button);
     expect(screen.getByRole("tooltip").style.top).toBe("124px");
   });
+
+  it("does not open on the focus a click gives, and closes on the click (WCAG 1.4.13)", async () => {
+    const user = userEvent.setup();
+    render(
+      <Tooltip tip="Explains the row">
+        <button type="button">Row</button>
+      </Tooltip>,
+    );
+    const button = screen.getByRole("button", { name: "Row" });
+    await user.hover(button);
+    expect(screen.getByRole("tooltip")).toBeVisible();
+    await user.click(button);
+    // Clicked and still focused under the pointer: the tip stays closed and cannot cover the next row.
+    expect(button).toHaveFocus();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    // It opens again only after the pointer left and came back.
+    await user.unhover(button);
+    await user.hover(button);
+    expect(screen.getByRole("tooltip")).toBeVisible();
+  });
+
+  it("opens on keyboard focus and stays while the pointer moves onto it (hoverable)", async () => {
+    const user = userEvent.setup();
+    render(
+      <Tooltip tip="Explains the key">
+        <button type="button">Key</button>
+      </Tooltip>,
+    );
+    await user.tab();
+    const tip = screen.getByRole("tooltip");
+    expect(tip).toBeVisible();
+    await user.hover(tip);
+    expect(screen.getByRole("tooltip")).toBeVisible();
+  });
+
+  it("opens beside its trigger with placement right, off the rows below", async () => {
+    const user = userEvent.setup();
+    render(
+      <Tooltip tip="Beside" placement="right">
+        <button type="button">Side</button>
+      </Tooltip>,
+    );
+    const button = screen.getByRole("button", { name: "Side" });
+    button.parentElement!.getBoundingClientRect = () => new DOMRect(10, 100, 200, 20);
+    await user.hover(button);
+    const tip = screen.getByRole("tooltip");
+    expect(tip.style.left).toBe("218px");
+    expect(tip.style.top).toBe("100px");
+  });
 });

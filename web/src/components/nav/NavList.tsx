@@ -56,7 +56,7 @@ interface QuietRowProps {
 function QuietRow({ row, tip, current, onSelect, children }: QuietRowProps) {
   return (
     <li>
-      <Tooltip tip={tip} className="block">
+      <Tooltip tip={tip} className="block" placement="right">
         <button
           type="button"
           className={QUIET_ITEM}
@@ -202,6 +202,7 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
           <Tooltip
             tip="Your pending review on GitHub: the comments you added, not yet submitted."
             className="block"
+            placement="right"
           >
             <button
               type="button"
