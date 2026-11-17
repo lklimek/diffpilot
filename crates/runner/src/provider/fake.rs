@@ -214,6 +214,7 @@ impl FakeProvider {
             .send(ProviderEvent::OutputReady(finished.output.clone()))
             .await;
         Ok(ProviderOutcome {
+            session_turns: None,
             output: finished.output,
             session_id: finished.thread_id,
             usage: usage_delta(

@@ -1904,7 +1904,7 @@ async fn cancel_discards_partial_results() {
         assert!(stored.is_empty(), "{kind:?} kept: {stored:?}");
     }
     let record = h.state.db.analyses().get(analysis).await.expect("analysis");
-    assert_eq!(record.session_state, SessionState::DropRequested);
+    assert_eq!(record.session_state, SessionState::Active);
     let (status, _) = h.post_empty(&format!("/api/v1/analyses/{id}/cancel")).await;
     assert_eq!(
         status,
@@ -1965,7 +1965,7 @@ async fn pipeline_jobs_carry_no_context_pack_at_enqueue() {
 }
 
 #[tokio::test]
-async fn reanalysis_starts_new_session() {
+async fn reanalysis_keeps_the_pull_request_session() {
     let h = harness().await;
     let old = h.seed_analysis_at(Some("1".repeat(40))).await;
     h.state
@@ -1978,11 +1978,12 @@ async fn reanalysis_starts_new_session() {
     let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
     assert_ne!(analysis, old);
     let record = h.state.db.analyses().get(old).await.expect("old");
-    assert_eq!(record.session_state, SessionState::DropRequested);
+    assert_eq!(record.session_state, SessionState::Active);
     let record = h.state.db.analyses().get(analysis).await.expect("new");
     assert_eq!(
-        record.agent_thread_id, None,
-        "the new analysis has its own session"
+        record.agent_thread_id.as_deref(),
+        Some("thread-old"),
+        "the new analysis shares the PR session"
     );
 }
 

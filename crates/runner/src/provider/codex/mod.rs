@@ -1,6 +1,6 @@
 //! The Codex CLI provider: `codex exec --json --output-schema` (new session) or `codex exec resume` (the
-//! analysis's session) in the job directory with a per-job `CODEX_HOME` and a constructed environment (S1a,
-//! S1b, S6 env contract, threat model T2/T5), ending every successful call with a compaction turn (ADR-004).
+//! pull request's session) in the job directory with a per-job `CODEX_HOME` and a constructed environment (S1a,
+//! S1b, S6 env contract, threat model T2/T5), saving every successful useful turn (ADR-004).
 //!
 //! Codex runs as the leader of its own process group; the group is killed when a turn ends, is cancelled
 //! (SIGTERM, SIGKILL after the grace) or dropped, so agent commands left in the background do not outlive it.
@@ -32,7 +32,6 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, timeout};
 
-use config::Purpose;
 pub use credential::CodexCredential;
 use credential::JobCredential;
 pub use isolated::Isolation;
@@ -61,15 +60,6 @@ const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 type SkillFileList = Vec<(PathBuf, Vec<u8>)>;
 /// Where Codex discovers user skills, below the agent's `HOME` (S2).
 const SKILLS_ROOT: &str = ".agents/skills";
-/// Context size that makes the compaction turn compact before it answers (S1b finding 3, S7).
-const COMPACTION_TOKEN_LIMIT: u32 = 1000;
-/// The compaction turn's prompt; its answer is discarded.
-const COMPACTION_PROMPT: &str = "Reply with OK.";
-/// Time kept free at the end of the runtime cap for stopping Codex and copying files back.
-const END_MARGIN: Duration = Duration::from_secs(15);
-/// Shortest time worth starting a compaction turn with.
-const MIN_COMPACTION: Duration = Duration::from_secs(30);
-
 /// Where the Codex provider finds its binary, credential and egress proxy.
 #[derive(Clone, Debug)]
 pub struct CodexSettings {
@@ -112,10 +102,8 @@ pub struct CodexProvider {
 enum Invocation<'a> {
     /// A new session.
     New,
-    /// The job turn in the analysis's session.
+    /// The job turn in the pull request's session.
     Resume(&'a str),
-    /// The compaction turn after the job turn.
-    Compaction(&'a str),
 }
 
 impl CodexProvider {
@@ -127,7 +115,7 @@ impl CodexProvider {
         }
     }
 
-    /// One agent call: the job turn (new or resumed session), the ready output, compaction, session copy-back.
+    /// One agent call: the job turn (new or resumed session), the ready output and session copy-back.
     async fn call(
         &self,
         resume: Option<&str>,
@@ -218,7 +206,7 @@ impl CodexProvider {
                 | ProviderError::SchemaRejected { .. }
                 | ProviderError::OutputNotJson,
             ) if resume.is_some() && !started => {
-                tracing::warn!(job = %call.job_id, "Codex could not resume the analysis's session");
+                tracing::warn!(job = %call.job_id, "Codex could not resume the pull request's session");
                 Err(ProviderError::SessionUnavailable)
             }
             other => other,
@@ -243,36 +231,23 @@ impl CodexProvider {
         let _ = events
             .send(ProviderEvent::OutputReady(output.clone()))
             .await;
-        let compacted = match thread.as_deref().filter(|thread| session::valid_thread_id(thread)) {
-            Some(thread) => self
-                .compact(call, thread, &mut credential, deadline)
-                .await
-                .map_err(|error| {
-                    tracing::warn!(job = %call.job_id, %error, "the compaction turn failed; the session counts as lost");
-                    error
-                })
-                .map(Some),
-            None => Ok(None),
-        };
-        // A credential the compaction turn left in an unknown state is never trusted.
-        let compacted = match compacted {
-            Err(ProviderError::CredentialUnusable) => {
-                credential.settle(true);
-                return Err(ProviderError::CredentialUnusable);
-            }
-            Ok(usage) => usage,
-            Err(_) => None,
-        };
         let certain = credential.settle(false);
-        let session_id = match (compacted, &thread) {
-            (Some(_), Some(thread)) if certain => {
+        let mut session_turns = None;
+        let session_id = match thread
+            .as_ref()
+            .filter(|thread| session::valid_thread_id(thread))
+        {
+            Some(thread) if certain => {
                 match session::save(
                     &call.codex_home,
                     thread,
                     &call.session_dir,
                     credential.scrubber(),
                 ) {
-                    Ok(()) => Some(thread.clone()),
+                    Ok(turns) => {
+                        session_turns = turns;
+                        Some(thread.clone())
+                    }
                     Err(error) => {
                         tracing::warn!(job = %call.job_id, %error, "the agent session could not be stored; the next job starts a new one");
                         None
@@ -287,59 +262,10 @@ impl CodexProvider {
         Ok(ProviderOutcome {
             output,
             session_id,
-            usage: usage_delta(before, compacted.unwrap_or(finished.cumulative_usage)),
+            session_turns,
+            usage: usage_delta(before, finished.cumulative_usage),
             skills_commit,
         })
-    }
-
-    /// The compaction turn (ADR-004): a resume with a tiny auto-compact limit and a trivial prompt, under a
-    /// regenerated config (T1d), within the call's runtime cap. Returns the thread's cumulative usage after it.
-    async fn compact(
-        &self,
-        call: &ProviderCall,
-        thread: &str,
-        credential: &mut JobCredential<'_>,
-        deadline: Instant,
-    ) -> Result<Usage, ProviderError> {
-        if self.cancel_requested(call.job_id) {
-            return Err(ProviderError::Cancelled);
-        }
-        let budget = deadline
-            .checked_duration_since(Instant::now())
-            .and_then(|left| left.checked_sub(END_MARGIN))
-            .filter(|budget| *budget >= MIN_COMPACTION)
-            .ok_or(ProviderError::Timeout)?;
-        self.write_config(call, Purpose::Compaction)?;
-        if let Some(isolation) = &self.settings.isolation {
-            isolation.push_config(call).await?;
-            // The supervised run stops itself at its deadline (SIGTERM, grace, sweep, copy-back); dropping
-            // it would leave the agent running.
-            let (stream, exit) = self
-                .exec(
-                    call,
-                    Invocation::Compaction(thread),
-                    COMPACTION_PROMPT,
-                    credential,
-                    None,
-                    Instant::now() + budget,
-                )
-                .await?;
-            return stream.finish_turn(exit);
-        }
-        let (stream, exit) = timeout(
-            budget,
-            self.exec(
-                call,
-                Invocation::Compaction(thread),
-                COMPACTION_PROMPT,
-                credential,
-                None,
-                deadline,
-            ),
-        )
-        .await
-        .map_err(|_| ProviderError::Timeout)??;
-        stream.finish_turn(exit)
     }
 
     fn cancel_requested(&self, job: JobId) -> bool {
@@ -357,7 +283,7 @@ impl CodexProvider {
         &self,
         call: &ProviderCall,
     ) -> Result<(Option<String>, SkillFileList), ProviderError> {
-        self.write_config(call, Purpose::Job)?;
+        self.write_config(call)?;
         let schema = serde_json::to_vec(&call.output_schema).map_err(io::Error::other)?;
         replace_private(&call.codex_home.join(SCHEMA_FILE), &schema)?;
         for dir in [agent_home(&call.job_dir), agent_tmp(&call.job_dir)] {
@@ -393,10 +319,9 @@ impl CodexProvider {
     }
 
     /// (Re)generates `config.toml`, replacing whatever the agent may have left there.
-    fn write_config(&self, call: &ProviderCall, purpose: Purpose) -> io::Result<()> {
+    fn write_config(&self, call: &ProviderCall) -> io::Result<()> {
         let config = config::config_toml(
             &call.model,
-            purpose,
             &call.access,
             &self.settings.github_mcp,
             AGENT_NO_PROXY,
@@ -432,30 +357,20 @@ impl CodexProvider {
             None => call.codex_home.clone(),
         };
         let mut args: Vec<OsString> = vec!["exec".into()];
-        if let Invocation::Resume(_) | Invocation::Compaction(_) = invocation {
+        if let Invocation::Resume(_) = invocation {
             args.push("resume".into());
         }
         args.extend(["--json", "--skip-git-repo-check", "--ignore-rules"].map(OsString::from));
-        match invocation {
-            Invocation::New | Invocation::Resume(_) => {
-                args.push("--output-schema".into());
-                args.push(codex_home.join(SCHEMA_FILE).into());
-            }
-            Invocation::Compaction(_) => {
-                args.push("-c".into());
-                args.push(
-                    format!("model_auto_compact_token_limit={COMPACTION_TOKEN_LIMIT}").into(),
-                );
-            }
-        }
-        if let Invocation::Resume(thread) | Invocation::Compaction(thread) = invocation {
+        args.push("--output-schema".into());
+        args.push(codex_home.join(SCHEMA_FILE).into());
+        if let Invocation::Resume(thread) = invocation {
             args.push(thread.into());
         }
         args.push("-".into());
         args
     }
 
-    /// Runs one Codex invocation to its exit; `events` gets its activities (none for compaction).
+    /// Runs one Codex invocation to its exit; `events` gets its activities.
     async fn exec(
         &self,
         call: &ProviderCall,
@@ -546,7 +461,7 @@ impl LlmProvider for CodexProvider {
     }
 
     /// SIGTERM to the call's process group; Codex then exits with 143 and the call ends as cancelled. A Codex
-    /// still running after the grace is killed; a compaction turn is not started after a cancel.
+    /// still running after the grace is killed; no new turn starts after a cancel.
     fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
         // Signalled under the lock that unregisters the group before its leader is reaped, so the id is ours.
         let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
@@ -714,6 +629,13 @@ pub(crate) fn agent_env(
         ("CODEX_HOME", codex_home.as_os_str().to_owned()),
         ("TMPDIR", agent_tmp(&call.job_dir).into_os_string()),
         ("LANG", "C.UTF-8".into()),
+        // The read-only checkout belongs to the runner, not the agent uid. Trust only this job's repo.
+        ("GIT_CONFIG_COUNT", "1".into()),
+        ("GIT_CONFIG_KEY_0", "safe.directory".into()),
+        (
+            "GIT_CONFIG_VALUE_0",
+            call.job_dir.join("repo").into_os_string(),
+        ),
     ];
     if let Some(proxy) = egress_proxy {
         for key in ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"] {

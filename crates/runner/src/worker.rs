@@ -6,7 +6,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
-use contracts::ids::{AnalysisId, JobId};
+use contracts::ids::JobId;
 use contracts::job::access::Secret;
 use contracts::job::event::JobEvent;
 use contracts::job::protocol::{
@@ -163,7 +163,7 @@ pub struct Worker {
     timing: Timing,
     credential_usable: CredentialCheck,
     /// Sessions the server asked to drop, acknowledged with the next claim.
-    dropped_sessions: Vec<AnalysisId>,
+    dropped_sessions: Vec<i64>,
     /// How long an unused agent session is kept; `None` keeps them.
     session_retention: Option<Duration>,
     last_sweep: Option<Instant>,
@@ -273,7 +273,7 @@ impl Worker {
     }
 
     /// Deletes the sessions the server dropped; returns those to acknowledge (a failed one is asked again).
-    fn drop_sessions(&self, analyses: Vec<AnalysisId>) -> Vec<AnalysisId> {
+    fn drop_sessions(&self, analyses: Vec<i64>) -> Vec<i64> {
         let sessions = self.executor.sessions();
         analyses
             .into_iter()

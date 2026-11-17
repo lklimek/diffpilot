@@ -366,6 +366,7 @@ async fn submit(
         attempt: 0,
         kind: JobKind::Ask,
         analysis_id: summary.id,
+        pull_request_id: state.db.analyses().get(summary.id).await?.pull_request_id,
         repo: RepoCheckout {
             clone_url: endpoint(
                 &state.config.github.clone_url,

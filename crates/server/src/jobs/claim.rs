@@ -109,7 +109,7 @@ pub trait ContextPacks: Send + Sync {
 }
 
 /// Serves one runner claim: housekeeping, credential registration, then the next runnable job, if any, with
-/// its read-only installation token, the analysis's session and the context pack of the results stored now
+/// its read-only installation token, the PR's session and the context pack of the results stored now
 /// (`runner-protocol.md` Claim).
 pub async fn claim(
     db: &Db,
@@ -210,7 +210,7 @@ pub async fn claim(
     })
 }
 
-/// The claimed job's spec with the analysis's session and the context pack of the results stored now: only the
+/// The claimed job's spec with the PR's session and the context pack of the results stored now: only the
 /// runner knows whether the session files survived, so every job carries the pack used when a new session is
 /// started. Built at claim, an `ask` job's pack also holds the step's answers given while it waited.
 async fn prepare_spec(
@@ -227,13 +227,13 @@ async fn prepare_spec(
     Ok(spec)
 }
 
-/// The analysis's agent session at claim time (ADR-004): one running job per analysis, so the session a job
-/// resumes is the one the previous job of the analysis reported; none before the first report or once dropped.
+/// The PR's agent session at claim time (ADR-004): one running job per PR, so the session a job
+/// resumes is the one the previous job of the PR reported; none before the first report or once dropped.
 async fn analysis_session(db: &Db, analysis: AnalysisId) -> Result<Option<SessionRef>, DbError> {
     let record = db.analyses().get(analysis).await?;
     Ok(match (record.session_state, record.agent_thread_id) {
         (SessionState::Active, Some(thread_id)) => Some(SessionRef {
-            analysis_id: analysis,
+            pull_request_id: record.pull_request_id,
             thread_id,
         }),
         _ => None,
@@ -663,7 +663,7 @@ mod tests {
         assert_eq!(
             claimed.spec.session,
             Some(SessionRef {
-                analysis_id: analysis,
+                pull_request_id: 1,
                 thread_id: "thread-7".to_owned(),
             })
         );
@@ -683,10 +683,7 @@ mod tests {
             .set_session(analysis, "thread-7", None)
             .await
             .expect("session");
-        s.db.analyses()
-            .request_session_drop(analysis)
-            .await
-            .expect("drop");
+        s.db.analyses().request_session_drop(1).await.expect("drop");
         let claimed = claim_one(&s, Utc::now()).await;
         assert_eq!(claimed.spec.session, None);
     }

@@ -672,8 +672,16 @@ mod tests {
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{bearer:?}");
             assert_eq!(body["code"], json!("unauthenticated"));
         }
-        let own = harness.claim(CREDENTIAL).await;
         let other = harness.claim("second").await;
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_RESULT.path, other.job),
+                Some(&other.token),
+                succeeded(other.job, 1),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let own = harness.claim(CREDENTIAL).await;
 
         let routes: [(&str, Value); 3] = [
             (RUNNER_EVENTS.path, json!(batch(1, "x"))),

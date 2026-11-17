@@ -130,6 +130,7 @@ impl LlmProvider for Scripted {
                 .send(ProviderEvent::OutputReady(self.output.clone()))
                 .await;
             Ok(ProviderOutcome {
+                session_turns: None,
                 output: self.output.clone(),
                 session_id: Some("thread-1".to_owned()),
                 usage: Usage::default(),
@@ -558,7 +559,7 @@ async fn runner_secrets_never_leave_in_bodies() {
 async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
     let server = MockServer::start().await;
     let root = TempDir::new().unwrap();
-    let analysis = AnalysisId::new_random();
+    let analysis = 1;
     Mock::given(method("POST"))
         .and(path("/runner/v1/claim"))
         .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {

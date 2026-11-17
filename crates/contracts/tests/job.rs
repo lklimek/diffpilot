@@ -40,6 +40,7 @@ fn spec() -> JobSpec {
         attempt: 1,
         kind: JobKind::AnalyseFlow,
         analysis_id,
+        pull_request_id: 1,
         repo: RepoCheckout {
             clone_url: "https://github.com/acme/node-client.git".to_owned(),
             base_sha: CommitSha("1".repeat(40)),
@@ -57,7 +58,7 @@ fn spec() -> JobSpec {
             kind: CredentialKind::CodexChatgpt,
         },
         session: Some(SessionRef {
-            analysis_id,
+            pull_request_id: 1,
             thread_id: "019a0000-0000-7000-8000-000000000001".to_owned(),
         }),
         context_pack: Some("PR context and plan.".to_owned()),
@@ -86,7 +87,7 @@ fn claim_response() -> ClaimResponse {
             lease_expires_at: Utc::now(),
             spec: spec(),
         }),
-        drop_sessions: vec![AnalysisId::new_random()],
+        drop_sessions: vec![1],
     }
 }
 

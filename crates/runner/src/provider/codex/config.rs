@@ -2,7 +2,7 @@
 //! T6): sandbox off (T1–T4 compensate), no project docs, hooks, plugins, analytics, sub-agents or bundled
 //! skills; the project is never trusted. The job turn gets the MCP servers its access allows: the official
 //! `github-mcp-server` read-only with the job's installation token in that server's environment only, and
-//! MemCan with its bearer in a static header (never in Codex's environment); the compaction turn gets none.
+//! MemCan with its bearer in a static header (never in Codex's environment).
 
 use std::path::Path;
 
@@ -33,20 +33,9 @@ pub(crate) const MEMCAN_TOOLS: [&str; 5] = [
 /// Variables Codex forwards from its own environment to `github-mcp-server` (S6 finding 10).
 const GITHUB_PROXY_VARS: [&str; 4] = ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
 
-/// What the configuration is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Purpose {
-    /// The job's model turn.
-    Job,
-    /// The compaction turn after it.
-    Compaction,
-}
-
-/// The per-job configuration for `purpose`; `github_mcp` is the `github-mcp-server` binary and `no_proxy` the
-/// hosts the agent reaches without the egress proxy.
+/// The per-job configuration; `github_mcp` is the GitHub MCP binary and `no_proxy` the bypass hosts.
 pub(crate) fn config_toml(
     model: &ModelChoice,
-    purpose: Purpose,
     access: &AgentAccess,
     github_mcp: &Path,
     no_proxy: &str,
@@ -59,6 +48,7 @@ pub(crate) fn config_toml(
     let mut config = format!(
         r#"model = {model}
 model_reasoning_effort = "{effort}"
+model_auto_compact_token_limit = 400000
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
 project_doc_max_bytes = 0
@@ -85,9 +75,6 @@ multi_agent = false
 "#,
         model = toml_string(&model.model),
     );
-    if purpose == Purpose::Compaction {
-        return config;
-    }
     if let Some(token) = &access.github {
         config.push_str(&github_server(token, github_mcp));
     }
@@ -226,7 +213,6 @@ mod tests {
     fn job_config(access: &AgentAccess) -> String {
         config_toml(
             &model(),
-            Purpose::Job,
             access,
             Path::new("/opt/github-mcp/github-mcp-server"),
             NO_PROXY,
@@ -302,19 +288,6 @@ required = false
     #[test]
     fn no_access_means_no_mcp_server() {
         assert!(!job_config(&AgentAccess::default()).contains("mcp_servers"));
-    }
-
-    #[test]
-    fn compaction_config_has_no_mcp_server_and_no_secret() {
-        let config = config_toml(
-            &model(),
-            Purpose::Compaction,
-            &access("http://agentic.lan:8190/mcp"),
-            Path::new("/opt/github-mcp/github-mcp-server"),
-            NO_PROXY,
-        );
-        assert!(!config.contains("mcp_servers"));
-        assert!(!config.contains(GITHUB_CANARY) && !config.contains(MEMCAN_CANARY));
     }
 
     #[test]

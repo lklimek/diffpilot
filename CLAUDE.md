@@ -14,8 +14,9 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - All database code (sqlx, migrations, row types) lives in `crates/db` behind its repository API; nothing else uses sqlx.
 - Pipeline and Ask use only the `JobExecutor` trait; `JobSpec` is self-contained; runner core is
   `execute(JobSpec, EventSink) -> JobResult`.
-- `LlmProvider` is `run` + `resume` + `cancel`: one agent session per analysis, resumed by every batch and Ask
-  job, compacted at job end; a lost session falls back to a context pack. Session files stay per analysis.
+- `LlmProvider` is `run` + `resume` + `cancel`: one agent session per pull request, resumed by every analysis and Ask
+  job. Codex compacts by itself at 400k tokens; no forced compaction. Each successful useful turn is archived
+  per PR; a lost session falls back to a context pack.
   Model and effort come from `select_model`, a plain Rust function in the server (no table, no setting;
   v1: Sol, high).
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
