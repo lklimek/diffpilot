@@ -130,6 +130,7 @@ pub async fn retry(
         })
         .await;
     let summary = published(written)?.ok_or(ControlError::Conflict { action: "retried" })?;
+    crate::memcan::profile::forget_not_checked(db, analysis).await?;
     tracing::info!(%analysis, "analysis retried by the user");
     super::start(state, analysis);
     Ok(summary)

@@ -889,13 +889,16 @@ async fn profile_lookup_is_made_once_per_analysis_and_stored() {
     let first = profile::ensure(&state.db, config, &summary)
         .await
         .expect("lookup");
+    assert!(!first.memcan_failed);
+    let first = first.lookup;
     fake.insert_memory(
         "a0",
         profile_memory("node-client", "project-profile", "later"),
     );
     let second = profile::ensure(&state.db, config, &summary)
         .await
-        .expect("stored");
+        .expect("stored")
+        .lookup;
     assert_eq!(
         first,
         ProfileLookup::Checked {
@@ -916,6 +919,8 @@ async fn absent_profile_is_checked_and_unreachable_memcan_is_not_checked() {
     let absent = profile::ensure(&state.db, &state.config.memcan, &summary)
         .await
         .expect("lookup");
+    assert!(!absent.memcan_failed);
+    let absent = absent.lookup;
     assert_eq!(absent, ProfileLookup::Checked { text: None });
     assert_eq!(absent.found(), Some(false));
 
@@ -932,6 +937,12 @@ async fn absent_profile_is_checked_and_unreachable_memcan_is_not_checked() {
     let unreachable = profile::ensure(&state.db, &state.config.memcan, &summary)
         .await
         .expect("lookup");
+    assert!(unreachable.memcan_failed, "the run treats MemCan as down");
+    let again = profile::ensure(&state.db, &state.config.memcan, &summary)
+        .await
+        .expect("stored");
+    assert!(!again.memcan_failed, "a stored lookup calls nothing");
+    let unreachable = unreachable.lookup;
     assert_eq!(unreachable, ProfileLookup::NotChecked);
     assert_eq!(unreachable.found(), None, "never 'no profile'");
     let stored: Option<serde_json::Value> = state
@@ -945,4 +956,41 @@ async fn absent_profile_is_checked_and_unreachable_memcan_is_not_checked() {
         Some(json!({"memcan": "not_checked"})),
         "recorded once"
     );
+}
+
+#[tokio::test]
+async fn retry_forgets_only_a_not_checked_profile_lookup() {
+    let (state, summary) = analysis_with_memcan(FakeMemcan::start().config()).await;
+    let documents = state.db.documents();
+    let read = || async {
+        state
+            .db
+            .documents()
+            .get::<serde_json::Value>(summary.id, DocumentKind::MemcanProfile, "")
+            .await
+            .expect("read")
+    };
+    let checked = json!({"memcan": "checked", "text": null});
+    documents
+        .put(summary.id, DocumentKind::MemcanProfile, "", &checked, at(1))
+        .await
+        .expect("put");
+    profile::forget_not_checked(&state.db, summary.id)
+        .await
+        .expect("forget");
+    assert_eq!(read().await, Some(checked), "a checked result is kept");
+    documents
+        .put(
+            summary.id,
+            DocumentKind::MemcanProfile,
+            "",
+            &json!({"memcan": "not_checked"}),
+            at(2),
+        )
+        .await
+        .expect("put");
+    profile::forget_not_checked(&state.db, summary.id)
+        .await
+        .expect("forget");
+    assert_eq!(read().await, None, "looked up again by the next run");
 }

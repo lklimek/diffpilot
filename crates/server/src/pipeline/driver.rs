@@ -105,7 +105,7 @@ struct Driver<'a> {
     memcan_profile: ProfileLookup,
     /// MemCan severity calibration examples per flow; `None` = not checked (MemCan unreachable).
     calibration: HashMap<FlowId, Option<Vec<CalibrationExample>>>,
-    /// MemCan failed once in this run: later flows do not wait for it again.
+    /// MemCan failed once in this run (the profile lookup or a calibration read): later reads do not wait for it.
     memcan_down: bool,
     /// Stages whose job waits for the usage limit to reset, with when it is queued again if known.
     paused: BTreeMap<String, Option<DateTime<Utc>>>,
@@ -121,7 +121,10 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
     let files = diff_files(mirror.clone(), &summary).await?;
     let snapshot = snapshot(state, &summary).await?;
     let prepass = prepass::ensure(state, &summary, &mirror, &files).await?;
-    let memcan_profile = profile::ensure(&state.db, &state.config.memcan, &summary).await?;
+    let profile::Ensured {
+        lookup: memcan_profile,
+        memcan_failed,
+    } = profile::ensure(&state.db, &state.config.memcan, &summary).await?;
     let listed = prepass.agent_files(&files);
     let fitted = {
         let job = JobContext {
@@ -174,7 +177,7 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
         in_flight: None,
         memcan_profile,
         calibration: HashMap::new(),
-        memcan_down: false,
+        memcan_down: memcan_failed,
         paused: BTreeMap::new(),
     };
     driver.run().await

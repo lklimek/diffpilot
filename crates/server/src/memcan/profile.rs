@@ -87,23 +87,37 @@ pub async fn stored(db: &Db, analysis: AnalysisId) -> Result<ProfileLookup, DbEr
         .unwrap_or(ProfileLookup::NotChecked))
 }
 
-/// The stored lookup of the analysis, made and stored first when missing (once per analysis: every prompt of
-/// the analysis gets the same profile).
+/// The analysis's lookup and whether MemCan failed in it just now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ensured {
+    /// The lookup.
+    pub lookup: ProfileLookup,
+    /// MemCan was called now and failed: the run treats it as down.
+    pub memcan_failed: bool,
+}
+
+/// The stored lookup of the analysis, made and stored first when missing (once per round: every prompt of the
+/// analysis gets the same profile).
 pub async fn ensure(
     db: &Db,
     config: &MemcanConfig,
     summary: &AnalysisSummary,
-) -> Result<ProfileLookup, DbError> {
+) -> Result<Ensured, DbError> {
     if let Some(lookup) = db
         .documents()
         .get(summary.id, DocumentKind::MemcanProfile, "")
         .await?
     {
-        return Ok(lookup);
+        return Ok(Ensured {
+            lookup,
+            memcan_failed: false,
+        });
     }
+    let mut memcan_failed = false;
     let lookup = match project_profile(config, &summary.pr.repo.name).await {
         Ok(lookup) => lookup,
         Err(error) => {
+            memcan_failed = true;
             tracing::warn!(analysis = %summary.id, %error,
                 "MemCan project profile not readable; the analysis runs without it (not checked)");
             ProfileLookup::NotChecked
@@ -118,7 +132,21 @@ pub async fn ensure(
             chrono::Utc::now(),
         )
         .await?;
-    Ok(lookup)
+    Ok(Ensured {
+        lookup,
+        memcan_failed,
+    })
+}
+
+/// Before an explicit Retry: forgets a `not_checked` lookup so the new round looks the profile up again; a
+/// `checked` one is kept for the analysis.
+pub async fn forget_not_checked(db: &Db, analysis: AnalysisId) -> Result<(), DbError> {
+    if stored(db, analysis).await? == ProfileLookup::NotChecked {
+        db.documents()
+            .delete(analysis, DocumentKind::MemcanProfile, "")
+            .await?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
