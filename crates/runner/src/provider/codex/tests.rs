@@ -63,6 +63,7 @@ fi
 if [ -f "$PWD/ignore-term" ]; then trap '' TERM; fi
 if [ -f "$PWD/tamper" ]; then printf '\n[mcp_servers.evil]\ncommand = "/bin/evil"\n' >> "$CODEX_HOME/config.toml"; fi
 if [ -f "$PWD/rotate" ]; then cat "$PWD/rotate" > "$CODEX_HOME/auth.json"; fi
+if [ -f "$PWD/stderr" ]; then cat "$PWD/stderr" >&2; fi
 if [ -f "$PWD/chmod-auth" ]; then chmod 000 "$CODEX_HOME/auth.json"; fi
 if [ -f "$PWD/lock-home" ]; then mkdir -p "$HOME/locked/deeper"; echo left > "$HOME/locked/deeper/x"; chmod 000 "$HOME/locked/deeper" "$HOME/locked"; fi
 if [ -f "$PWD/symlink-auth" ]; then rm -f "$CODEX_HOME/auth.json"; ln -s "$(cat "$PWD/symlink-auth")" "$CODEX_HOME/auth.json"; fi
@@ -1103,6 +1104,11 @@ fn supervisor_binary() -> PathBuf {
 
 /// The harness under an in-process unprivileged supervisor (ADR-013 layout below the temp dir).
 fn isolated(h: &mut Harness) -> PathBuf {
+    isolated_with(h, None)
+}
+
+/// [`isolated`] with `clear` refused for directories named `fail_clears` (test-only fault injection).
+fn isolated_with(h: &mut Harness, fail_clears: Option<&str>) -> PathBuf {
     let root = h._dir.path().to_path_buf();
     let agent_homes = root.join("codex-homes");
     fs::create_dir(&agent_homes).unwrap();
@@ -1120,6 +1126,7 @@ fn isolated(h: &mut Harness) -> PathBuf {
         work_dir: root.clone(),
         sweep_deadline: Duration::from_secs(5),
         fail_sweeps: false,
+        fail_clears: fail_clears.map(str::to_owned),
         binary: supervisor_binary(),
     })
     .unwrap();
@@ -1257,6 +1264,13 @@ async fn isolated_locked_agent_dirs_are_removed_and_the_next_job_runs() {
         "the locked leftovers are gone"
     );
     assert!(h.provider.settings.isolation.as_ref().unwrap().healthy());
+    fs::remove_file(h.call.job_dir.join("lock-home")).unwrap();
+    fs::remove_file(h.call.job_dir.join("child-args.txt")).unwrap();
+    run(&h).await.0.expect("the next job runs");
+    assert!(
+        h.call.job_dir.join("child-args.txt").exists(),
+        "Codex ran for the next job"
+    );
 }
 
 #[tokio::test]
@@ -1301,4 +1315,209 @@ async fn isolated_compaction_stops_at_its_budget_and_still_copies_back() {
     assert!(started.elapsed() < Duration::from_secs(45));
     assert!(!agent_home.exists());
     assert!(h.provider.settings.credential.usable());
+}
+
+/// One Codex run whose command line carries the rotated tokens glued to a preceding character.
+fn glued_token_scenario(h: &Harness) {
+    let command = format!("echo x{ROTATED_ACCESS} x{ROTATED_REFRESH}");
+    let lines = [
+        json!({"type": "thread.started", "thread_id": THREAD}),
+        json!({"type": "turn.started"}),
+        json!({"type": "item.completed", "item": {"id": "i1", "type": "command_execution", "command": command, "aggregated_output": "", "exit_code": 0, "status": "completed"}}),
+        json!({"type": "item.completed", "item": {"id": "i2", "type": "agent_message", "text": "{}"}}),
+        json!({"type": "turn.completed", "usage": {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5, "reasoning_output_tokens": 0}}),
+    ];
+    let scenario: String = lines.iter().map(|line| format!("{line}\n")).collect();
+    fs::write(h.call.job_dir.join("scenario.jsonl"), scenario).unwrap();
+}
+
+#[tokio::test]
+async fn isolated_glued_rotated_tokens_never_leave_in_events() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    rotate_to_new_tokens(&h);
+    glued_token_scenario(&h);
+    let (result, events) = run(&h).await;
+    result.expect("success");
+    let seen = format!("{events:?}");
+    assert!(
+        !seen.contains(ROTATED_ACCESS) && !seen.contains(ROTATED_REFRESH),
+        "{seen}"
+    );
+    assert!(seen.contains("x[redacted]"), "{seen}");
+}
+
+#[tokio::test]
+async fn isolated_glued_rotated_tokens_never_leave_in_stderr() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let sink = Arc::clone(&log);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_writer(move || Captured(Arc::clone(&sink)))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    rotate_to_new_tokens(&h);
+    glued_token_scenario(&h);
+    fs::write(
+        h.call.job_dir.join("stderr"),
+        format!("refresh failed for x{ROTATED_REFRESH} with x{ROTATED_ACCESS}\n"),
+    )
+    .unwrap();
+    run(&h).await.0.expect("success");
+    let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    assert!(logged.contains("Codex stderr tail"), "{logged}");
+    assert!(
+        !logged.contains(ROTATED_ACCESS) && !logged.contains(ROTATED_REFRESH),
+        "{logged}"
+    );
+}
+
+fn mode_and_owner(path: &Path) -> (u32, u32) {
+    use std::os::unix::fs::MetadataExt as _;
+    let meta = fs::symlink_metadata(path).unwrap();
+    (meta.mode() & 0o7777, meta.uid())
+}
+
+#[tokio::test]
+async fn isolated_uncleared_agent_dirs_are_quarantined_0700_by_the_supervisor() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated_with(&mut h, Some("codex-home"));
+    run(&h).await.0.expect("success");
+    let me = rustix::process::getuid().as_raw();
+    assert_eq!(
+        mode_and_owner(&agent_home),
+        (0o700, me),
+        "quarantined, not removed"
+    );
+    assert!(h.provider.settings.isolation.as_ref().unwrap().healthy());
+}
+
+#[tokio::test]
+async fn quarantine_sets_the_mode_in_the_supervisor_before_replying() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    fs::create_dir(&agent_home).unwrap();
+    fs::write(agent_home.join("left"), "x").unwrap();
+    fs::set_permissions(&agent_home, fs::Permissions::from_mode(0o755)).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    let reply = isolation
+        .supervisor
+        .request_for_tests(crate::supervisor::protocol::Op::Quarantine {
+            path: agent_home.to_string_lossy().into_owned(),
+        })
+        .await;
+    assert!(reply.is_ok(), "{reply:?}");
+    assert_eq!(
+        mode_and_owner(&agent_home).0,
+        0o700,
+        "set by the supervisor itself"
+    );
+}
+
+#[tokio::test]
+async fn recovery_quarantines_a_reachable_leftover_and_verifies_it() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated_with(&mut h, Some("stale-1"));
+    // A crash left a directory the agent can still enter (mode 0755, content inside).
+    let stale = agent_home.with_file_name("stale-1");
+    fs::create_dir(&stale).unwrap();
+    fs::write(stale.join("left"), "x").unwrap();
+    fs::set_permissions(&stale, fs::Permissions::from_mode(0o755)).unwrap();
+    let staging = h._dir.path().join("staging");
+    fs::create_dir(&staging).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    isolation
+        .recover(&staging, &h._dir.path().join("work"))
+        .await
+        .expect("recovered");
+    let me = rustix::process::getuid().as_raw();
+    assert_eq!(mode_and_owner(&stale), (0o700, me));
+}
+
+#[tokio::test]
+async fn recovery_stops_when_a_leftover_cannot_be_quarantined() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    std::os::unix::fs::symlink("/etc", agent_home.with_file_name("linked-1")).unwrap();
+    let staging = h._dir.path().join("staging");
+    fs::create_dir(&staging).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    let result = isolation
+        .recover(&staging, &h._dir.path().join("work"))
+        .await;
+    assert!(result.is_err(), "start-up must stop: {result:?}");
+}
+
+/// A crash left `<staging>/<key>.cas` and the old staged copy; the agent-side `auth.json` is a link.
+fn crashed_job_with_rejected_auth(h: &Harness, agent_homes: &Path) -> PathBuf {
+    use sha2::Digest as _;
+    let staging = h._dir.path().join("staging");
+    let key = "job-1";
+    fs::create_dir_all(staging.join(key)).unwrap();
+    let master = fs::read(&h.master_auth).unwrap();
+    fs::write(staging.join(key).join("auth.json"), &master).unwrap();
+    let digest: String = sha2::Sha256::digest(&master)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    fs::write(staging.join(format!("{key}.cas")), digest).unwrap();
+    let agent = agent_homes.join(key);
+    fs::create_dir(&agent).unwrap();
+    std::os::unix::fs::symlink(&h.master_auth, agent.join("auth.json")).unwrap();
+    staging
+}
+
+#[tokio::test]
+async fn recovery_with_a_rejected_agent_auth_marks_the_credential_unusable() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    let staging = crashed_job_with_rejected_auth(&h, agent_home.parent().unwrap());
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    isolation
+        .recover(&staging, &h._dir.path().join("work"))
+        .await
+        .expect("recovered");
+    h.provider.settings.credential.recover(&staging).unwrap();
+    assert!(
+        !h.provider.settings.credential.usable(),
+        "the old staged copy proves nothing after a crash"
+    );
+}
+
+#[tokio::test]
+async fn recovery_with_a_rejected_agent_auth_keeps_a_newer_login() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    let staging = crashed_job_with_rejected_auth(&h, agent_home.parent().unwrap());
+    // The owner signed in again after the crash.
+    let newer = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "new-access", "refresh_token": "new-refresh", "account_id": "acct-1"}});
+    fs::write(&h.master_auth, newer.to_string()).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    isolation
+        .recover(&staging, &h._dir.path().join("work"))
+        .await
+        .expect("recovered");
+    h.provider.settings.credential.recover(&staging).unwrap();
+    assert!(h.provider.settings.credential.usable());
+    assert_eq!(
+        fs::read_to_string(&h.master_auth).unwrap(),
+        newer.to_string()
+    );
+}
+
+/// A log writer appending to a shared buffer.
+struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

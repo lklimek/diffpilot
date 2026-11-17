@@ -13,6 +13,9 @@ const SWEEP_DEADLINE_MS: &str = "SR_SUPERVISOR_SWEEP_DEADLINE_MS";
 const UNPRIVILEGED: &str = "SR_SUPERVISOR_UNPRIVILEGED";
 /// Test-only fault injection (container test): every sweep fails. Honoured only with [`TEST_FAULTS`].
 const FAULT_SWEEP_FAILS: &str = "R1_FAULT_SWEEP_FAILS";
+/// Test-only fault injection (container test): `clear` helpers for a directory of this name are refused.
+/// Honoured only with [`TEST_FAULTS`].
+const FAULT_CLEAR_FAILS: &str = "R1_FAULT_CLEAR_FAILS";
 /// Enables test-only fault injection; never set in the image.
 const TEST_FAULTS: &str = "SR_SUPERVISOR_TEST_FAULTS";
 /// Shortest sweep deadline accepted: a shorter one would fail every sweep of a busy agent.
@@ -85,6 +88,17 @@ fn config() -> Result<ServeConfig, String> {
     if fail_sweeps {
         eprintln!("supervisor: TEST FAULT INJECTION: every sweep fails");
     }
+    let fail_clears = std::env::var(FAULT_CLEAR_FAILS)
+        .ok()
+        .filter(|name| !name.is_empty());
+    if let Some(name) = &fail_clears {
+        if !set(TEST_FAULTS) {
+            return Err(format!(
+                "{FAULT_CLEAR_FAILS} needs {TEST_FAULTS}=1 (tests only)"
+            ));
+        }
+        eprintln!("supervisor: TEST FAULT INJECTION: clear of directories named {name} fails");
+    }
     let path = |key: &str, default: &str| {
         std::env::var_os(key).map_or_else(|| PathBuf::from(default), PathBuf::from)
     };
@@ -99,6 +113,7 @@ fn config() -> Result<ServeConfig, String> {
         work_dir,
         sweep_deadline: Duration::from_millis(sweep_ms),
         fail_sweeps,
+        fail_clears,
         binary: std::env::current_exe().map_err(|error| format!("own path: {error}"))?,
     })
 }

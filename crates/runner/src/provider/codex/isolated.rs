@@ -8,7 +8,6 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +18,7 @@ use tokio::io::BufReader;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant, timeout};
 
-use super::credential::JobCredential;
+use super::credential::{JobCredential, UNKNOWN_SUFFIX};
 use super::{
     AGENT_PATH, CONFIG_FILE, CodexProvider, CodexStream, DRAIN_AFTER_EXIT, EXIT_POLL, Exit,
     Invocation, Lines, SKILLS_ROOT, agent_home, agent_tmp, forward, replace_private, session,
@@ -88,17 +87,15 @@ impl Isolation {
 
     /// Start-up (ADR-013 step 1): sweep, then for every leftover agent `CODEX_HOME` copy `auth.json` into the
     /// staging home of the same key (where credential recovery finds it), clear and remove it; the same for
-    /// the agent directories of leftover job directories. Returns how many directories were removed.
+    /// the agent directories of leftover job directories. A copy that cannot be brought back leaves the
+    /// credential state unknown (`<key>.unknown`, see credential recovery). Whatever cannot be removed is
+    /// quarantined and verified (runner-owned, 0700), or start-up stops. Returns how many directories were
+    /// handled.
     pub async fn recover(&self, staging: &Path, work: &Path) -> Result<usize, ProviderError> {
         self.supervisor.sweep().await.map_err(io_error)?;
         let mut removed = 0;
-        let me = rustix::process::getuid().as_raw();
         for entry in std::fs::read_dir(&self.codex_homes)? {
             let home = entry?.path();
-            if std::fs::symlink_metadata(&home).is_ok_and(|meta| meta.uid() == me) {
-                tracing::error!(dir = %home.display(), "a quarantined agent directory is left over; inspect and remove it by hand");
-                continue;
-            }
             let key = home.file_name().unwrap_or_default().to_owned();
             if staging
                 .join(format!("{}.cas", key.to_string_lossy()))
@@ -115,7 +112,11 @@ impl Isolation {
                         replace_private(&target.join(AUTH_FILE), &bytes)?;
                     }
                     Err(error) => {
-                        tracing::warn!(dir = %home.display(), %error, "no credential copy to recover from a leftover agent CODEX_HOME")
+                        tracing::error!(dir = %home.display(), %error, "the credential copy of a crashed job cannot be brought back; its state is unknown");
+                        replace_private(
+                            &staging.join(format!("{}{UNKNOWN_SUFFIX}", key.to_string_lossy())),
+                            b"",
+                        )?;
                     }
                 }
             }
@@ -126,7 +127,7 @@ impl Isolation {
             for entry in entries {
                 let job = entry?.path();
                 for dir in [agent_home(&job), agent_tmp(&job)] {
-                    if std::fs::symlink_metadata(&dir).is_ok_and(|meta| meta.uid() != me) {
+                    if std::fs::symlink_metadata(&dir).is_ok() {
                         self.remove(&dir).await.map_err(io_error_of)?;
                         removed += 1;
                     }

@@ -385,6 +385,9 @@ impl Worker {
             }
         };
 
+        // From here on the attempt's events are not read: closing the channel makes its sends fail at once,
+        // so back-pressure never holds up a detached attempt's signal, sweep and clean-up.
+        events.close();
         if let Some(stop) = stopped {
             self.stop_agent(job, &mut task).await;
             return stopped_end(stop, job, attempt);
@@ -400,6 +403,13 @@ impl Worker {
         };
         // A detached attempt finishes its stop, copy-back and cleanup before anything terminal is posted.
         self.executor.settled().await;
+        while let Ok(event) = events.try_recv() {
+            if let ProviderEvent::Activity(event) = event
+                && !run.pending_full()
+            {
+                run.push(event);
+            }
+        }
         // Every event before the result; a stale attempt or the fence here still suppresses the result.
         if let Err(stop) = run.flush_events().await {
             return stopped_end(stop, job, attempt);

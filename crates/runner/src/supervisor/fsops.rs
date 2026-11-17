@@ -214,6 +214,18 @@ pub fn inspect(path: &Path) -> io::Result<String> {
     ))
 }
 
+/// Sets the directory `path` (this uid's, never a link) to mode 0700, for a quarantine.
+pub fn lock_dir(path: &Path) -> io::Result<()> {
+    let dir = openat2(
+        rustix::fs::CWD,
+        path,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
+    )?;
+    chmod_fd(&dir, 0o700)
+}
+
 /// Removes everything below `root`, without following links; `root` itself stays.
 pub fn clear(root: &Path) -> io::Result<()> {
     clear_dir(&open_root(root)?)

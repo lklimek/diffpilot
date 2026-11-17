@@ -29,7 +29,7 @@ per datagram, `id` echoed in the reply; replies may arrive out of order (`wait`)
 | `wait {pid}` → `{status}` | answered when the supervisor reaps that spawned pid; `status` is the exit code, or the negated signal number (`-9` for SIGKILL), so a signal never reads as an exit code. The supervisor's own exit code for the runner uses 128 + signal. |
 | `signal {pid, signal}` → `{signalled}` | `pid` must be a spawned pid (= its process group, `setsid`); the signal goes to each thread group of that process group whose live threads all have the four uids = `agent`, through a pidfd (below). Used for the graceful SIGTERM to Codex. |
 | `sweep` → `{rounds, killed, ms}` | loop: for every thread group in `/proc`, read `/proc/<tgid>/task/*/status`; a group is live when **any thread** is neither zombie nor dead, whatever the leader's state (a leader that called `pthread_exit()` is a zombie while its other threads run); every live group with any of real/effective/saved/fs uid = `agent` on a live thread gets SIGKILL through a pidfd (kills the whole group); reap (a zombie leader is reaped after its last thread); until no live agent thread exists in `/proc/*/task/*`. In-process: no fork, no exec, so a full `pids_limit` cannot stop it. Hard deadline (default 5 s): past it, or on any error, the supervisor logs and exits 70 — init then ends the container and every process in it, the restart policy brings a clean one (fail closed). Never `kill(-1)` as root. |
-| `quarantine {path}` | same path forms and open as `handover`; refused while an agent thread lives; owner `agent` or `runner`; `fchownat(fd, "", runner, runner, AT_EMPTY_PATH)`, after which the runner sets mode 0700. For a per-job directory that `clear` could not empty: the agent uid can no longer enter it (fail closed). |
+| `quarantine {path}` | same path forms and open as `handover`; refused while an agent thread lives or a spawned child is unreaped; owner `agent` or `runner`; a `lock` helper as that owner sets mode 0700 (root without `CAP_FOWNER` cannot), `fstat` on the supervisor's fd checks 0700 on the same inode, then `fchownat(fd, "", runner, runner, AT_EMPTY_PATH)` and a final `fstat` (runner, 0700), all before the reply; the client checks again. Mode before owner: an interruption leaves a 0700 directory of its old owner, never a runner-owned open one. For a per-job directory that `clear` could not empty: the agent uid can no longer enter it (fail closed). Idempotent; start-up recovery repeats it. |
 | `handover {path}` | `path` normalised and either `<state>/codex-homes/<name>` or `<work>/<name>/{home,tmp}`; opened with `openat2(O_PATH\|O_DIRECTORY\|O_NOFOLLOW, RESOLVE_NO_SYMLINKS)`; must be owned by `runner`, mode 0700 and empty (listed by a runner-uid child, same dev/ino, because root without `DAC_READ_SEARCH` cannot list it); then `fchownat(fd, "", agent, agent, AT_EMPTY_PATH)`. The only use of `CHOWN`. |
 
 pidfd rule (no reused pid is ever hit): `pidfd_open(tgid)` (works on a zombie leader with live threads), then read
@@ -151,7 +151,8 @@ setuid/setgid bits stripped).
 - **Configuration:** `SR_RUNNER_UID`/`SR_AGENT_UID` (10001/10002), `SR_SUPERVISOR_SWEEP_DEADLINE_MS` (default
   5000, at least 100). Test-only: `SR_SUPERVISOR_UNPRIVILEGED=1` lets a non-root supervisor run (no uid switch,
   sweep scoped to its own descendants outside the runner; ignored as root); `R1_FAULT_SWEEP_FAILS=1` (every sweep
-  fails) is refused unless `SR_SUPERVISOR_TEST_FAULTS=1`. The image sets none of them.
+  fails) and `R1_FAULT_CLEAR_FAILS=<name>` (`clear` of a directory with that name is refused, so it gets
+  quarantined) are refused unless `SR_SUPERVISOR_TEST_FAULTS=1`. The image sets none of them.
 - **Runner without a supervisor:** refuses to start unless `SR_RUNNER_DEV_NO_ISOLATION=1` (dev stack, smoke),
   then warns on every job; the image never sets it.
 - **Runner layout:** the provider works on a runner-private staging `CODEX_HOME` (`<state>/codex-staging/<key>`,
@@ -167,13 +168,21 @@ closed. Nothing publishes a terminal result, releases the credential or claims t
 - `auth.json` that cannot be copied back (missing, link, oversized, not a single regular file) means the
   credential state is unknown: the master is marked unusable (a new login is needed), the old staged copy proves
   nothing;
+- the job loop stops reading the attempt's events (closes the channel) before it waits for the gate, so
+  back-pressure never blocks the attempt's signal/sweep/clean-up; events already buffered are still posted;
 - a per-job directory that `clear` cannot empty is quarantined; if that fails too, the runner takes no further
-  job (its credential is reported unusable) and start-up recovery stops with an error.
+  job (its credential is reported unusable);
+- start-up recovery, before the first claim, handles every leftover the same way (remove, else quarantine and
+  verify runner-owned 0700, an already quarantined one included); any failure stops start-up. A leftover agent
+  `auth.json` that cannot be copied back marks the master the job started from unusable (`<key>.unknown`), unless
+  the owner signed in again since (another digest).
 
 Live text (events, stderr) is scrubbed of the known secrets and, because a token rotated by the agent is known
 only after the copy-back, of token shapes: JWTs (`eyJ…` with three base64url segments, the first two at least 10
 characters) and, for every known secret with a prefix up to its first `_` or `-` within 8 characters (`ghs_`,
-`codex-`, `sk-`), that prefix followed by at least 20 token characters. Everything stored or returned (output,
+`codex-`, `sk-`), that prefix followed by at least 20 token characters including an upper-case letter or a digit
+(so lowercase identifiers stay). Shapes are found anywhere in a word, also glued to other characters
+(`x<token>`); each segment is tried once, so the cost stays linear. Everything stored or returned (output,
 result text, session rollout) is scrubbed with the exact rotated values after the copy-back. Residual: a rotated
 token without such a prefix, or one the agent encodes, can appear in live progress text only (AR-4).
 

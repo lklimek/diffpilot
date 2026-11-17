@@ -35,6 +35,9 @@ const MAX_REMEMBERED_BYTES: usize = 64 * 1024;
 const BASE_SUFFIX: &str = ".cas";
 /// Suffix a per-job `CODEX_HOME` gets when its copy could not be written back; recovered at the next start.
 const RECOVER_SUFFIX: &str = ".recover";
+/// `<home>.unknown` next to `<home>.cas`: the job's copy could not be brought back after a crash (process
+/// isolation), so the staged copy proves nothing and the master it was taken from is marked unusable.
+pub(crate) const UNKNOWN_SUFFIX: &str = ".unknown";
 /// File next to the master naming, by digest, the master that can no longer be used.
 const UNUSABLE_FILE: &str = "auth.json.unusable";
 
@@ -106,7 +109,11 @@ impl CodexCredential {
             };
             let home = codex_homes.join(key);
             let parked = codex_homes.join(format!("{key}{RECOVER_SUFFIX}"));
-            match self.recover_one(&path, &home, &parked) {
+            let unknown = codex_homes
+                .join(format!("{key}{UNKNOWN_SUFFIX}"))
+                .symlink_metadata()
+                .is_ok();
+            match self.recover_one(&path, &home, &parked, unknown) {
                 Ok(true) => written += 1,
                 Ok(false) => {}
                 Err(error) => {
@@ -130,7 +137,15 @@ impl CodexCredential {
     }
 
     /// One leftover: `Ok(true)` when its copy became the master, `Err` when it must stay for the next start.
-    fn recover_one(&self, base_file: &Path, home: &Path, parked: &Path) -> io::Result<bool> {
+    /// `unknown`: the job's copy could not be brought back, so only the base digest counts (a newer master is
+    /// left alone).
+    fn recover_one(
+        &self,
+        base_file: &Path,
+        home: &Path,
+        parked: &Path,
+        unknown: bool,
+    ) -> io::Result<bool> {
         let Some(base) = read_regular(base_file)
             .ok()
             .and_then(|bytes| unhex(String::from_utf8_lossy(&bytes).trim()))
@@ -138,6 +153,13 @@ impl CodexCredential {
             tracing::warn!(file = %base_file.display(), "ignoring an unreadable credential base file of a crashed job");
             return Ok(false);
         };
+        if unknown {
+            self.mark_unusable_if_master(
+                base,
+                "the credential copy of a crashed job could not be brought back from the agent",
+            );
+            return Ok(false);
+        }
         let copy = [parked, home]
             .into_iter()
             .map(|dir| dir.join(AUTH_FILE))

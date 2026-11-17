@@ -212,59 +212,100 @@ fn token_prefix(secret: &str) -> Option<&str> {
     (end >= 1).then(|| &secret[..=end])
 }
 
-/// Length of a JWT (`eyJ<header>.<payload>.<signature>`) at the start of `text`, if it is one.
-fn jwt_len(text: &[u8]) -> Option<usize> {
-    if !text.starts_with(b"eyJ") {
-        return None;
-    }
-    let mut at = 0;
-    for segment in 0..3 {
-        let run = text[at..].iter().take_while(|b| token_char(**b)).count();
-        if run < if segment < 2 { MIN_JWT_SEGMENT } else { 1 } {
-            return None;
-        }
-        at += run;
-        if segment < 2 {
-            if text.get(at) != Some(&b'.') {
-                return None;
-            }
-            at += 1;
-        }
-    }
-    Some(at)
+/// A byte of a token-shaped word: token characters and the dots of a JWT.
+fn word_char(byte: u8) -> bool {
+    token_char(byte) || byte == b'.'
 }
 
-/// `text` with JWTs and prefixed token runs replaced by [`REDACTED`]; linear in the text length.
+/// Whether `run` looks random rather than like a lowercase identifier: it has an upper-case letter or a digit.
+fn looks_random(run: &[u8]) -> bool {
+    run.iter()
+        .any(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+}
+
+/// The spans of `word` (bytes for which [`word_char`] holds) to redact. Shapes are found anywhere in the word,
+/// not only at its start, so a token glued to other characters (`x<token>`) is still found. Linear: each
+/// dot-separated segment is tried once as a JWT start (its first `eyJ`; a later one could only be shorter),
+/// and a prefixed token runs to the end of the word, so only the first occurrence of each prefix counts.
+fn word_spans(word: &[u8], prefixes: &[&str]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut segments = Vec::new();
+    let mut start = 0;
+    for (at, byte) in word.iter().enumerate() {
+        if *byte == b'.' {
+            segments.push((start, at));
+            start = at + 1;
+        }
+    }
+    segments.push((start, word.len()));
+    let mut index = 0;
+    while index + 2 < segments.len() {
+        let (begin, header_end) = segments[index];
+        let jwt = find(&word[begin..header_end], b"eyJ").map(|offset| begin + offset);
+        let (payload_start, payload_end) = segments[index + 1];
+        let (signature_start, signature_end) = segments[index + 2];
+        match jwt {
+            Some(at)
+                if header_end - at >= MIN_JWT_SEGMENT
+                    && payload_end - payload_start >= MIN_JWT_SEGMENT
+                    && signature_end > signature_start =>
+            {
+                spans.push((at, signature_end));
+                index += 3;
+            }
+            _ => index += 1,
+        }
+    }
+    let prefixed = prefixes
+        .iter()
+        .filter_map(|prefix| {
+            let at = find(word, prefix.as_bytes())?;
+            let run = &word[at + prefix.len()..];
+            (run.len() >= MIN_PREFIXED_TOKEN_CHARS && looks_random(run)).then_some(at)
+        })
+        .min();
+    if let Some(at) = prefixed {
+        spans.push((at, word.len()));
+    }
+    spans.sort_unstable();
+    spans
+}
+
+/// The first occurrence of `needle` in `haystack`.
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// `text` with JWTs and prefixed token runs replaced by [`REDACTED`]; linear in the text length for a fixed
+/// set of short prefixes.
 pub fn token_shapes(text: &str, prefixes: &[&str]) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     let mut at = 0;
     while at < bytes.len() {
-        let boundary = at == 0 || !token_char(bytes[at - 1]);
-        let token = boundary
-            .then(|| {
-                jwt_len(&bytes[at..]).or_else(|| {
-                    prefixes.iter().find_map(|prefix| {
-                        let rest = bytes[at..].strip_prefix(prefix.as_bytes())?;
-                        let run = rest
-                            .iter()
-                            .take_while(|b| token_char(**b) || **b == b'.')
-                            .count();
-                        (run >= MIN_PREFIXED_TOKEN_CHARS).then_some(prefix.len() + run)
-                    })
-                })
-            })
-            .flatten();
-        match token {
-            Some(len) => {
-                out.push_str(&text[copied..at]);
-                out.push_str(REDACTED);
-                at += len;
-                copied = at;
-            }
-            None => at += 1,
+        if !word_char(bytes[at]) {
+            at += 1;
+            continue;
         }
+        let end = at + bytes[at..].iter().take_while(|b| word_char(**b)).count();
+        for (from, to) in word_spans(&bytes[at..end], prefixes) {
+            let (from, to) = (at + from, at + to);
+            if from < copied {
+                // Overlaps a span already redacted.
+                copied = copied.max(to);
+                continue;
+            }
+            out.push_str(&text[copied..from]);
+            out.push_str(REDACTED);
+            copied = to;
+        }
+        at = end;
     }
     out.push_str(&text[copied..]);
     out
@@ -290,6 +331,32 @@ mod token_shape_tests {
             token_shapes("rt_short and eyJx.y.z", &["rt_"]),
             "rt_short and eyJx.y.z"
         );
+    }
+
+    #[test]
+    fn tokens_glued_to_preceding_characters_are_redacted() {
+        let jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhY2N0LTEifQ.c2lnbmF0dXJl";
+        let refresh = "rt_NEWrotatedRefreshToken0123456789";
+        assert_eq!(
+            token_shapes(&format!("x{jwt} 9{refresh} key=x{refresh}"), &["rt_"]),
+            "x[redacted] 9[redacted] key=x[redacted]"
+        );
+        // Lowercase identifiers that merely contain a prefix are not tokens.
+        let words = "smart-review-codex-staging-directory-name and art_of_the_lowercase_identifier";
+        assert_eq!(token_shapes(words, &["codex-", "rt_"]), words);
+    }
+
+    #[test]
+    fn token_shape_search_stays_linear_on_adversarial_text() {
+        let jwt = format!("{0}.{0}.x", "eyJ".repeat(200_000));
+        let prefixed = "rt_".repeat(200_000) + "A";
+        let text = format!("{jwt} {prefixed} {}", "eyJ.".repeat(200_000));
+        let started = std::time::Instant::now();
+        assert_eq!(
+            token_shapes(&text, &["rt_"]),
+            format!("[redacted] [redacted] {}", "eyJ.".repeat(200_000))
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

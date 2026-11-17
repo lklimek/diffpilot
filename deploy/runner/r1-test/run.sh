@@ -65,7 +65,8 @@ echo "CHECK runner_image_pins_and_uids $r $(tr '\n' ';' <<< "$versions" | sed 's
 docker volume create "$state" > /dev/null
 SR_RUNNER_SECRET="SR""CANARY-runner-secret-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 export SR_RUNNER_SECRET
-start "$container" -e SR_RUNNER_SECRET -e R1_SKIP_CODEX
+# Test-only: `clear` of the quarantine check's directory fails (Rust supervisor; needs the test flag).
+start "$container" -e SR_RUNNER_SECRET -e R1_SKIP_CODEX -e SR_SUPERVISOR_TEST_FAULTS=1 -e R1_FAULT_CLEAR_FAILS=quarantine-1
 unset SR_RUNNER_SECRET
 
 hardening="$(docker inspect -f 'CapDrop={{.HostConfig.CapDrop}} CapAdd={{.HostConfig.CapAdd}} SecurityOpt={{.HostConfig.SecurityOpt}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} Privileged={{.HostConfig.Privileged}} IpcMode={{.HostConfig.IpcMode}} PidsLimit={{.HostConfig.PidsLimit}} Memory={{.HostConfig.Memory}} Init={{.HostConfig.Init}} User={{.Config.User}}' "$container")"

@@ -214,8 +214,8 @@ impl Supervisor {
         .map(drop)
     }
 
-    /// Takes the leftover per-job directory `path` away from the agent: the supervisor makes the runner its
-    /// owner, then the runner sets mode 0700 so the agent uid can no longer enter it.
+    /// Takes the leftover per-job directory `path` away from the agent: the supervisor sets mode 0700 and makes
+    /// the runner its owner, so the agent uid can no longer enter it; the result is checked here as well.
     pub async fn quarantine(&self, path: &Path) -> Result<(), SupervisorError> {
         self.request(
             "quarantine",
@@ -226,8 +226,17 @@ impl Supervisor {
             REQUEST_DEADLINE,
         )
         .await?;
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+        use std::os::unix::fs::MetadataExt as _;
+        let meta = std::fs::symlink_metadata(path)?;
+        if !meta.is_dir()
+            || meta.uid() != rustix::process::getuid().as_raw()
+            || meta.mode() & 0o7777 != 0o700
+        {
+            return Err(SupervisorError::Refused {
+                op: "quarantine",
+                message: format!("{} is not a runner-owned 0700 directory", path.display()),
+            });
+        }
         Ok(())
     }
 
@@ -381,6 +390,12 @@ impl Supervisor {
                 Err(SupervisorError::Deadline("a helper"))
             }
         }
+    }
+
+    /// Sends `op` as is (tests of the supervisor's own behaviour).
+    #[cfg(test)]
+    pub(crate) async fn request_for_tests(&self, op: Op) -> Result<Reply, SupervisorError> {
+        self.request("test", op, Vec::new(), REQUEST_DEADLINE).await
     }
 
     async fn request(

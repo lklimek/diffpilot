@@ -42,7 +42,13 @@ struct Scripted {
     cancelled: Notify,
     finished: AtomicBool,
     job_dir: Mutex<Option<PathBuf>>,
+    /// Events the job loop accepted.
     sent: AtomicUsize,
+    /// `sent` when the first cancel arrived (the start of the stop; later events are discarded).
+    sent_at_cancel: Mutex<Option<usize>>,
+    /// Ignoring the cancel, the call still ends this long after it (a supervisor sweep in production).
+    ends_after_cancel: Option<Duration>,
+    cancel_at: Mutex<Option<Instant>>,
 }
 
 impl Scripted {
@@ -58,6 +64,9 @@ impl Scripted {
             finished: AtomicBool::new(false),
             job_dir: Mutex::new(None),
             sent: AtomicUsize::new(0),
+            sent_at_cancel: Mutex::new(None),
+            ends_after_cancel: None,
+            cancel_at: Mutex::new(None),
         }
     }
 
@@ -104,8 +113,18 @@ impl LlmProvider for Scripted {
                     activity: ActivityKind::Command,
                     summary: self.summary.clone(),
                 };
-                let _ = events.send(ProviderEvent::Activity(event)).await;
-                self.sent.fetch_add(1, Ordering::SeqCst);
+                if events.send(ProviderEvent::Activity(event)).await.is_ok() {
+                    self.sent.fetch_add(1, Ordering::SeqCst);
+                } else {
+                    // Nobody reads any more; let the runtime breathe.
+                    tokio::task::yield_now().await;
+                }
+                let cancelled_at = *self.cancel_at.lock().unwrap();
+                if let (Some(linger), Some(at)) = (self.ends_after_cancel, cancelled_at)
+                    && at.elapsed() >= linger
+                {
+                    return Err(ProviderError::Cancelled);
+                }
             }
             let _ = events
                 .send(ProviderEvent::OutputReady(self.output.clone()))
@@ -130,6 +149,14 @@ impl LlmProvider for Scripted {
 
     fn cancel(&self, _job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
         self.cancel_called.store(true, Ordering::SeqCst);
+        self.cancel_at
+            .lock()
+            .unwrap()
+            .get_or_insert_with(Instant::now);
+        self.sent_at_cancel
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| self.sent.load(Ordering::SeqCst));
         if self.honour_cancel {
             self.cancelled.notify_one();
         }
@@ -153,6 +180,10 @@ fn ack(cancel_requested: bool) -> ResponseTemplate {
 }
 
 async fn setup(provider: Scripted, claim_delay: Duration) -> Setup {
+    setup_with(provider, claim_delay, false).await
+}
+
+async fn setup_with(provider: Scripted, claim_delay: Duration, detached: bool) -> Setup {
     let server = MockServer::start().await;
     let root = TempDir::new().unwrap();
     let spec = spec(JobKind::Plan, shared_repo());
@@ -179,11 +210,12 @@ async fn setup(provider: Scripted, claim_delay: Duration) -> Setup {
         .mount(&server)
         .await;
     let provider = Arc::new(provider);
-    let executor = Arc::new(Executor::new(
-        provider.clone(),
-        dirs(root.path()),
-        credential(),
-    ));
+    let executor = Executor::new(provider.clone(), dirs(root.path()), credential());
+    let executor = Arc::new(if detached {
+        executor.with_detached_attempts()
+    } else {
+        executor
+    });
     let client = ServerClient::new(
         &server.uri(),
         Secret::new(RUNNER_SECRET),
@@ -398,6 +430,28 @@ async fn provider_ignoring_cancel_is_killed_after_the_grace() {
         "agent call dropped"
     );
     assert!(!setup.provider.job_dir().exists(), "work dir removed");
+}
+
+/// A detached attempt keeps producing events after the cancel grace (its agent ignores SIGTERM) while the job
+/// loop no longer receives them: back-pressure must not keep the attempt, and so the worker, from finishing.
+#[tokio::test]
+async fn cancel_with_full_event_channels_settles_a_detached_attempt() {
+    let mut provider = Scripted::new(usize::MAX, Duration::ZERO);
+    provider.honour_cancel = false;
+    provider.ends_after_cancel = Some(UNIT * 25);
+    let mut setup = setup_with(provider, Duration::ZERO, true).await;
+    mount(&setup, "events", ack(true)).await;
+    mount(&setup, "output", ResponseTemplate::new(204)).await;
+    mount(&setup, "result", ResponseTemplate::new(204)).await;
+    let end = tokio::time::timeout(UNIT * 200, setup.worker.poll_once())
+        .await
+        .expect("the worker settles instead of deadlocking")
+        .unwrap();
+    assert_eq!(end, Some(JobEnd::ResultPosted(JobOutcome::Cancelled)));
+    assert!(
+        setup.provider.finished.load(Ordering::SeqCst),
+        "the attempt ran to its end"
+    );
 }
 
 /// The claim reply is delayed by 600 ms and no later request is ever acked: the deadline runs from the claim's
@@ -629,7 +683,13 @@ async fn pending_events_are_bounded_while_posts_fail() {
         Some(JobEnd::Fenced),
         "the fence still works under backpressure"
     );
-    let sent = setup.provider.sent.load(Ordering::SeqCst);
+    // Until the stop: afterwards the job loop no longer reads, so the agent's last events are discarded.
+    let sent = setup
+        .provider
+        .sent_at_cancel
+        .lock()
+        .unwrap()
+        .expect("the fence stopped the agent");
     // Pending limit plus the two channel buffers and the events in hand.
     assert!(
         sent <= MAX_PENDING_EVENTS + 16 + EVENT_BUFFER + 4,

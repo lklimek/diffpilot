@@ -44,12 +44,13 @@ pub fn helper(args: &[OsString]) -> i32 {
             serde_json::to_writer(std::io::stdout().lock(), &entries).map_err(std::io::Error::other)
         }),
         (Some("clear"), Some(root), None) => fsops::clear(root),
+        (Some("lock"), Some(path), None) => fsops::lock_dir(path),
         (Some("inspect"), Some(path), None) => {
             fsops::inspect(path).and_then(|line| writeln!(std::io::stdout().lock(), "{line}"))
         }
         _ => {
             eprintln!(
-                "usage: smart-review-supervisor serve -- <runner argv> | copy-in|copy-out|list|clear|inspect ..."
+                "usage: smart-review-supervisor serve -- <runner argv> | copy-in|copy-out|list|clear|inspect|lock ..."
             );
             return 2;
         }

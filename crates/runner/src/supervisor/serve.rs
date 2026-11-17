@@ -56,6 +56,8 @@ pub struct ServeConfig {
     pub sweep_deadline: Duration,
     /// Test-only fault injection: every sweep fails (the container test's fail-closed check).
     pub fail_sweeps: bool,
+    /// Test-only fault injection: `clear` helpers for a directory with this name are refused.
+    pub fail_clears: Option<String>,
     /// This binary, given to the runner for helper modes.
     pub binary: PathBuf,
 }
@@ -336,6 +338,15 @@ impl Server {
                 "refused: helpers run only after a sweep (an agent process is alive)".to_owned(),
             );
         }
+        if let Some(name) = &self.config.fail_clears
+            && own_helper
+            && argv.get(1).is_some_and(|mode| mode == "clear")
+            && argv
+                .get(2)
+                .is_some_and(|dir| Path::new(dir).file_name() == Some(name.as_ref()))
+        {
+            return Err("refused: test fault injection (clear fails)".to_owned());
+        }
         // The wrapper starts as root and switches to the agent itself, so `spawn` returns at its exec: an agent
         // that stops every process of its uid cannot stop a child that std's spawn is still waiting for.
         let identity = if self.config.privileged {
@@ -377,9 +388,9 @@ impl Server {
     /// Takes a per-job directory the agent could not empty away from it (fail closed): chown to the runner
     /// through a no-symlink `O_PATH` descriptor, after which the runner sets mode 0700. Only while no agent
     /// process is alive.
-    fn quarantine(&self, path: &Path) -> Result<(), String> {
+    fn quarantine(&mut self, path: &Path) -> Result<(), String> {
         self.per_job_dir(path)?;
-        if procs::agent_alive(self.target) {
+        if self.agent_running() {
             return Err(
                 "refused: helpers run only after a sweep (an agent process is alive)".to_owned(),
             );
@@ -392,9 +403,34 @@ impl Server {
             ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
         )
         .map_err(|error| format!("open: {error}"))?;
-        let owner = fstat(&fd).map_err(|error| format!("stat: {error}"))?.st_uid;
-        if owner != self.config.agent.uid && owner != self.config.runner.uid {
+        let stat = fstat(&fd).map_err(|error| format!("stat: {error}"))?;
+        let owner = if stat.st_uid == self.config.runner.uid {
+            self.config.runner
+        } else if stat.st_uid == self.config.agent.uid {
+            self.config.agent
+        } else {
             return Err("not an agent or runner directory".to_owned());
+        };
+        // Mode first, then owner, both before the reply: an interruption leaves a 0700 directory of its old
+        // owner, which start-up recovery quarantines again. Root without CAP_FOWNER cannot chmod another
+        // uid's directory, so a helper as its owner does.
+        let mut lock = Command::new(&self.config.binary);
+        lock.arg("lock")
+            .arg(path)
+            .env_clear()
+            .current_dir("/")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null());
+        if self.config.privileged {
+            lock.uid(owner.uid).gid(owner.gid);
+        }
+        let locked = lock.status().map_err(|error| format!("lock: {error}"))?;
+        let mode = fstat(&fd)
+            .map_err(|error| format!("stat: {error}"))?
+            .st_mode
+            & 0o7777;
+        if !locked.success() || mode != 0o700 {
+            return Err(format!("could not set mode 0700 (mode {mode:o})"));
         }
         chownat(
             &fd,
@@ -403,7 +439,12 @@ impl Server {
             Some(Gid::from_raw(self.config.runner.gid)),
             AtFlags::EMPTY_PATH,
         )
-        .map_err(|error| format!("chown: {error}"))
+        .map_err(|error| format!("chown: {error}"))?;
+        let stat = fstat(&fd).map_err(|error| format!("stat: {error}"))?;
+        if stat.st_uid != self.config.runner.uid || stat.st_mode & 0o7777 != 0o700 {
+            return Err("the quarantine did not take effect".to_owned());
+        }
+        Ok(())
     }
 
     /// `<state>/codex-homes/<name>` or `<work>/<name>/{home,tmp}`, normalised.
