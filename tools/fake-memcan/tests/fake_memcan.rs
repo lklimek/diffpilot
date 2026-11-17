@@ -211,11 +211,201 @@ async fn import_search_delete_round_trip_in_memcan_shapes() {
     );
 }
 
+fn mcp_error(result: Result<CallToolResult, ServiceError>) -> (i32, String) {
+    match result {
+        Err(ServiceError::McpError(error)) => (error.code.0, error.message.to_string()),
+        other => panic!("expected a JSON-RPC error, got {other:?}"),
+    }
+}
+
 #[tokio::test]
-async fn reject_mode_answers_with_an_error_result_and_stores_nothing() {
+async fn import_validates_records_and_counts_like_memcan() {
     let fake = Fake::start().await;
     let client = fake.connect().await.unwrap();
-    fake.set_mode(Mode::Reject).await;
+    let records = [
+        record("ok", "p"),
+        String::new(),
+        json!({"id": "no-collection", "data": "text", "user_id": "project:p"}).to_string(),
+        json!({"_collection": "memories", "id": "no-data", "user_id": "project:p"}).to_string(),
+        json!({"_collection": "memories", "id": "number-data", "data": 7}).to_string(),
+        json!({"_collection": "notes", "id": "foreign", "data": "text"}).to_string(),
+        "not json".to_owned(),
+    ]
+    .join("\n");
+    let result = call(&client, "_import_records", json!({ "records": records }))
+        .await
+        .unwrap();
+    assert_ne!(result.is_error, Some(true));
+    let answer = answer(&result);
+    // Lines that do not parse are errors only; invalid records are skipped as well.
+    assert_eq!(answer["imported"], 1, "{answer}");
+    assert_eq!(answer["skipped"], 3, "{answer}");
+    let errors: Vec<&str> = answer["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|error| error.as_str().unwrap())
+        .collect();
+    assert_eq!(errors.len(), 5, "{answer}");
+    assert!(
+        errors[0].starts_with("line 3: parsing JSONL line: missing field `_collection`"),
+        "{answer}"
+    );
+    assert!(
+        errors[1].starts_with("line 7: parsing JSONL line:"),
+        "{answer}"
+    );
+    assert_eq!(errors[2], "record no-data missing 'data' field");
+    assert_eq!(errors[3], "record number-data missing 'data' field");
+    assert_eq!(
+        errors[4],
+        "unknown collection 'notes': unknown collection: notes"
+    );
+    let stored: Vec<String> = fake.state().await.memories.into_keys().collect();
+    assert_eq!(stored, ["ok"]);
+}
+
+#[tokio::test]
+async fn unusable_arguments_and_unknown_tools_are_json_rpc_errors() {
+    let fake = Fake::start().await;
+    let client = fake.connect().await.unwrap();
+    for (tool, arguments, field) in [
+        ("_import_records", json!({}), "records"),
+        ("_import_records", json!({"records": 3}), ""),
+        ("delete_memory", json!({}), "memory_id"),
+        ("search_memories", json!({"project": "p"}), "query"),
+    ] {
+        let (code, message) = mcp_error(call(&client, tool, arguments).await);
+        assert_eq!(code, -32602, "{tool}: invalid params");
+        assert!(
+            message.starts_with("failed to deserialize parameters: ") && message.contains(field),
+            "{tool}: {message}"
+        );
+    }
+    let (code, message) = mcp_error(call(&client, "add_memory", json!({"memory": "x"})).await);
+    assert_eq!((code, message.as_str()), (-32602, "tool not found"));
+}
+
+#[tokio::test]
+async fn search_scopes_like_memcan_and_reports_has_more_past_the_limit() {
+    let fake = Fake::start().await;
+    let client = fake.connect().await.unwrap();
+    let records = ["a", "b", "c"].map(|id| record(id, "p")).join("\n");
+    call(&client, "_import_records", json!({ "records": records }))
+        .await
+        .unwrap();
+    call(
+        &client,
+        "_import_records",
+        json!({"records": json!({"_collection": "memories", "id": "g", "data": "global", "user_id": "global"}).to_string()}),
+    )
+    .await
+    .unwrap();
+    let search = |arguments: Value| {
+        let client = &client;
+        async move { answer(&call(client, "search_memories", arguments).await.unwrap()) }
+    };
+    let page = search(json!({"query": "q", "project": "p", "limit": 2})).await;
+    assert_eq!(page["memories"].as_array().unwrap().len(), 2);
+    assert_eq!(page["has_more"], true);
+    let all = search(json!({"query": "q", "project": "p", "limit": 3})).await;
+    assert_eq!(all["memories"].as_array().unwrap().len(), 3);
+    assert_eq!(all["has_more"], false);
+    let entry = &all["memories"][0];
+    for key in [
+        "id",
+        "memory",
+        "hash",
+        "score",
+        "created_at",
+        "updated_at",
+        "user_id",
+        "type",
+    ] {
+        assert!(entry.get(key).is_some(), "{key} missing in {entry}");
+    }
+    assert!(entry.get("data").is_none(), "{entry}");
+    let by_user = search(json!({"query": "q", "project": "p", "user_id": "global"})).await;
+    assert_eq!(
+        by_user["memories"][0]["id"], "g",
+        "user_id wins over project"
+    );
+    let default = search(json!({"query": "q"})).await;
+    assert_eq!(default["memories"][0]["id"], "g", "MemCan's default scope");
+    assert_eq!(default["has_more"], false);
+}
+
+#[tokio::test]
+async fn embedding_failure_skips_imports_and_fails_searches_like_memcan() {
+    let fake = Fake::start().await;
+    let client = fake.connect().await.unwrap();
+    call(
+        &client,
+        "_import_records",
+        json!({"records": record("old", "p")}),
+    )
+    .await
+    .unwrap();
+    fake.set_mode(Mode::EmbeddingFailure).await;
+    let result = call(
+        &client,
+        "_import_records",
+        json!({"records": record("m1", "p")}),
+    )
+    .await
+    .unwrap();
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "a successful result with counters, not an error"
+    );
+    assert_eq!(
+        answer(&result),
+        json!({"imported": 0, "skipped": 1,
+            "errors": ["embedding batch failed for memories: embedding provider unavailable"]})
+    );
+    let batch = (0..51)
+        .map(|n| record(&format!("b{n}"), "p"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let batch = answer(
+        &call(&client, "_import_records", json!({ "records": batch }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(batch["skipped"], 51, "{batch}");
+    assert_eq!(
+        batch["errors"].as_array().unwrap().len(),
+        2,
+        "one error per batch of 50: {batch}"
+    );
+    let (code, message) = mcp_error(
+        call(
+            &client,
+            "search_memories",
+            json!({"query": "q", "project": "p"}),
+        )
+        .await,
+    );
+    assert_eq!(code, -32603, "internal error");
+    assert_eq!(message, "embedding failed: embedding provider unavailable");
+    let deleted = call(&client, "delete_memory", json!({"memory_id": "old"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        answer(&deleted),
+        json!({"status": "deleted", "memory_id": "old"})
+    );
+    let state = fake.state().await;
+    assert!(state.memories.is_empty());
+    assert_eq!(state.mode, Mode::EmbeddingFailure);
+}
+
+#[tokio::test]
+async fn synthetic_tool_error_answers_is_error_and_changes_nothing() {
+    let fake = Fake::start().await;
+    let client = fake.connect().await.unwrap();
+    fake.set_mode(Mode::SyntheticToolError).await;
     let result = call(
         &client,
         "_import_records",
@@ -224,9 +414,12 @@ async fn reject_mode_answers_with_an_error_result_and_stores_nothing() {
     .await
     .unwrap();
     assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        result.content[0].as_text().unwrap().text,
+        "fake-memcan synthetic tool error"
+    );
     let state = fake.state().await;
     assert!(state.memories.is_empty());
-    assert_eq!(state.mode, Mode::Reject);
     assert_eq!(
         state.calls,
         vec![Call {
@@ -317,7 +510,7 @@ async fn reset_clears_memories_calls_and_mode() {
     )
     .await
     .unwrap();
-    fake.set_mode(Mode::Reject).await;
+    fake.set_mode(Mode::SyntheticToolError).await;
     let status = fake
         .http
         .post(format!("{}/_fake/reset", fake.base))
