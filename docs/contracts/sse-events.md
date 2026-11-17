@@ -20,7 +20,8 @@
   impossible); a subscriber's last event equals the stored state. A buffer overflow closes the stream; the browser
   reconnects (default `EventSource` retry) and gets a fresh snapshot.
 - `analysis {summary}`: full `AnalysisSummary` on connect and on every state or progress change (planning →
-  running {done,total} → finished | failed | paused | cancelled). The stream stays open after a terminal state
+  running {done,total} → finished | failed | paused | cancelled). `paused {resumes_at, done, total}` keeps the
+  progress (`total` null before the plan) while a job waits for the usage limit. The stream stays open after a terminal state
   (re-analysis and Ask still emit) until the client closes it.
 - `question {question}`: full `AskQuestion` on every state change: `pending` → `answering` → `answered` |
   `failed`. `answered` is sent as soon as the job's output arrives before compaction (runner

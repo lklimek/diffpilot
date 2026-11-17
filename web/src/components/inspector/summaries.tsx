@@ -123,7 +123,10 @@ export function PrContextSummary({ context, sections }: { context: PrContextBloc
           <li>
             {sources.length > 0
               ? `Project profile: ${sources.map((s) => SOURCE[s]).join(" and ")}`
-              : "No project profile — ratings are component-level"}
+              : facts.project_profile.memcan === "not_checked"
+                ? "No project profile file"
+                : "No project profile — ratings are component-level"}
+            {facts.project_profile.memcan === "not_checked" && "; a MemCan profile was not checked"}
           </li>
           {facts.agent_instruction_files.length > 0 && (
             <li>Agent instruction files in this PR: {facts.agent_instruction_files.join(", ")}</li>

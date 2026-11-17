@@ -18,6 +18,11 @@ const PROVENANCE: Record<Provenance, { text: string; tip: string; tick: boolean 
     tip: "Deterministic rule: the lines matched a built-in line rule. The content was not analysed.",
     tick: false,
   },
+  binary_content: {
+    text: "binary file",
+    tip: "Git treats this file as binary; it is not shown or analysed.",
+    tick: false,
+  },
 };
 
 const BASE =

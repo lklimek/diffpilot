@@ -22,10 +22,12 @@ function label(state: AnalysisState): string {
       return "Planning flows…";
     case "running":
       return `${state.done} of ${state.total} flows analysed`;
-    case "paused":
+    case "paused": {
+      const count = state.total === null ? "" : `, ${state.done} of ${state.total} flows analysed`;
       return state.resumes_at
-        ? `Paused: Codex usage limit reached, resumes at ${clockText(state.resumes_at)}`
-        : "Paused: Codex usage limit reached; the resume time is not known";
+        ? `Paused${count}: Codex usage limit reached, resumes at ${clockText(state.resumes_at)}`
+        : `Paused${count}: Codex usage limit reached; the resume time is not known`;
+    }
     case "failed":
       return state.flow
         ? `Analysis of flow “${state.flow.title}” failed`
@@ -46,17 +48,17 @@ const BAR_LOOK: Record<AnalysisState["state"], string> = {
   cancelled: "border-border",
 };
 
-// Planning and paused have no count: the bar is indeterminate (striped; planning pulses unless motion is reduced).
+// Planning, and paused while planning, have no count: the bar is indeterminate (striped; planning pulses unless
+// motion is reduced). Paused with a count is striped too, filled to the flows analysed.
 const STRIPES = {
   planning: "repeating-linear-gradient(135deg, var(--color-accent) 0 8px, var(--color-accent-bg) 8px 16px)",
   paused: "repeating-linear-gradient(135deg, var(--color-med-bd) 0 6px, var(--color-med-bg) 6px 12px)",
 };
 
 function Bar({ state }: { state: AnalysisState }) {
-  // TODO(WP3-PIPE): count paused too ("Paused, k of n") once `AnalysisState.paused` carries done/total.
   const counted =
-    state.state === "running"
-      ? { now: state.done, max: state.total }
+    state.state === "running" || (state.state === "paused" && state.total !== null)
+      ? { now: state.done, max: state.total ?? 0 }
       : state.state === "finished"
         ? { now: state.total, max: state.total }
         : null;

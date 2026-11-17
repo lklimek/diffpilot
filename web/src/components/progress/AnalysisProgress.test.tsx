@@ -47,14 +47,21 @@ describe("AnalysisProgress (brief §4.2)", () => {
   it("paused: usage limit with the resume time", () => {
     const resumes = new Date();
     resumes.setHours(23, 59, 0, 0);
-    show({ state: "paused", resumes_at: resumes.toISOString() });
-    expect(screen.getByText("Paused: Codex usage limit reached, resumes at 23:59")).toBeVisible();
+    show({ state: "paused", resumes_at: resumes.toISOString(), done: 2, total: 5 });
+    expect(
+      screen.getByText("Paused, 2 of 5 flows analysed: Codex usage limit reached, resumes at 23:59"),
+    ).toBeVisible();
+    expect(bar()).toHaveAttribute("aria-valuenow", "2");
+    expect(bar()).toHaveAttribute("aria-valuemax", "5");
+    const [filled, empty] = Array.from(bar().children) as HTMLElement[];
+    expect([filled!.style.flexGrow, empty!.style.flexGrow]).toEqual(["2", "3"]);
     expect(buttons()).toEqual(["Cancel analysis"]);
   });
 
-  it("paused without a known resume time says so", () => {
-    show({ state: "paused", resumes_at: null });
+  it("paused while planning: no count, indeterminate bar", () => {
+    show({ state: "paused", resumes_at: null, done: 0, total: null });
     expect(screen.getByText("Paused: Codex usage limit reached; the resume time is not known")).toBeVisible();
+    expect(bar()).not.toHaveAttribute("aria-valuenow");
   });
 
   it("failed in a flow: names the flow, shows the plain description, Retry and Cancel", async () => {
@@ -97,7 +104,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
     const states: AnalysisState[] = [
       { state: "planning" },
       { state: "running", done: 1, total: 3 },
-      { state: "paused", resumes_at: null },
+      { state: "paused", resumes_at: null, done: 1, total: 3 },
       { state: "failed", flow: null, message: "Failed." },
       { state: "finished", total: 3 },
     ];

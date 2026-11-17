@@ -132,9 +132,15 @@ impl StateColumns {
                 columns.flows_done = *done;
                 columns.flows_total = Some(*total);
             }
-            AnalysisState::Paused { resumes_at } => {
+            AnalysisState::Paused {
+                resumes_at,
+                done,
+                total,
+            } => {
                 columns.state = "paused";
                 columns.paused_until = resumes_at.map(ts);
+                columns.flows_done = *done;
+                columns.flows_total = *total;
             }
             AnalysisState::Failed { flow, message } => {
                 columns.state = "failed";
@@ -169,6 +175,8 @@ fn state_from_row(row: &SqliteRow) -> Result<AnalysisState, DbError> {
             total: total.ok_or(corrupt)?,
         },
         "paused" => AnalysisState::Paused {
+            done: row.try_get("flows_done")?,
+            total,
             resumes_at: row
                 .try_get::<Option<String>, _>("paused_until")?
                 .map(|at| parse_ts(&at, "analyses.paused_until"))
@@ -676,10 +684,19 @@ mod tests {
             (
                 AnalysisState::Paused {
                     resumes_at: Some(at(30)),
+                    done: 2,
+                    total: Some(5),
                 },
                 false,
             ),
-            (AnalysisState::Paused { resumes_at: None }, false),
+            (
+                AnalysisState::Paused {
+                    resumes_at: None,
+                    done: 0,
+                    total: None,
+                },
+                false,
+            ),
             (
                 AnalysisState::Failed {
                     flow: Some(FlowRef {

@@ -58,7 +58,7 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
   it("paused: usage limit and resume time", async () => {
     const resumes = new Date();
     resumes.setHours(23, 58, 0, 0);
-    await showAt({ state: "paused", resumes_at: resumes.toISOString() });
+    await showAt({ state: "paused", resumes_at: resumes.toISOString(), done: 0, total: null });
     expect(screen.getByText("Paused: Codex usage limit reached, resumes at 23:58")).toBeVisible();
   });
 

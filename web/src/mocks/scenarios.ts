@@ -33,7 +33,7 @@ export const REPO_SETTINGS: RepoSettings = {
     { kind: "line_regex", pattern: "^\\s*//", category: "docs_comments" },
   ],
   related_repos: [{ owner: "acme", name: "node-sdk" }],
-  project_profile: { sources: ["repository_file"] },
+  project_profile: { sources: ["repository_file"], memcan: "not_checked" },
 };
 
 interface Scenario {
@@ -142,8 +142,8 @@ const SCENARIOS = {
   },
   planning: { analysis: { state: "planning" } },
   running: { analysis: { state: "running", done: 2, total: 5 } },
-  paused: { analysis: { state: "paused", resumes_at: "2026-11-17T14:20:00Z" } },
-  "paused-unknown": { analysis: { state: "paused", resumes_at: null } },
+  paused: { analysis: { state: "paused", resumes_at: "2026-11-17T14:20:00Z", done: 2, total: 5 } },
+  "paused-unknown": { analysis: { state: "paused", resumes_at: null, done: 0, total: null } },
   failed: {
     analysis: {
       state: "failed",
@@ -171,7 +171,11 @@ const SCENARIOS = {
   xss: { tour: withXss, questions: xssQuestions },
   "llm-unknown": {
     settings: { ...SETTINGS, llm_status: null, language: "pl" },
-    repoSettings: { ...REPO_SETTINGS, related_repos: [], project_profile: { sources: [] } },
+    repoSettings: {
+      ...REPO_SETTINGS,
+      related_repos: [],
+      project_profile: { sources: [], memcan: "checked" },
+    },
   },
 } satisfies Record<string, Scenario>;
 

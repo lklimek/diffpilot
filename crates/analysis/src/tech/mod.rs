@@ -133,7 +133,7 @@ impl TechPlugin for Generic {
 
 /// Line rule of the `generic` plugin: comment-only lines (a run of changed lines whose non-blank lines all match),
 /// decided by the Rust compiler's lexer over the whole file; other languages stay with the agent.
-pub const LINE_COMMENT_RULE: &str = r"^\s*//";
+pub const LINE_COMMENT_RULE: &str = "comment-only lines (Rust, by the compiler's lexer)";
 /// Rule of a generated-file header in the first lines.
 pub const GENERATED_HEADER_RULE: &str = "header: Code generated … DO NOT EDIT / @generated";
 /// Lines searched for a generated-file header.

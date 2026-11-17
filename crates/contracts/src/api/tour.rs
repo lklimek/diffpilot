@@ -117,13 +117,29 @@ pub struct Counters {
     pub lines_removed_from_tests: u32,
     /// Names of changed dependencies.
     pub dependencies_changed: Vec<String>,
+    /// Changed dependency files whose dependencies were not checked (other ecosystems, unreadable or unparsable
+    /// files); their changes are not counted in `dependencies_changed`.
+    pub dependency_files_not_checked: Vec<String>,
 }
 
-/// Sources of the project profile; empty means no profile (ratings are component-level).
+/// Sources of the project profile; empty with MemCan `checked` means no profile (ratings are component-level).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ProjectProfileStatus {
     /// Where the profile came from.
     pub sources: Vec<ProfileSource>,
+    /// Whether MemCan was searched for a `type: project-profile` memory; `not_checked` means a MemCan profile
+    /// may exist that `sources` does not list.
+    pub memcan: SourceCheck,
+}
+
+/// Whether a source was checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceCheck {
+    /// The source was read.
+    Checked,
+    /// The source was not read; nothing is claimed about it.
+    NotChecked,
 }
 
 /// A source of the project profile.

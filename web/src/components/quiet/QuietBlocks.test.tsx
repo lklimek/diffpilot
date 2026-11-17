@@ -99,7 +99,7 @@ describe("NotAnalysedBlock", () => {
     expect(within(block).getByText("classified by path")).toBeInTheDocument();
     expect(within(block).getByText("classified by line rule")).toBeInTheDocument();
     expect(block).toHaveTextContent("Recognised by file path and line rule, no LLM.");
-    expect(block).toHaveTextContent("^\\s*//");
+    expect(block).toHaveTextContent("comment-only lines (Rust, by the compiler's lexer)");
     expect(block).not.toHaveTextContent(/removed from tests|dependencies changed/);
   });
 

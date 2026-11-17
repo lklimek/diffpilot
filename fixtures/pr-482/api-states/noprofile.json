@@ -3,7 +3,8 @@
     "pr_context": {
       "facts": {
         "project_profile": {
-          "sources": []
+          "sources": [],
+          "memcan": "checked"
         }
       }
     }

@@ -25,6 +25,13 @@ describe("deterministic badges", () => {
     expectTrustWording(container.textContent ?? "");
   });
 
+  it("names a binary file as git's content check, without the green tick", () => {
+    render(<ProvenanceBadge badge="binary_content" />);
+    const badge = screen.getByText("binary file");
+    expect(badge).toHaveAttribute("data-badge", "binary_content");
+    expect(badge).toHaveAccessibleDescription("Git treats this file as binary; it is not shown or analysed.");
+  });
+
   it("says one line differs in the singular", () => {
     render(<DifferingLinesBadge count={1} />);
     expect(screen.getByText("≠ 1 line differs")).toBeInTheDocument();
