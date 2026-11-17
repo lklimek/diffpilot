@@ -121,6 +121,66 @@ pub async fn checkout(
     .await
 }
 
+/// Makes `checkout` (a plain repository, created when absent) hold `reference` of `url` at its tip, checked
+/// out detached; returns the commit.
+pub async fn sync_ref(checkout: &Path, url: &str, reference: &str) -> Result<String, GitError> {
+    if reference.starts_with('-')
+        || reference.is_empty()
+        || !reference
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._/-".contains(&byte))
+    {
+        return Err(GitError::InvalidCommit(reference.to_owned()));
+    }
+    if !checkout.join(".git").exists() {
+        git("init", None, &[os("init"), os("--quiet"), checkout.into()]).await?;
+    }
+    git(
+        "ref fetch",
+        Some(checkout),
+        &[
+            os("fetch"),
+            os("--quiet"),
+            os("--no-tags"),
+            os("--no-recurse-submodules"),
+            os("--depth=1"),
+            os("--"),
+            os(url),
+            os(reference),
+        ],
+    )
+    .await?;
+    git(
+        "ref checkout",
+        Some(checkout),
+        &[
+            os("-c"),
+            os("advice.detachedHead=false"),
+            os("checkout"),
+            os("--quiet"),
+            os("--force"),
+            os("--detach"),
+            os("FETCH_HEAD"),
+        ],
+    )
+    .await?;
+    let mut command = command(Some(checkout));
+    command.args(["rev-parse", "HEAD"]);
+    let output = command
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await?;
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || !is_object_id(&commit) {
+        return Err(GitError::Failed {
+            step: "rev-parse",
+            status: output.status,
+        });
+    }
+    Ok(commit)
+}
+
 async fn has_commits(mirror: &Path, commits: &[&str]) -> Result<bool, GitError> {
     for commit in commits {
         let mut command = command(Some(mirror));

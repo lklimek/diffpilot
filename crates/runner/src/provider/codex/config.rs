@@ -1,8 +1,37 @@
-//! The generated per-job `config.toml` (S1a lean config, ADR-002, threat model T3c, T5, T6): sandbox off (T1–T4
-//! compensate), no project docs, hooks, plugins, analytics, sub-agents or bundled skills; the project is never
-//! trusted.
+//! The generated per-job `config.toml` (S1a lean config, ADR-002, ADR-005, S5, S6, threat model T2, T3c, T5,
+//! T6): sandbox off (T1–T4 compensate), no project docs, hooks, plugins, analytics, sub-agents or bundled
+//! skills; the project is never trusted. The job turn gets the MCP servers its access allows: the official
+//! `github-mcp-server` read-only with the job's installation token in that server's environment only, and
+//! MemCan with its bearer in a static header (never in Codex's environment); the compaction turn gets none.
 
+use std::path::Path;
+
+use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint};
 use contracts::job::spec::{ModelChoice, ReasoningEffort};
+
+/// Tools of `github-mcp-server` the agent is offered (S5): reads of pull requests, issues, code and commits.
+pub(crate) const GITHUB_TOOLS: [&str; 10] = [
+    "pull_request_read",
+    "issue_read",
+    "list_issues",
+    "list_pull_requests",
+    "search_issues",
+    "search_pull_requests",
+    "search_code",
+    "get_file_contents",
+    "list_commits",
+    "get_commit",
+];
+/// MemCan tools the model is offered: search and `add_memory` (R6a; defence in depth only, AR-1).
+pub(crate) const MEMCAN_TOOLS: [&str; 5] = [
+    "search",
+    "search_memories",
+    "search_code",
+    "search_standards",
+    "add_memory",
+];
+/// Variables Codex forwards from its own environment to `github-mcp-server` (S6 finding 10).
+const GITHUB_PROXY_VARS: [&str; 4] = ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
 
 /// What the configuration is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -13,14 +42,21 @@ pub(crate) enum Purpose {
     Compaction,
 }
 
-/// The per-job configuration for `purpose`.
-pub(crate) fn config_toml(model: &ModelChoice, _purpose: Purpose) -> String {
+/// The per-job configuration for `purpose`; `github_mcp` is the `github-mcp-server` binary and `no_proxy` the
+/// hosts the agent reaches without the egress proxy.
+pub(crate) fn config_toml(
+    model: &ModelChoice,
+    purpose: Purpose,
+    access: &AgentAccess,
+    github_mcp: &Path,
+    no_proxy: &str,
+) -> String {
     let effort = match model.reasoning_effort {
         ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
     };
-    format!(
+    let mut config = format!(
         r#"model = {model}
 model_reasoning_effort = "{effort}"
 sandbox_mode = "danger-full-access"
@@ -48,7 +84,86 @@ daemon_auto_start = false
 multi_agent = false
 "#,
         model = toml_string(&model.model),
+    );
+    if purpose == Purpose::Compaction {
+        return config;
+    }
+    if let Some(token) = &access.github {
+        config.push_str(&github_server(token, github_mcp));
+    }
+    if let Some(memcan) = &access.memcan {
+        match memcan_url(&memcan.url, no_proxy) {
+            Some(url) => config.push_str(&memcan_server(url, memcan)),
+            None => tracing::error!(
+                "the MemCan URL is not an http(s) URL outside NO_PROXY; the job runs without MemCan; check SR_MEMCAN_URL"
+            ),
+        }
+    }
+    config
+}
+
+/// `github-mcp-server` read-only with a server-side tool allow-list and the same list in Codex (S5); the token
+/// only in its own environment (T2, T3c).
+fn github_server(token: &InstallationToken, binary: &Path) -> String {
+    let tools = GITHUB_TOOLS.join(",");
+    format!(
+        r#"
+[mcp_servers.github]
+command = {command}
+args = ["stdio", "--read-only", {tools_arg}]
+env = {{ GITHUB_PERSONAL_ACCESS_TOKEN = {token} }}
+env_vars = {env_vars}
+enabled_tools = {enabled}
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+required = true
+"#,
+        command = toml_string(&binary.to_string_lossy()),
+        tools_arg = toml_string(&format!("--tools={tools}")),
+        token = toml_string(token.token.expose()),
+        env_vars = toml_array(&GITHUB_PROXY_VARS),
+        enabled = toml_array(&GITHUB_TOOLS),
     )
+}
+
+/// MemCan over streamable HTTP through the egress proxy, bearer in a static header (T2, T6). Not required:
+/// an unreachable MemCan leaves the agent without memories instead of failing the job.
+fn memcan_server(url: &str, memcan: &McpHttpEndpoint) -> String {
+    format!(
+        r#"
+[mcp_servers.memcan]
+url = {url}
+http_headers = {{ Authorization = {bearer} }}
+enabled_tools = {enabled}
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+required = false
+"#,
+        url = toml_string(url),
+        bearer = toml_string(&format!("Bearer {}", memcan.token.expose())),
+        enabled = toml_array(&MEMCAN_TOOLS),
+    )
+}
+
+/// `url` if it is http(s) and its host is not reached around the proxy (`NO_PROXY` never holds MemCan, T2).
+fn memcan_url<'a>(url: &'a str, no_proxy: &str) -> Option<&'a str> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host_port = authority.rsplit('@').next()?;
+    let host = match host_port.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next()?,
+        None => host_port.split(':').next()?,
+    };
+    if host.is_empty()
+        || no_proxy
+            .split(',')
+            .any(|entry| entry.trim().eq_ignore_ascii_case(host))
+    {
+        return None;
+    }
+    Some(url)
 }
 
 /// A TOML basic string.
@@ -65,4 +180,169 @@ pub(crate) fn toml_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn toml_array(values: &[&str]) -> String {
+    let items: Vec<String> = values.iter().map(|value| toml_string(value)).collect();
+    format!("[{}]", items.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::Utc;
+    use contracts::common::RepoRef;
+    use contracts::job::access::Secret;
+
+    use super::*;
+
+    const NO_PROXY: &str = "localhost,127.0.0.1";
+    const GITHUB_CANARY: &str = "ghs_CONFIG_CANARY";
+    const MEMCAN_CANARY: &str = "memcan-CONFIG-CANARY";
+
+    fn model() -> ModelChoice {
+        ModelChoice {
+            model: "gpt-6.1-sol".to_owned(),
+            reasoning_effort: ReasoningEffort::High,
+        }
+    }
+
+    fn access(memcan_url: &str) -> AgentAccess {
+        AgentAccess {
+            github: Some(InstallationToken {
+                token: Secret::new(GITHUB_CANARY),
+                expires_at: Utc::now(),
+                repository: RepoRef {
+                    owner: "acme".to_owned(),
+                    name: "node-client".to_owned(),
+                },
+            }),
+            memcan: Some(McpHttpEndpoint {
+                url: memcan_url.to_owned(),
+                token: Secret::new(MEMCAN_CANARY),
+            }),
+        }
+    }
+
+    fn job_config(access: &AgentAccess) -> String {
+        config_toml(
+            &model(),
+            Purpose::Job,
+            access,
+            Path::new("/opt/github-mcp/github-mcp-server"),
+            NO_PROXY,
+        )
+    }
+
+    /// The MCP part of the config: everything from the first `[mcp_servers.` table.
+    fn mcp_part(config: &str) -> &str {
+        config
+            .find("\n[mcp_servers.")
+            .map_or("", |start| &config[start..])
+    }
+
+    #[test]
+    fn generated_config_has_only_github_read_only_and_memcan() {
+        let config = job_config(&access("http://agentic.lan:8190/mcp"));
+        let expected = r#"
+[mcp_servers.github]
+command = "/opt/github-mcp/github-mcp-server"
+args = ["stdio", "--read-only", "--tools=pull_request_read,issue_read,list_issues,list_pull_requests,search_issues,search_pull_requests,search_code,get_file_contents,list_commits,get_commit"]
+env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghs_CONFIG_CANARY" }
+env_vars = ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"]
+enabled_tools = ["pull_request_read", "issue_read", "list_issues", "list_pull_requests", "search_issues", "search_pull_requests", "search_code", "get_file_contents", "list_commits", "get_commit"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+required = true
+
+[mcp_servers.memcan]
+url = "http://agentic.lan:8190/mcp"
+http_headers = { Authorization = "Bearer memcan-CONFIG-CANARY" }
+enabled_tools = ["search", "search_memories", "search_code", "search_standards", "add_memory"]
+startup_timeout_sec = 20
+tool_timeout_sec = 60
+required = false
+"#;
+        assert_eq!(mcp_part(&config), expected);
+        assert_eq!(config.matches("[mcp_servers.").count(), 2);
+    }
+
+    #[test]
+    fn generated_config_lean() {
+        let config = job_config(&AgentAccess::default());
+        for line in [
+            "model = \"gpt-6.1-sol\"",
+            "model_reasoning_effort = \"high\"",
+            "sandbox_mode = \"danger-full-access\"",
+            "approval_policy = \"never\"",
+            "project_doc_max_bytes = 0",
+            "hooks = false",
+            "multi_agent = false",
+            "plugins = false",
+        ] {
+            assert!(config.lines().any(|l| l == line), "missing {line}");
+        }
+        assert!(config.contains("[skills.bundled]\nenabled = false"));
+        assert!(
+            !config.contains("trust_level"),
+            "the project is never trusted"
+        );
+        assert!(!config.contains("[projects"));
+    }
+
+    #[test]
+    fn uninstalled_repo_job_has_no_github_access() {
+        let mut access = access("http://agentic.lan:8190/mcp");
+        access.github = None;
+        let config = job_config(&access);
+        assert!(!config.contains("[mcp_servers.github]"));
+        assert!(!config.contains("github-mcp-server"));
+        assert!(config.contains("[mcp_servers.memcan]"));
+    }
+
+    #[test]
+    fn no_access_means_no_mcp_server() {
+        assert!(!job_config(&AgentAccess::default()).contains("mcp_servers"));
+    }
+
+    #[test]
+    fn compaction_config_has_no_mcp_server_and_no_secret() {
+        let config = config_toml(
+            &model(),
+            Purpose::Compaction,
+            &access("http://agentic.lan:8190/mcp"),
+            Path::new("/opt/github-mcp/github-mcp-server"),
+            NO_PROXY,
+        );
+        assert!(!config.contains("mcp_servers"));
+        assert!(!config.contains(GITHUB_CANARY) && !config.contains(MEMCAN_CANARY));
+    }
+
+    #[test]
+    fn memcan_not_in_no_proxy() {
+        for url in [
+            "http://localhost:8190/mcp",
+            "http://127.0.0.1:8190/mcp",
+            "http://user@LOCALHOST/mcp",
+            "file:///etc/passwd",
+            "http:///mcp",
+        ] {
+            let config = job_config(&access(url));
+            assert!(!config.contains("[mcp_servers.memcan]"), "{url}");
+            assert!(!config.contains(MEMCAN_CANARY), "{url}");
+        }
+        assert!(job_config(&access("https://[::1]:8190/mcp")).contains("[mcp_servers.memcan]"));
+    }
+
+    #[test]
+    fn values_are_toml_escaped() {
+        let mut access = access("http://agentic.lan:8190/mcp\"\n[mcp_servers.evil]");
+        access.github = None;
+        let config = job_config(&access);
+        assert!(!config.contains("\n[mcp_servers.evil]"), "{config}");
+    }
+
+    #[test]
+    fn toml_string_escapes_quotes_backslashes_and_controls() {
+        assert_eq!(toml_string("a\"b\\c\nd"), r#""a\"b\\c\u000Ad""#);
+    }
 }

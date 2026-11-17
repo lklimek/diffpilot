@@ -15,6 +15,7 @@ mod stream;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
+use std::os::unix::fs::DirBuilderExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -37,6 +38,7 @@ pub(crate) use stream::{CodexStream, Exit, usage_delta};
 
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
 use crate::scrub::Scrubber;
+use crate::skills::Skills;
 
 /// `PATH` of the agent environment; never the runner's own.
 pub const AGENT_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -53,6 +55,8 @@ const STDERR_TAIL_BYTES: usize = 4096;
 const EXIT_POLL: Duration = Duration::from_millis(50);
 /// How long stdout may stay open after Codex exited and its group was killed.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
+/// Where Codex discovers user skills, below the agent's `HOME` (S2).
+const SKILLS_ROOT: &str = ".agents/skills";
 /// Context size that makes the compaction turn compact before it answers (S1b finding 3, S7).
 const COMPACTION_TOKEN_LIMIT: u32 = 1000;
 /// The compaction turn's prompt; its answer is discarded.
@@ -73,6 +77,10 @@ pub struct CodexSettings {
     pub egress_proxy: Option<String>,
     /// How long Codex may take to stop after SIGTERM before its group is killed.
     pub term_grace: Duration,
+    /// The `github-mcp-server` binary started by Codex for jobs with an installation token.
+    pub github_mcp: PathBuf,
+    /// The claudius skills given to jobs that ask for them; `None` gives none.
+    pub skills: Option<Arc<Skills>>,
 }
 
 /// A running call: its current process group and when it was asked to stop.
@@ -145,7 +153,7 @@ impl CodexProvider {
             Some(thread) => session::restore(&call.session_dir, thread, &call.codex_home)?,
             None => Usage::default(),
         };
-        self.prepare(call).await?;
+        let skills_commit = self.prepare(call).await?;
         let invocation = resume.map_or(Invocation::New, Invocation::Resume);
         let (stream, exit) = self
             .exec(
@@ -230,7 +238,7 @@ impl CodexProvider {
             output,
             session_id,
             usage: usage_delta(before, compacted.unwrap_or(finished.cumulative_usage)),
-            skills_commit: None,
+            skills_commit,
         })
     }
 
@@ -275,9 +283,10 @@ impl CodexProvider {
             .is_some_and(|running| running.cancelled_at.is_some())
     }
 
-    /// Writes the config and output schema into the per-job `CODEX_HOME` and creates the agent's home and temp
-    /// directories inside the job directory.
-    async fn prepare(&self, call: &ProviderCall) -> Result<(), ProviderError> {
+    /// Writes the config and output schema into the per-job `CODEX_HOME`, creates the agent's home and temp
+    /// directories inside the job directory and copies the job's skills to `$HOME/.agents/skills` (S2).
+    /// Returns the claudius commit of the skills given.
+    async fn prepare(&self, call: &ProviderCall) -> Result<Option<String>, ProviderError> {
         self.write_config(call, Purpose::Job)?;
         let schema = serde_json::to_vec(&call.output_schema).map_err(io::Error::other)?;
         replace_private(&call.codex_home.join(SCHEMA_FILE), &schema)?;
@@ -289,15 +298,40 @@ impl CodexProvider {
                 _ => {}
             }
         }
-        Ok(())
+        let Some(skills) = self
+            .settings
+            .skills
+            .as_ref()
+            .filter(|_| !call.skills.is_empty())
+        else {
+            return Ok(None);
+        };
+        let Some(given) = skills.files(&call.skills)? else {
+            tracing::warn!(job = %call.job_id, "no claudius checkout yet; the job runs without skills");
+            return Ok(None);
+        };
+        let root = agent_home(&call.job_dir).join(SKILLS_ROOT);
+        for (rel, contents) in &given.files {
+            let path = root.join(rel);
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(path.parent().unwrap_or(&root))?;
+            replace_private(&path, contents)?;
+        }
+        Ok(Some(given.commit))
     }
 
     /// (Re)generates `config.toml`, replacing whatever the agent may have left there.
     fn write_config(&self, call: &ProviderCall, purpose: Purpose) -> io::Result<()> {
-        replace_private(
-            &call.codex_home.join(CONFIG_FILE),
-            config::config_toml(&call.model, purpose).as_bytes(),
-        )
+        let config = config::config_toml(
+            &call.model,
+            purpose,
+            &call.access,
+            &self.settings.github_mcp,
+            AGENT_NO_PROXY,
+        );
+        replace_private(&call.codex_home.join(CONFIG_FILE), config.as_bytes())
     }
 
     /// The `codex exec` command: fixed flags and paths only (no secret, no prompt in argv), cwd = job dir

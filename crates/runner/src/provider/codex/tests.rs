@@ -149,6 +149,8 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
         credential: Arc::new(CodexCredential::new(master_auth.clone())),
         egress_proxy: Some(PROXY.to_owned()),
         term_grace: Duration::from_secs(10),
+        github_mcp: PathBuf::from("/opt/github-mcp/github-mcp-server"),
+        skills: None,
     });
     Harness {
         _dir: dir,
@@ -287,6 +289,11 @@ async fn codex_env_has_no_secret() {
     assert_eq!(
         value("TMPDIR").map(PathBuf::from),
         Some(h.call.job_dir.join("tmp"))
+    );
+    assert_eq!(
+        value("PWD").map(PathBuf::from),
+        Some(h.call.job_dir.clone()),
+        "Codex runs above the checkout, so repository config is never discovered (T5)"
     );
 }
 
@@ -627,11 +634,6 @@ async fn missing_binary_is_an_io_error() {
     assert!(matches!(result, Err(ProviderError::Io(_))), "{result:?}");
 }
 
-#[test]
-fn toml_string_escapes_quotes_backslashes_and_controls() {
-    assert_eq!(config::toml_string("a\"b\\c\nd"), r#""a\"b\\c\u000Ad""#);
-}
-
 #[tokio::test]
 async fn oversized_line_is_skipped_and_the_next_one_read() {
     let mut input = vec![b'x'; MAX_LINE_BYTES + 1];
@@ -835,8 +837,16 @@ async fn config_regenerated_before_compaction() {
     assert!(!compaction.contains("evil"), "{compaction}");
     assert_eq!(
         compaction,
-        config::config_toml(&h.call.model, Purpose::Compaction)
+        config::config_toml(
+            &h.call.model,
+            Purpose::Compaction,
+            &h.call.access,
+            &h.provider.settings.github_mcp,
+            AGENT_NO_PROXY
+        )
     );
+    let job = child_file(&h, "child-config.toml");
+    assert!(job.contains("[mcp_servers.github]") && job.contains("[mcp_servers.memcan]"));
 }
 
 #[tokio::test]
@@ -1014,5 +1024,60 @@ async fn golden_resumed_session_with_unknown_events() {
         actual,
         fs::read_to_string(&golden).expect("golden file; run with UPDATE_GOLDEN=1"),
         "normalised events differ from the golden file"
+    );
+}
+
+#[tokio::test]
+async fn allowed_skills_are_copied_into_the_agent_home_with_their_commit() {
+    let mut h = harness("plan.jsonl", 0);
+    let repo = h._dir.path().join("claudius");
+    fs::create_dir_all(repo.join("skills/severity")).unwrap();
+    fs::create_dir_all(repo.join("skills/delegate")).unwrap();
+    fs::write(repo.join("skills/severity/SKILL.md"), "severity skill\n").unwrap();
+    fs::write(repo.join("skills/delegate/SKILL.md"), "delegate skill\n").unwrap();
+    for args in [
+        &["init", "--quiet", "-b", "main"][..],
+        &["add", "-A"],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--quiet",
+            "-m",
+            "s",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let skills = Arc::new(Skills::new(
+        format!("file://{}", repo.display()),
+        "main".to_owned(),
+        h._dir.path().join("checkout"),
+        vec!["severity".to_owned()],
+        Duration::from_secs(3600),
+    ));
+    skills.refresh_if_due().await;
+    h.provider.settings.skills = Some(skills);
+    h.call.skills = vec!["severity".to_owned(), "delegate".to_owned()];
+    let outcome = run(&h).await.0.expect("success");
+    assert_eq!(outcome.skills_commit.as_deref().map(str::len), Some(40));
+    let root = h.call.job_dir.join("home/.agents/skills");
+    assert_eq!(
+        fs::read_to_string(root.join("severity/SKILL.md")).unwrap(),
+        "severity skill\n"
+    );
+    assert!(
+        !root.join("delegate").exists(),
+        "skills outside the allow-list are never given"
     );
 }

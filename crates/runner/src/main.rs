@@ -12,6 +12,7 @@ use runner::config::{Config, ConfigError, ProviderKind};
 use runner::execute::Executor;
 use runner::provider::LlmProvider;
 use runner::provider::codex::{CodexCredential, CodexProvider, CodexSettings};
+use runner::skills::Skills;
 use runner::worker::{CredentialCheck, Timing, Worker};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
@@ -64,6 +65,13 @@ async fn run() -> Result<(), StartError> {
         private_dir(dir).await?;
     }
     remove_leftover_work_dirs(&dirs.work).await?;
+    let skills = Arc::new(Skills::new(
+        config.claudius_url.clone(),
+        config.claudius_ref.clone(),
+        config.claudius_checkout(),
+        config.skills.clone(),
+        config.claudius_refresh,
+    ));
     let (provider, credential_check): (Arc<dyn LlmProvider>, CredentialCheck) =
         match config.provider {
             ProviderKind::Codex => {
@@ -74,6 +82,8 @@ async fn run() -> Result<(), StartError> {
                     credential: Arc::clone(&credential),
                     egress_proxy: config.egress_proxy.clone(),
                     term_grace: Timing::v1().term_grace,
+                    github_mcp: config.github_mcp_bin.clone(),
+                    skills: Some(Arc::clone(&skills)),
                 });
                 (Arc::new(provider), Arc::new(move || credential.usable()))
             }
@@ -102,6 +112,7 @@ async fn run() -> Result<(), StartError> {
         credential_check,
     )
     .with_session_retention(config.session_retention)
+    .with_skills(skills)
     .run(shutdown_signal())
     .await;
     tracing::info!("runner stopped");

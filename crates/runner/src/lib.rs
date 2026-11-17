@@ -7,6 +7,7 @@ pub mod git;
 pub mod provider;
 pub mod scrub;
 pub mod sessions;
+pub mod skills;
 pub mod worker;
 
 #[cfg(test)]

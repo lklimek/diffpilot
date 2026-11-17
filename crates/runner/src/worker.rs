@@ -23,6 +23,7 @@ use crate::client::{ClientError, ServerClient};
 use crate::execute::{EventSink, Executor};
 use crate::provider::ProviderEvent;
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
+use crate::skills::Skills;
 
 /// Events buffered between `execute` and the loop.
 const EVENT_BUFFER: usize = 256;
@@ -166,6 +167,8 @@ pub struct Worker {
     /// How long an unused agent session is kept; `None` keeps them.
     session_retention: Option<Duration>,
     last_sweep: Option<Instant>,
+    /// The claudius skills, refreshed between jobs.
+    skills: Option<Arc<Skills>>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -197,7 +200,14 @@ impl Worker {
             dropped_sessions: Vec::new(),
             session_retention: None,
             last_sweep: None,
+            skills: None,
         }
+    }
+
+    /// Refreshes the claudius skills between jobs at their interval.
+    pub fn with_skills(mut self, skills: Arc<Skills>) -> Self {
+        self.skills = Some(skills);
+        self
     }
 
     /// Deletes agent sessions not used for `retention` (checked between jobs).
@@ -211,6 +221,12 @@ impl Worker {
         tokio::pin!(shutdown);
         loop {
             self.remove_expired_sessions();
+            if let Some(skills) = &self.skills {
+                tokio::select! {
+                    () = &mut shutdown => return,
+                    () = skills.refresh_if_due() => {}
+                }
+            }
             let polled = tokio::select! {
                 () = &mut shutdown => return,
                 polled = self.poll_once() => polled,
