@@ -8,15 +8,22 @@ use ts_rs::TS;
 use crate::common::LineSide;
 use crate::ids::{AnnotationId, FeedbackId, StepId};
 
-/// Body of `POST /api/v1/analyses/{id}/feedback`; one entry per user and target (later posts replace it).
+/// Body of `POST /api/v1/analyses/{id}/feedback`: one entry per user, target and value, so several values may
+/// coexist on a target; posting a value again replaces its note; `overrated` and `underrated` exclude each other
+/// (posting one removes the other). `missed_by_llm` is recorded only by the server.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FeedbackRequest {
     /// What the feedback is about.
     pub target: FeedbackTarget,
     /// The value.
     pub value: UserFeedbackValue,
-    /// Optional note.
+    /// Optional note, at most 2000 characters (`FeedbackRequest::MAX_NOTE_CHARS`).
     pub note: Option<String>,
+}
+
+impl FeedbackRequest {
+    /// Longest note accepted, in characters.
+    pub const MAX_NOTE_CHARS: usize = 2000;
 }
 
 /// What a feedback entry is about.

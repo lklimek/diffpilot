@@ -578,7 +578,9 @@ created_at: string, };
 export type FeedbackId = string;
 
 /**
- * Body of `POST /api/v1/analyses/{id}/feedback`; one entry per user and target (later posts replace it).
+ * Body of `POST /api/v1/analyses/{id}/feedback`: one entry per user, target and value, so several values may
+ * coexist on a target; posting a value again replaces its note; `overrated` and `underrated` exclude each other
+ * (posting one removes the other). `missed_by_llm` is recorded only by the server.
  */
 export type FeedbackRequest = {
 /**
@@ -590,7 +592,7 @@ target: FeedbackTarget,
  */
 value: UserFeedbackValue,
 /**
- * Optional note.
+ * Optional note, at most 2000 characters (`FeedbackRequest::MAX_NOTE_CHARS`).
  */
 note: string | null, };
 

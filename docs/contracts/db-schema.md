@@ -24,19 +24,22 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `job_events` | bounded activity log (last 500 per job) | PK `(job_id, attempt, seq)` |
 | `review_states` | ticks and last viewed block per user and analysis | – |
 | `questions` | Ask questions and answers | – |
-| `feedback` | one entry per (user, analysis, target); `revision` (+1 per replacement); `memcan_state` pending/written/failed of the current revision | `target_key`: step id, annotation id, or `<side>:<line>:<path>` for lines |
+| `feedback` | one entry per (user, analysis, target, value) (CCR-F1); `revision` (+1 per replacement or removal); `memcan_state` pending/written/failed of the current revision; `removed_at` marks a removed entry kept until MemCan deleted its memory | `target_key`: step id, annotation id, or `<side>:<line>:<path>` for lines; `overrated` / `underrated` exclusive per (user, analysis, target) |
 | `comment_requests` | pending-review idempotency: request hash + response per (user, key) | – |
 
 Every table except `tenants` and `users` has a `NOT NULL tenant_id` (schema test). `CHECK` lists mirror the
 closed contract enums (schema test compares them with the serde names).
 
 ## Feedback → MemCan
-The writer takes `pending_memcan` entries with their `revision`, writes them and acknowledges with
-`set_memcan_state(id, revision, state)`, which applies only if the revision is still current; a replacement
-made meanwhile stays pending (`MemcanAck::Superseded`) and is written next. The MemCan memory is keyed by the
-feedback id (metadata `feedback_id`, `revision`): the writer updates the existing memory of that id instead of
-adding a second one, and never overwrites a memory carrying a higher revision, so retries and reordered writes
-are idempotent and the newest correction wins (also for overrated / underrated calibration examples).
+The single writer (`server::memcan::writer`) takes `pending_memcan` entries (pending before failed, oldest first)
+with their `revision`, writes them and acknowledges with `set_memcan_state(id, revision, state)`, which applies
+only if the revision is still current; a replacement or removal made meanwhile stays pending
+(`MemcanAck::Superseded`) and is written next. The MemCan memory id is the feedback id: a live entry is stored
+with MemCan's `_import_records` (synchronous embed and upsert by id, no LLM rewriting; metadata `feedback_id`,
+`revision`), so retries are idempotent and the newest revision replaces the memory in place (also for
+overrated / underrated calibration examples); a removed entry's memory is deleted (`delete_memory`; "not found"
+counts as deleted) and the acknowledgement deletes the tombstone row. Sweeps run one after another in one
+writer, so an older revision is never written after a newer one. `written` means MemCan confirmed the write.
 
 ## Ownership
 Frozen cross-WP signatures (bodies return `NotImplemented` until filled): `jobs` (WP2-JOBS), `analyses`

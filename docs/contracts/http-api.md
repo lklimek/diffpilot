@@ -35,6 +35,7 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | GET | `/api/v1/analyses/{id}/questions` | session | – | `AskQuestion[]` |
 | POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` |
 | GET / POST | `/api/v1/analyses/{id}/feedback` | session / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
+| DELETE | `…/feedback/{feedback_id}` | session_csrf | – | 204 |
 | GET | `/api/v1/analyses/{id}/pending-review` | session | – | `PendingReview` |
 | POST | `/api/v1/analyses/{id}/pending-review/comments` | session_csrf | `CreateCommentRequest` | 201 `CreateCommentResponse` |
 | PATCH | `…/pending-review/comments/{comment_id}` | session_csrf | `UpdateCommentRequest` | `PendingComment` |
@@ -63,6 +64,15 @@ mapping, query rules and the endpoint × fixture-state inventory.
 - **No installation** (ADR-005 addendum): analysis still runs; `PrContextFacts.related_work_checked = false`
   (UI: "Related work: not checked"); commenting disabled.
 - **Idempotency**: `CreateCommentRequest.idempotency_key` per (user, key) returns the first response.
+- **Feedback** (CCR-F1): one entry per (user, analysis, target, value); several values may coexist on a target.
+  Posting a value again replaces its note (same id); `overrated` and `underrated` exclude each other (posting one
+  removes the other, one transaction); `DELETE …/feedback/{feedback_id}` removes one value of the user's own
+  entries (`not_found` otherwise). `missed_by_llm` is recorded only by the server (a comment on a changed line
+  without annotation) and rejected from clients (`invalid_request`, it is not a `UserFeedbackValue`). A step or
+  annotation target must exist in the analysis's flows, a line target needs a path and a line ≥ 1, the note at
+  most `FeedbackRequest::MAX_NOTE_CHARS` (2000) characters, else `invalid_request`; a blank note is stored as
+  none. Feedback is stored locally at once and written to MemCan asynchronously; no response claims it is in
+  MemCan.
 - **Settings**: `repos` lists the tenant's known repositories (from `repos`); each opens
   `/api/v1/repos/{owner}/{name}/settings`.
 - Ids in paths are UUIDs (`analysis`, `question`) or server ids (`f1.2` steps); unknown or another tenant's →
