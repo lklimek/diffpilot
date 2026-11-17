@@ -542,7 +542,7 @@ impl Jobs<'_> {
         events: &[JobEvent],
         lease_until: DateTime<Utc>,
     ) -> Result<EventsRecorded, DbError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = super::write_tx(self.pool).await?;
         let (current, _) = current(&mut tx, job).await?;
         current.accepts(attempt)?;
         let state = if events.is_empty() {
@@ -595,7 +595,7 @@ impl Jobs<'_> {
         output: &Value,
         lease_until: DateTime<Utc>,
     ) -> Result<OutputRecorded, DbError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = super::write_tx(self.pool).await?;
         let (current, row) = current(&mut tx, job).await?;
         current.accepts(attempt)?;
         let stored_attempt: Option<u32> = row.try_get("ready_output_attempt")?;
@@ -633,7 +633,7 @@ impl Jobs<'_> {
         result: &JobResult,
         now: DateTime<Utc>,
     ) -> Result<Completion, DbError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = super::write_tx(self.pool).await?;
         let (current, row) = current(&mut tx, result.job_id).await?;
         let recorded_attempt: Option<u32> = row.try_get("result_attempt")?;
         if recorded_attempt == Some(result.attempt) {
@@ -704,7 +704,7 @@ impl Jobs<'_> {
         job: JobId,
         now: DateTime<Utc>,
     ) -> Result<JobState, DbError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = super::write_tx(self.pool).await?;
         let (current, _) = current(&mut tx, job).await?;
         match current.state {
             JobState::Queued | JobState::Paused => {
@@ -739,7 +739,7 @@ impl Jobs<'_> {
     /// hash; the caller revokes the attempt's installation token (see [`Jobs::github_tokens_to_revoke`]) and ends
     /// the executor stream.
     pub async fn expire_leases(&self, now: DateTime<Utc>) -> Result<Vec<ExpiredLease>, DbError> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = super::write_tx(self.pool).await?;
         let rows = sqlx::query(
             "SELECT id, state, attempt, max_attempts, cancel_requested FROM jobs
              WHERE state IN ('claimed', 'running') AND lease_expires_at < ?
@@ -940,7 +940,7 @@ impl Jobs<'_> {
         attempt: u32,
         after_seq: u32,
     ) -> Result<JobSnapshot, DbError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::read_tx(self.pool).await?;
         let row = sqlx::query(concat!(
             "SELECT ",
             job_columns!(),

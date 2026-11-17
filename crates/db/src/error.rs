@@ -31,6 +31,20 @@ pub enum DbError {
     Storage(#[from] StorageError),
 }
 
+impl DbError {
+    /// The SQLite (extended) result code of a database failure, e.g. `517` for `SQLITE_BUSY_SNAPSHOT`; for logs,
+    /// never carries data values.
+    pub fn sqlite_code(&self) -> Option<String> {
+        match self {
+            Self::Storage(StorageError(Inner::Sqlx(error))) => match error.as_ref() {
+                sqlx::Error::Database(database) => database.code().map(|code| code.into_owned()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
 /// Opaque database failure; no sqlx type is reachable through the public API (plan A2).
 pub struct StorageError(Inner);
 

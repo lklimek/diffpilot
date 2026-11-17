@@ -58,7 +58,7 @@ impl Users<'_> {
         now: DateTime<Utc>,
     ) -> Result<UserRecord, DbError> {
         let now = timestamp(now);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::write_tx(self.pool).await?;
         let row = sqlx::query(
             "INSERT INTO users (id, github_id, login, name, avatar_url, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?)

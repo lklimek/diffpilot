@@ -176,7 +176,7 @@ impl FeedbackRepo<'_> {
     ) -> Result<Feedback, DbError> {
         let (kind, key) = target_key(&feedback.target)?;
         let now = ts(now);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::write_tx(self.pool).await?;
         let row = sqlx::query(concat!(
             "INSERT INTO feedback (id, tenant_id, analysis_id, user_id, target_kind, target_key, value, note,
                  created_at, updated_at)
@@ -309,7 +309,7 @@ impl FeedbackRepo<'_> {
     ) -> Result<MemcanAck, DbError> {
         let id = id.to_string();
         let now = ts(now);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = super::write_tx(self.pool).await?;
         if let MemcanOutcome::Unknown { settles_at, .. } = outcome {
             sqlx::query(
                 "UPDATE feedback SET unsettled_until = MAX(COALESCE(unsettled_until, ''), ?) WHERE id = ?",

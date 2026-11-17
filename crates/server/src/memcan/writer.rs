@@ -224,7 +224,8 @@ pub async fn run_writer(db: Db, config: Arc<Config>) {
         nudged.as_mut().enable();
         let outcome = sweep(&db, &config.memcan, Utc::now()).await;
         if let Err(error) = &outcome {
-            tracing::warn!(%error, "MemCan writer could not read the feedback queue; it retries after a back-off");
+            tracing::warn!(%error, sqlite_code = ?error.sqlite_code(),
+                "MemCan writer could not read or update the feedback queue; it retries after a back-off");
         }
         let (wait, interruptible) = next_wait(&mut backoff, &outcome);
         if interruptible {
