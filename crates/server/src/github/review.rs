@@ -7,53 +7,78 @@ use contracts::api::comments::{CommentKind, PendingComment};
 use contracts::common::{LineSide, PrRef};
 use secrecy::SecretString;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use url::Url;
 
 use crate::config::GithubConfig;
-use crate::github::graphql::{self, GraphqlError};
+use crate::github::graphql::{self, GraphqlError, GraphqlErrorType};
 use crate::github::threads::line_side;
 
 /// The pull request's node id and current head.
 pub const PULL_REQUEST_HEAD: &str = "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){\
 pullRequest(number:$pr){id headRefOid}}}";
 
-/// The user's pending reviews with their comments, and the first page of thread sides.
+/// The user's pending reviews with their first comments, and the first page of thread sides.
 pub const PENDING_REVIEW: &str = "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){\
 pullRequest(number:$pr){id headRefOid \
-reviews(states:[PENDING],first:10){nodes{id viewerDidAuthor \
-comments(first:100){totalCount nodes{id path line startLine subjectType body replyTo{id}}}}} \
+reviews(states:[PENDING],first:10){pageInfo{hasNextPage endCursor} nodes{id viewerDidAuthor \
+comments(first:100){pageInfo{hasNextPage endCursor} nodes{id path line startLine subjectType body replyTo{id}}}}} \
 reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{id diffSide comments(first:1){nodes{id}}}}}}}";
+
+/// Further pages of the user's pending reviews.
+pub const PENDING_REVIEWS_PAGE: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String!){\
+repository(owner:$o,name:$n){pullRequest(number:$pr){\
+reviews(states:[PENDING],first:10,after:$after){pageInfo{hasNextPage endCursor} nodes{id viewerDidAuthor \
+comments(first:100){pageInfo{hasNextPage endCursor} nodes{id path line startLine subjectType body replyTo{id}}}}}}}}";
+
+/// Further pages of one pending review's comments.
+pub const REVIEW_COMMENTS_PAGE: &str = "query($id:ID!,$after:String!){node(id:$id){\
+... on PullRequestReview{comments(first:100,after:$after){pageInfo{hasNextPage endCursor} \
+nodes{id path line startLine subjectType body replyTo{id}}}}}}";
+
+/// One review comment by id, with its state and where it belongs.
+pub const COMMENT_BY_ID: &str = "query($id:ID!){node(id:$id){__typename \
+... on PullRequestReviewComment{id path line startLine subjectType body state replyTo{id} \
+pullRequestReview{state viewerDidAuthor} pullRequest{number repository{name owner{login}}}}}}";
 
 /// Further pages of thread sides.
 pub const THREAD_SIDES: &str = "query($o:String!,$n:String!,$pr:Int!,$after:String!){repository(owner:$o,name:$n){\
 pullRequest(number:$pr){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} \
 nodes{id diffSide comments(first:1){nodes{id}}}}}}}";
 
-/// Adds a thread with its first comment to the user's pending review (created when missing).
+/// Adds a thread with its first comment to the user's pending review (created when missing); the comment's
+/// commits show which head GitHub placed it on.
 pub const ADD_THREAD: &str = "mutation($in:AddPullRequestReviewThreadInput!){addPullRequestReviewThread(input:$in){\
-thread{id path line startLine diffSide subjectType comments(first:1){nodes{id body}}}}}";
+thread{id path line startLine diffSide subjectType \
+comments(first:1){nodes{id body commit{oid} originalCommit{oid}}}}}}";
 
-/// Replaces the text of a pending comment.
+/// Replaces the text of a comment; answers whether it was still pending.
 pub const UPDATE_COMMENT: &str = "mutation($in:UpdatePullRequestReviewCommentInput!){\
-updatePullRequestReviewComment(input:$in){pullRequestReviewComment{id body}}}";
+updatePullRequestReviewComment(input:$in){pullRequestReviewComment{id body state pullRequestReview{state}}}}";
 
-/// Deletes a pending comment (the pending review disappears with its last comment).
+/// Deletes a comment (a pending review disappears with its last comment); answers the review's state.
 pub const DELETE_COMMENT: &str = "mutation($in:DeletePullRequestReviewCommentInput!){\
-deletePullRequestReviewComment(input:$in){pullRequestReviewComment{id}}}";
+deletePullRequestReviewComment(input:$in){pullRequestReview{state} pullRequestReviewComment{id}}}";
 
 /// Every GraphQL document of the pending-review flow.
-pub const DOCUMENTS: [&str; 6] = [
+pub const DOCUMENTS: [&str; 9] = [
     PULL_REQUEST_HEAD,
     PENDING_REVIEW,
+    PENDING_REVIEWS_PAGE,
+    REVIEW_COMMENTS_PAGE,
+    COMMENT_BY_ID,
     THREAD_SIDES,
     ADD_THREAD,
     UPDATE_COMMENT,
     DELETE_COMMENT,
 ];
 
-/// Thread-side pages read to place pending comments; at most this many after the first.
-const MAX_THREAD_PAGES: usize = 9;
+/// Read caps: pages of 10 pending reviews, of 100 comments per review, of 100 threads (for sides).
+pub const MAX_REVIEW_PAGES: usize = 5;
+/// See [`MAX_REVIEW_PAGES`]: up to 1000 comments per pending review.
+pub const MAX_COMMENT_PAGES: usize = 10;
+/// See [`MAX_REVIEW_PAGES`]: up to 1000 threads are searched for the sides of pending comments.
+pub const MAX_THREAD_PAGES: usize = 10;
 
 /// A pending-review call failed.
 #[derive(Debug, thiserror::Error)]
@@ -64,7 +89,7 @@ pub enum PendingReviewError {
     /// The pull request is not visible to the user.
     #[error("GitHub did not return the pull request")]
     MissingPullRequest,
-    /// GitHub answered `thread: null`: it silently rejected the position.
+    /// GitHub answered `thread: null` without errors: it silently rejected the position.
     #[error("GitHub rejected the comment position")]
     ThreadRejected,
 }
@@ -85,6 +110,26 @@ pub struct PendingComments {
     pub pull_request: PullRequestHead,
     /// The comments in review and comment order.
     pub comments: Vec<PendingComment>,
+    /// A read cap was hit: more pending reviews or comments exist than listed.
+    pub incomplete: bool,
+}
+
+/// A comment just added, with the commits GitHub placed it on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddedComment {
+    /// The comment.
+    pub comment: PendingComment,
+    /// `commit` and `originalCommit` of the comment, as far as GitHub reported them.
+    pub commits: Vec<String>,
+}
+
+/// Whether an edited or deleted comment still belonged to a pending review when GitHub applied the change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewState {
+    /// The review was still pending.
+    Pending,
+    /// The review had been published meanwhile; the change applied to the published comment.
+    Published,
 }
 
 /// Where a new thread goes.
@@ -148,7 +193,7 @@ fn linked_lines(body: &str, pr: &PrRef) -> (Option<u32>, Option<u32>) {
     parsed.unwrap_or((None, None))
 }
 
-fn variables(pr: &PrRef) -> serde_json::Value {
+fn variables(pr: &PrRef) -> Value {
     json!({"o": pr.repo.owner, "n": pr.repo.name, "pr": pr.number})
 }
 
@@ -198,8 +243,14 @@ pub async fn pull_request_head(
 struct PendingNode {
     id: String,
     head_ref_oid: String,
-    reviews: Nodes<ReviewNode>,
-    review_threads: ThreadPage,
+    reviews: Page<ReviewNode>,
+    review_threads: Page<ThreadSide>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewsNode {
+    reviews: Page<ReviewNode>,
 }
 
 #[derive(Deserialize)]
@@ -209,16 +260,31 @@ struct Nodes<T> {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ReviewNode {
-    viewer_did_author: bool,
-    comments: CommentConnection,
+struct Page<T> {
+    page_info: PageInfo,
+    nodes: Vec<T>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CommentConnection {
-    total_count: usize,
-    nodes: Vec<CommentNode>,
+struct PageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+impl PageInfo {
+    /// The cursor of the next page, if there is one.
+    fn next(self) -> Option<String> {
+        self.end_cursor.filter(|_| self.has_next_page)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewNode {
+    id: String,
+    viewer_did_author: bool,
+    comments: Page<CommentNode>,
 }
 
 #[derive(Deserialize)]
@@ -233,23 +299,18 @@ struct CommentNode {
     reply_to: Option<IdNode>,
 }
 
+impl CommentNode {
+    /// The id of the thread's first comment.
+    fn root(&self) -> &str {
+        self.reply_to
+            .as_ref()
+            .map_or(&self.id, |reply_to| &reply_to.id)
+    }
+}
+
 #[derive(Deserialize)]
 struct IdNode {
     id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ThreadPage {
-    page_info: PageInfo,
-    nodes: Vec<ThreadSide>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PageInfo {
-    has_next_page: bool,
-    end_cursor: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -263,7 +324,17 @@ struct ThreadSide {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ThreadsNode {
-    review_threads: ThreadPage,
+    review_threads: Page<ThreadSide>,
+}
+
+#[derive(Deserialize)]
+struct NodeData<N> {
+    node: Option<N>,
+}
+
+#[derive(Deserialize)]
+struct ReviewComments {
+    comments: Option<Page<CommentNode>>,
 }
 
 /// Thread id and diff side by the id of the thread's first comment.
@@ -289,11 +360,7 @@ impl ThreadIndex {
 }
 
 fn pending_comment(pr: &PrRef, comment: CommentNode, threads: &ThreadIndex) -> PendingComment {
-    let root = comment
-        .reply_to
-        .as_ref()
-        .map_or(comment.id.as_str(), |reply_to| reply_to.id.as_str());
-    let (thread_id, side) = threads.get(root).unwrap_or(("", None));
+    let (thread_id, side) = threads.get(comment.root()).unwrap_or(("", None));
     let thread_id = thread_id.to_owned();
     if comment.subject_type.as_deref() == Some("FILE") {
         let (start_line, line) = linked_lines(&comment.body, pr);
@@ -320,8 +387,50 @@ fn pending_comment(pr: &PrRef, comment: CommentNode, threads: &ThreadIndex) -> P
     }
 }
 
+/// Every comment of the user's pending reviews in `reviews`, following comment pages up to
+/// [`MAX_COMMENT_PAGES`]; returns whether a cap was hit.
+async fn review_comments(
+    config: &GithubConfig,
+    token: &SecretString,
+    reviews: Vec<ReviewNode>,
+    comments: &mut Vec<CommentNode>,
+) -> Result<bool, PendingReviewError> {
+    let mut capped = false;
+    for review in reviews
+        .into_iter()
+        .filter(|review| review.viewer_did_author)
+    {
+        comments.extend(review.comments.nodes);
+        let mut next = review.comments.page_info.next();
+        let mut pages = 1;
+        while let Some(after) = next {
+            if pages == MAX_COMMENT_PAGES {
+                capped = true;
+                break;
+            }
+            let data: NodeData<ReviewComments> = graphql::execute(
+                config,
+                token,
+                REVIEW_COMMENTS_PAGE,
+                json!({"id": review.id, "after": after}),
+            )
+            .await?;
+            let page = data
+                .node
+                .and_then(|node| node.comments)
+                .ok_or(GraphqlError::NoData)?;
+            comments.extend(page.nodes);
+            next = page.page_info.next();
+            pages += 1;
+        }
+    }
+    Ok(capped)
+}
+
 /// The user's pending comments on `pr`, merged over every pending review the user has there (concurrent first
-/// comments can create several, S3 run 80), with the pull request's node id and head.
+/// comments can create several, S3 run 80), with the pull request's node id and head. Reads at most
+/// [`MAX_REVIEW_PAGES`] × 10 reviews with [`MAX_COMMENT_PAGES`] × 100 comments each; beyond that the result
+/// is marked incomplete.
 pub async fn pending_comments(
     config: &GithubConfig,
     token: &SecretString,
@@ -331,40 +440,48 @@ pub async fn pending_comments(
         graphql::execute(config, token, PENDING_REVIEW, variables(pr)).await?;
     let node = data.pull_request()?;
     let mut comments: Vec<CommentNode> = Vec::new();
-    for review in node
-        .reviews
-        .nodes
-        .into_iter()
-        .filter(|r| r.viewer_did_author)
-    {
-        if review.comments.total_count > review.comments.nodes.len() {
-            tracing::warn!(
-                total = review.comments.total_count,
-                read = review.comments.nodes.len(),
-                "a pending review has more comments than are read; the list shows the first ones"
-            );
+    let mut incomplete = review_comments(config, token, node.reviews.nodes, &mut comments).await?;
+    let mut next = node.reviews.page_info.next();
+    let mut pages = 1;
+    while let Some(after) = next {
+        if pages == MAX_REVIEW_PAGES {
+            incomplete = true;
+            break;
         }
-        comments.extend(review.comments.nodes);
+        let mut vars = variables(pr);
+        vars["after"] = json!(after);
+        let data: RepositoryData<ReviewsNode> =
+            graphql::execute(config, token, PENDING_REVIEWS_PAGE, vars).await?;
+        let reviews = data.pull_request()?.reviews;
+        incomplete |= review_comments(config, token, reviews.nodes, &mut comments).await?;
+        next = reviews.page_info.next();
+        pages += 1;
+    }
+    if incomplete {
+        tracing::warn!(
+            read = comments.len(),
+            "the user has more pending comments than are read; the list is marked incomplete"
+        );
     }
     let mut threads = ThreadIndex::default();
-    let mut page_info = node.review_threads.page_info;
     threads.add(node.review_threads.nodes);
-    for _ in 0..MAX_THREAD_PAGES {
-        let unplaced = comments.iter().any(|comment| {
-            let root = comment.reply_to.as_ref().map_or(&comment.id, |r| &r.id);
-            threads.get(root).is_none()
-        });
-        let (true, true, Some(after)) = (unplaced, page_info.has_next_page, page_info.end_cursor)
-        else {
+    let mut next = node.review_threads.page_info.next();
+    let mut pages = 1;
+    while let Some(after) = next {
+        let unplaced = comments
+            .iter()
+            .any(|comment| threads.get(comment.root()).is_none());
+        if !unplaced || pages == MAX_THREAD_PAGES {
             break;
-        };
+        }
         let mut vars = variables(pr);
         vars["after"] = json!(after);
         let data: RepositoryData<ThreadsNode> =
             graphql::execute(config, token, THREAD_SIDES, vars).await?;
         let page = data.pull_request()?.review_threads;
-        page_info = page.page_info;
         threads.add(page.nodes);
+        next = page.page_info.next();
+        pages += 1;
     }
     Ok(PendingComments {
         pull_request: PullRequestHead {
@@ -375,7 +492,81 @@ pub async fn pending_comments(
             .into_iter()
             .map(|comment| pending_comment(pr, comment, &threads))
             .collect(),
+        incomplete,
     })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommentById {
+    #[serde(flatten)]
+    comment: CommentNode,
+    state: String,
+    pull_request_review: Option<ReviewOfComment>,
+    pull_request: PullOfComment,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewOfComment {
+    viewer_did_author: bool,
+}
+
+#[derive(Deserialize)]
+struct PullOfComment {
+    number: u32,
+    repository: RepositoryName,
+}
+
+#[derive(Deserialize)]
+struct RepositoryName {
+    name: String,
+    owner: IdLogin,
+}
+
+#[derive(Deserialize)]
+struct IdLogin {
+    login: String,
+}
+
+/// Comment `comment_id` when it is a pending comment of the user's on `pr` (used when the list hit its cap);
+/// its thread and side are not looked up.
+pub async fn pending_comment_by_id(
+    config: &GithubConfig,
+    token: &SecretString,
+    pr: &PrRef,
+    comment_id: &str,
+) -> Result<Option<PendingComment>, PendingReviewError> {
+    let data: NodeData<Value> =
+        match graphql::execute(config, token, COMMENT_BY_ID, json!({"id": comment_id})).await {
+            Ok(data) => data,
+            Err(GraphqlError::Rejected(GraphqlErrorType::NotFound)) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+    let Some(node) = data
+        .node
+        .filter(|node| node["__typename"] == "PullRequestReviewComment")
+    else {
+        return Ok(None);
+    };
+    let found: CommentById = serde_json::from_value(node).map_err(GraphqlError::Malformed)?;
+    let own_pending = found.state == "PENDING"
+        && found
+            .pull_request_review
+            .is_some_and(|review| review.viewer_did_author)
+        && found.pull_request.number == pr.number
+        && found
+            .pull_request
+            .repository
+            .owner
+            .login
+            .eq_ignore_ascii_case(&pr.repo.owner)
+        && found
+            .pull_request
+            .repository
+            .name
+            .eq_ignore_ascii_case(&pr.repo.name);
+    Ok(own_pending.then(|| pending_comment(pr, found.comment, &ThreadIndex::default())))
 }
 
 #[derive(Deserialize)]
@@ -398,17 +589,28 @@ struct AddedThread {
     start_line: Option<u32>,
     diff_side: Option<String>,
     subject_type: Option<String>,
-    comments: Nodes<AddedComment>,
+    comments: Nodes<AddedNode>,
 }
 
 #[derive(Deserialize)]
-struct AddedComment {
+#[serde(rename_all = "camelCase")]
+struct AddedNode {
     id: String,
     body: String,
+    #[serde(default)]
+    commit: Option<OidNode>,
+    #[serde(default)]
+    original_commit: Option<OidNode>,
+}
+
+#[derive(Deserialize)]
+struct OidNode {
+    oid: String,
 }
 
 /// Adds `body` as a new thread at `target` to the user's pending review on the pull request with node id
-/// `pull_request_id`; `thread: null` (GitHub's silent rejection) is [`PendingReviewError::ThreadRejected`].
+/// `pull_request_id`; `thread: null` without errors (GitHub's silent rejection) is
+/// [`PendingReviewError::ThreadRejected`].
 pub async fn add_thread(
     config: &GithubConfig,
     token: &SecretString,
@@ -416,7 +618,7 @@ pub async fn add_thread(
     pull_request_id: &str,
     target: &ThreadTarget,
     body: &str,
-) -> Result<PendingComment, PendingReviewError> {
+) -> Result<AddedComment, PendingReviewError> {
     let input = match target {
         ThreadTarget::Line {
             path,
@@ -442,30 +644,39 @@ pub async fn add_thread(
         .add_pull_request_review_thread
         .and_then(|payload| payload.thread)
         .ok_or(PendingReviewError::ThreadRejected)?;
-    let comment = thread
+    // A thread without its comment is an answer GitHub never gives; whether anything was written is unknown.
+    let added = thread
         .comments
         .nodes
         .into_iter()
         .next()
-        .ok_or(PendingReviewError::ThreadRejected)?;
+        .ok_or(GraphqlError::NoData)?;
+    let commits = [added.commit, added.original_commit]
+        .into_iter()
+        .flatten()
+        .map(|commit| commit.oid)
+        .collect();
     let mut threads = ThreadIndex::default();
     threads.0.push((
-        comment.id.clone(),
+        added.id.clone(),
         thread.id,
         line_side(thread.diff_side.as_deref()),
     ));
     let comment = CommentNode {
-        id: comment.id,
+        id: added.id,
         path: thread.path,
         line: thread.line,
         start_line: thread
             .start_line
             .filter(|start| Some(*start) != thread.line),
         subject_type: thread.subject_type,
-        body: comment.body,
+        body: added.body,
         reply_to: None,
     };
-    Ok(pending_comment(pr, comment, &threads))
+    Ok(AddedComment {
+        comment: pending_comment(pr, comment, &threads),
+        commits,
+    })
 }
 
 #[derive(Deserialize)]
@@ -477,16 +688,40 @@ struct UpdateData {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdatePayload {
-    pull_request_review_comment: Option<AddedComment>,
+    pull_request_review_comment: Option<UpdatedComment>,
 }
 
-/// Replaces the text of comment `comment_id`; returns the stored text.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatedComment {
+    body: String,
+    state: Option<String>,
+    pull_request_review: Option<StateNode>,
+}
+
+#[derive(Deserialize)]
+struct StateNode {
+    state: Option<String>,
+}
+
+/// Published unless GitHub reports the comment and its review as pending.
+fn review_state(comment_state: Option<&str>, review: Option<&StateNode>) -> ReviewState {
+    let review_pending = review.is_none_or(|review| review.state.as_deref() == Some("PENDING"));
+    if comment_state == Some("PENDING") && review_pending {
+        ReviewState::Pending
+    } else {
+        ReviewState::Published
+    }
+}
+
+/// Replaces the text of comment `comment_id`; returns the stored text and whether the comment was still
+/// pending (GitHub has no conditional mutation: a review published meanwhile receives the edit).
 pub async fn update_comment(
     config: &GithubConfig,
     token: &SecretString,
     comment_id: &str,
     body: &str,
-) -> Result<String, PendingReviewError> {
+) -> Result<(String, ReviewState), PendingReviewError> {
     let data: UpdateData = graphql::execute(
         config,
         token,
@@ -494,24 +729,36 @@ pub async fn update_comment(
         json!({"in": {"pullRequestReviewCommentId": comment_id, "body": body}}),
     )
     .await?;
-    data.update_pull_request_review_comment
+    let comment = data
+        .update_pull_request_review_comment
         .and_then(|payload| payload.pull_request_review_comment)
-        .map(|comment| comment.body)
-        .ok_or(PendingReviewError::Graphql(GraphqlError::NoData))
+        .ok_or(PendingReviewError::Graphql(GraphqlError::NoData))?;
+    let state = review_state(
+        comment.state.as_deref(),
+        comment.pull_request_review.as_ref(),
+    );
+    Ok((comment.body, state))
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeleteData {
-    delete_pull_request_review_comment: Option<serde_json::Value>,
+    delete_pull_request_review_comment: Option<DeletePayload>,
 }
 
-/// Deletes comment `comment_id`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeletePayload {
+    pull_request_review: Option<StateNode>,
+}
+
+/// Deletes comment `comment_id`; returns whether its review was still pending (a pending review that lost its
+/// last comment is gone, which counts as pending).
 pub async fn delete_comment(
     config: &GithubConfig,
     token: &SecretString,
     comment_id: &str,
-) -> Result<(), PendingReviewError> {
+) -> Result<ReviewState, PendingReviewError> {
     let data: DeleteData = graphql::execute(
         config,
         token,
@@ -519,9 +766,13 @@ pub async fn delete_comment(
         json!({"in": {"id": comment_id}}),
     )
     .await?;
-    data.delete_pull_request_review_comment
-        .map(|_| ())
-        .ok_or(PendingReviewError::Graphql(GraphqlError::NoData))
+    let payload = data
+        .delete_pull_request_review_comment
+        .ok_or(PendingReviewError::Graphql(GraphqlError::NoData))?;
+    Ok(review_state(
+        Some("PENDING"),
+        payload.pull_request_review.as_ref(),
+    ))
 }
 
 #[cfg(test)]
@@ -529,12 +780,10 @@ mod tests {
     use std::path::Path;
 
     use contracts::common::RepoRef;
-    use serde_json::Value;
     use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::github::graphql::GraphqlErrorType;
     use crate::github::graphql::tests::github_config;
     use crate::github::threads::REVIEW_THREADS;
 
@@ -628,6 +877,8 @@ mod tests {
         )
         .await
         .expect("comment");
+        assert_eq!(comment.commits, [HEAD], "the comment's commit is reported");
+        let comment = comment.comment;
         assert_eq!(comment.id, "PRRC_fixture482_c1");
         assert_eq!(comment.thread_id, "PRRT_fixture482_c1");
         assert_eq!(comment.kind, CommentKind::Line);
@@ -685,7 +936,8 @@ mod tests {
             "b",
         )
         .await
-        .expect("comment");
+        .expect("comment")
+        .comment;
         assert_eq!(comment.kind, CommentKind::File);
         assert_eq!(
             (comment.side, comment.start_line, comment.line),
@@ -724,28 +976,178 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn thread_null_with_an_execution_error_is_not_a_rejection() {
+        let server = MockServer::start().await;
+        answer(
+            &server,
+            json!({}),
+            json!({"data": {"addPullRequestReviewThread": {"thread": null}},
+                "errors": [{"type": "SOMETHING_NEW", "message": "field failed"}]}),
+        )
+        .await;
+        let target = ThreadTarget::File {
+            path: "src/rpc/client.rs".to_owned(),
+        };
+        let result = add_thread(
+            &github_config(&server),
+            &token(),
+            &pr(),
+            "PR_fixture482",
+            &target,
+            "b",
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(PendingReviewError::Graphql(GraphqlError::Rejected(
+                    GraphqlErrorType::Other
+                )))
+            ),
+            "the comment may exist: {result:?}"
+        );
+    }
+
+    fn comment_node(id: &str, extra: Value) -> Value {
+        let mut node = json!({"id": id, "path": "src/a.rs", "line": 5, "startLine": null,
+            "subjectType": "LINE", "body": "x", "replyTo": null});
+        if let (Value::Object(node), Value::Object(extra)) = (&mut node, extra) {
+            node.extend(extra);
+        }
+        node
+    }
+
+    fn page(nodes: Vec<Value>, next: Option<&str>) -> Value {
+        json!({"pageInfo": {"hasNextPage": next.is_some(), "endCursor": next}, "nodes": nodes})
+    }
+
+    fn comments(range: std::ops::Range<u32>) -> Vec<Value> {
+        range
+            .map(|n| comment_node(&format!("C{n}"), json!({})))
+            .collect()
+    }
+
+    fn pending_answer(reviews: Value) -> Value {
+        json!({"data": {"repository": {"pullRequest": {"id": "PR_1", "headRefOid": HEAD,
+            "reviews": reviews, "reviewThreads": page(vec![], None)}}}})
+    }
+
+    #[tokio::test]
+    async fn pending_comments_follow_comment_and_review_pages() {
+        let server = MockServer::start().await;
+        let review = |id: &str, comments: Value| json!({"id": id, "viewerDidAuthor": true, "comments": comments});
+        answer(
+            &server,
+            json!({"query": PENDING_REVIEW}),
+            pending_answer(page(
+                vec![review("R1", page(comments(0..100), Some("c1")))],
+                Some("r1"),
+            )),
+        )
+        .await;
+        answer(
+            &server,
+            json!({"query": REVIEW_COMMENTS_PAGE, "variables": {"id": "R1", "after": "c1"}}),
+            json!({"data": {"node": {"comments": page(comments(100..101), None)}}}),
+        )
+        .await;
+        answer(
+            &server,
+            json!({"query": PENDING_REVIEWS_PAGE, "variables": {"after": "r1"}}),
+            json!({"data": {"repository": {"pullRequest": {"reviews": page(
+                vec![review("R2", page(comments(101..102), None))], None)}}}}),
+        )
+        .await;
+        let pending = pending_comments(&github_config(&server), &token(), &pr())
+            .await
+            .expect("pending");
+        assert_eq!(pending.comments.len(), 102);
+        assert_eq!(
+            pending.comments[100].id, "C100",
+            "the 101st comment is listed"
+        );
+        assert!(!pending.incomplete);
+    }
+
+    #[tokio::test]
+    async fn pending_comments_beyond_the_cap_are_marked_incomplete() {
+        let server = MockServer::start().await;
+        let review = json!({"id": "R1", "viewerDidAuthor": true, "comments": page(comments(0..100), Some("c"))});
+        answer(
+            &server,
+            json!({"query": PENDING_REVIEW}),
+            pending_answer(page(vec![review], None)),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/api/graphql"))
+            .and(body_partial_json(json!({"query": REVIEW_COMMENTS_PAGE})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"data": {"node": {"comments": page(comments(0..100), Some("c"))}}}),
+            ))
+            .expect(u64::try_from(MAX_COMMENT_PAGES - 1).expect("pages"))
+            .mount(&server)
+            .await;
+        let pending = pending_comments(&github_config(&server), &token(), &pr())
+            .await
+            .expect("pending");
+        assert_eq!(pending.comments.len(), 100 * MAX_COMMENT_PAGES);
+        assert!(pending.incomplete, "a capped list is never complete");
+    }
+
+    #[tokio::test]
+    async fn one_comment_is_found_by_id_only_when_it_is_the_users_pending_one() {
+        let server = MockServer::start().await;
+        let node = |state: &str, own: bool, number: u32| {
+            let mut node = comment_node(
+                "C7",
+                json!({"__typename": "PullRequestReviewComment",
+                "state": state, "pullRequestReview": {"state": state, "viewerDidAuthor": own},
+                "pullRequest": {"number": number, "repository": {"name": "node-client", "owner": {"login": "acme"}}}}),
+            );
+            node["path"] = json!("src/a.rs");
+            json!({"data": {"node": node}})
+        };
+        let cases = [
+            ("C7", node("PENDING", true, 482), true),
+            ("C8", node("SUBMITTED", true, 482), false),
+            ("C9", node("PENDING", false, 482), false),
+            ("C10", node("PENDING", true, 481), false),
+            ("C11", json!({"data": {"node": null}}), false),
+        ];
+        for (id, response, _) in &cases {
+            answer(
+                &server,
+                json!({"query": COMMENT_BY_ID, "variables": {"id": id}}),
+                response.clone(),
+            )
+            .await;
+        }
+        for (id, _, own_pending) in cases {
+            let found = pending_comment_by_id(&github_config(&server), &token(), &pr(), id)
+                .await
+                .expect("lookup");
+            assert_eq!(found.is_some(), own_pending, "{id}");
+        }
+    }
+
+    #[tokio::test]
     async fn pending_comments_merge_reviews_and_place_sides() {
         let server = MockServer::start().await;
-        let comment = |id: &str, extra: Value| {
-            let mut node = json!({"id": id, "path": "src/a.rs", "line": 5, "startLine": null,
-                "subjectType": "LINE", "body": "x", "replyTo": null});
-            if let (Value::Object(node), Value::Object(extra)) = (&mut node, extra) {
-                node.extend(extra);
-            }
-            node
-        };
+        let comment = comment_node;
+        let none = json!({"hasNextPage": false, "endCursor": null});
         let link = format!("see https://github.com/acme/node-client/blob/{HEAD}/src/a.rs#L3-L4");
         let response = json!({"data": {"repository": {"pullRequest": {
             "id": "PR_1", "headRefOid": HEAD,
-            "reviews": {"nodes": [
-                {"id": "R1", "viewerDidAuthor": true, "comments": {"totalCount": 2, "nodes": [
+            "reviews": {"pageInfo": none, "nodes": [
+                {"id": "R1", "viewerDidAuthor": true, "comments": {"pageInfo": none, "nodes": [
                     comment("C1", json!({"startLine": 3, "line": 4})),
                     comment("C2", json!({"subjectType": "FILE", "line": null, "body": link})),
                 ]}},
-                {"id": "R2", "viewerDidAuthor": true, "comments": {"totalCount": 1, "nodes": [
+                {"id": "R2", "viewerDidAuthor": true, "comments": {"pageInfo": none, "nodes": [
                     comment("C3", json!({"replyTo": {"id": "X9"}})),
                 ]}},
-                {"id": "R3", "viewerDidAuthor": false, "comments": {"totalCount": 1, "nodes": [
+                {"id": "R3", "viewerDidAuthor": false, "comments": {"pageInfo": none, "nodes": [
                     comment("C4", json!({})),
                 ]}}
             ]},
@@ -818,12 +1220,14 @@ mod tests {
     async fn recorded_pending_list_is_read() {
         let server = MockServer::start().await;
         let mut response = recorded("pending-list-one.json");
-        response["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"] =
-            json!({"hasNextPage": false, "endCursor": null});
+        let none = json!({"hasNextPage": false, "endCursor": null});
+        response["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"] = none.clone();
+        response["data"]["repository"]["pullRequest"]["reviews"]["pageInfo"] = none.clone();
         for review in response["data"]["repository"]["pullRequest"]["reviews"]["nodes"]
             .as_array_mut()
             .expect("reviews")
         {
+            review["comments"]["pageInfo"] = none.clone();
             for comment in review["comments"]["nodes"]
                 .as_array_mut()
                 .expect("comments")
@@ -856,7 +1260,8 @@ mod tests {
             &server,
             json!({"variables": {"in": {"pullRequestReviewCommentId": "PRRC_fixture482_c1", "body": "new"}}}),
             json!({"data": {"updatePullRequestReviewComment": {"pullRequestReviewComment":
-                {"id": "PRRC_fixture482_c1", "body": "new"}}}}),
+                {"id": "PRRC_fixture482_c1", "body": "new", "state": "PENDING",
+                    "pullRequestReview": {"state": "PENDING"}}}}}),
         )
         .await;
         answer(
@@ -866,13 +1271,42 @@ mod tests {
         )
         .await;
         let config = github_config(&server);
-        let body = update_comment(&config, &token(), "PRRC_fixture482_c1", "new")
+        let updated = update_comment(&config, &token(), "PRRC_fixture482_c1", "new")
             .await
             .expect("update");
-        assert_eq!(body, "new");
-        delete_comment(&config, &token(), "PRRC_fixture482_c1")
+        assert_eq!(updated, ("new".to_owned(), ReviewState::Pending));
+        let deleted = delete_comment(&config, &token(), "PRRC_fixture482_c1")
             .await
             .expect("delete");
+        assert_eq!(deleted, ReviewState::Pending);
+    }
+
+    #[tokio::test]
+    async fn edit_or_delete_of_a_comment_published_meanwhile_reports_it() {
+        let server = MockServer::start().await;
+        answer(
+            &server,
+            json!({"query": UPDATE_COMMENT}),
+            json!({"data": {"updatePullRequestReviewComment": {"pullRequestReviewComment":
+                {"id": "C1", "body": "new", "state": "SUBMITTED", "pullRequestReview": {"state": "COMMENTED"}}}}}),
+        )
+        .await;
+        answer(
+            &server,
+            json!({"query": DELETE_COMMENT}),
+            json!({"data": {"deletePullRequestReviewComment": {
+                "pullRequestReview": {"state": "COMMENTED"}, "pullRequestReviewComment": {"id": "C1"}}}}),
+        )
+        .await;
+        let config = github_config(&server);
+        let (_, state) = update_comment(&config, &token(), "C1", "new")
+            .await
+            .expect("update");
+        assert_eq!(state, ReviewState::Published);
+        let state = delete_comment(&config, &token(), "C1")
+            .await
+            .expect("delete");
+        assert_eq!(state, ReviewState::Published);
     }
 
     #[tokio::test]

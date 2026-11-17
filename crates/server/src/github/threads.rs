@@ -1,7 +1,7 @@
 //! Existing review threads of a pull request (GraphQL, user token) for the Tour, and the check that a link
 //! GitHub reports points to `https://github.com` before it reaches the browser.
 
-use contracts::api::tour::GithubThread;
+use contracts::api::tour::{GithubThread, ThreadsStatus};
 use contracts::common::{LineSide, PrRef};
 use secrecy::SecretString;
 use serde::Deserialize;
@@ -11,8 +11,8 @@ use url::Url;
 use crate::config::GithubConfig;
 use crate::github::graphql::{self, GraphqlError};
 
-/// Threads are read in pages of 100; at most this many pages (1000 threads).
-const MAX_PAGES: usize = 10;
+/// Threads are read in pages of 100; at most this many pages (1000 threads). More threads: the list is partial.
+pub const MAX_PAGES: usize = 10;
 /// Characters of the first comment kept as the excerpt.
 const EXCERPT_CHARS: usize = 200;
 
@@ -160,7 +160,7 @@ pub async fn fetch(
     config: &GithubConfig,
     token: &SecretString,
     pr: &PrRef,
-) -> Result<Vec<GithubThread>, GraphqlError> {
+) -> Result<(Vec<GithubThread>, ThreadsStatus), GraphqlError> {
     let mut threads = Vec::new();
     let mut after: Option<String> = None;
     for _ in 0..MAX_PAGES {
@@ -184,14 +184,14 @@ pub async fn fetch(
                 has_next_page: true,
                 end_cursor: Some(cursor),
             } => after = Some(cursor),
-            _ => return Ok(threads),
+            _ => return Ok((threads, ThreadsStatus::Checked)),
         }
     }
     tracing::warn!(
         count = threads.len(),
-        "the pull request has more review threads than are read; the Tour lists the first ones"
+        "the pull request has more review threads than are read; the thread list is partial"
     );
-    Ok(threads)
+    Ok((threads, ThreadsStatus::Partial))
 }
 
 #[cfg(test)]
@@ -276,6 +276,8 @@ mod tests {
         )
         .await
         .expect("threads");
+        assert_eq!(threads.1, ThreadsStatus::Checked);
+        let threads = threads.0;
         let tour: Tour =
             serde_json::from_value(fixture("api-seed/default/tour.json")).expect("tour");
         let expected: Vec<GithubThread> = tour
@@ -355,6 +357,8 @@ mod tests {
         )
         .await
         .expect("threads");
+        assert_eq!(threads.1, ThreadsStatus::Checked);
+        let threads = threads.0;
         let ids: Vec<&str> = threads.iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["T1", "T3", "T4"], "pending and empty threads dropped");
         let t1 = &threads[0];
@@ -372,6 +376,31 @@ mod tests {
             threads[2].url, "https://github.com/acme/node-client/pull/482",
             "a non-GitHub link is replaced by the pull request page"
         );
+    }
+
+    #[tokio::test]
+    async fn threads_beyond_the_cap_are_partial() {
+        let server = MockServer::start().await;
+        let nodes: Vec<Value> = (0..100)
+            .map(|n| thread_node(&format!("T{n}"), json!({})))
+            .collect();
+        Mock::given(method("POST"))
+            .and(path("/api/graphql"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(thread_page(nodes, Some("more"))),
+            )
+            .expect(u64::try_from(MAX_PAGES).expect("pages"))
+            .mount(&server)
+            .await;
+        let (threads, status) = fetch(
+            &github_config(&server),
+            &SecretString::from("ghu_t"),
+            &fixture_pr(),
+        )
+        .await
+        .expect("threads");
+        assert_eq!(threads.len(), 100 * MAX_PAGES);
+        assert_eq!(status, ThreadsStatus::Partial, "never reported as complete");
     }
 
     #[test]

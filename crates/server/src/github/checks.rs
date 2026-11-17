@@ -18,7 +18,7 @@ use crate::github::threads::github_web_url;
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 const CLIENT_NAME: &str = "smart-review";
 const GITHUB_API_VERSION: &str = "2022-11-28";
-/// Check runs are read in pages of 100; at most this many pages.
+/// Check runs are read in pages of 100; at most this many pages (1000 runs). More runs: CI is not checked.
 const MAX_PAGES: u32 = 10;
 /// At most this many failing test names per check, each at most this many characters.
 const MAX_FAILING_TESTS: usize = 20;
@@ -71,23 +71,61 @@ fn outcome(run: &CheckRun) -> Outcome {
     }
 }
 
-/// Test names a check reports in its summary as `<name>: <reason>` lines, where the name is a path of `::`
-/// segments without spaces (`module::test`, `tests/x.py::test_y`); other summaries yield none.
+/// A test name as a failure format prints it: no whitespace or control characters, bounded length.
+fn test_name(name: &str) -> Option<&str> {
+    let valid = !name.is_empty()
+        && name.chars().count() <= MAX_TEST_NAME_CHARS
+        && !name.chars().any(|c| c.is_whitespace() || c.is_control());
+    valid.then_some(name)
+}
+
+/// Test names from the formats that mark a failure unambiguously; any other summary text yields none.
+/// - Rust libtest: `test <name> ... FAILED`, and the closing `failures:` block whose every line is
+///   `    <name>` (a block with any other line, such as captured output, is ignored).
+/// - pytest short summary: `FAILED <file>::<test>[ - <reason>]`.
+///
+/// At most [`MAX_FAILING_TESTS`] names of at most [`MAX_TEST_NAME_CHARS`] characters, without repeats.
 fn failing_tests(summary: &str) -> Vec<String> {
-    summary
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim().trim_start_matches(['-', '*']).trim_start();
-            let (name, _) = line.split_once(": ")?;
-            let plausible = name.contains("::")
-                && !name.starts_with(':')
-                && !name.ends_with(':')
-                && name.chars().count() <= MAX_TEST_NAME_CHARS
-                && !name.chars().any(|c| c.is_whitespace() || c.is_control());
-            plausible.then(|| name.to_owned())
-        })
-        .take(MAX_FAILING_TESTS)
-        .collect()
+    let mut names: Vec<String> = Vec::new();
+    let mut add = |name: &str| {
+        if names.len() < MAX_FAILING_TESTS && !names.iter().any(|known| known == name) {
+            names.push(name.to_owned());
+        }
+    };
+    let lines: Vec<&str> = summary.lines().map(|line| line.trim_end()).collect();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        index += 1;
+        if line.trim_start() == "failures:" {
+            let block: Vec<&str> = lines[index..]
+                .iter()
+                .take_while(|line| !line.is_empty())
+                .copied()
+                .collect();
+            index += block.len();
+            let listed: Option<Vec<&str>> = block
+                .iter()
+                .map(|line| line.strip_prefix("    ").and_then(test_name))
+                .collect();
+            for name in listed.unwrap_or_default() {
+                add(name);
+            }
+        } else if let Some(name) = line
+            .trim_start()
+            .strip_prefix("test ")
+            .and_then(|rest| rest.strip_suffix(" ... FAILED"))
+            .and_then(test_name)
+        {
+            add(name);
+        } else if let Some(rest) = line.strip_prefix("FAILED ") {
+            let name = rest.split_once(" - ").map_or(rest, |(name, _)| name);
+            if let Some(name) = test_name(name).filter(|name| name.contains("::")) {
+                add(name);
+            }
+        }
+    }
+    names
 }
 
 fn status_of(runs: &[CheckRun]) -> CiStatus {
@@ -178,9 +216,9 @@ pub async fn fetch(
     }
     tracing::warn!(
         count = runs.len(),
-        "the head commit has more check runs than are read; the CI fact counts the first ones"
+        "the head commit has more check runs than are read; CI is not checked"
     );
-    Ok(status_of(&runs))
+    Ok(NOT_CHECKED)
 }
 
 #[cfg(test)]
@@ -382,21 +420,69 @@ mod tests {
         }
     }
 
-    #[test]
-    fn failing_tests_come_only_from_name_reason_lines() {
-        let summary = "sync_headers::slow_peer_2000_headers: timed out after 5 s\n\
-                       - tests/test_x.py::test_y: AssertionError\n\
-                       Error: process exited with 1\n\
-                       some text :: with spaces: no\n\
-                       ::: odd\n";
+    #[tokio::test]
+    async fn more_runs_than_the_cap_are_not_checked() {
+        let server = MockServer::start().await;
+        let runs: Vec<Value> = (0..100)
+            .map(|n| run(&format!("r{n}"), "completed", Some("success")))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path(checks_path()))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"total_count": 1001, "check_runs": runs})),
+            )
+            .expect(u64::from(MAX_PAGES))
+            .mount(&server)
+            .await;
+        let status = fetch_from(&server).await.expect("status");
         assert_eq!(
-            failing_tests(summary),
-            [
-                "sync_headers::slow_peer_2000_headers",
-                "tests/test_x.py::test_y"
-            ]
+            status, NOT_CHECKED,
+            "the 1001st run may fail; 1000 passing runs are no proof"
         );
-        let many: String = (0..30).map(|n| format!("m::t{n}: failed\n")).collect();
+    }
+
+    #[test]
+    fn failing_tests_come_only_from_unambiguous_failure_formats() {
+        let libtest = "running 3 tests\n\
+                       test a::passes ... ok\n\
+                       test a::ignored ... ignored\n\
+                       test a::breaks ... FAILED\n\
+                       \n\
+                       failures:\n\
+                       \n\
+                       ---- a::breaks stdout ----\n\
+                       thread 'a::breaks' panicked\n\
+                       \n\
+                       failures:\n    a::breaks\n    b::also_breaks\n\
+                       \n\
+                       test result: FAILED. 1 passed; 2 failed; 1 ignored\n";
+        assert_eq!(failing_tests(libtest), ["a::breaks", "b::also_breaks"]);
+        let pytest = "FAILED tests/test_x.py::test_y - AssertionError: 1 != 2\n\
+                      PASSED tests/test_x.py::test_z\n\
+                      SKIPPED [1] tests/test_x.py:9: no network\n";
+        assert_eq!(failing_tests(pytest), ["tests/test_x.py::test_y"]);
+        for unknown in [
+            "suite::ok: passed\nsuite::bad: failed",
+            "sync_headers::slow_peer_2000_headers: timed out after 5 s",
+            "Error: process exited with 1",
+            "failures:\n    a::x\n  not a name line\n",
+        ] {
+            assert!(failing_tests(unknown).is_empty(), "{unknown}");
+        }
+        let many: String = (0..30)
+            .map(|n| format!("test m::t{n} ... FAILED\n"))
+            .collect();
         assert_eq!(failing_tests(&many).len(), MAX_FAILING_TESTS);
+        let long = format!("test {} ... FAILED", "x".repeat(MAX_TEST_NAME_CHARS + 1));
+        assert!(
+            failing_tests(&long).is_empty(),
+            "over-long names are dropped"
+        );
+        assert_eq!(
+            failing_tests("test a::x ... FAILED\nfailures:\n    a::x\n"),
+            ["a::x"],
+            "no repeats"
+        );
     }
 }

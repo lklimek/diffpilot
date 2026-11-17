@@ -1,6 +1,7 @@
 //! Comments in the user's GitHub pending review (ADR-006, threat model T11): list, create (idempotent), edit and
 //! delete. Writes are serialised per (user, pull request) and refused when the pull request's head moved since
-//! the analysis. A target's lines are classified from the analysed diff: inside one hunk (with GitHub's context)
+//! the analysis; a new comment is also checked after the write (GitHub places it on the current head, which may
+//! have moved in between) and removed again when it is not on the analysed head. A target's lines are classified from the analysed diff: inside one hunk (with GitHub's context)
 //! → line thread; elsewhere in a file of the diff → file-level thread whose body ends with a permalink to the
 //! lines; a file outside the diff → not commentable. A comment on a changed line no annotation covers also
 //! records `missed_by_llm` feedback.
@@ -9,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use analysis::diff::FileDiff;
-use analysis::lines::{changed_lines_within, line_window, thread_ranges};
+use analysis::lines::{CommentPosition, comment_position, line_window, missed_line};
 use chrono::Utc;
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
@@ -17,7 +18,7 @@ use contracts::api::comments::{
     CommentTarget, CreateCommentRequest, CreateCommentResponse, PendingComment, PendingReview,
 };
 use contracts::api::feedback::{FeedbackTarget, FeedbackValue};
-use contracts::common::{LineRange, LineSide, PrRef, RepoRef};
+use contracts::common::{LineSide, PrRef, RepoRef};
 use contracts::ids::FeedbackId;
 use db::error::DbError;
 use db::repo::comments::{CommentRequestKey, CommentRequestStart};
@@ -28,9 +29,10 @@ use tokio::sync::OwnedMutexGuard;
 use url::Url;
 
 use crate::auth::{UserTokenError, user_access_token};
+use crate::github::app_token::{self, AppTokenError, Installation};
 use crate::github::graphql::{GraphqlError, GraphqlErrorType};
 use crate::github::mirror::{MirrorError, is_tree_path, read_blob};
-use crate::github::review::{self, PendingReviewError, ThreadTarget};
+use crate::github::review::{self, PendingReviewError, ReviewState, ThreadTarget};
 use crate::pipeline::{PrDiffError, pr_diff};
 use crate::secrets::sha256;
 use crate::state::AppState;
@@ -53,6 +55,17 @@ pub enum CommentError {
     /// The pull request's head moved since the analysis; line numbers would point to other code.
     #[error("the pull request head moved since the analysis")]
     PrHeadChanged,
+    /// The head moved while the comment was written and the misplaced comment could not be deleted again: it
+    /// may remain in the pending review.
+    #[error("the head moved during the write and the comment could not be removed")]
+    MisplacedCommentLeft(#[source] PendingReviewError),
+    /// The comment's review was published on GitHub meanwhile; the edit (or, with `deleted`, the deletion)
+    /// applied to the published comment.
+    #[error("the comment was published meanwhile")]
+    PublishedMeanwhile {
+        /// The change was a deletion.
+        deleted: bool,
+    },
     /// The target is not commentable (file outside the diff, line outside the file) or GitHub rejected it.
     #[error("the comment position is not commentable")]
     PositionRejected,
@@ -62,6 +75,9 @@ pub enum CommentError {
     /// GitHub did not confirm a comment write; it may or may not exist.
     #[error("GitHub did not confirm the comment write")]
     OutcomeUnknown(#[source] PendingReviewError),
+    /// Whether the GitHub App is installed could not be read.
+    #[error("the GitHub App installation could not be read")]
+    App(#[source] AppTokenError),
     /// The user's GitHub token is not available.
     #[error("the user's GitHub token is not available")]
     Token(#[from] UserTokenError),
@@ -108,11 +124,17 @@ fn pr_of(summary: &AnalysisSummary) -> PrRef {
 }
 
 /// Whether the user token may write review comments to `repo`: the GitHub App must be installed there (S3
-/// finding 10). TODO(WP3-APPTOKEN): answer from `github::app_token::installation(&state.config.github, repo,
-/// Utc::now())` (`Installed { .. }` → true, `NotInstalled` → false, error → `CommentError`); until that lands,
-/// GitHub's `FORBIDDEN` answer to a write is the signal (`CommentError::AppNotInstalled`).
-async fn commenting_available(_state: &AppState, _repo: &RepoRef) -> Result<bool, CommentError> {
-    Ok(true)
+/// finding 10). An App that is unusable as configured makes commenting unavailable.
+async fn commenting_available(state: &AppState, repo: &RepoRef) -> Result<bool, CommentError> {
+    match app_token::installation(&state.config.github, repo, Utc::now()).await {
+        Ok(Installation::Installed { .. }) => Ok(true),
+        Ok(Installation::NotInstalled) => Ok(false),
+        Err(error) if error.is_configuration() => {
+            tracing::error!(%error, "GitHub App unusable; commenting is not available");
+            Ok(false)
+        }
+        Err(error) => Err(CommentError::App(error)),
+    }
 }
 
 async fn require_commenting(state: &AppState, repo: &RepoRef) -> Result<(), CommentError> {
@@ -147,62 +169,27 @@ fn github_error(error: PendingReviewError) -> CommentError {
     }
 }
 
-/// Maps a failure of a write: when GitHub may have applied it (no answer, server error, unreadable answer), the
-/// outcome is unknown.
+/// Maps a failure of a thread write. Only answers that prove nothing was written are definite: GitHub refused
+/// the request before executing it (errors without `data`, HTTP 4xx, sign-in or rate limit), `FORBIDDEN`, or
+/// `thread: null` without errors. Anything else (no answer, server error, an execution error next to `data`,
+/// an unreadable answer) leaves the outcome unknown.
 fn write_error(error: PendingReviewError) -> CommentError {
     match error {
+        PendingReviewError::ThreadRejected => CommentError::PositionRejected,
         PendingReviewError::Graphql(
-            GraphqlError::Http(_) | GraphqlError::Malformed(_) | GraphqlError::NoData,
-        ) => CommentError::OutcomeUnknown(error),
-        PendingReviewError::Graphql(GraphqlError::Status(status)) if status.is_server_error() => {
-            CommentError::OutcomeUnknown(error)
+            GraphqlError::Rejected(GraphqlErrorType::Forbidden)
+            | GraphqlError::NotExecuted(GraphqlErrorType::Forbidden),
+        ) => CommentError::AppNotInstalled,
+        PendingReviewError::Graphql(
+            GraphqlError::NotExecuted(_)
+            | GraphqlError::Client(_)
+            | GraphqlError::Unauthorized
+            | GraphqlError::RateLimited,
+        ) => CommentError::Github(error),
+        PendingReviewError::Graphql(GraphqlError::Status(status)) if status.is_client_error() => {
+            CommentError::Github(error)
         }
-        error => github_error(error),
-    }
-}
-
-/// Where a comment target goes on GitHub.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Position {
-    /// Every target line lies in one diff hunk (with GitHub's context): a line thread.
-    Line(ThreadTarget),
-    /// The file is in the diff, the lines are not all in one hunk: a file-level thread linking to the lines.
-    File {
-        /// Path of the file in the pull request.
-        path: String,
-    },
-    /// The file is not in the diff, or the lines are not in the file.
-    NotCommentable,
-}
-
-/// Classifies `target` (validated: `1 ≤ start ≤ line`) against the analysed diff; `total_lines` is the length
-/// of the target's file on its side.
-pub(crate) fn position(files: &[FileDiff], target: &CommentTarget, total_lines: u32) -> Position {
-    let Some(file) = files
-        .iter()
-        .find(|file| file.path_on(target.side) == Some(target.path.as_str()))
-    else {
-        return Position::NotCommentable;
-    };
-    let start = target.start_line.unwrap_or(target.line);
-    if target.line > total_lines {
-        return Position::NotCommentable;
-    }
-    let wanted = LineRange {
-        start_line: start,
-        end_line: target.line,
-    };
-    if thread_ranges(file, target.side, total_lines, start, target.line) == [wanted] {
-        Position::Line(ThreadTarget::Line {
-            path: file.path.clone(),
-            side: target.side,
-            start_line: (start < target.line).then_some(start),
-            line: target.line,
-        })
-    } else {
-        Position::File {
-            path: file.path.clone(),
-        }
+        error => CommentError::OutcomeUnknown(error),
     }
 }
 
@@ -231,26 +218,6 @@ fn permalink(summary: &AnalysisSummary, target: &CommentTarget) -> String {
     }
     url.set_fragment(Some(&fragment));
     url.into()
-}
-
-/// The first changed line of `target` that no annotation of the analysis covers (brief §5 Comments: such a
-/// comment is also `missed_by_llm` feedback); `None` when the target has no such line.
-pub(crate) fn missed_line(
-    files: &[FileDiff],
-    flows: &[FlowAnalysisOutput],
-    target: &CommentTarget,
-) -> Option<u32> {
-    let start = target.start_line.unwrap_or(target.line);
-    let annotated: Vec<(u32, u32)> = flows
-        .iter()
-        .flat_map(|flow| &flow.steps)
-        .filter(|step| step.file == target.path && step.side == target.side)
-        .flat_map(|step| &step.annotations)
-        .map(|annotation| (annotation.start_line, annotation.end_line))
-        .collect();
-    changed_lines_within(files, &target.path, target.side, start, target.line)
-        .into_iter()
-        .find(|line| !annotated.iter().any(|(a, b)| (*a..=*b).contains(line)))
 }
 
 /// Records `missed_by_llm` when the analysis is finished and the target has a changed line without annotation;
@@ -317,6 +284,7 @@ pub async fn list(
     Ok(PendingReview {
         commenting_available,
         comments: pending.comments,
+        incomplete: pending.incomplete,
     })
 }
 
@@ -365,7 +333,10 @@ pub async fn create(
             }
             Ok(response)
         }
-        Err(error @ CommentError::OutcomeUnknown(_)) => Err(error),
+        // A comment may exist on GitHub: the key stays busy so a retry cannot add a second one.
+        Err(error @ (CommentError::OutcomeUnknown(_) | CommentError::MisplacedCommentLeft(_))) => {
+            Err(error)
+        }
         Err(error) => {
             if let Err(db_error) = requests.fail(key).await {
                 tracing::error!(analysis = %summary.id, error = ?db_error,
@@ -394,10 +365,22 @@ async fn add_comment(
         Some(bytes) => line_window(&bytes, 1, 1).total_lines,
         None => 0,
     };
-    let (thread, body) = match position(&files, target, total_lines) {
-        Position::NotCommentable => return Err(CommentError::PositionRejected),
-        Position::Line(thread) => (thread, request.body.clone()),
-        Position::File { path } => (
+    let (thread, body) = match comment_position(&files, target, total_lines) {
+        CommentPosition::NotCommentable => return Err(CommentError::PositionRejected),
+        CommentPosition::Line {
+            path,
+            start_line,
+            line,
+        } => (
+            ThreadTarget::Line {
+                path,
+                side: target.side,
+                start_line,
+                line,
+            },
+            request.body.clone(),
+        ),
+        CommentPosition::File { path } => (
             ThreadTarget::File { path },
             format!(
                 "{}\n\n{}",
@@ -409,9 +392,14 @@ async fn add_comment(
     validate_body(&body)?;
     let pr = pr_of(summary);
     let pull = head_checked(state, &token, summary).await?;
-    let comment = review::add_thread(&state.config.github, &token, &pr, &pull, &thread, &body)
+    let added = review::add_thread(&state.config.github, &token, &pr, &pull, &thread, &body)
         .await
         .map_err(write_error)?;
+    let head = &summary.pr.head_sha.0;
+    if added.commits.is_empty() || added.commits.iter().any(|oid| oid != head) {
+        return Err(remove_misplaced(state, &token, summary, &added.comment.id).await);
+    }
+    let comment = added.comment;
     tracing::info!(analysis = %summary.id, user_id, kind = ?comment.kind,
         "comment added to the pending review");
     let missed_by_llm_recorded = record_missed(state, user_id, summary, &files, target).await;
@@ -436,7 +424,30 @@ async fn head_checked(
     Ok(pull.id)
 }
 
-/// The user's pending comment `comment_id` on the analysed pull request, after the head check.
+/// Deletes a comment GitHub placed on another head than the analysed one (the head moved between the check and
+/// the write); the answer is `PrHeadChanged`, or `MisplacedCommentLeft` when the deletion failed.
+async fn remove_misplaced(
+    state: &AppState,
+    token: &SecretString,
+    summary: &AnalysisSummary,
+    comment_id: &str,
+) -> CommentError {
+    match review::delete_comment(&state.config.github, token, comment_id).await {
+        Ok(_) => {
+            tracing::warn!(analysis = %summary.id,
+                "the head moved during the comment write; the misplaced comment was deleted again");
+            CommentError::PrHeadChanged
+        }
+        Err(error) => {
+            tracing::error!(analysis = %summary.id, ?error,
+                "the head moved during the comment write and the misplaced comment could not be deleted");
+            CommentError::MisplacedCommentLeft(error)
+        }
+    }
+}
+
+/// The user's pending comment `comment_id` on the analysed pull request, after the head check. A list cut at the
+/// read cap is no proof of absence: the comment is then looked up by id.
 async fn own_pending_comment(
     state: &AppState,
     token: &SecretString,
@@ -449,14 +460,26 @@ async fn own_pending_comment(
     if pending.pull_request.head_oid != summary.pr.head_sha.0 {
         return Err(CommentError::PrHeadChanged);
     }
-    pending
+    let incomplete = pending.incomplete;
+    if let Some(comment) = pending
         .comments
         .into_iter()
         .find(|comment| comment.id == comment_id)
+    {
+        return Ok(comment);
+    }
+    if !incomplete {
+        return Err(CommentError::NotFound);
+    }
+    review::pending_comment_by_id(&state.config.github, token, &pr_of(summary), comment_id)
+        .await
+        .map_err(github_error)?
         .ok_or(CommentError::NotFound)
 }
 
-/// Replaces the text of the user's pending comment `comment_id` on the analysed pull request.
+/// Replaces the text of the user's pending comment `comment_id` on the analysed pull request. GitHub has no
+/// conditional edit: when the review was published after the check, the edit applied to the published comment
+/// and the answer says so (`PublishedMeanwhile`).
 pub async fn update(
     state: &AppState,
     user_id: &str,
@@ -469,14 +492,21 @@ pub async fn update(
     require_commenting(state, &summary.pr.repo).await?;
     let token = user_access_token(state, user_id).await?;
     let comment = own_pending_comment(state, &token, summary, comment_id).await?;
-    let body = review::update_comment(&state.config.github, &token, &comment.id, body)
-        .await
-        .map_err(github_error)?;
+    let (body, review_state) =
+        review::update_comment(&state.config.github, &token, &comment.id, body)
+            .await
+            .map_err(github_error)?;
+    if review_state == ReviewState::Published {
+        tracing::warn!(analysis = %summary.id, user_id,
+            "the review was published meanwhile; the edit applied to the published comment");
+        return Err(CommentError::PublishedMeanwhile { deleted: false });
+    }
     tracing::info!(analysis = %summary.id, user_id, "pending comment edited");
     Ok(PendingComment { body, ..comment })
 }
 
-/// Deletes the user's pending comment `comment_id` on the analysed pull request.
+/// Deletes the user's pending comment `comment_id` on the analysed pull request; like [`update`], a review
+/// published after the check is reported (`PublishedMeanwhile`).
 pub async fn delete(
     state: &AppState,
     user_id: &str,
@@ -487,199 +517,55 @@ pub async fn delete(
     require_commenting(state, &summary.pr.repo).await?;
     let token = user_access_token(state, user_id).await?;
     let comment = own_pending_comment(state, &token, summary, comment_id).await?;
-    review::delete_comment(&state.config.github, &token, &comment.id)
+    let review_state = review::delete_comment(&state.config.github, &token, &comment.id)
         .await
         .map_err(github_error)?;
+    if review_state == ReviewState::Published {
+        tracing::warn!(analysis = %summary.id, user_id,
+            "the review was published meanwhile; the deletion applied to the published comment");
+        return Err(CommentError::PublishedMeanwhile { deleted: true });
+    }
     tracing::info!(analysis = %summary.id, user_id, "pending comment deleted");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use analysis::diff::{FileStatus, Hunk, LineSpan};
-    use contracts::ids::HunkId;
-    use serde_json::{Value, json};
-
     use super::*;
 
-    fn hunk(id: &str, base: (u32, u32), head: (u32, u32), removed: &[u32], added: &[u32]) -> Hunk {
-        Hunk {
-            id: HunkId(id.to_owned()),
-            base: LineSpan {
-                start: base.0,
-                len: base.1,
-            },
-            head: LineSpan {
-                start: head.0,
-                len: head.1,
-            },
-            added: added.to_vec(),
-            removed: removed.to_vec(),
-        }
-    }
-
-    /// `src/a.rs`: base 10–11 replaced by head 10–12; base 49 replaced by head 50. `new.rs` renamed from
-    /// `old.rs` with base 5 replaced by head 5.
-    fn files() -> Vec<FileDiff> {
-        vec![
-            FileDiff {
-                path: "src/a.rs".to_owned(),
-                old_path: None,
-                status: FileStatus::Modified,
-                binary: false,
-                hunks: vec![
-                    hunk("h1", (10, 2), (10, 3), &[10, 11], &[10, 11, 12]),
-                    hunk("h2", (49, 1), (50, 1), &[49], &[50]),
-                ],
-            },
-            FileDiff {
-                path: "new.rs".to_owned(),
-                old_path: Some("old.rs".to_owned()),
-                status: FileStatus::Renamed,
-                binary: false,
-                hunks: vec![hunk("h3", (5, 1), (5, 1), &[5], &[5])],
-            },
-        ]
-    }
-
-    fn target(path: &str, side: LineSide, start_line: Option<u32>, line: u32) -> CommentTarget {
-        CommentTarget {
-            path: path.to_owned(),
-            side,
-            start_line,
-            line,
-        }
-    }
-
-    fn line_thread(path: &str, side: LineSide, start_line: Option<u32>, line: u32) -> Position {
-        Position::Line(ThreadTarget::Line {
-            path: path.to_owned(),
-            side,
-            start_line,
-            line,
-        })
-    }
-
     #[test]
-    fn target_inside_one_hunk_is_a_line_thread() {
-        let files = files();
-        let head = LineSide::Head;
-        assert_eq!(
-            position(&files, &target("src/a.rs", head, None, 11), 100),
-            line_thread("src/a.rs", head, None, 11)
-        );
-        assert_eq!(
-            position(&files, &target("src/a.rs", head, Some(8), 12), 100),
-            line_thread("src/a.rs", head, Some(8), 12),
-            "context lines around the hunk take a line thread"
-        );
-        assert_eq!(
-            position(&files, &target("src/a.rs", LineSide::Base, None, 10), 100),
-            line_thread("src/a.rs", LineSide::Base, None, 10)
-        );
-        assert_eq!(
-            position(&files, &target("old.rs", LineSide::Base, None, 5), 10),
-            line_thread("new.rs", LineSide::Base, None, 5),
-            "GitHub names a renamed file by its new path"
-        );
-    }
-
-    #[test]
-    fn outside_diff_comment_is_file_level() {
-        let files = files();
-        let file = Position::File {
-            path: "src/a.rs".to_owned(),
-        };
-        assert_eq!(
-            position(&files, &target("src/a.rs", LineSide::Head, None, 30), 100),
-            file
-        );
-        assert_eq!(
-            position(
-                &files,
-                &target("src/a.rs", LineSide::Head, Some(12), 50),
-                100
-            ),
-            file,
-            "a range across two hunks is not one line thread"
-        );
-    }
-
-    #[test]
-    fn file_outside_the_diff_or_line_outside_the_file_is_not_commentable() {
-        let files = files();
-        for (target, total) in [
-            (target("src/other.rs", LineSide::Head, None, 1), 100),
-            (target("src/a.rs", LineSide::Head, None, 101), 100),
-            (target("new.rs", LineSide::Base, None, 5), 10),
-            (target("old.rs", LineSide::Head, None, 5), 10),
+    fn write_failures_are_unknown_unless_they_prove_nothing_was_written() {
+        let status = |code| PendingReviewError::Graphql(GraphqlError::Status(code));
+        let graphql = PendingReviewError::Graphql;
+        for unknown in [
+            status(reqwest::StatusCode::BAD_GATEWAY),
+            graphql(GraphqlError::NoData),
+            graphql(GraphqlError::Rejected(GraphqlErrorType::Other)),
+            graphql(GraphqlError::Rejected(GraphqlErrorType::NotFound)),
+            graphql(GraphqlError::Rejected(GraphqlErrorType::Unprocessable)),
+            PendingReviewError::MissingPullRequest,
         ] {
-            assert_eq!(
-                position(&files, &target, total),
-                Position::NotCommentable,
-                "{target:?}"
+            let mapped = write_error(unknown);
+            assert!(
+                matches!(mapped, CommentError::OutcomeUnknown(_)),
+                "{mapped:?}"
             );
         }
-    }
-
-    fn flow(steps: Value) -> FlowAnalysisOutput {
-        serde_json::from_value(json!({
-            "flow_id": "f1",
-            "introduction": {"problem_before": "p", "change": "c", "example_before_after": "e"},
-            "steps": steps, "edges": [], "impact_refs": [], "pattern_repetitions": [], "thread_statuses": []
-        }))
-        .expect("flow")
-    }
-
-    fn step(file: &str, side: &str, annotations: &[(u32, u32)]) -> Value {
-        let annotations: Vec<Value> = annotations
-            .iter()
-            .map(|(start, end)| {
-                json!({"type": "behaviour", "basis": "inference", "start_line": start, "end_line": end,
-                       "was": "w", "is": "i", "text": null, "evidence": []})
-            })
-            .collect();
-        json!({"id": "s1", "title": "t", "file": file, "side": side, "start_line": 1, "end_line": 60,
-               "symbol": null, "kind": "modified", "moved_from": null, "called_by": "c", "decides": "d",
-               "next": "n", "why": "w", "annotations": annotations, "assessment": null})
-    }
-
-    #[test]
-    fn missed_by_llm_only_for_changed_lines_without_annotation() {
-        let files = files();
-        let flows = [flow(json!([
-            step("src/a.rs", "head", &[(10, 10)]),
-            step("src/b.rs", "head", &[(11, 11)])
-        ]))];
-        let head = LineSide::Head;
-        for (target, expected) in [
-            (target("src/a.rs", head, None, 10), None),
-            (target("src/a.rs", head, None, 11), Some(11)),
-            (target("src/a.rs", head, Some(10), 12), Some(11)),
-            (target("src/a.rs", head, None, 30), None),
-            (target("src/a.rs", head, None, 50), Some(50)),
-            (target("src/a.rs", LineSide::Base, None, 10), Some(10)),
-            (target("src/other.rs", head, None, 11), None),
+        for refused in [
+            graphql(GraphqlError::NotExecuted(GraphqlErrorType::Other)),
+            graphql(GraphqlError::NotExecuted(GraphqlErrorType::Unprocessable)),
+            graphql(GraphqlError::Unauthorized),
+            graphql(GraphqlError::RateLimited),
+            status(reqwest::StatusCode::BAD_REQUEST),
         ] {
-            assert_eq!(missed_line(&files, &flows, &target), expected, "{target:?}");
+            let mapped = write_error(refused);
+            assert!(matches!(mapped, CommentError::Github(_)), "{mapped:?}");
         }
-        assert_eq!(
-            missed_line(&files, &[], &target("src/a.rs", head, None, 10)),
-            Some(10),
-            "without annotations every changed line is unannotated"
-        );
-    }
-
-    #[test]
-    fn write_failures_without_an_answer_have_an_unknown_outcome() {
-        let status = |code| PendingReviewError::Graphql(GraphqlError::Status(code));
         assert!(matches!(
-            write_error(status(reqwest::StatusCode::BAD_GATEWAY)),
-            CommentError::OutcomeUnknown(_)
-        ));
-        assert!(matches!(
-            write_error(PendingReviewError::Graphql(GraphqlError::NoData)),
-            CommentError::OutcomeUnknown(_)
+            write_error(graphql(GraphqlError::NotExecuted(
+                GraphqlErrorType::Forbidden
+            ))),
+            CommentError::AppNotInstalled
         ));
         assert!(matches!(
             write_error(PendingReviewError::ThreadRejected),
@@ -741,7 +627,8 @@ mod github_tests {
 
     use super::*;
     use crate::github::review::{
-        ADD_THREAD, DELETE_COMMENT, PENDING_REVIEW, PULL_REQUEST_HEAD, UPDATE_COMMENT,
+        ADD_THREAD, COMMENT_BY_ID, DELETE_COMMENT, MAX_COMMENT_PAGES, PENDING_REVIEW,
+        PULL_REQUEST_HEAD, REVIEW_COMMENTS_PAGE, UPDATE_COMMENT,
     };
     use crate::review::tests::github_state_with;
 
@@ -924,8 +811,11 @@ mod github_tests {
     fn pending_one() -> Value {
         let mut response = recorded("pending-list-one.json");
         let pull = &mut response["data"]["repository"]["pullRequest"];
-        pull["reviewThreads"]["pageInfo"] = json!({"hasNextPage": false, "endCursor": null});
+        let none = json!({"hasNextPage": false, "endCursor": null});
+        pull["reviewThreads"]["pageInfo"] = none.clone();
+        pull["reviews"]["pageInfo"] = none.clone();
         for review in pull["reviews"]["nodes"].as_array_mut().expect("reviews") {
+            review["comments"]["pageInfo"] = none.clone();
             for comment in review["comments"]["nodes"]
                 .as_array_mut()
                 .expect("comments")
@@ -1166,6 +1056,195 @@ mod github_tests {
         assert!(matches!(retry, Err(CommentError::KeyConflict)), "{retry:?}");
     }
 
+    /// The recorded line-thread answer with the comment placed on `commit`.
+    fn line_on(commit: &str) -> ResponseTemplate {
+        let mut response = recorded("add-thread-line.json");
+        response["data"]["addPullRequestReviewThread"]["thread"]["comments"]["nodes"][0]["commit"] =
+            json!({"oid": commit});
+        ResponseTemplate::new(200).set_body_json(response)
+    }
+
+    #[tokio::test]
+    async fn head_moved_during_the_write_deletes_the_comment_again() {
+        let f = fixture().await;
+        // The preflight sees the analysed head; the author pushes before the mutation runs.
+        f.head_is(HEAD, 2).await;
+        f.add_thread_answers(json!({"line": 96}), line_on(&"1".repeat(40)), 2)
+            .await;
+        f.mock(
+            json!({"query": DELETE_COMMENT, "variables": {"in": {"id": "PRRC_fixture482_c1"}}}),
+            ResponseTemplate::new(200).set_body_json(recorded("delete-comment.json")),
+            2,
+        )
+        .await;
+        let key = Uuid::new_v4();
+        for _ in 0..2 {
+            let result = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
+            assert!(
+                matches!(result, Err(CommentError::PrHeadChanged)),
+                "removed again, so the key is free for a retry: {result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn misplaced_comment_that_cannot_be_deleted_is_reported_and_keeps_the_key() {
+        let f = fixture().await;
+        f.head_is(HEAD, 1).await;
+        f.add_thread_answers(json!({"line": 96}), line_on(&"1".repeat(40)), 1)
+            .await;
+        f.mock(
+            json!({"query": DELETE_COMMENT}),
+            ResponseTemplate::new(502),
+            1,
+        )
+        .await;
+        let key = Uuid::new_v4();
+        let result = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
+        assert!(
+            matches!(result, Err(CommentError::MisplacedCommentLeft(_))),
+            "{result:?}"
+        );
+        let retry = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
+        assert!(matches!(retry, Err(CommentError::KeyConflict)), "{retry:?}");
+    }
+
+    #[tokio::test]
+    async fn execution_error_next_to_data_keeps_the_key_busy() {
+        let f = fixture().await;
+        f.head_is(HEAD, 1).await;
+        let mut answer = recorded("add-thread-line.json");
+        answer["errors"] =
+            json!([{"message": "Something went wrong resolving a field", "path": ["x"]}]);
+        f.add_thread_answers(
+            json!({}),
+            ResponseTemplate::new(200).set_body_json(answer),
+            1,
+        )
+        .await;
+        let key = Uuid::new_v4();
+        let result = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
+        assert!(
+            matches!(result, Err(CommentError::OutcomeUnknown(_))),
+            "{result:?}"
+        );
+        let retry = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
+        assert!(matches!(retry, Err(CommentError::KeyConflict)), "{retry:?}");
+    }
+
+    #[tokio::test]
+    async fn refusal_before_execution_frees_the_key() {
+        let f = fixture().await;
+        f.head_is(HEAD, 2).await;
+        f.add_thread_answers(
+            json!({}),
+            ResponseTemplate::new(200).set_body_json(json!({"errors": [{"message":
+                "Argument 'input' on Field 'addPullRequestReviewThread' has an invalid value"}]})),
+            2,
+        )
+        .await;
+        let key = Uuid::new_v4();
+        for _ in 0..2 {
+            let result = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
+            assert!(matches!(result, Err(CommentError::Github(_))), "{result:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn edit_of_a_comment_published_meanwhile_is_reported() {
+        let f = fixture().await;
+        f.pending_is(pending_one(), 1).await;
+        f.mock(
+            json!({"query": UPDATE_COMMENT}),
+            ResponseTemplate::new(200).set_body_json(
+                json!({"data": {"updatePullRequestReviewComment":
+                {"pullRequestReviewComment": {"id": "PRRC_fixture482_c1", "body": "edited",
+                    "state": "SUBMITTED", "pullRequestReview": {"state": "COMMENTED"}}}}}),
+            ),
+            1,
+        )
+        .await;
+        let edit = update(&f.state, "u1", &f.summary, "PRRC_fixture482_c1", "edited").await;
+        assert!(
+            matches!(
+                edit,
+                Err(CommentError::PublishedMeanwhile { deleted: false })
+            ),
+            "{edit:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_of_a_comment_published_meanwhile_is_reported() {
+        let f = fixture().await;
+        f.pending_is(pending_one(), 1).await;
+        f.mock(
+            json!({"query": DELETE_COMMENT}),
+            ResponseTemplate::new(200).set_body_json(json!({"data": {"deletePullRequestReviewComment":
+                {"pullRequestReview": {"state": "COMMENTED"}, "pullRequestReviewComment": {"id": "PRRC_fixture482_c1"}}}})),
+            1,
+        )
+        .await;
+        let removal = delete(&f.state, "u1", &f.summary, "PRRC_fixture482_c1").await;
+        assert!(
+            matches!(
+                removal,
+                Err(CommentError::PublishedMeanwhile { deleted: true })
+            ),
+            "{removal:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn comment_beyond_the_listing_cap_is_found_by_id() {
+        let f = fixture().await;
+        let comments = |from: u32| -> Vec<Value> {
+            (from..from + 100)
+                .map(|n| {
+                    json!({"id": format!("C{n}"), "path": CLIENT, "line": 96, "startLine": null,
+                    "subjectType": "LINE", "body": "x", "replyTo": null})
+                })
+                .collect()
+        };
+        let more = json!({"hasNextPage": true, "endCursor": "next"});
+        let none = json!({"hasNextPage": false, "endCursor": null});
+        f.pending_is(
+            json!({"data": {"repository": {"pullRequest": {"id": "PR_fixture482", "headRefOid": HEAD,
+                "reviews": {"pageInfo": none, "nodes": [{"id": "R1", "viewerDidAuthor": true,
+                    "comments": {"pageInfo": more, "nodes": comments(0)}}]},
+                "reviewThreads": {"pageInfo": none, "nodes": []}}}}}),
+            1,
+        )
+        .await;
+        f.mock(
+            json!({"query": REVIEW_COMMENTS_PAGE}),
+            ResponseTemplate::new(200).set_body_json(
+                json!({"data": {"node": {"comments": {"pageInfo": more, "nodes": comments(100)}}}}),
+            ),
+            u64::try_from(MAX_COMMENT_PAGES - 1).expect("pages"),
+        )
+        .await;
+        f.mock(
+            json!({"query": COMMENT_BY_ID, "variables": {"id": "C5000"}}),
+            ResponseTemplate::new(200).set_body_json(json!({"data": {"node": {
+                "__typename": "PullRequestReviewComment", "id": "C5000", "path": CLIENT, "line": 96,
+                "startLine": null, "subjectType": "LINE", "body": "late", "state": "PENDING", "replyTo": null,
+                "pullRequestReview": {"state": "PENDING", "viewerDidAuthor": true},
+                "pullRequest": {"number": 482, "repository": {"name": "node-client", "owner": {"login": "acme"}}}}}})),
+            1,
+        )
+        .await;
+        f.mock(
+            json!({"query": DELETE_COMMENT, "variables": {"in": {"id": "C5000"}}}),
+            ResponseTemplate::new(200).set_body_json(recorded("delete-comment.json")),
+            1,
+        )
+        .await;
+        delete(&f.state, "u1", &f.summary, "C5000")
+            .await
+            .expect("a truncated list is no proof that the comment is missing");
+    }
+
     #[tokio::test]
     async fn edit_and_delete_reach_github() {
         let f = fixture().await;
@@ -1174,7 +1253,8 @@ mod github_tests {
             json!({"query": UPDATE_COMMENT, "variables": {"in": {"pullRequestReviewCommentId": "PRRC_fixture482_c1",
                 "body": "edited"}}}),
             ResponseTemplate::new(200).set_body_json(json!({"data": {"updatePullRequestReviewComment":
-                {"pullRequestReviewComment": {"id": "PRRC_fixture482_c1", "body": "edited"}}}})),
+                {"pullRequestReviewComment": {"id": "PRRC_fixture482_c1", "body": "edited",
+                    "state": "PENDING", "pullRequestReview": {"state": "PENDING"}}}}})),
             1,
         )
         .await;

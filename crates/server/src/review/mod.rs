@@ -4,7 +4,7 @@
 
 use chrono::Utc;
 use contracts::api::analyses::AnalysisSummary;
-use contracts::api::tour::{CiStatus, GithubThread};
+use contracts::api::tour::{CiStatus, GithubThread, ThreadsStatus};
 use contracts::common::PrRef;
 use contracts::ids::AnalysisId;
 use db::error::DbError;
@@ -23,8 +23,10 @@ pub mod comments;
 pub struct GithubSnapshot {
     /// CI status of the analysed head; `not_checked` when the check runs could not be read.
     pub ci: CiStatus,
-    /// Submitted review threads, without step or LLM status; `None` when they could not be read.
-    pub threads: Option<Vec<GithubThread>>,
+    /// Submitted review threads, without step or LLM status (empty when not checked).
+    pub threads: Vec<GithubThread>,
+    /// Whether `threads` is every thread, the first ones up to the read cap, or nothing could be read.
+    pub threads_status: ThreadsStatus,
 }
 
 impl GithubSnapshot {
@@ -32,7 +34,8 @@ impl GithubSnapshot {
     pub fn not_checked() -> Self {
         Self {
             ci: checks::NOT_CHECKED,
-            threads: None,
+            threads: Vec::new(),
+            threads_status: ThreadsStatus::NotChecked,
         }
     }
 }
@@ -66,13 +69,16 @@ pub async fn read_github_snapshot(
             "check runs could not be read; CI stays not checked");
         checks::NOT_CHECKED
     });
-    let threads = threads
-        .inspect_err(|error| {
-            tracing::warn!(analysis = %summary.id, ?error,
-                "review threads could not be read; the Tour lists none");
-        })
-        .ok();
-    GithubSnapshot { ci, threads }
+    let (threads, threads_status) = threads.unwrap_or_else(|error| {
+        tracing::warn!(analysis = %summary.id, ?error,
+            "review threads could not be read; threads stay not checked");
+        (Vec::new(), ThreadsStatus::NotChecked)
+    });
+    GithubSnapshot {
+        ci,
+        threads,
+        threads_status,
+    }
 }
 
 /// Reads the snapshot ([`read_github_snapshot`]) and stores it for the analysis (replacing an earlier one).
@@ -111,7 +117,8 @@ pub async fn stored_github_snapshot(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::Arc;
+    use std::path::PathBuf;
+    use std::sync::{Arc, LazyLock};
 
     use contracts::api::tour::CiState;
     use db::repo::Db;
@@ -126,6 +133,7 @@ pub(crate) mod tests {
     use crate::auth::{lock_user, store_sign_in_tokens};
     use crate::config::Config;
     use crate::config::tests::test_config;
+    use crate::github::app_token::tests::{mount_installation, write_key};
     use crate::github::oauth::TokenGrant;
     use crate::jobs::queue::QueueExecutor;
     use crate::test_support::logs::LogCapture;
@@ -133,8 +141,15 @@ pub(crate) mod tests {
     /// User token of the seeded user `u1` in [`github_state`].
     pub(crate) const USER_TOKEN: &str = "ghu_review_secret_token_u1";
 
-    /// State whose GitHub API is `server` (under `/api`), with an analysis seeded for `u1`; `with_token`
-    /// stores [`USER_TOKEN`] as u1's sign-in.
+    /// The throwaway App key, written once per test process.
+    static APP_KEY: LazyLock<(tempfile::TempDir, PathBuf)> = LazyLock::new(|| {
+        let dir = tempfile::tempdir().expect("key dir");
+        let file = write_key(dir.path());
+        (dir, file)
+    });
+
+    /// State whose GitHub API is `server` (under `/api`), with an analysis seeded for `u1` and the GitHub App
+    /// installed on `acme/node-client`; `with_token` stores [`USER_TOKEN`] as u1's sign-in.
     pub(crate) async fn github_state(
         server: &MockServer,
         with_token: bool,
@@ -150,7 +165,9 @@ pub(crate) mod tests {
     ) -> (AppState, AnalysisId) {
         let mut config = test_config();
         config.github.api_url = Url::parse(&format!("{}/api", server.uri())).expect("url");
+        config.github.private_key_file = APP_KEY.1.clone();
         configure(&mut config);
+        mount_installation(server).await;
         let db = Db::in_memory().await.expect("db");
         let analysis = seed_analysis(&db).await.expect("seed");
         let executor = Arc::new(QueueExecutor::new(db.clone()));
@@ -217,8 +234,8 @@ pub(crate) mod tests {
         let snapshot = read_github_snapshot(&state, &summary(&state, analysis).await, "u1").await;
         assert_eq!(snapshot.ci, checks::NOT_CHECKED);
         assert_eq!(
-            snapshot.threads,
-            Some(Vec::new()),
+            (snapshot.threads, snapshot.threads_status),
+            (Vec::new(), ThreadsStatus::Checked),
             "threads read: none exist"
         );
         let logs = capture.text();
@@ -257,7 +274,11 @@ pub(crate) mod tests {
             .await
             .expect("ingest");
         assert_eq!(ingested.ci.state, CiState::Passing);
-        assert_eq!(ingested.threads, None, "threads not read");
+        assert_eq!(
+            ingested.threads_status,
+            ThreadsStatus::NotChecked,
+            "threads not read"
+        );
         assert_eq!(
             stored_github_snapshot(&state, analysis)
                 .await

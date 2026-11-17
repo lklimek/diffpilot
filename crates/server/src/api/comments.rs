@@ -57,13 +57,16 @@ impl ApiErrorSource for CommentError {
             Self::Invalid(_) => ApiErrorCode::InvalidRequest,
             Self::NotFound => ApiErrorCode::NotFound,
             Self::AppNotInstalled => ApiErrorCode::AppNotInstalled,
-            Self::PrHeadChanged => ApiErrorCode::PrHeadChanged,
+            Self::PrHeadChanged | Self::MisplacedCommentLeft(_) => ApiErrorCode::PrHeadChanged,
+            Self::PublishedMeanwhile { .. } => ApiErrorCode::CommentPublished,
             Self::PositionRejected => ApiErrorCode::PositionRejected,
             Self::KeyConflict => ApiErrorCode::Conflict,
             Self::Github(PendingReviewError::Graphql(GraphqlError::Unauthorized)) => {
                 ApiErrorCode::Unauthenticated
             }
-            Self::OutcomeUnknown(_) | Self::Github(_) => ApiErrorCode::GithubUnavailable,
+            Self::OutcomeUnknown(_) | Self::Github(_) | Self::App(_) => {
+                ApiErrorCode::GithubUnavailable
+            }
             Self::Diff(PrDiffError::NotPrepared) => ApiErrorCode::AnalysisNotFinished,
             Self::Token(error) => error.code(),
             Self::Db(error) => error.code(),
@@ -87,6 +90,15 @@ impl ApiErrorSource for CommentError {
             Self::PrHeadChanged => {
                 "The pull request changed since this analysis. Analyse it again to comment."
             }
+            Self::MisplacedCommentLeft(_) => {
+                "The pull request changed while the comment was being saved, and the comment could not be removed again. It may remain in your pending review on GitHub; check it there."
+            }
+            Self::PublishedMeanwhile { deleted: false } => {
+                "This comment was published on GitHub in the meantime; the change was applied to the published comment."
+            }
+            Self::PublishedMeanwhile { deleted: true } => {
+                "This comment was published on GitHub in the meantime; the published comment was deleted."
+            }
             Self::PositionRejected => {
                 "GitHub does not accept a comment on these lines. Copy the link to the lines instead."
             }
@@ -99,7 +111,7 @@ impl ApiErrorSource for CommentError {
             Self::Github(PendingReviewError::Graphql(GraphqlError::Unauthorized)) => {
                 "Your GitHub sign-in has ended. Sign in again."
             }
-            Self::Github(_) => GITHUB_ERROR,
+            Self::Github(_) | Self::App(_) => GITHUB_ERROR,
             Self::Diff(PrDiffError::NotPrepared) => "The analysis has not finished yet.",
             Self::Diff(_) | Self::Mirror(_) => {
                 "Something went wrong on the server. Try again later."
@@ -360,9 +372,10 @@ mod tests {
     #[tokio::test]
     async fn listing_reads_the_pending_review_from_github() {
         let server = MockServer::start().await;
+        let none = json!({"hasNextPage": false, "endCursor": null});
         let response = json!({"data": {"repository": {"pullRequest": {
             "id": "PR_1", "headRefOid": "h",
-            "reviews": {"nodes": [{"id": "R1", "viewerDidAuthor": true, "comments": {"totalCount": 1,
+            "reviews": {"pageInfo": none, "nodes": [{"id": "R1", "viewerDidAuthor": true, "comments": {"pageInfo": none,
                 "nodes": [{"id": COMMENT, "path": "src/rpc/client.rs", "line": 96, "startLine": null,
                 "subjectType": "LINE", "body": "b", "replyTo": null}]}}]},
             "reviewThreads": {"pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": [
@@ -386,7 +399,26 @@ mod tests {
             body,
             json!({"commenting_available": true, "comments": [{"id": COMMENT, "thread_id": "PRRT_1",
                 "path": "src/rpc/client.rs", "kind": "line", "side": "head", "start_line": null,
-                "line": 96, "body": "b"}]})
+                "line": 96, "body": "b"}], "incomplete": false})
+        );
+    }
+
+    #[test]
+    fn races_with_github_have_their_own_plain_outcomes() {
+        let published = CommentError::PublishedMeanwhile { deleted: false };
+        assert_eq!(published.code(), ApiErrorCode::CommentPublished);
+        assert!(
+            published
+                .public_message()
+                .contains("published on GitHub in the meantime")
+        );
+        let deleted = CommentError::PublishedMeanwhile { deleted: true };
+        assert_eq!(deleted.code(), ApiErrorCode::CommentPublished);
+        let left = CommentError::MisplacedCommentLeft(PendingReviewError::MissingPullRequest);
+        assert_eq!(left.code(), ApiErrorCode::PrHeadChanged);
+        assert!(
+            left.public_message()
+                .contains("may remain in your pending review")
         );
     }
 }

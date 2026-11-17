@@ -40,9 +40,13 @@ pub enum GraphqlError {
     /// The answer has no data and no error.
     #[error("GitHub answered without data")]
     NoData,
-    /// GitHub answered with a GraphQL error of this type.
+    /// GitHub answered with a GraphQL error of this type during execution (`data` present): a mutation may
+    /// have taken effect.
     #[error("GitHub rejected the request ({0:?})")]
     Rejected(GraphqlErrorType),
+    /// GitHub refused the request before executing it (errors without `data`): nothing was changed.
+    #[error("GitHub refused the request before executing it ({0:?})")]
+    NotExecuted(GraphqlErrorType),
 }
 
 /// The `type` of the first GraphQL error.
@@ -79,10 +83,19 @@ struct Request<'a, V> {
 }
 
 #[derive(Deserialize)]
-struct Envelope<D> {
-    data: Option<D>,
+struct Envelope {
+    /// Absent when the request failed before execution; `null` when execution failed at the root.
+    #[serde(default, deserialize_with = "present")]
+    data: Option<serde_json::Value>,
     #[serde(default)]
     errors: Vec<ErrorEntry>,
+}
+
+/// Keeps a present `data: null` apart from a missing `data`.
+fn present<'de, De: serde::Deserializer<'de>>(
+    deserializer: De,
+) -> Result<Option<serde_json::Value>, De::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -131,13 +144,18 @@ pub async fn execute<V: Serialize, D: DeserializeOwned>(
         status => return Err(GraphqlError::Status(status)),
     }
     let bytes = response.bytes().await.map_err(GraphqlError::Http)?;
-    let envelope: Envelope<D> = serde_json::from_slice(&bytes).map_err(GraphqlError::Malformed)?;
+    let envelope: Envelope = serde_json::from_slice(&bytes).map_err(GraphqlError::Malformed)?;
     if let Some(error) = envelope.errors.first() {
-        return Err(GraphqlError::Rejected(GraphqlErrorType::of(
-            error.kind.as_deref(),
-        )));
+        let kind = GraphqlErrorType::of(error.kind.as_deref());
+        return Err(match envelope.data {
+            Some(_) => GraphqlError::Rejected(kind),
+            None => GraphqlError::NotExecuted(kind),
+        });
     }
-    envelope.data.ok_or(GraphqlError::NoData)
+    match envelope.data {
+        None | Some(serde_json::Value::Null) => Err(GraphqlError::NoData),
+        Some(data) => serde_json::from_value(data).map_err(GraphqlError::Malformed),
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +216,12 @@ pub(crate) mod tests {
                 matches!(result, Err(GraphqlError::Rejected(found)) if found == expected),
                 "{kind}: {result:?}"
             );
+            let body = json!({"errors": [{"type": kind, "message": "m"}]});
+            let result = answer(ResponseTemplate::new(200).set_body_json(body)).await;
+            assert!(
+                matches!(result, Err(GraphqlError::NotExecuted(found)) if found == expected),
+                "errors without data are refused before execution: {kind}: {result:?}"
+            );
         }
     }
 
@@ -230,6 +254,8 @@ pub(crate) mod tests {
             "{result:?}"
         );
         let result = answer(ResponseTemplate::new(200).set_body_json(json!({}))).await;
+        assert!(matches!(result, Err(GraphqlError::NoData)), "{result:?}");
+        let result = answer(ResponseTemplate::new(200).set_body_json(json!({"data": null}))).await;
         assert!(matches!(result, Err(GraphqlError::NoData)), "{result:?}");
     }
 }
