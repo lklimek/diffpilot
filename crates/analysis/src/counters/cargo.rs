@@ -1,9 +1,10 @@
 //! `Cargo.toml` and `Cargo.lock` parsed with `toml_edit` (positions kept): dependency declarations and package
-//! records with the lines they occupy. A file that is too large or does not parse gives `None`: not checked.
+//! records with the lines they occupy and a decor-free identity (comments and formatting do not count). A file that
+//! is too large or does not parse gives `None`: not checked.
 
 use std::ops::Range;
 
-use toml_edit::{Document, Item, TableLike};
+use toml_edit::{Document, Item, TableLike, Value};
 
 /// Largest Cargo file read; a larger one is not checked.
 pub(crate) const MAX_CARGO_BYTES: usize = 4 * 1024 * 1024;
@@ -19,6 +20,10 @@ pub(crate) struct Declaration {
     pub path: Option<String>,
     /// Line ranges (1-based, inclusive) of its key and values.
     pub lines: Vec<(u32, u32)>,
+    /// Header line of the table holding it, if that table has a header.
+    pub header: Option<u32>,
+    /// Table, key and value without decor: equal identities are the same declaration.
+    pub identity: String,
 }
 
 /// One `[[package]]` record of a `Cargo.lock`.
@@ -30,6 +35,8 @@ pub(crate) struct LockPackage {
     pub source: Option<String>,
     /// Line ranges of the header and of every field except the package's own `dependencies` list.
     pub lines: Vec<(u32, u32)>,
+    /// The fields of `lines` without decor.
+    pub identity: String,
 }
 
 /// Dependency tables of a manifest or a `target.<cfg>` table (`_` spellings are Cargo's legacy aliases).
@@ -47,20 +54,43 @@ const KINDS: [&str; 5] = [
 pub(crate) fn manifest(text: &str) -> Option<Vec<Declaration>> {
     let document = parse(text)?;
     let lines = LineIndex::new(text);
-    let mut tables = kinds(document.as_table());
+    let mut tables: Vec<(String, &Item)> = kinds(document.as_table(), "");
     if let Some(targets) = document.get("target").and_then(Item::as_table_like) {
-        for (_, target) in targets.iter() {
-            tables.extend(target.as_table_like().map(kinds).unwrap_or_default());
+        for (cfg, target) in targets.iter() {
+            let prefix = format!("target.{cfg}.");
+            tables.extend(
+                target
+                    .as_table_like()
+                    .map(|t| kinds(t, &prefix))
+                    .unwrap_or_default(),
+            );
         }
     }
     let workspace = document.get("workspace").and_then(Item::as_table_like);
-    tables.extend(workspace.and_then(|workspace| workspace.get("dependencies")));
+    let members = workspace.and_then(|workspace| workspace.get("dependencies"));
+    tables.extend(members.map(|item| ("workspace.dependencies".to_owned(), item)));
     if let Some(patches) = document.get("patch").and_then(Item::as_table_like) {
-        tables.extend(patches.iter().map(|(_, item)| item));
+        tables.extend(
+            patches
+                .iter()
+                .map(|(registry, item)| (format!("patch.{registry}"), item)),
+        );
     }
-    tables.extend(document.get("replace"));
+    tables.extend(
+        document
+            .get("replace")
+            .map(|item| ("replace".to_owned(), item)),
+    );
     let mut out = Vec::new();
-    for table in tables.into_iter().filter_map(Item::as_table_like) {
+    for (label, table_item) in tables {
+        let Some(table) = table_item.as_table_like() else {
+            continue;
+        };
+        let header = table_item
+            .as_table()
+            .filter(|table| !table.is_implicit() && !table.is_dotted())
+            .and_then(toml_edit::Table::span)
+            .map(|span| lines.line(span.start));
         for (key, item) in table.iter() {
             let mut spans = Vec::new();
             if let Some((key, _)) = table.get_key_value(key) {
@@ -73,6 +103,7 @@ pub(crate) fn manifest(text: &str) -> Option<Vec<Declaration>> {
                     .and_then(Item::as_str)
                     .map(str::to_owned)
             };
+            let identity = format!("{label}\0{key}\0{}", canonical(item));
             // `[replace]` keys are package ids (`name:version`).
             let key = key.split_once(':').map_or(key, |(name, _)| name);
             out.push(Declaration {
@@ -80,6 +111,8 @@ pub(crate) fn manifest(text: &str) -> Option<Vec<Declaration>> {
                 git: field("git"),
                 path: field("path"),
                 lines: spans.into_iter().map(|span| lines.range(span)).collect(),
+                header,
+                identity,
             });
         }
     }
@@ -101,11 +134,13 @@ pub(crate) fn lock(text: &str) -> Option<Vec<LockPackage>> {
         // The record's span covers its body too: only its first line, the `[[package]]` header.
         let header = package.span().map(|span| span.start..span.start + 1);
         let mut spans: Vec<Range<usize>> = header.into_iter().collect();
+        let mut identity = String::new();
         for (key, item) in package.iter().filter(|(key, _)| *key != "dependencies") {
             if let Some((key, _)) = package.get_key_value(key) {
                 spans.extend(key.span());
             }
             collect_spans(item, &mut spans);
+            identity.push_str(&format!("{key}={};", canonical(item)));
         }
         out.push(LockPackage {
             name: name.to_owned(),
@@ -114,14 +149,55 @@ pub(crate) fn lock(text: &str) -> Option<Vec<LockPackage>> {
                 .and_then(Item::as_str)
                 .map(str::to_owned),
             lines: spans.into_iter().map(|span| lines.range(span)).collect(),
+            identity,
         });
     }
     Some(out)
 }
 
-/// The dependency tables of a manifest or `target.<cfg>` table.
-fn kinds(table: &dyn TableLike) -> Vec<&Item> {
-    KINDS.iter().filter_map(|kind| table.get(kind)).collect()
+/// The dependency tables of a manifest or `target.<cfg>` table, labelled `<prefix><kind>`.
+fn kinds<'d>(table: &'d dyn TableLike, prefix: &str) -> Vec<(String, &'d Item)> {
+    KINDS
+        .iter()
+        .filter_map(|kind| Some((format!("{prefix}{kind}"), table.get(kind)?)))
+        .collect()
+}
+
+/// An item's value without decor (comments, whitespace, quoting style, key order).
+fn canonical(item: &Item) -> String {
+    match item {
+        Item::None => String::new(),
+        Item::Value(value) => canonical_value(value),
+        Item::Table(table) => canonical_table(table),
+        Item::ArrayOfTables(tables) => {
+            let parts: Vec<String> = tables.iter().map(|table| canonical_table(table)).collect();
+            format!("[{}]", parts.join(","))
+        }
+    }
+}
+
+fn canonical_value(value: &Value) -> String {
+    match value {
+        Value::String(v) => format!("{:?}", v.value()),
+        Value::Integer(v) => format!("{:?}", v.value()),
+        Value::Float(v) => format!("{:?}", v.value()),
+        Value::Boolean(v) => format!("{:?}", v.value()),
+        Value::Datetime(v) => format!("{:?}", v.value()),
+        Value::Array(array) => {
+            let parts: Vec<String> = array.iter().map(canonical_value).collect();
+            format!("[{}]", parts.join(","))
+        }
+        Value::InlineTable(table) => canonical_table(table),
+    }
+}
+
+fn canonical_table(table: &dyn TableLike) -> String {
+    let mut parts: Vec<String> = table
+        .iter()
+        .map(|(key, item)| format!("{key:?}={}", canonical(item)))
+        .collect();
+    parts.sort_unstable();
+    format!("{{{}}}", parts.join(","))
 }
 
 fn parse(text: &str) -> Option<Document<&str>> {

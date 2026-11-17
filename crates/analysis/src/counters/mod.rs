@@ -3,7 +3,7 @@
 
 pub(crate) mod cargo;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use contracts::api::tour::Counters;
 use contracts::common::{Evidence, FileRanges, LineSide, NotAnalysedCategory};
@@ -69,43 +69,7 @@ pub fn compute<'t>(
                 });
             }
         }
-        for side in [LineSide::Base, LineSide::Head] {
-            let Some((path, kind)) = file
-                .path_on(side)
-                .and_then(|path| Some((path, dependency_file(path)?)))
-            else {
-                continue;
-            };
-            let mut changed: Vec<u32> = file
-                .hunks
-                .iter()
-                .flat_map(|hunk| match side {
-                    LineSide::Base => &hunk.removed,
-                    LineSide::Head => &hunk.added,
-                })
-                .copied()
-                .collect();
-            if changed.is_empty() {
-                continue;
-            }
-            changed.sort_unstable();
-            let names = match (kind, text(side, path)) {
-                (DependencyFile::CargoToml, Some(text)) => manifest_changes(text, &changed),
-                (DependencyFile::CargoLock, Some(text)) => lock_changes(text, &changed),
-                (DependencyFile::Other, _) | (_, None) => None,
-            };
-            let Some(names) = names else {
-                not_checked.push(path.to_owned());
-                continue;
-            };
-            for (name, line) in names {
-                dependencies.entry(name).or_default().push(Evidence {
-                    file: path.to_owned(),
-                    side,
-                    line,
-                });
-            }
-        }
+        dependency_changes(file, text, &mut dependencies, &mut not_checked);
     }
     not_checked.sort();
     not_checked.dedup();
@@ -128,59 +92,131 @@ pub fn compute<'t>(
     }
 }
 
-/// Dependencies named by the sorted `changed` lines of a `Cargo.toml` (O((D + C) log C) for D declaration
-/// spans); `None` when it is not checked.
-fn manifest_changes(text: &str, changed: &[u32]) -> Option<Vec<(String, u32)>> {
-    let declarations = cargo::manifest(text)?;
-    Some(named_lines(
-        text,
-        changed,
-        declarations
-            .into_iter()
-            .map(|declaration| (declaration.name, declaration.lines)),
-    ))
+/// A dependency declaration or lockfile record on one side of a dependency file.
+struct Entry {
+    name: String,
+    identity: String,
+    lines: Vec<(u32, u32)>,
+    header: Option<u32>,
 }
 
-/// Packages from a registry or git source whose own lines (name, version, source, checksum) are among the sorted
-/// `changed` lines of a `Cargo.lock`; workspace packages and changes of a package's dependency list do not count.
-/// `None` when it is not checked.
-fn lock_changes(text: &str, changed: &[u32]) -> Option<Vec<(String, u32)>> {
+/// Dependencies changed by `file`: entries whose decor-free identity is on one side only (added, removed, moved
+/// to another table, or with another value). Changed lines are only evidence. A side that cannot be read or
+/// parsed makes the whole file not checked.
+fn dependency_changes<'t>(
+    file: &FileDiff,
+    text: &dyn Fn(LineSide, &str) -> Option<&'t str>,
+    dependencies: &mut BTreeMap<String, Vec<Evidence>>,
+    not_checked: &mut Vec<String>,
+) {
+    let sides = [LineSide::Base, LineSide::Head].map(|side| {
+        file.path_on(side)
+            .and_then(|path| Some((side, path, dependency_file(path)?)))
+    });
+    if file.hunks.is_empty() || sides.iter().all(Option::is_none) {
+        return;
+    }
+    let mut entries: [Vec<Entry>; 2] = [Vec::new(), Vec::new()];
+    let mut unreadable = Vec::new();
+    for (slot, &(side, path, kind)) in sides
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, side)| Some((slot, side.as_ref()?)))
+    {
+        let parsed = match (kind, text(side, path)) {
+            (DependencyFile::CargoToml, Some(text)) => manifest_entries(text),
+            (DependencyFile::CargoLock, Some(text)) => lock_entries(text),
+            (DependencyFile::Other, _) | (_, None) => None,
+        };
+        match (parsed, entries.get_mut(slot)) {
+            (Some(parsed), Some(slot)) => *slot = parsed,
+            _ => unreadable.push(path.to_owned()),
+        }
+    }
+    if !unreadable.is_empty() {
+        not_checked.extend(unreadable);
+        return;
+    }
+    for (slot, &(side, path, _)) in sides
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, side)| Some((slot, side.as_ref()?)))
+    {
+        let (Some(own), Some(other)) = (entries.get(slot), entries.get(1 - slot)) else {
+            continue;
+        };
+        let other: BTreeSet<&str> = other.iter().map(|entry| entry.identity.as_str()).collect();
+        let mut changed: Vec<u32> = file
+            .hunks
+            .iter()
+            .flat_map(|hunk| match side {
+                LineSide::Base => &hunk.removed,
+                LineSide::Head => &hunk.added,
+            })
+            .copied()
+            .collect();
+        changed.sort_unstable();
+        for entry in own
+            .iter()
+            .filter(|entry| !other.contains(entry.identity.as_str()))
+        {
+            let mut lines: Vec<u32> = entry
+                .lines
+                .iter()
+                .flat_map(|&range| cargo::changed_within(&changed, range).iter().copied())
+                .chain(
+                    entry
+                        .header
+                        .filter(|line| changed.binary_search(line).is_ok()),
+                )
+                .collect();
+            if lines.is_empty() {
+                lines.extend(entry.lines.iter().map(|range| range.0).min());
+            }
+            lines.sort_unstable();
+            lines.dedup();
+            let evidence = dependencies.entry(entry.name.clone()).or_default();
+            evidence.extend(lines.into_iter().map(|line| Evidence {
+                file: path.to_owned(),
+                side,
+                line,
+            }));
+        }
+    }
+}
+
+/// The dependency declarations of a `Cargo.toml`; `None` when it is not checked.
+fn manifest_entries(text: &str) -> Option<Vec<Entry>> {
+    let declarations = cargo::manifest(text)?;
+    Some(
+        declarations
+            .into_iter()
+            .map(|declaration| Entry {
+                name: declaration.name,
+                identity: declaration.identity,
+                lines: declaration.lines,
+                header: declaration.header,
+            })
+            .collect(),
+    )
+}
+
+/// The registry and git packages of a `Cargo.lock` (workspace and path packages are not dependencies of their
+/// own); a package's `dependencies` list is not part of it. `None` when it is not checked.
+fn lock_entries(text: &str) -> Option<Vec<Entry>> {
     let packages = cargo::lock(text)?;
-    Some(named_lines(
-        text,
-        changed,
+    Some(
         packages
             .into_iter()
             .filter(|package| package.source.is_some())
-            .map(|package| (package.name, package.lines)),
-    ))
-}
-
-/// The non-blank changed lines inside each named set of line ranges, once per name and line.
-fn named_lines(
-    text: &str,
-    changed: &[u32],
-    named: impl Iterator<Item = (String, Vec<(u32, u32)>)>,
-) -> Vec<(String, u32)> {
-    let lines: Vec<&str> = text.lines().collect();
-    let blank = |number: u32| {
-        usize::try_from(number)
-            .ok()
-            .and_then(|n| lines.get(n.checked_sub(1)?))
-            .is_none_or(|line| line.trim().is_empty())
-    };
-    let mut out = Vec::new();
-    for (name, ranges) in named {
-        let mut hits: Vec<u32> = ranges
-            .into_iter()
-            .flat_map(|range| cargo::changed_within(changed, range).iter().copied())
-            .filter(|&number| !blank(number))
-            .collect();
-        hits.sort_unstable();
-        hits.dedup();
-        out.extend(hits.into_iter().map(|number| (name.clone(), number)));
-    }
-    out
+            .map(|package| Entry {
+                name: package.name,
+                identity: package.identity,
+                lines: package.lines,
+                header: None,
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -409,5 +445,71 @@ mod tests {
         let elapsed = started.elapsed();
         assert_eq!(facts.counters.dependencies_changed.len(), 100_000);
         assert!(elapsed < std::time::Duration::from_secs(30), "{elapsed:?}");
+    }
+
+    /// Dependency changes between two versions of `Cargo.toml`, with the hunks given.
+    fn manifest_change(base: &str, head: &str, hunks: Vec<Hunk>) -> CounterFacts {
+        let files = [file("Cargo.toml", FileStatus::Modified, hunks)];
+        let text =
+            move |side: LineSide, _: &str| Some(if side == LineSide::Base { base } else { head });
+        compute(&files, &[], &text)
+    }
+
+    #[test]
+    fn a_table_header_edit_changes_its_dependencies() {
+        let facts = manifest_change(
+            "[dependencies]\nserde = \"1\"\n",
+            "[dev-dependencies]\nserde = \"1\"\n",
+            vec![hunk((1, 1), (1, 1))],
+        );
+        assert_eq!(facts.counters.dependencies_changed, ["serde"]);
+        let evidence: Vec<(LineSide, u32)> = facts.dependencies[0]
+            .evidence
+            .iter()
+            .map(|evidence| (evidence.side, evidence.line))
+            .collect();
+        assert_eq!(
+            evidence,
+            [(LineSide::Base, 1), (LineSide::Head, 1)],
+            "the changed header"
+        );
+        let facts = manifest_change(
+            "[target.'cfg(unix)'.dependencies]\nnix = \"0.29\"\n",
+            "[target.'cfg(windows)'.dependencies]\nnix = \"0.29\"\n",
+            vec![hunk((1, 1), (1, 1))],
+        );
+        assert_eq!(facts.counters.dependencies_changed, ["nix"]);
+    }
+
+    #[test]
+    fn a_removed_dependency_is_a_change() {
+        let facts = manifest_change(
+            "[dependencies]\nserde = \"1\"\ntokio = \"1\"\n",
+            "[dependencies]\ntokio = \"1\"\n",
+            vec![hunk((2, 1), (1, 0))],
+        );
+        assert_eq!(facts.counters.dependencies_changed, ["serde"]);
+        assert_eq!(facts.dependencies[0].evidence[0].side, LineSide::Base);
+        assert_eq!(facts.dependencies[0].evidence[0].line, 2);
+    }
+
+    #[test]
+    fn a_comment_edit_changes_no_dependency() {
+        let facts = manifest_change(
+            "[dependencies.serde]\nversion = \"1\"\nfeatures = [\n  # old note\n  \"derive\",\n]\n",
+            "[dependencies.serde]\nversion = \"1\"\nfeatures = [\n  # new note\n  \"derive\",\n]\n",
+            vec![hunk((4, 1), (4, 1))],
+        );
+        assert!(facts.counters.dependencies_changed.is_empty(), "{facts:?}");
+        assert!(facts.dependency_files_not_checked.is_empty());
+        let facts = manifest_change(
+            "[dependencies]\ntokio = { version = \"1\", features = [\"macros\"] }\n",
+            "[dependencies]\ntokio = { features = [ \"macros\" ], version = \"1\" } # same\n",
+            vec![hunk((2, 1), (2, 1))],
+        );
+        assert!(
+            facts.counters.dependencies_changed.is_empty(),
+            "formatting only"
+        );
     }
 }
