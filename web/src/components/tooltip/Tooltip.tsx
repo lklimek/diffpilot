@@ -10,18 +10,21 @@ interface TooltipProps {
 }
 
 const TIP_WIDTH = 320;
+// Room a tip may need under its trigger; with less, it opens above.
+const TIP_ROOM = 140;
 
 /** Shows `tip` while the trigger is hovered or focused; Escape hides it (WCAG 1.4.13). */
 export function Tooltip({ tip, children, className = "" }: TooltipProps) {
   const id = useId();
   const wrapper = useRef<HTMLSpanElement>(null);
   // Fixed position so scroll containers (code view, columns) do not clip the tip.
-  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+  const [position, setPosition] = useState<{ top?: number; bottom?: number; left: number } | null>(null);
   const show = () => {
     const rect = wrapper.current?.getBoundingClientRect();
     if (!rect) return;
     const left = Math.max(4, Math.min(rect.left, window.innerWidth - TIP_WIDTH - 8));
-    setPosition({ top: rect.bottom + 4, left });
+    const above = rect.bottom + TIP_ROOM > window.innerHeight && rect.top > TIP_ROOM;
+    setPosition(above ? { bottom: window.innerHeight - rect.top + 4, left } : { top: rect.bottom + 4, left });
   };
   const hide = () => setPosition(null);
   return (

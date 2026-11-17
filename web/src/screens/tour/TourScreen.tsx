@@ -6,6 +6,7 @@ import { useLines, useMe, useReviewState, useTour } from "../../api/queries";
 import { BlockNav } from "../../components/block-nav/BlockNav";
 import { CodeView } from "../../components/code-view/CodeView";
 import { FlowIntroBlock } from "../../components/flow-intro/FlowIntroBlock";
+import { shortcutAction } from "../../components/help/shortcuts";
 import { NavList } from "../../components/nav/NavList";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
 import { StatusMessage } from "../../components/status/StatusMessage";
@@ -75,8 +76,9 @@ export function TourScreen() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isTyping(event)) return;
-      if (event.key === "j") go(next);
-      else if (event.key === "k") go(previous);
+      const action = shortcutAction(event.key);
+      if (action === "next_block") go(next);
+      else if (action === "previous_block") go(previous);
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -107,6 +109,7 @@ export function TourScreen() {
       <FlowIntroBlock
         flow={flow}
         dependencies={data.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
+        ticked={reviewState.data?.ticked_steps ?? []}
       />
     );
   } else if (current.block === "step") {
@@ -133,7 +136,13 @@ export function TourScreen() {
       <TopBar pr={data.analysis.pr} ci={data.pr_context.facts.ci} login={login} />
       <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[var(--width-nav)_minmax(0,1fr)]">
         <nav aria-label="Flows and steps" className="overflow-auto border-r border-border bg-surface p-3.5">
-          <NavList flows={data.flows} current={current} onSelect={go} />
+          <NavList
+            flows={data.flows}
+            quiet={data.quiet}
+            ticked={reviewState.data?.ticked_steps ?? []}
+            current={current}
+            onSelect={go}
+          />
         </nav>
         <main id="main" ref={main} tabIndex={-1} className="overflow-auto px-6 pt-4 pb-10">
           {block ?? <StatusMessage kind="empty">This block is not part of the analysis.</StatusMessage>}
