@@ -1240,9 +1240,8 @@ async fn other_tenants_analysis_is_not_found() {
         assert_eq!(body["code"], json!("not_found"));
     }
     let summary = h.state.db.analyses().summary(id).await.expect("summary");
-    assert_eq!(
-        summary.state,
-        AnalysisState::Planning,
+    assert!(
+        matches!(summary.state, AnalysisState::Planning { .. }),
         "untouched by the other tenant"
     );
 }
@@ -2402,13 +2401,18 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     let paused = h
         .wait_for_state(&id, |state| matches!(state, AnalysisState::Paused { .. }))
         .await;
-    assert_eq!(
-        paused.state,
-        AnalysisState::Paused {
-            resumes_at: Some(resets_at),
-            done: 0,
-            total: None
-        }
+    assert!(
+        matches!(
+            paused.state,
+            AnalysisState::Paused {
+                resumes_at: Some(at),
+                done: 0,
+                total: None,
+                ..
+            } if at == resets_at
+        ),
+        "{:?}",
+        paused.state
     );
     let job = h.state.db.jobs().get(old.job_id).await.expect("job");
     assert_eq!(
@@ -2421,6 +2425,6 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
         record.agent_thread_id, None,
         "the late session is not applied"
     );
-    h.wait_for_state(&id, |state| *state == AnalysisState::Planning)
+    h.wait_for_state(&id, |state| matches!(state, AnalysisState::Planning { .. }))
         .await;
 }

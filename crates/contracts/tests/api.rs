@@ -7,7 +7,10 @@ use contracts::agent::analyse_flow::AgentAnnotation;
 use contracts::agent::analyse_flow::{Assessment, FlowIntroduction};
 use contracts::agent::ask::AskOutput;
 use contracts::agent::pr_context::PrContextOutput;
-use contracts::api::analyses::{AnalysisState, AnalysisSummary, CreateAnalysisRequest, FlowRef};
+use contracts::api::analyses::{
+    AnalysisStage, AnalysisState, AnalysisSummary, CreateAnalysisRequest, FlowRef, StageFlow,
+    StageKind,
+};
 use contracts::api::auth::MeResponse;
 use contracts::api::code::{CommentScope, DeletedBlock, DiffResponse, LinesResponse, RangeQuery};
 use contracts::api::comments::{
@@ -327,12 +330,58 @@ fn node_kinds_follow_step_kinds() {
     }
 }
 
+fn stage_started() -> chrono::DateTime<Utc> {
+    chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 11, 17, 9, 30, 0)
+        .single()
+        .unwrap_or_default()
+}
+
 #[test]
 fn tagged_wire_formats() {
     let cases = [
         (
-            serde_json::to_value(AnalysisState::Running { done: 2, total: 5 }),
+            serde_json::to_value(AnalysisState::Running {
+                done: 2,
+                total: 5,
+                stage: None,
+            }),
             json!({"state": "running", "done": 2, "total": 5}),
+        ),
+        (
+            serde_json::to_value(AnalysisState::Planning { stage: None }),
+            json!({"state": "planning"}),
+        ),
+        (
+            serde_json::to_value(AnalysisState::Planning {
+                stage: Some(AnalysisStage {
+                    kind: StageKind::Plan,
+                    flow: None,
+                    started_at: None,
+                }),
+            }),
+            json!({"state": "planning", "stage": {"kind": "plan", "started_at": null}}),
+        ),
+        (
+            serde_json::to_value(AnalysisState::Running {
+                done: 1,
+                total: 5,
+                stage: Some(AnalysisStage {
+                    kind: StageKind::Flow,
+                    flow: Some(StageFlow {
+                        index: 2,
+                        title: "t".to_owned(),
+                    }),
+                    started_at: Some(stage_started()),
+                }),
+            }),
+            json!({"state": "running", "done": 1, "total": 5, "stage": {
+                "kind": "flow", "flow": {"index": 2, "title": "t"}, "started_at": "2026-11-17T09:30:00Z"}}),
+        ),
+        (
+            serde_json::to_value(AnalysisEvent::Heartbeat {
+                at: stage_started(),
+            }),
+            json!({"event": "heartbeat", "at": "2026-11-17T09:30:00Z"}),
         ),
         (
             serde_json::to_value(AnalysisState::Failed {
@@ -397,6 +446,9 @@ fn sse_event_name_is_the_tag() {
     for event in [
         AnalysisEvent::Analysis { summary: summary() },
         AnalysisEvent::Question { question },
+        AnalysisEvent::Heartbeat {
+            at: stage_started(),
+        },
     ] {
         let json = serde_json::to_value(&event).expect("serialises");
         assert_eq!(json["event"], json!(event.name()));

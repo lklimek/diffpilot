@@ -936,9 +936,14 @@ impl Driver<'_> {
                 resumes_at: self.paused.values().flatten().max().copied(),
                 done,
                 total,
+                stage: None,
             },
-            ((done, Some(total)), true) => AnalysisState::Running { done, total },
-            ((_, None), true) => AnalysisState::Planning,
+            ((done, Some(total)), true) => AnalysisState::Running {
+                done,
+                total,
+                stage: None,
+            },
+            ((_, None), true) => AnalysisState::Planning { stage: None },
         };
         self.set_state(state).await
     }
