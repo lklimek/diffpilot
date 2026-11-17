@@ -86,6 +86,7 @@ test("a second comment joins the same pending review; edit and delete act on Git
   await edited.getByRole("button", { name: "Delete from GitHub" }).click();
   await expect.poll(async () => (await pending(page, id)).comments.map((c) => c.line)).toEqual([96]);
   await expect(pendingButton(page)).toContainText("1");
+  await checkScreen(page);
 });
 
 test("a line outside the diff hunks becomes a file comment linking to the line", async ({ page }) => {
@@ -145,6 +146,7 @@ test("security: comment text with markup renders as text", async ({ page }) => {
   await expect(page.getByRole("main").getByText(markup)).toBeVisible();
   await expect(page.locator("#root img, #root script")).toHaveCount(0);
   expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined();
+  await checkScreen(page);
 });
 
 // TODO(comment_published): needs a review submitted on GitHub between the server's check and its write; fake

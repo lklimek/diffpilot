@@ -1,5 +1,6 @@
 // Journey (d): feedback values on a step, stored here and written to fake MemCan (pending → written), removal
-// deletes the memory, a rejected write stays recorded here (hard case 1: a confident wrong HIGH).
+// deletes the memory, a write MemCan fails stays recorded here and is retried once MemCan answers again (hard
+// case 1: a confident wrong HIGH).
 import { type Page } from "@playwright/test";
 import { checkScreen, finishedReview, inspector, memcan, openStep } from "../support/app";
 import { expect, test } from "../support/fixtures";
@@ -7,11 +8,18 @@ import { expect, test } from "../support/fixtures";
 test.describe.configure({ mode: "serial" });
 
 const buttons = (page: Page) => inspector(page).getByRole("group", { name: /^Feedback on / });
+// The writer is nudged by every feedback change, so an outcome shows within seconds.
+const OUTCOME_MS = 10_000;
+// A failed entry is retried 30 s later; the writer's next unnudged sweep comes at most 60 s after the last one
+// (crates/server/src/memcan/writer.rs FIRST_RETRY, SWEEP_INTERVAL).
+const RETRY_MS = 75_000;
+
 const memory = (page: Page) => inspector(page).getByRole("list", { name: "Calibration memory" });
 
 interface Feedback {
   id: string;
   value: string;
+  memory?: string;
 }
 
 async function stored(page: Page, id: string): Promise<Feedback[]> {
@@ -71,11 +79,14 @@ test("pressing a stored value again removes it and deletes its memory", async ({
     "aria-pressed",
     "false",
   );
-  await expect.poll(async () => (await fake.state()).deleted, { timeout: 30_000 }).toContain(overrated?.id);
+  await expect
+    .poll(async () => (await fake.state()).deleted, { timeout: OUTCOME_MS })
+    .toContain(overrated?.id);
   expect((await stored(page, id)).map((entry) => entry.value)).not.toContain("overrated");
+  await checkScreen(page);
 });
 
-test("MemCan rejects the write: the value stays recorded here and is not reported as saved", async ({
+test("MemCan cannot embed the record (MemCan's failure): recorded here, not reported as saved", async ({
   page,
   stack,
 }) => {
@@ -83,36 +94,72 @@ test("MemCan rejects the write: the value stays recorded here and is not reporte
   const fake = memcan(page, stack);
   await finishedReview(page);
   await openStep(page, 1, 7);
-  await fake.mode({ mode: "reject" });
+  await fake.mode({ mode: "embedding_failure" });
   await buttons(page).getByRole("button", { name: "underrated" }).click();
-  // Up to one writer back-off (30 s) after an intermittent database error recording the outcome (reported).
   await expect(memory(page)).toContainText(
     "underrated: Recorded here; not yet saved to calibration memory (retrying)",
-    { timeout: 45_000 },
+    { timeout: OUTCOME_MS },
   );
   await checkScreen(page);
+  const state = await fake.state();
   expect(
-    Object.values((await fake.state()).memories).map((entry) => entry.value),
-    "nothing stored while MemCan rejects",
-  ).not.toContain("underrated");
+    state.calls.some((call) => call.tool === "_import_records"),
+    "the write reached MemCan",
+  ).toBe(true);
+  expect(Object.values(state.memories).map((entry) => entry.value)).not.toContain("underrated");
   await fake.mode({ mode: "normal" });
 });
 
-// Product defect: after a rejected MemCan write the server often fails to record the outcome ("MemCan writer could
-// not read the feedback queue … the database failed") and backs off 30 s; suspected crates/db feedback.rs
-// record_memcan_outcome (deferred read-then-write transaction on the multi-connection WAL pool).
-test.fixme("a rejected MemCan write shows as not saved without a writer back-off", async ({
+test("MemCan rejects the call (synthetic tool error): recorded here, not reported as saved", async ({
   page,
   stack,
 }) => {
+  test.skip(!stack.memcan, "needs the fake MemCan's inspection endpoint");
   const fake = memcan(page, stack);
   await finishedReview(page);
   await openStep(page, 1, 4);
-  await fake.mode({ mode: "reject" });
+  await fake.mode({ mode: "synthetic_tool_error" });
   await buttons(page).getByRole("button", { name: "irrelevant" }).click();
   await expect(memory(page)).toContainText(
     "irrelevant: Recorded here; not yet saved to calibration memory (retrying)",
-    { timeout: 10_000 },
+    { timeout: OUTCOME_MS },
   );
+  await checkScreen(page);
+  expect(Object.values((await fake.state()).memories).map((entry) => entry.value)).not.toContain(
+    "irrelevant",
+  );
+});
+
+test("once MemCan answers again, the rejected write is retried and reads saved", async ({ page, stack }) => {
+  test.skip(!stack.memcan, "needs the fake MemCan's inspection endpoint");
+  const fake = memcan(page, stack);
+  const id = await finishedReview(page);
+  await openStep(page, 1, 4);
+  await expect(memory(page)).toContainText("irrelevant: Recorded here; not yet saved", {
+    timeout: OUTCOME_MS,
+  });
   await fake.mode({ mode: "normal" });
+  const irrelevant = (await stored(page, id)).find((entry) => entry.value === "irrelevant");
+  await expect
+    .poll(async () => (await stored(page, id)).find((entry) => entry.id === irrelevant?.id)?.memory, {
+      timeout: RETRY_MS,
+    })
+    .toBe("written");
+  expect((await fake.state()).memories[irrelevant?.id ?? ""]).toMatchObject({ value: "irrelevant" });
+  await page.reload();
+  await expect(memory(page)).toContainText("irrelevant: Saved to calibration memory");
+  await checkScreen(page);
+});
+
+// Product defect: the open page re-reads feedback only while a write is pending (web/src/api/queries.ts
+// useFeedback refetchInterval), so a "(retrying)" value that MemCan later saves keeps saying retrying until reload.
+test.fixme("the open page shows a retried write as saved without a reload", async ({ page, stack }) => {
+  const fake = memcan(page, stack);
+  await finishedReview(page);
+  await openStep(page, 1, 3);
+  await fake.mode({ mode: "synthetic_tool_error" });
+  await buttons(page).getByRole("button", { name: "correct" }).click();
+  await expect(memory(page)).toContainText("correct: Recorded here; not yet saved", { timeout: OUTCOME_MS });
+  await fake.mode({ mode: "normal" });
+  await expect(memory(page)).toContainText("correct: Saved to calibration memory", { timeout: RETRY_MS });
 });

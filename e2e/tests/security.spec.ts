@@ -1,7 +1,7 @@
 // Journey (h): browser security smoke — the Content-Security-Policy header is sent and blocks inline script; LLM
 // analysis text with markup renders as text. GitHub text and Ask answers: comments.spec.ts, ask.spec.ts.
 import { readFileSync } from "node:fs";
-import { finishedReview, heading, inspector, openStep } from "../support/app";
+import { checkScreen, finishedReview, heading, inspector, openStep } from "../support/app";
 import { expect, test } from "../support/fixtures";
 
 const MARKUP = '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>';
@@ -28,6 +28,7 @@ test("CSP header present; an inline script does not execute", async ({ page }) =
   });
   expect(await violations).toMatch(/^script-src/);
   expect(await page.evaluate(() => (window as { __inline?: number }).__inline)).toBeUndefined();
+  await checkScreen(page);
 });
 
 test("security: LLM analysis text with markup renders as text", async ({ page, stack }) => {
@@ -59,4 +60,5 @@ test("security: LLM analysis text with markup renders as text", async ({ page, s
   expect(handlers).toEqual([]);
   expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined();
   expect(dialogs).toEqual([]);
+  await checkScreen(page);
 });

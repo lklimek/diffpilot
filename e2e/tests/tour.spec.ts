@@ -25,9 +25,10 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
     "12 lines removed from tests",
     "3 dependencies changed: tokio, tracing, url",
     "Project profile: repository file",
-    "Project profile in MemCan:",
   ])
     await expect(facts).toContainText(fact);
+  // Fake MemCan answered the profile lookup completely (has_more false) and holds no profile.
+  await expect(facts).not.toContainText("Project profile in MemCan: not checked");
   const banner = page.getByRole("banner");
   await expect(banner).toContainText("CI: 1 of 6 failing");
   await expect(banner).toContainText("flows reviewed 0 / 5");
@@ -146,6 +147,7 @@ test("resume where left off: the tick and the last viewed block survive a reload
   await found.getByRole("link", { name: "Resume review" }).click();
   await expect(heading(page)).toContainText("Default timeout");
   await expect(ticked).toBeVisible();
+  await checkScreen(page);
 });
 
 test("columns: a hidden column stays hidden after a reload", async ({ page }) => {
@@ -154,6 +156,7 @@ test("columns: a hidden column stays hidden after a reload", async ({ page }) =>
   await page.reload();
   const strip = page.getByRole("button", { name: "Show Inspector column" });
   await expect(strip).toBeVisible();
+  await checkScreen(page);
   await strip.click();
   await expect(page.getByRole("button", { name: "Hide Inspector column" })).toBeVisible();
 });

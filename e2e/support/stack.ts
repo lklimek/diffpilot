@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import type { GithubCredentials } from "./secrets";
 
 const LAUNCHER = fileURLToPath(new URL("../../deploy/dev/stack.sh", import.meta.url));
 const START_TIMEOUT_MS = Number(process.env.SR_E2E_START_TIMEOUT_MS ?? 120_000);
@@ -40,6 +41,10 @@ export interface Stack {
    * returns its id. Null when the clone base is out of reach.
    */
   moveHead: (() => Promise<string>) | null;
+  /** What fake GitHub's App endpoints issued so far; null when out of reach. */
+  githubCredentials: (() => Promise<GithubCredentials>) | null;
+  /** Secrets a test saw (session cookie, CSRF token): the leak check at stop looks for them in the logs. */
+  secrets: [string, string][];
 }
 
 function envFile(stateDir: string): Record<string, string> {
@@ -68,6 +73,12 @@ function localStack(url: string, stateDir: string): Stack {
             env.SR_GITHUB_API_URL,
           )
       : null,
+    githubCredentials: async () => {
+      const response = await fetch(`${env.SR_GITHUB_API_URL}/_fake/app-credentials`);
+      if (!response.ok) throw new Error(`fake GitHub credentials: ${response.status}`);
+      return (await response.json()) as GithubCredentials;
+    },
+    secrets: [],
   };
 }
 
@@ -106,6 +117,8 @@ function externalStack(url: string): Stack {
     memcan: memcan && token ? { url: memcan, token } : null,
     script: null,
     moveHead: null,
+    githubCredentials: null,
+    secrets: [],
   };
 }
 
@@ -128,10 +141,21 @@ export async function startStack(): Promise<{ stack: Stack; stop: () => Promise<
       return false; // the group is gone
     }
   };
+  // The guard outlives a worker killed by SIGKILL or the OOM killer: its stdin is a pipe from this process, so the
+  // worker's death ends `cat`, and the guard stops the launcher's group (the launcher stops the components).
+  const guard = spawn(
+    "bash",
+    ["-c", 'cat > /dev/null; kill -TERM -- "-$1" 2> /dev/null; exit 0', "stack-guard", String(group)],
+    { detached: true, stdio: ["pipe", "ignore", "ignore"] },
+  );
+  guard.stdin?.on("error", () => {});
+  guard.unref();
+  (guard.stdin as unknown as { unref?: () => void } | null)?.unref?.();
   const onExit = () => signalGroup("SIGTERM");
   process.once("exit", onExit);
   const stop = async () => {
     process.off("exit", onExit);
+    guard.kill("SIGKILL"); // stopped here; a late guard must not signal a reused group id
     signalGroup("SIGTERM");
     await Promise.race([exited, delay(STOP_TIMEOUT_MS)]);
     if (signalGroup(0)) signalGroup("SIGKILL");

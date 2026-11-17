@@ -1,4 +1,7 @@
 // Steps and checks shared by the journeys.
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page } from "@playwright/test";
 import type { Stack } from "./stack";
@@ -110,21 +113,105 @@ export async function openStep(page: Page, flow: number, step: number): Promise<
   await navTo(page, new RegExp(`^Step ${step}:`));
 }
 
-const BANNED = [
-  /\bno\s+risks?\b/i,
-  /\bnothing\s+to\s+review\b/i,
-  /\bno\s+review\s+needed\b/i,
-  /\bnoise\b/i,
-  /\bverified\b/i,
-  /\bwas\s+wrong\b/i,
-  /\bconfidence\b/i,
-  /\d\s?%/,
-];
+/** The wording rules shared with scripts/check-wording.sh (brief §1, plan §12.4). */
+const RULES = JSON.parse(
+  readFileSync(new URL("../../scripts/wording-rules.json", import.meta.url), "utf8"),
+) as { words: string; percent: string };
+const WORDS = new RegExp(RULES.words, "iu");
+const PERCENT = new RegExp(RULES.percent, "u");
 
-/** Brief §1 / plan §12.4 on the rendered page text (tooltips included): no banned phrase, no percentage. */
+/** Banned phrases and percentages in `text`, as `"match" in context`. */
+export function wordingViolations(text: string, patterns: RegExp[] = [WORDS, PERCENT]): string[] {
+  return patterns.flatMap((pattern) => {
+    const match = new RegExp(pattern.source, `${pattern.flags}g`);
+    return [...text.matchAll(match)].map((found) => {
+      const at = found.index ?? 0;
+      return `"${found[0]}" in "${text.slice(Math.max(0, at - 40), at + 40)}"`;
+    });
+  });
+}
+
+/**
+ * Brief §1 / plan §12.4 on the rendered page: no banned phrase and no percentage in the page text (hidden tooltip
+ * text included), and no `%` at all in the top bar.
+ */
 export async function expectTrustWording(page: Page): Promise<void> {
-  const text = await page.locator("body").evaluate((body) => body.textContent ?? "");
-  for (const pattern of BANNED) expect(text, `banned wording ${pattern}`).not.toMatch(pattern);
+  // Text nodes joined by spaces (hidden text too; block boundaries keep word boundaries) and the rendered text
+  // (inline markup inside a word).
+  const text = await page.locator("body").evaluate((body) => {
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, (node) =>
+      node.parentElement?.closest("script, style") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+    );
+    const nodes: string[] = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode.textContent ?? "");
+    return `${nodes.join(" ")}\n${(body as HTMLElement).innerText}`;
+  });
+  expect(wordingViolations(text), "banned wording on the page").toEqual([]);
+  const banner = page.getByRole("banner");
+  if ((await banner.count()) > 0) {
+    const top = await banner
+      .first()
+      .evaluate((bar) => `${bar.textContent ?? ""} ${(bar as HTMLElement).innerText}`);
+    expect(wordingViolations(top, [WORDS, /%/u]), "banned wording in the top bar").toEqual([]);
+  }
+}
+
+/**
+ * Focuses every rendered trigger of a tooltip (`aria-describedby` naming a `role="tooltip"` element), or the
+ * focusable element inside it: the tip must show on keyboard focus and hide when focus leaves; returns the texts
+ * shown and the problems found. No key is pressed (Escape is the app's global "close" shortcut).
+ */
+export async function sweepTooltips(page: Page): Promise<{ texts: string[]; problems: string[] }> {
+  return page.evaluate(async () => {
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    const settle = async () => {
+      await frame();
+      await frame();
+    };
+    const previous = document.activeElement as HTMLElement | null;
+    const texts: string[] = [];
+    const problems: string[] = [];
+    const tipOf = (trigger: Element) =>
+      (trigger.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .find((element) => element?.getAttribute("role") === "tooltip");
+    const focusable = "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
+    for (const trigger of document.querySelectorAll<HTMLElement>("[aria-describedby]")) {
+      const tip = tipOf(trigger);
+      // Not rendered: hidden, display none, or the content of a closed <details>.
+      if (!tip || !trigger.checkVisibility({ contentVisibilityAuto: true, visibilityProperty: true }))
+        continue;
+      const name = (trigger.getAttribute("aria-label") ?? trigger.textContent ?? "").trim().slice(0, 60);
+      // A trigger that is not focusable itself opens through a focusable element inside it (focus bubbles).
+      const target = trigger.matches(focusable) ? trigger : trigger.querySelector<HTMLElement>(focusable);
+      // A disabled control takes no focus by design; its description stays in the accessibility tree.
+      if (target?.matches(":disabled")) continue;
+      if (!target) {
+        problems.push(`tooltip trigger cannot take keyboard focus: "${name}"`);
+        continue;
+      }
+      target.focus({ preventScroll: true });
+      await settle();
+      if (document.activeElement !== target) {
+        // Re-rendered meanwhile (the node left the document): not a finding.
+        if (!target.isConnected) continue;
+        problems.push(`tooltip trigger cannot take keyboard focus: "${name}"`);
+        continue;
+      }
+      if (tip.hidden) {
+        problems.push(`tooltip not shown on focus: "${name}"`);
+      } else {
+        texts.push(tip.textContent ?? "");
+      }
+      target.blur();
+      await settle();
+      if (!tip.hidden) problems.push(`tooltip stays open after focus leaves "${name}"`);
+    }
+    previous?.focus?.({ preventScroll: true });
+    await settle();
+    return { texts, problems };
+  });
 }
 
 /** No serious or critical axe violation (WCAG 2.2 AA tags). */
@@ -142,9 +229,12 @@ export async function expectAccessible(page: Page): Promise<void> {
   expect(serious.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(" ")}`)).toEqual([]);
 }
 
-/** Wording rules and the accessibility pass on the current screen state. */
+/** Wording rules (page, top bar, every tooltip shown by keyboard) and the accessibility pass on the screen. */
 export async function checkScreen(page: Page): Promise<void> {
   await expectTrustWording(page);
+  const tooltips = await sweepTooltips(page);
+  expect(tooltips.problems, "tooltips").toEqual([]);
+  expect(wordingViolations(tooltips.texts.join("\n")), "banned wording in tooltips").toEqual([]);
   await expectAccessible(page);
 }
 
@@ -172,4 +262,80 @@ export function memcan(page: Page, stack: Stack) {
       expect(response.status()).toBe(204);
     },
   };
+}
+
+/** `HH:MM` of `iso` as the UI shows a time of today (browser time zone, 24-hour clock). */
+export function clock(page: Page, iso: string): Promise<string> {
+  return page.evaluate(
+    (time) => new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit" }).format(new Date(time)),
+    iso,
+  );
+}
+
+/** A provider call as the runner logs it: a claimed job attempt, or its end with the outcome. */
+export interface RunnerEvent {
+  at: number;
+  event: "claimed" | "finished";
+  job: string;
+  attempt: number;
+  kind?: string;
+  outcome?: string;
+}
+
+/** The runner's job attempts so far (runner.log of a local stack). */
+export function runnerEvents(stack: Stack): RunnerEvent[] {
+  if (!stack.stateDir) throw new Error("the runner log of a stack started elsewhere is out of reach");
+  const claimed = /^(\S+)\s+INFO runner::worker: job claimed job=(\S+) attempt=(\d+) kind="(\w+)"/;
+  const finished =
+    /^(\S+)\s+INFO runner::execute: job attempt finished job=(\S+) attempt=(\d+) outcome="(\w+)"/;
+  return readFileSync(join(stack.stateDir, "logs", "runner.log"), "utf8")
+    .split("\n")
+    .flatMap((line): RunnerEvent[] => {
+      const claim = claimed.exec(line);
+      if (claim)
+        return [
+          { at: Date.parse(claim[1]), event: "claimed", job: claim[2], attempt: +claim[3], kind: claim[4] },
+        ];
+      const end = finished.exec(line);
+      if (end)
+        return [
+          { at: Date.parse(end[1]), event: "finished", job: end[2], attempt: +end[3], outcome: end[4] },
+        ];
+      return [];
+    });
+}
+
+/**
+ * The attempts of the job that hit the usage limit: none may start before `resumesAt`, exactly one after it.
+ * `kind` narrows to one job kind.
+ */
+export function expectRetriedOnlyAfter(stack: Stack, resumesAt: number, kind: string): void {
+  const events = runnerEvents(stack);
+  const limited = events.find((event) => event.event === "finished" && event.outcome === "usage_limited");
+  expect(limited, "a job attempt ended on the usage limit").toBeDefined();
+  const job = events.find((event) => event.event === "claimed" && event.job === limited?.job);
+  expect(job?.kind).toBe(kind);
+  const later = events.filter(
+    (event) =>
+      event.event === "claimed" && event.job === limited?.job && event.attempt > (limited?.attempt ?? 0),
+  );
+  expect(
+    later.filter((event) => event.at < resumesAt).map((event) => new Date(event.at).toISOString()),
+    `no attempt before ${new Date(resumesAt).toISOString()}`,
+  ).toEqual([]);
+  expect(later.length, "exactly one attempt after the reset").toBe(1);
+}
+
+/** Runs a read-only query on the server database of a local stack; rows as `|`-separated lines. */
+export function sql(stack: Stack, query: string): string[] {
+  if (!stack.stateDir) throw new Error("the database of a stack started elsewhere is out of reach");
+  return execFileSync(
+    "sqlite3",
+    ["-readonly", join(stack.stateDir, "server", "smart-review.sqlite"), query],
+    {
+      encoding: "utf8",
+    },
+  )
+    .split("\n")
+    .filter(Boolean);
 }

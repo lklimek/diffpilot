@@ -2,21 +2,29 @@
 
 The v1 user journeys through the real stack, no mocks in the browser: server with the embedded web UI, runner
 with the fake provider (fixture replay of `fixtures/pr-482`, scriptable), fake GitHub (`tools/fake-github`) and
-fake MemCan (`tools/fake-memcan`). Every reached state is also checked for the wording rules of brief §1 (no
-"no risk", "verified", "noise", "confidence", percentages …) and by axe (serious or critical = failure).
+fake MemCan (`tools/fake-memcan`). Every reached state is checked by `checkScreen` (`support/app.ts`): the wording rules of brief §1
+(`scripts/wording-rules.json`, shared with `scripts/check-wording.sh`) on the page text, hidden tooltips included,
+no `%` at all in the top bar, every tooltip opened by keyboard focus and closed by Escape (its text checked too), and
+axe (serious or critical = failure). When a local stack stops, its component logs are checked for leaked secrets
+(`support/secrets.ts`): generated secrets, the App private key lines, every App JWT and installation token fake
+GitHub issued, fixture credentials, session secrets the tests registered, and anything shaped like the server's
+random tokens (job tokens are known only by that shape: the server keeps just their hash). A leak fails the run.
 
-| Spec                      | Journey                                                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `slice.spec.ts`           | sign in, analyse PR 482, flow 1 step 1; no secret or token in any component log                         |
-| `analysis-cancel.spec.ts` | planning, cancel → "analyze again"; failure before any flow → Retry → `k of n` → finished               |
-| `analysis-pause.spec.ts`  | usage limit → "Paused until HH:MM" → resumed; failed flow named → Retry → finished                      |
-| `tour.spec.ts`            | PR context facts, flow order, quiet rows, no LLM questions (hard case 3), classic diff, resume, columns |
-| `comments.spec.ts`        | pending review: create, second comment, edit, delete, outside the diff, missed by the LLM (hard case 2) |
-| `head-moved.spec.ts`      | `pr_head_changed`, "The PR has moved" → Re-analyze without ticks, Ask on the superseded analysis        |
-| `feedback.spec.ts`        | wrong + overrated → MemCan calibration example (hard case 1), pending → written, removal, rejected      |
-| `ask.spec.ts`             | answered and pinned, usage-limit wait with its time, failed answer as a sentence, markup as text        |
-| `settings.spec.ts`        | signed-out screens, LLM status after a failed and a working call, language                              |
-| `security.spec.ts`        | CSP header; an inline script does not run; LLM analysis text with markup renders as text                |
+| Spec                              | Journey                                                                                                               |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `check-screen.spec.ts`            | self-test of `checkScreen` on static pages (no stack): it fails on each kind of violation                             |
+| `slice.spec.ts`                   | sign in, analyse PR 482, flow 1 step 1; a read-only installation token per job, revoked; no secret in the logs so far |
+| `analysis-cancel.spec.ts`         | planning, cancel → "analyze again"; failure before any flow → Retry → `k of n` → finished                             |
+| `analysis-cancel-running.spec.ts` | cancel while a flow job runs: the job stops, stored flows and session discarded, a clean new analysis                 |
+| `analysis-pause.spec.ts`          | usage limit → "Paused until HH:MM" of `resumes_at`, no attempt before it, one after; failed flow → Retry              |
+| `tour.spec.ts`                    | PR context facts, flow order, quiet rows, no LLM questions (hard case 3), classic diff, resume, columns               |
+| `flow-groups.spec.ts`             | flows the LLM classifies as refactor or tests: after the behaviour flows, labelled                                    |
+| `comments.spec.ts`                | pending review: create, second comment, edit, delete, outside the diff, missed by the LLM (hard case 2)               |
+| `head-moved.spec.ts`              | `pr_head_changed`, "The PR has moved" → Re-analyze without ticks, Ask on the superseded analysis                      |
+| `feedback.spec.ts`                | wrong + overrated → MemCan calibration example (hard case 1), removal, MemCan failures, recovery                      |
+| `ask.spec.ts`                     | answered and pinned, usage-limit wait until `resumes_at`, failed answer, Ask again, markup as text                    |
+| `settings.spec.ts`                | signed-out screens, LLM status after a failed and a working call, language                                            |
+| `security.spec.ts`                | CSP header; an inline script does not run; LLM analysis text with markup renders as text                              |
 
 ## Run
 
@@ -36,13 +44,14 @@ The global setup builds once (`npm run build` in `web/`, then `cargo build` of s
 through a wrapper: set all four of `SR_DEV_SERVER_BIN`, `SR_DEV_RUNNER_BIN`, `SR_DEV_FAKE_GITHUB_BIN`,
 `SR_DEV_FAKE_MEMCAN_BIN`.
 
-| Variable                  | Effect                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------- |
-| `SR_E2E_OUTPUT_DIR`       | Traces and screenshots of failures (default `test-results`).                    |
-| `SR_E2E_STACK_ARGS`       | Extra launcher arguments, e.g. `--without runner` (analyses then never finish). |
-| `SR_E2E_START_TIMEOUT_MS` | Bound for one stack start (default 2 min).                                      |
-| `SCREENSHOT_DIR`          | `slice.spec.ts` saves its screens at 1440 and 3440 px, light and dark.          |
-| `RUST_LOG`                | Log level of the components (default `info`).                                   |
+| Variable                  | Effect                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| `SR_E2E_OUTPUT_DIR`       | Traces and screenshots of failures (default `test-results`).                              |
+| `SR_E2E_STACK_ARGS`       | Extra launcher arguments, e.g. `--without runner` (analyses then never finish).           |
+| `SR_E2E_START_TIMEOUT_MS` | Bound for one stack start (default 2 min).                                                |
+| `SR_E2E_BUILD_TIMEOUT_MS` | Bound for the global setup's build (default 30 min); the build's process group is killed. |
+| `SCREENSHOT_DIR`          | `slice.spec.ts` saves its screens at 1440 and 3440 px, light and dark.                    |
+| `RUST_LOG`                | Log level of the components (default `info`).                                             |
 
 ## How the stack is started
 
@@ -58,7 +67,12 @@ What a test can reach of a local stack (`Stack` in `support/stack.ts`):
   call): per job kind, flow and prompt substring, `replay` slowly, `usage_limit` with a reset time, `fail`, or
   `answer` with a given output (Ask). Format: `crates/runner/src/provider/fake.rs`.
 - `stack.memcan` with `memcan(page, stack)` (`support/app.ts`): fake MemCan's memories, deletions and calls
-  (`GET /_fake/state`) and its mode (`normal`, `reject`, `unavailable`, `hang`, `delay`).
+  (`GET /_fake/state`) and its mode (`normal`, `embedding_failure` as MemCan fails, `synthetic_tool_error`,
+  `unavailable`, `hang`, `delay`; `tools/fake-memcan/README.md`).
+- `stack.githubCredentials()`: App JWTs accepted and installation tokens minted and revoked by fake GitHub.
+- `runnerEvents(stack)`, `sql(stack, query)` (`support/app.ts`): the runner's job attempts from its log, read-only
+  queries on the server database.
+- The stack's launcher is tied to its worker: a guard process stops it when the worker dies, also on SIGKILL.
 - `stack.moveHead()` pushes a commit onto the PR head in the clone base and moves fake GitHub's head
   (`POST /_fake/head`).
 
@@ -96,7 +110,7 @@ changes, review threads or installations "not checked", a review published on Gi
 ```sh
 deploy/dev/stack.sh            # prints SR_DEV_URL=...; open it and sign in; Ctrl+C stops everything
 deploy/dev/stack.sh --help     # every input and every variable it sets
-deploy/dev/stack-check.sh      # launcher checks: git isolation, relative state dir, cleanup on start timeout
+deploy/dev/stack-check.sh      # git isolation, relative state dir, build timeouts, a killed worker leaves no stack
 deploy/dev/real-codex-smoke.sh # one analysis of a public PR with the real Codex provider (see its header)
 deploy/dev/smoke-publish-check.sh # smoke publication checks (fake credentials): marker names, leaks, failed scans
 ```

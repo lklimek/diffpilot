@@ -2,7 +2,15 @@
 // kept over a reload, a wait on the usage limit with its time, a failed answer as a plain sentence; LLM text with
 // markup renders as text.
 import { type Page } from "@playwright/test";
-import { checkScreen, finishedReview, inspector, openStep } from "../support/app";
+import {
+  checkScreen,
+  clock,
+  expectRetriedOnlyAfter,
+  finishedReview,
+  inspector,
+  openStep,
+  runnerEvents,
+} from "../support/app";
 import { expect, test } from "../support/fixtures";
 
 test.describe.configure({ mode: "serial" });
@@ -67,14 +75,35 @@ test("usage limit: the question waits with the time it runs, then is answered", 
       action: { answer: { output: { answer: "Answered once the limit reset.", evidence: [] } } },
     },
   ]);
-  await finishedReview(page);
+  const id = await finishedReview(page);
   await openStep(page, 1, 6);
-  await ask(page, "Answer after the usage limit please: is the delay capped?");
+  const question = "Answer after the usage limit please: is the delay capped?";
+  await ask(page, question);
+  let resumesAt = "";
+  await expect
+    .poll(
+      async () => {
+        const asked = (await (await page.request.get(`/api/v1/analyses/${id}/questions`)).json()) as {
+          text: string;
+          resumes_at?: string;
+        }[];
+        resumesAt = asked.find((entry) => entry.text === question)?.resumes_at ?? "";
+        return resumesAt;
+      },
+      { timeout: 60_000 },
+    )
+    .not.toBe("");
+  expect(Date.parse(resumesAt), "the run time lies ahead").toBeGreaterThan(Date.now());
   await expect(
-    answers(page).getByText(/^Waiting for the LLM usage limit to reset; the question runs at \d\d:\d\d\.$/),
-  ).toBeVisible({ timeout: 60_000 });
+    answers(page).getByText(
+      `Waiting for the LLM usage limit to reset; the question runs at ${await clock(page, resumesAt)}.`,
+    ),
+  ).toBeVisible();
   await checkScreen(page);
   await expect(answers(page)).toContainText("Answered once the limit reset.", { timeout: 90_000 });
+  await checkScreen(page);
+  // The question's job waited for the reset time it was given, then ran once.
+  expectRetriedOnlyAfter(stack, Date.parse(resumesAt), "ask");
 });
 
 test("a failed answer reads as a plain sentence and offers Ask again", async ({ page, stack }) => {
@@ -94,6 +123,42 @@ test("a failed answer reads as a plain sentence and offers Ask again", async ({ 
   await expect(failed).toBeVisible({ timeout: 60_000 });
   await expect(failed).not.toContainText(/[{}<>]|Error|error:|panicked|schema/);
   await expect(answers(page).getByRole("button", { name: "Ask again" })).toBeVisible();
+  await checkScreen(page);
+});
+
+test("Ask again after a failed answer runs the question again and shows its answer", async ({
+  page,
+  stack,
+}) => {
+  test.skip(!stack.script, "needs the fake provider's script (a local stack)");
+  stack.script?.([
+    {
+      id: "fails-once",
+      job: "ask",
+      prompt_contains: "second try",
+      times: 1,
+      action: { answer: { output: { answer: 42, confidence: "high" } } },
+    },
+    {
+      id: "then-answers",
+      job: "ask",
+      prompt_contains: "second try",
+      action: { answer: { output: { answer: "Answered on the second try.", evidence: [] } } },
+    },
+  ]);
+  await finishedReview(page);
+  await openStep(page, 2, 1);
+  await ask(page, "On the second try: does the timeout apply per attempt?");
+  await expect(answers(page).getByText(/^No answer: /)).toBeVisible({ timeout: 60_000 });
+  const asked = runnerEvents(stack).filter(
+    (event) => event.event === "claimed" && event.kind === "ask",
+  ).length;
+  await answers(page).getByRole("button", { name: "Ask again" }).click();
+  await expect(answers(page)).toContainText("Answered on the second try.", { timeout: 60_000 });
+  expect(
+    runnerEvents(stack).filter((event) => event.event === "claimed" && event.kind === "ask").length,
+    "Ask again ran a new job",
+  ).toBe(asked + 1);
   await checkScreen(page);
 });
 
@@ -118,4 +183,5 @@ test("security: an LLM answer with markup is never rendered as markup", async ({
   );
   await expect(page.locator("#root img, #root script")).toHaveCount(0);
   expect(await page.evaluate(() => (window as { __xss?: number }).__xss)).toBeUndefined();
+  await checkScreen(page);
 });
