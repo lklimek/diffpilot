@@ -1,12 +1,13 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { Tour } from "../../api/generated/types";
-import { expectTrustWording, toursByState } from "../../__tests__/wording";
-import { seedFor } from "../../mocks/fixtures";
-import { PrContextBlock } from "./PrContextBlock";
+import { expectTrustWording } from "../../__tests__/wording";
+import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
+import { PrContextBlock, type PrContextView } from "./PrContextBlock";
 
 const tour = seedFor("default", "tour") as Tour;
-const renderBlock = (t: Tour) => render(<PrContextBlock pr={t.analysis.pr} context={t.pr_context} />);
+const renderBlock = (t: Tour, context: PrContextView = t.pr_context) =>
+  render(<PrContextBlock pr={t.analysis.pr} context={context} />);
 
 describe("PrContextBlock", () => {
   it("separates the LLM analysis from the deterministic facts", () => {
@@ -28,7 +29,41 @@ describe("PrContextBlock", () => {
     expect(facts).toHaveTextContent("12 lines removed from tests");
     expect(facts).toHaveTextContent("3 dependencies changed: tokio, tracing, url");
     expect(facts).toHaveTextContent("Project profile: repository file");
-    expect(facts).toHaveTextContent("5 flows, 17 steps");
+  });
+
+  it("puts the counts of the LLM's split into flows and steps under the LLM analysis (UX-007)", () => {
+    renderBlock(tour);
+    expect(screen.getByRole("region", { name: "Facts" })).not.toHaveTextContent(/flows|steps/);
+    expect(screen.getByRole("region", { name: "LLM analysis" })).toHaveTextContent(
+      "The LLM split this PR into 5 flows with 17 steps.",
+    );
+  });
+
+  it("says CI was not checked when the server could not read the checks", () => {
+    const context: PrContextView = structuredClone(tour.pr_context);
+    context.facts.ci = { state: "not_checked", total: 0, failing: [] };
+    renderBlock(tour, context);
+    const facts = screen.getByRole("region", { name: "Facts" });
+    expect(facts).toHaveTextContent("CI: not checked");
+    expect(facts).not.toHaveTextContent(/no checks reported|passing/);
+  });
+
+  it.each([
+    ["passing", "CI: all 6 checks passing"],
+    ["pending", "CI: 6 checks, still running"],
+    ["none", "CI: no checks reported"],
+  ] as const)("states CI %s as a fact from GitHub", (state, text) => {
+    const t = structuredClone(tour);
+    t.pr_context.facts.ci = { state, total: state === "none" ? 0 : 6, failing: [] };
+    renderBlock(t);
+    expect(screen.getByRole("region", { name: "Facts" })).toHaveTextContent(text);
+  });
+
+  it("names the kind of related work with a label map (UX-009)", () => {
+    renderBlock(tour);
+    const llm = screen.getByRole("region", { name: "LLM analysis" });
+    expect(within(llm).getByText("Stacked PR")).toBeInTheDocument();
+    expect(within(llm).queryByText(/stacked pr/)).not.toBeInTheDocument();
   });
 
   it("states a missing project profile (noprofile)", () => {
@@ -63,15 +98,33 @@ describe("PrContextBlock", () => {
     expect(llm.querySelectorAll("[href]")).toHaveLength(0);
   });
 
-  it("lists agent instruction files in the diff as a notice", () => {
+  it("warns before the LLM analysis when the PR changes agent instruction files (T14)", () => {
     const t = structuredClone(tour);
-    t.pr_context.facts.agent_instruction_files = ["AGENTS.md"];
+    t.pr_context.facts.agent_instruction_files = ["AGENTS.md", ".claude/settings.json"];
     renderBlock(t);
-    expect(screen.getByRole("note")).toHaveTextContent("AGENTS.md");
+    const note = screen.getByRole("note");
+    expect(note).toHaveTextContent("AGENTS.md, .claude/settings.json");
+    expect(note).toHaveTextContent("From the diff; no LLM.");
+    const llm = screen.getByRole("region", { name: "LLM analysis" });
+    expect(note.compareDocumentPosition(llm) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it.each(toursByState)("keeps the wording rules in state %s", (_, stateTour) => {
+  it("shows no instruction-file notice when the diff has none", () => {
+    renderBlock(tour);
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+  });
+
+  it.each(FIXTURE_STATES)("shows every fact computed or not checked in state %s", (state) => {
+    const stateTour = seedFor(state, "tour") as Tour;
     const { container } = renderBlock(stateTour);
+    const facts = screen.getByRole("region", { name: "Facts" });
+    expect(facts).toHaveTextContent(/CI: /);
+    expect(facts).toHaveTextContent(/\d+ lines removed from tests/);
+    expect(facts).toHaveTextContent(/\d+ dependencies changed/);
+    expect(facts).toHaveTextContent(/Project profile: |No project profile — ratings are component-level/);
+    const relatedNotChecked = screen.queryByText("Related work: not checked");
+    if (stateTour.pr_context.facts.related_work_checked) expect(relatedNotChecked).toBeNull();
+    else expect(relatedNotChecked).toBeInTheDocument();
     expectTrustWording(container.textContent ?? "");
   });
 });

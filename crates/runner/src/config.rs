@@ -18,7 +18,8 @@ pub const RUNNER_ID: &str = "SR_RUNNER_ID";
 pub const STATE_DIR: &str = "SR_RUNNER_STATE_DIR";
 /// Directory for job work dirs (may be tmpfs); default `<state>/work`.
 pub const WORK_DIR: &str = "SR_RUNNER_WORK_DIR";
-/// Id of the LLM credential the runner holds (`<state>/credentials/<id>/auth.json`).
+/// Id of the LLM credential the runner holds (`<state>/credentials/<id>/auth.json`). Reserved: v1 has one
+/// credential and the server assigns every job to `default`, so any other value is rejected.
 pub const CREDENTIAL_ID: &str = "SR_RUNNER_CREDENTIAL_ID";
 /// The `codex` binary.
 pub const CODEX_BIN: &str = "SR_RUNNER_CODEX_BIN";
@@ -82,9 +83,11 @@ pub enum ConfigError {
         "environment variable {0} must not point below /tmp; use the runner's persistent volume"
     )]
     UnderTmp(&'static str),
-    /// The credential id has characters outside `[A-Za-z0-9._-]`.
-    #[error("environment variable {0} may contain only letters, digits, '.', '_' and '-'")]
-    InvalidCredentialId(&'static str),
+    /// The credential id is not `default`, the only credential the server assigns jobs to in v1.
+    #[error(
+        "environment variable {0} is reserved: v1 supports only the credential 'default'; unset it"
+    )]
+    UnsupportedCredentialId(&'static str),
     /// Unknown provider name.
     #[error("environment variable {0} must be 'codex' (or 'fake' in fake-provider builds)")]
     UnknownProvider(&'static str),
@@ -122,12 +125,8 @@ impl Config {
             None => state_dir.join("work"),
         };
         let credential_id = get(CREDENTIAL_ID).unwrap_or_else(|| DEFAULT_CREDENTIAL_ID.to_owned());
-        let valid_id = credential_id
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-            && !matches!(credential_id.as_str(), "." | "..");
-        if !valid_id {
-            return Err(ConfigError::InvalidCredentialId(CREDENTIAL_ID));
+        if credential_id != DEFAULT_CREDENTIAL_ID {
+            return Err(ConfigError::UnsupportedCredentialId(CREDENTIAL_ID));
         }
         let egress_proxy = get(EGRESS_PROXY);
         if let Some(proxy) = &egress_proxy
@@ -240,15 +239,18 @@ mod tests {
     }
 
     #[test]
-    fn credential_id_cannot_escape_the_store() {
-        for id in ["../x", "..", "a/b"] {
+    fn credential_id_other_than_default_is_rejected() {
+        for id in ["work", "../x", "..", "a/b"] {
             let mut pairs = BASE.to_vec();
             pairs.push((CREDENTIAL_ID, id));
             assert!(
-                matches!(config(&pairs), Err(ConfigError::InvalidCredentialId(_))),
+                matches!(config(&pairs), Err(ConfigError::UnsupportedCredentialId(_))),
                 "{id}"
             );
         }
+        let mut pairs = BASE.to_vec();
+        pairs.push((CREDENTIAL_ID, "default"));
+        assert_eq!(config(&pairs).unwrap().credential.id, "default");
     }
 
     #[test]
