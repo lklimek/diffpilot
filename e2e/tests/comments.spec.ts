@@ -72,9 +72,11 @@ test("a second comment joins the same pending review; edit and delete act on Git
 
   const mine = inspector(page).getByRole("listitem").filter({ hasText: "Rebuilt on every turn: intended?" });
   await mine.getByRole("button", { name: "Edit", exact: true }).click();
-  await inspector(page)
-    .getByRole("textbox", { name: "Edit comment" })
-    .fill("Rebuilt on every turn: is that needed?");
+  const editor = inspector(page).getByRole("textbox", { name: "Edit comment" });
+  await editor.fill("Rebuilt on every turn: is that needed?");
+  // The editor open; the sweep leaves it open with the draft kept.
+  await checkScreen(page);
+  await expect(editor).toHaveValue("Rebuilt on every turn: is that needed?");
   await inspector(page).getByRole("button", { name: "Save", exact: true }).click();
   await expect
     .poll(async () => (await pending(page, id)).comments.map((c) => c.body))
@@ -83,6 +85,8 @@ test("a second comment joins the same pending review; edit and delete act on Git
 
   const edited = inspector(page).getByRole("listitem").filter({ hasText: "is that needed?" });
   await edited.getByRole("button", { name: "Delete", exact: true }).click();
+  // The delete confirmation open; the sweep leaves it open.
+  await checkScreen(page);
   await edited.getByRole("button", { name: "Delete from GitHub" }).click();
   await expect.poll(async () => (await pending(page, id)).comments.map((c) => c.line)).toEqual([96]);
   await expect(pendingButton(page)).toContainText("1");

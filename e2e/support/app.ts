@@ -98,12 +98,8 @@ export async function finishedReview(page: Page): Promise<string> {
   return new URL(page.url()).pathname.split("/").at(-1) ?? "";
 }
 
-/**
- * Clicks a navigation entry. The pointer first leaves the entry clicked before: a focused entry keeps its tooltip,
- * which may cover the next entry until the pointer moves away.
- */
+/** Clicks a navigation entry. */
 export async function navTo(page: Page, name: string | RegExp): Promise<void> {
-  await page.mouse.move(0, 0);
   await nav(page).getByRole("button", { name }).click();
 }
 
@@ -156,13 +152,103 @@ export async function expectTrustWording(page: Page): Promise<void> {
   }
 }
 
+/** A control that must carry a non-empty tooltip (brief §4 rule 3, plan §12.4). */
+export interface RequiredTip {
+  /** The screen it belongs to: a selector present only there (`body`: every screen). */
+  screen: string;
+  /** What it is, for the failure message. */
+  what: string;
+  /** The tooltip trigger itself (the element with `aria-describedby`). */
+  selector: string;
+  /** Source of a regular expression the accessible name (aria-label, else text) must match. */
+  name?: string;
+  /** How many must be rendered on that screen; 0: none required, but each one rendered needs its tip. */
+  min: number;
+}
+
+const REVIEW = 'nav[aria-label="Flows and steps"]';
+const PROGRESS = 'section[aria-label="Analysis progress"]';
+const HOME = 'form:has(input[type="url"])';
+
+/** The controls of web/src/components that carry a tooltip, per screen. */
+export const REQUIRED_TIPS: RequiredTip[] = [
+  // Top bar (TopBar.tsx): every item but the brand and the repository link.
+  { screen: "body", what: "top bar: PR number", selector: 'header a[href*="/pull/"]', min: 0 },
+  {
+    screen: "body",
+    what: "top bar: label (head SHA, CI, flows reviewed)",
+    selector: 'header [tabindex="0"]',
+    min: 0,
+  },
+  { screen: "body", what: "top bar: button (pending review, help)", selector: "header button", min: 0 },
+  { screen: "body", what: "top bar: user", selector: 'header a[href="/settings"]', min: 0 },
+  { screen: REVIEW, what: "top bar: PR number", selector: 'header a[href*="/pull/"]', min: 1 },
+  { screen: REVIEW, what: "top bar: head SHA", selector: 'header code[tabindex="0"]', min: 1 },
+  {
+    screen: REVIEW,
+    what: "top bar: flows reviewed",
+    selector: 'header [tabindex="0"]',
+    name: "^flows reviewed",
+    min: 1,
+  },
+  {
+    screen: REVIEW,
+    what: "top bar: pending review",
+    selector: "header button",
+    name: "^Pending review",
+    min: 1,
+  },
+  { screen: REVIEW, what: "top bar: help", selector: "header button", name: "^Help", min: 1 },
+  { screen: REVIEW, what: "top bar: user", selector: 'header a[href="/settings"]', min: 1 },
+  // Navigation (NavList.tsx): quiet rows, the pending-review row, risk and group labels.
+  {
+    screen: REVIEW,
+    what: "navigation: quiet row",
+    selector: `${REVIEW} ul[aria-label="Quiet rows"] button, ${REVIEW} ul[aria-label="Not analysed"] button`,
+    min: 0,
+  },
+  {
+    screen: REVIEW,
+    what: "navigation: pending review",
+    selector: `${REVIEW} button`,
+    name: "^Pending review on GitHub",
+    min: 0,
+  },
+  { screen: REVIEW, what: "risk or other LLM label", selector: "[data-llm-label]", min: 1 },
+  { screen: "body", what: "provenance badge", selector: "[data-badge]", min: 0 },
+  // Block (BlockNav.tsx) and inspector (FeedbackButtons.tsx, AskForm.tsx).
+  { screen: REVIEW, what: "Previous", selector: "main button", name: "^← Previous", min: 1 },
+  { screen: REVIEW, what: "Next", selector: "main button", name: "^Next", min: 1 },
+  {
+    screen: "body",
+    what: "feedback value",
+    selector: '[role="group"][aria-label^="Feedback on"] button',
+    min: 0,
+  },
+  { screen: "body", what: "Ask", selector: 'form button[type="submit"]', name: "^(Ask|Sending…)$", min: 0 },
+  // Progress (AnalysisProgress.tsx) and Home (PrUrlForm.tsx).
+  {
+    screen: PROGRESS,
+    what: "progress action (Cancel, Retry, Open review)",
+    selector: `${PROGRESS} button, ${PROGRESS} a[href]`,
+    min: 1,
+  },
+  { screen: HOME, what: "Analyze", selector: `${HOME} button[type="submit"]`, name: "^Analyze$", min: 1 },
+];
+
 /**
- * Focuses every rendered trigger of a tooltip (`aria-describedby` naming a `role="tooltip"` element), or the
- * focusable element inside it: the tip must show on keyboard focus and hide when focus leaves; returns the texts
- * shown and the problems found. No key is pressed (Escape is the app's global "close" shortcut).
+ * Checks the tooltips of the rendered screen; returns the texts shown and the problems found:
+ * - each control of `required` on the current screen is rendered (`min`) and names a non-empty tooltip;
+ * - every `aria-describedby` id names an element, and a tooltip it names is not empty;
+ * - every rendered tooltip trigger (or the focusable element inside it) takes keyboard focus, aria-disabled
+ *   controls included; the tip shows on focus and hides when focus leaves. Only the content of a closed
+ *   `<details>` (not rendered) is skipped. No key is pressed (Escape is the app's global "close" shortcut).
  */
-export async function sweepTooltips(page: Page): Promise<{ texts: string[]; problems: string[] }> {
-  return page.evaluate(async () => {
+export async function sweepTooltips(
+  page: Page,
+  required: RequiredTip[] = REQUIRED_TIPS,
+): Promise<{ texts: string[]; problems: string[] }> {
+  return page.evaluate(async (required) => {
     const frame = () => new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
     const settle = async () => {
       await frame();
@@ -171,22 +257,45 @@ export async function sweepTooltips(page: Page): Promise<{ texts: string[]; prob
     const previous = document.activeElement as HTMLElement | null;
     const texts: string[] = [];
     const problems: string[] = [];
-    const tipOf = (trigger: Element) =>
+    const rendered = (element: Element) =>
+      element.checkVisibility({ contentVisibilityAuto: true, visibilityProperty: true });
+    const nameOf = (element: Element) =>
+      (element.getAttribute("aria-label") ?? element.textContent ?? "").trim().replace(/\s+/g, " ");
+    const described = (trigger: Element) =>
       (trigger.getAttribute("aria-describedby") ?? "")
         .split(/\s+/)
-        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((id) => ({ id, element: document.getElementById(id) }));
+    const tipOf = (trigger: Element) =>
+      described(trigger)
+        .map(({ element }) => element)
         .find((element) => element?.getAttribute("role") === "tooltip");
+
+    for (const want of required) {
+      if (!document.querySelector(want.screen)) continue;
+      const name = want.name === undefined ? null : new RegExp(want.name, "u");
+      const found = [...document.querySelectorAll(want.selector)].filter(
+        (element) => rendered(element) && (!name || name.test(nameOf(element))),
+      );
+      if (found.length < want.min)
+        problems.push(`required control missing: ${want.what} (${found.length} of ${want.min} rendered)`);
+      for (const element of found) {
+        const tip = tipOf(element);
+        if (!tip) problems.push(`required tooltip missing: ${want.what} "${nameOf(element).slice(0, 60)}"`);
+      }
+    }
+
     const focusable = "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
     for (const trigger of document.querySelectorAll<HTMLElement>("[aria-describedby]")) {
+      const name = nameOf(trigger).slice(0, 60);
+      for (const { id, element } of described(trigger))
+        if (!element) problems.push(`aria-describedby names no element: "${id}" on "${name}"`);
       const tip = tipOf(trigger);
-      // Not rendered: hidden, display none, or the content of a closed <details>.
-      if (!tip || !trigger.checkVisibility({ contentVisibilityAuto: true, visibilityProperty: true }))
-        continue;
-      const name = (trigger.getAttribute("aria-label") ?? trigger.textContent ?? "").trim().slice(0, 60);
+      // Not a tooltip (help text), or not rendered: hidden, display none, or inside a closed <details>.
+      if (!tip || !rendered(trigger)) continue;
+      if ((tip.textContent ?? "").trim() === "") problems.push(`tooltip is empty: "${name}"`);
       // A trigger that is not focusable itself opens through a focusable element inside it (focus bubbles).
       const target = trigger.matches(focusable) ? trigger : trigger.querySelector<HTMLElement>(focusable);
-      // A disabled control takes no focus by design; its description stays in the accessibility tree.
-      if (target?.matches(":disabled")) continue;
       if (!target) {
         problems.push(`tooltip trigger cannot take keyboard focus: "${name}"`);
         continue;
@@ -211,7 +320,7 @@ export async function sweepTooltips(page: Page): Promise<{ texts: string[]; prob
     previous?.focus?.({ preventScroll: true });
     await settle();
     return { texts, problems };
-  });
+  }, required);
 }
 
 /** No serious or critical axe violation (WCAG 2.2 AA tags). */
@@ -230,9 +339,9 @@ export async function expectAccessible(page: Page): Promise<void> {
 }
 
 /** Wording rules (page, top bar, every tooltip shown by keyboard) and the accessibility pass on the screen. */
-export async function checkScreen(page: Page): Promise<void> {
+export async function checkScreen(page: Page, required: RequiredTip[] = REQUIRED_TIPS): Promise<void> {
   await expectTrustWording(page);
-  const tooltips = await sweepTooltips(page);
+  const tooltips = await sweepTooltips(page, required);
   expect(tooltips.problems, "tooltips").toEqual([]);
   expect(wordingViolations(tooltips.texts.join("\n")), "banned wording in tooltips").toEqual([]);
   await expectAccessible(page);

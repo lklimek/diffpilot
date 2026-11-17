@@ -20,6 +20,10 @@ const page = (
     }
   </script></body></html>`;
 
+// Home's form (web/src/components/pr-form/PrUrlForm.tsx): a URL field and its submit control.
+const home = (submit: string) =>
+  `<form><label>GitHub pull request URL <input type="url"></label>${submit.replace('type="button"', 'type="submit"')}</form>`;
+
 const cases: [string, string, RegExp | null][] = [
   ["a clean screen", page(tooltip("Ticks", "Steps you marked reviewed."), "<p>3 of 7 steps</p>"), null],
   ["a banned phrase in the page", page("", "<p>No risk here.</p>"), /banned wording on the page/],
@@ -37,9 +41,34 @@ const cases: [string, string, RegExp | null][] = [
     /stays open after focus leaves/,
   ],
   [
-    "a disabled trigger (skipped: no focus by design)",
-    page(tooltip("Previous", "No earlier block.").replace('type="button"', 'type="button" disabled'), ""),
+    "an aria-disabled trigger (focusable, its tip says why)",
+    page(
+      tooltip("Previous", "No earlier block.").replace('type="button"', 'type="button" aria-disabled="true"'),
+      "",
+    ),
     null,
+  ],
+  [
+    "a natively disabled trigger (its tip cannot be reached by keyboard)",
+    page(tooltip("Previous", "No earlier block.").replace('type="button"', 'type="button" disabled'), ""),
+    /cannot take keyboard focus: .*Previous/,
+  ],
+  ["an empty tooltip", page(tooltip("Fact", ""), ""), /tooltip is empty: .*Fact/],
+  [
+    "aria-describedby naming no element",
+    page("", '<button type="button" aria-describedby="gone">Fact</button>'),
+    /aria-describedby names no element: .*gone/,
+  ],
+  ["Home with Analyze and its tooltip", page("", home(tooltip("Analyze", "Opens the pull request."))), null],
+  [
+    "Home with Analyze but no tooltip",
+    page("", home('<button type="submit">Analyze</button>')),
+    /required tooltip missing: Analyze .*Analyze/,
+  ],
+  [
+    "Home without Analyze",
+    page("", home(tooltip("Open", "Opens the pull request."))),
+    /required control missing: Analyze \(0 of 1 rendered\)/,
   ],
   [
     "a trigger without keyboard focus",
