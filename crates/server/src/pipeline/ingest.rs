@@ -13,6 +13,7 @@ use db::repo::analyses::NewAnalysis;
 use crate::auth::{Session, UserTokenError, user_access_token};
 use crate::github::rest::{self, GithubError, GithubPull};
 use crate::pipeline;
+use crate::review::comments::commenting_available;
 use crate::state::AppState;
 
 /// A pull request could not be resolved or analysed.
@@ -94,11 +95,18 @@ pub async fn resolve(
         ),
         None => (None, false),
     };
+    let commenting_available = commenting_available(state, &pull.summary.repo)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                ?error,
+                "GitHub App installation not readable; commenting shown as unavailable"
+            );
+            false
+        });
     Ok(ResolvePrResponse {
         pr: pull.summary,
-        // TODO(WP3-APPTOKEN): true when the GitHub App is installed on the repository (installation lookup with
-        // the App JWT); comments are not part of the stage-2 slice.
-        commenting_available: false,
+        commenting_available,
         analysis,
         head_moved,
     })
@@ -115,6 +123,12 @@ pub async fn create(
         return Err(IngestError::HeadMoved);
     }
     let user = state.db.users().get(&session.user_id).await?;
+    let superseded = state
+        .db
+        .analyses()
+        .latest_for_pr(pr_id, user.language)
+        .await?
+        .filter(|old| old.head_sha != pull.summary.head_sha);
     let created = state
         .db
         .analyses()
@@ -137,6 +151,11 @@ pub async fn create(
         Err(DbError::Conflict) => return Err(IngestError::AnalysisExists),
         Err(error) => return Err(error.into()),
     };
+    // A re-analysis on a moved head starts a new agent session; the old analysis's session files are deleted.
+    if let Some(old) = superseded {
+        state.db.analyses().request_session_drop(old.id).await?;
+        tracing::debug!(analysis = %record.id, superseded = %old.id, "agent session of the superseded analysis dropped");
+    }
     tracing::info!(
         analysis = %record.id,
         user_id = %session.user_id,

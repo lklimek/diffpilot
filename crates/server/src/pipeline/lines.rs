@@ -14,6 +14,7 @@ use contracts::common::LineSide;
 use contracts::ids::CommitSha;
 
 use crate::github::mirror::{MirrorError, read_blob};
+use crate::pipeline::prepass::{self, PrepassRunError};
 use crate::pipeline::{PrDiffError, pr_diff};
 use crate::state::AppState;
 
@@ -29,6 +30,29 @@ pub enum LinesError {
     /// The path is not a file in the pinned tree of that side.
     #[error("the file is not in the analysed commit")]
     FileNotFound,
+    /// The pre-pass lists the file side as never rendered (generated or binary).
+    #[error("the file is not rendered")]
+    NotRendered,
+    /// The pre-pass could not be computed or read.
+    #[error("the pre-pass is not available")]
+    Prepass(#[from] PrepassRunError),
+}
+
+/// Refuses a file side the pre-pass lists as never rendered (generated or binary, brief §7). The pre-pass is
+/// computed and stored here when the driver has not stored it yet (it is deterministic). `mirror` and `files`
+/// come from [`pr_diff`] of the same analysis.
+pub async fn ensure_rendered(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    (mirror, files): (&Path, &[FileDiff]),
+    side: LineSide,
+    path: &str,
+) -> Result<(), LinesError> {
+    let prepass = prepass::ensure(state, summary, mirror, files).await?;
+    if prepass.is_not_rendered(side, path) {
+        return Err(LinesError::NotRendered);
+    }
+    Ok(())
 }
 
 /// Lines `query.from..=query.to` (clamped to the file) of `query.path` on `query.side` of the analysis, with
@@ -39,6 +63,7 @@ pub async fn read(
     query: RangeQuery,
 ) -> Result<LinesResponse, LinesError> {
     let (mirror, files) = pr_diff(state, summary).await?;
+    ensure_rendered(state, summary, (&mirror, &files), query.side, &query.path).await?;
     let commit = match query.side {
         LineSide::Head => &summary.pr.head_sha,
         LineSide::Base => &summary.pr.base_sha,

@@ -5,14 +5,15 @@
 use chrono::Utc;
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::tour::{CiStatus, GithubThread, ThreadsStatus};
-use contracts::common::PrRef;
+use contracts::common::{PrRef, RepoRef};
 use contracts::ids::AnalysisId;
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::user_access_token;
-use crate::github::{checks, threads};
+use crate::github::app_token::{self, Installation};
+use crate::github::{checks, rest, threads};
 use crate::state::AppState;
 
 pub mod comments;
@@ -27,6 +28,13 @@ pub struct GithubSnapshot {
     pub threads: Vec<GithubThread>,
     /// Whether `threads` is every thread, the first ones up to the read cap, or nothing could be read.
     pub threads_status: ThreadsStatus,
+    /// The GitHub App is installed on the PR repository (installation lookup): agent jobs get a GitHub tool and
+    /// related work is checked. False when not installed, unusable or not readable.
+    #[serde(default)]
+    pub app_installed: bool,
+    /// The pull request description (author-written, untrusted); none when empty or not readable.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 impl GithubSnapshot {
@@ -36,12 +44,14 @@ impl GithubSnapshot {
             ci: checks::NOT_CHECKED,
             threads: Vec::new(),
             threads_status: ThreadsStatus::NotChecked,
+            app_installed: false,
+            description: None,
         }
     }
 }
 
-/// Reads the pull request's threads and the head's check runs with `user_id`'s token. Never fails: what could
-/// not be read stays "not checked" (logged).
+/// Reads the pull request's threads, description and the head's check runs with `user_id`'s token, and whether the
+/// GitHub App is installed on the repository. Never fails: what could not be read stays "not checked" (logged).
 pub async fn read_github_snapshot(
     state: &AppState,
     summary: &AnalysisSummary,
@@ -60,9 +70,19 @@ pub async fn read_github_snapshot(
         repo: summary.pr.repo.clone(),
         number: summary.pr.number,
     };
-    let (ci, threads) = tokio::join!(
+    let (ci, threads, pull, installed) = tokio::join!(
         checks::fetch(config, &token, &pr.repo, &summary.pr.head_sha),
         threads::fetch(config, &token, &pr),
+        rest::get_pull(config, &token, &pr),
+        app_installed(state, &pr.repo),
+    );
+    let description = pull.map_or_else(
+        |error| {
+            tracing::warn!(analysis = %summary.id, ?error,
+                "the pull request description could not be read; the agent works without it");
+            None
+        },
+        |pull| pull.description,
     );
     let ci = ci.unwrap_or_else(|error| {
         tracing::warn!(analysis = %summary.id, ?error,
@@ -78,6 +98,20 @@ pub async fn read_github_snapshot(
         ci,
         threads,
         threads_status,
+        app_installed: installed,
+        description,
+    }
+}
+
+/// Whether the GitHub App is installed on `repo`; an unusable App or a failed lookup counts as not installed.
+async fn app_installed(state: &AppState, repo: &RepoRef) -> bool {
+    match app_token::installation(&state.config.github, repo, Utc::now()).await {
+        Ok(Installation::Installed { .. }) => true,
+        Ok(Installation::NotInstalled) => false,
+        Err(error) => {
+            tracing::warn!(%error, "GitHub App installation not readable; related work stays not checked");
+            false
+        }
     }
 }
 

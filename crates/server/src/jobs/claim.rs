@@ -6,11 +6,15 @@ use std::time::Duration;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, TimeDelta, Utc};
-use contracts::job::access::{AgentAccess, InstallationToken, Secret};
+use contracts::ids::AnalysisId;
+use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::protocol::{Claim, ClaimRequest, ClaimResponse, LeaseTiming};
+use contracts::job::spec::SessionRef;
 use db::error::DbError;
+use db::repo::analyses::SessionState;
 use db::repo::jobs::{ClaimParams, JobRecord};
 use db::repo::{DEFAULT_TENANT, Db};
+use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -143,10 +147,13 @@ pub async fn claim(
                 }
             };
             let mut spec = job.spec;
-            // TODO(WP3-RUN): fill `access.memcan` from `Config::memcan`; the stage-2 slice runs without MemCan.
+            spec.session = analysis_session(db, job.analysis_id).await?;
             spec.access = AgentAccess {
                 github,
-                memcan: None,
+                memcan: Some(McpHttpEndpoint {
+                    url: config.memcan.url.to_string(),
+                    token: Secret::new(config.memcan.token.expose_secret()),
+                }),
             };
             Some(Claim {
                 job_token: token,
@@ -159,6 +166,19 @@ pub async fn claim(
     Ok(ClaimResponse {
         claim,
         drop_sessions,
+    })
+}
+
+/// The analysis's agent session at claim time (ADR-004): one running job per analysis, so the session a job
+/// resumes is the one the previous job of the analysis reported; none before the first report or once dropped.
+async fn analysis_session(db: &Db, analysis: AnalysisId) -> Result<Option<SessionRef>, DbError> {
+    let record = db.analyses().get(analysis).await?;
+    Ok(match (record.session_state, record.agent_thread_id) {
+        (SessionState::Active, Some(thread_id)) => Some(SessionRef {
+            analysis_id: analysis,
+            thread_id,
+        }),
+        _ => None,
     })
 }
 
@@ -383,6 +403,68 @@ mod tests {
         let logs = capture.text();
         assert!(logs.contains("installation token minted"), "{logs}");
         assert!(!logs.contains(MINTED_TOKEN), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn jobs_carry_installation_token() {
+        let capture = LogCapture::start();
+        let s = setup().await;
+        enqueue(&s.db).await;
+        let now = Utc::now();
+        installed(&s, now).await;
+        let claimed = claim_one(&s, now).await;
+        let github = claimed.spec.access.github.expect("installation token");
+        assert_eq!(github.token.expose(), MINTED_TOKEN);
+        let memcan = claimed.spec.access.memcan.expect("MemCan endpoint");
+        assert_eq!(memcan.url, s.config.memcan.url.to_string());
+        let memcan_token = s.config.memcan.token.expose_secret();
+        assert_eq!(memcan.token.expose(), memcan_token);
+        let logs = capture.text();
+        assert!(!logs.contains(memcan_token), "{logs}");
+        assert!(!logs.contains(MINTED_TOKEN), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn jobs_carry_analysis_session() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        let now = Utc::now();
+        installed(&s, now).await;
+        s.db.analyses()
+            .set_session(analysis, "thread-7", None)
+            .await
+            .expect("session");
+        let claimed = claim_one(&s, now).await;
+        assert_eq!(
+            claimed.spec.session,
+            Some(SessionRef {
+                analysis_id: analysis,
+                thread_id: "thread-7".to_owned(),
+            })
+        );
+        let stored = s.db.jobs().get(job).await.expect("job");
+        assert_eq!(
+            stored.spec.session, None,
+            "the session is set at claim, not stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_session_is_not_resumed() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        s.db.analyses()
+            .set_session(analysis, "thread-7", None)
+            .await
+            .expect("session");
+        s.db.analyses()
+            .request_session_drop(analysis)
+            .await
+            .expect("drop");
+        let claimed = claim_one(&s, Utc::now()).await;
+        assert_eq!(claimed.spec.session, None);
     }
 
     #[tokio::test]

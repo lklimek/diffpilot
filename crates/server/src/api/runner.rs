@@ -433,6 +433,8 @@ async fn apply_result(
         &mut result,
         &known_secrets(state, &auth.token, installation.as_ref()),
     );
+    // Before completing: the next job of the analysis becomes claimable only then, and must resume this session.
+    record_session(state, auth.job, &result).await?;
     let completion = state.db.jobs().complete(&result, Utc::now()).await?;
     if let Completion::Applied { state: job_state } = completion {
         tracing::info!(
@@ -443,6 +445,29 @@ async fn apply_result(
         );
         github_tokens::nudge();
     }
+    Ok(())
+}
+
+/// Records the agent session a job reported as its analysis's session (ADR-004): the next job of the analysis
+/// resumes it. A cancelled job's session is not kept (cancel discards the session).
+async fn record_session(state: &AppState, job: JobId, result: &JobResult) -> Result<(), DbError> {
+    let Some(session) = &result.session else {
+        return Ok(());
+    };
+    if matches!(result.outcome, JobOutcome::Cancelled) {
+        return Ok(());
+    }
+    let analysis = state.db.jobs().get(job).await?.analysis_id;
+    state
+        .db
+        .analyses()
+        .set_session(
+            analysis,
+            &session.thread_id,
+            result.skills_commit.as_deref(),
+        )
+        .await?;
+    tracing::debug!(%job, %analysis, outcome = ?session.outcome, "agent session of the analysis recorded");
     Ok(())
 }
 
@@ -458,6 +483,7 @@ mod tests {
     use contracts::job::protocol::{CredentialStatus, LeaseTiming};
     use contracts::job::result::{JobFailureKind, SessionOutcome, SessionReport};
     use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+    use db::repo::analyses::SessionState;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
     use db::repo::jobs::{JobStage, NewJob};
     use http_body_util::BodyExt;
@@ -804,7 +830,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim_uses_lease_timing_v1_and_sends_no_credentials_in_the_slice() {
+    async fn claim_uses_lease_timing_v1_and_sends_memcan_without_github_when_not_installed() {
         let harness = Harness::new().await;
         let (_, job) = harness.enqueue(CREDENTIAL).await;
         let before = Utc::now();
@@ -814,7 +840,9 @@ mod tests {
         assert!(claimed.lease_expires_at >= before + lease - TimeDelta::milliseconds(1));
         assert!(claimed.lease_expires_at <= after + lease);
         assert_eq!(claimed.job, job);
-        assert_eq!(claimed.spec_access, AgentAccess::default());
+        assert!(claimed.spec_access.github.is_none(), "no App installation");
+        let memcan = claimed.spec_access.memcan.expect("MemCan endpoint");
+        assert_eq!(memcan.url, harness.state.config.memcan.url.to_string());
         let stored = harness.state.db.jobs().token_hash(job).await.expect("hash");
         assert_eq!(
             stored,
@@ -1095,6 +1123,66 @@ mod tests {
             assert!(!stored.contains(secret), "secret stored: {stored}");
         }
         assert!(credential.last_call.is_some(), "the status row was written");
+    }
+
+    #[tokio::test]
+    async fn result_records_the_session_of_the_analysis() {
+        let harness = Harness::new().await;
+        let (analysis, _) = harness.enqueue(CREDENTIAL).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        let mut result = succeeded(claimed.job, 1);
+        result.session = Some(SessionReport {
+            thread_id: "thread-1".to_owned(),
+            outcome: SessionOutcome::Started,
+        });
+        result.skills_commit = Some("abc".to_owned());
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_RESULT.path, claimed.job),
+                Some(&claimed.token),
+                result,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let record = harness
+            .state
+            .db
+            .analyses()
+            .get(analysis)
+            .await
+            .expect("analysis");
+        assert_eq!(record.agent_thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(record.session_state, SessionState::Active);
+        assert_eq!(record.skills_commit.as_deref(), Some("abc"));
+    }
+
+    #[tokio::test]
+    async fn cancelled_result_does_not_record_its_session() {
+        let harness = Harness::new().await;
+        let (analysis, _) = harness.enqueue(CREDENTIAL).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        let mut result = succeeded(claimed.job, 1);
+        result.outcome = JobOutcome::Cancelled;
+        result.session = Some(SessionReport {
+            thread_id: "thread-1".to_owned(),
+            outcome: SessionOutcome::Started,
+        });
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_RESULT.path, claimed.job),
+                Some(&claimed.token),
+                result,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let record = harness
+            .state
+            .db
+            .analyses()
+            .get(analysis)
+            .await
+            .expect("analysis");
+        assert_eq!(record.agent_thread_id, None);
     }
 
     #[test]

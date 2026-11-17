@@ -48,7 +48,11 @@ mapping, query rules and the endpoint × fixture-state inventory.
   `to − from + 1 ≤ RangeQuery::MAX_LINES` (2000) else `range_too_large`; `to` is clamped to the file. The API
   never serves whole files (brief §7). `side=base` serves the base commit (deleted or emptied files, removed
   blocks). Paths outside the PR's files and impact/context files of the head tree are allowed; generated
-  material classified "not rendered" answers `not_rendered`.
+  material and binary files the pre-pass lists as "not rendered" answer `not_rendered` (422); before the pre-pass
+  is stored `analysis_not_finished`.
+- **Cancel and retry**: cancel applies to a planning, running, paused or failed analysis (else `conflict`): state
+  `cancelled`, unfinished jobs cancelled, stored results and the agent session discarded. Retry applies to a
+  failed analysis only (else `conflict`): state `planning`, stored results kept, failed stages submitted again.
 - **Deleted blocks** (`LinesResponse.deleted`): every deletion marker in the range is reported with its
   `total_lines`; its `lines` hold at most `RangeQuery::MAX_LINES` removed lines per response, shared by the
   blocks in order (a block past the budget has empty `lines`). `lines.len() < total_lines` means truncated: read

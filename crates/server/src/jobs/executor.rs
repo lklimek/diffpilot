@@ -91,10 +91,4 @@ pub enum ExecutorError {
     /// The executor is shutting down.
     #[error("the job executor is shutting down")]
     Closed,
-    /// The operation is declared but not implemented yet (filled in by WP2-JOBS).
-    #[error("the job executor operation {operation} is not implemented yet")]
-    NotImplemented {
-        /// The operation.
-        operation: &'static str,
-    },
 }

@@ -18,9 +18,9 @@ use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::pr::PrSummary;
 use contracts::ids::{AnalysisId, CommitSha, JobId};
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
-use contracts::job::spec::JobPriority;
+use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::JobState;
-use db::repo::analyses::NewAnalysis;
+use db::repo::analyses::{NewAnalysis, SessionState};
 use db::repo::documents::DocumentKind;
 use db::repo::jobs::JobStage;
 use db::repo::sessions::NewSession;
@@ -41,7 +41,7 @@ use server::secrets::sha256;
 use server::state::AppState;
 use tempfile::TempDir;
 use tower::ServiceExt;
-use wiremock::matchers::{header, method, path};
+use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const USER_TOKEN: &str = "ghu_fake_slice_token";
@@ -93,7 +93,10 @@ fn numbered(lines: std::ops::RangeInclusive<u32>) -> String {
 /// Answers every job with the fixture agent output of its stage.
 #[derive(Debug, Default)]
 struct ScriptedExecutor {
-    stages: Mutex<HashMap<JobId, String>>,
+    /// Stage key and generation of each submitted job.
+    stages: Mutex<HashMap<JobId, (String, u32)>>,
+    /// Submitted specs with their stage key and generation, in submit order.
+    specs: Mutex<Vec<(String, u32, JobSpec)>>,
     /// Analysis of each submitted job.
     analyses: Mutex<HashMap<JobId, AnalysisId>>,
     /// Jobs whose result was delivered.
@@ -104,12 +107,17 @@ struct ScriptedExecutor {
     cancelled: Mutex<Vec<String>>,
 }
 
-/// How a stage's job ends instead of returning its fixture output.
+/// How a stage's job ends instead of returning its fixture output. Scripts are keyed by `<stage>#<generation>`,
+/// or by `<stage>` for every generation.
 #[derive(Clone, Debug)]
 enum Script {
     Output(Value),
     Fail,
+    /// Fails with this runner text.
+    FailWith(String),
     Pending,
+    /// Paused by the usage limit; returns the fixture output once notified.
+    PausedUntil(Arc<tokio::sync::Notify>),
 }
 
 impl ScriptedExecutor {
@@ -125,17 +133,33 @@ impl ScriptedExecutor {
         stages
     }
 
+    fn unscript(&self, stage: &str) {
+        self.scripts.lock().expect("lock").remove(stage);
+    }
+
     fn script(&self, stage: &str, script: Script) {
         self.scripts
             .lock()
             .expect("lock")
             .insert(stage.to_owned(), script);
     }
+
+    /// Submitted specs of `stage` (any generation), in submit order.
+    fn specs_of(&self, stage: &str) -> Vec<(u32, JobSpec)> {
+        self.specs
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(key, _, _)| key == stage)
+            .map(|(_, generation, spec)| (*generation, spec.clone()))
+            .collect()
+    }
 }
 
 fn agent_output(stage: &str) -> Value {
     let file = match stage {
-        "plan:1" => "plan.json".to_owned(),
+        // Every batch of a huge pull request gets the fixture plan (rejected by verification).
+        plan if plan.starts_with("plan:") => "plan.json".to_owned(),
         "pr_context" => "pr_context.json".to_owned(),
         flow => format!(
             "flow-{}.json",
@@ -148,12 +172,24 @@ fn agent_output(stage: &str) -> Value {
 impl JobExecutor for ScriptedExecutor {
     fn submit(&self, request: JobRequest) -> BoxFuture<'_, Result<JobHandle, ExecutorError>> {
         let stage = request.stage.key();
+        let generation = request.generation;
         let job_id = request.spec.job_id;
         self.stages
             .lock()
             .expect("lock")
-            .insert(job_id, stage.clone());
-        self.submitted.lock().expect("lock").push(stage);
+            .insert(job_id, (stage.clone(), generation));
+        self.specs
+            .lock()
+            .expect("lock")
+            .push((stage.clone(), generation, request.spec.clone()));
+        self.submitted
+            .lock()
+            .expect("lock")
+            .push(if generation == 0 {
+                stage
+            } else {
+                format!("{stage}#{generation}")
+            });
         self.analyses
             .lock()
             .expect("lock")
@@ -162,8 +198,15 @@ impl JobExecutor for ScriptedExecutor {
     }
 
     fn events(&self, handle: &JobHandle) -> BoxStream<'static, Result<JobUpdate, ExecutorError>> {
-        let stage = self.stages.lock().expect("lock")[&handle.job_id].clone();
-        let script = self.scripts.lock().expect("lock").get(&stage).cloned();
+        let (stage, generation) = self.stages.lock().expect("lock")[&handle.job_id].clone();
+        let script = {
+            let scripts = self.scripts.lock().expect("lock");
+            scripts
+                .get(&format!("{stage}#{generation}"))
+                .or_else(|| scripts.get(&stage))
+                .cloned()
+        };
+        let mut paused = None;
         let outcome = match script {
             None => JobOutcome::Succeeded {
                 output: agent_output(&stage),
@@ -173,7 +216,17 @@ impl JobExecutor for ScriptedExecutor {
                 kind: JobFailureKind::ProviderFailed,
                 message: "the provider exited with an error".to_owned(),
             },
+            Some(Script::FailWith(message)) => JobOutcome::Failed {
+                kind: JobFailureKind::ProviderFailed,
+                message,
+            },
             Some(Script::Pending) => return stream::pending().boxed(),
+            Some(Script::PausedUntil(notify)) => {
+                paused = Some(notify);
+                JobOutcome::Succeeded {
+                    output: agent_output(&stage),
+                }
+            }
         };
         self.finished.lock().expect("lock").insert(handle.job_id);
         let result = JobResult {
@@ -185,11 +238,20 @@ impl JobExecutor for ScriptedExecutor {
             skills_commit: None,
             llm_call: None,
         };
-        stream::iter([Ok(JobUpdate::Finished(result))]).boxed()
+        let finished = Ok(JobUpdate::Finished(result));
+        match paused {
+            None => stream::iter([finished]).boxed(),
+            Some(notify) => stream::iter([Ok(JobUpdate::Paused { resumes_at: None })])
+                .chain(stream::once(async move {
+                    notify.notified().await;
+                    finished
+                }))
+                .boxed(),
+        }
     }
 
     fn cancel(&self, handle: &JobHandle) -> BoxFuture<'_, Result<(), ExecutorError>> {
-        let stage = self.stages.lock().expect("lock")[&handle.job_id].clone();
+        let (stage, _) = self.stages.lock().expect("lock")[&handle.job_id].clone();
         self.cancelled.lock().expect("lock").push(stage);
         Box::pin(async { Ok(()) })
     }
@@ -200,7 +262,7 @@ impl JobExecutor for ScriptedExecutor {
         let mut cancelled = self.cancelled.lock().expect("lock");
         for (job, analysis_of_job) in self.analyses.lock().expect("lock").iter() {
             if *analysis_of_job == analysis && !finished.contains(job) {
-                cancelled.push(stages[job].clone());
+                cancelled.push(stages[job].0.clone());
             }
         }
         Box::pin(async { Ok(()) })
@@ -260,6 +322,28 @@ async fn harness() -> Harness {
             format!("Bearer {USER_TOKEN}").as_str(),
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(&recorded["response"]))
+        .mount(&github)
+        .await;
+    // The GitHub snapshot read at ingest: the recorded review threads (one page) and check runs.
+    let mut threads =
+        read_json(&fixtures().join("github/graphql/review-threads.json"))["response"].clone();
+    threads["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"] =
+        json!({"hasNextPage": false, "endCursor": null});
+    Mock::given(method("POST"))
+        .and(path("/api/graphql"))
+        .and(body_string_contains("reviewThreads"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(threads))
+        .mount(&github)
+        .await;
+    let checks = read_json(&fixtures().join("github/rest/check-runs.json"));
+    let head = recorded["response"]["head"]["sha"]
+        .as_str()
+        .expect("head sha");
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/repos/acme/node-client/commits/{head}/check-runs"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&checks["response"]))
         .mount(&github)
         .await;
 
@@ -353,6 +437,47 @@ impl Harness {
 
     async fn post(&self, uri: &str, body: Value) -> (StatusCode, Value) {
         json_of(self.send("POST", uri, Auth::SessionCsrf, Some(body)).await).await
+    }
+
+    /// Resolves the fixture PR and creates its analysis through the API; returns the analysis id.
+    async fn create_fixture_analysis(&self) -> String {
+        let (status, resolved) = self
+            .post("/api/v1/pr/resolve", json!({ "url": PR_URL }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{resolved}");
+        let (status, created) = self
+            .post(
+                "/api/v1/analyses",
+                json!({
+                    "pr": { "repo": { "owner": "acme", "name": "node-client" }, "number": 482 },
+                    "head_sha": resolved["pr"]["head_sha"],
+                }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        created["id"].as_str().expect("id").to_owned()
+    }
+
+    async fn post_empty(&self, uri: &str) -> (StatusCode, Value) {
+        json_of(self.send("POST", uri, Auth::SessionCsrf, None).await).await
+    }
+
+    /// Polls the analysis until `done` holds for its state.
+    async fn wait_for_state(
+        &self,
+        id: &str,
+        done: impl Fn(&AnalysisState) -> bool,
+    ) -> AnalysisSummary {
+        for _ in 0..600 {
+            let (status, body) = self.get(&format!("/api/v1/analyses/{id}")).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let summary: AnalysisSummary = serde_json::from_value(body).expect("summary");
+            if done(&summary.state) {
+                return summary;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the analysis did not reach the expected state in time");
     }
 
     /// An analysis of the fixture PR stored directly (no pipeline run).
@@ -828,7 +953,14 @@ async fn unauthenticated_requests_get_401() {
 #[tokio::test]
 async fn mutations_without_csrf_get_403() {
     let h = harness().await;
-    for uri in ["/api/v1/pr/resolve", "/api/v1/analyses"] {
+    let id = h.seed_analysis().await;
+    for uri in [
+        "/api/v1/pr/resolve".to_owned(),
+        "/api/v1/analyses".to_owned(),
+        format!("/api/v1/analyses/{id}/cancel"),
+        format!("/api/v1/analyses/{id}/retry"),
+    ] {
+        let uri = uri.as_str();
         let body = json!({ "url": PR_URL });
         let (status, body) = json_of(h.send("POST", uri, Auth::Session, Some(body)).await).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{uri}");
@@ -922,13 +1054,21 @@ async fn other_tenants_analysis_is_not_found() {
         )
         .await
         .expect("session");
-    for uri in [
-        format!("/api/v1/analyses/{id}"),
-        format!("/api/v1/analyses/{id}/tour"),
-        format!("/api/v1/analyses/{id}/lines?path=README.md&side=head&from=1&to=2"),
+    for (method, uri) in [
+        ("GET", format!("/api/v1/analyses/{id}")),
+        ("GET", format!("/api/v1/analyses/{id}/tour")),
+        (
+            "GET",
+            format!("/api/v1/analyses/{id}/lines?path=README.md&side=head&from=1&to=2"),
+        ),
+        ("POST", format!("/api/v1/analyses/{id}/cancel")),
+        ("POST", format!("/api/v1/analyses/{id}/retry")),
     ] {
-        let request = Request::get(&uri)
+        let request = Request::builder()
+            .method(method)
+            .uri(&uri)
             .header("cookie", "sr_session=other-tenant-session")
+            .header("x-csrf-token", CSRF)
             .body(Body::empty())
             .expect("request");
         let response = api::router(h.state.clone())
@@ -939,6 +1079,12 @@ async fn other_tenants_analysis_is_not_found() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}: {body}");
         assert_eq!(body["code"], json!("not_found"));
     }
+    let summary = h.state.db.analyses().summary(id).await.expect("summary");
+    assert_eq!(
+        summary.state,
+        AnalysisState::Planning,
+        "untouched by the other tenant"
+    );
 }
 
 /// A pull request whose base branch moved after the fork point: returns (fork point, base tip, head).
@@ -1249,4 +1395,391 @@ async fn lines_answer_409_until_the_merge_base_is_stored() {
     let (status, body) = h.get(&lines).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["changed"], json!([2]));
+}
+
+/// A finished analysis's Tour holds only computed facts or an explicit "not checked" (brief §1).
+#[tokio::test]
+async fn tour_has_no_uncomputed_fact() {
+    let h = harness().await;
+    let id = h.create_fixture_analysis().await;
+    h.wait_until_finished(&id).await;
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let facts = &tour["pr_context"]["facts"];
+    let checks = read_json(&fixtures().join("github/rest/check-runs.json"));
+    let runs = checks["response"]["check_runs"]
+        .as_array()
+        .expect("runs")
+        .len();
+    assert_ne!(
+        facts["ci"]["state"],
+        json!("not_checked"),
+        "CI read from the snapshot"
+    );
+    assert_eq!(facts["ci"]["total"], json!(runs));
+    assert_eq!(facts["threads_status"], json!("checked"));
+    let recorded = read_json(&fixtures().join("github/graphql/review-threads.json"));
+    let nodes = recorded["response"]["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+        .as_array()
+        .expect("threads")
+        .len();
+    let threads = tour["threads"].as_array().expect("threads");
+    assert_eq!(threads.len(), nodes);
+    // Every line thread inside a step is placed in it; its id is listed on the step.
+    let steps: Vec<&Value> = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .flat_map(|flow| flow["steps"].as_array().expect("steps"))
+        .collect();
+    for thread in threads {
+        let inside = steps.iter().find(|step| {
+            let facts = &step["facts"];
+            thread["line"].as_u64().is_some_and(|line| {
+                facts["file"] == thread["path"]
+                    && facts["side"] == thread["side"]
+                    && facts["range"]["start_line"].as_u64() <= Some(line)
+                    && Some(line) <= facts["range"]["end_line"].as_u64()
+            })
+        });
+        match inside {
+            Some(step) => {
+                assert_eq!(thread["step_id"], step["id"], "{thread}");
+                assert!(
+                    step["facts"]["thread_ids"]
+                        .as_array()
+                        .expect("ids")
+                        .contains(&thread["id"])
+                );
+            }
+            None => {
+                assert_eq!(thread["step_id"], Value::Null, "{thread}");
+                assert_eq!(
+                    thread["llm_status"],
+                    Value::Null,
+                    "no status outside a step"
+                );
+            }
+        }
+    }
+    // The MemCan profile is honestly not checked; the App is not installed in the fake, so related work is not
+    // checked and none is shown.
+    assert_eq!(facts["project_profile"]["memcan"], json!("not_checked"));
+    assert_eq!(facts["related_work_checked"], json!(false));
+    assert_eq!(tour["pr_context"]["llm"]["related_work"], json!([]));
+    let step_count: usize = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .map(|flow| flow["steps"].as_array().expect("steps").len())
+        .sum();
+    assert_eq!(facts["step_count"], json!(step_count));
+    assert_eq!(facts["flow_count"], json!(5));
+    let commenting = h
+        .post("/api/v1/pr/resolve", json!({ "url": PR_URL }))
+        .await
+        .1;
+    assert_eq!(
+        commenting["commenting_available"],
+        json!(false),
+        "looked up: not installed"
+    );
+}
+
+/// The fixture output of `stage` with its first step moved outside the changed lines (verification rejects it).
+fn rejected_flow(stage: &str) -> Value {
+    let mut output = agent_output(stage);
+    output["steps"][0]["start_line"] = json!(9990);
+    output["steps"][0]["end_line"] = json!(9999);
+    output
+}
+
+#[tokio::test]
+async fn rejected_flow_output_is_repaired() {
+    let h = harness().await;
+    h.executor
+        .script("flow:f2#0", Script::Output(rejected_flow("flow:f2")));
+    let id = h.create_fixture_analysis().await;
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    assert!(h.executor.submitted().contains(&"flow:f2#1".to_owned()));
+    let runs = h.executor.specs_of("flow:f2");
+    assert_eq!(runs.len(), 2);
+    assert!(
+        runs[1].1.prompt.contains("repair 1 of 2"),
+        "{}",
+        runs[1].1.prompt
+    );
+    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(tour["flows"].as_array().expect("flows").len(), 5);
+}
+
+/// Deviation from the plan's test wording ("repair exhausted -> failed flow + Retry"), decided by the
+/// coordinator: a flow without accepted output leaves its lines Unexplained and the analysis finishes.
+#[tokio::test]
+async fn exhausted_flow_repairs_leave_its_lines_unexplained() {
+    let h = harness().await;
+    h.executor
+        .script("flow:f2", Script::Output(rejected_flow("flow:f2")));
+    let id = h.create_fixture_analysis().await;
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    let submitted = h.executor.submitted();
+    for run in ["flow:f2", "flow:f2#1", "flow:f2#2"] {
+        assert!(submitted.contains(&run.to_owned()), "{submitted:?}");
+    }
+    assert!(!submitted.contains(&"flow:f2#3".to_owned()));
+    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    let flows: Vec<&Value> = tour["flows"].as_array().expect("flows").iter().collect();
+    assert_eq!(flows.len(), 4);
+    assert!(flows.iter().all(|flow| flow["id"] != json!("f2")));
+    assert!(
+        !tour["quiet"]["unexplained"]
+            .as_array()
+            .expect("unexplained")
+            .is_empty(),
+        "the lines of f2 are Unexplained"
+    );
+}
+
+#[tokio::test]
+async fn exhausted_plan_repairs_fail_the_analysis() {
+    let h = harness().await;
+    let mut plan = agent_output("plan:1");
+    plan["flows"][0]["hunks"][0]["hunk_id"] = json!("h999");
+    h.executor.script("plan:1", Script::Output(plan));
+    let id = h.create_fixture_analysis().await;
+    let ended = h.wait_until_ended(&id).await;
+    match ended.state {
+        AnalysisState::Failed {
+            flow: None,
+            message,
+        } => {
+            assert!(message.contains("plan of the flows"), "{message}");
+            assert!(message.contains("Retry"), "{message}");
+        }
+        other => panic!("expected failed, got {other:?}"),
+    }
+    assert!(
+        h.executor
+            .submitted()
+            .iter()
+            .all(|stage| !stage.starts_with("flow:"))
+    );
+}
+
+#[tokio::test]
+async fn failure_before_any_flow_offers_retry() {
+    let h = harness().await;
+    h.executor.script("plan:1", Script::Fail);
+    let id = h.create_fixture_analysis().await;
+    let ended = h.wait_until_ended(&id).await;
+    match &ended.state {
+        AnalysisState::Failed {
+            flow: None,
+            message,
+        } => {
+            assert!(message.contains("The agent run failed"), "{message}");
+        }
+        other => panic!("expected failed, got {other:?}"),
+    }
+    assert!(
+        h.executor
+            .submitted()
+            .iter()
+            .all(|stage| !stage.starts_with("flow:"))
+    );
+    // Retry runs it again; the plan job failed, so it is submitted again.
+    h.executor.unscript("plan:1");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], json!({ "state": "planning" }));
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    // Retry applies only to a failed analysis.
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
+#[tokio::test]
+async fn cancel_discards_partial_results() {
+    let h = harness().await;
+    for flow in ["flow:f3", "flow:f4", "flow:f5"] {
+        h.executor.script(flow, Script::Pending);
+    }
+    let id = h.create_fixture_analysis().await;
+    h.wait_for_state(&id, |state| {
+        matches!(state, AnalysisState::Running { done: 2, .. })
+    })
+    .await;
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    h.state
+        .db
+        .analyses()
+        .set_session(analysis, "thread-1", None)
+        .await
+        .expect("session");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/cancel")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"], json!({ "state": "cancelled" }));
+    let cancelled = h.executor.cancelled();
+    for flow in ["flow:f3", "flow:f4", "flow:f5"] {
+        assert!(cancelled.contains(&flow.to_owned()), "{cancelled:?}");
+    }
+    let documents = h.state.db.documents();
+    for kind in [
+        DocumentKind::Plan,
+        DocumentKind::PrContext,
+        DocumentKind::Flow,
+    ] {
+        let stored: Vec<(String, Value)> = documents.list(analysis, kind).await.expect("list");
+        assert!(stored.is_empty(), "{kind:?} kept: {stored:?}");
+    }
+    let record = h.state.db.analyses().get(analysis).await.expect("analysis");
+    assert_eq!(record.session_state, SessionState::DropRequested);
+    let (status, _) = h.post_empty(&format!("/api/v1/analyses/{id}/cancel")).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "an ended analysis is not cancelled again"
+    );
+    let (status, _) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "only a failed analysis is retried"
+    );
+}
+
+#[tokio::test]
+async fn usage_limit_pauses_and_resumes() {
+    let h = harness().await;
+    let resume = Arc::new(tokio::sync::Notify::new());
+    h.executor
+        .script("flow:f2", Script::PausedUntil(resume.clone()));
+    let id = h.create_fixture_analysis().await;
+    let paused = h
+        .wait_for_state(&id, |state| {
+            matches!(
+                state,
+                AnalysisState::Paused {
+                    done: 4,
+                    total: Some(5),
+                    ..
+                }
+            )
+        })
+        .await;
+    assert!(matches!(paused.state, AnalysisState::Paused { .. }));
+    resume.notify_one();
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+}
+
+/// Jobs after the first carry a context pack of the stored results: a runner whose session of the analysis is
+/// missing starts a new one seeded with it (`StartedAfterLoss`).
+#[tokio::test]
+async fn lost_session_uses_context_pack() {
+    let h = harness().await;
+    let id = h.create_fixture_analysis().await;
+    h.wait_until_finished(&id).await;
+    let plan = h.executor.specs_of("plan:1");
+    assert_eq!(
+        plan[0].1.context_pack, None,
+        "nothing stored before the first job"
+    );
+    let title = agent_output("plan:1")["flows"][0]["title"]
+        .as_str()
+        .expect("title")
+        .to_owned();
+    for flow in ["flow:f1", "flow:f2", "flow:f3", "flow:f4", "flow:f5"] {
+        let spec = &h.executor.specs_of(flow)[0].1;
+        let pack = spec.context_pack.as_deref().expect("context pack");
+        assert!(pack.contains(&title), "{flow}: {pack}");
+        assert_eq!(spec.session, None, "the session is set at claim");
+    }
+}
+
+#[tokio::test]
+async fn reanalysis_starts_new_session() {
+    let h = harness().await;
+    let old = h.seed_analysis_at(Some("1".repeat(40))).await;
+    h.state
+        .db
+        .analyses()
+        .set_session(old, "thread-old", None)
+        .await
+        .expect("session");
+    let id = h.create_fixture_analysis().await;
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    assert_ne!(analysis, old);
+    let record = h.state.db.analyses().get(old).await.expect("old");
+    assert_eq!(record.session_state, SessionState::DropRequested);
+    let record = h.state.db.analyses().get(analysis).await.expect("new");
+    assert_eq!(
+        record.agent_thread_id, None,
+        "the new analysis has its own session"
+    );
+}
+
+#[tokio::test]
+async fn lines_refuse_files_the_prepass_does_not_render() {
+    let h = harness().await;
+    let summary = h
+        .analyse_repo("gen", 9, |repo| {
+            let base = commit(repo, &[("a.txt", "one\n")], "base");
+            std::fs::write(repo.join("logo.png"), [0x89, b'P', b'N', b'G', 0, 1, 2, 0])
+                .expect("write");
+            let head = commit(repo, &[("a.txt", "one\ntwo\n")], "head");
+            (base, head)
+        })
+        .await;
+    let (status, body) = h
+        .get(&format!(
+            "/api/v1/analyses/{}/lines?path=logo.png&side=head&from=1&to=2",
+            summary.id
+        ))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], json!("not_rendered"));
+}
+
+/// A real provider error text (Codex `turn.failed` of a rejected schema) stays in the log: the analysis state and
+/// its events carry only the fixed sentence.
+#[tokio::test]
+async fn provider_error_text_never_reaches_the_analysis_state() {
+    let h = harness().await;
+    let recorded =
+        std::fs::read_to_string(fixtures().join("codex/schema-error.jsonl")).expect("fixture");
+    let provider_text = recorded
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("JSON line"))
+        .find(|event| event["type"] == json!("turn.failed"))
+        .and_then(|event| event["error"]["message"].as_str().map(str::to_owned))
+        .expect("turn.failed message");
+    h.executor
+        .script("plan:1", Script::FailWith(provider_text.clone()));
+    let id = h.seed_analysis().await;
+    let mut events = h.state.progress.subscribe(id);
+    server::pipeline::start(&h.state, id);
+    let ended = h.wait_until_ended(&id.to_string()).await;
+    let AnalysisState::Failed { message, .. } = &ended.state else {
+        panic!("expected failed, got {:?}", ended.state);
+    };
+    assert!(
+        message.contains("the LLM provider reported an error"),
+        "{message}"
+    );
+    let mut published = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        published.push(serde_json::to_string(&event).expect("event JSON"));
+    }
+    assert!(!published.is_empty());
+    for text in published
+        .iter()
+        .chain([&serde_json::to_string(&ended).expect("JSON")])
+    {
+        assert!(!text.contains("invalid_json_schema"), "{text}");
+        assert!(!text.contains("codex_output_schema"), "{text}");
+    }
 }

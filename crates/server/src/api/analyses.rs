@@ -1,5 +1,5 @@
-//! Analyses: create and read (request parsing and the tenant check; the work lives in `pipeline`). Also the
-//! error type and helpers shared by the pull-request, tour and lines routes. TODO(WP3-PIPE): cancel and retry.
+//! Analyses: create, read, cancel and retry (request parsing and the tenant check; the work lives in
+//! `pipeline`). Also the error type and helpers shared by the pull-request, tour and lines routes.
 //!
 //! An analysis is created with the pull request's base tip; the pipeline then stores the merge base of base tip
 //! and head (GitHub's three-dot comparison) before any job runs. The diff, `side=base` reads, prompts and
@@ -17,16 +17,19 @@ use axum::{Json, Router};
 use contracts::api::analyses::{AnalysisSummary, CreateAnalysisRequest};
 use contracts::api::error::ApiErrorCode;
 use contracts::ids::AnalysisId;
-use contracts::routes::{CREATE_ANALYSIS, GET_ANALYSIS};
+use contracts::routes::{CANCEL_ANALYSIS, CREATE_ANALYSIS, GET_ANALYSIS, RETRY_ANALYSIS};
 use db::error::DbError;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf, UserTokenError};
 use crate::github::mirror::MirrorError;
 use crate::github::rest::GithubError;
+use crate::jobs::executor::ExecutorError;
 use crate::pipeline::PrDiffError;
+use crate::pipeline::control::{self, ControlError};
 use crate::pipeline::ingest::{self, IngestError};
 use crate::pipeline::lines::LinesError;
+use crate::pipeline::prepass::PrepassRunError;
 use crate::pipeline::tour::{TourError, TourLoadError};
 use crate::state::AppState;
 
@@ -72,6 +75,21 @@ pub enum AnalysisApiError {
     /// The path is not a file in the pinned tree of that side.
     #[error("the file is not in the analysed commit")]
     FileNotFound,
+    /// The pre-pass could not be computed.
+    #[error("the pre-pass is not available")]
+    Prepass(#[source] PrepassRunError),
+    /// The file side is generated or binary: never rendered.
+    #[error("the file is not rendered")]
+    NotRendered,
+    /// Cancel or retry does not apply in the analysis's state.
+    #[error("the analysis cannot be {action} in its current state")]
+    StateConflict {
+        /// What was asked.
+        action: &'static str,
+    },
+    /// The jobs of the analysis could not be cancelled.
+    #[error("the jobs of the analysis could not be cancelled")]
+    Executor(#[source] ExecutorError),
     /// The user's GitHub token is not available.
     #[error("the user's GitHub token is not available")]
     Token(#[from] UserTokenError),
@@ -123,6 +141,16 @@ impl From<IngestError> for AnalysisApiError {
     }
 }
 
+impl From<ControlError> for AnalysisApiError {
+    fn from(error: ControlError) -> Self {
+        match error {
+            ControlError::Conflict { action } => Self::StateConflict { action },
+            ControlError::Db(error) => Self::Db(error),
+            ControlError::Executor(error) => Self::Executor(error),
+        }
+    }
+}
+
 impl From<TourLoadError> for AnalysisApiError {
     fn from(error: TourLoadError) -> Self {
         match error {
@@ -140,6 +168,8 @@ impl From<LinesError> for AnalysisApiError {
             LinesError::Diff(error) => error.into(),
             LinesError::Mirror(error) => Self::Mirror(error),
             LinesError::FileNotFound => Self::FileNotFound,
+            LinesError::NotRendered => Self::NotRendered,
+            LinesError::Prepass(error) => Self::Prepass(error),
         }
     }
 }
@@ -164,7 +194,10 @@ impl ApiErrorSource for AnalysisApiError {
             Self::Path(rejection) => rejection.code(),
             Self::NotAPrUrl => ApiErrorCode::NotAPrUrl,
             Self::PrivateRepository => ApiErrorCode::PrivateRepository,
-            Self::HeadMoved | Self::AnalysisExists => ApiErrorCode::Conflict,
+            Self::HeadMoved | Self::AnalysisExists | Self::StateConflict { .. } => {
+                ApiErrorCode::Conflict
+            }
+            Self::NotRendered => ApiErrorCode::NotRendered,
             Self::NotFinished => ApiErrorCode::AnalysisNotFinished,
             Self::InvalidRange | Self::InvalidPath | Self::InvalidRepository => {
                 ApiErrorCode::InvalidRequest
@@ -177,9 +210,12 @@ impl ApiErrorSource for AnalysisApiError {
             Self::Token(error) => error.code(),
             Self::Db(error) => error.code(),
             _ if self.is_fetch_failure() => ApiErrorCode::GithubUnavailable,
-            Self::Mirror(_) | Self::Diff(_) | Self::DiffTask(_) | Self::Tour(_) => {
-                ApiErrorCode::Internal
-            }
+            Self::Mirror(_)
+            | Self::Diff(_)
+            | Self::DiffTask(_)
+            | Self::Tour(_)
+            | Self::Executor(_)
+            | Self::Prepass(_) => ApiErrorCode::Internal,
         }
     }
 
@@ -204,6 +240,15 @@ impl ApiErrorSource for AnalysisApiError {
             Self::InvalidPath => "The file path is not valid.",
             Self::InvalidRepository => "The repository or pull request number is not valid.",
             Self::FileNotFound => "The file is not in the analysed commit.",
+            Self::NotRendered => {
+                "This file is generated or binary; it is not shown and was not given to the agent."
+            }
+            Self::StateConflict { action: "retried" } => {
+                "Only a failed analysis can be retried. Reload to see its current state."
+            }
+            Self::StateConflict { .. } => {
+                "The analysis has already ended. Reload to see its current state."
+            }
             Self::Github(GithubError::NotFound) => "The pull request was not found on GitHub.",
             Self::Github(GithubError::Unauthorized) => {
                 "Your GitHub sign-in has ended. Sign in again."
@@ -211,7 +256,12 @@ impl ApiErrorSource for AnalysisApiError {
             Self::Github(_) => GITHUB_ERROR,
             Self::Mirror(MirrorError::BlobTooLarge { .. }) => "The file is too large to show.",
             _ if self.is_fetch_failure() => GITHUB_ERROR,
-            Self::Mirror(_) | Self::Diff(_) | Self::DiffTask(_) | Self::Tour(_) => SERVER_ERROR,
+            Self::Mirror(_)
+            | Self::Diff(_)
+            | Self::DiffTask(_)
+            | Self::Tour(_)
+            | Self::Executor(_)
+            | Self::Prepass(_) => SERVER_ERROR,
         })
     }
 }
@@ -229,6 +279,8 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route(CREATE_ANALYSIS.path, post(create))
         .route(GET_ANALYSIS.path, get(read))
+        .route(CANCEL_ANALYSIS.path, post(cancel))
+        .route(RETRY_ANALYSIS.path, post(retry))
 }
 
 /// The analysis if the session's tenant may see it; `not_found` otherwise (no existence leak).
@@ -263,4 +315,26 @@ async fn read(
 ) -> ApiResult<Json<AnalysisSummary>> {
     let Path(id) = id.map_err(failure)?;
     Ok(Json(visible_analysis(&state, &session, id).await?))
+}
+
+async fn cancel(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    id: Result<Path<AnalysisId>, PathRejection>,
+) -> ApiResult<Json<AnalysisSummary>> {
+    let Path(id) = id.map_err(failure)?;
+    visible_analysis(&state, &session, id).await?;
+    let summary = control::cancel(&state, id).await.map_err(failure)?;
+    Ok(Json(summary))
+}
+
+async fn retry(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    id: Result<Path<AnalysisId>, PathRejection>,
+) -> ApiResult<Json<AnalysisSummary>> {
+    let Path(id) = id.map_err(failure)?;
+    visible_analysis(&state, &session, id).await?;
+    let summary = control::retry(&state, id).await.map_err(failure)?;
+    Ok(Json(summary))
 }

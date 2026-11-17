@@ -24,17 +24,33 @@
   "pr_context": {
     "facts": {
       "ci": {
-        "state": "not_checked",
-        "total": 0,
-        "failing": []
+        "state": "failing",
+        "total": 6,
+        "failing": [
+          {
+            "name": "test (integration)",
+            "url": "https://github.com/acme/node-client/runs/3000000004",
+            "failing_tests": [
+              "sync_headers::slow_peer_2000_headers"
+            ]
+          }
+        ]
       },
-      "threads_status": "not_checked",
+      "threads_status": "checked",
       "counters": {
-        "lines_removed_from_tests": 0,
-        "dependencies_changed": []
+        "lines_removed_from_tests": 12,
+        "dependencies_changed": [
+          "tokio",
+          "tracing",
+          "url"
+        ],
+        "dependency_files_not_checked": []
       },
       "project_profile": {
-        "sources": []
+        "sources": [
+          "repository_file"
+        ],
+        "memcan": "not_checked"
       },
       "agent_instruction_files": [],
       "related_work_checked": false,
@@ -45,23 +61,7 @@
       "problem": "The wallet UI hangs for 30 s when a peer is unreachable (#470), and one late reply fails a whole call with Timeout.",
       "why_needed": "Issue #470: the wallet UI hung for 30 s on unreachable peers, and short outages reach wallet users as “offline”.",
       "what_it_gives": "A call is tried up to 3 times and a dead peer is noticed after 5 s instead of 30 s, so one late reply no longer shows the wallet as offline.",
-      "related_work": [
-        {
-          "reference": "acme/node-client#479",
-          "kind": "competing_solution",
-          "overlap": "Adds retry in HttpTransport, one layer lower. If both merge, one call can make up to 9 attempts."
-        },
-        {
-          "reference": "acme/node-client#470",
-          "kind": "linked_issue",
-          "overlap": "“Wallet UI hangs 30 s”. Asks for a shorter wait; does not ask for retry."
-        },
-        {
-          "reference": "acme/node-sdk#118",
-          "kind": "stacked_pr",
-          "overlap": "Adopts this retry API and still calls send_once(), which this PR removes."
-        }
-      ],
+      "related_work": [],
       "fit_questions": [
         {
           "question": "Right layer? Retry sits in RpcClient while #479 adds it in HttpTransport; should there be only one?",
@@ -549,7 +549,9 @@
             ],
             "moved": null,
             "call_hierarchy": null,
-            "thread_ids": []
+            "thread_ids": [
+              "PRRT_fixture482_t1"
+            ]
           },
           "llm": {
             "title": "Retry allowed?",
@@ -1008,7 +1010,9 @@
             ],
             "moved": null,
             "call_hierarchy": null,
-            "thread_ids": []
+            "thread_ids": [
+              "PRRT_fixture482_t2"
+            ]
           },
           "llm": {
             "title": "Retry policy: attempt limit and delays",
@@ -1773,7 +1777,18 @@
                 "end_line": 50
               }
             ],
-            "moved": null,
+            "moved": {
+              "from": {
+                "file": "src/util/backoff.rs",
+                "side": "base",
+                "range": {
+                  "start_line": 11,
+                  "end_line": 68
+                }
+              },
+              "badge": null,
+              "differing_lines": 2
+            },
             "call_hierarchy": null,
             "thread_ids": []
           },
@@ -1906,9 +1921,310 @@
     }
   ],
   "quiet": {
-    "unexplained": [],
-    "moves": [],
-    "not_analysed": []
+    "unexplained": [
+      {
+        "file": "src/rpc/metrics.rs",
+        "side": "head",
+        "ranges": [
+          {
+            "start_line": 40,
+            "end_line": 46
+          }
+        ]
+      }
+    ],
+    "moves": [
+      {
+        "from": {
+          "file": "src/rpc/client.rs",
+          "side": "base",
+          "range": {
+            "start_line": 173,
+            "end_line": 213
+          }
+        },
+        "to": {
+          "file": "src/rpc/client.rs",
+          "side": "head",
+          "range": {
+            "start_line": 112,
+            "end_line": 152
+          }
+        },
+        "badge": "text_identical"
+      }
+    ],
+    "not_analysed": [
+      {
+        "category": "tests",
+        "file_count": 4,
+        "items": [
+          {
+            "file": "tests/common/mod.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 14,
+                "end_line": 14
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "tests/**"
+          },
+          {
+            "file": "tests/common/mod.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 14,
+                "end_line": 15
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "tests/**"
+          },
+          {
+            "file": "tests/rpc_retry.rs",
+            "side": "head",
+            "ranges": null,
+            "badge": "classified_by_path",
+            "rule": "tests/**"
+          },
+          {
+            "file": "tests/send_once.rs",
+            "side": "base",
+            "ranges": null,
+            "badge": "classified_by_path",
+            "rule": "tests/**"
+          },
+          {
+            "file": "tests/sync_headers.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 19,
+                "end_line": 19
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "tests/**"
+          },
+          {
+            "file": "tests/sync_headers.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 19,
+                "end_line": 19
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "tests/**"
+          }
+        ]
+      },
+      {
+        "category": "docs_comments",
+        "file_count": 3,
+        "items": [
+          {
+            "file": "README.md",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 15,
+                "end_line": 20
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "*.md"
+          },
+          {
+            "file": "docs/rpc.md",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 3,
+                "end_line": 3
+              },
+              {
+                "start_line": 7,
+                "end_line": 9
+              },
+              {
+                "start_line": 13,
+                "end_line": 13
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "docs/**"
+          },
+          {
+            "file": "docs/rpc.md",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 3,
+                "end_line": 3
+              },
+              {
+                "start_line": 7,
+                "end_line": 7
+              },
+              {
+                "start_line": 11,
+                "end_line": 12
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "docs/**"
+          },
+          {
+            "file": "src/rpc/client.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 99,
+                "end_line": 99
+              }
+            ],
+            "badge": "classified_by_line_rule",
+            "rule": "comment-only lines (Rust, by the compiler's lexer)"
+          },
+          {
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 89,
+                "end_line": 89
+              }
+            ],
+            "badge": "classified_by_line_rule",
+            "rule": "comment-only lines (Rust, by the compiler's lexer)"
+          }
+        ]
+      },
+      {
+        "category": "generated_mechanical",
+        "file_count": 1,
+        "items": [
+          {
+            "file": "Cargo.lock",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 30,
+                "end_line": 30
+              },
+              {
+                "start_line": 32,
+                "end_line": 32
+              },
+              {
+                "start_line": 36,
+                "end_line": 36
+              },
+              {
+                "start_line": 38,
+                "end_line": 38
+              },
+              {
+                "start_line": 42,
+                "end_line": 42
+              },
+              {
+                "start_line": 44,
+                "end_line": 44
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "Cargo.lock"
+          },
+          {
+            "file": "Cargo.lock",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 30,
+                "end_line": 30
+              },
+              {
+                "start_line": 32,
+                "end_line": 32
+              },
+              {
+                "start_line": 36,
+                "end_line": 36
+              },
+              {
+                "start_line": 38,
+                "end_line": 38
+              },
+              {
+                "start_line": 42,
+                "end_line": 42
+              },
+              {
+                "start_line": 44,
+                "end_line": 44
+              }
+            ],
+            "badge": "classified_by_path",
+            "rule": "Cargo.lock"
+          }
+        ]
+      }
+    ]
   },
-  "threads": []
+  "threads": [
+    {
+      "id": "PRRT_fixture482_t1",
+      "path": "src/rpc/client.rs",
+      "line": 99,
+      "start_line": null,
+      "side": "head",
+      "author": "bob",
+      "excerpt": "Should we retry non-idempotent calls at all?",
+      "comment_count": 2,
+      "url": "https://github.com/acme/node-client/pull/482#discussion_r2000000001",
+      "is_resolved": false,
+      "is_outdated": false,
+      "step_id": "f1.5",
+      "llm_status": "still_valid",
+      "llm_reason": "should_retry still retries every method, broadcast_tx included."
+    },
+    {
+      "id": "PRRT_fixture482_t2",
+      "path": "src/rpc/retry.rs",
+      "line": 30,
+      "start_line": null,
+      "side": "head",
+      "author": "carol",
+      "excerpt": "Use a seeded RNG for the jitter so tests are stable.",
+      "comment_count": 1,
+      "url": "https://github.com/acme/node-client/pull/482#discussion_r2000000002",
+      "is_resolved": false,
+      "is_outdated": false,
+      "step_id": "f1.10",
+      "llm_status": "stale",
+      "llm_reason": "The line now calls with_jitter; the random draw it refers to lives in jitter_fraction, moved in flow 5."
+    },
+    {
+      "id": "PRRT_fixture482_t3",
+      "path": "README.md",
+      "line": 17,
+      "start_line": 15,
+      "side": "head",
+      "author": "erin",
+      "excerpt": "Mention the new 5 s default here too.",
+      "comment_count": 1,
+      "url": "https://github.com/acme/node-client/pull/482#discussion_r2000000003",
+      "is_resolved": false,
+      "is_outdated": false,
+      "step_id": null,
+      "llm_status": null,
+      "llm_reason": null
+    }
+  ]
 }

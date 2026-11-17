@@ -121,6 +121,17 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
   discarded.
 - `llm_call` (last provider call outcome) updates the LLM status in Settings; `usage` is the job's own delta.
 
+## Agent session (ADR-004)
+- One session per analysis. The server sets `spec.session` at claim from the analysis's recorded session (none
+  before the first report, none once a drop was requested); the stored spec never holds it. One running job per
+  analysis, so queued jobs never fork the session.
+- The result's `session` is recorded as the analysis's session before the job completes (not for a `cancelled`
+  result); a session already asked to be dropped stays dropped.
+- Every job after the first carries `context_pack`: the stored plan, PR context and accepted flow analyses
+  (`pipeline::context`); the runner uses it only when it starts a new session (`started_after_loss`).
+- Cancel and a re-analysis on a moved head request the drop of the analysis's session (`drop_sessions`).
+- `access.memcan` is filled at claim from the server configuration (never stored, never logged).
+
 ## Pipeline recovery (server restart)
 Durable state only; no in-memory handle is needed after a restart.
 - **Stage link.** Every job carries its stage (`JobStage`: `plan:<batch>`, `pr_context`, `flow:<id>`,
@@ -128,7 +139,8 @@ Durable state only; no in-memory handle is needed after a restart.
   (`MAX_REPAIR_RUNS` = 2, brief §5 Pipeline 6). The database allows one live or succeeded job per (analysis,
   stage, generation) (`jobs_one_live_per_stage`); a failed or cancelled one may be submitted again (Retry).
 - **Repair.** When verification rejects the output of a succeeded job of generation g, the pipeline submits
-  generation g + 1 with the repair prompt; with g = 2 the stage fails ("repair exhausted"). The rejection
+  generation g + 1 with the repair prompt; with g = 2 repair is exhausted: a flow ends without output (its lines
+  are Unexplained, the analysis goes on), a plan or PR context fails the analysis. The rejection
   needs no stored flag: verification is deterministic, so after a restart re-verifying the newest succeeded
   generation reproduces the decision.
 - **Submit boundary.** `JobExecutor::submit` is idempotent per (stage, generation): an existing live or
