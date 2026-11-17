@@ -2,6 +2,7 @@
 //! its value.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use contracts::job::access::Secret;
 use contracts::job::spec::{CredentialKind, LlmCredentialRef};
@@ -23,15 +24,34 @@ pub const WORK_DIR: &str = "SR_RUNNER_WORK_DIR";
 pub const CREDENTIAL_ID: &str = "SR_RUNNER_CREDENTIAL_ID";
 /// The `codex` binary.
 pub const CODEX_BIN: &str = "SR_RUNNER_CODEX_BIN";
+/// The `github-mcp-server` binary (default `/opt/github-mcp/github-mcp-server`).
+pub const GITHUB_MCP_BIN: &str = "SR_RUNNER_GITHUB_MCP_BIN";
 /// Explicit egress proxy URL given to the agent, e.g. `http://egress-proxy:3128`.
 pub const EGRESS_PROXY: &str = "SR_RUNNER_EGRESS_PROXY";
 /// `codex` (default) or `fake` (only in builds with the `fake-provider` feature).
 pub const PROVIDER: &str = "SR_RUNNER_PROVIDER";
+/// Git URL of the claudius repository the agent's skills come from.
+pub const CLAUDIUS_URL: &str = "SR_RUNNER_CLAUDIUS_URL";
+/// Ref (branch or tag) of claudius to use (default `main`).
+pub const CLAUDIUS_REF: &str = "SR_RUNNER_CLAUDIUS_REF";
+/// Seconds between two refreshes of the claudius checkout (default 21600).
+pub const CLAUDIUS_REFRESH_SECS: &str = "SR_RUNNER_CLAUDIUS_REFRESH_SECS";
+/// Comma-separated skills a job may be given (default `severity`, ADR-002).
+pub const SKILLS: &str = "SR_RUNNER_SKILLS";
+/// Days an agent session is kept after its last job (default 14).
+pub const SESSION_RETENTION_DAYS: &str = "SR_RUNNER_SESSION_RETENTION_DAYS";
 
 const DEFAULT_RUNNER_ID: &str = "runner";
 const DEFAULT_STATE_DIR: &str = "/var/lib/smart-review-runner";
 const DEFAULT_CREDENTIAL_ID: &str = "default";
 const DEFAULT_CODEX_BIN: &str = "codex";
+const DEFAULT_GITHUB_MCP_BIN: &str = "/opt/github-mcp/github-mcp-server";
+const DEFAULT_SESSION_RETENTION_DAYS: u64 = 14;
+const DEFAULT_CLAUDIUS_URL: &str = "https://github.com/lklimek/claudius.git";
+const DEFAULT_CLAUDIUS_REF: &str = "main";
+const DEFAULT_CLAUDIUS_REFRESH_SECS: u64 = 6 * 3600;
+const DEFAULT_SKILLS: &str = "severity";
+const SECS_PER_DAY: u64 = 24 * 3600;
 
 /// Which provider runs the agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,10 +80,22 @@ pub struct Config {
     pub credential: LlmCredentialRef,
     /// The `codex` binary.
     pub codex_bin: PathBuf,
+    /// The `github-mcp-server` binary.
+    pub github_mcp_bin: PathBuf,
     /// Egress proxy for the agent.
     pub egress_proxy: Option<String>,
     /// The provider.
     pub provider: ProviderKind,
+    /// How long an agent session is kept after its last job.
+    pub session_retention: Duration,
+    /// The claudius repository URL.
+    pub claudius_url: String,
+    /// The claudius ref.
+    pub claudius_ref: String,
+    /// Interval between claudius refreshes.
+    pub claudius_refresh: Duration,
+    /// Skills a job may be given.
+    pub skills: Vec<String>,
 }
 
 /// Invalid or missing configuration.
@@ -88,6 +120,9 @@ pub enum ConfigError {
         "environment variable {0} is reserved: v1 supports only the credential 'default'; unset it"
     )]
     UnsupportedCredentialId(&'static str),
+    /// A number variable is not a positive whole number.
+    #[error("environment variable {0} must be a positive whole number")]
+    NotPositive(&'static str),
     /// Unknown provider name.
     #[error("environment variable {0} must be 'codex' (or 'fake' in fake-provider builds)")]
     UnknownProvider(&'static str),
@@ -140,6 +175,26 @@ impl Config {
             Some("fake") => ProviderKind::Fake,
             Some(_) => return Err(ConfigError::UnknownProvider(PROVIDER)),
         };
+        let retention_days = match get(SESSION_RETENTION_DAYS) {
+            Some(days) => days
+                .parse::<u64>()
+                .ok()
+                .filter(|days| (1..=3650).contains(days))
+                .ok_or(ConfigError::NotPositive(SESSION_RETENTION_DAYS))?,
+            None => DEFAULT_SESSION_RETENTION_DAYS,
+        };
+        let claudius_refresh = match get(CLAUDIUS_REFRESH_SECS) {
+            Some(secs) => secs
+                .parse::<u64>()
+                .ok()
+                .filter(|secs| *secs >= 60)
+                .ok_or(ConfigError::NotPositive(CLAUDIUS_REFRESH_SECS))?,
+            None => DEFAULT_CLAUDIUS_REFRESH_SECS,
+        };
+        let claudius_url = get(CLAUDIUS_URL).unwrap_or_else(|| DEFAULT_CLAUDIUS_URL.to_owned());
+        if !(claudius_url.starts_with("https://") || claudius_url.starts_with("file://")) {
+            return Err(ConfigError::NotHttpUrl(CLAUDIUS_URL));
+        }
         Ok(Self {
             server_url,
             runner_secret,
@@ -153,8 +208,23 @@ impl Config {
             codex_bin: PathBuf::from(
                 get(CODEX_BIN).unwrap_or_else(|| DEFAULT_CODEX_BIN.to_owned()),
             ),
+            github_mcp_bin: absolute(
+                GITHUB_MCP_BIN,
+                get(GITHUB_MCP_BIN).unwrap_or_else(|| DEFAULT_GITHUB_MCP_BIN.to_owned()),
+            )?,
             egress_proxy,
             provider,
+            session_retention: Duration::from_secs(retention_days * SECS_PER_DAY),
+            claudius_url,
+            claudius_ref: get(CLAUDIUS_REF).unwrap_or_else(|| DEFAULT_CLAUDIUS_REF.to_owned()),
+            claudius_refresh: Duration::from_secs(claudius_refresh),
+            skills: get(SKILLS)
+                .unwrap_or_else(|| DEFAULT_SKILLS.to_owned())
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+                .collect(),
         })
     }
 
@@ -166,6 +236,11 @@ impl Config {
             mirrors: self.state_dir.join("mirrors"),
             sessions: self.state_dir.join("sessions"),
         }
+    }
+
+    /// The runner-private claudius checkout.
+    pub fn claudius_checkout(&self) -> PathBuf {
+        self.state_dir.join("claudius")
     }
 
     /// The master `auth.json` of the runner's credential.
@@ -216,6 +291,10 @@ mod tests {
         assert_eq!(config.credential.id, "default");
         assert_eq!(config.provider, ProviderKind::Codex);
         assert_eq!(
+            config.session_retention,
+            Duration::from_secs(14 * 24 * 3600)
+        );
+        assert_eq!(
             config.master_auth(),
             PathBuf::from("/var/lib/smart-review-runner/credentials/default/auth.json")
         );
@@ -251,6 +330,24 @@ mod tests {
         let mut pairs = BASE.to_vec();
         pairs.push((CREDENTIAL_ID, "default"));
         assert_eq!(config(&pairs).unwrap().credential.id, "default");
+    }
+
+    #[test]
+    fn session_retention_must_be_a_positive_number_of_days() {
+        for days in ["0", "-1", "x", "1.5"] {
+            let mut pairs = BASE.to_vec();
+            pairs.push((SESSION_RETENTION_DAYS, days));
+            assert!(
+                matches!(config(&pairs), Err(ConfigError::NotPositive(_))),
+                "{days}"
+            );
+        }
+        let mut pairs = BASE.to_vec();
+        pairs.push((SESSION_RETENTION_DAYS, "3"));
+        assert_eq!(
+            config(&pairs).unwrap().session_retention,
+            Duration::from_secs(3 * 24 * 3600)
+        );
     }
 
     #[test]

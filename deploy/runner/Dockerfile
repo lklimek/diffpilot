@@ -2,7 +2,19 @@
 # two uids (runner 10001, agent 10002), no setuid/setgid bits, no Docker socket. The entrypoint is the root
 # supervisor, started with only CHOWN, SETUID, SETGID and KILL (see ADR-013 for the run options).
 #
-# Build: docker build -t smart-review-runner:skeleton deploy/runner
+# Build (from the repository root; the named context `workspace` is the Cargo workspace):
+#   docker build --build-context workspace=. -t smart-review-runner deploy/runner
+
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS build
+# rustup installs the toolchain pinned by rust-toolchain.toml; jobs capped for the shared build host.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates rustup gcc g++ make cmake perl pkg-config libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=workspace . /src
+WORKDIR /src
+ENV CARGO_BUILD_JOBS=2 \
+    CARGO_TARGET_DIR=/build
+RUN cargo build --release --locked -p runner --bin smart-review-supervisor --bin smart-review-runner
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS fetch
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -40,6 +52,7 @@ RUN apt-get update \
 
 COPY --from=fetch /opt/codex /opt/codex
 COPY --from=fetch /opt/github-mcp/github-mcp-server /usr/local/bin/github-mcp-server
+COPY --from=build --chmod=0755 /build/release/smart-review-supervisor /build/release/smart-review-runner /usr/local/bin/
 RUN ln -s /opt/codex/bin/codex /usr/local/bin/codex
 
 # No shared group: agent must not read anything group-readable by runner.
@@ -56,9 +69,9 @@ RUN groupadd --gid 10001 runner \
 # and at /tmp (runner only, mode 0700).
 ENV SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner \
     SR_RUNNER_WORK_DIR=/work \
-    SR_RUNNER_CODEX_BIN=/usr/local/bin/codex
+    SR_RUNNER_CODEX_BIN=/usr/local/bin/codex \
+    SR_RUNNER_GITHUB_MCP_BIN=/usr/local/bin/github-mcp-server
 
 # The supervisor must start as root (it drops to runner and agent itself); never set USER here.
-# TODO(WP3-RUN, WP3-OPS phase 2): copy the Rust supervisor and runner binaries from the workspace build stage.
-ENTRYPOINT ["/usr/local/bin/smart-review-supervisor"]
+ENTRYPOINT ["/usr/local/bin/smart-review-supervisor", "serve", "--"]
 CMD ["/usr/local/bin/smart-review-runner"]

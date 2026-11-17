@@ -6,6 +6,7 @@
 # Usage: run.sh [LEDGER_FILE]     (default /data/tmp/r1-test/<timestamp>.log)
 # Env:   R1_SKIP_BUILD=1          reuse the images built earlier
 #        R1_SKIP_CODEX=1          skip the real-Codex job
+#        R1_SUPERVISOR=rust       run the checks against the Rust smart-review-supervisor (default: python prototype)
 # A second container (fault injection R1_FAULT_SWEEP_FAILS=1) proves that a failing sweep ends the container.
 # codex-homes is a size- and inode-capped tmpfs here: a stand-in for the bounded persistent filesystem of ADR-013.
 # Heavy job: builds two images (one at a time); do not run while a cargo job of this session runs.
@@ -38,12 +39,12 @@ start() {
     --tmpfs /tmp:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700 \
     --mount "type=volume,source=$state,target=/var/lib/smart-review-runner" \
     --tmpfs /var/lib/smart-review-runner/codex-homes:rw,nosuid,nodev,size=16m,nr_inodes=2048,uid=10001,gid=10001,mode=0711 \
-    "$@" "$image" > /dev/null
+    -e "R1_SUPERVISOR=${R1_SUPERVISOR:-python}" "$@" "$image" > /dev/null
 }
 trap cleanup EXIT
 
 if [[ "${R1_SKIP_BUILD:-0}" != 1 ]]; then
-  docker build -q -t "$skeleton" "$here/.." > /dev/null
+  docker build -q --build-context "workspace=$here/../../.." -t "$skeleton" "$here/.." > /dev/null
   docker build -q --build-arg "RUNNER_IMAGE=$skeleton" -t "$image" "$here" > /dev/null
 fi
 
@@ -64,7 +65,8 @@ echo "CHECK runner_image_pins_and_uids $r $(tr '\n' ';' <<< "$versions" | sed 's
 docker volume create "$state" > /dev/null
 SR_RUNNER_SECRET="SR""CANARY-runner-secret-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 export SR_RUNNER_SECRET
-start "$container" -e SR_RUNNER_SECRET -e R1_SKIP_CODEX
+# Test-only: `clear` of the quarantine check's directory fails (Rust supervisor; needs the test flag).
+start "$container" -e SR_RUNNER_SECRET -e R1_SKIP_CODEX -e SR_SUPERVISOR_TEST_FAULTS=1 -e R1_FAULT_CLEAR_FAILS=quarantine-1
 unset SR_RUNNER_SECRET
 
 hardening="$(docker inspect -f 'CapDrop={{.HostConfig.CapDrop}} CapAdd={{.HostConfig.CapAdd}} SecurityOpt={{.HostConfig.SecurityOpt}} ReadonlyRootfs={{.HostConfig.ReadonlyRootfs}} Privileged={{.HostConfig.Privileged}} IpcMode={{.HostConfig.IpcMode}} PidsLimit={{.HostConfig.PidsLimit}} Memory={{.HostConfig.Memory}} Init={{.HostConfig.Init}} User={{.Config.User}}' "$container")"
@@ -83,7 +85,8 @@ echo "# container exit: $exit_code" | tee -a "$ledger"
 # Fail closed: a sweep that fails (injected) must end the container within the deadline, never hang.
 docker rm -f "$container" > /dev/null
 started=$SECONDS
-start "$failing" -e R1_SCENARIO=sweep-failure -e R1_FAULT_SWEEP_FAILS=1 -e SR_SUPERVISOR_SWEEP_DEADLINE_MS=1000
+# The Rust supervisor honours the fault switch only with its explicit test flag.
+start "$failing" -e R1_SCENARIO=sweep-failure -e R1_FAULT_SWEEP_FAILS=1 -e SR_SUPERVISOR_TEST_FAULTS=1 -e SR_SUPERVISOR_SWEEP_DEADLINE_MS=1000
 fail_exit="$(timeout 60 docker wait "$failing" || echo timeout)"
 elapsed=$((SECONDS - started))
 fail_log="$(docker logs "$failing" 2>&1)"

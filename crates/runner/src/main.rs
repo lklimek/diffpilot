@@ -11,7 +11,10 @@ use runner::client::{ClientError, ServerClient};
 use runner::config::{Config, ConfigError, ProviderKind};
 use runner::execute::Executor;
 use runner::provider::LlmProvider;
-use runner::provider::codex::{CodexProvider, CodexSettings, credential_usable};
+use runner::provider::ProviderError;
+use runner::provider::codex::{CodexCredential, CodexProvider, CodexSettings, Isolation};
+use runner::skills::Skills;
+use runner::supervisor::client::{Supervisor, SupervisorError};
 use runner::worker::{CredentialCheck, Timing, Worker};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
@@ -33,6 +36,14 @@ enum StartError {
     },
     #[error("could not create the server client")]
     Client(#[from] ClientError),
+    #[error(
+        "no supervisor: start the runner under smart-review-supervisor, or set SR_RUNNER_DEV_NO_ISOLATION=1 for development only"
+    )]
+    NoIsolation,
+    #[error("cannot use the supervisor (SR_SUPERVISOR_FD)")]
+    Supervisor(#[from] SupervisorError),
+    #[error("cannot recover the agent directories of a previous run")]
+    Recover(#[source] ProviderError),
 }
 
 fn main() -> ExitCode {
@@ -53,7 +64,13 @@ fn main() -> ExitCode {
 
 async fn run() -> Result<(), StartError> {
     let config = Config::from_env()?;
-    let dirs = config.dirs();
+    let mut dirs = config.dirs();
+    let isolation = Supervisor::from_env()?
+        .map(|supervisor| Isolation::new(supervisor, dirs.codex_homes.clone()));
+    let dev_no_isolation = std::env::var_os(DEV_NO_ISOLATION).is_some_and(|value| value == "1");
+    if isolation.is_none() && !dev_no_isolation {
+        return Err(StartError::NoIsolation);
+    }
     for dir in [
         &config.state_dir,
         &dirs.codex_homes,
@@ -63,19 +80,56 @@ async fn run() -> Result<(), StartError> {
     ] {
         private_dir(dir).await?;
     }
+    match &isolation {
+        Some(isolation) => {
+            // ADR-013 layout: the agent may traverse these roots, not list them; the runner works on a
+            // private staging copy of each per-job CODEX_HOME.
+            for dir in [&config.state_dir, &isolation.codex_homes, &dirs.work] {
+                set_mode(dir, 0o711)?;
+            }
+            dirs.codex_homes = config.state_dir.join(CODEX_STAGING);
+            private_dir(&dirs.codex_homes).await?;
+            let removed = isolation
+                .recover(&dirs.codex_homes, &dirs.work)
+                .await
+                .map_err(StartError::Recover)?;
+            tracing::info!(
+                removed,
+                "process isolation on: agents run as their own uid through the supervisor"
+            );
+        }
+        None => tracing::warn!(
+            "process isolation off (development): agents run as the runner's uid; production runs under smart-review-supervisor (ADR-013)"
+        ),
+    }
     remove_leftover_work_dirs(&dirs.work).await?;
+    let skills = Arc::new(Skills::new(
+        config.claudius_url.clone(),
+        config.claudius_ref.clone(),
+        config.claudius_checkout(),
+        config.skills.clone(),
+        config.claudius_refresh,
+    ));
     let (provider, credential_check): (Arc<dyn LlmProvider>, CredentialCheck) =
         match config.provider {
             ProviderKind::Codex => {
-                let master_auth = config.master_auth();
+                let credential = Arc::new(CodexCredential::new(config.master_auth()));
+                recover_credential(&credential, &dirs.codex_homes)?;
                 let provider = CodexProvider::new(CodexSettings {
                     binary: config.codex_bin.clone(),
-                    master_auth: master_auth.clone(),
+                    credential: Arc::clone(&credential),
                     egress_proxy: config.egress_proxy.clone(),
+                    term_grace: Timing::v1().term_grace,
+                    github_mcp: config.github_mcp_bin.clone(),
+                    skills: Some(Arc::clone(&skills)),
+                    isolation: isolation.clone(),
                 });
+                let isolation = isolation.clone();
                 (
                     Arc::new(provider),
-                    Arc::new(move || credential_usable(&master_auth)),
+                    Arc::new(move || {
+                        credential.usable() && isolation.as_ref().is_none_or(Isolation::healthy)
+                    }),
                 )
             }
             #[cfg(feature = "fake-provider")]
@@ -87,7 +141,14 @@ async fn run() -> Result<(), StartError> {
                 )
             }
         };
-    let executor = Arc::new(Executor::new(provider, dirs, config.credential.clone()));
+    let executor = Executor::new(provider, dirs, config.credential.clone());
+    // Under the supervisor an attempt runs to its own end (stop, sweep, copy-back) even when the job loop
+    // stops waiting for it.
+    let executor = Arc::new(if isolation.is_some() {
+        executor.with_detached_attempts()
+    } else {
+        executor
+    });
     let client = ServerClient::new(
         &config.server_url,
         config.runner_secret.clone(),
@@ -102,10 +163,29 @@ async fn run() -> Result<(), StartError> {
         Timing::v1(),
         credential_check,
     )
+    .with_session_retention(config.session_retention)
+    .with_skills(skills)
     .run(shutdown_signal())
     .await;
     tracing::info!("runner stopped");
     Ok(())
+}
+
+/// Runs agents as the runner's own uid when no supervisor is present (development only; never set in the
+/// image).
+const DEV_NO_ISOLATION: &str = "SR_RUNNER_DEV_NO_ISOLATION";
+
+/// The runner-private staging `CODEX_HOME`s under the supervisor, below the state directory.
+const CODEX_STAGING: &str = "codex-staging";
+
+fn set_mode(path: &Path, mode: u32) -> Result<(), StartError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|source| {
+        StartError::Dir {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
 }
 
 async fn private_dir(path: &Path) -> Result<(), StartError> {
@@ -120,8 +200,25 @@ async fn private_dir(path: &Path) -> Result<(), StartError> {
         })
 }
 
-/// Work dirs of a previous run hold only checkouts; per-job `CODEX_HOME`s are kept for credential recovery
-/// (WP3-RUN, T13).
+/// Writes back the refreshed credential copies a previous run left in per-job `CODEX_HOME`s, then removes them
+/// (T13); before the first claim.
+fn recover_credential(credential: &CodexCredential, codex_homes: &Path) -> Result<(), StartError> {
+    let recovered = credential
+        .recover(codex_homes)
+        .map_err(|source| StartError::Dir {
+            path: codex_homes.to_path_buf(),
+            source,
+        })?;
+    if recovered > 0 {
+        tracing::info!(
+            recovered,
+            "recovered refreshed Codex credentials of interrupted jobs"
+        );
+    }
+    Ok(())
+}
+
+/// Work dirs of a previous run hold only checkouts.
 async fn remove_leftover_work_dirs(work: &Path) -> Result<(), StartError> {
     let dir_error = |source| StartError::Dir {
         path: work.to_path_buf(),

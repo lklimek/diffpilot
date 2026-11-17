@@ -9,16 +9,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use contracts::ids::JobId;
 use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
     SessionReport,
 };
-use contracts::job::spec::{JobSpec, LlmCredentialRef};
+use contracts::job::spec::{JobLimits, JobSpec, LlmCredentialRef};
 use tokio::sync::mpsc;
 
 use crate::git;
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
+use crate::sessions::SessionStore;
 
 /// Where `execute` sends a job's normalised events and its ready output, in order, together with the secrets
 /// the receiver holds (job token, runner secret): `execute` scrubs every known secret before it clips text,
@@ -50,7 +52,7 @@ pub struct RunnerDirs {
     pub codex_homes: PathBuf,
     /// Bare mirrors by clone URL.
     pub mirrors: PathBuf,
-    /// Agent-session store per analysis (used from WP3-RUN).
+    /// Agent-session store, one directory per analysis.
     pub sessions: PathBuf,
 }
 
@@ -59,6 +61,10 @@ pub struct Executor {
     provider: Arc<dyn LlmProvider>,
     dirs: RunnerDirs,
     credential: LlmCredentialRef,
+    /// Attempts run as their own task: dropping `execute` cancels the attempt instead of abandoning it.
+    detached: bool,
+    /// Held by a detached attempt until it has stopped, swept, copied back and cleaned up.
+    gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl std::fmt::Debug for Executor {
@@ -81,12 +87,33 @@ impl Executor {
             provider,
             dirs,
             credential,
+            detached: false,
+            gate: Arc::default(),
         }
+    }
+
+    /// Waits until no detached attempt is still finishing (stop, sweep, copy-back, cleanup); call before a
+    /// terminal result is posted and before the next claim.
+    pub async fn settled(&self) {
+        drop(self.gate.lock().await);
+    }
+
+    /// Runs every attempt as its own task (process isolation, ADR-013): agent processes of another uid can
+    /// only be stopped through the supervisor, so a dropped `execute` cancels the provider call and the
+    /// attempt still stops, sweeps, copies back and cleans up before its directories are removed.
+    pub fn with_detached_attempts(mut self) -> Self {
+        self.detached = true;
+        self
     }
 
     /// The LLM credential the runner holds.
     pub fn credential(&self) -> &LlmCredentialRef {
         &self.credential
+    }
+
+    /// The agent-session store.
+    pub fn sessions(&self) -> SessionStore {
+        SessionStore::new(self.dirs.sessions.clone())
     }
 
     /// The provider, for cancelling a running call.
@@ -97,6 +124,36 @@ impl Executor {
     /// Runs `spec` to its result. Events and the ready output go to `sink`; a closed sink does not stop the
     /// job. Both job directories are removed when this returns or is dropped.
     pub async fn execute(&self, spec: JobSpec, sink: EventSink) -> JobResult {
+        if !self.detached {
+            return self.execute_here(spec, sink).await;
+        }
+        let attempt = Self {
+            provider: Arc::clone(&self.provider),
+            dirs: self.dirs.clone(),
+            credential: self.credential.clone(),
+            detached: true,
+            gate: Arc::clone(&self.gate),
+        };
+        // Taken before the task starts, so `settled` never passes an attempt that has not begun.
+        let held = Arc::clone(&self.gate).lock_owned().await;
+        let mut cancel = CancelOnDrop {
+            provider: Arc::clone(&self.provider),
+            job: Some(spec.job_id),
+        };
+        let joined = tokio::spawn(async move {
+            let result = attempt.execute_here(spec, sink).await;
+            drop(held);
+            result
+        })
+        .await;
+        cancel.job = None;
+        match joined {
+            Ok(result) => result,
+            Err(error) => std::panic::resume_unwind(error.into_panic()),
+        }
+    }
+
+    async fn execute_here(&self, spec: JobSpec, sink: EventSink) -> JobResult {
         let key = format!("{}-{}", spec.job_id, spec.attempt);
         let job_dir = RemoveOnDrop(self.dirs.work.join(&key));
         let codex_home = RemoveOnDrop(self.dirs.codex_homes.join(&key));
@@ -149,36 +206,88 @@ impl Executor {
                         .map(|memcan| memcan.token.expose()),
                 ),
         ));
-        // Stage 2 starts a session for every job, seeded with the context pack (ADR-004); a requested
-        // session counts as lost. Resume arrives with WP3-RUN.
-        let prompt = match &spec.context_pack {
-            Some(pack) => format!("{pack}\n\n{}", spec.prompt),
-            None => spec.prompt.clone(),
-        };
-        let session_outcome = match spec.session {
-            Some(_) => SessionOutcome::StartedAfterLoss,
-            None => SessionOutcome::Started,
-        };
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let call = ProviderCall {
             job_id: spec.job_id,
             job_dir: job_dir.to_path_buf(),
             codex_home: codex_home.to_path_buf(),
-            session_dir: self.dirs.sessions.join(spec.analysis_id.to_string()),
-            prompt,
+            session_dir: self.sessions().dir(spec.analysis_id),
+            prompt: spec.prompt.clone(),
             output_schema: spec.output_schema.clone(),
             model: spec.model.clone(),
-            limits: spec.limits,
+            limits: JobLimits {
+                max_runtime_secs: u32::try_from(remaining.as_secs()).unwrap_or(u32::MAX),
+            },
             access: spec.access.clone(),
             skills: spec.skills.clone(),
         };
         let (tx, rx) = mpsc::channel(EVENT_BUFFER);
         let run = async {
-            tokio::time::timeout_at(deadline, self.provider.run(&call, tx))
-                .await
-                .unwrap_or(Err(ProviderError::Timeout))
+            let session = self.run_session(spec, call, tx);
+            tokio::pin!(session);
+            match tokio::time::timeout_at(deadline, &mut session).await {
+                Ok(done) => done,
+                // Supervised agent processes are stopped through the provider, never by dropping the call
+                // that owns them: the cap starts the stop sequence and the call still finishes it.
+                Err(_) if self.detached => {
+                    if let Err(error) = self.provider.cancel(spec.job_id).await {
+                        tracing::warn!(job = %spec.job_id, %error, "cannot stop the agent at the runtime cap");
+                    }
+                    let (_, session_outcome) = session.await;
+                    (Err(ProviderError::Timeout), session_outcome)
+                }
+                Err(_) => (Err(ProviderError::Timeout), SessionOutcome::Started),
+            }
         };
-        let (outcome, ()) = tokio::join!(run, pump(rx, sink, &scrubber));
+        let ((outcome, session_outcome), ()) = tokio::join!(run, pump(rx, sink, &scrubber));
+        let outcome = match outcome {
+            Ok(mut done) if done.session_id.is_some() && !sink.secrets.is_empty() => {
+                if let Err(error) = self.sessions().scrub(spec.analysis_id, &sink.secrets) {
+                    tracing::warn!(job = %spec.job_id, %error, "cannot scrub the stored agent session; it is discarded");
+                    if let Err(error) = self.sessions().remove(spec.analysis_id) {
+                        tracing::warn!(job = %spec.job_id, %error, "cannot remove an unscrubbed agent session");
+                    }
+                    done.session_id = None;
+                }
+                Ok(done)
+            }
+            other => other,
+        };
         to_result(spec, outcome, session_outcome, &scrubber)
+    }
+
+    /// Resumes the analysis's own session (ADR-004) or starts a new one; a lost session, or one of another
+    /// analysis, starts a new session seeded with the context pack.
+    async fn run_session(
+        &self,
+        spec: &JobSpec,
+        mut call: ProviderCall,
+        events: mpsc::Sender<ProviderEvent>,
+    ) -> (Result<ProviderOutcome, ProviderError>, SessionOutcome) {
+        if let Some(session) = &spec.session {
+            if session.analysis_id == spec.analysis_id {
+                match self
+                    .provider
+                    .resume(&session.thread_id, &call, events.clone())
+                    .await
+                {
+                    Err(ProviderError::SessionUnavailable) => {
+                        tracing::info!(job = %spec.job_id, "the analysis's agent session is unavailable; starting a new one with the context pack");
+                    }
+                    other => return (other, SessionOutcome::Resumed),
+                }
+            } else {
+                tracing::warn!(job = %spec.job_id, "the job names another analysis's session; starting a new one");
+            }
+        }
+        if let Some(pack) = &spec.context_pack {
+            call.prompt = format!("{pack}\n\n{}", spec.prompt);
+        }
+        let outcome = match spec.session {
+            Some(_) => SessionOutcome::StartedAfterLoss,
+            None => SessionOutcome::Started,
+        };
+        (self.provider.run(&call, events).await, outcome)
     }
 
     /// Creates the job directories and checks the repository out; the error is the job's failure.
@@ -340,6 +449,27 @@ async fn prepare_dirs(dirs: &[&Path]) -> io::Result<()> {
         tokio::fs::DirBuilder::new().mode(0o700).create(dir).await?;
     }
     Ok(())
+}
+
+/// Cancels a detached attempt's provider call when `execute` is dropped before it finished.
+struct CancelOnDrop {
+    provider: Arc<dyn LlmProvider>,
+    job: Option<JobId>,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if let Some(job) = self.job
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            let provider = Arc::clone(&self.provider);
+            runtime.spawn(async move {
+                if let Err(error) = provider.cancel(job).await {
+                    tracing::warn!(%job, %error, "cannot cancel a dropped attempt");
+                }
+            });
+        }
+    }
 }
 
 /// Removes a directory tree when dropped (also when the job future is dropped by the job loop).
