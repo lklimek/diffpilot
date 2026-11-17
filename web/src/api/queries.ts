@@ -249,6 +249,10 @@ export interface AnalysisLive {
   error?: unknown;
   /** The connection broke and is being re-established; `summary` may be stale until the next snapshot. */
   reconnecting: boolean;
+  /** When this page first saw the current state; `exact` false when a (re)connection snapshot showed it. */
+  stageSince?: { at: number; exact: boolean };
+  /** When the last summary arrived from the server (event or read). */
+  updatedAt?: number;
 }
 
 /** What to do with an analysis event stream (`followAnalysisEvents`). */
@@ -303,18 +307,42 @@ export function useAnalysisLive(id: AnalysisId): AnalysisLive {
   useEffect(() => {
     let active = true;
     // State kept across an error only when it is this analysis's own.
-    const own = (current: AnalysisLive & { id?: AnalysisId }) => (current.id === id ? current : {});
+    const own = (current: AnalysisLive & { id?: AnalysisId }): Partial<AnalysisLive> =>
+      current.id === id ? current : {};
+    // The first summary of a connection is a snapshot: a change it shows happened at some unknown earlier time.
+    let snapshotNext = true;
+    const arrived = (summary: AnalysisSummary, reconnecting: boolean, exact: boolean) => {
+      const now = Date.now();
+      setLive((current) => {
+        const previous = own(current);
+        const same =
+          previous.summary !== undefined &&
+          JSON.stringify(previous.summary.state) === JSON.stringify(summary.state);
+        return {
+          id,
+          summary,
+          reconnecting,
+          stageSince: same && previous.stageSince ? previous.stageSince : { at: now, exact },
+          updatedAt: now,
+        };
+      });
+    };
     const stop = followAnalysisEvents(id, {
       onEvent: (event) => {
         if (event.event === "analysis" && event.summary.id === id) {
-          setLive({ id, summary: event.summary, reconnecting: false });
+          arrived(event.summary, false, !snapshotNext);
+          snapshotNext = false;
         }
       },
-      onDrop: () => setLive((current) => ({ ...own(current), id, reconnecting: true })),
+      onDrop: () => {
+        snapshotNext = true;
+        setLive((current) => ({ ...own(current), id, reconnecting: true }));
+      },
       onClosed: () =>
         api.getAnalysis(id).then(
           (summary) => {
-            if (active) setLive({ id, summary, reconnecting: true });
+            snapshotNext = true;
+            if (active) arrived(summary, true, false);
           },
           (error: unknown) => {
             if (active) setLive((current) => ({ ...own(current), id, error, reconnecting: false }));

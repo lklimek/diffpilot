@@ -41,6 +41,8 @@ interface Scenario {
   resolve?: (seed: ResolvePrResponse) => ResolvePrResponse;
   /** The analysis stays in this state (no scripted run after Analyze). */
   analysis?: AnalysisState;
+  /** States published one per `RUN_STEP_MS` once the first event stream opens; the last one stays. */
+  script?: AnalysisState[];
   /** `settings` answer. */
   settings?: Settings;
   /** `repos/{owner}/{name}/settings` answer; null = not known yet (409 `analysis_not_finished`). */
@@ -204,6 +206,8 @@ const SCENARIOS = {
     settings: { ...SETTINGS, app_installations: [] },
   },
   planning: { analysis: { state: "planning" } },
+  // A one-flow PR: planning, then the plan is ready and the PR context and flow 1 run (no flow done yet).
+  "first-flow": { analysis: { state: "planning" }, script: [{ state: "running", done: 0, total: 1 }] },
   running: { analysis: { state: "running", done: 2, total: 5 } },
   paused: { analysis: { state: "paused", resumes_at: "2026-11-17T14:20:00Z", done: 2, total: 5 } },
   "paused-unknown": { analysis: { state: "paused", resumes_at: null, done: 0, total: null } },

@@ -113,6 +113,39 @@ describe("useAnalysisLive (sse-events.md)", () => {
     expect(FakeEventSource.instances[0]!.readyState).toBe(FakeEventSource.CLOSED);
   });
 
+  it("dates the current state: exact when seen changing live, a lower bound when a (re)connection showed it", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.parse("2026-11-17T10:00:00Z");
+    vi.setSystemTime(t0);
+    const { result } = renderHook(() => useAnalysisLive(ID));
+    const source = FakeEventSource.latest();
+    act(() => source.emit({ event: "analysis", summary: at({ state: "planning" }) }));
+    expect(result.current.stageSince).toEqual({ at: t0, exact: false });
+    expect(result.current.updatedAt).toBe(t0);
+
+    vi.setSystemTime(t0 + 30_000);
+    act(() => source.emit({ event: "analysis", summary: at({ state: "planning" }) }));
+    expect(result.current.stageSince).toEqual({ at: t0, exact: false });
+    expect(result.current.updatedAt).toBe(t0 + 30_000);
+
+    vi.setSystemTime(t0 + 60_000);
+    act(() => source.emit({ event: "analysis", summary: at({ state: "running", done: 0, total: 1 }) }));
+    expect(result.current.stageSince).toEqual({ at: t0 + 60_000, exact: true });
+
+    vi.setSystemTime(t0 + 90_000);
+    act(() => source.drop());
+    vi.setSystemTime(t0 + 120_000);
+    act(() => {
+      source.open();
+      source.emit({ event: "analysis", summary: at({ state: "running", done: 1, total: 1 }) });
+    });
+    // Changed while disconnected: only known to have started by now.
+    expect(result.current.stageSince).toEqual({ at: t0 + 120_000, exact: false });
+    vi.setSystemTime(t0 + 150_000);
+    act(() => source.emit({ event: "analysis", summary: at({ state: "finished", total: 1 }) }));
+    expect(result.current.stageSince).toEqual({ at: t0 + 150_000, exact: true });
+  });
+
   it("closes the stream on unmount", () => {
     const { unmount } = renderHook(() => useAnalysisLive(ID));
     const source = FakeEventSource.latest();
