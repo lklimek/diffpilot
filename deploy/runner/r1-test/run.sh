@@ -9,6 +9,8 @@
 #        R1_SUPERVISOR=rust       run the checks against the Rust smart-review-supervisor (default: python prototype)
 # A second container (fault injection R1_FAULT_SWEEP_FAILS=1) proves that a failing sweep ends the container.
 # codex-homes is a size- and inode-capped tmpfs here: a stand-in for the bounded persistent filesystem of ADR-013.
+# The production image (target `runner`) is checked for toolchains and for its preflight, which must refuse an
+# unbounded codex-homes; the test image derives from target `base`.
 # Heavy job: builds two images (one at a time); do not run while a cargo job of this session runs.
 set -euo pipefail
 
@@ -17,14 +19,19 @@ run_id="$(date -u +%Y%m%dt%H%M%S)"
 ledger="${1:-/data/tmp/r1-test/${run_id}.log}"
 mkdir -p "$(dirname "$ledger")"
 skeleton=smart-review-runner:skeleton
+base=smart-review-runner:base
 image=smart-review-runner-r1-test:local
 container="sr-r1-test-${run_id}"
 failing="sr-r1-fail-${run_id}"
 state="sr-r1-state-${run_id}"
+preflight="sr-r1-preflight-${run_id}"
+pf_state="sr-r1-pfstate-${run_id}"
+host_dir="$(mktemp -d /data/tmp/sr-r1-ext4.XXXXXX)"
 
 cleanup() {
-  docker rm -f "$container" "$failing" > /dev/null 2>&1 || true
-  docker volume rm "$state" > /dev/null 2>&1 || true
+  docker rm -f "$container" "$failing" "$preflight" > /dev/null 2>&1 || true
+  docker volume rm "$state" "$pf_state" > /dev/null 2>&1 || true
+  rmdir "$host_dir/homes" "$host_dir" 2> /dev/null || true
 }
 
 # start NAME [docker run args...]: the production security options (ADR-013) plus the test mounts.
@@ -44,8 +51,9 @@ start() {
 trap cleanup EXIT
 
 if [[ "${R1_SKIP_BUILD:-0}" != 1 ]]; then
+  docker build -q --build-context "workspace=$here/../../.." --target base -t "$base" "$here/.." > /dev/null
   docker build -q --build-context "workspace=$here/../../.." -t "$skeleton" "$here/.." > /dev/null
-  docker build -q --build-arg "RUNNER_IMAGE=$skeleton" -t "$image" "$here" > /dev/null
+  docker build -q --build-arg "RUNNER_IMAGE=$base" -t "$image" "$here" > /dev/null
 fi
 
 {
@@ -61,6 +69,43 @@ suid="$(tail -n 1 <<< "$versions")"
 if [[ $codex_ok == 1 && $suid == 0 ]] && grep -q 'uid=10001(runner) gid=10001(runner) groups=10001(runner)' <<< "$versions" \
    && grep -q 'uid=10002(agent) gid=10002(agent) groups=10002(agent)' <<< "$versions"; then r=PASS; else r=FAIL; fi
 echo "CHECK runner_image_pins_and_uids $r $(tr '\n' ';' <<< "$versions" | sed 's/;$//') (last: setuid/setgid files)" | tee -a "$ledger"
+
+# T4: no package manager, compiler or interpreter beyond Codex's needs; no development or test switch baked in.
+present="$(docker run --rm --network none --entrypoint /bin/sh "$skeleton" -c \
+  'for t in apt apt-get dpkg perl python python3 gcc cc c++ clang rustc cargo make node npm git-lfs; do
+     command -v "$t" > /dev/null 2>&1 && printf "%s " "$t"; done; true')"
+env_baked="$(docker image inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$skeleton" \
+  | grep -E '^(SR_RUNNER_DEV_NO_ISOLATION|SR_SUPERVISOR_TEST_FAULTS|SR_SUPERVISOR_UNPRIVILEGED|R1_FAULT_[A-Z_]*|SR_CODEX_HOMES_ALLOW_TMPFS)=' || true)"
+entry="$(docker image inspect -f '{{json .Config.Entrypoint}} {{json .Config.User}}' "$skeleton")"
+if [[ -z "$present" && -z "$env_baked" && "$entry" == '["/usr/local/bin/smart-review-supervisor","serve","--"] ""' ]]; then r=PASS; else r=FAIL; fi
+echo "CHECK runner_image_has_no_toolchains $r present=[${present% }] test/dev switches in image env=[${env_baked}] entrypoint/user=$entry" | tee -a "$ledger"
+
+# Preflight: the production entrypoint refuses to start the runner unless codex-homes is a bounded filesystem.
+# run_preflight NAME [docker run args]: exit code and log of the production image with the runner's options.
+run_preflight() {
+  docker rm -f "$preflight" > /dev/null 2>&1 || true
+  docker run -d --name "$preflight" --init --network none --ipc none \
+    --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
+    --security-opt no-new-privileges --read-only --pids-limit 128 --memory 512m \
+    --tmpfs /work:rw,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0711 \
+    --tmpfs /tmp:rw,nosuid,nodev,size=16m,uid=10001,gid=10001,mode=0700 \
+    --mount "type=volume,source=$pf_state,target=/var/lib/smart-review-runner" \
+    "$@" "$skeleton" > /dev/null
+  local code
+  code="$(timeout 60 docker wait "$preflight" || echo timeout)"
+  printf '%s|%s' "$code" "$(docker logs "$preflight" 2>&1 | grep 'runner preflight' | head -n 1)"
+}
+mkdir -m 0755 "$host_dir/homes"
+no_mount="$(run_preflight)"
+tmpfs_refused="$(run_preflight --tmpfs /var/lib/smart-review-runner/codex-homes:size=16m,uid=10001,mode=0711)"
+ext4_big="$(run_preflight --mount "type=bind,source=$host_dir/homes,target=/var/lib/smart-review-runner/codex-homes")"
+tmpfs_allowed="$(run_preflight --tmpfs /var/lib/smart-review-runner/codex-homes:size=16m,nr_inodes=2048,uid=10001,mode=0711 \
+  -e SR_CODEX_HOMES_ALLOW_TMPFS=1)"
+if [[ "$no_mount" == "78|"*"not a mount point"* && "$tmpfs_refused" == "78|"*"is a tmpfs"* \
+      && "$ext4_big" == "78|"*"more than SR_CODEX_HOMES_MAX_BYTES"* \
+      && "$tmpfs_allowed" != 78"|"* && "$tmpfs_allowed" == *"is a bounded tmpfs filesystem"* ]]; then r=PASS; else r=FAIL; fi
+echo "CHECK runner_preflight_refuses_unbounded_codex_homes $r no mount: $no_mount; tmpfs: $tmpfs_refused; host ext4 bind: $ext4_big; tmpfs with the local-test switch (runner then stops on its config): $tmpfs_allowed" | tee -a "$ledger"
+docker rm -f "$preflight" > /dev/null 2>&1 || true
 
 docker volume create "$state" > /dev/null
 SR_RUNNER_SECRET="SR""CANARY-runner-secret-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
