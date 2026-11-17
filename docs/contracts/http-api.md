@@ -151,16 +151,16 @@ mapping, query rules and the endpoint × fixture-state inventory.
   annotation target must exist in the analysis's flows under its canonical Tour id (`f3.1`, `f3.1.a2`; aliases
   such as `f3.01` are rejected), a line target must be a changed line of the analysed diff on its side (added on
   `head`, removed on `base`), the note at most `FeedbackRequest::MAX_NOTE_CHARS` (2000) characters, else
-  `invalid_request`; a blank note is stored as none. Feedback is stored locally at once and written to MemCan
-  asynchronously; `Feedback.memory` is the state of the current revision's copy there (`pending`, `written` =
+  `invalid_request`; a blank note is stored as none. Feedback is stored locally at once; only the fixed value and public target facts are written to MemCan
+  asynchronously. Private notes never leave the local user-scoped row; `Feedback.memory` is the state of the current revision's copy there (`pending`, `written` =
   MemCan confirmed it and no earlier write of unknown outcome can still land, `failed` = the last attempt failed,
   retried on a back-off). Only `written` may be shown as "saved to calibration memory".
-- **Ask** (`…/steps/{step_id}/questions`): only for a `finished` analysis (else `analysis_not_finished`) that no
-  re-analysis replaced (else `conflict`); `step_id` is a canonical step id of the analysis's Tour (`f1.5`; aliases
+- **Ask** (`…/steps/{step_id}/questions`): only for a `finished` analysis (else `analysis_not_finished`) whose PR data was not explicitly
+  removed (else `conflict`); `step_id` is a canonical step id of the analysis's Tour (`f1.5`; aliases
   such as `f1.05` and unknown steps are `not_found`); `text` is trimmed, 1 to `AskRequest::MAX_TEXT_CHARS` (2000)
   characters, else `invalid_request`, and stored and shown as text. No idempotency key: each request is a new
-  question. Limits (`conflict` with a plain message): 100 questions per analysis, 30 per user per hour. The
-  question runs as an `ask` job claimed before batch jobs; one job runs per analysis, so a second question waits
+  question. Limits (`conflict` with a plain message): 100 questions per user per analysis, 30 per user per hour. The
+  question runs as an `ask` job claimed before batch jobs; one job runs per PR and credential, so a second question waits
   `pending` until the first ends. States: `pending` (queued; `resumes_at` set while it waits for the LLM usage
   limit), `answering`, `answered`, `failed` with a plain `failure` sentence (job failure by typed cause, an answer
   that did not pass the checks, a re-analysis that cancelled it, a server error); a failed question is asked again
@@ -172,8 +172,8 @@ mapping, query rules and the endpoint × fixture-state inventory.
   it again or its result arrives); only final answers enter later context packs. Logging: the provider's failure
   text appears only in the server's warn log, scrubbed of known secrets; no log line carries a secret, a token or
   the question text, and no response, event or stored question carries the provider's text. `GET …/questions`
-  lists every question of the analysis, oldest first, in any state and of every user of the tenant.
-  Each current HTTP/SSE response carries `asked_by` (GitHub login) and `mine` (reader is asker). These fields
+  lists only the signed-in user’s questions of the analysis, oldest first, in any state. SSE applies the same filter.
+  Each current HTTP/SSE response carries `asked_by` (GitHub login) and `mine` (always true for a current response). These fields
   are optional only for older payloads. There is no question edit/delete/retry endpoint; another POST is a new
   question owned by its sender. Plain text:
   HTML-like tags (`<` followed by a letter, `/` or `!`) are allowed only inside code spans and closed fenced
@@ -348,3 +348,8 @@ without an estimate it is null. It stays below 100 until finished. SSE publishes
 changes; the browser does not poll for estimates. A null percentage means an indeterminate bar.
 
 There is no precise agent-start event in the runner protocol; claim time includes repository preparation.
+
+Private Ask history used for re-forking is scoped to `(pull_request_id, user_id)`, never another reader's
+questions or answers. Review-state and feedback routes also select by the authenticated user; removing a
+foreign feedback id answers 404. Draft comment text remains component-local until explicitly sent to the
+user's GitHub pending review. Published GitHub review comments are public PR data.

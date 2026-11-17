@@ -85,7 +85,7 @@ async fn analysis_events(
         .map_err(EventsError::from)?;
     let mut snapshot = vec![AnalysisEvent::Analysis { summary }];
     snapshot.extend(
-        question_snapshot(&state, analysis)
+        question_snapshot(&state, analysis, &session.user_id)
             .await
             .map_err(EventsError::from)?
             .into_iter()
@@ -98,15 +98,18 @@ async fn analysis_events(
                 let state = state.clone();
                 let user = session.user_id.clone();
                 async move {
-                    if let Err(error) = personalize_event(&state, &user, &mut event).await {
-                        tracing::warn!(%error, "SSE ownership projection failed; closing stream");
-                        return None;
+                    match personalize_event(&state, &user, &mut event).await {
+                        Ok(true) => Ok(Some(event)),
+                        Ok(false) => Ok(None),
+                        Err(error) => {
+                            tracing::warn!(%error, "SSE ownership projection failed; closing stream");
+                            Err(())
+                        }
                     }
-                    Some(event)
                 }
             })
-            .take_while(|event| std::future::ready(event.is_some()))
-            .filter_map(|event| async move { event.and_then(|event| sse_event(&event)) })
+            .take_while(|event| std::future::ready(event.is_ok()))
+            .filter_map(|event| async move { event.ok().flatten().and_then(|event| sse_event(&event)) })
             .map(Ok),
     ))
 }
@@ -116,27 +119,35 @@ async fn personalize_event(
     state: &AppState,
     user: &str,
     event: &mut AnalysisEvent,
-) -> Result<(), DbError> {
+) -> Result<bool, DbError> {
     match event {
         AnalysisEvent::Analysis { summary } => {
             summary.has_my_state = Some(state.db.review_states().exists(user, summary.id).await?);
         }
         AnalysisEvent::Question { question } => {
             let record = state.db.questions().get(question.id, Utc::now()).await?;
+            if record.user_id != user {
+                return Ok(false);
+            }
             question.asked_by = record.question.asked_by;
             question.mine = Some(record.user_id == user);
         }
         AnalysisEvent::Heartbeat { .. } => {}
     }
-    Ok(())
+    Ok(true)
 }
 
-/// Every question of the analysis in any state, for the snapshot.
+/// Every private question of the analysis in any state, for the snapshot.
 async fn question_snapshot(
     state: &AppState,
     analysis: AnalysisId,
+    user: &str,
 ) -> Result<Vec<AskQuestion>, DbError> {
-    state.db.questions().list(analysis, Utc::now()).await
+    state
+        .db
+        .questions()
+        .list_for_user(analysis, user, Utc::now())
+        .await
 }
 
 /// The snapshot, then live events and a [`AnalysisEvent::Heartbeat`] every [`HEARTBEAT`] (no database read); ends
@@ -252,6 +263,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn private_sse_snapshot_and_live_events_never_reveal_the_other_reader() {
+        use contracts::ids::{QuestionId, StepId};
+        use db::repo::questions::{NewQuestion, QuestionLimits};
+        let state = test_state().await;
+        let analysis = seed_analysis(&state.db).await.expect("seed");
+        let cookie_a = session_cookie(&state, DEFAULT_TENANT).await;
+        let cookie_b = crate::test_support::other_user_cookie(&state).await;
+        let mut events = Vec::new();
+        for user in ["u1", "u2"] {
+            let id = QuestionId::new_random();
+            state
+                .db
+                .questions()
+                .create(
+                    NewQuestion {
+                        id,
+                        analysis_id: analysis,
+                        step_id: StepId("f1.1".to_owned()),
+                        user_id: user.to_owned(),
+                        text: format!("PRIVATE_{user}"),
+                    },
+                    QuestionLimits {
+                        per_analysis: 10,
+                        per_user: 10,
+                        user_window_start: Utc::now(),
+                    },
+                    Utc::now(),
+                )
+                .await
+                .expect("question");
+            let mut question = state
+                .db
+                .questions()
+                .get(id, Utc::now())
+                .await
+                .expect("question")
+                .question;
+            question.state = contracts::api::questions::AskState::Answering;
+            events.push(AnalysisEvent::Question { question });
+        }
+        for (index, cookie) in [cookie_a, cookie_b].iter().enumerate() {
+            let response = router(state.clone())
+                .oneshot(events_request(analysis, Some(cookie)))
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+            // Foreign first: it must be skipped while the stream stays open for the own event.
+            for event in [&events[1 - index], &events[index]] {
+                state
+                    .progress
+                    .update(analysis, || async { Ok::<_, DbError>(event.clone()) })
+                    .await
+                    .expect("publish");
+            }
+            let received = read_events(response.into_body(), 3).await;
+            assert_eq!(received[0].0, "analysis");
+            for (_, data) in &received[1..] {
+                assert_eq!(data["question"]["text"], format!("PRIVATE_u{}", index + 1));
+                assert_eq!(data["question"]["mine"], true);
+            }
+            assert_eq!(received[2].1["question"]["state"], "answering");
+        }
+    }
+
+    #[tokio::test]
     async fn sse_projects_ownership_per_subscriber_without_replacing_the_event_state() {
         use contracts::api::questions::AskState;
         use contracts::ids::{QuestionId, StepId};
@@ -290,9 +366,13 @@ mod tests {
         let shared = AnalysisEvent::Question { question };
         for (user, mine) in [("u1", true), ("u2", false)] {
             let mut event = shared.clone();
-            personalize_event(&state, user, &mut event)
+            let visible = personalize_event(&state, user, &mut event)
                 .await
                 .expect("projection");
+            assert_eq!(visible, mine, "foreign questions never leave the stream");
+            if !visible {
+                continue;
+            }
             let wire = serde_json::to_value(event).expect("wire");
             assert_eq!(wire["question"]["mine"], mine);
             assert_eq!(wire["question"]["asked_by"], "lklimek");

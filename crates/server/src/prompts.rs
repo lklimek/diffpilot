@@ -252,7 +252,7 @@ pub struct RepairInput<'a> {
     pub rejected: &'a serde_json::Value,
 }
 
-/// An earlier question of a step with its answer.
+/// An earlier private question of this PR with its answer.
 #[derive(Clone, Copy, Debug)]
 pub struct AnsweredQuestion<'a> {
     /// The question.
@@ -513,7 +513,7 @@ pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError>
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let label = "earlier questions of this step".to_owned();
+        let label = "earlier private questions of this pull request".to_owned();
         sections.push((label, earlier, PACK_ANSWERS_BYTES, true));
     }
     if let Some(context) = input.pr_context {

@@ -7,15 +7,14 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, TimeDelta, Utc};
 use contracts::ids::AnalysisId;
-use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
+use contracts::job::access::{AgentAccess, InstallationToken, Secret};
 use contracts::job::protocol::{Claim, ClaimRequest, ClaimResponse, LeaseTiming};
-use contracts::job::spec::SessionRef;
+use contracts::job::spec::{SessionRef, WorkingSession};
 use db::error::DbError;
 use db::repo::analyses::SessionState;
 use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
 use db::repo::{DEFAULT_TENANT, Db};
 use futures::future::BoxFuture;
-use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -191,10 +190,9 @@ pub async fn claim(
                 .await?;
             spec.access = AgentAccess {
                 github,
-                memcan: Some(McpHttpEndpoint {
-                    url: config.memcan.url.to_string(),
-                    token: Secret::new(config.memcan.token.expose_secret()),
-                }),
+                // Shared MCP memory is not an isolation boundary: an Ask could write instructions
+                // later read by analysis. Only the server's bounded profile/calibration projections apply.
+                memcan: None,
             };
             Some(Claim {
                 job_token: token,
@@ -220,6 +218,25 @@ async fn prepare_spec(
 ) -> Result<contracts::job::spec::JobSpec, ClaimError> {
     let mut spec = job.spec.clone();
     spec.session = analysis_session(db, job.analysis_id).await?;
+    spec.working_session = if let JobStage::Ask(question) = job.stage {
+        let record = db.questions().get(question, Utc::now()).await?;
+        if record.analysis_id != job.analysis_id {
+            return Err(DbError::NotFound.into());
+        }
+        Some(WorkingSession {
+            user_key: Sha256::digest(record.user_id.as_bytes())
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+            analytic_generation: db.agent_sessions().generation(spec.pull_request_id).await?,
+            thread_id: db
+                .agent_sessions()
+                .working(spec.pull_request_id, &record.user_id)
+                .await?,
+        })
+    } else {
+        None
+    };
     spec.context_pack = packs
         .pack(job.analysis_id, &job.stage)
         .await
@@ -327,6 +344,7 @@ async fn store_or_revoke(
 
 #[cfg(test)]
 mod tests {
+    use secrecy::ExposeSecret;
     use std::sync::Arc;
 
     use axum::body::Body;
@@ -340,7 +358,6 @@ mod tests {
     use contracts::routes::RUNNER_RESULT;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
     use db::repo::jobs::NewJob;
-    use secrecy::ExposeSecret;
     use serde_json::json;
     use tempfile::TempDir;
     use tower::ServiceExt;
@@ -639,12 +656,11 @@ mod tests {
         let claimed = claim_one(&s, now).await;
         let github = claimed.spec.access.github.expect("installation token");
         assert_eq!(github.token.expose(), MINTED_TOKEN);
-        let memcan = claimed.spec.access.memcan.expect("MemCan endpoint");
-        assert_eq!(memcan.url, s.config.memcan.url.to_string());
-        let memcan_token = s.config.memcan.token.expose_secret();
-        assert_eq!(memcan.token.expose(), memcan_token);
+        assert!(
+            claimed.spec.access.memcan.is_none(),
+            "agents cannot read or write shared memory"
+        );
         let logs = capture.text();
-        assert!(!logs.contains(memcan_token), "{logs}");
         assert!(!logs.contains(MINTED_TOKEN), "{logs}");
     }
 

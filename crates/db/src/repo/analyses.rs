@@ -568,7 +568,7 @@ impl Analyses<'_> {
     ) -> Result<(), DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let updated = sqlx::query(
-            "UPDATE pull_requests SET agent_thread_id = ?,
+            "UPDATE pull_requests SET agent_thread_id = ?, analytic_generation = analytic_generation + 1,
                  session_state = CASE WHEN session_state IN ('none', 'active') THEN 'active' ELSE session_state END
              WHERE id = (SELECT pull_request_id FROM analyses WHERE id = ?)",
         ).bind(thread_id).bind(id.to_string()).execute(&mut *tx).await?;
@@ -722,6 +722,7 @@ pub mod testing {
                 kind: CredentialKind::CodexChatgpt,
             },
             session: None,
+            working_session: None,
             context_pack: None,
             skills: Vec::new(),
             access: AgentAccess::default(),

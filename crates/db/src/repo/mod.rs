@@ -13,6 +13,7 @@ use sqlx::{SqlSafeStr, Sqlite, Transaction};
 
 use crate::error::DbError;
 
+pub mod agent_sessions;
 pub mod analyses;
 mod analysis_progress;
 pub mod comments;

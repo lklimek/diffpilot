@@ -408,6 +408,112 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn private_pending_reviews_and_foreign_comment_ids_are_scoped_to_each_user() {
+        use crate::github::review::PENDING_REVIEW;
+        use wiremock::matchers::{body_partial_json, header};
+        let server = MockServer::start().await;
+        let (state, analysis) = github_state(&server, true).await;
+        let head = state
+            .db
+            .analyses()
+            .summary(analysis)
+            .await
+            .expect("summary")
+            .pr
+            .head_sha
+            .0;
+        let cookie_a = session_cookie(&state, DEFAULT_TENANT).await;
+        let cookie_b = crate::test_support::other_user_cookie(&state).await;
+        let lock = crate::auth::lock_user("u2").await;
+        crate::auth::store_sign_in_tokens(
+            &state,
+            &lock,
+            DEFAULT_TENANT,
+            &crate::github::oauth::TokenGrant {
+                access_token: secrecy::SecretString::from("ghu_private_test_b"),
+                expires_in: 3600,
+                refresh_token: secrecy::SecretString::from("ghr_private_test_b"),
+                refresh_token_expires_in: 7200,
+            },
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("tokens");
+        drop(lock);
+        let none = json!({"hasNextPage": false, "endCursor": null});
+        for (index, token, cookie) in [
+            (0, USER_TOKEN, cookie_a),
+            (1, "ghu_private_test_b", cookie_b),
+        ] {
+            let reviews: Vec<_> = (0..2).map(|owner| json!({"id": format!("R{owner}"), "viewerDidAuthor": owner == index,
+                "comments": {"pageInfo": none, "nodes": [{"id": format!("C{owner}"), "path":"src/rpc/client.rs", "line":96,
+                "startLine":null, "subjectType":"LINE", "body":format!("PRIVATE_{owner}"), "replyTo":null}]}})).collect();
+            Mock::given(method("POST"))
+                .and(path("/api/graphql"))
+                .and(header("authorization", format!("Bearer {token}").as_str()))
+                .and(body_partial_json(json!({"query":PENDING_REVIEW})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    json!({"data":{"repository":{"pullRequest":{
+                        "id":"PR_1", "headRefOid":head, "reviews":{"pageInfo":none,"nodes":reviews},
+                        "reviewThreads":{"pageInfo":none,"nodes":[]}
+                    }}}}),
+                ))
+                .expect(3)
+                .mount(&server)
+                .await;
+            let (status, listed) = send(&state, &routes(analysis)[0], Some(&cookie), false).await;
+            assert_eq!(status, StatusCode::OK, "{listed}");
+            assert_eq!(listed["comments"].as_array().expect("comments").len(), 1);
+            assert_eq!(listed["comments"][0]["body"], format!("PRIVATE_{index}"));
+            assert!(
+                !listed
+                    .to_string()
+                    .contains(&format!("PRIVATE_{}", 1 - index))
+            );
+            // A retry of POST uses only this user's cached pending-comment response, even with
+            // the same idempotency key on both browsers. No foreign local response may be returned.
+            let post = routes(analysis)[1].clone();
+            let request: CreateCommentRequest =
+                serde_json::from_value(post.2.clone().expect("body")).expect("request");
+            let user = if index == 0 { "u1" } else { "u2" };
+            let key_text = request.idempotency_key.to_string();
+            let key = db::repo::comments::CommentRequestKey {
+                user_id: user,
+                idempotency_key: &key_text,
+            };
+            let hash = crate::secrets::sha256(
+                &serde_json::to_vec(&(&request.target, &request.body)).expect("hash"),
+            );
+            let started = state
+                .db
+                .comment_requests()
+                .begin::<Value>(key, analysis, &hash, chrono::Utc::now())
+                .await
+                .expect("start");
+            assert!(matches!(
+                started,
+                db::repo::comments::CommentRequestStart::Started
+            ));
+            let response = json!({"comment": {"id":format!("C{index}"), "thread_id":format!("T{index}"),
+                "path":"src/rpc/client.rs", "kind":"line", "side":"head", "start_line":null, "line":96,
+                "body":format!("PRIVATE_RESPONSE_{index}")}, "missed_by_llm_recorded":false});
+            state
+                .db
+                .comment_requests()
+                .complete(key, &response)
+                .await
+                .expect("complete");
+            let (status, created) = send(&state, &post, Some(&cookie), true).await;
+            assert_eq!(status, StatusCode::CREATED, "{created}");
+            assert_eq!(created, response);
+            for route in &routes(analysis)[2..] {
+                let (status, body) = send(&state, route, Some(&cookie), true).await;
+                assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+            }
+        }
+    }
+
     #[test]
     fn races_with_github_have_their_own_plain_outcomes() {
         let published = CommentError::PublishedMeanwhile { deleted: false };

@@ -1030,7 +1030,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim_uses_lease_timing_v1_and_sends_memcan_without_github_when_not_installed() {
+    async fn claim_uses_lease_timing_v1_without_shared_memory_access() {
         let harness = Harness::new().await;
         let (_, job) = harness.enqueue(CREDENTIAL).await;
         let before = Utc::now();
@@ -1041,8 +1041,7 @@ mod tests {
         assert!(claimed.lease_expires_at <= after + lease);
         assert_eq!(claimed.job, job);
         assert!(claimed.spec_access.github.is_none(), "no App installation");
-        let memcan = claimed.spec_access.memcan.expect("MemCan endpoint");
-        assert_eq!(memcan.url, harness.state.config.memcan.url.to_string());
+        assert!(claimed.spec_access.memcan.is_none());
         let stored = harness.state.db.jobs().token_hash(job).await.expect("hash");
         assert_eq!(
             stored,

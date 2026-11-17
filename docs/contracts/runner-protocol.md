@@ -123,21 +123,26 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - `llm_call` (last provider call outcome) updates the LLM status in Settings; `usage` is the job's own delta.
 
 ## Agent session (ADR-004)
-- One session per PR. `JobSpec.pull_request_id` is the PR database key and the runner archive directory name.
-  `SessionRef` carries `{pull_request_id, thread_id}`. The server sets `spec.session` at claim from the PR's recorded session (none
-  before the first report, none once a drop was requested); the stored spec never holds it. One running job per
-  PR, so queued jobs never fork the session.
-- The result's `session` is recorded as the PR's session in the transaction that completes the job, only
-  for the first effective, not cancelled result of the current attempt (a repeat or a result after a cancel
-  request changes nothing); a session already asked to be dropped stays dropped.
-- `context_pack` is built at claim from the plan, PR context and accepted flow analyses stored at that moment
-  (`jobs::claim::ContextPacks`, implemented by `pipeline::context::StoredPacks`); never at enqueue. Only the runner
-  knows whether its session files survived, so every job carries it; the runner uses it only when it starts a new
-  session (`started_after_loss`). An `ask` job's pack adds the asked step in full, the rest of its flow analysis
-  and the step's questions answered before it (`ask::context_pack`), so answers given while it waited are in it.
-  Session and pack are prepared before the installation token is minted; when they cannot be (stored results
-  unreadable, pack not renderable) the claim is released (job `queued`, attempt unspent, no token minted) and
-  the claim answers 500 `internal`.
+- One analytic session per PR. `JobSpec.pull_request_id` is the stable PR database key.
+  `spec.session` names the analytic `{pull_request_id, thread_id}`, set at claim.
+- Additive `working_session`: null for analytic jobs; for Ask,
+  `{"user_key":"<64 lowercase SHA-256 hex digits>","analytic_generation":7,"thread_id":null}`.
+  A non-null thread restores `<state>/sessions/<pr>/users/<user_key>` first. If unavailable, or null,
+  restore the analytic `session` from `<state>/sessions/<pr>/analytic`. Always save Ask to the working
+  directory, never analytic. Analytic jobs restore/save only analytic. The runner validates routing before
+  invoking the provider; it has no database. The same provider thread id can occur in separate fork archives.
+- The server selects a working thread only when its stored generation equals the current analytic generation.
+  An effective analytic checkpoint increments that generation. Successful output without an archive clears
+  the analytic reference and invalidates forks. Ask results update only the authenticated question's user row;
+  repeated/stale results have no effect. Cancelled checkpoints invalidate forks without accepting their thread.
+- Claim still serialises per PR and credential. No simultaneous analysis/Ask or two-user Ask jobs in v1.
+- Every claim carries a bounded context pack. Analytic packs contain only public PR data and analysis
+  documents, including repairs. Ask packs include only that user's latest 20 final Q&A across the PR, fenced
+  as untrusted data. The runner supplies this pack on every lazy/re-fork and lost-session fallback, including
+  successful analytic restore, but not on a normal working resume. Lost analytic archive starts a new session.
+- Session and pack preparation precede token minting; failure releases the claim without spending an attempt.
+- `access.memcan` is null: agents cannot write private input into shared memory or read other users' notes.
+  Server-side bounded profile/calibration reads remain available. No new result fields are needed.
 - `jobs.github_access_granted` records whether the attempt's claim got an installation token; the executor
   reports it with the result (`JobUpdate::Finished { github_access }`), the pipeline stores it with the accepted
   PR context (`documents.github_access`), and the Tour's `related_work_checked` reads only that stored fact.

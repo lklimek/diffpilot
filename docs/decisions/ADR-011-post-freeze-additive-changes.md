@@ -125,3 +125,12 @@ These remaining statements in `docs/design-brief.md` are superseded:
 | §5 "Job execution interface": `JobExecutor` = `submit`, `events`, `cancel` | adds `cancel_analysis` | this ADR, plan rule A3 |
 | §2 "Agent access": "Read-only checkout, no code execution"; §5 "Security": "only the LLM credential and the job's read-only installation token in the runner", §5: "the agent holds only the job's short-lived read-only installation token" | Codex sandbox off: no code execution is a prompt rule only; the agent uid can read its per-job Codex credential, installation token and MemCan bearer | ADR-002, threat model AR-4, AR-6, §9 |
 | §5 Agent sessions: one per analysis, compact at each job end, new session on moved head; session files persist across one analysis only | One per PR, shared across analyses and Ask; automatic compaction at 400k only; Cancel/Re-analyze preserve archives, retention defaults to 14 days | owner decision 2026-11-17, ADR-004 |
+
+## Private Ask session forks (owner approval, 2026-11-17)
+
+| Change | Reason |
+|---|---|
+| `JobSpec.working_session?: {user_key, analytic_generation, thread_id?}` | Self-contained archive routing: Ask restores its valid working fork, else analytic; saves only its private fork (ADR-004). |
+| `pull_requests.analytic_generation`; `working_sessions` keyed by PR/user | Re-fork after analytic advancement without allowing user instructions into analysis. |
+| Questions HTTP/SSE filtered to asker; private quotas/history | Shared analyses never expose foreign Q&A, counts or ownership markers. Existing `asked_by`/`mine` retained for compatibility, always caller-owned. |
+| MemCan feedback `private_text_excluded: true`; no agent MemCan access | Prevent private feedback notes or Ask-written memories from reaching shared analytical context. Legacy calibration text is not read. |

@@ -156,7 +156,6 @@ async fn hard_case_1_wrong_and_overrated_reach_memcan_with_the_bearer_token_in_t
         "New error variant RpcError::Exhausted",
         "src/rpc/error.rs:7-16",
         "medium risk",
-        "Only logs.",
     ] {
         assert!(text.contains(part), "{part} in {text}");
     }
@@ -192,7 +191,7 @@ async fn a_new_revision_replaces_the_same_memory_and_a_switch_moves_the_calibrat
     assert!(
         memories[&overrated.id.to_string()]["data"]
             .as_str()
-            .is_some_and(|text| text.contains("\"b\""))
+            .is_some_and(|text| !text.contains("\"b\""))
     );
 
     let underrated = post(
@@ -645,12 +644,18 @@ async fn calibration_examples_are_bounded_text_of_the_project() {
     let example = |value: &str, text: &str| {
         json!({
             "data": text, "user_id": "project:node-client", "project": "node-client",
-            "type": "severity-calibration", "source": "smart-review", "value": value,
+            "type": "severity-calibration", "source": "smart-review", "value": value, "private_text_excluded": true,
         })
     };
     let long = format!("Overrated\u{1b}[31m retry\n{}", "z".repeat(5000));
     fake.insert_memory("a1", example("overrated", &long));
     fake.insert_memory("a2", example("underrated", "Underrated: a lost reply."));
+    let mut legacy = example("overrated", "PRIVATE_LEGACY_NOTE");
+    legacy
+        .as_object_mut()
+        .expect("object")
+        .remove("private_text_excluded");
+    fake.insert_memory("a0", legacy);
     let mut forged = example("overrated", "forged");
     forged["source"] = json!("agent");
     fake.insert_memory("a3", forged);
