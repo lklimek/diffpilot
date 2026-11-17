@@ -602,3 +602,153 @@ fn clone_base_script_builds_the_fixture_remote() {
         assert!(refs.lines().any(|l| l == line), "{line} not in:\n{refs}");
     }
 }
+
+/// Posts a GraphQL document like `server::github::graphql::execute`.
+async fn graphql(base: &str, token: &str, query: &str, variables: Value) -> (StatusCode, Value) {
+    let response = client()
+        .post(format!("{base}/graphql"))
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .header(USER_AGENT, "smart-review")
+        .json(&serde_json::json!({"query": query, "variables": variables}))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+const ADD_THREAD: &str = "mutation($in:AddPullRequestReviewThreadInput!){addPullRequestReviewThread(input:$in){thread{id}}}";
+const PENDING: &str = "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){id headRefOid reviews(states:[PENDING],first:10){nodes{id}} reviewThreads(first:100){nodes{id}}}}}";
+
+fn pull_variables() -> Value {
+    serde_json::json!({"o": "acme", "n": "node-client", "pr": 482})
+}
+
+async fn add(base: &str, token: &str, input: Value) -> Value {
+    let (status, body) = graphql(base, token, ADD_THREAD, serde_json::json!({"in": input})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["data"]["addPullRequestReviewThread"]["thread"].clone()
+}
+
+async fn pending(base: &str, token: &str) -> Value {
+    let (status, body) = graphql(base, token, PENDING, pull_variables()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["data"]["repository"]["pullRequest"].clone()
+}
+
+#[tokio::test]
+async fn graphql_pending_review_is_created_reused_edited_and_deleted() {
+    let base = spawn(config()).await;
+    let token = token(&sign_in(&base).await, "access_token");
+    let pull = pending(&base, &token).await;
+    assert_eq!(pull["id"], "PR_fixture482");
+    assert_eq!(
+        pull["headRefOid"],
+        recording("rest/pull.json")["response"]["head"]["sha"]
+    );
+    assert_eq!(pull["reviews"]["nodes"], serde_json::json!([]));
+
+    let first = add(
+        &base,
+        &token,
+        serde_json::json!({"pullRequestId": "PR_fixture482",
+        "path": "src/rpc/client.rs", "line": 96, "side": "RIGHT", "body": "one"}),
+    )
+    .await;
+    let second = add(
+        &base,
+        &token,
+        serde_json::json!({"pullRequestId": "PR_fixture482",
+        "path": "src/rpc/client.rs", "subjectType": "FILE", "body": "two"}),
+    )
+    .await;
+    assert!(first["id"].is_string() && second["id"].is_string());
+    let reviews = &pending(&base, &token).await["reviews"]["nodes"];
+    assert_eq!(
+        reviews.as_array().unwrap().len(),
+        1,
+        "one pending review reused: {reviews}"
+    );
+    assert_eq!(reviews[0]["comments"]["totalCount"], 2);
+    let comment = reviews[0]["comments"]["nodes"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let update = "mutation($in:UpdatePullRequestReviewCommentInput!){updatePullRequestReviewComment(input:$in){pullRequestReviewComment{id body}}}";
+    let (_, body) = graphql(
+        &base,
+        &token,
+        update,
+        serde_json::json!({"in": {"pullRequestReviewCommentId": comment, "body": "edited"}}),
+    )
+    .await;
+    assert_eq!(
+        body["data"]["updatePullRequestReviewComment"]["pullRequestReviewComment"]["body"],
+        "edited"
+    );
+
+    let delete = "mutation($in:DeletePullRequestReviewCommentInput!){deletePullRequestReviewComment(input:$in){pullRequestReviewComment{id}}}";
+    let (_, body) = graphql(
+        &base,
+        &token,
+        delete,
+        serde_json::json!({"in": {"id": comment}}),
+    )
+    .await;
+    assert_eq!(
+        body["data"]["deletePullRequestReviewComment"]["pullRequestReviewComment"]["id"],
+        comment.as_str()
+    );
+    let (_, body) = graphql(
+        &base,
+        &token,
+        delete,
+        serde_json::json!({"in": {"id": comment}}),
+    )
+    .await;
+    assert_eq!(body["errors"][0]["type"], "NOT_FOUND", "{body}");
+    let other = reviews[0]["comments"]["nodes"][1]["id"].clone();
+    graphql(
+        &base,
+        &token,
+        delete,
+        serde_json::json!({"in": {"id": other}}),
+    )
+    .await;
+    assert_eq!(
+        pending(&base, &token).await["reviews"]["nodes"],
+        serde_json::json!([]),
+        "the review disappears with its last comment"
+    );
+}
+
+#[tokio::test]
+async fn graphql_rejects_positions_silently_and_never_submits() {
+    let base = spawn(config()).await;
+    let token = token(&sign_in(&base).await, "access_token");
+    for input in [
+        serde_json::json!({"pullRequestId": "PR_fixture482", "path": "src/rpc/client.rs", "line": 60,
+            "side": "RIGHT", "body": "outside the hunks"}),
+        serde_json::json!({"pullRequestId": "PR_fixture482", "path": "src/rpc/transport.rs",
+            "subjectType": "FILE", "body": "file not in the PR"}),
+    ] {
+        assert_eq!(add(&base, &token, input).await, Value::Null);
+    }
+    let left = add(
+        &base,
+        &token,
+        serde_json::json!({"pullRequestId": "PR_fixture482",
+        "path": "src/rpc/client.rs", "line": 53, "side": "LEFT", "body": "removed"}),
+    )
+    .await;
+    assert!(left["id"].is_string(), "{left}");
+    let submit = concat!(
+        "mutation{submit",
+        "PullRequestReview(input:{event:COMMENT}){clientMutationId}}"
+    );
+    let (_, body) = graphql(&base, &token, submit, Value::Null).await;
+    assert_eq!(body["errors"][0]["type"], "FORBIDDEN");
+    let (status, _) = graphql(&base, "not-a-token", PENDING, pull_variables()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

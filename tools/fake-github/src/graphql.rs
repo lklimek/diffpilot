@@ -1,0 +1,386 @@
+//! `POST /graphql`: the review threads of `acme/node-client#482` and the fake user's pending review, kept in
+//! memory. Documents are recognised by the field they use (the server's documents, `server::github::review`);
+//! answers have GitHub's shape, including the silent `thread: null` for a position outside the diff hunks or a
+//! file outside the pull request (spike S3). Nothing can submit a review.
+
+use std::sync::{Arc, Mutex, PoisonError};
+
+use axum::Json;
+use axum::body::Bytes;
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use crate::StartError;
+use crate::fixtures::{RawRecording, load};
+use crate::oauth::{Credentials, Oauth};
+
+/// Recorded submitted review threads of the pull request.
+const REVIEW_THREADS: &str = "graphql/review-threads.json";
+/// The pull request (node id, head) and its files (hunk headers decide which lines take a line thread).
+const PULL: &str = "rest/pull.json";
+const PULL_FILES: &str = "rest/pull-files.json";
+/// Id of the fake user's pending review while it has comments.
+const PENDING_REVIEW_ID: &str = "PRR_fake_pending";
+
+/// Lines of one file that take a line thread, per side, from the patch's hunk headers.
+#[derive(Debug, Default)]
+struct FileLines {
+    path: String,
+    left: Vec<(u32, u32)>,
+    right: Vec<(u32, u32)>,
+}
+
+/// A pending comment (each starts its own thread).
+#[derive(Clone, Debug)]
+struct Pending {
+    id: String,
+    thread_id: String,
+    path: String,
+    line: Option<u32>,
+    start_line: Option<u32>,
+    side: &'static str,
+    file_level: bool,
+    body: String,
+}
+
+/// State of the GraphQL endpoint.
+pub(crate) struct Graphql {
+    oauth: Arc<Oauth>,
+    pull_id: String,
+    head: String,
+    files: Vec<FileLines>,
+    threads: Value,
+    pending: Mutex<PendingState>,
+}
+
+#[derive(Default)]
+struct PendingState {
+    comments: Vec<Pending>,
+    next: u64,
+}
+
+#[derive(Deserialize)]
+struct PullRecording {
+    node_id: String,
+    head: PullHead,
+}
+
+#[derive(Deserialize)]
+struct PullHead {
+    sha: String,
+}
+
+#[derive(Deserialize)]
+struct FileRecording {
+    filename: String,
+    #[serde(default)]
+    patch: Option<String>,
+}
+
+/// `@@ -a,b +c,d @@` → ((a, b), (c, d)); a missing count is 1.
+fn hunk_header(line: &str) -> Option<((u32, u32), (u32, u32))> {
+    let inner = line.strip_prefix("@@ ")?.split(" @@").next()?;
+    let mut parts = inner.split(' ');
+    let span = |part: Option<&str>, sign: char| -> Option<(u32, u32)> {
+        let part = part?.strip_prefix(sign)?;
+        let (start, len) = part.split_once(',').unwrap_or((part, "1"));
+        Some((start.parse().ok()?, len.parse().ok()?))
+    };
+    Some((span(parts.next(), '-')?, span(parts.next(), '+')?))
+}
+
+fn file_lines(file: FileRecording) -> FileLines {
+    let mut lines = FileLines {
+        path: file.filename,
+        ..FileLines::default()
+    };
+    for (left, right) in file
+        .patch
+        .unwrap_or_default()
+        .lines()
+        .filter_map(hunk_header)
+    {
+        for (side, (start, len)) in [(&mut lines.left, left), (&mut lines.right, right)] {
+            if len > 0 {
+                side.push((start, start + len - 1));
+            }
+        }
+    }
+    lines
+}
+
+impl Graphql {
+    pub(crate) fn load(config: &crate::Config, oauth: Arc<Oauth>) -> Result<Self, StartError> {
+        let parse = |file: &str, recording: RawRecording| {
+            serde_json::from_str::<Value>(recording.response.get()).map_err(|source| {
+                StartError::ParseFixture {
+                    path: config.fixture_dir.join(file),
+                    source,
+                }
+            })
+        };
+        let pull: PullRecording =
+            serde_json::from_value(parse(PULL, load(&config.fixture_dir, PULL)?)?).map_err(
+                |source| StartError::ParseFixture {
+                    path: config.fixture_dir.join(PULL),
+                    source,
+                },
+            )?;
+        let files: Vec<FileRecording> =
+            serde_json::from_value(parse(PULL_FILES, load(&config.fixture_dir, PULL_FILES)?)?)
+                .map_err(|source| StartError::ParseFixture {
+                    path: config.fixture_dir.join(PULL_FILES),
+                    source,
+                })?;
+        let mut threads = parse(REVIEW_THREADS, load(&config.fixture_dir, REVIEW_THREADS)?)?
+            ["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+            .take();
+        for thread in threads.as_array_mut().into_iter().flatten() {
+            for comment in thread["comments"]["nodes"]
+                .as_array_mut()
+                .into_iter()
+                .flatten()
+            {
+                comment["state"] = json!("SUBMITTED");
+            }
+        }
+        Ok(Self {
+            oauth,
+            pull_id: pull.node_id,
+            head: pull.head.sha,
+            files: files.into_iter().map(file_lines).collect(),
+            threads,
+            pending: Mutex::default(),
+        })
+    }
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, PendingState> {
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn pull_request(&self, fields: Value) -> Value {
+        json!({"data": {"repository": {"pullRequest": fields}}})
+    }
+
+    /// Submitted threads plus one per pending comment.
+    fn thread_nodes(&self, pending: &[Pending]) -> Vec<Value> {
+        let mut nodes: Vec<Value> = self.threads.as_array().cloned().unwrap_or_default();
+        for (index, node) in nodes.iter_mut().enumerate() {
+            node["comments"]["nodes"][0]["id"] = json!(format!("PRRC_fixture482_t{}", index + 1));
+        }
+        nodes.extend(pending.iter().map(|comment| {
+            json!({"id": comment.thread_id, "path": comment.path,
+                "line": if comment.file_level { Some(1) } else { comment.line },
+                "startLine": comment.start_line.or(comment.line), "diffSide": comment.side,
+                "subjectType": if comment.file_level { "FILE" } else { "LINE" },
+                "isResolved": false, "isOutdated": false,
+                "comments": {"totalCount": 1, "nodes": [{"id": comment.id, "state": "PENDING",
+                    "body": comment.body, "createdAt": "2026-11-16T10:12:00Z",
+                    "url": format!("https://github.com/acme/node-client/pull/482#discussion_{}", comment.id),
+                    "author": {"login": "alice"}}]}})
+        }));
+        nodes
+    }
+
+    fn review_threads(&self) -> Value {
+        let nodes = self.thread_nodes(&self.pending().comments);
+        self.pull_request(json!({"reviewThreads": {"totalCount": nodes.len(),
+            "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": nodes}}))
+    }
+
+    fn pending_review(&self) -> Value {
+        let state = self.pending();
+        let reviews = if state.comments.is_empty() {
+            Vec::new()
+        } else {
+            let comments: Vec<Value> = state
+                .comments
+                .iter()
+                .map(|comment| {
+                    json!({"id": comment.id, "path": comment.path,
+                        "line": if comment.file_level { None } else { comment.line },
+                        "startLine": comment.start_line,
+                        "subjectType": if comment.file_level { "FILE" } else { "LINE" },
+                        "state": "PENDING", "body": comment.body, "replyTo": null})
+                })
+                .collect();
+            vec![
+                json!({"id": PENDING_REVIEW_ID, "state": "PENDING", "viewerDidAuthor": true,
+                "comments": {"totalCount": comments.len(), "nodes": comments}}),
+            ]
+        };
+        let threads = self.thread_nodes(&state.comments);
+        self.pull_request(json!({"id": self.pull_id, "headRefOid": self.head,
+            "reviews": {"totalCount": reviews.len(), "nodes": reviews},
+            "reviewThreads": {"totalCount": threads.len(),
+                "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": threads}}))
+    }
+
+    /// Whether GitHub would accept the thread: the file is in the pull request and, for a line thread, every
+    /// line lies in one hunk of its side.
+    fn accepts(&self, input: &Value) -> bool {
+        let Some(file) = self
+            .files
+            .iter()
+            .find(|file| Some(file.path.as_str()) == input["path"].as_str())
+        else {
+            return false;
+        };
+        if input["subjectType"] == "FILE" {
+            return true;
+        }
+        let Some(line) = input["line"].as_u64().and_then(|n| u32::try_from(n).ok()) else {
+            return false;
+        };
+        let start = input["startLine"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(line);
+        let hunks = if input["side"] == "LEFT" {
+            &file.left
+        } else {
+            &file.right
+        };
+        hunks.iter().any(|(a, b)| *a <= start && line <= *b)
+    }
+
+    fn add_thread(&self, input: &Value) -> Value {
+        if input["pullRequestId"] != json!(self.pull_id) || !self.accepts(input) {
+            tracing::info!(path = ?input["path"], line = ?input["line"],
+                "fake-github rejects the thread silently (thread: null), as GitHub does");
+            return json!({"data": {"addPullRequestReviewThread": {"thread": null}}});
+        }
+        let mut state = self.pending();
+        state.next += 1;
+        let file_level = input["subjectType"] == "FILE";
+        let line = input["line"].as_u64().and_then(|n| u32::try_from(n).ok());
+        let comment = Pending {
+            id: format!("PRRC_fake_{}", state.next),
+            thread_id: format!("PRRT_fake_{}", state.next),
+            path: input["path"].as_str().unwrap_or_default().to_owned(),
+            line,
+            start_line: input["startLine"]
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok()),
+            side: if input["side"] == "LEFT" {
+                "LEFT"
+            } else {
+                "RIGHT"
+            },
+            file_level,
+            body: input["body"].as_str().unwrap_or_default().to_owned(),
+        };
+        state.comments.push(comment.clone());
+        tracing::info!(id = %comment.id, "fake-github added a pending comment");
+        json!({"data": {"addPullRequestReviewThread": {"thread": {
+            "id": comment.thread_id, "path": comment.path,
+            "line": if file_level { Some(1) } else { line },
+            "startLine": comment.start_line.or(line), "diffSide": comment.side,
+            "subjectType": if file_level { "FILE" } else { "LINE" },
+            "comments": {"nodes": [{"id": comment.id, "body": comment.body}]}}}}})
+    }
+
+    fn not_found(field: &str, id: &Value) -> Value {
+        json!({"data": {field: null}, "errors": [{"type": "NOT_FOUND", "path": [field],
+            "message": format!("Could not resolve to a node with the global id of '{}'.", id.as_str().unwrap_or_default())}]})
+    }
+
+    fn update_comment(&self, input: &Value) -> Value {
+        let id = &input["pullRequestReviewCommentId"];
+        let mut state = self.pending();
+        let Some(comment) = state.comments.iter_mut().find(|c| json!(c.id) == *id) else {
+            return Self::not_found("updatePullRequestReviewComment", id);
+        };
+        comment.body = input["body"].as_str().unwrap_or_default().to_owned();
+        json!({"data": {"updatePullRequestReviewComment": {"pullRequestReviewComment":
+            {"id": comment.id, "body": comment.body, "state": "PENDING"}}}})
+    }
+
+    fn delete_comment(&self, input: &Value) -> Value {
+        let id = &input["id"];
+        let mut state = self.pending();
+        let Some(index) = state.comments.iter().position(|c| json!(c.id) == *id) else {
+            return Self::not_found("deletePullRequestReviewComment", id);
+        };
+        let removed = state.comments.remove(index);
+        tracing::info!(id = %removed.id, left = state.comments.len(), "fake-github deleted a pending comment");
+        json!({"data": {"deletePullRequestReviewComment": {"pullRequestReviewComment": {"id": removed.id}}}})
+    }
+}
+
+#[derive(Deserialize)]
+struct Request {
+    query: String,
+    #[serde(default)]
+    variables: Value,
+}
+
+fn graphql_error(status: StatusCode, message: &str) -> Response {
+    (
+        status,
+        Json(json!({"message": message, "documentation_url": "https://docs.github.com/graphql"})),
+    )
+        .into_response()
+}
+
+/// Answers one GraphQL request; a valid access token is required (GitHub has no anonymous GraphQL).
+pub(crate) async fn serve(
+    State(graphql): State<Arc<Graphql>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if graphql.oauth.credentials(&headers) != Credentials::Valid {
+        return graphql_error(StatusCode::UNAUTHORIZED, "Bad credentials");
+    }
+    let Ok(request) = serde_json::from_slice::<Request>(&body) else {
+        return graphql_error(StatusCode::BAD_REQUEST, "Problems parsing JSON");
+    };
+    let query = request.query.as_str();
+    let input = &request.variables["in"];
+    let answer = if query.contains("submitPullRequestReview")
+        || query.contains("addPullRequestReview(")
+    {
+        tracing::warn!(
+            "fake-github refuses to create or submit a review; the server must never do this"
+        );
+        json!({"data": null, "errors": [{"type": "FORBIDDEN", "message": "not supported by fake-github"}]})
+    } else if query.contains("addPullRequestReviewThread") {
+        graphql.add_thread(input)
+    } else if query.contains("updatePullRequestReviewComment") {
+        graphql.update_comment(input)
+    } else if query.contains("deletePullRequestReviewComment") {
+        graphql.delete_comment(input)
+    } else if query.contains("reviews(states:[PENDING]") {
+        graphql.pending_review()
+    } else if query.contains("reviewThreads") && request.variables["after"].is_string() {
+        // Every thread fits on the first page.
+        graphql.pull_request(json!({"reviewThreads": {"totalCount": 0,
+            "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": []}}))
+    } else if query.contains("reviewThreads") {
+        graphql.review_threads()
+    } else if query.contains("headRefOid") {
+        graphql.pull_request(json!({"id": graphql.pull_id, "headRefOid": graphql.head}))
+    } else {
+        tracing::warn!("fake-github has no answer for this GraphQL document");
+        json!({"data": null, "errors": [{"type": "UNKNOWN_DOCUMENT", "message": "not supported by fake-github"}]})
+    };
+    (StatusCode::OK, Json(answer)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hunk_headers_give_both_sides() {
+        assert_eq!(
+            hunk_header("@@ -32,13 +32,14 @@ fn x"),
+            Some(((32, 13), (32, 14)))
+        );
+        assert_eq!(hunk_header("@@ -0,0 +1 @@"), Some(((0, 0), (1, 1))));
+        assert_eq!(hunk_header("+added line"), None);
+    }
+}
