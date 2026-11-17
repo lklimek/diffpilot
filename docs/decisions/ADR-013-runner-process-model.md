@@ -2,7 +2,7 @@
 
 - Status: accepted by evidence (WP3-OPS phase 1, 2026-11-17); R1 holds, the two-container fallback is not needed.
 - Source: threat model R1, T1a–T1d, T4, T8b, T13; plan §5.4.
-- Evidence: `deploy/runner/r1-test/run.sh` (33 named checks, all PASS); ledger
+- Evidence: `deploy/runner/r1-test/run.sh` (34 named checks, all PASS); ledger
   `/data/artifacts/smart-review/2026-11-17/wp3-ops/r1-test.log`. Docker 29.9.2, kernel 7.0, default seccomp,
   AppArmor `docker-default (enforce)`, real Codex CLI 0.167.0 and `github-mcp-server` 2.1.0, fake keys only.
 
