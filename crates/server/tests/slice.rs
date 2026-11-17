@@ -1900,6 +1900,11 @@ async fn pipeline_jobs_carry_no_context_pack_at_enqueue() {
     assert!(!specs.is_empty());
     for (stage, _, spec) in specs {
         assert_eq!(spec.context_pack, None, "{stage}");
+        assert_eq!(
+            spec.skills,
+            ["severity"],
+            "{stage}: prompts require severity"
+        );
         assert_eq!(spec.session, None, "{stage}: the session is set at claim");
     }
 }

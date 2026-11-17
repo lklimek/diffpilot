@@ -38,11 +38,13 @@ repository there is no GitHub tool: `related_work` is `[]` and the server shows 
   context`), `moved_from` (base location of a moved block or null), `called_by`, `decides`, `next`, `why`,
   `annotations[]`, `assessment` (null unless a production user or operator would notice something).
 - `annotations[]`: `type` (`behaviour | consequence | question | note`), `basis`, `start_line`, `end_line`
-  (inside the step, step's side), **`was` and `is`** (behaviour of the highlighted lines before and after:
-  the hover tooltip, facts only, no risk or verdict), `text` (the consequence, question or note; null exactly
+  (inside the step, step's side), **`was` and `is`** (nonempty before/after facts for `behaviour`, empty strings
+  for the other types), `text` (the consequence, question or note; null exactly
   for `behaviour`), `evidence[]`.
 - `assessment`: `headline`, `risk`, `reason` (also for low), `basis_note` ("read N files; nothing executed"),
   `not_checked`, `origin`, `blocking` (`blocks_this_pr | follow_up`), `smallest_correction`.
+  Rate unresolved risk introduced or left by the change, not the pre-existing defect it fixes.
+  With no open concern or action, use null for the assessment rather than inventing a follow-up.
 - `edges[]` step → step with an optional label (decision outcome, loop back-edge, error exit). The server
   derives nodes, numbering and node kinds.
 - `impact_refs[]`: head-only code outside the diff the change may affect (`step_id`, location, `symbol`,
@@ -68,8 +70,11 @@ material (e.g. a deleted comment) is classified on the base side.
 | `ChangedLineUncovered` | every non-blank changed line of the flow inside a step (removed lines: inside a base step, at a marker inside a head step, or in the original of a confirmed move: `ConfirmedMove.covered_base_lines`) |
 | `DuplicateId`, `UnknownReference`, `DanglingEdge` | flow ids, `importance_rank`, step ids and thread statuses unique; `depends_on`, impact and pattern references and edges name existing flows or steps; the output's `flow_id` is the job's flow |
 | `FactWithoutEvidence` | `fact` ⇒ ≥ 1 evidence line |
-| `BehaviourMissing` | `was` and `is` non-empty on every annotation |
-| `RemarkMismatch` | `text` null iff `type = behaviour` (blank text counts as null) |
+| `BehaviourMissing` | `was` and `is` non-empty on `behaviour` annotations only |
+| `RemarkMismatch` | `text` null iff `type = behaviour` (blank text counts as null); other annotation types use empty strings for `was` and `is` |
+| `AgentLimitation` | reviewer-facing text must not report missing agent tools, skills or instructions, or AI self-commentary |
+| `AssessmentActionMissing` | `follow_up` requires a named action in `smallest_correction`; non-low risk requires a concrete correction or an evidenced question on the same step |
+| `UnconfirmedStack` | the server supplies no deterministic base/open-PR-head relationship yet, so agent-supplied `stacked_pr` labels are rejected |
 | `BaseSideMisused` | a base step is `deleted_site` and every line of it was removed |
 | `UnknownThread`, `ThreadStatusMissing` | thread aliases were listed; every listed alias has a status |
 | `MoveClaimMismatch` | `moved_from` set iff `kind = moved`; when a deterministic moved block contains every head line of the step, a claim naming another file or non-overlapping base lines is rejected (`MovesReport::contradicted_origin`). The move fact comes only from `MovesReport::confirm`, the single check of a claim: a block contains the step and the claim, and both ends of the step map to the ends of the claim; the fact names the claimed lines and counts the differing lines inside them. Any other claim (a step wider than a block, across two blocks, without a block, ends that do not correspond) keeps its LLM claim without a move fact |

@@ -390,7 +390,7 @@ async fn submit(
         },
         session: None,
         context_pack: None,
-        skills: Vec::new(),
+        skills: prompts::required_skills(),
         access: AgentAccess::default(),
     };
     let handle = state

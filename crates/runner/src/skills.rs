@@ -44,6 +44,20 @@ pub struct SkillFiles {
     pub files: Vec<(PathBuf, Vec<u8>)>,
 }
 
+/// Required analysis skills could not be supplied to a job.
+#[derive(Debug, thiserror::Error)]
+pub enum SkillError {
+    /// No successfully refreshed checkout is configured.
+    #[error("the analysis skills are unavailable; check the runner skills configuration")]
+    Unavailable,
+    /// A requested skill is missing, empty or excluded by the allow-list.
+    #[error("a required analysis skill is missing; check the runner skills configuration")]
+    Missing,
+    /// The runner cannot read its skill checkout.
+    #[error("the analysis skills could not be read; check the runner skills permissions")]
+    Read(#[from] io::Error),
+}
+
 impl Skills {
     /// Skills from `url` at `reference`, checked out in `checkout`, refreshed every `interval`; only names in
     /// `allowed` are ever given.
@@ -109,6 +123,22 @@ impl Skills {
                 "cannot refresh the claudius skills; check SR_RUNNER_CLAUDIUS_URL and SR_RUNNER_CLAUDIUS_REF and the runner's proxy"
             ),
         }
+    }
+
+    /// Gives every required skill or fails before the agent can run without its instructions.
+    pub fn required_files(&self, requested: &[String]) -> Result<SkillFiles, SkillError> {
+        let given = self.files(requested)?.ok_or(SkillError::Unavailable)?;
+        for name in requested {
+            let manifest = Path::new(name).join("SKILL.md");
+            if !given
+                .files
+                .iter()
+                .any(|(path, bytes)| path == &manifest && !bytes.is_empty())
+            {
+                return Err(SkillError::Missing);
+            }
+        }
+        Ok(given)
     }
 
     /// The files of the requested skills that are allowed and present; `None` before the first refresh.

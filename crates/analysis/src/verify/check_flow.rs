@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
 use contracts::api::tour::{FlowGraph, GraphEdge, GraphNode};
-use contracts::common::{AnnotationType, Basis, FragmentKind, LineRange, LineSide};
+use contracts::common::{
+    AnnotationType, Basis, Blocking, FragmentKind, LineRange, LineSide, RiskBand,
+};
 use contracts::ids::StepId;
 
 use super::spans::{self, Span};
@@ -125,6 +127,9 @@ pub(super) fn flow(
         .collect();
     let unknown_step = |id: &str| !local.contains_key(id);
     for (index, edge) in output.edges.iter().enumerate() {
+        if let Some(label) = &edge.label {
+            issues.reviewer_text(&format!("edges[{index}].label"), label);
+        }
         for end in [&edge.from_step_id, &edge.to_step_id] {
             if unknown_step(end) {
                 let message = format!("edges[{index}]: {end} is not a step id of this output");
@@ -246,6 +251,9 @@ fn check_step(
             }
         }
     }
+    if let Some(symbol) = &step.symbol {
+        issues.reviewer_text(&format!("{at}.symbol"), symbol);
+    }
     check_move_claim(issues, context, at, step);
     for (number, annotation) in step.annotations.iter().enumerate() {
         let at = format!("{at}.annotations[{number}]");
@@ -255,10 +263,24 @@ fn check_step(
                 format!("{at}: lines {first}-{last} are outside the step's lines {start}-{end}");
             issues.push(VerifyIssueKind::LineOutOfRange, message);
         }
-        if annotation.was.trim().is_empty() || annotation.is.trim().is_empty() {
+        for (field, text) in [("was", &annotation.was), ("is", &annotation.is)] {
+            issues.reviewer_text(&format!("{at}.{field}"), text);
+        }
+        if let Some(text) = &annotation.text {
+            issues.reviewer_text(&format!("{at}.text"), text);
+        }
+        if annotation.kind == AnnotationType::Behaviour
+            && (annotation.was.trim().is_empty() || annotation.is.trim().is_empty())
+        {
             let message =
                 format!("{at}: was and is must both describe the behaviour of these lines");
             issues.push(VerifyIssueKind::BehaviourMissing, message);
+        }
+        if annotation.kind != AnnotationType::Behaviour
+            && (!annotation.was.is_empty() || !annotation.is.is_empty())
+        {
+            issues.push(VerifyIssueKind::RemarkMismatch,
+                format!("{at}: was and is must be empty strings on a consequence, question or note; put its content in text"));
         }
         let blank_text = annotation
             .text
@@ -301,7 +323,39 @@ fn check_step(
         if let Some(correction) = &assessment.smallest_correction {
             issues.text(&format!("{at}.smallest_correction"), correction);
         }
+        let correction = assessment
+            .smallest_correction
+            .as_deref()
+            .is_some_and(concrete_action);
+        let question = step.annotations.iter().any(|note| {
+            note.kind == AnnotationType::Question
+                && note.text.as_deref().is_some_and(|text| {
+                    concrete_action(text) && text.trim().ends_with('?') && !note.evidence.is_empty()
+                })
+        });
+        if (assessment.blocking == Blocking::FollowUp && !correction)
+            || (assessment.risk != RiskBand::Low && !correction && !question)
+        {
+            issues.push(VerifyIssueKind::AssessmentActionMissing,
+                format!("{at}: follow_up needs a named action in smallest_correction; a non-low risk needs a concrete correction or an evidenced question on this step; rate only unresolved risk introduced or left by this change"));
+        }
     }
+}
+
+fn concrete_action(text: &str) -> bool {
+    let text = text.trim().trim_end_matches(['.', '?']).to_lowercase();
+    !matches!(
+        text.as_str(),
+        "" | "none"
+            | "none given"
+            | "n/a"
+            | "not applicable"
+            | "no correction"
+            | "no correction needed"
+            | "nothing"
+            | "brak"
+            | "nie dotyczy"
+    )
 }
 
 /// `moved_from` is set exactly on `moved` steps and names base lines that exist. When a deterministic moved
@@ -735,8 +789,18 @@ mod tests {
             basis,
             start_line: lines.0,
             end_line: lines.1,
-            was: "Sent once.".to_owned(),
-            is: "Retried.".to_owned(),
+            was: if kind == AnnotationType::Behaviour {
+                "Sent once."
+            } else {
+                ""
+            }
+            .to_owned(),
+            is: if kind == AnnotationType::Behaviour {
+                "Retried."
+            } else {
+                ""
+            }
+            .to_owned(),
             text: (kind != AnnotationType::Behaviour).then(|| "Can it be sent twice?".to_owned()),
             evidence,
         }
@@ -812,7 +876,7 @@ mod tests {
             not_checked: "The node's deduplication.".to_owned(),
             origin: Origin::Introduced,
             blocking: Blocking::BlocksThisPr,
-            smallest_correction: None,
+            smallest_correction: Some("Deduplicate retries by request id.".to_owned()),
         });
         let removed = step(
             "s3",
@@ -902,6 +966,110 @@ mod tests {
 
     fn kinds(issues: &[VerifyIssue]) -> Vec<VerifyIssueKind> {
         issues.iter().map(|issue| issue.kind).collect()
+    }
+
+    #[test]
+    fn remarks_do_not_need_copied_behaviour() {
+        let mut output = output();
+        for kind in [
+            AnnotationType::Note,
+            AnnotationType::Question,
+            AnnotationType::Consequence,
+        ] {
+            let note = &mut output.steps[0].annotations[0];
+            note.kind = kind;
+            note.was.clear();
+            note.is.clear();
+            assert!(Setup::new().run(&output).is_ok(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn remarks_reject_copied_behaviour() {
+        let mut output = output();
+        output.steps[0].annotations[0].was = "Sent once.".to_owned();
+        output.steps[0].annotations[0].is = "Retried.".to_owned();
+        let issues = Setup::new().issues(&output);
+        assert_eq!(kinds(&issues), [VerifyIssueKind::RemarkMismatch]);
+    }
+
+    #[test]
+    fn reviewer_text_rejects_agent_capability_excuses() {
+        for text in [
+            "The severity skill was unavailable; the band reflects the component-wide availability effect.",
+            "I could not load the required instructions.",
+            "As an AI, I cannot inspect this.",
+        ] {
+            let mut output = output();
+            output.steps[1].assessment.as_mut().unwrap().basis_note = text.to_owned();
+            assert_eq!(
+                kinds(&Setup::new().issues(&output)),
+                [VerifyIssueKind::AgentLimitation],
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn assessment_requires_a_correction_or_concrete_question() {
+        for blocking in [Blocking::BlocksThisPr, Blocking::FollowUp] {
+            for correction in [None, Some("none given"), Some("N/A"), Some("Brak.")] {
+                let mut output = output();
+                let assessment = output.steps[1].assessment.as_mut().unwrap();
+                assessment.origin = Origin::PreExisting;
+                assessment.blocking = blocking;
+                assessment.smallest_correction = correction.map(str::to_owned);
+                assert_eq!(
+                    kinds(&Setup::new().issues(&output)),
+                    [VerifyIssueKind::AssessmentActionMissing]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn non_low_risk_can_ask_a_concrete_question_without_prescribing_a_fix() {
+        let mut output = output();
+        output.steps[1]
+            .assessment
+            .as_mut()
+            .unwrap()
+            .smallest_correction = None;
+        output.steps[1].annotations.push(annotation(
+            AnnotationType::Question,
+            Basis::Inference,
+            (10, 12),
+            vec![evidence("src/a.rs", LineSide::Head, 10)],
+        ));
+        assert!(Setup::new().run(&output).is_ok());
+        output.steps[1].assessment.as_mut().unwrap().blocking = Blocking::FollowUp;
+        assert_eq!(
+            kinds(&Setup::new().issues(&output)),
+            [VerifyIssueKind::AssessmentActionMissing]
+        );
+        output.steps[1]
+            .assessment
+            .as_mut()
+            .unwrap()
+            .smallest_correction =
+            Some("In a separate change, deduplicate retries by request id.".to_owned());
+        assert!(Setup::new().run(&output).is_ok());
+    }
+
+    #[test]
+    fn behaviour_still_requires_both_before_and_after_facts() {
+        let mut output = output();
+        output.steps[1].annotations[0].was.clear();
+        assert_eq!(
+            kinds(&Setup::new().issues(&output)),
+            [VerifyIssueKind::BehaviourMissing]
+        );
+        output.steps[1].annotations[0].was = "Sent once.".to_owned();
+        output.steps[1].annotations[0].is.clear();
+        assert_eq!(
+            kinds(&Setup::new().issues(&output)),
+            [VerifyIssueKind::BehaviourMissing]
+        );
     }
 
     #[test]
@@ -1014,7 +1182,6 @@ mod tests {
             [
                 VerifyIssueKind::RemarkMismatch,
                 VerifyIssueKind::FactWithoutEvidence,
-                VerifyIssueKind::BehaviourMissing,
                 VerifyIssueKind::RemarkMismatch,
             ],
             "{issues:#?}"
@@ -1028,6 +1195,7 @@ mod tests {
         output.steps[0].why = String::new();
         if let Some(assessment) = output.steps[1].assessment.as_mut() {
             assessment.reason = String::new();
+            assessment.risk = RiskBand::Low;
             assessment.smallest_correction = Some(String::new());
         }
         output.thread_statuses[0].reason = String::new();

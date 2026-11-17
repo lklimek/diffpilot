@@ -47,8 +47,8 @@
           "basis": "fact",
           "start_line": 13,
           "end_line": 13,
-          "was": "Two failure variants.",
-          "is": "Three failure variants.",
+          "was": "",
+          "is": "",
           "text": "Two wildcard match sites outside the diff swallow it (wallet and peers).",
           "evidence": [
             {
@@ -68,8 +68,8 @@
           "basis": "inference",
           "start_line": 13,
           "end_line": 13,
-          "was": "Two failure variants.",
-          "is": "Three failure variants.",
+          "was": "",
+          "is": "",
           "text": "Should the two wildcard sites handle Exhausted explicitly?",
           "evidence": []
         }
@@ -105,8 +105,8 @@
           "basis": "fact",
           "start_line": 121,
           "end_line": 121,
-          "was": "The wildcard arm saw one other error.",
-          "is": "The wildcard arm also receives Exhausted.",
+          "was": "",
+          "is": "",
           "text": "The user message differs from the Timeout case.",
           "evidence": [
             {
@@ -126,8 +126,8 @@
           "basis": "inference",
           "start_line": 121,
           "end_line": 121,
-          "was": "The wildcard arm saw one other error.",
-          "is": "The wildcard arm also receives Exhausted.",
+          "was": "",
+          "is": "",
           "text": "Should Exhausted map to WalletError::Offline like Timeout?",
           "evidence": []
         }

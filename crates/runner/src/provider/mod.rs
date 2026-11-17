@@ -93,6 +93,9 @@ pub struct ProviderOutcome {
 /// An agent call failed; `Display` is a plain message safe to report as the LLM status.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
+    /// A skill required by the prompt cannot be provided.
+    #[error("{0}")]
+    Configuration(#[from] crate::skills::SkillError),
     /// The session is missing or unusable; the caller starts a new one with the context pack.
     #[error("the agent session could not be resumed")]
     SessionUnavailable,
