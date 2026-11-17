@@ -1,19 +1,29 @@
 //! Verification of agent output against the deterministic facts (brief §5 Pipeline 6, ADR-008): schema-valid
 //! output is checked for ranges, hunk coverage, ids, graph consistency, fact ⇒ evidence, move claims and thread
-//! aliases; issues feed the repair prompt. Bodies filled in by WP3-VERIFY.
+//! aliases; issues feed the repair prompt. [`analysis`] verifies a whole analysis and orders the Tour.
 
-use std::collections::BTreeMap;
+mod check_flow;
+mod check_plan;
+mod facts;
+pub mod wording;
+
+#[cfg(test)]
+mod tests;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::tour::{FlowGraph, MoveFact};
-use contracts::common::{FileRanges, LineSide};
+use contracts::common::{Evidence, FileRanges, LineSide};
 use contracts::ids::{CommitSha, FlowId, StepId};
 
-use crate::diff::DiffIndex;
+use crate::coverage::{self, Coverage, CoverageError};
+use crate::diff::{DiffIndex, FileDiff};
 use crate::moves::MovesReport;
+use crate::order::{OrderInput, tour_order};
 
 /// Line facts of the files the agent output refers to, on both sides (base for deleted or emptied files,
 /// removed blocks and base-side evidence).
@@ -31,18 +41,24 @@ pub struct FileFacts {
     pub blank_lines: Vec<u32>,
 }
 
+impl FileFacts {
+    /// Whether `line` is blank (whitespace only); `blank_lines` is ascending.
+    pub fn is_blank(&self, line: u32) -> bool {
+        self.blank_lines.binary_search(&line).is_ok()
+    }
+}
+
 impl LineFacts {
     /// Reads the facts of `files` (side, path) at `base` or `head` from the repository at `repo` (read-only).
+    /// Paths that are not files of the pinned tree of their side (missing, a directory, absolute, with `.` or
+    /// `..` components) are left out, so verification rejects references to them.
     pub fn load(
         repo: &Path,
         base: &CommitSha,
         head: &CommitSha,
         files: &[(LineSide, String)],
     ) -> Result<Self, VerifyError> {
-        let _ = (repo, base, head, files);
-        Err(VerifyError::NotImplemented {
-            operation: "verify::LineFacts::load",
-        })
+        facts::load(repo, base, head, files)
     }
 
     /// Adds or replaces the facts of `path` on `side`.
@@ -96,6 +112,40 @@ pub enum VerifyIssueKind {
     BaseSideMisused,
     /// A thread alias that was not listed.
     UnknownThread,
+    /// A path that is not a file of the pinned tree on its side.
+    UnknownFile,
+    /// A required text that is empty or whitespace only.
+    EmptyText,
+    /// A move claim that contradicts the step kind or the deterministic moved block at the step's lines.
+    MoveClaimMismatch,
+    /// A listed thread alias without a status.
+    ThreadStatusMissing,
+}
+
+impl VerifyIssueKind {
+    /// Stable snake_case code for the repair prompt and logs.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::UnknownHunk => "unknown_hunk",
+            Self::RangeOutsideHunk => "range_outside_hunk",
+            Self::LineUnassigned => "line_unassigned",
+            Self::LineAssignedTwice => "line_assigned_twice",
+            Self::LineOutOfRange => "line_out_of_range",
+            Self::ChangedLineUncovered => "changed_line_uncovered",
+            Self::DuplicateId => "duplicate_id",
+            Self::UnknownReference => "unknown_reference",
+            Self::DanglingEdge => "dangling_edge",
+            Self::FactWithoutEvidence => "fact_without_evidence",
+            Self::BehaviourMissing => "behaviour_missing",
+            Self::RemarkMismatch => "remark_mismatch",
+            Self::BaseSideMisused => "base_side_misused",
+            Self::UnknownThread => "unknown_thread",
+            Self::UnknownFile => "unknown_file",
+            Self::EmptyText => "empty_text",
+            Self::MoveClaimMismatch => "move_claim_mismatch",
+            Self::ThreadStatusMissing => "thread_status_missing",
+        }
+    }
 }
 
 /// Verification could not run or rejected the output.
@@ -107,6 +157,15 @@ pub enum VerifyError {
     /// Reading head files failed.
     #[error("could not read the head files")]
     Io(#[from] std::io::Error),
+    /// `git` could not read the analysed commits.
+    #[error("git could not read the files of the analysed commits: {message}")]
+    Git {
+        /// Plain git error output.
+        message: String,
+    },
+    /// The coverage inputs do not match the diff.
+    #[error("the coverage of the changed lines could not be computed")]
+    Coverage(#[from] CoverageError),
     /// Declared but not implemented yet.
     #[error("the analysis operation {operation} is not implemented yet")]
     NotImplemented {
@@ -120,9 +179,9 @@ pub enum VerifyError {
 pub struct VerifiedPlan {
     /// The plan as produced by the agent.
     pub output: PlanOutput,
-    /// Changed head lines of each flow.
+    /// Changed lines of each flow: head lines and the removed base lines that go with them.
     pub flow_lines: BTreeMap<FlowId, Vec<FileRanges>>,
-    /// Changed head lines the plan left unassigned.
+    /// Changed lines the plan left unassigned.
     pub unassigned: Vec<FileRanges>,
 }
 
@@ -146,7 +205,7 @@ pub struct VerifiedFlow {
     pub step_ids: Vec<StepId>,
     /// Graph with nodes derived from the steps.
     pub graph: FlowGraph,
-    /// Changed lines covered by the steps.
+    /// The flow's planned changed lines, all inside its steps (blank lines need no step).
     pub covered: Vec<FileRanges>,
     /// Deterministic move facts per moved step.
     pub moves: Vec<(StepId, MoveFact)>,
@@ -171,21 +230,29 @@ pub struct FlowContext<'a> {
     pub thread_aliases: &'a [String],
 }
 
-/// Verifies a `plan` output against the pre-pass hunks. Hunks resolve through `diff` to their own file and
-/// side (two files may share line numbers; a renamed file has a base and a head path).
+/// Verifies a `plan` output against the hunks listed in the plan prompt (`diff`, quiet hunks left out). Hunks
+/// resolve through `diff` to their own file and side (two files may share line numbers; a renamed file has a
+/// base and a head path).
 pub fn plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<VerifiedPlan, VerifyError> {
-    let _ = (output, diff);
-    Err(VerifyError::NotImplemented {
-        operation: "verify::plan",
-    })
+    check_plan::plan(output, diff)
 }
 
-/// Verifies a `pr_context` output (evidence lines inside their file on their side).
+/// Verifies a `pr_context` output (required texts; evidence lines inside their file on their side).
 pub fn pr_context(output: &PrContextOutput, facts: &LineFacts) -> Result<(), VerifyError> {
-    let _ = (output, facts);
-    Err(VerifyError::NotImplemented {
-        operation: "verify::pr_context",
-    })
+    let mut issues = Issues::default();
+    issues.text("problem", &output.problem);
+    issues.text("why_needed", &output.why_needed);
+    issues.text("what_it_gives", &output.what_it_gives);
+    for (index, work) in output.related_work.iter().enumerate() {
+        issues.text(&format!("related_work[{index}].reference"), &work.reference);
+        issues.text(&format!("related_work[{index}].overlap"), &work.overlap);
+    }
+    for (index, question) in output.fit_questions.iter().enumerate() {
+        let at = format!("fit_questions[{index}]");
+        issues.text(&format!("{at}.question"), &question.question);
+        issues.evidence(facts, &at, &question.evidence);
+    }
+    issues.finish(())
 }
 
 /// Verifies an `analyse_flow` output.
@@ -193,50 +260,341 @@ pub fn flow(
     output: &FlowAnalysisOutput,
     context: FlowContext<'_>,
 ) -> Result<VerifiedFlow, VerifyError> {
-    let _ = (output, context);
-    Err(VerifyError::NotImplemented {
-        operation: "verify::flow",
+    check_flow::flow(output, context)
+}
+
+/// The (side, path) pairs whose [`LineFacts`] verifying `output` needs: every location of the output and the
+/// files of the flow's planned lines (`flow_lines`, for blank changed lines).
+pub fn flow_files(
+    output: &FlowAnalysisOutput,
+    flow_lines: &[FileRanges],
+) -> Vec<(LineSide, String)> {
+    let mut files = BTreeSet::new();
+    for step in &output.steps {
+        files.insert((step.side, step.file.clone()));
+        if let Some(from) = &step.moved_from {
+            files.insert((LineSide::Base, from.file.clone()));
+        }
+        for annotation in &step.annotations {
+            files.extend(annotation.evidence.iter().map(evidence_file));
+        }
+    }
+    let impacts = output.impact_refs.iter();
+    files.extend(impacts.map(|impact| (LineSide::Head, impact.file.clone())));
+    for pattern in &output.pattern_repetitions {
+        files.extend(
+            pattern
+                .sites
+                .iter()
+                .map(|site| (site.side, site.file.clone())),
+        );
+    }
+    files.extend(
+        flow_lines
+            .iter()
+            .map(|lines| (lines.side, lines.file.clone())),
+    );
+    files.into_iter().collect()
+}
+
+/// The (side, path) pairs whose [`LineFacts`] verifying a `pr_context` output needs.
+pub fn pr_context_files(output: &PrContextOutput) -> Vec<(LineSide, String)> {
+    let questions = output.fit_questions.iter();
+    let files: BTreeSet<_> = questions
+        .flat_map(|question| question.evidence.iter().map(evidence_file))
+        .collect();
+    files.into_iter().collect()
+}
+
+fn evidence_file(evidence: &Evidence) -> (LineSide, String) {
+    (evidence.side, evidence.file.clone())
+}
+
+/// Everything verifying one analysis needs; plain inputs, no IO.
+#[derive(Clone, Copy, Debug)]
+pub struct AnalysisInput<'a> {
+    /// The whole diff of the pull request.
+    pub diff: &'a DiffIndex<'a>,
+    /// The hunks listed in the plan prompt (the diff without quiet hunks).
+    pub listed: &'a DiffIndex<'a>,
+    /// Changed lines the pre-pass took out of the agent's hunks: Not analysed items and identical moves.
+    pub quiet: &'a [FileRanges],
+    /// Line facts of every file the outputs and the planned flows refer to ([`flow_files`],
+    /// [`pr_context_files`]).
+    pub facts: &'a LineFacts,
+    /// Deterministic moves.
+    pub moves: &'a MovesReport,
+    /// The `plan` output.
+    pub plan: &'a PlanOutput,
+    /// The `pr_context` output.
+    pub pr_context: &'a PrContextOutput,
+    /// The current `analyse_flow` output of each analysed flow (one per flow; a repaired output replaces the
+    /// rejected one).
+    pub flows: &'a [FlowAnalysisOutput],
+    /// Thread aliases listed in each flow's prompt; a flow without an entry lists none.
+    pub thread_aliases: &'a BTreeMap<FlowId, Vec<String>>,
+}
+
+/// The agent output an issue or warning belongs to: the job to repair.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum OutputRef {
+    /// The `plan` output.
+    Plan,
+    /// The `pr_context` output.
+    PrContext,
+    /// The `analyse_flow` output of a flow.
+    Flow(FlowId),
+}
+
+/// Structured repair feedback: one rejected output with its issues.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Repair {
+    /// The output to repair.
+    pub output: OutputRef,
+    /// What is wrong with it.
+    pub issues: Vec<VerifyIssue>,
+}
+
+/// The verdict on one analysis.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalysisVerdict {
+    /// Rejected outputs with their issues; empty when every output was accepted.
+    pub repairs: Vec<Repair>,
+    /// Wording warnings of all outputs (to be logged; never a rejection).
+    pub warnings: Vec<(OutputRef, WordingWarning)>,
+    /// The Tour skeleton; `None` while the plan is rejected.
+    pub tour: Option<TourSkeleton>,
+}
+
+/// The ordered Tour content built from the accepted outputs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TourSkeleton {
+    /// The verified plan.
+    pub plan: VerifiedPlan,
+    /// Accepted flows in tour order: behaviour by importance, LLM-classified refactors, LLM-classified tests.
+    pub flows: Vec<VerifiedFlow>,
+    /// Planned flows without an accepted output, in tour order; their lines are Unexplained.
+    pub unanalysed: Vec<FlowId>,
+    /// Coverage over the accepted flows and the quiet lines; Unexplained is the first quiet row.
+    pub coverage: Coverage,
+}
+
+/// Verifies every output of one analysis and orders the Tour.
+///
+/// The plan is checked against `listed`, each flow output against its planned flow, the PR context on its
+/// own. Rejected outputs come back as [`Repair`]s (the pipeline repairs each at most twice). A flow without
+/// an accepted output is `unanalysed`; its changed lines, like the plan's `unassigned` lines, are
+/// Unexplained, so every changed line is in exactly one flow, a quiet item or Unexplained.
+///
+/// # Errors
+/// [`VerifyError::Coverage`] when `quiet` names a file that is not in the diff.
+pub fn analysis(input: AnalysisInput<'_>) -> Result<AnalysisVerdict, VerifyError> {
+    let mut repairs = Vec::new();
+    let mut warnings: Vec<(OutputRef, WordingWarning)> = Vec::new();
+    let mut warn = |output: OutputRef, found: Vec<WordingWarning>| {
+        warnings.extend(found.into_iter().map(|warning| (output.clone(), warning)));
+    };
+    warn(OutputRef::Plan, wording::plan(input.plan));
+    warn(OutputRef::PrContext, wording::pr_context(input.pr_context));
+    let verified_plan = match rejected(plan(input.plan, input.listed))? {
+        Ok(verified) => Some(verified),
+        Err(issues) => {
+            repairs.push(Repair {
+                output: OutputRef::Plan,
+                issues,
+            });
+            None
+        }
+    };
+    if let Err(issues) = rejected(pr_context(input.pr_context, input.facts))? {
+        repairs.push(Repair {
+            output: OutputRef::PrContext,
+            issues,
+        });
+    }
+    let Some(verified_plan) = verified_plan else {
+        return Ok(AnalysisVerdict {
+            repairs,
+            warnings,
+            tour: None,
+        });
+    };
+    let mut accepted: BTreeMap<FlowId, VerifiedFlow> = BTreeMap::new();
+    for output in input.flows {
+        let id = &output.flow_id;
+        let planned = input.plan.flows.iter().find(|flow| &flow.id == id);
+        let result = match planned {
+            _ if accepted.contains_key(id) => Err(vec![issue(
+                VerifyIssueKind::DuplicateId,
+                format!("flow_id: a second output for flow {id}"),
+            )]),
+            None => Err(vec![issue(
+                VerifyIssueKind::UnknownReference,
+                format!("flow_id: {id} is not a flow of the plan"),
+            )]),
+            Some(planned) => {
+                let aliases = input.thread_aliases.get(id).map_or(&[][..], Vec::as_slice);
+                let context = FlowContext {
+                    planned,
+                    plan: &verified_plan,
+                    facts: input.facts,
+                    diff: input.diff,
+                    moves: input.moves,
+                    thread_aliases: aliases,
+                };
+                rejected(flow(output, context))?
+            }
+        };
+        match result {
+            Ok(verified) => {
+                warn(OutputRef::Flow(id.clone()), verified.warnings.clone());
+                accepted.insert(id.clone(), verified);
+            }
+            Err(issues) => repairs.push(Repair {
+                output: OutputRef::Flow(id.clone()),
+                issues,
+            }),
+        }
+    }
+    let planned: Vec<OrderInput> = input.plan.flows.iter().map(OrderInput::from).collect();
+    let mut flows = Vec::with_capacity(accepted.len());
+    let mut unanalysed = Vec::new();
+    for id in tour_order(&planned) {
+        match accepted.remove(&id) {
+            Some(verified) => flows.push(verified),
+            None => unanalysed.push(id),
+        }
+    }
+    let coverage = coverage::check(input.diff.files(), input.quiet, &flows)?;
+    Ok(AnalysisVerdict {
+        repairs,
+        warnings,
+        tour: Some(TourSkeleton {
+            plan: verified_plan,
+            flows,
+            unanalysed,
+            coverage,
+        }),
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use contracts::common::LineSide;
-
-    use super::*;
-
-    #[test]
-    fn facts_are_kept_per_side() {
-        let mut facts = LineFacts::default();
-        facts.insert(
-            LineSide::Base,
-            "src/rpc/old.rs",
-            FileFacts {
-                line_count: 40,
-                blank_lines: vec![12],
-            },
-        );
-        facts.insert(
-            LineSide::Head,
-            "src/rpc/old.rs",
-            FileFacts {
-                line_count: 0,
-                blank_lines: vec![],
-            },
-        );
-        assert_eq!(
-            facts
-                .get(LineSide::Base, "src/rpc/old.rs")
-                .map(|f| f.line_count),
-            Some(40)
-        );
-        assert_eq!(
-            facts
-                .get(LineSide::Head, "src/rpc/old.rs")
-                .map(|f| f.line_count),
-            Some(0),
-            "an emptied file"
-        );
-        assert!(facts.get(LineSide::Head, "src/rpc/gone.rs").is_none());
+/// Splits a verification result into accepted or rejected-with-issues; other errors pass through.
+fn rejected<T>(result: Result<T, VerifyError>) -> Result<Result<T, Vec<VerifyIssue>>, VerifyError> {
+    match result {
+        Ok(value) => Ok(Ok(value)),
+        Err(VerifyError::Rejected(issues)) => Ok(Err(issues)),
+        Err(other) => Err(other),
     }
+}
+
+fn issue(kind: VerifyIssueKind, message: String) -> VerifyIssue {
+    VerifyIssue { kind, message }
+}
+
+/// Collects the issues of one output.
+#[derive(Debug, Default)]
+struct Issues(Vec<VerifyIssue>);
+
+impl Issues {
+    fn push(&mut self, kind: VerifyIssueKind, message: String) {
+        self.0.push(issue(kind, message));
+    }
+
+    /// A required text must not be blank.
+    fn text(&mut self, at: &str, text: &str) {
+        if text.trim().is_empty() {
+            self.push(VerifyIssueKind::EmptyText, format!("{at} is empty"));
+        }
+    }
+
+    /// `path` must be a file on `side` and `lines` lines of it; true when they are.
+    fn location(
+        &mut self,
+        facts: &LineFacts,
+        at: &str,
+        side: LineSide,
+        path: &str,
+        (start, end): (u32, u32),
+    ) -> bool {
+        let side_name = side_name(side);
+        let Some(file) = facts.get(side, path) else {
+            self.push(
+                VerifyIssueKind::UnknownFile,
+                format!("{at}: {path} is not a file of the {side_name} commit"),
+            );
+            return false;
+        };
+        if start == 0 || start > end || end > file.line_count {
+            let count = file.line_count;
+            self.push(
+                VerifyIssueKind::LineOutOfRange,
+                format!(
+                    "{at}: lines {start}-{end} are not lines of {path} on {side_name} (1-{count})"
+                ),
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Every evidence line must be a line of its file on its side.
+    fn evidence(&mut self, facts: &LineFacts, at: &str, evidence: &[Evidence]) {
+        for (index, item) in evidence.iter().enumerate() {
+            let at = format!("{at}.evidence[{index}]");
+            self.location(facts, &at, item.side, &item.file, (item.line, item.line));
+        }
+    }
+
+    fn finish<T>(self, value: T) -> Result<T, VerifyError> {
+        if self.0.is_empty() {
+            Ok(value)
+        } else {
+            Err(VerifyError::Rejected(self.0))
+        }
+    }
+}
+
+fn side_name(side: LineSide) -> &'static str {
+    match side {
+        LineSide::Head => "head",
+        LineSide::Base => "base",
+    }
+}
+
+/// `a-b, c` for sorted lines.
+fn describe_lines(lines: &[u32]) -> String {
+    crate::lines::ranges(lines)
+        .iter()
+        .map(|range| match (range.start_line, range.end_line) {
+            (start, end) if start == end => start.to_string(),
+            (start, end) => format!("{start}-{end}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Lines per (side, path) as `FileRanges`, in key order.
+fn to_file_ranges(lines: BTreeMap<(LineSide, String), BTreeSet<u32>>) -> Vec<FileRanges> {
+    lines
+        .into_iter()
+        .map(|((side, file), lines)| FileRanges {
+            file,
+            side,
+            ranges: crate::lines::ranges(&lines.into_iter().collect::<Vec<_>>()),
+        })
+        .collect()
+}
+
+/// The head path of the file whose base path is `base_path`, if the file still exists at head.
+fn head_path_of<'a>(files: &'a [FileDiff], base_path: &str) -> Option<&'a str> {
+    files
+        .iter()
+        .find(|file| file.path_on(LineSide::Base) == Some(base_path))
+        .and_then(|file| file.path_on(LineSide::Head))
+}
+
+/// Whether a deletion marker after head line `marker` lies inside head lines `start..=end` (the code view
+/// shows it there: `lines::deletion_markers`).
+fn marker_inside(marker: u32, start: u32, end: u32) -> bool {
+    start <= marker.saturating_add(1) && marker <= end
 }

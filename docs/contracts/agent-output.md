@@ -60,18 +60,28 @@ material (e.g. a deleted comment) is classified on the base side.
 
 | Issue | Rule |
 |---|---|
-| `UnknownHunk`, `RangeOutsideHunk` | plan hunk ids exist; sub-ranges inside their hunk |
-| `LineUnassigned`, `LineAssignedTwice` | each changed line in exactly one flow or `unassigned` |
-| `LineOutOfRange` | lines inside the file on their side |
-| `ChangedLineUncovered` | every changed line of the flow inside a step (removed lines: inside a base step or at a marker inside a head step) |
-| `DuplicateId`, `UnknownReference`, `DanglingEdge` | ids unique; references and edges name existing steps |
+| `UnknownHunk`, `RangeOutsideHunk` | plan hunk ids exist in the listed hunks (quiet hunks are not listed); sub-ranges give both ends and lie inside their hunk; a pure-deletion hunk only whole |
+| `LineUnassigned`, `LineAssignedTwice` | each changed line of the listed hunks in exactly one flow or `unassigned` (one issue per hunk) |
+| `UnknownFile` | every path (step, evidence, `moved_from`, impact, pattern site) is a file of the pinned tree on its side (`LineFacts::load` reads only normalised repository paths through `git cat-file`) |
+| `LineOutOfRange` | lines inside the file on their side; annotations inside their step |
+| `ChangedLineUncovered` | every non-blank changed line of the flow inside a step (removed lines: inside a base step or at a marker inside a head step) |
+| `DuplicateId`, `UnknownReference`, `DanglingEdge` | flow ids, `importance_rank`, step ids and thread statuses unique; `depends_on`, impact and pattern references and edges name existing flows or steps; the output's `flow_id` is the job's flow |
 | `FactWithoutEvidence` | `fact` ⇒ ≥ 1 evidence line |
 | `BehaviourMissing` | `was` and `is` non-empty on every annotation |
-| `RemarkMismatch` | `text` null iff `type = behaviour` |
-| `BaseSideMisused` | a base step is `deleted_site` and its lines lie in the file's hunks |
-| `UnknownThread` | thread aliases were listed |
-Wording rules (banned phrases, brief §1) produce warnings, not rejections. Step ranges are trimmed of blank
-edge lines; moved steps get deterministic move facts.
+| `RemarkMismatch` | `text` null iff `type = behaviour` (blank text counts as null) |
+| `BaseSideMisused` | a base step is `deleted_site` and every line of it was removed |
+| `UnknownThread`, `ThreadStatusMissing` | thread aliases were listed; every listed alias has a status |
+| `MoveClaimMismatch` | `moved_from` set iff `kind = moved`; a claim contradicting the deterministic moved block at the step's head lines (other file or non-overlapping lines) is rejected; a claim without such a block stays an LLM claim without a move fact |
+| `EmptyText` | required texts (titles, intent, reasons, introduction, step facts, assessment fields, PR-context fields) are not blank |
+Wording rules (banned phrases and percentages, brief §1; the patterns of `scripts/check-wording.mjs`, kept in
+sync by a test) produce warnings, not rejections; the pipeline logs them. Step ranges are trimmed of blank edge
+lines (never past changed or annotated lines or a deletion marker); moved steps get deterministic move facts.
+Issues carry a stable `code()` and a message naming the field path, for the repair prompt.
+
+`verify::analysis(AnalysisInput) -> AnalysisVerdict` runs every check of one analysis: `repairs` (rejected
+outputs with their issues), wording `warnings`, and the Tour skeleton (flows in tour order, planned flows
+without an accepted output, coverage). Lines of the plan's `unassigned` hunks and of flows without an accepted
+output are Unexplained; `coverage.double_covered` lists lines covered by two flows or by a flow and a quiet item.
 
 ## Mandatory prompt rules block (every job kind)
 1. Trust and wording: facts carry evidence you read; inferences are marked; suspicions are questions; no

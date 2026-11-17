@@ -57,6 +57,7 @@ sha2 = "0.11.1"
 getrandom = "0.4.3"
 subtle = "2.6.1"
 similar = "3.2.1"
+regex = "1.13.1"
 
 # Tests
 tower = { version = "0.5.3", features = ["util"] }
