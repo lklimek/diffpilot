@@ -406,6 +406,30 @@ describe("Tour screen (brief §4.3)", () => {
     ).toBeInTheDocument();
   });
 
+  it.each([null, "unchecked-facts"] as const)(
+    "the menu's Unexplained count equals the ranges the Unexplained block shows (scenario %s)",
+    async (name) => {
+      setScenario(name);
+      await open();
+      const row = within(nav()).getByRole("button", { name: /^Unexplained/ });
+      const [, lines, files] = /(\d+) changed lines? in (\d+) files?/.exec(row.textContent ?? "")!;
+      await user().click(row);
+      const items = within(main()).getAllByRole("listitem");
+      let shown = 0;
+      const shownFiles = new Set<string>();
+      for (const item of items) {
+        const [file, ranges] = item.querySelectorAll("p:first-child > *");
+        shownFiles.add(file!.textContent ?? "");
+        for (const [, from, to] of (ranges!.textContent ?? "").matchAll(/(\d+)(?:–(\d+))?/g)) {
+          shown += Number(to ?? from) - Number(from) + 1;
+        }
+      }
+      expect(shown).toBeGreaterThan(0);
+      expect(shown).toBe(Number(lines));
+      expect(shownFiles.size).toBe(Number(files));
+    },
+  );
+
   it("keeps the trust wording in every fixture state", async () => {
     for (const state of ["default", "wrong", "missed", "noq", "noprofile", "resume"] as const) {
       await open(state);

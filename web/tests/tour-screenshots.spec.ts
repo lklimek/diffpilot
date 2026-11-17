@@ -142,6 +142,49 @@ const EXTRA: Record<string, [string, (page: Page) => Promise<void>]> = {
       await page.getByText("Dependency files not checked: Cargo.lock").first().waitFor();
     },
   ],
+  "binary-badge": [
+    "default",
+    async (page) => {
+      await page.goto(`/analyses/${ANALYSIS_ID}?scenario=binary-file`);
+      await nav(page)
+        .getByRole("button", { name: /^Mechanical & generated/ })
+        .click();
+      await page.getByRole("main").getByText("binary file", { exact: true }).hover();
+      await page.getByRole("tooltip").filter({ visible: true }).waitFor();
+    },
+  ],
+  "tooltip-keyboard-focus": [
+    "default",
+    async (page) => {
+      await page.locator("body").click({ position: { x: 1, y: 1 } });
+      await nav(page)
+        .getByRole("button", { name: /^PR context/ })
+        .focus();
+      // Tab through the flows to the Unexplained row.
+      const target = nav(page).getByRole("button", { name: /^Unexplained/ });
+      for (let i = 0; i < 12 && !(await target.evaluate((el) => el === document.activeElement)); i += 1) {
+        await page.keyboard.press("Tab");
+      }
+      await page.getByRole("tooltip").filter({ visible: true }).waitFor();
+    },
+  ],
+  "tooltip-after-click": [
+    "default",
+    async (page) => {
+      await nav(page)
+        .getByRole("button", { name: /^Unexplained/ })
+        .click();
+    },
+  ],
+  "tooltip-nav-hover": [
+    "default",
+    async (page) => {
+      await nav(page)
+        .getByRole("button", { name: /^Unexplained/ })
+        .hover();
+      await page.getByRole("tooltip").filter({ visible: true }).waitFor();
+    },
+  ],
   "focus-visible": [
     "default",
     async (page) => {

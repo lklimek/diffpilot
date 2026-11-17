@@ -178,7 +178,7 @@ describe("AskAnswers", () => {
     resumes.setHours(23, 59, 0, 0);
     render(<AskAnswers questions={[question({ state: "pending", resumes_at: resumes.toISOString() })]} />);
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Waiting for the LLM usage limit to reset; the question runs at 23:59.",
+      "Waiting for the LLM usage limit to reset; the question resumes automatically at 23:59.",
     );
   });
 

@@ -7,21 +7,33 @@ interface TooltipProps {
   children: ReactElement<{ "aria-describedby"?: string }>;
   /** Classes of the wrapper (layout of the trigger). */
   className?: string;
+  /** `below` (default; above when there is no room) or `right` of the trigger, e.g. for rows of a list. */
+  placement?: "below" | "right";
 }
 
 const TIP_WIDTH = 320;
 // Room a tip may need under its trigger; with less, it opens above.
 const TIP_ROOM = 140;
 
-/** Shows `tip` while the trigger is hovered or focused; Escape hides it (WCAG 1.4.13). */
-export function Tooltip({ tip, children, className = "" }: TooltipProps) {
+/**
+ * Shows `tip` while the trigger is hovered or has keyboard focus (WCAG 1.4.13): Escape dismisses it, the pointer
+ * can move onto it, and it stays until then. A click closes it and the focus the click gives does not reopen it,
+ * so it never covers the element the pointer goes to next; it opens again when the pointer comes back.
+ */
+export function Tooltip({ tip, children, className = "", placement = "below" }: TooltipProps) {
   const id = useId();
   const wrapper = useRef<HTMLSpanElement>(null);
   // Fixed position so scroll containers (code view, columns) do not clip the tip.
   const [position, setPosition] = useState<{ top?: number; bottom?: number; left: number } | null>(null);
+  // Set by a press of the pointer until it leaves the trigger: no tip from that hover or that focus.
+  const pressed = useRef(false);
   const show = () => {
     const rect = wrapper.current?.getBoundingClientRect();
-    if (!rect) return;
+    if (!rect || pressed.current) return;
+    if (placement === "right" && rect.right + 8 + TIP_WIDTH <= window.innerWidth) {
+      setPosition({ top: rect.top, left: rect.right + 8 });
+      return;
+    }
     const left = Math.max(4, Math.min(rect.left, window.innerWidth - TIP_WIDTH - 8));
     const above = rect.bottom + TIP_ROOM > window.innerHeight && rect.top > TIP_ROOM;
     setPosition(above ? { bottom: window.innerHeight - rect.top + 4, left } : { top: rect.bottom + 4, left });
@@ -32,9 +44,19 @@ export function Tooltip({ tip, children, className = "" }: TooltipProps) {
       ref={wrapper}
       className={className}
       onPointerEnter={show}
-      onPointerLeave={hide}
+      onPointerLeave={() => {
+        pressed.current = false;
+        hide();
+      }}
+      onPointerDown={() => {
+        pressed.current = true;
+        hide();
+      }}
       onFocus={show}
-      onBlur={hide}
+      onBlur={() => {
+        pressed.current = false;
+        hide();
+      }}
       onKeyDown={(event) => {
         if (event.key === "Escape") hide();
       }}

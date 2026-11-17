@@ -42,7 +42,7 @@ function Answer({ question, onAskAgain }: { question: AskQuestion } & Pick<AskAn
       return (
         <p role="status" className="text-muted">
           {question.resumes_at
-            ? `Waiting for the LLM usage limit to reset; the question runs at ${clockText(question.resumes_at)}.`
+            ? `Waiting for the LLM usage limit to reset; the question resumes automatically at ${clockText(question.resumes_at)}.`
             : "Waiting for the LLM to start on it."}
         </p>
       );
