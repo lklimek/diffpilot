@@ -472,6 +472,18 @@ pub mod testing {
     /// Credential id used by [`job_spec`].
     pub const CREDENTIAL: &str = "codex-default";
 
+    /// The in-memory database's only connection, held until dropped: every repository call waits meanwhile.
+    #[derive(Debug)]
+    pub struct HeldConnection(
+        #[expect(dead_code, reason = "held only for its drop")]
+        sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    );
+
+    /// Takes the connection of a [`Db::in_memory`] database, to stall repository calls in tests.
+    pub async fn hold_connection(db: &Db) -> Result<HeldConnection, DbError> {
+        Ok(HeldConnection(db.pool.acquire().await?))
+    }
+
     /// Inserts a user, the repository `acme/node-client`, PR #482 (once) and a new `planning` analysis of it.
     pub async fn seed_analysis(db: &Db) -> Result<AnalysisId, DbError> {
         let id = AnalysisId::new_random();

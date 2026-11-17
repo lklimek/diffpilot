@@ -41,7 +41,7 @@ pub async fn expire_leases(db: &Db, now: DateTime<Utc>) -> Result<Vec<ExpiredLea
             "job lease expired without a runner heartbeat"
         );
     }
-    // TODO(WP3-APPTOKEN): revoke the installation tokens listed by `Jobs::github_tokens_to_revoke` here.
+    // Their installation tokens are revoked by the `github_tokens` worker.
     Ok(expired)
 }
 
@@ -51,7 +51,6 @@ impl JobExecutor for QueueExecutor {
             let analysis = request.spec.analysis_id;
             let stage = request.stage.clone();
             let generation = request.generation;
-            // TODO(WP3-APPTOKEN): `request.pr_repo` selects the installation token minted at claim.
             let job = NewJob {
                 spec: request.spec,
                 priority: request.priority,
