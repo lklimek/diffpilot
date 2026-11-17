@@ -233,8 +233,11 @@ impl Isolation {
         }
     }
 
-    /// `clear` as the agent, then `rmdir` as the runner (the parent is the runner's).
+    /// `clear` as the agent, then `rmdir` as the runner (the parent is the runner's); absent is fine.
     async fn remove(&self, dir: &Path) {
+        if dir.symlink_metadata().is_err() {
+            return;
+        }
         if let Err(error) = self.supervisor.clear(dir).await {
             tracing::warn!(dir = %dir.display(), %error, "cannot empty an agent directory");
         }
@@ -297,7 +300,7 @@ impl CodexProvider {
             .unwrap_or_else(Instant::now);
         let mut timed_out = false;
         let mut stopping_since: Option<Instant> = None;
-        let mut swept = false;
+        let mut swept_at: Option<Instant> = None;
         let outcome = async {
             let wait = supervisor.wait(pid);
             tokio::pin!(wait);
@@ -318,10 +321,15 @@ impl CodexProvider {
                             supervisor.signal_now(pid, 15);
                         }
                         let since = stopping_since.or_else(|| self.cancelled_at(call));
-                        if !swept && since.is_some_and(|at| at.elapsed() >= self.settings.term_grace) {
+                        if swept_at.is_none() && since.is_some_and(|at| at.elapsed() >= self.settings.term_grace) {
                             tracing::warn!(job = %call.job_id, "Codex did not stop within the grace after SIGTERM; sweeping");
-                            swept = true;
+                            swept_at = Some(Instant::now());
                             supervisor.sweep().await.map_err(io_error)?;
+                        }
+                        if swept_at.is_some_and(|at| at.elapsed() >= REAP_DEADLINE) {
+                            return Err(ProviderError::Io(io::Error::other(
+                                "the supervisor did not report the swept Codex's exit",
+                            )));
                         }
                     }
                 }
