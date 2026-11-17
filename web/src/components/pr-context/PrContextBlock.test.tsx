@@ -28,7 +28,7 @@ describe("PrContextBlock", () => {
     expect(facts).toHaveTextContent("sync_headers::slow_peer_2000_headers");
     expect(facts).toHaveTextContent("12 lines removed from tests");
     expect(facts).toHaveTextContent("3 dependencies changed: tokio, tracing, url");
-    expect(facts).toHaveTextContent("Project profile: repository file");
+    expect(facts).toHaveTextContent("Project profile: repository file; a MemCan profile was not checked");
   });
 
   it("puts the counts of the LLM's split into flows and steps under the LLM analysis (UX-007)", () => {

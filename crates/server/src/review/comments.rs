@@ -131,7 +131,10 @@ fn pr_of(summary: &AnalysisSummary) -> PrRef {
 
 /// Whether the user token may write review comments to `repo`: the GitHub App must be installed there (S3
 /// finding 10). An App that is unusable as configured makes commenting unavailable.
-async fn commenting_available(state: &AppState, repo: &RepoRef) -> Result<bool, CommentError> {
+pub(crate) async fn commenting_available(
+    state: &AppState,
+    repo: &RepoRef,
+) -> Result<bool, CommentError> {
     match app_token::installation(&state.config.github, repo, Utc::now()).await {
         Ok(Installation::Installed { .. }) => Ok(true),
         Ok(Installation::NotInstalled) => Ok(false),

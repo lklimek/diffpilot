@@ -6,8 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use contracts::api::tour::{
     IdenticalMove, NotAnalysedItem, NotAnalysedSection, ProfileSource, ProjectProfileStatus,
+    SourceCheck,
 };
-use contracts::common::{FileRanges, LineSide, NotAnalysedCategory, RepoRef};
+use contracts::common::{FileRanges, LineSide, NotAnalysedCategory, ProvenanceBadge, RepoRef};
 use contracts::ids::HunkId;
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +18,8 @@ use crate::lines::ranges;
 use crate::moves::{self, MovesReport};
 use crate::related;
 use crate::tech::{self, Classified, FileSource, Generic, PROFILE_PATH, TechError, TechPlugin};
+
+pub mod batches;
 
 /// Result of the pre-pass; stored as the analysis's `prepass` document.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,15 +95,20 @@ pub enum PrepassError {
 }
 
 impl Prepass {
-    /// Profile sources: the base-ref file and, when the caller found one, the MemCan memory.
-    pub fn profile_status(&self, memcan: bool) -> ProjectProfileStatus {
+    /// Profile sources: the base-ref file and the MemCan memory; `memcan` is `None` when MemCan was not searched,
+    /// else whether a profile memory was found.
+    pub fn profile_status(&self, memcan: Option<bool>) -> ProjectProfileStatus {
         let file = self
             .profile_file
             .is_some()
             .then_some(ProfileSource::RepositoryFile);
-        let memory = memcan.then_some(ProfileSource::Memcan);
+        let memory = (memcan == Some(true)).then_some(ProfileSource::Memcan);
         ProjectProfileStatus {
             sources: file.into_iter().chain(memory).collect(),
+            memcan: match memcan {
+                Some(_) => SourceCheck::Checked,
+                None => SourceCheck::NotChecked,
+            },
         }
     }
 
@@ -108,7 +116,117 @@ impl Prepass {
     pub fn identical_moves(&self) -> Vec<IdenticalMove> {
         self.moves.identical()
     }
+
+    /// `files` with only the hunks given to the agent; a hunk the pre-pass does not know stays (only a
+    /// deterministic rule takes material out). Files left without hunks are dropped.
+    pub fn agent_files(&self, files: &[FileDiff]) -> Vec<FileDiff> {
+        let quiet: BTreeSet<&HunkId> = self
+            .hunks
+            .iter()
+            .filter(|hunk| hunk.disposition != Disposition::Agent)
+            .map(|hunk| &hunk.id)
+            .collect();
+        files
+            .iter()
+            .filter_map(|file| {
+                let hunks: Vec<_> = file
+                    .hunks
+                    .iter()
+                    .filter(|hunk| !quiet.contains(&hunk.id))
+                    .cloned()
+                    .collect();
+                (!hunks.is_empty()).then(|| FileDiff {
+                    hunks,
+                    ..file.clone()
+                })
+            })
+            .collect()
+    }
+
+    /// Changed lines of the hunks the pre-pass took from the agent (Not analysed items, identical moves): one
+    /// entry per hunk side, the coverage check's quiet input.
+    pub fn quiet_lines(&self, files: &[FileDiff]) -> Vec<FileRanges> {
+        let quiet: BTreeSet<&HunkId> = self
+            .hunks
+            .iter()
+            .filter(|hunk| hunk.disposition != Disposition::Agent)
+            .map(|hunk| &hunk.id)
+            .collect();
+        let mut out = Vec::new();
+        for file in files {
+            for hunk in file.hunks.iter().filter(|hunk| quiet.contains(&hunk.id)) {
+                for (side, lines) in [
+                    (LineSide::Head, &hunk.added),
+                    (LineSide::Base, &hunk.removed),
+                ] {
+                    if let (Some(path), false) = (file.path_on(side), lines.is_empty()) {
+                        out.push(FileRanges {
+                            file: path.to_owned(),
+                            side,
+                            ranges: ranges(lines),
+                        });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether `path` on `side` is never rendered (generated or binary).
+    pub fn is_not_rendered(&self, side: LineSide, path: &str) -> bool {
+        self.not_rendered
+            .iter()
+            .any(|item| item.side == side && item.file == path)
+    }
+
+    /// Not analysed sections with every binary file listed (in "Mechanical & generated" unless a path rule
+    /// already lists it): a binary file is never silently absent.
+    pub fn not_analysed_with_binaries(&self) -> Vec<NotAnalysedSection> {
+        let mut sections = self.not_analysed.clone();
+        let listed = |sections: &[NotAnalysedSection], item: &NotRendered| {
+            sections
+                .iter()
+                .flat_map(|section| &section.items)
+                .any(|listed| listed.side == item.side && listed.file == item.file)
+        };
+        for item in self
+            .not_rendered
+            .iter()
+            .filter(|item| item.reason == NotRenderedReason::Binary)
+        {
+            if listed(&sections, item) {
+                continue;
+            }
+            let entry = NotAnalysedItem {
+                file: item.file.clone(),
+                side: item.side,
+                ranges: None,
+                badge: ProvenanceBadge::BinaryContent,
+                rule: BINARY_RULE.to_owned(),
+            };
+            let category = NotAnalysedCategory::GeneratedMechanical;
+            match sections
+                .iter_mut()
+                .find(|section| section.category == category)
+            {
+                Some(section) => {
+                    let new_file = !section.items.iter().any(|other| other.file == entry.file);
+                    section.file_count += u32::from(new_file);
+                    section.items.push(entry);
+                }
+                None => sections.push(NotAnalysedSection {
+                    category,
+                    file_count: 1,
+                    items: vec![entry],
+                }),
+            }
+        }
+        sections
+    }
 }
+
+/// Rule text of a binary file in the Not analysed sections.
+pub const BINARY_RULE: &str = "binary file (git)";
 
 /// File sides the pre-pass reads: both sides of every changed text file, the Cargo files among `base_paths` (all
 /// paths at the base commit) and the project profile at base. Read them, then call [`prepass`].

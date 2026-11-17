@@ -9,12 +9,14 @@ use analysis::lines::{
     DiffTexts, DiffTooLarge, LineWindow, changed_lines_within, classic_diff, deleted_blocks,
     deletion_markers, line_window, thread_ranges,
 };
+use analysis::prepass::Prepass;
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::code::{CommentScope, DeletedBlock, DiffResponse, LinesResponse, RangeQuery};
 use contracts::common::LineSide;
 use contracts::ids::CommitSha;
 
 use crate::github::mirror::{MirrorError, read_blob};
+use crate::pipeline::prepass::{self, PrepassRunError};
 use crate::pipeline::{PrDiffError, pr_diff};
 use crate::state::AppState;
 
@@ -30,6 +32,29 @@ pub enum LinesError {
     /// The path is not a file in the pinned tree of that side.
     #[error("the file is not in the analysed commit")]
     FileNotFound,
+    /// The pre-pass lists the file side as never rendered (generated or binary).
+    #[error("the file is not rendered")]
+    NotRendered,
+    /// The pre-pass could not be computed or read.
+    #[error("the pre-pass is not available")]
+    Prepass(#[from] PrepassRunError),
+}
+
+/// Refuses a file side the pre-pass lists as never rendered (generated or binary, brief §7). The pre-pass is
+/// computed and stored here when the driver has not stored it yet (it is deterministic). `mirror` and `files`
+/// come from [`pr_diff`] of the same analysis. Returns the pre-pass.
+pub async fn ensure_rendered(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    (mirror, files): (&Path, &[FileDiff]),
+    side: LineSide,
+    path: &str,
+) -> Result<Prepass, LinesError> {
+    let prepass = prepass::ensure(state, summary, mirror, files).await?;
+    if prepass.is_not_rendered(side, path) {
+        return Err(LinesError::NotRendered);
+    }
+    Ok(prepass)
 }
 
 /// The classic diff of a range could not be shown.
@@ -57,6 +82,8 @@ pub async fn read(
     query: RangeQuery,
 ) -> Result<LinesResponse, LinesError> {
     let (mirror, files) = pr_diff(state, summary).await?;
+    let prepass =
+        ensure_rendered(state, summary, (&mirror, &files), query.side, &query.path).await?;
     let commit = match query.side {
         LineSide::Head => &summary.pr.head_sha,
         LineSide::Base => &summary.pr.base_sha,
@@ -88,6 +115,11 @@ pub async fn read(
         },
         None => CommentScope::NotInDiff,
     };
+    // Moved blocks are detected on head lines (their target); base ranges have none.
+    let moved = match query.side {
+        LineSide::Head => prepass.moves.moved_lines(&query.path, from, to),
+        LineSide::Base => Vec::new(),
+    };
     Ok(LinesResponse {
         path: query.path,
         side: query.side,
@@ -97,8 +129,7 @@ pub async fn read(
         lines,
         changed,
         deleted,
-        // TODO(WP3-PREPASS): moved blocks from the deterministic move detection.
-        moved: Vec::new(),
+        moved,
         comments,
     })
 }
@@ -149,7 +180,15 @@ pub async fn diff(
             hunks: Vec::new(),
         });
     };
-    // TODO(WP3-PIPE): also refuse file sides the stored pre-pass lists as not rendered (generated), as for lines.
+    // Generated and binary file sides are never rendered, on either side of the diff.
+    let prepass =
+        ensure_rendered(state, summary, (&mirror, &files), query.side, &query.path).await?;
+    if file
+        .path_on(other_side)
+        .is_some_and(|other| prepass.is_not_rendered(other_side, other))
+    {
+        return Err(LinesError::NotRendered.into());
+    }
     if file.binary {
         return Err(DiffReadError::Binary);
     }

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::{user_access_token, user_token_rejected};
 use crate::github::graphql::GraphqlError;
-use crate::github::rest::GithubError;
+use crate::github::rest::{self, GithubError};
 use crate::github::{checks, threads};
 use crate::state::AppState;
 
@@ -29,6 +29,9 @@ pub struct GithubSnapshot {
     pub threads: Vec<GithubThread>,
     /// Whether `threads` is every thread, the first ones up to the read cap, or nothing could be read.
     pub threads_status: ThreadsStatus,
+    /// The pull request description (author-written, untrusted); none when empty or not readable.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 impl GithubSnapshot {
@@ -38,12 +41,13 @@ impl GithubSnapshot {
             ci: checks::NOT_CHECKED,
             threads: Vec::new(),
             threads_status: ThreadsStatus::NotChecked,
+            description: None,
         }
     }
 }
 
-/// Reads the pull request's threads and the head's check runs with `user_id`'s token. Never fails: what could
-/// not be read stays "not checked" (logged).
+/// Reads the pull request's threads, description and the head's check runs with `user_id`'s token. Never fails:
+/// what could not be read stays "not checked" (logged).
 pub async fn read_github_snapshot(
     state: &AppState,
     summary: &AnalysisSummary,
@@ -62,15 +66,25 @@ pub async fn read_github_snapshot(
         repo: summary.pr.repo.clone(),
         number: summary.pr.number,
     };
-    let (ci, threads) = tokio::join!(
+    let (ci, threads, pull) = tokio::join!(
         checks::fetch(config, &token, &pr.repo, &summary.pr.head_sha),
         threads::fetch(config, &token, &pr),
+        rest::get_pull(config, &token, &pr),
     );
     if matches!(ci, Err(GithubError::Unauthorized))
         || matches!(threads, Err(GraphqlError::Unauthorized))
+        || matches!(pull, Err(GithubError::Unauthorized))
     {
         user_token_rejected(state, user_id, &token).await;
     }
+    let description = pull.map_or_else(
+        |error| {
+            tracing::warn!(analysis = %summary.id, ?error,
+                "the pull request description could not be read; the agent works without it");
+            None
+        },
+        |pull| pull.description,
+    );
     let ci = ci.unwrap_or_else(|error| {
         tracing::warn!(analysis = %summary.id, ?error,
             "check runs could not be read; CI stays not checked");
@@ -85,6 +99,7 @@ pub async fn read_github_snapshot(
         ci,
         threads,
         threads_status,
+        description,
     }
 }
 

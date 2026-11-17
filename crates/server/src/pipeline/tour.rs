@@ -1,22 +1,22 @@
-//! Projection of the stored agent output plus repository facts into the `Tour` (stage-2 slice).
-//!
-//! Server-set facts here: flow order, step ids and numbers, graph nodes, changed lines, GitHub links. Facts of
-//! later work packages are empty: CI, counters, profile and instruction-file notices (WP3-PREPASS,
-//! WP3-REVIEW), quiet rows (WP3-PREPASS, WP3-VERIFY), move facts, threads (WP3-REVIEW).
+//! Projection of a finished analysis into the `Tour`: the verified Tour skeleton (`analysis::verify`), the stored
+//! pre-pass and the stored GitHub snapshot. Every fact comes from one of them or says "not checked" (brief §1
+//! "silence is not safety"): CI and threads from the snapshot, counters, profile, instruction files, moves and
+//! Not analysed from the pre-pass, Unexplained from the coverage of the accepted flows, step ids, graph and move
+//! facts from verification.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use analysis::diff::FileDiff;
 use analysis::lines::{changed_lines_within, contains_range, ranges};
-use analysis::order::{OrderInput, tour_order};
-use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
-use contracts::agent::plan::{PlanOutput, PlannedFlow};
+use analysis::prepass::Prepass;
+use analysis::verify::{TourSkeleton, VerifiedFlow};
+use contracts::agent::plan::PlannedFlow;
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::tour::{
-    Annotation, Counters, Flow, FlowFacts, FlowGraph, FlowGroup, FlowLlm, GraphEdge, GraphNode,
-    ImpactRef, PatternRepetition, PatternSite, PrContextBlock, PrContextFacts,
-    ProjectProfileStatus, QuietRows, Step, StepFacts, StepLlm, ThreadsStatus, Tour,
+    Annotation, Flow, FlowFacts, FlowGroup, FlowLlm, GithubThread, ImpactRef, PatternRepetition,
+    PatternSite, PrContextBlock, PrContextFacts, QuietRows, Step, StepFacts, StepLlm, Tour,
 };
 use contracts::common::{LineRange, LineSide};
 use contracts::ids::{AnnotationId, FlowId, StepId};
@@ -24,16 +24,23 @@ use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use url::Url;
 
-use crate::github::checks::NOT_CHECKED;
+use crate::pipeline::context::StoredResults;
+use crate::pipeline::prepass::{self, PrepassRunError};
+use crate::pipeline::unsent::{self, Unsent};
+use crate::pipeline::verdict::{self, Facts, Outputs, VerdictError, thread_alias};
 use crate::pipeline::{PrDiffError, pr_diff};
+use crate::review::{GithubSnapshot, stored_github_snapshot};
 use crate::state::AppState;
 
 /// The Tour cannot be built from the stored documents.
 #[derive(Debug, thiserror::Error)]
 pub enum TourError {
-    /// A planned flow has no stored analysis.
-    #[error("flow {0} has no stored analysis")]
-    MissingFlow(FlowId),
+    /// The stored plan fails verification: there is no Tour skeleton.
+    #[error("the stored plan does not pass verification")]
+    PlanRejected,
+    /// Verification could not run.
+    #[error("the stored outputs could not be checked")]
+    Verdict(#[from] VerdictError),
 }
 
 /// GitHub permalinks into the analysed repository.
@@ -87,122 +94,228 @@ pub enum TourLoadError {
     /// The diff of the analysis is not available.
     #[error("the diff of the analysis is not available")]
     Diff(#[from] PrDiffError),
+    /// The pre-pass could not be computed.
+    #[error("the pre-pass is not available")]
+    Prepass(#[from] PrepassRunError),
     /// The stored documents do not form a Tour.
     #[error("the Tour could not be built")]
     Tour(#[from] TourError),
 }
 
-/// The Tour of a finished analysis, projected from its stored documents and diff.
+/// The Tour of a finished analysis: its stored outputs verified again (verification is deterministic), then
+/// projected with the stored pre-pass and GitHub snapshot.
 pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, TourLoadError> {
     if !matches!(summary.state, AnalysisState::Finished { .. }) {
         return Err(TourLoadError::NotFinished);
     }
-    let documents = state.db.documents();
-    let plan: PlanOutput = documents
-        .get(summary.id, DocumentKind::Plan, "")
+    let results = StoredResults::load(&state.db, summary.id).await?;
+    let (Some(plan), Some(pr_context)) = (results.plan, results.pr_context) else {
+        return Err(DbError::NotFound.into());
+    };
+    let snapshot = stored_github_snapshot(state, summary.id).await?;
+    let (mirror, files) = pr_diff(state, summary).await?;
+    // Stored by the driver; computed here for an analysis finished without one (deterministic).
+    let prepass = prepass::ensure(state, summary, &mirror, &files).await?;
+    let facts = Arc::new(Facts {
+        mirror,
+        base: summary.pr.base_sha.clone(),
+        head: summary.pr.head_sha.clone(),
+        listed: prepass.agent_files(&files),
+        files,
+        prepass,
+    });
+    let aliases = verdict::alias_map(&verdict::flow_threads(
+        &snapshot.threads,
+        &plan,
+        &facts.listed,
+    ));
+    let outputs = Arc::new(Outputs {
+        plan,
+        pr_context: pr_context.clone(),
+        flows: results.flows,
+    });
+    let verdict = verdict::analysis(Arc::clone(&facts), outputs, aliases.clone())
+        .await
+        .map_err(TourError::from)?;
+    let skeleton = verdict.tour.ok_or(TourError::PlanRejected)?;
+    // Stored with the accepted PR context: its agent had the GitHub tool.
+    let related_work_checked = state
+        .db
+        .documents()
+        .github_access(summary.id, DocumentKind::PrContext, "")
         .await?
-        .ok_or(DbError::NotFound)?;
-    let pr_context: PrContextOutput = documents
-        .get(summary.id, DocumentKind::PrContext, "")
-        .await?
-        .ok_or(DbError::NotFound)?;
-    let flows: Vec<FlowAnalysisOutput> = documents
-        .list(summary.id, DocumentKind::Flow)
+        == Some(true);
+    let unsent: Vec<Unsent> = state
+        .db
+        .documents()
+        .list(summary.id, DocumentKind::Unsent)
         .await?
         .into_iter()
-        .map(|(_, flow)| flow)
+        .map(|(_, unsent)| unsent)
         .collect();
-    let (_, files) = pr_diff(state, summary).await?;
-    Ok(project(summary, &plan, pr_context, flows, &files)?)
+    Ok(project(&Projection {
+        summary,
+        skeleton: &skeleton,
+        pr_context,
+        prepass: &facts.prepass,
+        snapshot: &snapshot,
+        files: &facts.files,
+        aliases: &aliases,
+        related_work_checked,
+        unsent: &unsent,
+    }))
+}
+
+/// Everything the Tour is projected from.
+pub struct Projection<'a> {
+    /// The analysis.
+    pub summary: &'a AnalysisSummary,
+    /// Accepted flows in tour order, Unexplained flows and coverage.
+    pub skeleton: &'a TourSkeleton,
+    /// The accepted PR context.
+    pub pr_context: PrContextOutput,
+    /// The stored pre-pass.
+    pub prepass: &'a Prepass,
+    /// The stored GitHub snapshot.
+    pub snapshot: &'a GithubSnapshot,
+    /// The whole diff.
+    pub files: &'a [FileDiff],
+    /// Thread aliases listed in each flow's prompt.
+    pub aliases: &'a BTreeMap<FlowId, Vec<String>>,
+    /// The accepted PR context was written by an agent with the GitHub tool.
+    pub related_work_checked: bool,
+    /// Lines the server did not send to the LLM, with the reason (Unexplained rows show it).
+    pub unsent: &'a [Unsent],
 }
 
 /// Builds the Tour of a finished analysis.
-pub fn project(
-    summary: &AnalysisSummary,
-    plan: &PlanOutput,
-    pr_context: PrContextOutput,
-    flows: Vec<FlowAnalysisOutput>,
-    files: &[FileDiff],
-) -> Result<Tour, TourError> {
-    let links = Links::new(summary);
-    let mut outputs: HashMap<FlowId, FlowAnalysisOutput> = flows
-        .into_iter()
-        .map(|flow| (flow.flow_id.clone(), flow))
-        .collect();
-    let order = tour_order(
-        &plan
+pub fn project(input: &Projection<'_>) -> Tour {
+    let links = Links::new(input.summary);
+    let mut flows: Vec<Flow> = Vec::with_capacity(input.skeleton.flows.len());
+    for (verified, position) in input.skeleton.flows.iter().zip(1u32..) {
+        let Some(planned) = input
+            .skeleton
+            .plan
+            .output
             .flows
             .iter()
-            .map(|flow| OrderInput {
-                id: flow.id.clone(),
-                group: FlowGroup::from(flow.classification),
-                importance_rank: flow.importance_rank,
-            })
-            .collect::<Vec<_>>(),
-    );
-    let mut tour_flows = Vec::with_capacity(order.len());
-    for (index, id) in order.into_iter().enumerate() {
-        let Some(planned) = plan.flows.iter().find(|flow| flow.id == id) else {
+            .find(|flow| flow.id == verified.flow_id)
+        else {
             continue;
         };
-        let output = outputs
-            .remove(&id)
-            .ok_or_else(|| TourError::MissingFlow(id.clone()))?;
-        let position = u32::try_from(index + 1).unwrap_or(u32::MAX);
-        tour_flows.push(project_flow(planned, output, position, files, &links));
+        flows.push(project_flow(
+            planned,
+            verified,
+            position,
+            input.files,
+            &links,
+        ));
     }
-    let step_count = tour_flows.iter().map(|flow| flow.facts.step_count).sum();
-    Ok(Tour {
-        analysis: summary.clone(),
+    let threads = place_threads(input, &mut flows);
+    let step_count = flows.iter().map(|flow| flow.facts.step_count).sum();
+    let prepass = input.prepass;
+    let mut llm = input.pr_context.clone();
+    let related_work_checked = input.related_work_checked;
+    if !related_work_checked && !llm.related_work.is_empty() {
+        // Without the GitHub tool the agent could not check: whatever it lists is not checked related work.
+        tracing::warn!(analysis = %input.summary.id, items = llm.related_work.len(),
+            "related work listed by an agent without GitHub access; it is not shown");
+        llm.related_work.clear();
+    }
+    Tour {
+        analysis: input.summary.clone(),
         pr_context: PrContextBlock {
             facts: PrContextFacts {
-                // TODO(WP3-PIPE): CI and threads from `review::stored_github_snapshot`; until wired, not checked.
-                ci: NOT_CHECKED,
-                threads_status: ThreadsStatus::NotChecked,
-                counters: Counters {
-                    lines_removed_from_tests: 0,
-                    dependencies_changed: Vec::new(),
-                },
-                project_profile: ProjectProfileStatus {
-                    sources: Vec::new(),
-                },
-                agent_instruction_files: Vec::new(),
-                // The stage-2 agent has no GitHub tool (no installation token yet, WP3-APPTOKEN).
-                related_work_checked: false,
-                flow_count: u32::try_from(tour_flows.len()).unwrap_or(u32::MAX),
+                ci: input.snapshot.ci.clone(),
+                threads_status: input.snapshot.threads_status,
+                counters: prepass.counters.counters.clone(),
+                // TODO(WP3-MEMCAN merge): search MemCan for a `type: project-profile` memory (bounded read).
+                project_profile: prepass.profile_status(None),
+                agent_instruction_files: prepass.agent_instruction_files.clone(),
+                related_work_checked,
+                flow_count: u32::try_from(flows.len()).unwrap_or(u32::MAX),
                 step_count,
             },
-            llm: pr_context,
+            llm,
         },
-        flows: tour_flows,
+        flows,
         quiet: QuietRows {
-            unexplained: Vec::new(),
-            moves: Vec::new(),
-            not_analysed: Vec::new(),
+            unexplained: unsent::with_reasons(&input.skeleton.coverage.unexplained, input.unsent),
+            moves: prepass.identical_moves(),
+            not_analysed: prepass.not_analysed_with_binaries(),
         },
-        threads: Vec::new(),
-    })
+        threads,
+    }
+}
+
+/// Every snapshot thread with the step it is located in; the LLM status only when that step's flow listed the
+/// thread in its prompt and rated it. Steps get the ids of their threads.
+fn place_threads(input: &Projection<'_>, flows: &mut [Flow]) -> Vec<GithubThread> {
+    let statuses: HashMap<(&FlowId, &str), (contracts::common::ThreadLlmStatus, &str)> = input
+        .skeleton
+        .flows
+        .iter()
+        .flat_map(|flow| {
+            flow.output.thread_statuses.iter().map(move |status| {
+                (
+                    (&flow.flow_id, status.thread_alias.as_str()),
+                    (status.status, status.reason.as_str()),
+                )
+            })
+        })
+        .collect();
+    let mut out = Vec::with_capacity(input.snapshot.threads.len());
+    for (index, thread) in input.snapshot.threads.iter().enumerate() {
+        let mut placed = thread.clone();
+        let alias = thread_alias(index);
+        let located = thread.line.zip(thread.side).and_then(|(line, side)| {
+            flows.iter_mut().find_map(|flow| {
+                let step = flow.steps.iter_mut().find(|step| {
+                    step.facts.file == thread.path
+                        && step.facts.side == side
+                        && step.facts.range.start_line <= line
+                        && line <= step.facts.range.end_line
+                })?;
+                step.facts.thread_ids.push(thread.id.clone());
+                Some((flow.id.clone(), step.id.clone()))
+            })
+        });
+        placed.step_id = None;
+        placed.llm_status = None;
+        placed.llm_reason = None;
+        if let Some((flow, step)) = located {
+            placed.step_id = Some(step);
+            let listed = input
+                .aliases
+                .get(&flow)
+                .is_some_and(|aliases| aliases.contains(&alias));
+            if let (true, Some((status, reason))) = (listed, statuses.get(&(&flow, alias.as_str())))
+            {
+                placed.llm_status = Some(*status);
+                placed.llm_reason = Some((*reason).to_owned());
+            }
+        }
+        out.push(placed);
+    }
+    out
 }
 
 fn project_flow(
     planned: &PlannedFlow,
-    output: FlowAnalysisOutput,
+    verified: &VerifiedFlow,
     position: u32,
     files: &[FileDiff],
     links: &Links,
 ) -> Flow {
-    let step_ids: HashMap<String, StepId> = output
+    let output = &verified.output;
+    let server_ids: HashMap<&str, &StepId> = output
         .steps
         .iter()
-        .enumerate()
-        .map(|(index, step)| {
-            (
-                step.id.clone(),
-                StepId(format!("{}.{}", planned.id, index + 1)),
-            )
-        })
+        .zip(&verified.step_ids)
+        .map(|(step, id)| (step.id.as_str(), id))
         .collect();
-    let server_id = |local: &str| step_ids.get(local).cloned();
+    let server_id = |local: &str| server_ids.get(local).map(|id| (*id).clone());
+    let moves: HashMap<&StepId, _> = verified.moves.iter().map(|(id, fact)| (id, fact)).collect();
     let mut files_touched: Vec<String> = Vec::new();
     for step in &output.steps {
         if !files_touched.contains(&step.file) {
@@ -214,44 +327,77 @@ fn project_flow(
         .iter()
         .filter_map(|step| step.assessment.as_ref().map(|assessment| assessment.risk))
         .max();
-    let nodes = output
-        .steps
-        .iter()
-        .enumerate()
-        .filter_map(|(index, step)| {
-            Some(GraphNode {
-                step_id: server_id(&step.id)?,
-                number: u32::try_from(index + 1).ok()?,
-                kind: step.kind.into(),
-                label: step.title.clone(),
-            })
-        })
-        .collect();
-    let edges = output
-        .edges
-        .iter()
-        .filter_map(|edge| {
-            Some(GraphEdge {
-                from: server_id(&edge.from_step_id)?,
-                to: server_id(&edge.to_step_id)?,
-                label: edge.label.clone(),
-            })
-        })
-        .collect();
     let steps: Vec<Step> = output
         .steps
         .iter()
-        .enumerate()
-        .filter_map(|(index, step)| {
-            let id = server_id(&step.id)?;
-            Some(project_step(
-                step,
-                id,
-                u32::try_from(index + 1).ok()?,
-                &output,
+        .zip(&verified.step_ids)
+        .zip(1u32..)
+        .map(|((step, id), number)| {
+            let range = LineRange {
+                start_line: step.start_line,
+                end_line: step.end_line,
+            };
+            let inside = changed_lines_within(
                 files,
-                links,
-            ))
+                &step.file,
+                step.side,
+                range.start_line,
+                range.end_line,
+            );
+            let annotations = step
+                .annotations
+                .iter()
+                .zip(1u32..)
+                .map(|(annotation, n)| {
+                    Annotation::from_agent(AnnotationId::of(id, n), annotation.clone())
+                })
+                .collect();
+            let impact = output
+                .impact_refs
+                .iter()
+                .filter(|impact| impact.step_id == step.id)
+                .map(|impact| {
+                    let range = LineRange {
+                        start_line: impact.start_line,
+                        end_line: impact.end_line,
+                    };
+                    ImpactRef {
+                        file: impact.file.clone(),
+                        range,
+                        symbol: impact.symbol.clone(),
+                        reason: impact.reason.clone(),
+                        basis: impact.basis,
+                        github_url: links.lines(&impact.file, LineSide::Head, range),
+                    }
+                })
+                .collect();
+            Step {
+                id: id.clone(),
+                number,
+                facts: StepFacts {
+                    file: step.file.clone(),
+                    side: step.side,
+                    range,
+                    github_url: links.lines(&step.file, step.side, range),
+                    changed_lines: ranges(&inside),
+                    moved: moves.get(id).map(|fact| (*fact).clone()),
+                    call_hierarchy: None,
+                    thread_ids: Vec::new(),
+                },
+                llm: StepLlm {
+                    title: step.title.clone(),
+                    kind: step.kind,
+                    symbol: step.symbol.clone(),
+                    called_by: step.called_by.clone(),
+                    decides: step.decides.clone(),
+                    next: step.next.clone(),
+                    why: step.why.clone(),
+                    annotations,
+                    assessment: step.assessment.clone(),
+                    moved_from: step.moved_from.clone(),
+                    impact,
+                },
+            }
         })
         .collect();
     let pattern_repetitions = output
@@ -310,85 +456,7 @@ fn project_flow(
             depends_on: planned.depends_on.clone(),
             pattern_repetitions,
         },
-        graph: FlowGraph { nodes, edges },
+        graph: verified.graph.clone(),
         steps,
-    }
-}
-
-fn project_step(
-    step: &AgentStep,
-    id: StepId,
-    number: u32,
-    output: &FlowAnalysisOutput,
-    files: &[FileDiff],
-    links: &Links,
-) -> Step {
-    let range = LineRange {
-        start_line: step.start_line,
-        end_line: step.end_line,
-    };
-    let inside = changed_lines_within(
-        files,
-        &step.file,
-        step.side,
-        range.start_line,
-        range.end_line,
-    );
-    let annotations = step
-        .annotations
-        .iter()
-        .enumerate()
-        .map(|(index, annotation)| {
-            Annotation::from_agent(
-                AnnotationId(format!("{id}.a{}", index + 1)),
-                annotation.clone(),
-            )
-        })
-        .collect();
-    let impact = output
-        .impact_refs
-        .iter()
-        .filter(|impact| impact.step_id == step.id)
-        .map(|impact| {
-            let range = LineRange {
-                start_line: impact.start_line,
-                end_line: impact.end_line,
-            };
-            ImpactRef {
-                file: impact.file.clone(),
-                range,
-                symbol: impact.symbol.clone(),
-                reason: impact.reason.clone(),
-                basis: impact.basis,
-                github_url: links.lines(&impact.file, LineSide::Head, range),
-            }
-        })
-        .collect();
-    Step {
-        id,
-        number,
-        facts: StepFacts {
-            file: step.file.clone(),
-            side: step.side,
-            range,
-            github_url: links.lines(&step.file, step.side, range),
-            changed_lines: ranges(&inside),
-            moved: None,
-            call_hierarchy: None,
-            thread_ids: Vec::new(),
-        },
-        llm: StepLlm {
-            title: step.title.clone(),
-            kind: step.kind,
-            symbol: step.symbol.clone(),
-            called_by: step.called_by.clone(),
-            decides: step.decides.clone(),
-            next: step.next.clone(),
-            why: step.why.clone(),
-            annotations,
-            assessment: step.assessment.clone(),
-            moved_from: step.moved_from.clone(),
-            impact,
-        },
     }
 }

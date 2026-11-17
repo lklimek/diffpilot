@@ -19,11 +19,16 @@ use crate::github::rest::is_valid_repo;
 
 /// Longest a fetch may take (large repositories on a first fetch).
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15 * 60);
-/// Longest a local read may take.
-const READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longest a local read may take (and wait for its read slot).
+pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
 pub use analysis::blob::{MAX_BLOB_BYTES, is_tree_path};
 /// Longest wait for another fetch into the same mirror (one fetch plus its local checks).
 const LOCK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+
+/// Blob reads running at once (each holds a git process and up to its byte limit in memory).
+pub const READ_SLOTS: usize = 6;
+static READ_PERMITS: LazyLock<Arc<tokio::sync::Semaphore>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(READ_SLOTS)));
 
 /// One lock per mirror: fetches into the same bare repository are serialised.
 static MIRROR_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
@@ -66,6 +71,9 @@ pub enum MirrorError {
     /// The blocking file read did not complete.
     #[error("the file read did not complete")]
     Task(#[source] tokio::task::JoinError),
+    /// The file read slots were closed.
+    #[error("the file read slots are closed")]
+    ReadSlotsClosed,
 }
 
 /// The mirror directory of `repo` (lower-cased: GitHub names are case-insensitive).
@@ -201,27 +209,12 @@ pub async fn read_blob(
     if !is_tree_path(path) {
         return Ok(None);
     }
-    let (mirror, commit, path) = (mirror.to_path_buf(), commit.clone(), path.to_owned());
     let limits = Limits {
         max_blob_bytes: MAX_BLOB_BYTES,
         total_bytes: MAX_BLOB_BYTES,
         timeout: READ_TIMEOUT,
     };
-    let answers =
-        tokio::task::spawn_blocking(move || blob::read_blobs(&mirror, &[(&commit, &path)], limits))
-            .await
-            .map_err(MirrorError::Task)?
-            .map_err(|error| match error {
-                BlobError::Io(error) => MirrorError::Io(error),
-                BlobError::Git { message } => MirrorError::Git {
-                    operation: "cat-file",
-                    message,
-                },
-                BlobError::Timeout { .. } => MirrorError::Timeout {
-                    operation: "cat-file",
-                    timeout: READ_TIMEOUT,
-                },
-            })?;
+    let answers = read_blobs(mirror, vec![(commit.clone(), path.to_owned())], limits).await?;
     match answers.into_iter().next() {
         Some(Blob::Content(bytes)) => Ok(Some(bytes.to_vec())),
         Some(Blob::TooLarge { size } | Blob::OverBudget { size }) => {
@@ -229,6 +222,72 @@ pub async fn read_blob(
         }
         Some(Blob::Missing) | None => Ok(None),
     }
+}
+
+/// The files `path` at `commit` for each request, in request order, through the shared bounded reader
+/// (`analysis::blob::read_blobs`). At most [`READ_SLOTS`] reads run at once; a read waits at most
+/// [`READ_TIMEOUT`] for its slot.
+pub async fn read_blobs(
+    mirror: &Path,
+    requests: Vec<(CommitSha, String)>,
+    limits: Limits,
+) -> Result<Vec<Blob>, MirrorError> {
+    read_blobs_in_slot(&READ_PERMITS, READ_TIMEOUT, mirror, requests, limits).await
+}
+
+/// [`read_blobs`] with its slots and slot wait given; the slot moves into the blocking task and is released
+/// when the read ends.
+async fn read_blobs_in_slot(
+    permits: &Arc<tokio::sync::Semaphore>,
+    wait: Duration,
+    mirror: &Path,
+    requests: Vec<(CommitSha, String)>,
+    limits: Limits,
+) -> Result<Vec<Blob>, MirrorError> {
+    let slot = tokio::time::timeout(wait, Arc::clone(permits).acquire_owned())
+        .await
+        .map_err(|_| MirrorError::Timeout {
+            operation: "read slot",
+            timeout: wait,
+        })?
+        .map_err(|_| MirrorError::ReadSlotsClosed)?;
+    let mirror = mirror.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        let requests: Vec<(&CommitSha, &str)> = requests
+            .iter()
+            .map(|(commit, path)| (commit, path.as_str()))
+            .collect();
+        blob::read_blobs(&mirror, &requests, limits)
+    })
+    .await
+    .map_err(MirrorError::Task)?
+    .map_err(|error| match error {
+        BlobError::Io(error) => MirrorError::Io(error),
+        BlobError::Git { message } => MirrorError::Git {
+            operation: "cat-file",
+            message,
+        },
+        BlobError::Timeout { .. } => MirrorError::Timeout {
+            operation: "cat-file",
+            timeout: limits.timeout,
+        },
+    })
+}
+
+/// Every file path in the tree of `commit` (`git ls-tree -r`), in tree order.
+pub async fn tree_paths(mirror: &Path, commit: &CommitSha) -> Result<Vec<String>, MirrorError> {
+    let mut command = git(mirror);
+    command
+        .args(["ls-tree", "-r", "-z", "--name-only", "--end-of-options"])
+        .arg(&commit.0);
+    let output = check(run(command, "ls-tree", READ_TIMEOUT).await?, "ls-tree")?;
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect())
 }
 
 /// The merge base of `base` and `head`: the commit a pull request's changes are compared with (GitHub's
@@ -283,6 +342,80 @@ mod tests {
             lock_mirror(dir.path(), Duration::from_secs(1))
                 .await
                 .is_ok()
+        );
+    }
+
+    /// A bare repository with one commit holding `a.txt`; returns its directory and the commit.
+    fn repo_with_one_file() -> (tempfile::TempDir, CommitSha) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.test")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.test")
+                .arg("-C")
+                .arg(dir.path())
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.path().join("a.txt"), "one\n").expect("write");
+        git(&["add", "a.txt"]);
+        git(&["commit", "-q", "-m", "c"]);
+        let head = CommitSha(git(&["rev-parse", "HEAD"]));
+        (dir, head)
+    }
+
+    fn limits() -> Limits {
+        Limits {
+            max_blob_bytes: MAX_BLOB_BYTES,
+            total_bytes: MAX_BLOB_BYTES,
+            timeout: READ_TIMEOUT,
+        }
+    }
+
+    #[tokio::test]
+    async fn blob_reads_wait_for_a_free_slot_and_release_it() {
+        let (dir, head) = repo_with_one_file();
+        let request = vec![(head.clone(), "a.txt".to_owned())];
+        let none = Arc::new(tokio::sync::Semaphore::new(0));
+        let waited = read_blobs_in_slot(
+            &none,
+            Duration::from_millis(20),
+            dir.path(),
+            request.clone(),
+            limits(),
+        )
+        .await;
+        assert!(
+            matches!(
+                waited,
+                Err(MirrorError::Timeout {
+                    operation: "read slot",
+                    ..
+                })
+            ),
+            "{waited:?}"
+        );
+        let one = Arc::new(tokio::sync::Semaphore::new(1));
+        let read = read_blobs_in_slot(&one, READ_TIMEOUT, dir.path(), request, limits())
+            .await
+            .expect("read");
+        assert!(matches!(&read[..], [Blob::Content(bytes)] if bytes[..] == b"one\n"[..]));
+        assert_eq!(
+            one.available_permits(),
+            1,
+            "the slot is released after the read"
+        );
+        assert_eq!(
+            tree_paths(dir.path(), &head).await.expect("tree"),
+            ["a.txt"]
         );
     }
 

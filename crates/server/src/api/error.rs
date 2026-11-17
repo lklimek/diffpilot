@@ -84,7 +84,7 @@ impl ApiErrorSource for ExecutorError {
         match self {
             Self::Db(error) => error.code(),
             Self::UnknownJob(_) => ApiErrorCode::NotFound,
-            Self::Closed | Self::NotImplemented { .. } => ApiErrorCode::Internal,
+            Self::Closed => ApiErrorCode::Internal,
         }
     }
 
@@ -92,7 +92,7 @@ impl ApiErrorSource for ExecutorError {
         match self {
             Self::Db(error) => error.public_message(),
             Self::UnknownJob(_) => Cow::Borrowed("The requested job was not found."),
-            Self::Closed | Self::NotImplemented { .. } => Cow::Borrowed(INTERNAL_MESSAGE),
+            Self::Closed => Cow::Borrowed(INTERNAL_MESSAGE),
         }
     }
 }

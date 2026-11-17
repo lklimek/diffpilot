@@ -59,18 +59,12 @@ impl JobExecutor for QueueExecutor {
             };
             match self.db.jobs().enqueue(job, Utc::now()).await {
                 Ok(job) => Ok(JobHandle { job_id: job.id }),
+                // Only the analysis's current round: a Retry never re-uses an earlier round's job.
                 Err(DbError::Conflict) => self
                     .db
                     .jobs()
-                    .list_for_analysis(analysis, &[])
+                    .current_for_stage(analysis, &stage, generation)
                     .await?
-                    .into_iter()
-                    .rev()
-                    .find(|job| {
-                        job.stage == stage
-                            && job.generation == generation
-                            && !matches!(job.state, JobState::Failed | JobState::Cancelled)
-                    })
                     .map(|job| JobHandle { job_id: job.id })
                     .ok_or(ExecutorError::Db(DbError::Conflict)),
                 Err(error) => Err(error.into()),
@@ -132,6 +126,8 @@ struct Follower {
     seq: u32,
     last_state: Option<JobState>,
     output_sent: bool,
+    /// The credential pause end last reported for the queued job.
+    reported_pause: Option<DateTime<Utc>>,
     pending: VecDeque<JobUpdate>,
     done: bool,
     /// Runs after the follower's read and before it acts on it, to force interleavings in tests.
@@ -152,6 +148,7 @@ impl Follower {
             seq: 0,
             last_state: None,
             output_sent: false,
+            reported_pause: None,
             pending: VecDeque::new(),
             done: false,
             #[cfg(test)]
@@ -195,9 +192,13 @@ impl Follower {
             snapshot = self.snapshot().await?;
         }
         // State, ready output and events come from one read, so they belong to one attempt and one moment.
-        let JobSnapshot { job, events } = snapshot;
+        let JobSnapshot {
+            job,
+            events,
+            credential_paused_until,
+        } = snapshot;
         if self.last_state.is_none() && job.state.is_terminal() {
-            return self.finish(job.result);
+            return self.finish(job.result, job.github_access_granted);
         }
         #[cfg(test)]
         if let Some(hook) = &self.between_reads {
@@ -240,9 +241,21 @@ impl Follower {
                 resumes_at: job.resumes_at,
             });
         }
+        // A queued job waits while its credential is paused, whichever job (any analysis, any round) hit the
+        // usage limit: reported once per pause end.
+        let credential_pause = credential_paused_until.filter(|until| *until > now);
+        if job.state == JobState::Queued
+            && credential_pause.is_some()
+            && credential_pause != self.reported_pause
+        {
+            self.reported_pause = credential_pause;
+            self.pending.push_back(JobUpdate::Paused {
+                resumes_at: credential_pause,
+            });
+        }
         self.last_state = Some(job.state);
         if job.state.is_terminal() {
-            return self.finish(job.result);
+            return self.finish(job.result, job.github_access_granted);
         }
         Ok(())
     }
@@ -263,12 +276,16 @@ impl Follower {
     fn finish(
         &mut self,
         result: Option<contracts::job::result::JobResult>,
+        github_access: bool,
     ) -> Result<(), ExecutorError> {
         self.done = true;
         let result = result.ok_or(ExecutorError::Db(DbError::Corrupt {
             column: "jobs.result",
         }))?;
-        self.pending.push_back(JobUpdate::Finished(result));
+        self.pending.push_back(JobUpdate::Finished {
+            result,
+            github_access,
+        });
         Ok(())
     }
 }
@@ -387,6 +404,158 @@ mod tests {
         ));
     }
 
+    async fn fail_analysis(db: &Db, analysis: contracts::ids::AnalysisId) {
+        let failed = contracts::api::analyses::AnalysisState::Failed {
+            flow: None,
+            message: "x".to_owned(),
+        };
+        db.analyses()
+            .set_state(analysis, &failed, Utc::now())
+            .await
+            .expect("failed");
+    }
+
+    #[tokio::test]
+    async fn retry_round_submits_new_jobs_for_succeeded_stages() {
+        let (db, executor, analysis) = setup().await;
+        let first = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit");
+        claim(&db, 60).await;
+        db.jobs()
+            .complete(&succeeded(first.job_id, 1), Utc::now())
+            .await
+            .expect("complete");
+        let replay = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("resubmit");
+        assert_eq!(
+            replay, first,
+            "same round: the succeeded job is re-used (restart recovery)"
+        );
+        fail_analysis(&db, analysis).await;
+        assert!(
+            db.analyses()
+                .retry(analysis, Utc::now())
+                .await
+                .expect("retry")
+        );
+        let fresh = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit after retry");
+        assert_ne!(fresh, first, "a Retry calls the agent again");
+        let again = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("resubmit after retry");
+        assert_eq!(again, fresh, "idempotent within the new round");
+        assert!(
+            !db.analyses()
+                .retry(analysis, Utc::now())
+                .await
+                .expect("retry"),
+            "only a failed analysis starts a new round"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_cancels_a_claimed_job_and_never_reuses_it() {
+        let (db, executor, analysis) = setup().await;
+        let claimed = executor
+            .submit(request(analysis, "f2"))
+            .await
+            .expect("submit");
+        claim(&db, 60).await;
+        let queued = executor
+            .submit(request(analysis, "f3"))
+            .await
+            .expect("submit");
+        fail_analysis(&db, analysis).await;
+        assert!(
+            db.analyses()
+                .retry(analysis, Utc::now())
+                .await
+                .expect("retry")
+        );
+        let old = db.jobs().get(claimed.job_id).await.expect("job");
+        assert!(
+            old.cancel_requested,
+            "the earlier round's running job is cancelled"
+        );
+        let old_queued = db.jobs().get(queued.job_id).await.expect("job");
+        assert_eq!(old_queued.state, JobState::Cancelled);
+        let fresh = executor
+            .submit(request(analysis, "f2"))
+            .await
+            .expect("submit after retry");
+        assert_ne!(fresh, claimed);
+    }
+
+    /// A queued job whose credential another job paused reports the pause with its end, once per pause end.
+    #[tokio::test]
+    async fn queued_job_reports_the_pause_of_its_credential() {
+        let (db, executor, analysis) = setup().await;
+        let handle = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit");
+        let credential = contracts::job::spec::LlmCredentialRef {
+            id: CREDENTIAL.to_owned(),
+            kind: contracts::job::spec::CredentialKind::CodexChatgpt,
+        };
+        db.llm_credentials()
+            .register(db::repo::DEFAULT_TENANT, &credential, true, Utc::now())
+            .await
+            .expect("register");
+        let until = DateTime::from_timestamp(Utc::now().timestamp() + 600, 0).expect("reset time");
+        db.llm_credentials()
+            .pause(CREDENTIAL, until)
+            .await
+            .expect("pause");
+        let mut updates = executor.events(&handle);
+        assert_eq!(
+            next(&mut updates).await,
+            JobUpdate::Paused {
+                resumes_at: Some(until)
+            }
+        );
+        executor.cancel(&handle).await.expect("cancel");
+        assert!(
+            matches!(next(&mut updates).await, JobUpdate::Finished { .. }),
+            "the pause is reported once"
+        );
+    }
+
+    /// The result reports whether the attempt that produced it ran with a GitHub installation token.
+    #[tokio::test]
+    async fn finished_reports_the_attempts_github_access() {
+        let (db, executor, analysis) = setup().await;
+        let handle = executor
+            .submit(request(analysis, "f1"))
+            .await
+            .expect("submit");
+        let job = handle.job_id;
+        claim(&db, 60).await;
+        db.jobs()
+            .record_github_access(job, 1, true)
+            .await
+            .expect("access");
+        db.jobs()
+            .complete(&succeeded(job, 1), Utc::now())
+            .await
+            .expect("complete");
+        assert_eq!(
+            next(&mut executor.events(&handle)).await,
+            JobUpdate::Finished {
+                result: succeeded(job, 1),
+                github_access: true
+            }
+        );
+    }
+
     #[tokio::test]
     async fn events_follow_a_scripted_job_to_its_result() {
         let (db, executor, analysis) = setup().await;
@@ -427,14 +596,20 @@ mod tests {
             .expect("complete");
         assert_eq!(
             next(&mut updates).await,
-            JobUpdate::Finished(succeeded(job, 1))
+            JobUpdate::Finished {
+                result: succeeded(job, 1),
+                github_access: false
+            }
         );
         assert!(updates.next().await.is_none());
 
         let mut finished = executor.events(&handle);
         assert_eq!(
             next(&mut finished).await,
-            JobUpdate::Finished(succeeded(job, 1)),
+            JobUpdate::Finished {
+                result: succeeded(job, 1),
+                github_access: false
+            },
             "a finished job yields only its result"
         );
         assert!(finished.next().await.is_none());
@@ -499,7 +674,7 @@ mod tests {
             .expire_leases(after_lease())
             .await
             .expect("expire");
-        let JobUpdate::Finished(result) = next(&mut updates).await else {
+        let JobUpdate::Finished { result, .. } = next(&mut updates).await else {
             panic!("expected the end of the job");
         };
         assert_eq!(result.outcome, JobOutcome::Cancelled);
@@ -563,7 +738,7 @@ mod tests {
                 JobUpdate::OutputReady(_) => "output".to_owned(),
                 JobUpdate::Requeued { attempt } => format!("requeued {attempt}"),
                 JobUpdate::Paused { .. } => "paused".to_owned(),
-                JobUpdate::Finished(result) => format!("finished {}", result.attempt),
+                JobUpdate::Finished { result, .. } => format!("finished {}", result.attempt),
             })
             .collect()
     }
@@ -614,7 +789,10 @@ mod tests {
         let mut seen = vec![next(&mut updates).await, next(&mut updates).await];
         loop {
             let update = next(&mut updates).await;
-            let end = matches!(update, JobUpdate::OutputReady(_) | JobUpdate::Finished(_));
+            let end = matches!(
+                update,
+                JobUpdate::OutputReady(_) | JobUpdate::Finished { .. }
+            );
             seen.push(update);
             if end {
                 return kinds(&seen);

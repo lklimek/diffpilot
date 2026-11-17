@@ -279,6 +279,8 @@ pub enum ProvenanceBadge {
     ClassifiedByPath,
     /// Recognised by a line rule.
     ClassifiedByLineRule,
+    /// Git treats the file as binary (content check); it is not shown or analysed.
+    BinaryContent,
 }
 
 /// Section of material that is not analysed.

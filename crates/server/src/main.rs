@@ -49,6 +49,8 @@ enum StartError {
         #[source]
         source: std::io::Error,
     },
+    #[error("could not finish the clean-up of cancelled analyses")]
+    Recover(#[source] server::pipeline::control::ControlError),
     #[error("could not resume the unfinished analyses")]
     Resume(#[source] DbError),
     #[error("the HTTP server stopped with an I/O error")]
@@ -106,6 +108,10 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         state.db.clone(),
         state.config.clone(),
     ));
+    // Before any runner claim is served: a crash may have left a cancellation half done.
+    server::pipeline::control::recover_cancellations(&state)
+        .await
+        .map_err(StartError::Recover)?;
     server::pipeline::resume_unfinished(&state)
         .await
         .map_err(StartError::Resume)?;

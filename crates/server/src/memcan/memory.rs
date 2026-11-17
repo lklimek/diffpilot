@@ -47,7 +47,7 @@ pub(crate) fn subject<'a>(
 }
 
 /// Step `f<flow>.<n>`: the n-th step (1-based) of that flow's output.
-// TODO(WP3-PIPE): share the step / annotation id rule with `pipeline::tour` (built inline there with `format!`).
+/// The inverse of the one id rule, `contracts::ids::StepId::of` / `AnnotationId::of` (used by `pipeline::tour`).
 fn step<'a>(flows: &'a [FlowAnalysisOutput], id: &str) -> Option<&'a AgentStep> {
     let (flow, number) = id.split_once('.')?;
     let flow = flows.iter().find(|output| output.flow_id.0 == flow)?;

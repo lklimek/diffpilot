@@ -33,7 +33,15 @@ total: number, } | { "state": "paused",
 /**
  * When it resumes, if known.
  */
-resumes_at: string | null, } | { "state": "failed",
+resumes_at: string | null,
+/**
+ * Flows analysed before the pause.
+ */
+done: number,
+/**
+ * Flows in total; null while planning (the number of flows is not known yet).
+ */
+total: number | null, } | { "state": "failed",
 /**
  * The flow that failed, or null when it failed before any flow existed.
  */
@@ -407,7 +415,12 @@ lines_removed_from_tests: number,
 /**
  * Names of changed dependencies.
  */
-dependencies_changed: Array<string>, };
+dependencies_changed: Array<string>,
+/**
+ * Changed dependency files whose dependencies were not checked (other ecosystems, unreadable or unparsable
+ * files); their changes are not counted in `dependencies_changed`.
+ */
+dependency_files_not_checked: Array<string>, };
 
 /**
  * Body of `POST /api/v1/analyses`.
@@ -656,23 +669,6 @@ side: LineSide,
  * The lines.
  */
 range: LineRange, };
-
-/**
- * Several line ranges of one file on one side.
- */
-export type FileRanges = {
-/**
- * Repository-relative path on that side.
- */
-file: string,
-/**
- * Commit the lines refer to.
- */
-side: LineSide,
-/**
- * The lines, ascending and disjoint.
- */
-ranges: Array<LineRange>, };
 
 /**
  * A question about the fit of the change at project scale.
@@ -1467,18 +1463,23 @@ head_sha: CommitSha, };
 export type ProfileSource = "repository_file" | "memcan";
 
 /**
- * Sources of the project profile; empty means no profile (ratings are component-level).
+ * Sources of the project profile; empty with MemCan `checked` means no profile (ratings are component-level).
  */
 export type ProjectProfileStatus = {
 /**
  * Where the profile came from.
  */
-sources: Array<ProfileSource>, };
+sources: Array<ProfileSource>,
+/**
+ * Whether MemCan was searched for a `type: project-profile` memory; `not_checked` means a MemCan profile
+ * may exist that `sources` does not list.
+ */
+memcan: SourceCheck, };
 
 /**
  * A deterministic check that a badge names (brief §1, §3). No badge means LLM analysis.
  */
-export type ProvenanceBadge = "text_identical" | "classified_by_path" | "classified_by_line_rule";
+export type ProvenanceBadge = "text_identical" | "classified_by_path" | "classified_by_line_rule" | "binary_content";
 
 /**
  * Identifier of an Ask question.
@@ -1502,7 +1503,7 @@ export type QuietRows = {
  * Changed lines no flow explains ("Unexplained — read these yourself"); listed first. Removed lines
  * without a head location are base-side entries.
  */
-unexplained: Array<FileRanges>,
+unexplained: Array<UnexplainedRanges>,
 /**
  * Moves whose text is deterministically identical.
  */
@@ -1674,6 +1675,11 @@ app_installations: Array<AppInstallation> | null,
 repos: Array<RepoRef>, };
 
 /**
+ * Whether a source was checked.
+ */
+export type SourceCheck = "checked" | "not_checked";
+
+/**
  * One step of a flow.
  */
 export type Step = {
@@ -1819,6 +1825,33 @@ quiet: QuietRows,
  * Every GitHub review thread of the pull request.
  */
 threads: Array<GithubThread>, };
+
+/**
+ * Unexplained lines of one file on one side, with why the server left them out when it decided so.
+ */
+export type UnexplainedRanges = {
+/**
+ * Repository-relative path on that side.
+ */
+file: string,
+/**
+ * Commit the lines refer to.
+ */
+side: LineSide,
+/**
+ * The lines, ascending and disjoint.
+ */
+ranges: Array<LineRange>,
+/**
+ * Why the server did not send these lines to the LLM (deterministic); absent when the LLM did not
+ * explain them.
+ */
+reason?: UnexplainedReason, };
+
+/**
+ * Why the server left Unexplained lines out of every LLM request.
+ */
+export type UnexplainedReason = "too_large_for_prompt";
 
 /**
  * Body of `PATCH /api/v1/analyses/{id}/pending-review/comments/{comment_id}`.

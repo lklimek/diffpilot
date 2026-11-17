@@ -1285,6 +1285,41 @@ async fn github_401_refreshes_the_pair_on_next_use() {
     );
 }
 
+/// A GitHub 401 while reading a pull request for an analysis marks the held token expired.
+#[tokio::test]
+async fn github_401_on_the_pull_request_marks_the_token_expired() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    h.github.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/api/repos/acme/node-client/pulls/482"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&h.github)
+        .await;
+    let request = Request::post("/api/v1/pr/resolve")
+        .header(COOKIE, signed_in.cookie.as_str())
+        .header(CSRF_HEADER, signed_in.csrf.as_str())
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({ "url": "https://github.com/acme/node-client/pull/482" }).to_string(),
+        ))
+        .expect("request");
+    let response = h.send(request).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let stored = h
+        .state
+        .db
+        .user_tokens()
+        .get(&signed_in.user_id)
+        .await
+        .expect("lookup")
+        .expect("pair kept for the refresh");
+    assert!(
+        stored.tokens.access_expires_at <= Utc::now(),
+        "the rejected access token is refreshed on next use"
+    );
+}
+
 /// After a GitHub 401, a refresh GitHub rejects ends the sign-in: the user is asked to sign in again.
 #[tokio::test]
 async fn github_401_then_rejected_refresh_asks_to_sign_in_again() {

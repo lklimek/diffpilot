@@ -1,6 +1,7 @@
 //! Tech plugins: path and line classification rules and call hierarchy (rule A6; `generic` in v1), plus the
 //! other path facts of the pre-pass: agent instruction files, dependency manifests, the project profile.
 
+use contracts::api::settings::{NotAnalysedRule, RuleKind};
 use contracts::api::tour::CallHierarchy;
 use contracts::common::{LineRange, LineSide, NotAnalysedCategory, ProvenanceBadge};
 
@@ -133,7 +134,7 @@ impl TechPlugin for Generic {
 
 /// Line rule of the `generic` plugin: comment-only lines (a run of changed lines whose non-blank lines all match),
 /// decided by the Rust compiler's lexer over the whole file; other languages stay with the agent.
-pub const LINE_COMMENT_RULE: &str = r"^\s*//";
+pub const LINE_COMMENT_RULE: &str = "comment-only lines (Rust, by the compiler's lexer)";
 /// Rule of a generated-file header in the first lines.
 pub const GENERATED_HEADER_RULE: &str = "header: Code generated … DO NOT EDIT / @generated";
 /// Lines searched for a generated-file header.
@@ -195,6 +196,30 @@ const PATH_RULES: &[(&str, NotAnalysedCategory)] = &[
     ("*.min.js", NotAnalysedCategory::GeneratedMechanical),
     ("*.min.css", NotAnalysedCategory::GeneratedMechanical),
 ];
+
+/// The built-in Not analysed rules of the `generic` plugin as Settings lists them: every path rule, then the line
+/// rules (generated header, comment-only lines).
+pub fn rules() -> Vec<NotAnalysedRule> {
+    let paths = PATH_RULES.iter().map(|(glob, category)| NotAnalysedRule {
+        kind: RuleKind::PathGlob,
+        pattern: (*glob).to_owned(),
+        category: *category,
+    });
+    let lines = [
+        (
+            GENERATED_HEADER_RULE,
+            NotAnalysedCategory::GeneratedMechanical,
+        ),
+        (LINE_COMMENT_RULE, NotAnalysedCategory::DocsComments),
+    ]
+    .into_iter()
+    .map(|(rule, category)| NotAnalysedRule {
+        kind: RuleKind::LineRegex,
+        pattern: rule.to_owned(),
+        category,
+    });
+    paths.chain(lines).collect()
+}
 
 /// Path rules of generated (not merely mechanical) files: never rendered, never given to the agent (brief §7).
 const GENERATED_PATH_RULES: &[&str] = &[
@@ -819,6 +844,18 @@ mod tests {
             "lockfiles are mechanical, still rendered"
         );
         assert!(is_line_rule(&item(LINE_COMMENT_RULE)));
+        let listed = rules();
+        assert!(
+            listed
+                .iter()
+                .any(|rule| rule.kind == RuleKind::PathGlob && rule.pattern == "tests/**")
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|rule| rule.kind == RuleKind::LineRegex && rule.pattern == LINE_COMMENT_RULE)
+        );
+        assert_eq!(listed.len(), PATH_RULES.len() + 2);
         assert!(!is_line_rule(&item("*.md")));
     }
 

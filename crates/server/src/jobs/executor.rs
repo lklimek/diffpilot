@@ -76,7 +76,13 @@ pub enum JobUpdate {
     },
     /// The job ended (succeeded, failed or cancelled). A job cancelled at lease expiry without a runner result
     /// ends with a server-built `cancelled` result.
-    Finished(JobResult),
+    Finished {
+        /// The result.
+        result: JobResult,
+        /// The attempt that produced the result ran with a GitHub installation token (set when it started), so
+        /// its agent could read GitHub.
+        github_access: bool,
+    },
 }
 
 /// A job could not be submitted, followed or cancelled.
@@ -91,10 +97,4 @@ pub enum ExecutorError {
     /// The executor is shutting down.
     #[error("the job executor is shutting down")]
     Closed,
-    /// The operation is declared but not implemented yet (filled in by WP2-JOBS).
-    #[error("the job executor operation {operation} is not implemented yet")]
-    NotImplemented {
-        /// The operation.
-        operation: &'static str,
-    },
 }

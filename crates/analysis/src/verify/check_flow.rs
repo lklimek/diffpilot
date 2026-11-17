@@ -453,8 +453,9 @@ fn verified(
     confirmed: Vec<Option<ConfirmedMove>>,
 ) -> VerifiedFlow {
     let flow_id = &context.planned.id;
-    let step_ids: Vec<StepId> = (1..=output.steps.len())
-        .map(|number| StepId(format!("{flow_id}.{number}")))
+    let step_ids: Vec<StepId> = (1u32..)
+        .take(output.steps.len())
+        .map(|number| StepId::of(flow_id, number))
         .collect();
     let server_ids: HashMap<&str, &StepId> = output
         .steps

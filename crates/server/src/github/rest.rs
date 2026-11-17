@@ -57,6 +57,8 @@ pub struct GithubPull {
     pub repo_github_id: i64,
     /// The base repository is private (not supported in v1).
     pub private: bool,
+    /// The pull request description (author-written, untrusted); none when empty.
+    pub description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -67,6 +69,8 @@ struct PullResponse {
     user: Account,
     head: PullSide,
     base: PullBase,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -151,6 +155,7 @@ pub async fn get_pull(
         },
         repo_github_id: pull.base.repo.id,
         private: pull.base.repo.private,
+        description: pull.body.filter(|body| !body.trim().is_empty()),
     })
 }
 

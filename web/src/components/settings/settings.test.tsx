@@ -105,7 +105,7 @@ const repoSettings: RepoSettings = {
     { kind: "line_regex", pattern: "^\\s*//", category: "docs_comments" },
   ],
   related_repos: [{ owner: "acme", name: "node-sdk" }],
-  project_profile: { sources: ["repository_file", "memcan"] },
+  project_profile: { sources: ["repository_file", "memcan"], memcan: "checked" },
 };
 
 describe("RepoSettingsCard (read-only)", () => {
@@ -131,7 +131,12 @@ describe("RepoSettingsCard (read-only)", () => {
   it("states the absence of related repositories and of a profile", () => {
     render(
       <RepoSettingsCard
-        settings={{ ...repoSettings, rules: [], related_repos: [], project_profile: { sources: [] } }}
+        settings={{
+          ...repoSettings,
+          rules: [],
+          related_repos: [],
+          project_profile: { sources: [], memcan: "checked" },
+        }}
       />,
     );
     const region = screen.getByRole("region", { name: /acme\/node-client/ });
