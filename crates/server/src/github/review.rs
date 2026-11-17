@@ -273,9 +273,15 @@ struct PageInfo {
 }
 
 impl PageInfo {
-    /// The cursor of the next page, if there is one.
-    fn next(self) -> Option<String> {
-        self.end_cursor.filter(|_| self.has_next_page)
+    /// The cursor of the next page, if there is one; a next page without a cursor sets `incomplete`.
+    fn next(self, incomplete: &mut bool) -> Option<String> {
+        if !self.has_next_page {
+            return None;
+        }
+        if self.end_cursor.is_none() {
+            *incomplete = true;
+        }
+        self.end_cursor
     }
 }
 
@@ -401,7 +407,7 @@ async fn review_comments(
         .filter(|review| review.viewer_did_author)
     {
         comments.extend(review.comments.nodes);
-        let mut next = review.comments.page_info.next();
+        let mut next = review.comments.page_info.next(&mut capped);
         let mut pages = 1;
         while let Some(after) = next {
             if pages == MAX_COMMENT_PAGES {
@@ -420,7 +426,7 @@ async fn review_comments(
                 .and_then(|node| node.comments)
                 .ok_or(GraphqlError::NoData)?;
             comments.extend(page.nodes);
-            next = page.page_info.next();
+            next = page.page_info.next(&mut capped);
             pages += 1;
         }
     }
@@ -441,7 +447,7 @@ pub async fn pending_comments(
     let node = data.pull_request()?;
     let mut comments: Vec<CommentNode> = Vec::new();
     let mut incomplete = review_comments(config, token, node.reviews.nodes, &mut comments).await?;
-    let mut next = node.reviews.page_info.next();
+    let mut next = node.reviews.page_info.next(&mut incomplete);
     let mut pages = 1;
     while let Some(after) = next {
         if pages == MAX_REVIEW_PAGES {
@@ -454,7 +460,7 @@ pub async fn pending_comments(
             graphql::execute(config, token, PENDING_REVIEWS_PAGE, vars).await?;
         let reviews = data.pull_request()?.reviews;
         incomplete |= review_comments(config, token, reviews.nodes, &mut comments).await?;
-        next = reviews.page_info.next();
+        next = reviews.page_info.next(&mut incomplete);
         pages += 1;
     }
     if incomplete {
@@ -465,7 +471,8 @@ pub async fn pending_comments(
     }
     let mut threads = ThreadIndex::default();
     threads.add(node.review_threads.nodes);
-    let mut next = node.review_threads.page_info.next();
+    let mut sides_cut = false;
+    let mut next = node.review_threads.page_info.next(&mut sides_cut);
     let mut pages = 1;
     while let Some(after) = next {
         let unplaced = comments
@@ -480,8 +487,13 @@ pub async fn pending_comments(
             graphql::execute(config, token, THREAD_SIDES, vars).await?;
         let page = data.pull_request()?.review_threads;
         threads.add(page.nodes);
-        next = page.page_info.next();
+        next = page.page_info.next(&mut sides_cut);
         pages += 1;
+    }
+    if sides_cut {
+        tracing::debug!(
+            "a thread-side page had no cursor; some pending comments stay without their thread"
+        );
     }
     Ok(PendingComments {
         pull_request: PullRequestHead {
@@ -540,7 +552,7 @@ pub async fn pending_comment_by_id(
     let data: NodeData<Value> =
         match graphql::execute(config, token, COMMENT_BY_ID, json!({"id": comment_id})).await {
             Ok(data) => data,
-            Err(GraphqlError::Rejected(GraphqlErrorType::NotFound)) => return Ok(None),
+            Err(error) if error.kind() == Some(GraphqlErrorType::NotFound) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
     let Some(node) = data
@@ -1070,6 +1082,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_next_page_without_a_cursor_is_incomplete() {
+        let broken = json!({"hasNextPage": true, "endCursor": null});
+        for (reviews_page, comments_page) in [(None, Some(&broken)), (Some(&broken), None)] {
+            let server = MockServer::start().await;
+            let none = json!({"hasNextPage": false, "endCursor": null});
+            let review = json!({"id": "R1", "viewerDidAuthor": true, "comments": {
+                "pageInfo": comments_page.unwrap_or(&none), "nodes": comments(0..3)}});
+            answer(
+                &server,
+                json!({"query": PENDING_REVIEW}),
+                pending_answer(
+                    json!({"pageInfo": reviews_page.unwrap_or(&none), "nodes": [review]}),
+                ),
+            )
+            .await;
+            let pending = pending_comments(&github_config(&server), &token(), &pr())
+                .await
+                .expect("pending");
+            assert_eq!(pending.comments.len(), 3);
+            assert!(
+                pending.incomplete,
+                "never complete when a page cannot be followed"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn pending_comments_beyond_the_cap_are_marked_incomplete() {
         let server = MockServer::start().await;
         let review = json!({"id": "R1", "viewerDidAuthor": true, "comments": page(comments(0..100), Some("c"))});
@@ -1322,7 +1361,7 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(PendingReviewError::Graphql(GraphqlError::Rejected(
+                Err(PendingReviewError::Graphql(GraphqlError::FieldFailed(
                     GraphqlErrorType::NotFound
                 )))
             ),

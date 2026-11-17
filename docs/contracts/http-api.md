@@ -67,7 +67,9 @@ mapping, query rules and the endpoint × fixture-state inventory.
   preflight alone cannot bind a comment to the analysed head: the author may push in between. The server reads
   the new comment's commit from the mutation's answer; when it is not the analysed head (or missing), it deletes
   the comment again and answers `pr_head_changed`. If that deletion fails, the answer is also `pr_head_changed`,
-  with a message saying the comment may remain in the pending review; the idempotency key then stays busy.
+  with a message saying the comment may remain in the pending review; the idempotency key then stays busy. If
+  the review was published before the deletion, the published comment is removed and the answer is
+  `comment_published` (nothing of the attempt remains; the key is freed).
 - **Edit and delete of a comment published meanwhile** (accepted residual risk, ADR-006): GitHub has no
   conditional edit or delete, so the user may publish the review (e.g. in another tab) between the server's
   pending check and the mutation; the change then applies to the published comment. The server reads the
@@ -75,7 +77,7 @@ mapping, query rules and the endpoint × fixture-state inventory.
   was applied; never a silent success).
 - **Pending-review list** (`PendingReview`): every pending review of the user on the PR is merged; at most 50
   pending reviews with 1000 comments each are read (pages of 10 and 100). Beyond that `incomplete` is true. A
-  list cut at that cap is never taken as proof that a comment does not exist: edit and delete then look the
+  list cut at that cap (or at a next page GitHub reports without a cursor) is never taken as proof that a comment does not exist: edit and delete then look the
   comment up by id.
 - **No installation** (ADR-005 addendum): analysis still runs; `PrContextFacts.related_work_checked = false`
   (UI: "Related work: not checked"); commenting disabled.
@@ -87,15 +89,27 @@ mapping, query rules and the endpoint × fixture-state inventory.
   check still counts as failing, with its link). `CiCheck.url` and `GithubThread.url` are always `https://github.com/…`: any other
   URL GitHub reports is dropped (`CiCheck.url` null; a thread links to its pull request instead).
 - **Review threads** (`PrContextFacts.threads_status`, `Tour.threads`): read with the same token at ingest.
-  `checked` = every thread is listed; `partial` = only the first 1000 (the read cap) are listed; `not_checked` =
-  they could not be read (`Tour.threads` empty, which says nothing about their existence).
+  `checked` = every thread is listed; `partial` = only the first ones are listed (the 1000-thread read cap, or
+  a next page without a cursor); `not_checked` = they could not be read (`Tour.threads` empty, which says
+  nothing about their existence).
 - **Idempotency**: `CreateCommentRequest.idempotency_key` per (user, key) returns the first response. The same key
   with another request (other analysis, target or body) is `conflict`; so is a repeat while the first attempt's
-  outcome is unknown: the comment may exist, the pending-review list shows it. The outcome is unknown for every
-  failure of the write that does not prove nothing was written: no answer, a 5xx, an unreadable answer, or any
-  GraphQL execution error (errors next to `data`, whatever their type). Only these free the key for a retry:
-  GraphQL errors without `data` (refused before execution, e.g. argument validation), HTTP 4xx (sign-in, rate
-  limit), `FORBIDDEN`, and `thread: null` without errors.
+  outcome is unknown: the comment may exist, the pending-review list shows it. A failed write frees the key only
+  when the answer proves nothing was written; "resolved data" = `data` with a non-null root field:
+
+  | Answer to the thread mutation | Outcome | Key |
+  |---|---|---|
+  | GraphQL errors without `data`, or with `data: null` (refused before execution, e.g. validation) | error (`app_not_installed` for `FORBIDDEN`) | freed |
+  | `FORBIDDEN` with the mutation field null | `app_not_installed` | freed |
+  | `thread: null` without errors | `position_rejected` | freed |
+  | HTTP 401, 429, 403 rate limit or other 4xx, without resolved data; request never sent | error | freed |
+  | any error next to resolved data (including `FORBIDDEN` and a secondary rate limit carrying data) | unknown (`github_unavailable`) | busy |
+  | any other error with the mutation field null | unknown | busy |
+  | no answer, 5xx, unreadable answer, `data` without the comment | unknown | busy |
+  | comment placed on another head, deleted again | `pr_head_changed` | freed |
+  | comment placed on another head, its review published meanwhile, deleted again | `comment_published` | freed |
+  | comment placed on another head, deletion failed | `pr_head_changed` (may remain) | busy |
+
 - **Settings**: `repos` lists the tenant's known repositories (from `repos`); each opens
   `/api/v1/repos/{owner}/{name}/settings`.
 - Ids in paths are UUIDs (`analysis`, `question`) or server ids (`f1.2` steps); unknown or another tenant's →
@@ -117,7 +131,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `conflict` | 409 | state conflict (e.g. analysis already live for this head) |
 | `analysis_not_finished` | 409 | tour, questions before `finished`; lines, diff before the analysis is ready (stored base is the merge base) |
 | `pr_head_changed` | 409 | comment write when the PR head moved (before or during the write) |
-| `comment_published` | 409 | edit or delete applied to a comment whose review was published meanwhile |
+| `comment_published` | 409 | edit or delete applied to a comment whose review was published meanwhile; or a new comment on a moved head removed from a review published meanwhile |
 | `private_repository` | 422 | v1 is public repositories only |
 | `app_not_installed` | 422 | comment routes without the App on the PR repo |
 | `position_rejected` | 422 | GitHub silently rejected (`thread: null`) or target not commentable |

@@ -184,6 +184,10 @@ pub async fn fetch(
                 has_next_page: true,
                 end_cursor: Some(cursor),
             } => after = Some(cursor),
+            PageInfo {
+                has_next_page: true,
+                end_cursor: None,
+            } => return Ok((threads, ThreadsStatus::Partial)),
             _ => return Ok((threads, ThreadsStatus::Checked)),
         }
     }
@@ -401,6 +405,29 @@ mod tests {
         .expect("threads");
         assert_eq!(threads.len(), 100 * MAX_PAGES);
         assert_eq!(status, ThreadsStatus::Partial, "never reported as complete");
+    }
+
+    #[tokio::test]
+    async fn a_next_page_without_a_cursor_is_partial() {
+        let server = MockServer::start().await;
+        let mut page = thread_page(vec![thread_node("T1", json!({}))], None);
+        page["data"]["repository"]["pullRequest"]["reviewThreads"]["pageInfo"]["hasNextPage"] =
+            json!(true);
+        Mock::given(method("POST"))
+            .and(path("/api/graphql"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let (threads, status) = fetch(
+            &github_config(&server),
+            &SecretString::from("ghu_t"),
+            &fixture_pr(),
+        )
+        .await
+        .expect("threads");
+        assert_eq!(threads.len(), 1);
+        assert_eq!(status, ThreadsStatus::Partial);
     }
 
     #[test]

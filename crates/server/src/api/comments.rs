@@ -58,7 +58,9 @@ impl ApiErrorSource for CommentError {
             Self::NotFound => ApiErrorCode::NotFound,
             Self::AppNotInstalled => ApiErrorCode::AppNotInstalled,
             Self::PrHeadChanged | Self::MisplacedCommentLeft(_) => ApiErrorCode::PrHeadChanged,
-            Self::PublishedMeanwhile { .. } => ApiErrorCode::CommentPublished,
+            Self::PublishedMeanwhile { .. } | Self::MisplacedPublishedRemoved => {
+                ApiErrorCode::CommentPublished
+            }
             Self::PositionRejected => ApiErrorCode::PositionRejected,
             Self::KeyConflict => ApiErrorCode::Conflict,
             Self::Github(PendingReviewError::Graphql(GraphqlError::Unauthorized)) => {
@@ -92,6 +94,9 @@ impl ApiErrorSource for CommentError {
             }
             Self::MisplacedCommentLeft(_) => {
                 "The pull request changed while the comment was being saved, and the comment could not be removed again. It may remain in your pending review on GitHub; check it there."
+            }
+            Self::MisplacedPublishedRemoved => {
+                "The pull request changed while the comment was being saved, and your review was published on GitHub in the meantime. The comment had been published on other code and was removed again. Analyse the pull request again to comment."
             }
             Self::PublishedMeanwhile { deleted: false } => {
                 "This comment was published on GitHub in the meantime; the change was applied to the published comment."
@@ -414,6 +419,9 @@ mod tests {
         );
         let deleted = CommentError::PublishedMeanwhile { deleted: true };
         assert_eq!(deleted.code(), ApiErrorCode::CommentPublished);
+        let removed = CommentError::MisplacedPublishedRemoved;
+        assert_eq!(removed.code(), ApiErrorCode::CommentPublished);
+        assert!(removed.public_message().contains("was removed"));
         let left = CommentError::MisplacedCommentLeft(PendingReviewError::MissingPullRequest);
         assert_eq!(left.code(), ApiErrorCode::PrHeadChanged);
         assert!(

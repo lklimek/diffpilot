@@ -59,6 +59,12 @@ pub enum CommentError {
     /// may remain in the pending review.
     #[error("the head moved during the write and the comment could not be removed")]
     MisplacedCommentLeft(#[source] PendingReviewError),
+    /// The head moved during the write and the misplaced comment was deleted again, but its review had been
+    /// published meanwhile: the published comment was removed. Nothing of the attempt remains.
+    #[error(
+        "the head moved during the write; the misplaced comment had been published and was removed"
+    )]
+    MisplacedPublishedRemoved,
     /// The comment's review was published on GitHub meanwhile; the edit (or, with `deleted`, the deletion)
     /// applied to the published comment.
     #[error("the comment was published meanwhile")]
@@ -159,25 +165,25 @@ fn validate_body(body: &str) -> Result<(), CommentError> {
 fn github_error(error: PendingReviewError) -> CommentError {
     match error {
         PendingReviewError::ThreadRejected => CommentError::PositionRejected,
-        PendingReviewError::Graphql(GraphqlError::Rejected(GraphqlErrorType::Forbidden)) => {
-            CommentError::AppNotInstalled
-        }
-        PendingReviewError::Graphql(GraphqlError::Rejected(GraphqlErrorType::NotFound)) => {
-            CommentError::NotFound
-        }
+        PendingReviewError::Graphql(ref graphql) => match graphql.kind() {
+            Some(GraphqlErrorType::Forbidden) => CommentError::AppNotInstalled,
+            Some(GraphqlErrorType::NotFound) => CommentError::NotFound,
+            _ => CommentError::Github(error),
+        },
         error => CommentError::Github(error),
     }
 }
 
 /// Maps a failure of a thread write. Only answers that prove nothing was written are definite: GitHub refused
-/// the request before executing it (errors without `data`, HTTP 4xx, sign-in or rate limit), `FORBIDDEN`, or
-/// `thread: null` without errors. Anything else (no answer, server error, an execution error next to `data`,
-/// an unreadable answer) leaves the outcome unknown.
+/// the request before executing it (GraphQL errors without `data` or with `data: null`; HTTP 401, 4xx or a rate
+/// limit without resolved data; a client that sent nothing), `FORBIDDEN` with the mutation field null, or
+/// `thread: null` without errors. Anything else (no answer, 5xx, an unreadable answer, any error next to
+/// resolved data, any other error of a failed mutation field) leaves the outcome unknown.
 fn write_error(error: PendingReviewError) -> CommentError {
     match error {
         PendingReviewError::ThreadRejected => CommentError::PositionRejected,
         PendingReviewError::Graphql(
-            GraphqlError::Rejected(GraphqlErrorType::Forbidden)
+            GraphqlError::FieldFailed(GraphqlErrorType::Forbidden)
             | GraphqlError::NotExecuted(GraphqlErrorType::Forbidden),
         ) => CommentError::AppNotInstalled,
         PendingReviewError::Graphql(
@@ -433,10 +439,15 @@ async fn remove_misplaced(
     comment_id: &str,
 ) -> CommentError {
     match review::delete_comment(&state.config.github, token, comment_id).await {
-        Ok(_) => {
+        Ok(ReviewState::Pending) => {
             tracing::warn!(analysis = %summary.id,
                 "the head moved during the comment write; the misplaced comment was deleted again");
             CommentError::PrHeadChanged
+        }
+        Ok(ReviewState::Published) => {
+            tracing::warn!(analysis = %summary.id,
+                "the head moved during the comment write and the review was published meanwhile; the misplaced published comment was deleted");
+            CommentError::MisplacedPublishedRemoved
         }
         Err(error) => {
             tracing::error!(analysis = %summary.id, ?error,
@@ -543,6 +554,10 @@ mod tests {
             graphql(GraphqlError::Rejected(GraphqlErrorType::Other)),
             graphql(GraphqlError::Rejected(GraphqlErrorType::NotFound)),
             graphql(GraphqlError::Rejected(GraphqlErrorType::Unprocessable)),
+            graphql(GraphqlError::Rejected(GraphqlErrorType::Forbidden)),
+            graphql(GraphqlError::Rejected(GraphqlErrorType::RateLimited)),
+            graphql(GraphqlError::FieldFailed(GraphqlErrorType::Other)),
+            graphql(GraphqlError::FieldFailed(GraphqlErrorType::NotFound)),
             PendingReviewError::MissingPullRequest,
         ] {
             let mapped = write_error(unknown);
@@ -568,14 +583,14 @@ mod tests {
             CommentError::AppNotInstalled
         ));
         assert!(matches!(
-            write_error(PendingReviewError::ThreadRejected),
-            CommentError::PositionRejected
-        ));
-        assert!(matches!(
-            write_error(PendingReviewError::Graphql(GraphqlError::Rejected(
+            write_error(graphql(GraphqlError::FieldFailed(
                 GraphqlErrorType::Forbidden
             ))),
             CommentError::AppNotInstalled
+        ));
+        assert!(matches!(
+            write_error(PendingReviewError::ThreadRejected),
+            CommentError::PositionRejected
         ));
         assert!(matches!(
             write_error(status(reqwest::StatusCode::FORBIDDEN)),
@@ -1021,23 +1036,47 @@ mod github_tests {
     }
 
     #[tokio::test]
-    async fn forbidden_write_is_app_not_installed() {
+    async fn forbidden_before_the_mutation_ran_is_app_not_installed_and_frees_the_key() {
         let f = fixture().await;
-        f.head_is(HEAD, 1).await;
+        f.head_is(HEAD, 2).await;
         f.add_thread_answers(
             json!({}),
             ResponseTemplate::new(200).set_body_json(json!({"data": {"addPullRequestReviewThread": null},
                 "errors": [{"type": "FORBIDDEN", "message": "Resource not accessible by integration"}]})),
+            2,
+        )
+        .await;
+        let key = Uuid::new_v4();
+        for _ in 0..2 {
+            let result = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
+            assert!(
+                matches!(result, Err(CommentError::AppNotInstalled)),
+                "{result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn forbidden_next_to_resolved_data_keeps_the_key_busy() {
+        let f = fixture().await;
+        f.head_is(HEAD, 1).await;
+        let mut answer = recorded("add-thread-line.json");
+        answer["errors"] =
+            json!([{"type": "FORBIDDEN", "message": "field not accessible", "path": ["x"]}]);
+        f.add_thread_answers(
+            json!({}),
+            ResponseTemplate::new(200).set_body_json(answer),
             1,
         )
         .await;
-        let result = f
-            .create(Uuid::new_v4(), LineSide::Head, None, 96, CLIENT, "b")
-            .await;
+        let key = Uuid::new_v4();
+        let result = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
         assert!(
-            matches!(result, Err(CommentError::AppNotInstalled)),
+            matches!(result, Err(CommentError::OutcomeUnknown(_))),
             "{result:?}"
         );
+        let retry = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
+        assert!(matches!(retry, Err(CommentError::KeyConflict)), "{retry:?}");
     }
 
     #[tokio::test]
@@ -1107,6 +1146,29 @@ mod github_tests {
         );
         let retry = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
         assert!(matches!(retry, Err(CommentError::KeyConflict)), "{retry:?}");
+    }
+
+    #[tokio::test]
+    async fn misplaced_comment_in_a_review_published_meanwhile_is_reported_as_removed() {
+        let f = fixture().await;
+        f.head_is(HEAD, 2).await;
+        f.add_thread_answers(json!({"line": 96}), line_on(&"1".repeat(40)), 2)
+            .await;
+        f.mock(
+            json!({"query": DELETE_COMMENT, "variables": {"in": {"id": "PRRC_fixture482_c1"}}}),
+            ResponseTemplate::new(200).set_body_json(json!({"data": {"deletePullRequestReviewComment":
+                {"pullRequestReview": {"state": "COMMENTED"}, "pullRequestReviewComment": {"id": "PRRC_fixture482_c1"}}}})),
+            2,
+        )
+        .await;
+        let key = Uuid::new_v4();
+        for _ in 0..2 {
+            let result = f.create(key, LineSide::Head, None, 96, CLIENT, "b").await;
+            assert!(
+                matches!(result, Err(CommentError::MisplacedPublishedRemoved)),
+                "nothing of the attempt remains, so the key is free: {result:?}"
+            );
+        }
     }
 
     #[tokio::test]

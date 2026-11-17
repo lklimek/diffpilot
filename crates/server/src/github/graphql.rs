@@ -40,13 +40,28 @@ pub enum GraphqlError {
     /// The answer has no data and no error.
     #[error("GitHub answered without data")]
     NoData,
-    /// GitHub answered with a GraphQL error of this type during execution (`data` present): a mutation may
-    /// have taken effect.
-    #[error("GitHub rejected the request ({0:?})")]
+    /// GitHub answered with a GraphQL error of this type next to resolved `data`: execution ran, a mutation
+    /// may have taken effect.
+    #[error("GitHub rejected part of the request ({0:?})")]
     Rejected(GraphqlErrorType),
-    /// GitHub refused the request before executing it (errors without `data`): nothing was changed.
+    /// GitHub answered with a GraphQL error of this type and every root field of `data` null: the root field
+    /// failed (whether a mutation's resolver had written anything depends on the error type).
+    #[error("GitHub rejected the request ({0:?})")]
+    FieldFailed(GraphqlErrorType),
+    /// GitHub refused the request before executing it (errors without `data`, or `data: null`): nothing was
+    /// changed.
     #[error("GitHub refused the request before executing it ({0:?})")]
     NotExecuted(GraphqlErrorType),
+}
+
+impl GraphqlError {
+    /// The type of the first GraphQL error, when GitHub answered with one.
+    pub fn kind(&self) -> Option<GraphqlErrorType> {
+        match self {
+            Self::Rejected(kind) | Self::FieldFailed(kind) | Self::NotExecuted(kind) => Some(*kind),
+            _ => None,
+        }
+    }
 }
 
 /// The `type` of the first GraphQL error.
@@ -136,25 +151,63 @@ pub async fn execute<V: Serialize, D: DeserializeOwned>(
         .headers()
         .get("x-ratelimit-remaining")
         .is_some_and(|value| value.as_bytes() == b"0");
-    match status {
-        StatusCode::OK => {}
-        StatusCode::UNAUTHORIZED => return Err(GraphqlError::Unauthorized),
-        StatusCode::TOO_MANY_REQUESTS => return Err(GraphqlError::RateLimited),
-        StatusCode::FORBIDDEN if exhausted => return Err(GraphqlError::RateLimited),
-        status => return Err(GraphqlError::Status(status)),
+    if status != StatusCode::OK {
+        // A non-200 answer that still carries resolved data was executed (e.g. a secondary rate limit).
+        let body = response.bytes().await.unwrap_or_default();
+        if let Ok(envelope) = serde_json::from_slice::<Envelope>(&body)
+            && phase(envelope.data.as_ref()) == Phase::Resolved
+        {
+            return Err(GraphqlError::Rejected(envelope.first_error_type()));
+        }
+        return Err(match status {
+            StatusCode::UNAUTHORIZED => GraphqlError::Unauthorized,
+            StatusCode::TOO_MANY_REQUESTS => GraphqlError::RateLimited,
+            StatusCode::FORBIDDEN if exhausted => GraphqlError::RateLimited,
+            status => GraphqlError::Status(status),
+        });
     }
     let bytes = response.bytes().await.map_err(GraphqlError::Http)?;
     let envelope: Envelope = serde_json::from_slice(&bytes).map_err(GraphqlError::Malformed)?;
-    if let Some(error) = envelope.errors.first() {
-        let kind = GraphqlErrorType::of(error.kind.as_deref());
-        return Err(match envelope.data {
-            Some(_) => GraphqlError::Rejected(kind),
-            None => GraphqlError::NotExecuted(kind),
+    if !envelope.errors.is_empty() {
+        let kind = envelope.first_error_type();
+        return Err(match phase(envelope.data.as_ref()) {
+            Phase::NotStarted => GraphqlError::NotExecuted(kind),
+            Phase::RootFailed => GraphqlError::FieldFailed(kind),
+            Phase::Resolved => GraphqlError::Rejected(kind),
         });
     }
     match envelope.data {
         None | Some(serde_json::Value::Null) => Err(GraphqlError::NoData),
         Some(data) => serde_json::from_value(data).map_err(GraphqlError::Malformed),
+    }
+}
+
+/// How far execution got, judged from `data`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    /// No `data` or `data: null`: the request was refused before execution.
+    NotStarted,
+    /// Every root field is null: each root field failed.
+    RootFailed,
+    /// Some root field resolved.
+    Resolved,
+}
+
+fn phase(data: Option<&serde_json::Value>) -> Phase {
+    match data {
+        None | Some(serde_json::Value::Null) => Phase::NotStarted,
+        Some(serde_json::Value::Object(fields))
+            if fields.values().all(serde_json::Value::is_null) =>
+        {
+            Phase::RootFailed
+        }
+        Some(_) => Phase::Resolved,
+    }
+}
+
+impl Envelope {
+    fn first_error_type(&self) -> GraphqlErrorType {
+        GraphqlErrorType::of(self.errors.first().and_then(|error| error.kind.as_deref()))
     }
 }
 
@@ -210,18 +263,33 @@ pub(crate) mod tests {
             ("RATE_LIMITED", GraphqlErrorType::RateLimited),
             ("SOMETHING", GraphqlErrorType::Other),
         ] {
-            let body = json!({"data": {"x": null}, "errors": [{"type": kind, "message": "m"}]});
+            let error = json!([{"type": kind, "message": "m"}]);
+            let body = json!({"data": {"x": {"id": "1"}, "y": null}, "errors": error});
             let result = answer(ResponseTemplate::new(200).set_body_json(body)).await;
             assert!(
                 matches!(result, Err(GraphqlError::Rejected(found)) if found == expected),
-                "{kind}: {result:?}"
+                "resolved data next to errors: {kind}: {result:?}"
             );
-            let body = json!({"errors": [{"type": kind, "message": "m"}]});
+            assert_eq!(
+                result.as_ref().err().and_then(GraphqlError::kind),
+                Some(expected)
+            );
+            let body = json!({"data": {"x": null}, "errors": error});
             let result = answer(ResponseTemplate::new(200).set_body_json(body)).await;
             assert!(
-                matches!(result, Err(GraphqlError::NotExecuted(found)) if found == expected),
-                "errors without data are refused before execution: {kind}: {result:?}"
+                matches!(result, Err(GraphqlError::FieldFailed(found)) if found == expected),
+                "every root field null: {kind}: {result:?}"
             );
+            for body in [
+                json!({"errors": error}),
+                json!({"data": null, "errors": error}),
+            ] {
+                let result = answer(ResponseTemplate::new(200).set_body_json(body)).await;
+                assert!(
+                    matches!(result, Err(GraphqlError::NotExecuted(found)) if found == expected),
+                    "errors without data are refused before execution: {kind}: {result:?}"
+                );
+            }
         }
     }
 
@@ -239,6 +307,27 @@ pub(crate) mod tests {
         );
         let result =
             answer(ResponseTemplate::new(403).insert_header("x-ratelimit-remaining", "0")).await;
+        assert!(
+            matches!(result, Err(GraphqlError::RateLimited)),
+            "{result:?}"
+        );
+        let limited_with_data = ResponseTemplate::new(403)
+            .insert_header("x-ratelimit-remaining", "0")
+            .set_body_json(json!({"data": {"x": {"id": "1"}},
+                "errors": [{"type": "RATE_LIMITED", "message": "m"}]}));
+        let result = answer(limited_with_data).await;
+        assert!(
+            matches!(
+                result,
+                Err(GraphqlError::Rejected(GraphqlErrorType::RateLimited))
+            ),
+            "a limit answer carrying data was executed: {result:?}"
+        );
+        let result = answer(
+            ResponseTemplate::new(429)
+                .set_body_json(json!({"errors": [{"type": "RATE_LIMITED", "message": "m"}]})),
+        )
+        .await;
         assert!(
             matches!(result, Err(GraphqlError::RateLimited)),
             "{result:?}"
