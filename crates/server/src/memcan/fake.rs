@@ -1,7 +1,7 @@
 //! Fake MemCan for the tests: a real MCP server (rmcp, streamable HTTP) with the tools the server calls, MemCan's
 //! answer shapes, a bearer check and switchable misbehaviour.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -25,6 +25,8 @@ use url::Url;
 use super::client::MAX_ANSWER_BYTES;
 use crate::config::MemcanConfig;
 
+/// Endpoint path (a canary for leak checks of the MemCan address).
+pub(crate) const PATH: &str = "/mcp-url-CANARY";
 /// The bearer token the fake accepts (a canary for leak checks).
 pub(crate) const TOKEN: &str = "memcan-token-CANARY-4711";
 
@@ -35,8 +37,12 @@ pub(crate) enum Mode {
     Normal,
     /// Every HTTP request hangs (no handshake).
     HangAll,
-    /// Tool calls hang.
-    SlowCalls,
+    /// Tool calls are carried out after this delay, even when the client gave up meanwhile.
+    Delayed(Duration),
+    /// Tool calls answer like MemCan in shape but for another id or count (nothing is done).
+    Mismatch,
+    /// Tool calls fail with an internal error that mentions "not found" (nothing is done).
+    OtherNotFound,
     /// Tool calls answer with an error result that quotes the token.
     ToolError,
     /// Tool calls answer with text that is not JSON.
@@ -53,6 +59,7 @@ struct Inner {
     calls: Vec<(String, Value)>,
     authorization: Vec<Option<String>>,
     memories: BTreeMap<String, Value>,
+    rejected: BTreeSet<String>,
 }
 
 /// A running fake MemCan on a free local port.
@@ -72,6 +79,7 @@ impl FakeMemcan {
             calls: Vec::new(),
             authorization: Vec::new(),
             memories: BTreeMap::new(),
+            rejected: BTreeSet::new(),
         }));
         let handler = Handler(Arc::clone(&inner));
         let service: StreamableHttpService<Handler, LocalSessionManager> =
@@ -81,7 +89,7 @@ impl FakeMemcan {
                 StreamableHttpServerConfig::default(),
             );
         let router = axum::Router::new()
-            .nest_service("/mcp", service)
+            .nest_service(PATH, service)
             .layer(from_fn_with_state(Arc::clone(&inner), gate));
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind fake MemCan");
         listener.set_nonblocking(true).expect("non-blocking");
@@ -98,7 +106,7 @@ impl FakeMemcan {
         });
         Self {
             inner,
-            url: Url::parse(&format!("http://{addr}/mcp")).expect("url"),
+            url: Url::parse(&format!("http://{addr}{PATH}")).expect("url"),
         }
     }
 
@@ -137,6 +145,16 @@ impl FakeMemcan {
     /// Stored memories by id (payload as imported, without `id` and `_collection`).
     pub(crate) fn memories(&self) -> BTreeMap<String, Value> {
         self.lock().memories.clone()
+    }
+
+    /// Answers every import or delete of memory `id` with a tool error until [`Self::allow`].
+    pub(crate) fn reject(&self, id: &str) {
+        self.lock().rejected.insert(id.to_owned());
+    }
+
+    /// Stops rejecting memory `id`.
+    pub(crate) fn allow(&self, id: &str) {
+        self.lock().rejected.remove(id);
     }
 
     /// Stores a memory directly (as any other MemCan writer could).
@@ -199,84 +217,118 @@ impl ServerHandler for Handler {
                 .push((request.name.to_string(), arguments.clone()));
             inner.mode
         };
+        let inner = Arc::clone(&self.0);
+        let name = request.name.to_string();
         match mode {
-            Mode::SlowCalls => tokio::time::sleep(Duration::from_secs(60)).await,
-            Mode::ToolError => {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "rejected the request with Bearer {TOKEN}"
-                ))])
-                .into());
+            Mode::Delayed(delay) => {
+                // Detached, so the operation lands even when the client stopped waiting.
+                let late = tokio::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    execute(&inner, &name, &arguments)
+                });
+                late.await
+                    .unwrap_or_else(|_| Err(ErrorData::internal_error("task failed", None)))
             }
+            Mode::ToolError => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "rejected the request with Bearer {TOKEN}"
+            ))])
+            .into()),
             Mode::Garbage => {
-                return Ok(CallToolResult::success(vec![ContentBlock::text("<html>busy")]).into());
+                Ok(CallToolResult::success(vec![ContentBlock::text("<html>busy")]).into())
             }
-            Mode::Oversized => {
-                return Ok(CallToolResult::success(vec![ContentBlock::text(
-                    "x".repeat(MAX_ANSWER_BYTES + 1),
-                )])
-                .into());
-            }
-            Mode::Normal | Mode::HangAll | Mode::EchoToken => {}
-        }
-        let mut inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        match request.name.as_ref() {
-            "_import_records" => {
-                let records = arguments["records"].as_str().unwrap_or_default();
-                let mut imported = 0;
-                for line in records.lines() {
-                    let Ok(Value::Object(mut record)) = serde_json::from_str::<Value>(line) else {
-                        continue;
-                    };
-                    record.remove("_collection");
-                    if let Some(Value::String(id)) = record.remove("id") {
-                        inner.memories.insert(id, Value::Object(record));
-                        imported += 1;
-                    }
-                }
-                text(json!({"imported": imported, "skipped": 0, "errors": []}))
-            }
-            "delete_memory" => {
-                let id = arguments["memory_id"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
-                match inner.memories.remove(&id) {
-                    Some(_) => text(json!({"status": "deleted", "memory_id": id})),
-                    None => Err(ErrorData::invalid_params(
-                        format!("delete_memory failed: memory not found: {id}"),
-                        None,
-                    )),
-                }
-            }
-            "search_memories" => {
-                let scope = format!(
-                    "project:{}",
-                    arguments["project"].as_str().unwrap_or_default()
-                );
-                let limit = arguments["limit"].as_u64().unwrap_or(10);
-                let memories: Vec<Value> = inner
-                    .memories
-                    .iter()
-                    .filter(|(_, payload)| payload["user_id"] == scope.as_str())
-                    .take(usize::try_from(limit).unwrap_or(usize::MAX))
-                    .map(|(id, payload)| {
-                        let mut entry = payload.clone();
-                        if let Value::Object(entry) = &mut entry {
-                            entry.insert("id".to_owned(), json!(id));
-                            entry.insert("score".to_owned(), json!(0.9));
-                            if let Some(data) = entry.remove("data") {
-                                entry.insert("memory".to_owned(), data);
-                            }
-                        }
-                        entry
-                    })
-                    .collect();
-                text(json!({"memories": memories, "has_more": false}))
-            }
-            other => Err(ErrorData::invalid_params(
-                format!("unknown tool {other}"),
+            Mode::Oversized => Ok(CallToolResult::success(vec![ContentBlock::text(
+                "x".repeat(MAX_ANSWER_BYTES + 1),
+            )])
+            .into()),
+            Mode::Mismatch => match name.as_str() {
+                "delete_memory" => text(json!({"status": "deleted", "memory_id": "another-id"})),
+                _ => text(json!({"imported": 2, "skipped": 0, "errors": []})),
+            },
+            Mode::OtherNotFound => Err(ErrorData::internal_error(
+                format!("{name} failed: table not found"),
                 None,
             )),
+            Mode::Normal | Mode::HangAll | Mode::EchoToken => execute(&inner, &name, &arguments),
         }
+    }
+}
+
+/// Carries out a tool call like MemCan.
+fn execute(
+    inner: &Mutex<Inner>,
+    name: &str,
+    arguments: &Value,
+) -> Result<CallToolResponse, ErrorData> {
+    let mut inner = inner.lock().unwrap_or_else(PoisonError::into_inner);
+    let named = arguments["memory_id"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| {
+            let records = arguments["records"].as_str().unwrap_or_default();
+            serde_json::from_str::<Value>(records.lines().next().unwrap_or_default())
+                .ok()
+                .and_then(|record| record["id"].as_str().map(str::to_owned))
+        });
+    if named.is_some_and(|id| inner.rejected.contains(&id)) {
+        return Ok(CallToolResult::error(vec![ContentBlock::text("embedding failed")]).into());
+    }
+    match name {
+        "_import_records" => {
+            let records = arguments["records"].as_str().unwrap_or_default();
+            let mut imported = 0;
+            for line in records.lines() {
+                let Ok(Value::Object(mut record)) = serde_json::from_str::<Value>(line) else {
+                    continue;
+                };
+                record.remove("_collection");
+                if let Some(Value::String(id)) = record.remove("id") {
+                    inner.memories.insert(id, Value::Object(record));
+                    imported += 1;
+                }
+            }
+            text(json!({"imported": imported, "skipped": 0, "errors": []}))
+        }
+        "delete_memory" => {
+            let id = arguments["memory_id"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            match inner.memories.remove(&id) {
+                Some(_) => text(json!({"status": "deleted", "memory_id": id})),
+                None => Err(ErrorData::invalid_params(
+                    format!("delete_memory failed: memory not found: {id}"),
+                    None,
+                )),
+            }
+        }
+        "search_memories" => {
+            let scope = format!(
+                "project:{}",
+                arguments["project"].as_str().unwrap_or_default()
+            );
+            let limit = arguments["limit"].as_u64().unwrap_or(10);
+            let memories: Vec<Value> = inner
+                .memories
+                .iter()
+                .filter(|(_, payload)| payload["user_id"] == scope.as_str())
+                .take(usize::try_from(limit).unwrap_or(usize::MAX))
+                .map(|(id, payload)| {
+                    let mut entry = payload.clone();
+                    if let Value::Object(entry) = &mut entry {
+                        entry.insert("id".to_owned(), json!(id));
+                        entry.insert("score".to_owned(), json!(0.9));
+                        if let Some(data) = entry.remove("data") {
+                            entry.insert("memory".to_owned(), data);
+                        }
+                    }
+                    entry
+                })
+                .collect();
+            text(json!({"memories": memories, "has_more": false}))
+        }
+        other => Err(ErrorData::invalid_params(
+            format!("unknown tool {other}"),
+            None,
+        )),
     }
 }

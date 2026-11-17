@@ -9,6 +9,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
+use contracts::api::analyses::AnalysisSummary;
 use contracts::api::error::ApiErrorCode;
 use contracts::api::feedback::{Feedback, FeedbackRequest};
 use contracts::ids::{AnalysisId, FeedbackId};
@@ -35,10 +36,20 @@ pub enum FeedbackApiError {
     Analysis(#[from] AnalysisApiError),
     /// The feedback could not be recorded.
     #[error("the feedback could not be recorded")]
-    Feedback(#[from] FeedbackError),
+    Feedback(#[source] FeedbackError),
     /// The database failed.
     #[error("the database failed")]
     Db(#[from] DbError),
+}
+
+impl From<FeedbackError> for FeedbackApiError {
+    fn from(error: FeedbackError) -> Self {
+        match error {
+            FeedbackError::Diff(error) => Self::Analysis(error.into()),
+            FeedbackError::Db(error) => Self::Db(error),
+            error => Self::Feedback(error),
+        }
+    }
 }
 
 impl ApiErrorSource for FeedbackApiError {
@@ -50,6 +61,7 @@ impl ApiErrorSource for FeedbackApiError {
             Self::Feedback(FeedbackError::NoteTooLong | FeedbackError::UnknownTarget) => {
                 ApiErrorCode::InvalidRequest
             }
+            Self::Feedback(FeedbackError::Diff(_)) => ApiErrorCode::Internal,
             Self::Feedback(FeedbackError::Db(error)) | Self::Db(error) => error.code(),
         }
     }
@@ -63,7 +75,10 @@ impl ApiErrorSource for FeedbackApiError {
                 Cow::Borrowed("The note is too long; write at most 2000 characters.")
             }
             Self::Feedback(FeedbackError::UnknownTarget) => {
-                Cow::Borrowed("The step, annotation or line is not part of this analysis.")
+                Cow::Borrowed("The step, annotation or changed line is not part of this analysis.")
+            }
+            Self::Feedback(FeedbackError::Diff(_)) => {
+                Cow::Borrowed("Something went wrong on the server. Try again later.")
             }
             Self::Feedback(FeedbackError::Db(error)) | Self::Db(error) => error.public_message(),
         }
@@ -81,11 +96,10 @@ async fn visible(
     state: &AppState,
     session: &Session,
     id: AnalysisId,
-) -> FeedbackResult<AnalysisId> {
-    match visible_analysis(state, session, id).await {
-        Ok(summary) => Ok(summary.id),
-        Err(ApiFailure(error)) => Err(failure(error)),
-    }
+) -> FeedbackResult<AnalysisSummary> {
+    visible_analysis(state, session, id)
+        .await
+        .map_err(|ApiFailure(error)| failure(error))
 }
 
 /// Routes of this module.
@@ -106,7 +120,7 @@ async fn list(
     let entries = state
         .db
         .feedback()
-        .list(analysis, &session.user_id)
+        .list(analysis.id, &session.user_id)
         .await
         .map_err(failure)?;
     Ok(Json(entries))
@@ -121,7 +135,7 @@ async fn create(
     let Path(id) = id.map_err(failure)?;
     let Json(request) = body.map_err(failure)?;
     let analysis = visible(&state, &session, id).await?;
-    let stored = feedback::record(&state.db, &session.user_id, analysis, request, Utc::now())
+    let stored = feedback::record(&state, &session.user_id, &analysis, request, Utc::now())
         .await
         .map_err(failure)?;
     Ok(Json(stored))
@@ -137,7 +151,7 @@ async fn remove(
     feedback::remove(
         &state.db,
         &session.user_id,
-        analysis,
+        analysis.id,
         feedback_id,
         Utc::now(),
     )
@@ -297,7 +311,7 @@ mod tests {
             .state
             .db
             .feedback()
-            .pending_memcan(10)
+            .pending_memcan(Utc::now(), 10)
             .await
             .expect("queue");
         assert_eq!(pending.len(), 2, "queued for MemCan");
@@ -345,11 +359,6 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
             assert_eq!(error["code"], "invalid_request", "{body}");
         }
-        let line = json!({
-            "target": {"target": "line", "path": "src/rpc/client.rs", "side": "head", "line": 96},
-            "value": "wrong", "note": null
-        });
-        assert_eq!(f.post(line).await.0, StatusCode::OK);
         let exact = "n".repeat(FeedbackRequest::MAX_NOTE_CHARS);
         assert_eq!(
             f.post(on_step("correct", Some(&exact))).await.0,
@@ -449,5 +458,38 @@ mod tests {
             .expect("list");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].value, FeedbackValue::Wrong);
+    }
+
+    #[tokio::test]
+    async fn only_canonical_step_and_annotation_ids_are_accepted() {
+        let f = fixture().await;
+        assert_eq!(f.post(on_step("overrated", None)).await.0, StatusCode::OK);
+        for alias in [
+            json!({"target": {"target": "step", "step_id": "f3.01"}, "value": "underrated", "note": null}),
+            json!({"target": {"target": "annotation", "annotation_id": "f3.1.a02"}, "value": "underrated", "note": null}),
+        ] {
+            let (status, error) = f.post(alias.clone()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{alias}");
+            assert_eq!(error["code"], "invalid_request");
+        }
+        let values: Vec<Value> = f
+            .list()
+            .await
+            .iter()
+            .map(|entry| entry["value"].clone())
+            .collect();
+        assert_eq!(
+            values,
+            [json!("overrated")],
+            "the alias cannot bypass the exclusivity"
+        );
+    }
+
+    #[tokio::test]
+    async fn entries_report_their_memcan_copy_as_pending_until_confirmed() {
+        let f = fixture().await;
+        let (_, stored) = f.post(on_step("overrated", None)).await;
+        assert_eq!(stored["memory"], "pending");
+        assert_eq!(f.list().await[0]["memory"], "pending");
     }
 }

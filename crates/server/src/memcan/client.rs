@@ -1,5 +1,6 @@
 //! MCP client of MemCan over streamable HTTP with the configured bearer token. Every call is time-bounded, nothing
-//! is retried here, and no error carries the token (upstream text is scrubbed and cut before it is kept).
+//! is retried here, and no error carries the token or the MemCan address (upstream text is scrubbed and cut before
+//! it is kept).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,7 +23,7 @@ const CONNECT_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_secs(5)
 };
 /// Longest wait for one tool call (MemCan embeds the text before it answers).
-const CALL_TIMEOUT: Duration = if cfg!(test) {
+pub(crate) const CALL_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_secs(3)
 } else {
     Duration::from_secs(20)
@@ -51,6 +52,8 @@ pub enum MemcanError {
     Rejected {
         /// The tool.
         tool: &'static str,
+        /// JSON-RPC error code; `None` for a tool result marked as error.
+        code: Option<i32>,
         /// Scrubbed, shortened error text.
         detail: String,
     },
@@ -115,6 +118,7 @@ impl<'a> MemcanClient<'a> {
             Err(ServiceError::McpError(error)) => {
                 return Err(MemcanError::Rejected {
                     tool,
+                    code: Some(error.code.0),
                     detail: scrub(self.config, &error.message),
                 });
             }
@@ -134,6 +138,7 @@ impl<'a> MemcanClient<'a> {
         if result.is_error == Some(true) {
             return Err(MemcanError::Rejected {
                 tool,
+                code: None,
                 detail: scrub(self.config, &text),
             });
         }
@@ -154,13 +159,72 @@ fn unreachable_error(config: &MemcanConfig, error: &dyn std::error::Error) -> Me
     }
 }
 
-/// Removes the bearer token and cuts the text to [`MAX_DETAIL_CHARS`].
+/// Removes the bearer token, the MemCan address and any URL, then cuts the text to [`MAX_DETAIL_CHARS`].
 fn scrub(config: &MemcanConfig, text: &str) -> String {
-    let token = config.token.expose_secret();
-    let text = if token.is_empty() {
-        text.to_owned()
-    } else {
-        text.replace(token, "[redacted]")
-    };
-    text.chars().take(MAX_DETAIL_CHARS).collect()
+    let url = &config.url;
+    let host = url.host_str().unwrap_or_default();
+    let authority = url
+        .port_or_known_default()
+        .map(|port| format!("{host}:{port}"))
+        .unwrap_or_default();
+    let mut text = text.to_owned();
+    for secret in [
+        config.token.expose_secret(),
+        url.as_str(),
+        url.as_str().trim_end_matches('/'),
+        &authority,
+        host,
+    ] {
+        if !secret.is_empty() {
+            text = text.replace(secret, "[redacted]");
+        }
+    }
+    strip_urls(&text).chars().take(MAX_DETAIL_CHARS).collect()
+}
+
+/// Replaces every `http://` or `https://` URL (up to whitespace, a quote or a closing bracket) with `[url]`.
+fn strip_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = ["http://", "https://"]
+        .iter()
+        .filter_map(|scheme| rest.find(scheme))
+        .min()
+    {
+        out.push_str(&rest[..start]);
+        out.push_str("[url]");
+        let tail = &rest[start..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '\''))
+            .unwrap_or(tail.len());
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use secrecy::SecretString;
+
+    use super::*;
+
+    #[test]
+    fn scrub_removes_token_address_and_urls() {
+        let config = MemcanConfig {
+            url: "http://memcan.lan:8190/mcp-url-CANARY"
+                .parse()
+                .expect("url"),
+            token: SecretString::from("tok-CANARY"),
+        };
+        let text = scrub(
+            &config,
+            "error sending request for url (http://memcan.lan:8190/mcp-url-CANARY): Bearer tok-CANARY; \
+             memcan.lan:8190 refused; see https://example.com/x?y=1 and memcan.lan",
+        );
+        for leak in ["CANARY", "memcan.lan", "8190", "example.com"] {
+            assert!(!text.contains(leak), "{leak} in {text}");
+        }
+        assert!(text.contains("refused"), "{text}");
+    }
 }

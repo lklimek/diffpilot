@@ -47,15 +47,20 @@ pub(crate) fn subject<'a>(
 }
 
 /// Step `f<flow>.<n>`: the n-th step (1-based) of that flow's output.
+// TODO(WP3-PIPE): share the step / annotation id rule with `pipeline::tour` (built inline there with `format!`).
 fn step<'a>(flows: &'a [FlowAnalysisOutput], id: &str) -> Option<&'a AgentStep> {
     let (flow, number) = id.split_once('.')?;
     let flow = flows.iter().find(|output| output.flow_id.0 == flow)?;
     flow.steps.get(position(number)?)
 }
 
-/// Zero-based position of a 1-based number written in decimal digits only.
+/// Zero-based position of a 1-based number in the Tour's canonical form (decimal digits, no leading zero), so
+/// every step or annotation has exactly one id.
 fn position(number: &str) -> Option<usize> {
-    if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+    if number.starts_with('0')
+        || number.is_empty()
+        || !number.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return None;
     }
     number.parse::<usize>().ok()?.checked_sub(1)
@@ -234,7 +239,7 @@ mod tests {
     use std::path::Path;
 
     use chrono::TimeZone;
-    use contracts::api::feedback::Feedback;
+    use contracts::api::feedback::{Feedback, FeedbackMemory};
     use contracts::common::RepoRef;
     use contracts::ids::{AnalysisId, AnnotationId, CommitSha, FeedbackId, StepId};
 
@@ -273,9 +278,11 @@ mod tests {
                     .with_ymd_and_hms(2026, 11, 17, 12, 0, 0)
                     .single()
                     .unwrap_or_default(),
+                memory: FeedbackMemory::Pending,
             },
             revision: 3,
             removed: false,
+            attempts: 0,
         }
     }
 
@@ -303,13 +310,17 @@ mod tests {
             Some(Subject::Annotation(step, annotation))
                 if step.id == "s1" && annotation.kind == AnnotationType::Consequence
         ));
-        for unknown in ["f3.0", "f3.9", "f9.1", "f3", "f3.+1", "f3.1.x"] {
+        for unknown in [
+            "f3.0", "f3.9", "f9.1", "f3", "f3.+1", "f3.1.x", "f3.01", " f3.1",
+        ] {
             assert!(
                 subject(&flows, &step_target(unknown)).is_none(),
                 "{unknown}"
             );
         }
-        for unknown in ["f3.1.a0", "f3.1.a9", "f3.1", "f3.1.a"] {
+        for unknown in [
+            "f3.1.a0", "f3.1.a9", "f3.1", "f3.1.a", "f3.1.a02", "f3.01.a2",
+        ] {
             assert!(
                 subject(&flows, &annotation_target(unknown)).is_none(),
                 "{unknown}"

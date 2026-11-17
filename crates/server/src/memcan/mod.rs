@@ -24,8 +24,22 @@ use contracts::ids::AnalysisId;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::documents::DocumentKind;
+use tracing_subscriber::filter::{LevelFilter, Targets};
 
 pub use client::MemcanError;
+
+/// Caps the log targets that could print MCP or HTTP payloads (MemCan text, a token echoed by a hostile server,
+/// request URLs) regardless of `RUST_LOG`: rmcp logs nothing (its errors reach the server's own scrubbed log
+/// lines), the HTTP stack at most `INFO`. Applied by the server's and the tests' log setup.
+pub fn payload_log_cap() -> Targets {
+    Targets::new()
+        .with_default(LevelFilter::TRACE)
+        .with_target("rmcp", LevelFilter::OFF)
+        .with_target("reqwest", LevelFilter::INFO)
+        .with_target("hyper", LevelFilter::INFO)
+        .with_target("hyper_util", LevelFilter::INFO)
+        .with_target("h2", LevelFilter::INFO)
+}
 
 /// The stored flow analyses of an analysis.
 async fn stored_flows(db: &Db, analysis: AnalysisId) -> Result<Vec<FlowAnalysisOutput>, DbError> {
