@@ -1,82 +1,207 @@
-import { useEffect, useId, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
-import { useMe, useOpenPr } from "../../api/queries";
+import type { ResolvePrResponse } from "../../api/generated/types";
+import { useCreateAnalysis, useMe, useResolvePr } from "../../api/queries";
+import { AnalyzeHelp } from "../../components/analyze-help/AnalyzeHelp";
+import { Banner } from "../../components/banner/Banner";
+import { buttonClass } from "../../components/button/button";
+import { PrUrlForm } from "../../components/pr-form/PrUrlForm";
+import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
+import { Tooltip } from "../../components/tooltip/Tooltip";
 import { TopBar } from "../../components/top-bar/TopBar";
+import { analysisHref, homeOutcome, startsAtOnce } from "./outcome";
 
-/** Minimal entry (WP3-SCREENS builds the real Home): PR URL → finished analysis → review. */
+/** Router state of Home after Cancel analysis on the progress screen. */
+export interface HomeState {
+  /** PR URL of the cancelled analysis (fills the field). */
+  cancelledPrUrl?: string;
+}
+
+// `/?login_error=<LoginError>` from the OAuth callback; unknown values get the generic text, never echoed.
+const LOGIN_ERRORS: Record<string, [string, string]> = {
+  login_not_allowed: [
+    "This GitHub login is not allowed.",
+    "Only the GitHub logins this smart-review instance allows can sign in. Ask its owner to add yours.",
+  ],
+  oauth_failed: ["Sign-in with GitHub did not complete.", "GitHub did not confirm the sign-in. Try again."],
+  state_mismatch: ["The sign-in expired.", "It took too long or was started in another tab. Sign in again."],
+};
+const LOGIN_FAILED: [string, string] = ["Sign-in failed.", "Try again."];
+
+const errorText = (error: unknown) =>
+  error instanceof ApiError ? error.message : "Something went wrong. Try again.";
+const short = (sha: string) => <code>{sha.slice(0, 7)}</code>;
+const SMALL_PRIMARY = buttonClass("primary", true);
+
+/** Home (brief §4.1): sign-in, PR URL, resume, head moved, errors. */
 export function HomeScreen() {
   const me = useMe();
-  const openPr = useOpenPr();
+  const resolve = useResolvePr();
+  const create = useCreateAnalysis();
   const navigate = useNavigate();
-  const inputId = useId();
-  const [url, setUrl] = useState("");
+  const [params] = useSearchParams();
+  const { cancelledPrUrl } = (useLocation().state ?? {}) as HomeState;
   const user = me.data?.user ?? null;
+  const loginErrorCode = params.get("login_error");
+  const loginError = loginErrorCode === null ? null : (LOGIN_ERRORS[loginErrorCode] ?? LOGIN_FAILED);
 
-  const opened = openPr.data;
-  useEffect(() => {
-    if (opened?.state.state === "finished") void navigate(`/analyses/${opened.id}`);
-  }, [opened, navigate]);
+  const analyze = (resolved: ResolvePrResponse) =>
+    create.mutate(
+      { pr: { repo: resolved.pr.repo, number: resolved.pr.number }, head_sha: resolved.pr.head_sha },
+      { onSuccess: (analysis) => void navigate(`/analyses/${analysis.id}/progress`) },
+    );
+  const submit = (url: string) => {
+    create.reset();
+    resolve.mutate(url, {
+      onSuccess: (resolved) => {
+        if (startsAtOnce(resolved)) analyze(resolved);
+      },
+    });
+  };
+
+  const resolved = resolve.data;
+  const outcome = resolved && homeOutcome(resolved);
+  const busy = resolve.isPending || create.isPending;
 
   return (
     <div className="flex min-h-screen flex-col">
       <TopBar login={user?.login ?? null} />
-      <main id="main" className="grid content-start gap-4 px-8 py-5">
-        <h1 className="text-[22px] font-bold">Review a pull request</h1>
-        {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
-        {me.isError && (
-          <StatusMessage kind="error">
-            {me.error instanceof ApiError ? me.error.message : "Cannot reach the server."}
-          </StatusMessage>
-        )}
-        {me.isSuccess && !user && (
-          <p>
-            <a href="/auth/github/login">Sign in with GitHub</a>
-          </p>
-        )}
-        {user && (
-          <form
-            className="flex max-w-[1400px] flex-wrap items-end gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              openPr.mutate(url.trim());
-            }}
-          >
-            <div className="min-w-0 flex-1">
-              <label htmlFor={inputId} className="mb-1 block text-xs font-semibold">
-                GitHub pull request URL
-              </label>
-              <input
-                id={inputId}
-                type="url"
-                required
-                value={url}
-                onChange={(event) => setUrl(event.target.value)}
-                placeholder="https://github.com/owner/repo/pull/123"
-                className="w-full rounded-md border border-muted bg-surface px-2.5 py-1.5"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={openPr.isPending}
-              className="cursor-pointer rounded-md border border-accent bg-accent px-3 py-1.5 font-semibold text-on-accent disabled:opacity-55"
-            >
-              Analyze
-            </button>
-          </form>
-        )}
-        {openPr.isError && (
-          <StatusMessage kind="error">
-            {openPr.error instanceof ApiError ? openPr.error.message : "Something went wrong. Try again."}
-          </StatusMessage>
-        )}
-        {opened && opened.state.state !== "finished" && (
-          <StatusMessage kind="empty">
-            The analysis has started. This build has no progress screen yet; open the review when it has
-            finished.
-          </StatusMessage>
-        )}
+      <main id="main" className="flex-1 px-8 py-5">
+        <div className="grid items-start gap-6 min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+          <div className="grid content-start gap-3">
+            {loginError && (
+              <Banner tone="error" title={loginError[0]}>
+                {loginError[1]}
+              </Banner>
+            )}
+            {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
+            {me.isError && <StatusMessage kind="error">{errorText(me.error)}</StatusMessage>}
+            {me.isSuccess && !user && <SignInCard loginHref="/auth/github/login" />}
+            {user && (
+              <>
+                <h1 className="text-[22px] font-bold">Which pull request?</h1>
+                <PrUrlForm initialUrl={cancelledPrUrl} busy={busy} onSubmit={submit} />
+                {cancelledPrUrl && resolve.isIdle && (
+                  <Banner tone="info" title="Analysis cancelled — analyze again.">
+                    Its partial results were discarded.
+                  </Banner>
+                )}
+                {resolve.isError && (
+                  <Banner tone="error" title="Cannot open this pull request.">
+                    {errorText(resolve.error)}
+                  </Banner>
+                )}
+                {create.isError && (
+                  <Banner tone="error" title="Cannot start the analysis.">
+                    {errorText(create.error)}
+                  </Banner>
+                )}
+                {resolved && !resolved.commenting_available && (
+                  <Banner
+                    tone="warn"
+                    title={`The GitHub App is not installed on ${resolved.pr.repo.owner}/${resolved.pr.repo.name}.`}
+                    actions={
+                      outcome?.kind === "analyze" && (
+                        <Tooltip tip="Starts the analysis without the GitHub App.">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => analyze(resolved)}
+                            className={SMALL_PRIMARY}
+                          >
+                            Analyze without it
+                          </button>
+                        </Tooltip>
+                      )
+                    }
+                  >
+                    The analysis works without it, but related work is not checked and comments cannot be
+                    written into your pending review. The installations are listed in{" "}
+                    <Link to="/settings">Settings</Link>.
+                  </Banner>
+                )}
+                {outcome?.kind === "resume" && outcome.analysis.state.state === "finished" && (
+                  <Banner
+                    tone="info"
+                    title="Analysis found."
+                    actions={
+                      <Tooltip tip="Opens the review where you left it.">
+                        <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
+                          Resume review
+                        </Link>
+                      </Tooltip>
+                    }
+                  >
+                    This PR was analysed at {short(outcome.analysis.pr.head_sha)} (
+                    {outcome.analysis.state.total} flows). Your ticks, answers and last viewed block are kept;
+                    nothing is analysed again.
+                  </Banner>
+                )}
+                {outcome?.kind === "in_progress" && (
+                  <Banner
+                    tone="info"
+                    title="An analysis of this PR is in progress."
+                    actions={
+                      <Tooltip tip="Opens the progress of the running analysis.">
+                        <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
+                          Show progress
+                        </Link>
+                      </Tooltip>
+                    }
+                  >
+                    Nothing new is started.
+                  </Banner>
+                )}
+                {outcome?.kind === "failed" && (
+                  <Banner
+                    tone="error"
+                    title="The last analysis of this PR failed."
+                    actions={
+                      <Tooltip tip="Opens the failed analysis, where you can retry it.">
+                        <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
+                          Show details and retry
+                        </Link>
+                      </Tooltip>
+                    }
+                  >
+                    {outcome.message}
+                  </Banner>
+                )}
+                {outcome?.kind === "head_moved" && resolved && (
+                  <Banner
+                    tone="warn"
+                    title="The PR has moved."
+                    actions={
+                      <>
+                        <Tooltip tip="Starts a fresh analysis of the current head; ticks are not carried over.">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => analyze(resolved)}
+                            className={SMALL_PRIMARY}
+                          >
+                            Re-analyze
+                          </button>
+                        </Tooltip>
+                        <Tooltip tip="Opens the analysis of the older head.">
+                          <Link to={analysisHref(outcome.analysis)} className={buttonClass("plain", true)}>
+                            Open the old analysis
+                          </Link>
+                        </Tooltip>
+                      </>
+                    }
+                  >
+                    This analysis is for {short(outcome.analysis.pr.head_sha)}; the PR is now at{" "}
+                    {short(resolved.pr.head_sha)}. Re-analyzing starts a fresh analysis; ticks are not carried
+                    over.
+                  </Banner>
+                )}
+              </>
+            )}
+          </div>
+          {user && <AnalyzeHelp settingsHref="/settings" />}
+        </div>
       </main>
     </div>
   );

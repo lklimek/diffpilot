@@ -1,6 +1,7 @@
 // The only fetch layer of the web app: typed calls to the routes of crates/contracts.
 import { routes, type RouteName } from "./generated/routes";
 import type {
+  AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
   ApiErrorCode,
@@ -10,7 +11,11 @@ import type {
   RangeQuery,
   ResolvePrRequest,
   ResolvePrResponse,
+  RepoRef,
+  RepoSettings,
   ReviewState,
+  SetLanguageRequest,
+  Settings,
   Tour,
 } from "./generated/types";
 
@@ -50,6 +55,14 @@ function isErrorBody(value: unknown): value is { code: ApiErrorCode; message: st
     typeof (value as { code?: unknown }).code === "string" &&
     typeof (value as { message?: unknown }).message === "string"
   );
+}
+
+/** Callbacks of an analysis event stream. */
+export interface AnalysisStreamHandlers {
+  /** One event (a full snapshot of the analysis or of one question). */
+  onEvent: (event: AnalysisEvent) => void;
+  /** The connection broke: `closed` when the browser gave up (HTTP error), else it is retrying. */
+  onError: (closed: boolean) => void;
 }
 
 /** Creates a client for the API at `baseUrl` (empty = same origin); holds the session's CSRF token. */
@@ -115,6 +128,29 @@ export function createApiClient(baseUrl = "") {
     getLines: (id: AnalysisId, query: RangeQuery) =>
       call<LinesResponse>("getLines", { params: { id }, query: { ...query } }),
     getReviewState: (id: AnalysisId) => call<ReviewState>("getReviewState", { params: { id } }),
+    cancelAnalysis: (id: AnalysisId) => call<AnalysisSummary>("cancelAnalysis", { params: { id } }),
+    retryAnalysis: (id: AnalysisId) => call<AnalysisSummary>("retryAnalysis", { params: { id } }),
+    getSettings: () => call<Settings>("getSettings"),
+    setLanguage: (body: SetLanguageRequest) => call<void>("setLanguage", { body }),
+    getRepoSettings: (repo: RepoRef) =>
+      call<RepoSettings>("getRepoSettings", { params: { owner: repo.owner, name: repo.name } }),
+    /** Opens the analysis event stream (docs/contracts/sse-events.md); returns a function that closes it. */
+    subscribeAnalysis(id: AnalysisId, handlers: AnalysisStreamHandlers): () => void {
+      const source = new EventSource(baseUrl + routePath("analysisEvents", { id }));
+      const onMessage = (message: MessageEvent<string>) => {
+        let event: AnalysisEvent;
+        try {
+          event = JSON.parse(message.data) as AnalysisEvent;
+        } catch {
+          return;
+        }
+        handlers.onEvent(event);
+      };
+      source.addEventListener("analysis", onMessage);
+      source.addEventListener("question", onMessage);
+      source.onerror = () => handlers.onError(source.readyState === EventSource.CLOSED);
+      return () => source.close();
+    },
   };
 }
 
