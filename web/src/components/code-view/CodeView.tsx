@@ -1,5 +1,6 @@
 import {
   useId,
+  useMemo,
   useState,
   type CSSProperties,
   type KeyboardEvent,
@@ -280,12 +281,12 @@ interface DeletedRunProps {
   block: DeletedBlock;
   anchor: string;
   ctx: LineContext;
-  highlight?: Highlight;
+  /** Token lists of the block's lines, from the view's single highlight call. */
+  tokens?: Token[][];
   onLoadDeleted?: (block: DeletedBlock) => void;
 }
 
-function DeletedRun({ block, anchor, ctx, highlight, onLoadDeleted }: DeletedRunProps) {
-  const tokens = useTokens(highlight, ctx.path, block.lines);
+function DeletedRun({ block, anchor, ctx, tokens, onLoadDeleted }: DeletedRunProps) {
   const more = plural(block.total_lines - block.lines.length, "more deleted line");
   return (
     <div
@@ -360,7 +361,10 @@ export function CodeView({
   onLineAction,
   onLoadDeleted,
 }: CodeViewProps) {
-  const tokens = useTokens(highlight, lines.path, lines.lines);
+  // One highlight call (one budget) for the range and its removed blocks, the range first.
+  const fragments = useMemo(() => [lines.lines, ...lines.deleted.map((d) => d.lines)], [lines]);
+  const fragmentTokens = useTokens(highlight, lines.path, fragments);
+  const tokens = fragmentTokens?.[0];
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const segments = buildSegments(lines, annotations);
   const keys = segments.flatMap((s) =>
@@ -435,7 +439,7 @@ export function CodeView({
               block={segment.block}
               anchor={after < lines.from ? `before line ${lines.from}` : `after line ${after}`}
               ctx={ctx}
-              highlight={highlight}
+              tokens={fragmentTokens?.[1 + lines.deleted.indexOf(segment.block)] ?? undefined}
               onLoadDeleted={onLoadDeleted}
             />
           );

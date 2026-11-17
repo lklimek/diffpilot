@@ -13,7 +13,25 @@ import { expectTrustWording, toursByState } from "../../__tests__/wording";
 import { FIXTURE_STATES, linesFor, seedFor, type FixtureState } from "../../mocks/fixtures";
 import { findStep } from "../../screens/tour/sequence";
 import { CodeView, type CodeViewProps } from "./CodeView";
-import type { Highlight, Token } from "./highlight";
+import { createShikiHighlight, MAX_TOKENS, type Highlight, type ShikiModules, type Token } from "./highlight";
+
+// Longest stretch without an event-loop turn while `work` runs: a 0 ms timer that re-arms itself.
+async function longestSlice(work: () => Promise<unknown>): Promise<number> {
+  let last = performance.now();
+  let longest = 0;
+  let running = true;
+  const tick = () => {
+    const now = performance.now();
+    longest = Math.max(longest, now - last);
+    last = now;
+    if (running) setTimeout(tick, 0);
+  };
+  setTimeout(tick, 0);
+  await work();
+  running = false;
+  tick();
+  return longest;
+}
 
 function stepProps(stepId: string, state: FixtureState = "default") {
   const tour = seedFor(state, "tour") as Tour;
@@ -314,7 +332,8 @@ describe("CodeView", () => {
 
   it("renders code, LLM and GitHub text as text, never as markup (T12)", async () => {
     const evil = '<img src=x onerror="alert(1)"><a href="javascript:alert(1)">x</a>';
-    const highlight: Highlight = async (_, lines) => lines.map((l) => [{ content: l, light: "#000000" }]);
+    const highlight: Highlight = async (_, fragments) =>
+      fragments.map((lines) => lines.map((l) => [{ content: l, light: "#000000" }]));
     const thread = (seedFor("default", "tour") as Tour).threads[0]!;
     render(
       <CodeView
@@ -334,20 +353,22 @@ describe("CodeView", () => {
 
   describe("syntax highlighting", () => {
     it("paints plain text first, then the tokens of the displayed lines only", async () => {
-      let resolve: (tokens: Token[][]) => void = () => {};
+      let resolve: (tokens: (Token[][] | null)[]) => void = () => {};
       const highlight = vi.fn<Highlight>(() => new Promise((r) => (resolve = r)));
       render(<CodeView lines={plain(7, ["let a = 1;", "let b = 2;"])} highlight={highlight} />);
       expect(highlight).toHaveBeenCalledWith(
         "src/a.rs",
-        ["let a = 1;", "let b = 2;"],
+        [["let a = 1;", "let b = 2;"]],
         expect.any(AbortSignal),
       );
       expect(document.querySelector("[data-line='7'] code")).toHaveTextContent("let a = 1;");
       expect(document.querySelector("[data-token]")).toBeNull();
       await act(async () =>
         resolve([
-          [{ content: "let", light: "#cf222e", dark: "#ff7b72" }, { content: " a = 1;" }],
-          [{ content: "let b = 2;" }],
+          [
+            [{ content: "let", light: "#cf222e", dark: "#ff7b72" }, { content: " a = 1;" }],
+            [{ content: "let b = 2;" }],
+          ],
         ]),
       );
       const token = document.querySelector("[data-line='7'] [data-token]") as HTMLElement;
@@ -357,18 +378,60 @@ describe("CodeView", () => {
       expect(document.querySelector("[data-line='7'] code")).toHaveTextContent("let a = 1;");
     });
 
-    it("highlights removed code in its own call", () => {
-      const highlight = vi.fn<Highlight>(async () => null);
-      const block = { after_line: 7, base_start: 3, lines: ["old();"], total_lines: 1 };
-      render(<CodeView lines={plain(7, ["new();"], { deleted: [block] })} highlight={highlight} />);
-      expect(highlight).toHaveBeenCalledTimes(2);
-      expect(highlight).toHaveBeenCalledWith("src/a.rs", ["new();"], expect.any(AbortSignal));
-      expect(highlight).toHaveBeenCalledWith("src/a.rs", ["old();"], expect.any(AbortSignal));
+    it("highlights the range and its removed code in one call, range first", async () => {
+      const highlight = vi.fn<Highlight>(async () => [
+        [[{ content: "new();", light: "#111111" }]],
+        null,
+        [[{ content: "two();", light: "#222222" }]],
+      ]);
+      const blocks = [
+        { after_line: 7, base_start: 3, lines: ["old();"], total_lines: 1 },
+        { after_line: 7, base_start: 9, lines: ["two();"], total_lines: 1 },
+      ];
+      render(<CodeView lines={plain(7, ["new();"], { deleted: blocks })} highlight={highlight} />);
+      await act(async () => {});
+      expect(highlight).toHaveBeenCalledTimes(1);
+      expect(highlight).toHaveBeenCalledWith(
+        "src/a.rs",
+        [["new();"], ["old();"], ["two();"]],
+        expect.any(AbortSignal),
+      );
+      // A fragment the budget left out stays plain.
+      expect(document.querySelector("[data-line='3'] [data-token]")).toBeNull();
+      expect(document.querySelector("[data-line='9'] [data-token]")).not.toBeNull();
+      expect(document.querySelector("[data-line='7'] [data-token]")).not.toBeNull();
     });
+
+    it("keeps one budget for the whole view: many small removed blocks of pathological lines (CWE-770)", async () => {
+      const real = createShikiHighlight({
+        core: () => import("shiki/core"),
+        engine: () => import("shiki/engine/javascript"),
+        light: () => import("shiki/themes/github-light-default.mjs"),
+        dark: () => import("shiki/themes/github-dark-default.mjs"),
+        langs: { rust: () => import("shiki/langs/rust.mjs") } as ShikiModules["langs"],
+      });
+      await real("w.rs", [["fn a() {}"]]);
+      const highlight = vi.fn(real);
+      const line = `${"a+".repeat(999)}a`;
+      const deleted = Array.from({ length: 40 }, (_, i) => ({
+        after_line: 1,
+        base_start: 1 + i * 5,
+        lines: Array.from({ length: 5 }, () => line),
+        total_lines: 5,
+      }));
+      render(<CodeView lines={plain(1, ["fn a() {}"], { deleted })} highlight={highlight} />);
+      expect(highlight).toHaveBeenCalledTimes(1);
+      const slice = await longestSlice(() => highlight.mock.results[0]!.value as Promise<unknown>);
+      expect(slice).toBeLessThan(100);
+      await act(async () => {});
+      expect(document.querySelectorAll("[data-token]").length).toBeLessThanOrEqual(MAX_TOKENS);
+      expect(document.querySelector("[data-line='196'] [data-token]")).toBeNull();
+    }, 30_000);
 
     it("drops colours that no longer match the path or highlighter (same lines reference)", async () => {
       const lines = plain(1, ["let a = 1;"], { path: "src/a.rs" });
-      const colour: Highlight = async (_, l) => l.map((t) => [{ content: t, light: "#111111" }]);
+      const colour: Highlight = async (_, f) =>
+        f.map((l) => l.map((t) => [{ content: t, light: "#111111" }]));
       const { rerender } = render(<CodeView lines={lines} highlight={colour} />);
       await act(async () => {});
       expect(document.querySelector("[data-token]")).not.toBeNull();
@@ -408,7 +471,7 @@ describe("CodeView", () => {
     it.each<[string, Highlight]>([
       ["no language", async () => null],
       ["a load failure", async () => Promise.reject(new Error("offline"))],
-      ["tokens that do not match the text", async () => [[{ content: "other" }]]],
+      ["tokens that do not match the text", async () => [[[{ content: "other" }]]]],
     ])("falls back to plain text on %s", async (_, highlight) => {
       render(<CodeView lines={plain(1, ["let a = 1;"])} highlight={highlight} />);
       await act(async () => {});

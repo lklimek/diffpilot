@@ -89,11 +89,22 @@ describe("readable", () => {
   });
 });
 
+// One fragment per call: the tokens of that fragment, or null.
+async function one(
+  highlight: ReturnType<typeof createShikiHighlight>,
+  path: string,
+  lines: readonly string[],
+  signal?: AbortSignal,
+): Promise<Token[][] | null> {
+  const result = await highlight(path, [lines], signal);
+  return result === null ? null : (result[0] ?? null);
+}
+
 describe("createShikiHighlight", () => {
   it("tokenizes only the given lines and keeps their text", async () => {
     const highlight = createShikiHighlight(modules());
     const lines = ["fn main() {", '    let s = "<img src=x onerror=alert(1)>";', "}"];
-    const tokens = (await highlight("src/main.rs", lines))!;
+    const tokens = (await one(highlight, "src/main.rs", lines))!;
     expect(tokens.map(text)).toEqual(lines);
     const keyword = tokens[0]!.find((t) => t.content === "fn")!;
     expect(keyword.light).toMatch(/^#[0-9a-f]{6}$/);
@@ -103,16 +114,16 @@ describe("createShikiHighlight", () => {
 
   it("resolves null for a file without a supported language or without a loader", async () => {
     const highlight = createShikiHighlight(modules());
-    expect(await highlight("LICENSE", ["MIT"])).toBeNull();
-    expect(await highlight("main.go", ["package main"])).toBeNull();
+    expect(await one(highlight, "LICENSE", ["MIT"])).toBeNull();
+    expect(await one(highlight, "main.go", ["package main"])).toBeNull();
   });
 
   it("loads the runtime once and each language once", async () => {
     const core = vi.fn(() => import("shiki/core"));
     const rust = vi.fn(() => import("shiki/langs/rust.mjs"));
     const highlight = createShikiHighlight(modules({ core, langs: { ...langs, rust } }));
-    await Promise.all([highlight("a.rs", ["fn a() {}"]), highlight("b.rs", ["fn b() {}"])]);
-    await highlight("c.rs", ["fn c() {}"]);
+    await Promise.all([one(highlight, "a.rs", ["fn a() {}"]), one(highlight, "b.rs", ["fn b() {}"])]);
+    await one(highlight, "c.rs", ["fn c() {}"]);
     expect(core).toHaveBeenCalledTimes(1);
     expect(rust).toHaveBeenCalledTimes(1);
   });
@@ -121,15 +132,15 @@ describe("createShikiHighlight", () => {
     let fail = true;
     const core = vi.fn(() => (fail ? Promise.reject(new Error("offline")) : import("shiki/core")));
     const highlight = createShikiHighlight(modules({ core }));
-    await expect(highlight("a.rs", ["fn a() {}"])).rejects.toThrow("offline");
+    await expect(one(highlight, "a.rs", ["fn a() {}"])).rejects.toThrow("offline");
     fail = false;
-    expect(await highlight("a.rs", ["fn a() {}"])).not.toBeNull();
+    expect(await one(highlight, "a.rs", ["fn a() {}"])).not.toBeNull();
   });
 
   it("leaves very long lines untokenized (one plain token)", async () => {
     const highlight = createShikiHighlight(modules());
     const long = `let x = "${"a".repeat(30_000)}";`;
-    const tokens = (await highlight("a.rs", ["fn a() {}", long]))!;
+    const tokens = (await one(highlight, "a.rs", ["fn a() {}", long]))!;
     expect(text(tokens[1]!)).toBe(long);
     expect(tokens[1]).toHaveLength(1);
   });
@@ -143,7 +154,7 @@ describe("createShikiHighlight", () => {
     ];
     let checked = 0;
     for (const [path, lines] of corpus) {
-      for (const token of (await highlight(path, lines))!.flat()) {
+      for (const token of (await one(highlight, path, lines))!.flat()) {
         for (const scheme of ["light", "dark"] as const) {
           const colour = token[scheme];
           if (!colour) continue;
@@ -178,7 +189,7 @@ describe("createShikiHighlight budgets (CWE-770)", () => {
   }
 
   const warm = async (highlight: ReturnType<typeof createShikiHighlight>) => {
-    await highlight("warm.rs", ["fn a() {}"]);
+    await one(highlight, "warm.rs", ["fn a() {}"]);
   };
   const pathological = (n: number) => Array.from({ length: n }, () => `${"a+".repeat(999)}a`);
 
@@ -187,7 +198,7 @@ describe("createShikiHighlight budgets (CWE-770)", () => {
     await warm(highlight);
     const lines = pathological(200);
     expect(lines.join("\n").length).toBeGreaterThan(MAX_HIGHLIGHT_CHARS);
-    const [tokens, slice] = await longestSlice(() => highlight("a.rs", lines));
+    const [tokens, slice] = await longestSlice(() => one(highlight, "a.rs", lines));
     expect(tokens).toBeNull();
     expect(slice).toBeLessThan(50);
   });
@@ -197,7 +208,7 @@ describe("createShikiHighlight budgets (CWE-770)", () => {
     await warm(highlight);
     const lines = pathological(100);
     expect(lines.join("\n").length).toBeLessThanOrEqual(MAX_HIGHLIGHT_CHARS);
-    const [tokens, slice] = await longestSlice(() => highlight("a.rs", lines));
+    const [tokens, slice] = await longestSlice(() => one(highlight, "a.rs", lines));
     expect(tokens).toBeNull();
     expect(slice).toBeLessThan(100);
   });
@@ -207,7 +218,7 @@ describe("createShikiHighlight budgets (CWE-770)", () => {
     await warm(highlight);
     const file = linesFor("default", "src/rpc/client.rs", "head", 1, 224)!.lines;
     const lines = Array.from({ length: 2000 }, (_, i) => file[i % file.length]!);
-    const [tokens, slice] = await longestSlice(() => highlight("a.rs", lines));
+    const [tokens, slice] = await longestSlice(() => one(highlight, "a.rs", lines));
     expect(tokens!.map(text)).toEqual(lines);
     expect(tokens!.flat().length).toBeLessThanOrEqual(MAX_TOKENS);
     expect(slice).toBeLessThan(100);
@@ -216,7 +227,7 @@ describe("createShikiHighlight budgets (CWE-770)", () => {
   it("keeps the grammar state across slices (a block comment spanning a slice boundary)", async () => {
     const highlight = createShikiHighlight(modules());
     const lines = ["/*", ...Array.from({ length: 400 }, () => "x".repeat(60)), "*/", "fn a() {}"];
-    const tokens = (await highlight("a.rs", lines))!;
+    const tokens = (await one(highlight, "a.rs", lines))!;
     const inComment = tokens[300]![0]!;
     const fn = tokens.at(-1)!.find((t) => t.content === "fn")!;
     expect(inComment.light).toBe(tokens[0]![0]!.light);
@@ -228,8 +239,29 @@ describe("createShikiHighlight budgets (CWE-770)", () => {
     await warm(highlight);
     const controller = new AbortController();
     const file = linesFor("default", "src/rpc/client.rs", "head", 1, 224)!.lines;
-    const pending = highlight("a.rs", [...file, ...file, ...file], controller.signal);
+    const pending = one(highlight, "a.rs", [...file, ...file, ...file], controller.signal);
     controller.abort();
     expect(await pending).toBeNull();
+  });
+  it("shares one budget across all fragments of a call (40 blocks of 5 pathological lines)", async () => {
+    const highlight = createShikiHighlight(modules());
+    await warm(highlight);
+    const fragments = Array.from({ length: 40 }, () => pathological(5));
+    const [result, slice] = await longestSlice(() => highlight("a.rs", fragments));
+    const tokens = result!.flatMap((f) => (f ? f.flat() : []));
+    expect(tokens.length).toBeLessThanOrEqual(MAX_TOKENS);
+    expect(result![0]).not.toBeNull();
+    expect(result!.at(-1)).toBeNull();
+    expect(slice).toBeLessThan(100);
+  });
+
+  it("runs one slice at a time across parallel calls", async () => {
+    const highlight = createShikiHighlight(modules());
+    await warm(highlight);
+    const [results, slice] = await longestSlice(() =>
+      Promise.all(Array.from({ length: 30 }, () => highlight("a.rs", [pathological(2)]))),
+    );
+    expect(results.every((r) => r?.[0] !== null)).toBe(true);
+    expect(slice).toBeLessThan(100);
   });
 });

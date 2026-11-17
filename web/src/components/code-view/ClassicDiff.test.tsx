@@ -2,7 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { DiffResponse } from "../../api/generated/types";
 import { ClassicDiff } from "./ClassicDiff";
-import type { Highlight } from "./highlight";
+import { createShikiHighlight, MAX_TOKENS, type Highlight, type ShikiModules } from "./highlight";
 
 const diff: DiffResponse = {
   path: "src/rpc/client.rs",
@@ -38,17 +38,55 @@ describe("ClassicDiff", () => {
     expect(screen.getByText("No change in this range.")).toBeInTheDocument();
   });
 
-  it("colours the lines of each hunk with one highlight call", async () => {
-    const highlight = vi.fn<Highlight>(async (_, lines) =>
-      lines.map((l) => [{ content: l, light: "#111111" }]),
+  it("colours all hunks with one highlight call, one fragment per hunk", async () => {
+    const highlight = vi.fn<Highlight>(async (_, fragments) =>
+      fragments.map((lines) => lines.map((l) => [{ content: l, light: "#111111" }])),
     );
-    render(<ClassicDiff diff={diff} highlight={highlight} />);
+    const two = { ...diff, hunks: [diff.hunks[0]!, { ...diff.hunks[0]!, header: "@@ -90 +130 @@" }] };
+    render(<ClassicDiff diff={two} highlight={highlight} />);
     await act(async () => {});
-    expect(highlight).toHaveBeenCalledWith(
-      "src/rpc/client.rs",
-      diff.hunks[0]!.lines.map((l) => l.text),
-      expect.any(AbortSignal),
-    );
-    expect(document.querySelectorAll("[data-token]")).toHaveLength(3);
+    expect(highlight).toHaveBeenCalledTimes(1);
+    const texts = diff.hunks[0]!.lines.map((l) => l.text);
+    expect(highlight).toHaveBeenCalledWith("src/rpc/client.rs", [texts, texts], expect.any(AbortSignal));
+    expect(document.querySelectorAll("[data-token]")).toHaveLength(6);
   });
+
+  it("keeps one budget for all hunks: many small hunks of pathological lines (CWE-770)", async () => {
+    const real = createShikiHighlight({
+      core: () => import("shiki/core"),
+      engine: () => import("shiki/engine/javascript"),
+      light: () => import("shiki/themes/github-light-default.mjs"),
+      dark: () => import("shiki/themes/github-dark-default.mjs"),
+      langs: { rust: () => import("shiki/langs/rust.mjs") } as ShikiModules["langs"],
+    });
+    await real("w.rs", [["fn a() {}"]]);
+    const highlight = vi.fn(real);
+    const text = `${"a+".repeat(999)}a`;
+    const hunks = Array.from({ length: 40 }, (_, h) => ({
+      header: `@@ -${h * 5 + 1},5 +0,0 @@`,
+      lines: Array.from({ length: 5 }, (_, i) => ({
+        kind: "removed" as const,
+        old_line: h * 5 + i + 1,
+        new_line: null,
+        text,
+      })),
+    }));
+    render(<ClassicDiff diff={{ ...diff, hunks }} highlight={highlight} />);
+    expect(highlight).toHaveBeenCalledTimes(1);
+    let last = performance.now();
+    let longest = 0;
+    let running = true;
+    const tick = () => {
+      const now = performance.now();
+      longest = Math.max(longest, now - last);
+      last = now;
+      if (running) setTimeout(tick, 0);
+    };
+    setTimeout(tick, 0);
+    await highlight.mock.results[0]!.value;
+    running = false;
+    expect(longest).toBeLessThan(100);
+    await act(async () => {});
+    expect(document.querySelectorAll("[data-token]").length).toBeLessThanOrEqual(MAX_TOKENS);
+  }, 30_000);
 });

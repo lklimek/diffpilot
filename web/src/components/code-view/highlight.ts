@@ -15,15 +15,16 @@ export interface Token {
 }
 
 /**
- * Colours the given lines of the file at `path` (brief §7: displayed lines only). Resolves one token list per
- * line, or null (plain text) when the file has no supported language, the range is over budget or `signal`
+ * Colours the displayed fragments of the file at `path` (brief §7: displayed lines only) — e.g. a range and its
+ * removed blocks — under ONE budget for the view. Resolves per fragment one token list per line, or null for a
+ * fragment beyond the budget (plain text); null overall when the file has no supported language or `signal`
  * aborted; rejects when the highlighter cannot load.
  */
 export type Highlight = (
   path: string,
-  lines: readonly string[],
+  fragments: readonly (readonly string[])[],
   signal?: AbortSignal,
-) => Promise<Token[][] | null>;
+) => Promise<(Token[][] | null)[] | null>;
 
 /** Languages with a grammar slot; the host supplies one loader per language. */
 export const LANGUAGES = [
@@ -167,9 +168,9 @@ export interface ShikiModules {
 
 /** Lines longer than this stay one plain token (performance; the text is shown in full). */
 export const MAX_TOKENIZED_LINE = 2000;
-/** Ranges with more characters stay plain text without being tokenized (CWE-770). */
+/** Characters a view may colour across all its fragments; the rest stays plain, untokenized (CWE-770). */
 export const MAX_HIGHLIGHT_CHARS = 200_000;
-/** Ranges that produce more tokens stay plain text: bounds tokenizing and the rendered spans (CWE-770). */
+/** Tokens a view may render across all its fragments; a fragment past it stays plain (CWE-770). */
 export const MAX_TOKENS = 25_000;
 /** Characters tokenized per synchronous slice; slices yield to the event loop in between. */
 const SLICE_CHARS = 4_000;
@@ -204,23 +205,14 @@ export function createShikiHighlight(modules: ShikiModules): Highlight {
     };
   };
 
-  return async (path, lines, signal) => {
-    const language = languageOf(path);
-    const loader = language && modules.langs[language];
-    const chars = lines.reduce((n, line) => n + line.length + 1, 0);
-    if (!language || !loader || lines.length === 0 || chars > MAX_HIGHLIGHT_CHARS) return null;
-    runtime ??= start().catch((error: unknown) => {
-      runtime = null;
-      throw error;
-    });
-    const { highlighter, themes } = await runtime;
-    let grammar = grammars.get(language);
-    if (!grammar) {
-      grammar = loader().then((module) => highlighter.loadLanguage(...module.default));
-      grammars.set(language, grammar);
-      grammar.catch(() => grammars.delete(language));
-    }
-    await grammar;
+  // Tokenizes one fragment in slices; null when it would take the call past `budget` tokens or is aborted.
+  const tokenize = async (
+    { highlighter, themes }: Runtime,
+    language: Language,
+    lines: readonly string[],
+    budget: number,
+    signal: AbortSignal | undefined,
+  ): Promise<Token[][] | null> => {
     const result: Token[][] = [];
     let count = 0;
     let state: GrammarState | undefined;
@@ -247,10 +239,54 @@ export function createShikiHighlight(modules: ShikiModules): Highlight {
           })),
         );
       }
-      if (count > MAX_TOKENS) return null;
+      if (count > budget) return null;
       start = end;
       await nextTurn();
     }
-    return signal?.aborted ? null : result;
+    return result;
+  };
+
+  const run = async (
+    path: string,
+    fragments: readonly (readonly string[])[],
+    signal: AbortSignal | undefined,
+  ): Promise<(Token[][] | null)[] | null> => {
+    const language = languageOf(path);
+    const loader = language && modules.langs[language];
+    if (!language || !loader || signal?.aborted) return null;
+    runtime ??= start().catch((error: unknown) => {
+      runtime = null;
+      throw error;
+    });
+    const ready = await runtime;
+    let grammar = grammars.get(language);
+    if (!grammar) {
+      grammar = loader().then((module) => ready.highlighter.loadLanguage(...module.default));
+      grammars.set(language, grammar);
+      grammar.catch(() => grammars.delete(language));
+    }
+    await grammar;
+    // One budget for all fragments, in order; the first fragment over it and all after it stay plain.
+    const result: (Token[][] | null)[] = fragments.map(() => null);
+    let chars = 0;
+    let tokens = 0;
+    for (const [i, lines] of fragments.entries()) {
+      chars += lines.reduce((n, line) => n + line.length + 1, 0);
+      if (chars > MAX_HIGHLIGHT_CHARS) break;
+      const fragment = await tokenize(ready, language, lines, MAX_TOKENS - tokens, signal);
+      if (signal?.aborted) return null;
+      if (!fragment) break;
+      tokens += fragment.reduce((n, line) => n + line.length, 0);
+      result[i] = fragment;
+    }
+    return result;
+  };
+
+  // One call at a time, so slices of parallel calls never pile up in one event-loop turn.
+  let queue: Promise<unknown> = Promise.resolve();
+  return (path, fragments, signal) => {
+    const next = queue.then(() => run(path, fragments, signal));
+    queue = next.catch(() => undefined);
+    return next;
   };
 }

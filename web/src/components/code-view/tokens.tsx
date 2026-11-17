@@ -1,34 +1,40 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import type { Highlight, Token } from "./highlight";
 
+/** Token lists per fragment; null for a fragment left plain. */
+export type FragmentTokens = (Token[][] | null)[];
+
 interface Result {
   highlight: Highlight;
   path: string;
-  lines: readonly string[];
-  tokens: Token[][] | null;
+  fragments: readonly (readonly string[])[];
+  tokens: FragmentTokens | null;
 }
 
 /**
- * Tokens for `lines` once `highlight` resolves; null meanwhile, on failure and once highlight, path or lines
- * change (plain text). A superseded call is aborted.
+ * Tokens per fragment from ONE `highlight` call for the whole view (one budget); null meanwhile, on failure and
+ * once highlight, path or fragments change (plain text). A superseded call is aborted.
  */
 export function useTokens(
   highlight: Highlight | undefined,
   path: string,
-  lines: readonly string[],
-): Token[][] | null {
+  fragments: readonly (readonly string[])[],
+): FragmentTokens | null {
   const [result, setResult] = useState<Result | null>(null);
   useEffect(() => {
     if (!highlight) return;
     const controller = new AbortController();
-    const settle = (tokens: Token[][] | null) => {
-      if (!controller.signal.aborted) setResult({ highlight, path, lines, tokens });
+    const settle = (tokens: FragmentTokens | null) => {
+      if (!controller.signal.aborted) setResult({ highlight, path, fragments, tokens });
     };
-    highlight(path, lines, controller.signal).then(settle, () => settle(null));
+    highlight(path, fragments, controller.signal).then(settle, () => settle(null));
     return () => controller.abort();
-  }, [highlight, path, lines]);
+  }, [highlight, path, fragments]);
   const current =
-    result !== null && result.highlight === highlight && result.path === path && result.lines === lines;
+    result !== null &&
+    result.highlight === highlight &&
+    result.path === path &&
+    result.fragments === fragments;
   return current ? result.tokens : null;
 }
 
