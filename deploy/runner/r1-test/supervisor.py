@@ -4,11 +4,14 @@
 serve RUNNER_ARGV...   root entrypoint (caps CHOWN/SETUID/SETGID/KILL only): forks the runner as uid `runner` with
                        an inherited SOCK_SEQPACKET control socket (fd in SR_SUPERVISOR_FD) and serves its requests.
 Requests (JSON, one per datagram), the whole privileged surface:
-  spawn{argv, env, cwd} + 3 fds (stdin, stdout, stderr) -> {pid}: new session, uid/gid agent, no groups, exact env,
-  oom_score_adj 1000.
+  spawn{argv, env, cwd, exclusive?} + 3 fds (stdin, stdout, stderr) -> {pid}: new session, uid/gid agent, no groups,
+  exact env, oom_score_adj 1000. Refused while any agent thread is alive when `exclusive` is set or argv is one of
+  this binary's helpers.
   wait{pid} -> {status} once reaped.
-  signal{pid, signal} -> the signal to each process of the spawned pid's process group whose uids are all agent.
-  sweep -> {rounds, killed, ms}: SIGKILL (pidfd) to every process with any uid = agent until none is alive. Past
+  signal{pid, signal} -> the signal to each thread group of the spawned pid's process group whose live threads
+  are all uid agent.
+  sweep -> {rounds, killed, ms}: SIGKILL (pidfd) to every thread group with a live thread whose uids include agent
+  (a zombie leader with running threads counts) until no such thread exists in /proc/*/task/*. Past
   the deadline (SR_SUPERVISOR_SWEEP_DEADLINE_MS, default 5000) or on any error the supervisor exits 70, which ends
   the container (fail closed).
   handover{path} -> chown an empty runner-owned 0700 dir `<state>/codex-homes/<key>` or `<work>/<key>/{home,tmp}`
@@ -42,6 +45,7 @@ SYS_OPENAT2 = 437
 RESOLVE_NO_XDEV, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS, RESOLVE_BENEATH = 0x01, 0x02, 0x04, 0x08
 STRICT = RESOLVE_NO_XDEV | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS | RESOLVE_BENEATH
 NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+SELF = os.path.realpath(__file__)
 
 _libc = ctypes.CDLL(None, use_errno=True)
 
@@ -92,37 +96,46 @@ def run_as(ids, fn):
     return json.loads(b"".join(chunks) or b"{}")
 
 
-def proc_entries():
-    """(pid, {real, effective, saved, fs uid}, state, process group) of every process visible in /proc."""
+def thread_groups():
+    """(tgid, process group, [(uids, state)] of its threads) for every thread group in /proc. Liveness is per
+    thread: a zombie leader whose other threads still run is a live process."""
     for name in os.listdir("/proc"):
         if not name.isdigit():
             continue
         try:
-            with open(f"/proc/{name}/status") as f:
-                fields = dict(line.split(":", 1) for line in f if ":" in line)
             with open(f"/proc/{name}/stat") as f:
                 pgrp = int(f.read().rsplit(")", 1)[1].split()[2])
-            yield int(name), {int(u) for u in fields["Uid"].split()}, fields["State"].split()[0], pgrp
-        except (OSError, KeyError, ValueError, IndexError):
+            yield int(name), pgrp, task_states(name)
+        except (OSError, ValueError, IndexError):
             continue
 
 
-def uids_of(pid):
-    with open(f"/proc/{pid}/status") as f:
-        for line in f:
-            if line.startswith("Uid:"):
-                return {int(u) for u in line.split()[1:]}
-    return set()
+def task_states(tgid):
+    found = []
+    for tid in os.listdir(f"/proc/{tgid}/task"):
+        try:
+            with open(f"/proc/{tgid}/task/{tid}/status") as f:
+                fields = dict(line.split(":", 1) for line in f if ":" in line)
+            found.append(({int(u) for u in fields["Uid"].split()}, fields["State"].split()[0]))
+        except (OSError, KeyError, ValueError):
+            continue
+    return found
+
+
+def live_uids(threads):
+    """Union of the four uids over the threads that are neither zombie nor dead."""
+    return set().union(*(uids for uids, state in threads if state not in "ZX"))
 
 
 def pidfd_signal(pid, sig, accept):
-    """Signals pid only if, once pinned by a pidfd, its uids satisfy accept: a reused pid is never hit."""
+    """Signals thread group pid only if, once pinned by a pidfd, the uids of its live threads satisfy accept: a
+    reused pid is never hit."""
     try:
         fd = os.pidfd_open(pid)
     except OSError:
         return False
     try:
-        if not accept(uids_of(pid)):
+        if not accept(live_uids(task_states(pid))):
             return False
         signal.pidfd_send_signal(fd, sig)
         return True
@@ -196,18 +209,22 @@ class Supervisor:
         try:
             while True:
                 rounds += 1
-                targets = [p for p, uids, state, _ in proc_entries() if agent in uids and state not in "ZX"]
+                targets = self.agent_groups()
                 if not targets and os.environ.get("R1_FAULT_SWEEP_FAILS") != "1":
                     self.reap()
                     return {"rounds": rounds, "killed": killed, "ms": round((time.monotonic() - start) * 1000)}
                 if time.monotonic() - start > self.deadline:
-                    raise TimeoutError(f"{len(targets)} uid-agent processes alive after {rounds} rounds")
+                    raise TimeoutError(f"{len(targets)} uid-agent thread groups alive after {rounds} rounds")
                 killed += sum(pidfd_signal(p, signal.SIGKILL, lambda uids: agent in uids) for p in targets)
                 self.reap()
                 time.sleep(0.005)
         except BaseException as error:  # noqa: BLE001 - any failure ends the container
             print(f"supervisor: sweep failed, terminating the container: {error!r}", file=sys.stderr, flush=True)
             os._exit(70)
+
+    def agent_groups(self):
+        """Thread groups with at least one live thread whose uids include agent."""
+        return [tgid for tgid, _, threads in thread_groups() if self.agent_ids[0] in live_uids(threads)]
 
     def reap(self):
         while True:
@@ -247,7 +264,7 @@ class Supervisor:
                 pgid, sig = request["pid"], int(request["signal"])
                 if pgid not in self.spawned:
                     raise ValueError("not a spawned pid")
-                members = [p for p, _, state, pgrp in proc_entries() if pgrp == pgid and state not in "ZX"]
+                members = [tgid for tgid, pgrp, threads in thread_groups() if pgrp == pgid and live_uids(threads)]
                 agent = {self.agent_ids[0]}
                 self.reply(rid, signalled=sum(pidfd_signal(p, sig, lambda uids: uids == agent) for p in members))
             elif op == "spawn":
@@ -276,6 +293,8 @@ class Supervisor:
         if len(fds) != 3 or not argv or not os.path.isabs(argv[0]) or not os.path.isabs(cwd):
             raise ValueError("spawn needs 3 fds, an absolute program and an absolute cwd")
         env = dict(entry.split("=", 1) for entry in env)
+        if (request.get("exclusive") or SELF in argv[:2]) and self.agent_groups():
+            raise ValueError("an agent process is alive; helpers run only after a sweep")
         pid = os.fork()
         if pid == 0:
             try:

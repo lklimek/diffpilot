@@ -57,6 +57,25 @@ def processes():
     return found
 
 
+def agent_threads():
+    """(tgid, tid, state) of every live thread with any uid = agent, from /proc/*/task/* (a zombie thread-group
+    leader with running threads is a live process)."""
+    found = []
+    for tgid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            tids = os.listdir(f"/proc/{tgid}/task")
+        except OSError:
+            continue
+        for tid in tids:
+            try:
+                st = status(f"{tgid}/task/{tid}")
+            except OSError:
+                continue
+            if str(AGENT_UID) in st["Uid"].split() and st["State"][0] not in "ZX":
+                found.append((int(tgid), int(tid), st["State"][0]))
+    return found
+
+
 def agent_live():
     return {p: v for p, v in processes().items() if v[0] == AGENT_UID and v[1] not in "ZX"}
 
@@ -69,15 +88,26 @@ class Supervisor:
         self.next = 0
         self.early = {}
 
-    def call(self, op, fds=(), **fields):
+    def send(self, op, fds=(), **fields):
         self.next += 1
-        rid = self.next
-        msg = json.dumps({"id": rid, "op": op, **fields}).encode()
+        msg = json.dumps({"id": self.next, "op": op, **fields}).encode()
         socket.send_fds(self.sock, [msg], list(fds)) if fds else self.sock.send(msg)
+        return self.next
+
+    def reply(self, rid, timeout=None):
+        """The reply to request rid, or None when the timeout passes first."""
+        deadline = None if timeout is None else time.monotonic() + timeout
         while rid not in self.early:
+            left = None if deadline is None else deadline - time.monotonic()
+            if left is not None and (left <= 0 or not select.select([self.sock], [], [], left)[0]):
+                return None
             reply = json.loads(self.sock.recv(1 << 20))
             self.early[reply["id"]] = reply
         return self.early.pop(rid)
+
+    def call(self, op, fds=(), **fields):
+        """Requests the supervisor answers at once (spawn, signal, sweep, handover)."""
+        return self.reply(self.send(op, fds, **fields))
 
 
 class Proc:
@@ -130,12 +160,14 @@ def agent_env(key):
     ]
 
 
-def spawn(sup, argv, key, stdin=b"", keep_stdin=False):
+def spawn(sup, argv, key, stdin=b"", keep_stdin=False, exclusive=False):
     """Starts argv as uid agent via the supervisor; stdin is written and closed unless keep_stdin."""
     in_r, in_w = os.pipe()
     out_r, out_w = os.pipe()
     err_r, err_w = os.pipe()
-    reply = sup.call("spawn", fds=(in_r, out_w, err_w), argv=argv, env=agent_env(key), cwd=f"{WORK}/{key}")
+    reply = sup.call(
+        "spawn", fds=(in_r, out_w, err_w), argv=argv, env=agent_env(key), cwd=f"{WORK}/{key}", exclusive=exclusive
+    )
     for fd in (in_r, out_w, err_w):
         os.close(fd)
     if not reply["ok"]:
@@ -150,19 +182,30 @@ def spawn(sup, argv, key, stdin=b"", keep_stdin=False):
     return Proc(reply["pid"], out_r, err_r)
 
 
-def run(sup, argv, key, stdin=b"", deadline=HELPER_DEADLINE):
-    """Runs an agent command to its end within the deadline; past it the supervisor sweeps every agent process
-    (a stopped or hung helper never blocks the runner)."""
-    proc = spawn(sup, argv, key, stdin)
+def finish(sup, proc, deadline):
+    """Reads the agent command's output AND its exit status within one deadline; past it the supervisor sweeps
+    every agent process, so neither a stopped command nor one that closed its streams and lingers blocks."""
+    end = time.monotonic() + deadline
     drained = proc.drain(deadline)
+    rid = sup.send("wait", pid=proc.pid)
+    reply = sup.reply(rid, max(end - time.monotonic(), 0)) if drained is not None else None
     swept = state = None
-    if drained is None:
+    if reply is None:
         state = processes().get(proc.pid, (None, "gone"))[1]
         swept = sup.call("sweep")
-        drained = proc.drain(5) or (b"", "")
-    return Result(
-        sup.call("wait", pid=proc.pid)["status"], *drained, drained is None or swept is not None, swept, state
-    )
+        drained = drained or proc.drain(5) or (b"", "")
+        reply = sup.reply(rid, 5)
+    return Result((reply or {}).get("status"), *drained, swept is not None, swept, state)
+
+
+def wait_status(sup, pid, timeout):
+    """Exit status once reaped, or None after timeout (bounded; the caller sweeps next either way)."""
+    return (sup.reply(sup.send("wait", pid=pid), timeout) or {}).get("status")
+
+
+def run(sup, argv, key, stdin=b"", deadline=HELPER_DEADLINE, exclusive=False):
+    """Runs an agent command to its end within the deadline (see finish)."""
+    return finish(sup, spawn(sup, argv, key, stdin, exclusive=exclusive), deadline)
 
 
 def write_private(path, data, mode=0o600):
@@ -235,7 +278,7 @@ def cleanup_job(sup, key):
     """After kill_all: per-job dirs and IPC objects emptied as agent, then the empty dirs removed by runner."""
     home, job = os.path.join(HOMES, key), os.path.join(WORK, key)
     statuses = [run(sup, [PY, SUP, "clear", d], key)[0] for d in (home, f"{job}/home", f"{job}/tmp", "/dev/mqueue")]
-    statuses.append(run(sup, ["/usr/bin/ipcrm", "--all"], key)[0])
+    statuses.append(run(sup, ["/usr/bin/ipcrm", "--all"], key, exclusive=True)[0])
     for d in (home, f"{job}/home", f"{job}/tmp"):
         os.rmdir(d)  # empty agent-owned dir in a runner-owned parent
     os.remove(f"{job}/repo/README.md")
@@ -443,7 +486,7 @@ def stand_in_job(sup, sup_pid, me):
     time.sleep(0.5)
     before = agent_live()
     signal_group(sup, probe.pid, 15)
-    probe_status = sup.call("wait", pid=probe.pid)["status"]
+    probe_status = wait_status(sup, probe.pid, 10)  # its children keep stdout open; the sweep follows
     time.sleep(0.5)
     after_group_kill = agent_live()
     check(
@@ -586,7 +629,7 @@ def real_codex_job(sup, sup_pid):
         f"environs with the canary={scan.get('hits')}",
     )
     signal_group(sup, codex.pid, 15)
-    codex_status = sup.call("wait", pid=codex.pid)["status"]
+    codex_status = wait_status(sup, codex.pid, 10)
     time.sleep(0.5)
     survivors = sorted(set(v[2] for v in agent_live().values()))
     check(
@@ -623,8 +666,9 @@ def real_codex_job(sup, sup_pid):
 
 
 def hostile_job(sup, sup_pid):
-    """An agent that SIGSTOPs everything of its uid in a loop, ignores SIGTERM and runs a fork loop; a helper
-    started meanwhile hangs, hits its deadline, and the supervisor sweep ends all of it."""
+    """An agent that SIGSTOPs everything of its uid in a loop, ignores SIGTERM and runs a fork loop: the supervisor
+    refuses helpers meanwhile; an agent command started anyway is stopped, hits its deadline, and the supervisor
+    sweep ends all of it."""
     key = "hostile-1"
     home, job, _, _ = prepare_job(sup, key, {"config.toml": "# hostile\n"})
     args = {"runner_pid": os.getpid(), "supervisor_pid": sup_pid}
@@ -632,14 +676,24 @@ def hostile_job(sup, sup_pid):
     tried = json.loads(hostile.line(20) or "{}")
     time.sleep(1)
     stopped = sum(1 for v in agent_live().values() if v[1] == "T")
+    try:
+        spawn(sup, [PY, SUP, "list", home], key)
+        refused = None
+    except RuntimeError as error:
+        refused = str(error)[:160]
+    check(
+        "supervisor_refuses_helper_while_agent_alive",
+        refused is not None and "helpers run only after a sweep" in refused,
+        f"helper spawn while the hostile agent runs: {refused!r}",
+    )
     started = time.monotonic()
-    helper = run(sup, [PY, SUP, "list", home], key, deadline=2)
+    helper = run(sup, ["/bin/sleep", "30"], key, deadline=2)
     elapsed = time.monotonic() - started
     left = [p for p, v in processes().items() if v[0] == AGENT_UID]
     check(
-        "hung_helper_hits_deadline_then_swept",
+        "hung_agent_command_hits_deadline_then_swept",
         helper.timed_out and helper.state_at_timeout == "T" and helper.status == -9 and helper.sweep.get("ok"),
-        f"helper state at the 2 s deadline={helper.state_at_timeout!r} status={helper.status} "
+        f"command state at the 2 s deadline={helper.state_at_timeout!r} status={helper.status} "
         f"returned after {elapsed:.2f} s",
     )
     states = {who: status(pid)["State"] for who, pid in (("runner", "self"), ("supervisor", sup_pid))}
@@ -680,7 +734,7 @@ def pid_exhaustion_job(sup):
     after = run(sup, ["/bin/true"], key, deadline=5)
     check(
         "pid_exhaustion_sweep_still_works",
-        refused is not None and swept.get("killed", 0) > 400 and after.status == 0 and not agent_live(),
+        refused is not None and swept.get("killed", 0) > 400 and after.status == 0 and not agent_threads(),
         f"peak container pids={peak} (pids_limit 512) spawn refused={refused!r} sweep={swept} spawn afterwards={after.status}",
     )
     cleanup_job(sup, key)
@@ -725,6 +779,47 @@ def sweep_failure_scenario(sup):
     raise SystemExit(1)
 
 
+def closed_streams_job(sup):
+    """An agent command closes stdout and stderr, ignores SIGTERM and keeps running: EOF arrives at once, so only a
+    deadline covering the wait reply as well ends it (sweep)."""
+    key = "linger-1"
+    prepare_job(sup, key, {})
+    proc = spawn(sup, [PY, AGENT, "linger"], key)
+    time.sleep(0.5)
+    signalled = signal_group(sup, proc.pid, 15).get("signalled")
+    started = time.monotonic()
+    result = finish(sup, proc, 2)
+    elapsed = time.monotonic() - started
+    check(
+        "closed_streams_sigterm_ignored_hits_deadline_then_swept",
+        result.timed_out and result.status == -9 and result.sweep.get("ok") and not agent_threads() and elapsed < 10,
+        f"SIGTERM delivered to {signalled} thread group(s), ignored; state at the 2 s deadline="
+        f"{result.state_at_timeout!r} status={result.status} returned after {elapsed:.2f} s",
+    )
+    cleanup_job(sup, key)
+
+
+def zombie_leader_job(sup):
+    """A process whose main thread called pthread_exit() while another thread runs must be swept too."""
+    key = "zombie-1"
+    prepare_job(sup, key, {})
+    proc = spawn(sup, [PY, AGENT, "zombie-leader"], key, keep_stdin=True)
+    leader = json.loads(proc.line(20) or "{}").get("leader")
+    time.sleep(0.5)
+    leader_state = processes().get(leader, (None, "gone"))[1]
+    before = [t for t in agent_threads() if t[0] == leader]
+    swept = kill_all(sup)
+    time.sleep(0.3)
+    after = agent_threads()
+    check(
+        "zombie_leader_thread_group_swept",
+        leader_state == "Z" and len(before) >= 1 and swept.get("ok") and not after,
+        f"leader {leader} state={leader_state!r} live threads before={before} sweep={swept} "
+        f"live uid-agent threads after={after}",
+    )
+    cleanup_job(sup, key)
+
+
 def main():
     sup = Supervisor()
     if os.environ.get("R1_SCENARIO") == "sweep-failure":
@@ -734,6 +829,8 @@ def main():
     layout()
     key, home = stand_in_job(sup, sup_pid, me)
     copy_back_checks(sup, key, home)
+    zombie_leader_job(sup)
+    closed_streams_job(sup)
     hostile_job(sup, sup_pid)
     pid_exhaustion_job(sup)
     codex_home_exhaustion_job(sup)

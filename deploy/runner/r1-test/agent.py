@@ -8,6 +8,9 @@ plant             plants copy-back traps in the per-job CODEX_HOME; one JSON lin
 environ-scan PREFIX  JSON: which /proc/*/environ were readable and which contained PREFIX.
 hostile           ignores SIGTERM, starts a fork loop, tries to SIGSTOP runner and supervisor (one JSON line), then
                   SIGSTOPs every other process of its uid in a tight loop.
+zombie-leader     the main thread leaves with pthread_exit() while a second thread keeps running (the
+                  thread-group leader is a zombie, the process is not dead); one JSON line first.
+linger            closes stdout and stderr, ignores SIGTERM, keeps running.
 fill              fills $CODEX_HOME: one file until ENOSPC, then empty files until ENOSPC; one JSON line.
 """
 
@@ -212,6 +215,15 @@ def hostile(args):
             pass
 
 
+def zombie_leader():
+    import ctypes
+    import threading
+
+    threading.Thread(target=lambda: [time.sleep(0.1) for _ in iter(int, 1)]).start()
+    print(json.dumps({"leader": os.getpid()}), flush=True)
+    ctypes.CDLL(None).pthread_exit(None)  # ctypes releases the GIL, so the second thread keeps running
+
+
 def fill():
     home = os.environ["CODEX_HOME"]
     report = {"bytes_written": 0}
@@ -255,6 +267,14 @@ if __name__ == "__main__":
         plant(json.loads(sys.stdin.readline()))
     elif mode == "hostile":
         hostile(json.loads(sys.stdin.readline()))
+    elif mode == "zombie-leader":
+        zombie_leader()
+    elif mode == "linger":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        os.close(1)
+        os.close(2)
+        while True:
+            time.sleep(60)
     elif mode == "fill":
         fill()
     elif mode == "environ-scan":
