@@ -9,6 +9,7 @@ use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
+use chrono::Utc;
 use contracts::api::error::ApiErrorCode;
 use contracts::api::events::AnalysisEvent;
 use contracts::api::questions::AskQuestion;
@@ -99,12 +100,11 @@ async fn analysis_events(
 }
 
 /// Every question of the analysis in any state, for the snapshot.
-// TODO(WP3-ASK): read all questions of the analysis (every state) from the questions repository.
 async fn question_snapshot(
-    _state: &AppState,
-    _analysis: AnalysisId,
+    state: &AppState,
+    analysis: AnalysisId,
 ) -> Result<Vec<AskQuestion>, DbError> {
-    Ok(Vec::new())
+    state.db.questions().list(analysis, Utc::now()).await
 }
 
 /// Live events in channel order; a subscriber that fell behind loses its stream and reconnects for a snapshot.

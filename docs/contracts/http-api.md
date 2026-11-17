@@ -135,6 +135,20 @@ mapping, query rules and the endpoint × fixture-state inventory.
   asynchronously; `Feedback.memory` is the state of the current revision's copy there (`pending`, `written` =
   MemCan confirmed it and no earlier write of unknown outcome can still land, `failed` = the last attempt failed,
   retried on a back-off). Only `written` may be shown as "saved to calibration memory".
+- **Ask** (`…/steps/{step_id}/questions`): only for a `finished` analysis (else `analysis_not_finished`) that no
+  re-analysis replaced (else `conflict`); `step_id` is a canonical step id of the analysis's Tour (`f1.5`; aliases
+  such as `f1.05` and unknown steps are `not_found`); `text` is trimmed, 1 to `AskRequest::MAX_TEXT_CHARS` (2000)
+  characters, else `invalid_request`, and stored and shown as text. No idempotency key: each request is a new
+  question. Limits (`conflict` with a plain message): 100 questions per analysis, 30 per user per hour. The
+  question runs as an `ask` job claimed before batch jobs; one job runs per analysis, so a second question waits
+  `pending` until the first ends. States: `pending` (queued; `resumes_at` set while it waits for the LLM usage
+  limit), `answering`, `answered`, `failed` with a plain `failure` sentence (job failure by typed cause, an answer
+  that did not pass the checks, a re-analysis that cancelled it, a server error); a failed question is asked again
+  as a new one. An answer is shown only after its schema, the wording rules of brief §1, plain text (no markup, no
+  link other than `https://github.com/…`), at most 8000 characters and 50 evidence lines inside their file of the
+  pinned tree; otherwise the question fails and the answer is never shown. After a server restart every `pending`
+  or `answering` question is followed again to its end. `GET …/questions` lists every question of the analysis,
+  oldest first, in any state and of every user of the tenant.
 - **Settings**: `repos` lists the tenant's repositories with at least one analysis; each opens
   `/api/v1/repos/{owner}/{name}/settings` (owner and name match case-insensitively; any other repository is
   `not_found`). Its rules, related repositories and profile source come from the newest stored pre-pass of the

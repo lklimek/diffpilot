@@ -28,6 +28,6 @@
 - `question {question}`: full `AskQuestion` on every state change: `pending` → `answering` → `answered` |
   `failed`. `answered` is sent as soon as the job's output arrives before compaction (runner
   `OutputReady`, ADR-004); if that attempt is later requeued or cancelled, a new `question` event returns it to
-  `answering` or `failed`. No token streaming in v1.
+  `answering` or `failed`. A usage limit returns it to `pending` with `resumes_at`. No token streaming in v1.
 - Activity events of jobs (commands, tool calls) are not forwarded to the browser (brief: no feed).
 - Keep-alive: an SSE comment every 15 s. Events carry no secrets and no raw agent output (summaries only).
