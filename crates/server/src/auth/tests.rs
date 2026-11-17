@@ -315,7 +315,7 @@ async fn allowlist_rejects_unlisted_login() {
 }
 
 #[tokio::test]
-async fn login_bound_to_github_id() {
+async fn allowlist_binds_github_user_id() {
     let h = harness().await;
     let first = h.sign_in("lklimek", 1001).await;
     assert!(!first.user_id.is_empty());
@@ -343,7 +343,7 @@ async fn login_bound_to_github_id() {
 }
 
 #[tokio::test]
-async fn state_mismatch_rejected() {
+async fn oauth_state_single_use_and_bound_to_browser() {
     let h = harness().await;
     h.mock_github_user("lklimek", 1001).await;
     let callback = |query: String, cookie: Option<String>| {
@@ -951,7 +951,7 @@ async fn logout_keeps_tokens_until_the_last_session_ends() {
 }
 
 #[tokio::test]
-async fn token_row_is_ciphertext() {
+async fn token_ciphertext_bound_to_row() {
     let h = harness().await;
     let signed_in = h.sign_in("lklimek", 1001).await;
     let stored = h
