@@ -80,6 +80,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "toml_edit",
+ "url",
 ]
 
 [[package]]

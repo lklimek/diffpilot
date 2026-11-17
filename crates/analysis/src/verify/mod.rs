@@ -5,6 +5,7 @@
 mod check_flow;
 mod check_plan;
 mod facts;
+mod plain;
 pub(crate) mod spans;
 pub mod wording;
 
@@ -13,7 +14,6 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::LazyLock;
 
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::ask::AskOutput;
@@ -30,7 +30,6 @@ use crate::coverage::{self, Coverage, CoverageError};
 use crate::diff::DiffIndex;
 use crate::moves::MovesReport;
 use crate::order::{OrderInput, tour_order};
-use regex::Regex;
 
 /// Line facts of the files the agent output refers to, on both sides (base for deleted or emptied files,
 /// removed blocks and base-side evidence).
@@ -282,43 +281,15 @@ pub fn pr_context(output: &PrContextOutput, facts: &LineFacts) -> Result<(), Ver
     issues.finish(())
 }
 
-/// HTML markup: dangerous elements, closing tags, and tags with an attribute (generics such as `Vec<u8>`,
-/// `Option<A>` or `Iterator<Item = u8>` are not markup).
-static MARKUP: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)<\s*(?:script|style|iframe|img|svg|object|embed|meta|link|form)\b|</\s*[a-z][a-z0-9-]*\s*>|<[a-z][a-z0-9-]*\s+[^<>]*\b[a-z-]+\s*=\s*[^\s<>]",
-    )
-    .ok()
-});
-
-/// A URL with a scheme, or a script or data URL; only `https://github.com/…` is allowed.
-static LINK: LazyLock<Option<Regex>> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"'`]*|(?-i:\b(?:javascript|vbscript):\S)|(?i)\bdata:[a-z]+/[a-z0-9.+-]+[;,]"#)
-        .ok()
-});
-
-/// What makes `text` unfit for display as plain text: the first markup or non-GitHub link found.
-fn markup_or_link(text: &str) -> Option<&str> {
-    let (Some(markup), Some(link)) = (MARKUP.as_ref(), LINK.as_ref()) else {
-        return Some("text that could not be checked");
-    };
-    if markup.is_match(text) {
-        return Some("HTML markup");
-    }
-    link.find_iter(text)
-        .any(|found| !found.as_str().starts_with("https://github.com/"))
-        .then_some("a link outside https://github.com/")
-}
-
 /// Verifies an `ask` output: a non-blank answer shown as plain text (no markup, no link except
 /// `https://github.com/…`) and evidence lines inside their file on their side.
 pub fn ask(output: &AskOutput, facts: &LineFacts) -> Result<(), VerifyError> {
     let mut issues = Issues::default();
     issues.text("answer", &output.answer);
-    if let Some(found) = markup_or_link(&output.answer) {
+    if let Some(found) = plain::check(&output.answer) {
         issues.push(
             VerifyIssueKind::MarkupOrLink,
-            format!("answer contains {found}; write plain text"),
+            format!("answer contains {}; write plain text", found.describe()),
         );
     }
     issues.evidence(facts, "answer", &output.evidence);

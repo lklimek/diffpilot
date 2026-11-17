@@ -489,6 +489,27 @@ fn ask_rejects_markup_and_links_outside_github() {
         "Click javascript:alert(1)?",
         "Open data:text/html;base64,AAAA?",
         "Mail <a href=\"https://github.com/acme\">here</a>?",
+        "A<br>B",
+        "A <br/> B",
+        "Hidden <!-- note --> text?",
+        "Closing </p> tag?",
+        "Is Option<A> unchanged?",
+        "Open [x](//evil.example/path)?",
+        "Open [x](JaVaScRiPt:alert(1))?",
+        "Open [x](src/rpc/client.rs)?",
+        "Open ![x](https://evil.example/a.png)?",
+        "Open <https://evil.example/x>?",
+        "Open <mailto:a@evil.example>?",
+        "Open //evil.example/path?",
+        "Read https://github.com@evil.example/x?",
+        "Read https://user:pass@github.com/acme/x?",
+        "Read https://github.com:8443/acme/x?",
+        "Read HTTP://GITHUB.COM/acme/x?",
+        "Click VBScript:msgbox(1)?",
+        "Open DATA:text/html,x?",
+        "In code `curl https://evil.example/x`?",
+        "[x]: https://evil.example/x",
+        "Unclosed fence?\n```\nA<br>B",
     ];
     for answer in rejected {
         assert_eq!(
@@ -502,6 +523,12 @@ fn ask_rejects_markup_and_links_outside_github() {
         "Does `Result<Vec<u8>, Error>` or `Option<A>` change?",
         "Is `a < b && c > d` still true?",
         "Does `HashMap<K, V>` keep order?",
+        "Read HTTPS://GITHUB.COM/acme/x?",
+        "See [PR 470](https://github.com/acme/node-client/pull/470) and <https://github.com/acme/x>?",
+        "Does this change?\n```rust\nfn first<T: Clone>(items: &[T]) -> Option<T> { None }\n```\nOr not?",
+        "Does ``Vec<`u8`>`` change?",
+        "Is std::fmt::Display used, or a // comment in `// keep <b>`?",
+        "Is 3 < 4 and a <= b?",
     ];
     for answer in allowed {
         assert_eq!(
