@@ -8,10 +8,14 @@ use db::repo::sessions::NewSession;
 use crate::secrets::sha256;
 use crate::state::AppState;
 
-/// A session of user `u1` (seeded with the analysis) in `tenant`; returns its `Cookie` header value.
+/// A session of user `u1` (seeded with the analysis, GitHub id 1), allowed in `tenant`; returns its `Cookie`
+/// header value.
 pub(crate) async fn session_cookie(state: &AppState, tenant: &str) -> String {
     let token = format!("session-token-{tenant}");
     let now = Utc::now();
+    db::repo::tenants::testing::allow_login(&state.db, tenant, "lklimek", 1)
+        .await
+        .expect("allowlist");
     state
         .db
         .sessions()

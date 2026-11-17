@@ -17,6 +17,7 @@ use db::error::DbError;
 use db::repo::tokens::{EncryptedTokens, PairCondition, StoredTokens};
 use secrecy::{ExposeSecret, SecretString};
 
+use super::{Session, liveness};
 use crate::api::error::ApiErrorSource;
 use crate::github::oauth::{self, OauthError, TokenGrant};
 use crate::secrets::{Aad, SecretError, TokenCipher};
@@ -157,6 +158,17 @@ pub async fn end_sign_in(state: &AppState, user_id: &str) -> Result<(), DbError>
         .db
         .user_tokens()
         .end_sign_in(user_id, PairCondition::Any)
+        .await?;
+    Ok(())
+}
+
+/// Ends one session (sign-out); the token pair is deleted with the user's last live session.
+pub(crate) async fn end_session(state: &AppState, session: &Session) -> Result<(), DbError> {
+    let _lock = lock_user(&session.user_id).await;
+    state
+        .db
+        .user_tokens()
+        .end_session(&session.user_id, session.token_hash(), liveness(Utc::now()))
         .await?;
     Ok(())
 }

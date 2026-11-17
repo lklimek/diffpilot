@@ -23,9 +23,10 @@ use axum::extract::{ConnectInfo, FromRequestParts, OptionalFromRequestParts};
 use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue};
-use chrono::{TimeDelta, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use contracts::api::error::ApiErrorCode;
 use db::error::DbError;
+use db::repo::sessions::Liveness;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::config::Config;
@@ -36,16 +37,28 @@ use crate::state::AppState;
 mod tests;
 mod tokens;
 
+pub(crate) use tokens::end_session;
 pub use tokens::{
     UserLock, UserTokenError, end_sign_in, lock_user, store_sign_in_tokens, user_access_token,
 };
 
 /// Lifetime of a session (absolute; the user signs in again afterwards).
 pub const SESSION_TTL: TimeDelta = TimeDelta::days(7);
+/// A session unused for this long ends (idle timeout).
+pub const SESSION_IDLE_TIMEOUT: TimeDelta = TimeDelta::hours(24);
 /// Lifetime of an OAuth login between redirect to GitHub and callback.
 pub const OAUTH_LOGIN_TTL: TimeDelta = TimeDelta::minutes(10);
 /// Header carrying the CSRF token on mutating requests.
 pub const CSRF_HEADER: &str = "x-csrf-token";
+
+/// Which sessions are live at `now`: unexpired, used within [`SESSION_IDLE_TIMEOUT`], and of a user the
+/// session's tenant still allows (a login removed from the allowlist loses access on its next request).
+pub(crate) fn liveness(now: DateTime<Utc>) -> Liveness {
+    Liveness {
+        now,
+        seen_after: now - SESSION_IDLE_TIMEOUT,
+    }
+}
 
 /// A cookie set by this module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +193,11 @@ impl Session {
             return Ok(None);
         };
         let token_hash = sha256(token.as_bytes());
-        let record = state.db.sessions().touch(&token_hash, Utc::now()).await?;
+        let record = state
+            .db
+            .sessions()
+            .touch(&token_hash, liveness(Utc::now()))
+            .await?;
         Ok(record.map(|record| Self {
             user_id: record.user_id,
             tenant_id: record.tenant_id,

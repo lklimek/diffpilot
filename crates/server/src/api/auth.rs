@@ -25,7 +25,7 @@ use url::Url;
 use crate::api::error::ApiFailure;
 use crate::auth::{
     BrowserTransport, Cookie, OAUTH_LOGIN_TTL, SESSION_TTL, Session, SessionCsrf, UserTokenError,
-    end_sign_in, lock_user, store_sign_in_tokens,
+    end_session, end_sign_in, liveness, lock_user, store_sign_in_tokens,
 };
 use crate::config::Config;
 use crate::github::oauth::{self, OauthError};
@@ -155,7 +155,7 @@ async fn login(State(state): State<AppState>, transport: BrowserTransport) -> Re
 async fn start_login(state: &AppState) -> Result<(String, Url), SignInError> {
     let now = Utc::now();
     let sessions = state.db.sessions();
-    sessions.delete_expired(now).await?;
+    sessions.delete_expired(liveness(now)).await?;
     let oauth_state = random_token()?;
     let verifier = SecretString::from(random_token()?);
     let challenge = URL_SAFE_NO_PAD.encode(sha256(verifier.expose_secret().as_bytes()));
@@ -266,10 +266,9 @@ async fn complete_login(
         .users()
         .upsert_member(&tenant_id, &uuid::Uuid::new_v4().to_string(), &profile, now)
         .await?;
-    // Tokens and session are written under the user's lock, never interleaved with a refresh or sign-out.
+    // Session and tokens are written under the user's lock, never interleaved with a refresh or sign-out; the
+    // session first, so the cleanup of token pairs without sessions never takes the new pair.
     let lock = lock_user(&user.id).await;
-    store_sign_in_tokens(state, &lock, &tenant_id, &grant, now).await?;
-
     let session_token = random_token()?;
     let csrf_token = random_token()?;
     state
@@ -286,12 +285,14 @@ async fn complete_login(
             now,
         )
         .await?;
+    store_sign_in_tokens(state, &lock, &tenant_id, &grant, now).await?;
     drop(lock);
     tracing::info!(login = %user.profile.login, user_id = %user.id, "user signed in");
     Ok(Cookie::Session.set(&session_token, SESSION_TTL, transport.https))
 }
 
-/// `POST /auth/logout`: ends this session, or with `everywhere` every session and the stored GitHub tokens.
+/// `POST /auth/logout`: ends this session, or with `everywhere` every session of the user; the stored GitHub
+/// tokens end with the user's last live session.
 async fn logout(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
@@ -304,12 +305,7 @@ async fn logout(
     let ended = if request.everywhere {
         end_sign_in(&state, &session.user_id).await
     } else {
-        state
-            .db
-            .sessions()
-            .delete(session.token_hash())
-            .await
-            .map(|_| ())
+        end_session(&state, &session).await
     };
     if let Err(error) = ended {
         return ApiFailure(error).into_response();

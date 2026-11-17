@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 
 use super::Db;
-use super::sessions::{parse_timestamp, timestamp};
+use super::sessions::{Liveness, live_session, parse_timestamp, timestamp};
 use crate::error::DbError;
 
 /// Access to stored user tokens.
@@ -195,6 +195,58 @@ impl UserTokens<'_> {
         .await?;
         tx.commit().await?;
         Ok(true)
+    }
+
+    /// Ends the user's session `token_hash`; when the user has no other live session left (see [`Liveness`]),
+    /// deletes the token pair in the same transaction. True if the pair was deleted.
+    pub async fn end_session(
+        &self,
+        user_id: &str,
+        token_hash: &[u8],
+        live: Liveness,
+    ) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM sessions WHERE token_hash = ? AND user_id = ?")
+            .bind(token_hash)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        let deleted = sqlx::query(concat!(
+            "DELETE FROM user_tokens WHERE user_id = ?3
+             AND NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = ?3 AND ",
+            live_session!(),
+            ")"
+        ))
+        .bind(timestamp(live.now))
+        .bind(timestamp(live.seen_after))
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(deleted == 1)
+    }
+
+    /// Marks the access token of pair `version` expired at `now` (GitHub rejected it), so its next use refreshes
+    /// the pair; false if another write came first.
+    pub async fn expire_access(
+        &self,
+        user_id: &str,
+        version: i64,
+        now: DateTime<Utc>,
+    ) -> Result<bool, DbError> {
+        let now = timestamp(now);
+        let updated = sqlx::query(
+            "UPDATE user_tokens SET access_expires_at = ?, version = version + 1, updated_at = ?
+             WHERE user_id = ? AND version = ?",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(user_id)
+        .bind(version)
+        .execute(self.pool)
+        .await?;
+        Ok(updated.rows_affected() == 1)
     }
 }
 
@@ -402,6 +454,90 @@ mod tests {
                 .expect("absent")
         );
         assert_eq!(session_count(&db).await, 0);
+    }
+
+    fn live_at(now: DateTime<Utc>) -> Liveness {
+        Liveness {
+            now,
+            seen_after: now - TimeDelta::hours(1),
+        }
+    }
+
+    #[tokio::test]
+    async fn end_session_deletes_the_pair_with_the_last_live_session() {
+        let db = db_with_signed_in_user().await;
+        let tokens = db.user_tokens();
+        let now = Utc::now();
+        crate::repo::tenants::testing::allow_login(&db, DEFAULT_TENANT, "lklimek", 42)
+            .await
+            .expect("allowed");
+        for (hash, expires_at) in [
+            (&b"second"[..], now + TimeDelta::hours(1)),
+            (&b"expired"[..], now - TimeDelta::seconds(1)),
+        ] {
+            db.sessions()
+                .create(
+                    &crate::repo::sessions::NewSession {
+                        token_hash: hash,
+                        tenant_id: DEFAULT_TENANT,
+                        user_id: "u-1",
+                        csrf_token: "c",
+                        expires_at,
+                    },
+                    now,
+                )
+                .await
+                .expect("session");
+        }
+        assert!(
+            !tokens
+                .end_session("u-1", b"h", live_at(now))
+                .await
+                .expect("end"),
+            "another live session keeps the pair"
+        );
+        assert!(tokens.get("u-1").await.expect("get").is_some());
+        assert_eq!(session_count(&db).await, 2);
+        assert!(
+            !tokens
+                .end_session("u-2", b"second", live_at(now))
+                .await
+                .expect("end"),
+            "only the user's own session"
+        );
+        assert_eq!(session_count(&db).await, 2);
+        assert!(
+            tokens
+                .end_session("u-1", b"second", live_at(now))
+                .await
+                .expect("end"),
+            "the last live session takes the pair with it"
+        );
+        assert_eq!(tokens.get("u-1").await.expect("get"), None);
+    }
+
+    #[tokio::test]
+    async fn expire_access_is_a_compare_and_swap() {
+        let db = db_with_signed_in_user().await;
+        let tokens = db.user_tokens();
+        let stored = tokens.get("u-1").await.expect("get").expect("stored");
+        let now = pair(1).access_expires_at - TimeDelta::hours(1);
+        assert!(
+            !tokens
+                .expire_access("u-1", stored.version + 1, now)
+                .await
+                .expect("stale")
+        );
+        assert!(
+            tokens
+                .expire_access("u-1", stored.version, now)
+                .await
+                .expect("expire")
+        );
+        let expired = tokens.get("u-1").await.expect("get").expect("stored");
+        assert_eq!(expired.tokens.access_expires_at, now);
+        assert_eq!(expired.tokens.refresh_ct, stored.tokens.refresh_ct);
+        assert_eq!(expired.version, stored.version + 1);
     }
 
     #[tokio::test]

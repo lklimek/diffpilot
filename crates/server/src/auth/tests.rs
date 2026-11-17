@@ -15,6 +15,7 @@ use chrono::{TimeDelta, Utc};
 use db::repo::DEFAULT_TENANT;
 use db::repo::Db;
 use db::repo::sessions::NewSession;
+use db::repo::tenants::testing::{allow_login, remove_login};
 use db::repo::users::GithubProfile;
 use http_body_util::BodyExt;
 use secrecy::{ExposeSecret, SecretString};
@@ -603,14 +604,14 @@ async fn session_id_stored_hashed() {
     let sessions = h.state.db.sessions();
     assert_eq!(
         sessions
-            .touch(token.as_bytes(), Utc::now())
+            .touch(token.as_bytes(), super::liveness(Utc::now()))
             .await
             .expect("lookup"),
         None,
         "the raw token is not stored"
     );
     let stored = sessions
-        .touch(&sha256(token.as_bytes()), Utc::now())
+        .touch(&sha256(token.as_bytes()), super::liveness(Utc::now()))
         .await
         .expect("lookup")
         .expect("session found by hash");
@@ -661,6 +662,151 @@ async fn logout_clears_session() {
             .expect("lookup"),
         None,
         "signing out everywhere drops the GitHub tokens"
+    );
+}
+
+/// `/api/v1/me` login for this `Cookie` header, or `None` when the request is signed out.
+async fn me_login(h: &Harness, cookie: &str) -> Option<String> {
+    json_body(h.send(get_with_cookie("/api/v1/me", cookie)).await).await["user"]["login"]
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// A session of `user_id` created `created_ago`, last seen then, with a 7-day expiry; returns its cookie.
+async fn backdated_session(
+    h: &Harness,
+    user_id: &str,
+    name: &str,
+    created_ago: TimeDelta,
+) -> String {
+    let created = Utc::now() - created_ago;
+    let token = format!("{name}-session-token");
+    h.state
+        .db
+        .sessions()
+        .create(
+            &NewSession {
+                token_hash: &sha256(token.as_bytes()),
+                tenant_id: DEFAULT_TENANT,
+                user_id,
+                csrf_token: "csrf",
+                expires_at: created + super::SESSION_TTL,
+            },
+            created,
+        )
+        .await
+        .expect("session");
+    format!("__Host-sr_session={token}")
+}
+
+#[tokio::test]
+async fn idle_session_ends() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let recent = backdated_session(&h, &signed_in.user_id, "recent", TimeDelta::hours(23)).await;
+    let idle = backdated_session(&h, &signed_in.user_id, "idle", TimeDelta::hours(25)).await;
+    assert_eq!(me_login(&h, &recent).await.as_deref(), Some("lklimek"));
+    assert_eq!(
+        me_login(&h, &recent).await.as_deref(),
+        Some("lklimek"),
+        "each use restarts the idle window"
+    );
+    assert_eq!(me_login(&h, &idle).await, None, "idle past the timeout");
+}
+
+#[tokio::test]
+async fn removed_login_loses_access_on_next_request() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let settings = || Request::get("/api/v1/settings").header(COOKIE, &signed_in.cookie);
+    assert_eq!(
+        me_login(&h, &signed_in.cookie).await.as_deref(),
+        Some("lklimek")
+    );
+
+    remove_login(&h.state.db, DEFAULT_TENANT, "lklimek")
+        .await
+        .expect("remove");
+    assert_eq!(me_login(&h, &signed_in.cookie).await, None);
+    let response = h
+        .send(settings().body(Body::empty()).expect("request"))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = h
+        .send(logout_request(
+            Some(&signed_in.cookie),
+            Some(&signed_in.csrf),
+            false,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    allow_login(&h.state.db, DEFAULT_TENANT, "lklimek", 2002)
+        .await
+        .expect("entry bound to another account");
+    assert_eq!(me_login(&h, &signed_in.cookie).await, None);
+}
+
+#[tokio::test]
+async fn session_is_bound_to_its_tenant() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    db::repo::analyses::testing::seed_tenant(&h.state.db, "other")
+        .await
+        .expect("tenant");
+    let now = Utc::now();
+    h.state
+        .db
+        .sessions()
+        .create(
+            &NewSession {
+                token_hash: &sha256(b"other-tenant-token"),
+                tenant_id: "other",
+                user_id: &signed_in.user_id,
+                csrf_token: "csrf",
+                expires_at: now + TimeDelta::hours(1),
+            },
+            now,
+        )
+        .await
+        .expect("session");
+    assert_eq!(
+        me_login(&h, "__Host-sr_session=other-tenant-token").await,
+        None,
+        "a session in a tenant that does not allow its user is not accepted"
+    );
+}
+
+#[tokio::test]
+async fn logout_keeps_tokens_until_the_last_session_ends() {
+    let h = harness().await;
+    let first = h.sign_in("lklimek", 1001).await;
+    let second = h.sign_in("lklimek", 1001).await;
+    let stored = || async { h.state.db.user_tokens().get(&first.user_id).await };
+    let response = h
+        .send(logout_request(
+            Some(&first.cookie),
+            Some(&first.csrf),
+            false,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        stored().await.expect("lookup").is_some(),
+        "the other session still uses the GitHub tokens"
+    );
+    let response = h
+        .send(logout_request(
+            Some(&second.cookie),
+            Some(&second.csrf),
+            false,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        stored().await.expect("lookup"),
+        None,
+        "the last session takes the GitHub tokens with it"
     );
 }
 
@@ -962,6 +1108,9 @@ async fn missing_token_row_ends_sessions() {
         .upsert_member(DEFAULT_TENANT, "u-orphan", &profile, now)
         .await
         .expect("user");
+    allow_login(&h.state.db, DEFAULT_TENANT, "Claudius-Maginificent", 77)
+        .await
+        .expect("allowlist");
     h.state
         .db
         .sessions()
