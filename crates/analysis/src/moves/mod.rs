@@ -212,6 +212,33 @@ impl MovesReport {
             covered_base_lines: within(&block.removed_base_lines, claimed),
         })
     }
+
+    /// The origin of a moved block containing the whole step at head lines `step` of `step_file` when `claim`
+    /// contradicts it: the claim names another file or base lines outside that origin. `None` when no block
+    /// contains the step (a step wider than a block) or the claim overlaps an origin, confirmed by `confirm` or not.
+    pub fn contradicted_origin(
+        &self,
+        step_file: &str,
+        step: LineRange,
+        claim: &MovedFrom,
+    ) -> Option<&FileRange> {
+        let claimed = LineRange {
+            start_line: claim.base_start,
+            end_line: claim.base_end,
+        };
+        if step.start_line > step.end_line {
+            return None;
+        }
+        let mut containing = self
+            .moved
+            .iter()
+            .filter(|block| block.to.file == step_file && contains(block.to.range, step))
+            .peekable();
+        let origin = &containing.peek()?.from;
+        let consistent = containing
+            .any(|block| block.from.file == claim.file && overlaps(block.from.range, claimed));
+        (!consistent).then_some(origin)
+    }
 }
 
 impl MovedBlock {
@@ -872,6 +899,26 @@ mod tests {
             ..claim
         };
         assert_eq!(report.confirm("src/b.rs", range(2, 6), &elsewhere), None);
+        assert_eq!(
+            report.contradicted_origin("src/b.rs", range(3, 5), &elsewhere),
+            Some(&block.from),
+            "another origin file contradicts the block"
+        );
+        let shifted = MovedFrom {
+            base_start: 2,
+            ..claim.clone()
+        };
+        assert_eq!(report.confirm("src/b.rs", range(2, 6), &shifted), None);
+        assert_eq!(
+            report.contradicted_origin("src/b.rs", range(2, 6), &shifted),
+            None,
+            "an overlapping but unconfirmed claim is no contradiction"
+        );
+        assert_eq!(
+            report.contradicted_origin("src/b.rs", range(1, 6), &elsewhere),
+            None,
+            "no block contains a wider step"
+        );
     }
 
     #[test]

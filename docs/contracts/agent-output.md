@@ -65,22 +65,23 @@ material (e.g. a deleted comment) is classified on the base side.
 | `UnknownFile` | every path (step, evidence, `moved_from`, impact, pattern site) is a file of the pinned tree on its side (`LineFacts::load` reads only normalised repository paths through the bounded reader `analysis::blob`) |
 | `FileTooLarge` | a referenced file is larger than `blob::MAX_BLOB_BYTES` (8 MiB, the display limit) or the files of one output exceed `verify::MAX_FACTS_BYTES` (16 MiB) |
 | `LineOutOfRange` | lines inside the file on their side; annotations inside their step |
-| `ChangedLineUncovered` | every non-blank changed line of the flow inside a step (removed lines: inside a base step or at a marker inside a head step) |
+| `ChangedLineUncovered` | every non-blank changed line of the flow inside a step (removed lines: inside a base step, at a marker inside a head step, or in the original of a confirmed move: `ConfirmedMove.covered_base_lines`) |
 | `DuplicateId`, `UnknownReference`, `DanglingEdge` | flow ids, `importance_rank`, step ids and thread statuses unique; `depends_on`, impact and pattern references and edges name existing flows or steps; the output's `flow_id` is the job's flow |
 | `FactWithoutEvidence` | `fact` ⇒ ≥ 1 evidence line |
 | `BehaviourMissing` | `was` and `is` non-empty on every annotation |
 | `RemarkMismatch` | `text` null iff `type = behaviour` (blank text counts as null) |
 | `BaseSideMisused` | a base step is `deleted_site` and every line of it was removed |
 | `UnknownThread`, `ThreadStatusMissing` | thread aliases were listed; every listed alias has a status |
-| `MoveClaimMismatch` | `moved_from` set iff `kind = moved`; when one deterministic moved block contains every head line of the step, a claim naming another file or non-overlapping base lines is rejected. The move fact (badge, differing lines counted inside the step) is given only when one block contains the whole step and the claimed origin lies inside that block's base lines; a step wider than a block, across two blocks or without a block keeps its LLM claim without a move fact |
+| `MoveClaimMismatch` | `moved_from` set iff `kind = moved`; when a deterministic moved block contains every head line of the step, a claim naming another file or non-overlapping base lines is rejected (`MovesReport::contradicted_origin`). The move fact comes only from `MovesReport::confirm`, the single check of a claim: a block contains the step and the claim, and both ends of the step map to the ends of the claim; the fact names the claimed lines and counts the differing lines inside them. Any other claim (a step wider than a block, across two blocks, without a block, ends that do not correspond) keeps its LLM claim without a move fact |
 | `ImpactInsideDiff` | impact references name unchanged code: no changed head line inside them |
 | `EmptyText` | required texts (titles, intent, reasons, introduction, step facts, assessment fields, PR-context fields) are not blank |
 Wording rules (banned phrases and percentages, brief §1; the patterns of `scripts/check-wording.mjs`, kept in
 sync by a test) produce warnings, not rejections; the pipeline logs them. Step ranges are trimmed of blank edge
 lines (never past changed or annotated lines or a deletion marker); moved steps get deterministic move facts.
 Issues carry a stable `code()` and a message naming the field path, for the repair prompt. Every pass is
-interval arithmetic over the diff, the output and the selections (no per-line search), bounded by
-O(n log n) in their sizes; `LineFacts::load` and the server's line views share one reader with a per-file
+interval arithmetic over the diff, the output and the selections (no per-line search; a step, reference or
+cover finds its lines by binary search, never by rescanning a file's changes), bounded by O(n log n) in their
+sizes, except that each move claim scans the moved blocks once; `LineFacts::load` and the server's line views share one reader with a per-file
 limit, a total budget and a deadline that kills git.
 
 `verify::analysis(AnalysisInput) -> AnalysisVerdict` runs every check of one analysis: `repairs` (rejected

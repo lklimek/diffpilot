@@ -1,13 +1,13 @@
 //! `analyse_flow` checks: locations in the pinned trees, step and annotation rules, references and edges,
 //! thread aliases, move claims and coverage of the flow's changed lines; then the derived graph, step ids,
-//! trimmed ranges and move facts. The diff, the steps and the moved blocks are indexed once, so every pass is
-//! O(n log n) in the size of the diff and the output.
+//! trimmed ranges and move facts. The diff and the steps are indexed once and every lookup is a binary search, so
+//! every pass is O(n log n) in the size of the diff and the output; move claims are checked by `MovesReport`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
-use contracts::api::tour::{FlowGraph, GraphEdge, GraphNode, MoveFact};
-use contracts::common::{AnnotationType, Basis, FragmentKind, LineSide, ProvenanceBadge};
+use contracts::api::tour::{FlowGraph, GraphEdge, GraphNode};
+use contracts::common::{AnnotationType, Basis, FragmentKind, LineRange, LineSide};
 use contracts::ids::StepId;
 
 use super::spans::{self, Span};
@@ -15,13 +15,13 @@ use super::{
     FileFacts, FlowContext, Issues, VerifiedFlow, VerifyError, VerifyIssueKind, side_name, wording,
 };
 use crate::diff::FileDiff;
-use crate::moves::{MovedBlock, MovesReport};
+use crate::moves::{ConfirmedMove, MovesReport};
 
 /// Removed base lines, the deletion marker they show at, and the file's head path.
 type Removed<'a> = (Span, u32, Option<&'a str>);
 
-/// A moved block's head lines, the block and its differing head lines, sorted.
-type IndexedBlock<'a> = (Span, &'a MovedBlock, Vec<u32>);
+/// Spans a step or reference message lists before "and more": messages stay short however wide the range.
+const MESSAGE_SPANS: usize = 3;
 
 /// The changed lines of the diff, indexed by side and path.
 struct Changes<'a> {
@@ -29,7 +29,7 @@ struct Changes<'a> {
     lines: HashMap<&'a str, [Vec<Span>; 2]>,
     /// Deletion markers per head path, ascending.
     markers: HashMap<&'a str, Vec<u32>>,
-    /// Removed lines per base path with their marker and the file's head path.
+    /// Removed lines per base path with their marker and the file's head path, ascending.
     removed: HashMap<&'a str, Vec<Removed<'a>>>,
 }
 
@@ -67,6 +67,9 @@ impl<'a> Changes<'a> {
             markers.sort_unstable();
             markers.dedup();
         }
+        for removed in changes.removed.values_mut() {
+            removed.sort_unstable_by_key(|&(span, _, _)| span);
+        }
         changes
     }
 
@@ -82,52 +85,11 @@ impl<'a> Changes<'a> {
     }
 }
 
-/// Deterministic moved blocks per head path, ascending by head start, with their differing lines sorted.
-struct Moves<'a> {
-    blocks: HashMap<&'a str, Vec<IndexedBlock<'a>>>,
-}
-
-impl<'a> Moves<'a> {
-    fn new(report: &'a MovesReport) -> Self {
-        let mut blocks: HashMap<&str, Vec<_>> = HashMap::new();
-        for block in report
-            .moved
-            .iter()
-            .filter(|block| block.to.side == LineSide::Head)
-        {
-            let to = (block.to.range.start_line, block.to.range.end_line);
-            let mut differing = block.differing_head_lines.clone();
-            differing.sort_unstable();
-            differing.dedup();
-            blocks
-                .entry(block.to.file.as_str())
-                .or_default()
-                .push((to, block, differing));
-        }
-        for list in blocks.values_mut() {
-            list.sort_unstable_by_key(|(to, _, _)| *to);
-        }
-        Self { blocks }
-    }
-
-    /// The moved block whose head lines contain all of a head step's lines.
-    fn containing(&self, step: &AgentStep) -> Option<&IndexedBlock<'a>> {
-        if step.side != LineSide::Head {
-            return None;
-        }
-        let list = self.blocks.get(step.file.as_str())?;
-        let index = list.partition_point(|(to, _, _)| to.0 <= step.start_line);
-        let candidate = list.get(index.checked_sub(1)?)?;
-        (candidate.0.1 >= step.end_line).then_some(candidate)
-    }
-}
-
 pub(super) fn flow(
     output: &FlowAnalysisOutput,
     context: FlowContext<'_>,
 ) -> Result<VerifiedFlow, VerifyError> {
     let changes = Changes::new(context.diff.files());
-    let moves = Moves::new(context.moves);
     let mut issues = Issues::default();
     let flow_id = &context.planned.id;
     if &output.flow_id != flow_id {
@@ -154,8 +116,13 @@ pub(super) fn flow(
             let message = format!("{at}: step id {} is used twice", step.id);
             issues.push(VerifyIssueKind::DuplicateId, message);
         }
-        check_step(&mut issues, context, &changes, &moves, &at, step);
+        check_step(&mut issues, context, &changes, &at, step);
     }
+    let confirmed: Vec<Option<ConfirmedMove>> = output
+        .steps
+        .iter()
+        .map(|step| confirm(context.moves, step))
+        .collect();
     let unknown_step = |id: &str| !local.contains_key(id);
     for (index, edge) in output.edges.iter().enumerate() {
         for end in [&edge.from_step_id, &edge.to_step_id] {
@@ -176,9 +143,12 @@ pub(super) fn flow(
         }
         let lines = (impact.start_line, impact.end_line);
         if issues.location(context.facts, &at, LineSide::Head, &impact.file, lines) {
-            let inside = spans::intersect(changes.lines(LineSide::Head, &impact.file), &[lines]);
+            let inside = spans::overlapping(changes.lines(LineSide::Head, &impact.file), lines);
             if !inside.is_empty() {
-                let changed = spans::describe(&inside);
+                let clipped = inside
+                    .iter()
+                    .map(|&(first, last)| (first.max(lines.0), last.min(lines.1)));
+                let changed = spans::describe_first(clipped, MESSAGE_SPANS);
                 let message = format!(
                     "{at}: lines {changed} of {} are changed lines of this pull request; impact_refs name \
                      unchanged code outside the diff (changed lines belong in steps)",
@@ -223,7 +193,7 @@ pub(super) fn flow(
             issues.push(VerifyIssueKind::ThreadStatusMissing, message);
         }
     }
-    for ((side, file), lines) in uncovered(output, context, &changes) {
+    for ((side, file), lines) in uncovered(output, context, &changes, &confirmed) {
         let side = side_name(side);
         let lines = spans::describe(&lines);
         let message = format!(
@@ -233,14 +203,13 @@ pub(super) fn flow(
         issues.push(VerifyIssueKind::ChangedLineUncovered, message);
     }
     issues.finish(())?;
-    Ok(verified(output, context, &changes, &moves))
+    Ok(verified(output, context, &changes, confirmed))
 }
 
 fn check_step(
     issues: &mut Issues,
     context: FlowContext<'_>,
     changes: &Changes<'_>,
-    moves: &Moves<'_>,
     at: &str,
     step: &AgentStep,
 ) {
@@ -264,9 +233,10 @@ fn check_step(
             );
             issues.push(VerifyIssueKind::BaseSideMisused, message);
         } else if located {
-            let kept = spans::subtract(&[(start, end)], changes.lines(LineSide::Base, &step.file));
-            if !kept.is_empty() {
-                let lines = spans::describe(&kept);
+            let mut kept =
+                spans::gaps(changes.lines(LineSide::Base, &step.file), (start, end)).peekable();
+            if kept.peek().is_some() {
+                let lines = spans::describe_first(kept, MESSAGE_SPANS);
                 let message = format!(
                     "{at}: base lines {lines} of {} were not removed by this pull request; a base-side step holds \
                      removed lines only",
@@ -276,7 +246,7 @@ fn check_step(
             }
         }
     }
-    check_move_claim(issues, context, moves, at, step);
+    check_move_claim(issues, context, at, step);
     for (number, annotation) in step.annotations.iter().enumerate() {
         let at = format!("{at}.annotations[{number}]");
         let (first, last) = (annotation.start_line, annotation.end_line);
@@ -335,15 +305,10 @@ fn check_step(
 }
 
 /// `moved_from` is set exactly on `moved` steps and names base lines that exist. When a deterministic moved
-/// block contains the whole step, the claim must name that block's file and overlap its base lines; any other
-/// claim (a step wider than a block, across two blocks, without a block) stays an LLM claim without a move fact.
-fn check_move_claim(
-    issues: &mut Issues,
-    context: FlowContext<'_>,
-    moves: &Moves<'_>,
-    at: &str,
-    step: &AgentStep,
-) {
+/// block contains the whole step, the claim must name that block's file and overlap its base lines
+/// (`MovesReport::contradicted_origin`); any other claim (a step wider than a block, across two blocks, without a
+/// block, ends that do not correspond) stays an LLM claim without a move fact (`confirm`).
+fn check_move_claim(issues: &mut Issues, context: FlowContext<'_>, at: &str, step: &AgentStep) {
     let moved = step.kind == FragmentKind::Moved;
     let Some(from) = &step.moved_from else {
         if moved {
@@ -359,51 +324,49 @@ fn check_move_claim(
     }
     let claimed = (from.base_start, from.base_end);
     let at_from = format!("{at}.moved_from");
-    if !issues.location(context.facts, &at_from, LineSide::Base, &from.file, claimed) {
+    if !issues.location(context.facts, &at_from, LineSide::Base, &from.file, claimed)
+        || step.side != LineSide::Head
+    {
         return;
     }
-    if let Some((_, block, _)) = moves.containing(step) {
-        let origin = &block.from;
-        let (first, last) = (origin.range.start_line, origin.range.end_line);
-        if origin.file != from.file || !spans::touches(&[(first, last)], claimed) {
-            let file = &origin.file;
-            let message = format!(
-                "{at_from}: the block moved to these lines comes from {file} base lines {first}-{last}"
-            );
-            issues.push(VerifyIssueKind::MoveClaimMismatch, message);
-        }
+    if let Some(origin) = context
+        .moves
+        .contradicted_origin(&step.file, step_lines(step), from)
+    {
+        let (file, first, last) = (&origin.file, origin.range.start_line, origin.range.end_line);
+        let message = format!(
+            "{at_from}: the block moved to these lines comes from {file} base lines {first}-{last}"
+        );
+        issues.push(VerifyIssueKind::MoveClaimMismatch, message);
     }
 }
 
-/// The deterministic move fact of a `moved` step: only when one moved block contains every line of the step and
-/// the claimed origin lies inside that block's base lines; the differing lines are counted inside the step.
-fn move_fact(moves: &Moves<'_>, step: &AgentStep) -> Option<MoveFact> {
-    let from = step
+/// The deterministic confirmation of a `moved` head step's claim: its move fact and the removed base lines it
+/// accounts for (`MovesReport::confirm`, the single check of a move claim).
+fn confirm(moves: &MovesReport, step: &AgentStep) -> Option<ConfirmedMove> {
+    let claim = step
         .moved_from
         .as_ref()
-        .filter(|_| step.kind == FragmentKind::Moved)?;
-    let (_, block, differing) = moves.containing(step)?;
-    let origin = &block.from;
-    let base = (origin.range.start_line, origin.range.end_line);
-    if origin.file != from.file || !spans::covers(&[base], (from.base_start, from.base_end)) {
-        return None;
-    }
-    let first = differing.partition_point(|&line| line < step.start_line);
-    let last = differing.partition_point(|&line| line <= step.end_line);
-    Some(MoveFact {
-        from: origin.clone(),
-        badge: block.identical.then_some(ProvenanceBadge::TextIdentical),
-        differing_lines: u32::try_from(last - first).unwrap_or(u32::MAX),
-    })
+        .filter(|_| step.kind == FragmentKind::Moved && step.side == LineSide::Head)?;
+    moves.confirm(&step.file, step_lines(step), claim)
 }
 
-/// Planned changed lines of the flow outside every step; blank lines need no step. Interval arithmetic over the
-/// planned ranges, the merged step ranges and the removed spans: O((P + S + H + B) log) for P planned ranges, S
-/// steps, H hunk spans and B blank lines of the planned files.
+fn step_lines(step: &AgentStep) -> LineRange {
+    LineRange {
+        start_line: step.start_line,
+        end_line: step.end_line,
+    }
+}
+
+/// Planned changed lines of the flow outside every step; blank lines need no step, and removed lines of a
+/// confirmed move's original belong to the moved step. Interval arithmetic over the planned ranges, the merged
+/// step ranges and binary searches into the file's removed spans and blank lines: O((P + S + M) log n + k) for P
+/// planned ranges, S steps, M covered move lines and k removed spans and blank lines inside the planned lines.
 fn uncovered(
     output: &FlowAnalysisOutput,
     context: FlowContext<'_>,
     changes: &Changes<'_>,
+    confirmed: &[Option<ConfirmedMove>],
 ) -> BTreeMap<(LineSide, String), Vec<Span>> {
     let mut steps: HashMap<(LineSide, String), Vec<Span>> = HashMap::new();
     for step in &output.steps {
@@ -412,6 +375,12 @@ fn uncovered(
             .entry(key)
             .or_default()
             .push((step.start_line, step.end_line));
+    }
+    for confirmed in confirmed.iter().flatten() {
+        let key = (LineSide::Base, confirmed.fact.from.file.clone());
+        let lines = crate::lines::ranges(&confirmed.covered_base_lines);
+        let covered = lines.iter().map(|r| (r.start_line, r.end_line));
+        steps.entry(key).or_default().extend(covered);
     }
     for spans in steps.values_mut() {
         *spans = spans::merge(std::mem::take(spans));
@@ -434,19 +403,19 @@ fn uncovered(
             steps_of(lines.side, file),
         );
         if lines.side == LineSide::Base && !rest.is_empty() {
-            let at_markers: Vec<Span> = changes
-                .removed
-                .get(file)
-                .into_iter()
-                .flatten()
-                .filter(|(_, marker, head)| {
-                    head.is_some_and(|head| {
-                        let marker_gap = (*marker, marker.saturating_add(1));
-                        spans::touches(steps_of(LineSide::Head, head), marker_gap)
-                    })
-                })
-                .map(|(span, _, _)| *span)
-                .collect();
+            let removed = changes.removed.get(file).map_or(&[][..], Vec::as_slice);
+            let mut at_markers: Vec<Span> = Vec::new();
+            for &(first, last) in &rest {
+                let from = removed.partition_point(|&((_, end), _, _)| end < first);
+                let near = removed[from..]
+                    .iter()
+                    .take_while(|&&((start, _), _, _)| start <= last);
+                at_markers.extend(near.filter_map(|&(span, marker, head)| {
+                    let marker_gap = (marker, marker.saturating_add(1));
+                    let head = head?;
+                    spans::touches(steps_of(LineSide::Head, head), marker_gap).then_some(span)
+                }));
+            }
             rest = spans::subtract(&rest, &spans::merge(at_markers));
         }
         if let Some(facts) = context
@@ -454,7 +423,7 @@ fn uncovered(
             .get(lines.side, file)
             .filter(|_| !rest.is_empty())
         {
-            rest = spans::subtract(&rest, &blank_spans(facts));
+            rest = spans::subtract(&rest, &blank_spans(facts, &rest));
         }
         if !rest.is_empty() {
             missing.insert((lines.side, lines.file.clone()), rest);
@@ -463,11 +432,17 @@ fn uncovered(
     missing
 }
 
-fn blank_spans(facts: &FileFacts) -> Vec<Span> {
-    crate::lines::ranges(&facts.blank_lines)
-        .into_iter()
-        .map(|range| (range.start_line, range.end_line))
-        .collect()
+/// The blank lines of a file inside `within` (sorted, merged), as spans: a binary search per span.
+fn blank_spans(facts: &FileFacts, within: &[Span]) -> Vec<Span> {
+    let blank = &facts.blank_lines;
+    let mut out = Vec::new();
+    for &(first, last) in within {
+        let from = blank.partition_point(|&line| line < first);
+        let to = from + blank[from..].partition_point(|&line| line <= last);
+        let runs = crate::lines::ranges(&blank[from..to]);
+        out.extend(runs.into_iter().map(|r| (r.start_line, r.end_line)));
+    }
+    out
 }
 
 /// The accepted flow: trimmed ranges, server step ids, derived graph, covered lines, move facts, warnings.
@@ -475,7 +450,7 @@ fn verified(
     output: &FlowAnalysisOutput,
     context: FlowContext<'_>,
     changes: &Changes<'_>,
-    moves: &Moves<'_>,
+    confirmed: Vec<Option<ConfirmedMove>>,
 ) -> VerifiedFlow {
     let flow_id = &context.planned.id;
     let step_ids: Vec<StepId> = (1..=output.steps.len())
@@ -510,11 +485,10 @@ fn verified(
             })
         })
         .collect();
-    let facts = output
-        .steps
-        .iter()
+    let facts = confirmed
+        .into_iter()
         .zip(&step_ids)
-        .filter_map(|(step, id)| Some((id.clone(), move_fact(moves, step)?)))
+        .filter_map(|(confirmed, id)| Some((id.clone(), confirmed?.fact)))
         .collect();
     let mut trimmed_output = output.clone();
     for step in &mut trimmed_output.steps {
@@ -626,16 +600,16 @@ mod tests {
         AgentThreadStatus, Assessment, FlowIntroduction, MovedFrom,
     };
     use contracts::agent::plan::{HunkSelection, PlannedFlow};
-    use contracts::api::tour::FlowGroup;
+    use contracts::api::tour::{FlowGroup, MoveFact};
     use contracts::common::{
         Blocking, Classification, Evidence, FileRange, FileRanges, LineRange, NodeKind, Origin,
-        RiskBand, ThreadLlmStatus,
+        ProvenanceBadge, RiskBand, ThreadLlmStatus,
     };
     use contracts::ids::{FlowId, HunkId};
 
     use super::*;
     use crate::diff::{DiffIndex, FileDiff, FileStatus, Hunk, LineSpan};
-    use crate::moves::MovesReport;
+    use crate::moves::{AlignedRun, MovedBlock, MovesReport};
     use crate::verify::{FileFacts, LineFacts, VerifiedPlan, VerifyIssue};
 
     fn hunk(id: &str, base: (u32, u32), head: (u32, u32)) -> Hunk {
@@ -1161,12 +1135,10 @@ mod tests {
                 end_line,
             },
         };
-        setup.moves.moved.push(MovedBlock {
-            from: file_range("src/old.rs", LineSide::Base, 1, 10),
-            to: file_range("src/a.rs", LineSide::Head, 20, 29),
-            identical: false,
-            differing_head_lines: vec![22, 23],
-        });
+        setup
+            .moves
+            .moved
+            .push(block(("src/old.rs", 1, 10), ("src/a.rs", 20), &[22, 23]));
         let mut output = output();
         let mut moved = step(
             "s4",
@@ -1195,7 +1167,7 @@ mod tests {
                 }
             )]
         );
-        setup.moves.moved[0].identical = true;
+        setup.moves.moved[0] = block(("src/old.rs", 1, 10), ("src/a.rs", 20), &[]);
         let verified = setup.run(&output).expect("identical move");
         assert_eq!(
             verified.moves[0].1.badge,
@@ -1284,6 +1256,35 @@ mod tests {
         }
     }
 
+    /// A deterministic block moved from base lines `from` (file, first, last) to head lines starting at `to` (file,
+    /// first), line for line; the head lines in `differing` (and their base counterparts) differ, the rest align.
+    /// Every base line of the origin was removed.
+    fn block(from: (&str, u32, u32), to: (&str, u32), differing: &[u32]) -> MovedBlock {
+        let (file, first, last) = from;
+        let offset = |head: u32| head - to.1 + first;
+        let head_last = to.1 + (last - first);
+        let mut aligned: Vec<AlignedRun> = Vec::new();
+        for head in (to.1..=head_last).filter(|line| !differing.contains(line)) {
+            match aligned.last_mut() {
+                Some(run) if run.head_start + run.len == head => run.len += 1,
+                _ => aligned.push(AlignedRun {
+                    base_start: offset(head),
+                    head_start: head,
+                    len: 1,
+                }),
+            }
+        }
+        MovedBlock {
+            from: file_range(file, LineSide::Base, first, last),
+            to: file_range(to.0, LineSide::Head, to.1, head_last),
+            identical: differing.is_empty(),
+            differing_head_lines: differing.to_vec(),
+            differing_base_lines: differing.iter().map(|&head| offset(head)).collect(),
+            removed_base_lines: (first..=last).collect(),
+            aligned,
+        }
+    }
+
     /// The output plus one `moved` step at head lines `lines` of `src/a.rs` claiming `claim` (file, base lines).
     fn with_moved_step(lines: (u32, u32), claim: (&str, u32, u32)) -> FlowAnalysisOutput {
         let mut output = output();
@@ -1298,38 +1299,66 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_move_covers_the_removed_lines_of_its_claim() {
+        let mut setup = Setup::new();
+        setup
+            .moves
+            .moved
+            .push(block(("src/gone.rs", 1, 5), ("src/a.rs", 20), &[]));
+        let without_base_step = |claim| {
+            let mut output = with_moved_step((20, 24), claim);
+            output.steps.remove(2);
+            output.edges.pop();
+            output
+        };
+        let verified = setup
+            .run(&without_base_step(("src/gone.rs", 1, 5)))
+            .expect("the moved step accounts for the removed lines of its original");
+        assert_eq!(verified.moves.len(), 1);
+
+        let issues = setup.issues(&without_base_step(("src/gone.rs", 2, 5)));
+        assert_eq!(
+            kinds(&issues),
+            [VerifyIssueKind::ChangedLineUncovered],
+            "an unconfirmed claim is no contradiction, but covers nothing: {issues:#?}"
+        );
+        assert!(issues[0].message.contains("base lines 1-4 of src/gone.rs"));
+    }
+
+    #[test]
     fn move_fact_only_covers_lines_inside_one_moved_block() {
         let mut setup = Setup::new();
         // Identical move old.rs 1-10 → a.rs 20-29; a second move old.rs 11-15 → a.rs 30-34 with line 31 changed.
-        setup.moves.moved.push(MovedBlock {
-            from: file_range("src/old.rs", LineSide::Base, 1, 10),
-            to: file_range("src/a.rs", LineSide::Head, 20, 29),
-            identical: true,
-            differing_head_lines: Vec::new(),
-        });
-        setup.moves.moved.push(MovedBlock {
-            from: file_range("src/old.rs", LineSide::Base, 11, 15),
-            to: file_range("src/a.rs", LineSide::Head, 30, 34),
-            identical: false,
-            differing_head_lines: vec![34, 31],
-        });
+        setup
+            .moves
+            .moved
+            .push(block(("src/old.rs", 1, 10), ("src/a.rs", 20), &[]));
+        setup
+            .moves
+            .moved
+            .push(block(("src/old.rs", 11, 15), ("src/a.rs", 30), &[31, 34]));
         let fact = |lines, claim| {
             let verified = setup.run(&with_moved_step(lines, claim)).expect("accepted");
             verified.moves.into_iter().map(|(_, fact)| fact).next()
         };
-        let identical = MoveFact {
-            from: file_range("src/old.rs", LineSide::Base, 1, 10),
+        let identical = |first, last| MoveFact {
+            from: file_range("src/old.rs", LineSide::Base, first, last),
             badge: Some(ProvenanceBadge::TextIdentical),
             differing_lines: 0,
         };
         assert_eq!(
             fact((20, 29), ("src/old.rs", 1, 10)),
-            Some(identical.clone())
+            Some(identical(1, 10))
         );
         assert_eq!(
             fact((22, 27), ("src/old.rs", 3, 8)),
-            Some(identical),
-            "a part of the block"
+            Some(identical(3, 8)),
+            "a part of the block: the fact names the claimed lines"
+        );
+        assert_eq!(
+            fact((22, 27), ("src/old.rs", 2, 7)),
+            None,
+            "the claimed lines are not the step's counterpart"
         );
         assert_eq!(
             fact((18, 25), ("src/old.rs", 1, 10)),
@@ -1352,13 +1381,18 @@ mod tests {
             "claim wider than the block's origin"
         );
         assert_eq!(
-            fact((31, 33), ("src/old.rs", 12, 14)),
+            fact((30, 33), ("src/old.rs", 11, 14)),
             Some(MoveFact {
-                from: file_range("src/old.rs", LineSide::Base, 11, 15),
+                from: file_range("src/old.rs", LineSide::Base, 11, 14),
                 badge: None,
                 differing_lines: 1,
             }),
             "differing lines are counted inside the step"
+        );
+        assert_eq!(
+            fact((31, 33), ("src/old.rs", 12, 14)),
+            None,
+            "a step starting at a differing line has no aligned counterpart"
         );
 
         let issues = setup.issues(&with_moved_step((22, 27), ("src/old.rs", 20, 25)));
@@ -1473,5 +1507,74 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn many_wide_steps_and_impact_refs_over_many_changes_are_not_quadratic() {
+        // 10,000 base steps and 10,000 impact refs, each over a whole file with 50,000 one-line changes: a scan
+        // (or a message listing every span) per step or ref is 5·10^8 steps per kind, binary searches a few.
+        const HUNKS: u32 = 50_000;
+        const WIDE: usize = 10_000;
+        let last = 2 * HUNKS + 1;
+        let mut setup = Setup::new();
+        setup.files = vec![FileDiff {
+            path: "src/big.rs".to_owned(),
+            old_path: None,
+            status: FileStatus::Modified,
+            binary: false,
+            hunks: (1..=HUNKS)
+                .map(|n| hunk(&format!("h{n}"), (2 * n, 1), (2 * n, 1)))
+                .collect(),
+        }];
+        setup.plan.flow_lines = BTreeMap::from([(FlowId("f1".to_owned()), Vec::new())]);
+        for side in [LineSide::Head, LineSide::Base] {
+            let facts = FileFacts {
+                line_count: last,
+                blank_lines: Vec::new(),
+            };
+            setup.facts.insert(side, "src/big.rs", facts);
+        }
+        let mut output = output();
+        output.steps.truncate(1);
+        output.edges.clear();
+        output.pattern_repetitions.clear();
+        output.steps.extend((0..WIDE).map(|n| {
+            let id = format!("b{n}");
+            step(
+                &id,
+                "src/big.rs",
+                LineSide::Base,
+                (1, last),
+                FragmentKind::DeletedSite,
+            )
+        }));
+        let impact = AgentImpactRef {
+            step_id: "s1".to_owned(),
+            file: "src/big.rs".to_owned(),
+            start_line: 1,
+            end_line: last,
+            ..output.impact_refs[0].clone()
+        };
+        output.impact_refs = vec![impact; WIDE];
+        let started = std::time::Instant::now();
+        let issues = setup.issues(&output);
+        let elapsed = started.elapsed();
+        let count = |kind| issues.iter().filter(|issue| issue.kind == kind).count();
+        assert_eq!(count(VerifyIssueKind::BaseSideMisused), WIDE);
+        assert_eq!(count(VerifyIssueKind::ImpactInsideDiff), WIDE);
+        assert_eq!(issues.len(), 2 * WIDE, "{:#?}", &issues[..3]);
+        assert!(
+            issues[0].message.contains("base lines 1, 3, 5 and more"),
+            "{}",
+            issues[0].message
+        );
+        assert!(
+            issues[WIDE]
+                .message
+                .contains("lines 2, 4, 6 and more of src/big.rs are changed lines"),
+            "{}",
+            issues[WIDE].message
+        );
+        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
     }
 }

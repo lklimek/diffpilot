@@ -24,15 +24,14 @@ pub(crate) fn merge(mut spans: Vec<Span>) -> Vec<Span> {
     out
 }
 
-/// `a` without `b`; both sorted and merged.
+/// `a` without `b`; both sorted and merged. Each span of `a` finds its first cut by binary search, so the work is
+/// O(|a| log |b| + cuts) and a short `a` never scans a long `b`.
 pub(crate) fn subtract(a: &[Span], b: &[Span]) -> Vec<Span> {
     let mut out = Vec::new();
     let mut next = 0;
     for &(first, last) in a {
+        next += b[next..].partition_point(|&(_, cut_last)| cut_last < first);
         let mut start = u64::from(first);
-        while next < b.len() && b[next].1 < first {
-            next += 1;
-        }
         let mut index = next;
         while index < b.len() && b[index].0 <= last && start <= u64::from(last) {
             let (cut_first, cut_last) = b[index];
@@ -53,32 +52,56 @@ fn start_u32(start: u64) -> u32 {
     u32::try_from(start).unwrap_or(u32::MAX)
 }
 
-/// `a` within `b`; both sorted and merged.
+/// `a` within `b`; both sorted and merged. Walks the shorter list and finds its first overlap in the longer one
+/// by binary search: O(min log max + output), so one span against a long list costs a search, not a scan.
 pub(crate) fn intersect(a: &[Span], b: &[Span]) -> Vec<Span> {
-    let (mut i, mut j, mut out) = (0, 0, Vec::new());
-    while i < a.len() && j < b.len() {
-        let first = a[i].0.max(b[j].0);
-        let last = a[i].1.min(b[j].1);
-        if first <= last {
-            out.push((first, last));
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let mut out = Vec::new();
+    let mut next = 0;
+    for &(first, last) in short {
+        next += long[next..].partition_point(|&(_, end)| end < first);
+        for &(start, end) in long[next..].iter().take_while(|&&(start, _)| start <= last) {
+            out.push((start.max(first), end.min(last)));
         }
-        if a[i].1 < b[j].1 { i += 1 } else { j += 1 }
     }
     out
+}
+
+/// The spans of the sorted, merged `spans` sharing a line with `span`: two binary searches.
+pub(crate) fn overlapping(spans: &[Span], (first, last): Span) -> &[Span] {
+    let from = spans.partition_point(|&(_, end)| end < first);
+    let to = from + spans[from..].partition_point(|&(start, _)| start <= last);
+    &spans[from..to]
+}
+
+/// The lines of `span` outside the sorted, merged `spans`, lazily and in order: a binary search, then one step
+/// per gap taken.
+pub(crate) fn gaps(spans: &[Span], (first, last): Span) -> impl Iterator<Item = Span> + '_ {
+    let mut inside = overlapping(spans, (first, last)).iter();
+    let mut start = Some(u64::from(first));
+    std::iter::from_fn(move || {
+        while let Some(from) = start.filter(|&from| from <= u64::from(last)) {
+            match inside.next() {
+                Some(&(cut_first, cut_last)) => {
+                    start = Some(u64::from(cut_last) + 1);
+                    if u64::from(cut_first) > from {
+                        return Some((start_u32(from), cut_first - 1));
+                    }
+                }
+                None => {
+                    start = None;
+                    return Some((start_u32(from), last));
+                }
+            }
+        }
+        None
+    })
 }
 
 /// Whether `span` shares a line with the sorted, merged `spans`.
 pub(crate) fn touches(spans: &[Span], (first, last): Span) -> bool {
     let index = spans.partition_point(|&(_, end)| end < first);
     spans.get(index).is_some_and(|&(start, _)| start <= last)
-}
-
-/// Whether `span` lies inside the sorted, merged `spans`.
-pub(crate) fn covers(spans: &[Span], (first, last): Span) -> bool {
-    let index = spans.partition_point(|&(_, end)| end < first);
-    spans
-        .get(index)
-        .is_some_and(|&(start, end)| start <= first && last <= end)
 }
 
 /// Spans covered by at least two of `layers` (each layer sorted and merged), in order.
@@ -144,6 +167,19 @@ pub(crate) fn to_ranges(spans: &[Span]) -> Vec<LineRange> {
         .collect()
 }
 
+/// `a-b, c` for the first `limit` spans, then ` and more` when there are others: a message stays short however
+/// many spans there are.
+pub(crate) fn describe_first(spans: impl IntoIterator<Item = Span>, limit: usize) -> String {
+    let mut spans = spans.into_iter();
+    let shown: Vec<Span> = spans.by_ref().take(limit).collect();
+    let more = if spans.next().is_some() {
+        " and more"
+    } else {
+        ""
+    };
+    format!("{}{more}", describe(&shown))
+}
+
 /// `a-b, c` for spans.
 pub(crate) fn describe(spans: &[Span]) -> String {
     spans
@@ -161,6 +197,10 @@ pub(crate) fn describe(spans: &[Span]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use proptest::prelude::*;
+
     use super::*;
 
     #[test]
@@ -179,7 +219,6 @@ mod tests {
             [(5, 10), (20, 25)]
         );
         assert!(touches(&[(1, 3), (8, 9)], (3, 5)) && !touches(&[(1, 3), (8, 9)], (4, 7)));
-        assert!(covers(&[(1, 3), (5, 9)], (5, 9)) && !covers(&[(1, 3), (5, 9)], (3, 5)));
         assert_eq!(
             covered_twice(&[vec![(1, 10)], vec![(5, 6), (9, 12)], vec![(6, 9)]]),
             [(5, 10)]
@@ -190,5 +229,52 @@ mod tests {
                 && !marker_inside(9, (11, 12))
         );
         assert_eq!(describe(&[(1, 1), (3, 5)]), "1, 3-5");
+        assert_eq!(
+            describe_first([(1, 1), (3, 5), (7, 7)], 2),
+            "1, 3-5 and more"
+        );
+        assert_eq!(describe_first([(1, 1)], 2), "1");
+        assert_eq!(
+            overlapping(&[(1, 3), (5, 6), (8, 9)], (3, 7)),
+            [(1, 3), (5, 6)]
+        );
+        assert_eq!(
+            gaps(&[(1, 3), (5, 6), (8, 9)], (2, 12)).collect::<Vec<_>>(),
+            [(4, 4), (7, 7), (10, 12)]
+        );
+        assert_eq!(gaps(&[(0, u32::MAX)], (5, 9)).next(), None);
+    }
+
+    /// Up to eight spans within lines 0-40.
+    fn span_list() -> impl Strategy<Value = Vec<Span>> {
+        proptest::collection::vec((0u32..40, 0u32..6), 0..8)
+            .prop_map(|spans| merge(spans.into_iter().map(|(at, len)| (at, at + len)).collect()))
+    }
+
+    fn lines(spans: &[Span]) -> BTreeSet<u32> {
+        spans
+            .iter()
+            .flat_map(|&(first, last)| first..=last)
+            .collect()
+    }
+
+    proptest! {
+        /// The binary-searching operations agree with plain set arithmetic and return sorted, merged-able spans.
+        #[test]
+        fn proptest_span_operations_match_sets(a in span_list(), b in span_list(), span in (0u32..40, 0u32..10)) {
+            let span = (span.0, span.0 + span.1);
+            let (set_a, set_b) = (lines(&a), lines(&b));
+            let within = intersect(&a, &b);
+            prop_assert_eq!(lines(&within), &set_a & &set_b);
+            prop_assert_eq!(&within, &intersect(&b, &a));
+            prop_assert!(within.windows(2).all(|pair| pair[0].1 < pair[1].0));
+            let without = subtract(&a, &b);
+            prop_assert_eq!(lines(&without), &set_a - &set_b);
+            prop_assert!(without.windows(2).all(|pair| pair[0].1 < pair[1].0));
+            let gaps: Vec<Span> = gaps(&b, span).collect();
+            prop_assert_eq!(&gaps, &subtract(&[span], &b));
+            let near = overlapping(&b, span);
+            prop_assert_eq!(near.len(), b.iter().filter(|&&s| intersect(&[s], &[span]).len() == 1).count());
+        }
     }
 }

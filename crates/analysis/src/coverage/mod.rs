@@ -37,7 +37,8 @@ pub enum CoverageError {
 /// Changed lines not covered by `flows` or the deterministic `quiet` lines (Not analysed, identical moves).
 /// Changed lines are added head lines and removed base lines; other lines inside the inputs are ignored. Each
 /// input `FileRanges` is one cover (one flow or one quiet item). Output follows the diff's file order, head
-/// before base. Interval arithmetic: O((H + C) log (H + C)) for H hunk spans and C input ranges.
+/// before base. Interval arithmetic, one pass per file: O((H + C) log (H + C)) for H hunk spans and C input ranges,
+/// however the ranges are split into covers.
 pub fn check(
     files: &[FileDiff],
     quiet: &[FileRanges],
@@ -62,19 +63,20 @@ pub fn check(
     for lines in changed.values_mut() {
         *lines = spans::merge(std::mem::take(lines));
     }
-    // Per (side, path): the lines of each cover, merged within the cover.
+    // Per (side, path): the lines of each cover, merged within the cover. The changed lines are applied once per
+    // file below, never per cover (a cover per one-line hunk would otherwise rescan the file's changes each time).
     let mut layers: HashMap<(LineSide, &str), Vec<Vec<Span>>> = HashMap::new();
     let covers = quiet
         .iter()
         .chain(flows.iter().flat_map(|flow| &flow.covered));
     for ranges in covers {
         let key = (ranges.side, ranges.file.as_str());
-        let Some(lines) = changed.get(&key) else {
+        if !changed.contains_key(&key) {
             return Err(CoverageError::UnknownFile {
                 path: ranges.file.clone(),
             });
-        };
-        let cover = spans::intersect(lines, &spans::from_ranges(&ranges.ranges));
+        }
+        let cover = spans::from_ranges(&ranges.ranges);
         layers.entry(key).or_default().push(cover);
     }
     let mut coverage = Coverage::default();
@@ -91,7 +93,7 @@ pub fn check(
         if !unexplained.is_empty() {
             coverage.unexplained.push(file_ranges(unexplained));
         }
-        let twice = spans::covered_twice(&layers);
+        let twice = spans::intersect(lines, &spans::covered_twice(&layers));
         if !twice.is_empty() {
             coverage.double_covered.push(file_ranges(twice));
         }
@@ -228,6 +230,48 @@ mod tests {
         assert_eq!(
             coverage.unexplained,
             [file_ranges("src/a.rs", LineSide::Head, &[1, 2, 3])]
+        );
+    }
+
+    #[test]
+    fn many_disjoint_changes_with_separate_covers_are_not_quadratic() {
+        // 50,000 one-line hunks, each with its own quiet cover, then 50,000 covers of the whole file: rescanning
+        // the file's changes per cover is 2.5·10^9 steps per shape, one pass per file a few hundred thousand.
+        const HUNKS: u32 = 50_000;
+        let spans: Vec<Span> = (1..=HUNKS).map(|n| ((2 * n, 1), (2 * n, 1))).collect();
+        let files = [file("src/big.rs", FileStatus::Modified, &spans)];
+        let single = |line| file_ranges("src/big.rs", LineSide::Head, &[line]);
+        let mut quiet: Vec<FileRanges> = (2..HUNKS).map(|n| single(2 * n)).collect();
+        quiet.push(single(4));
+        let started = std::time::Instant::now();
+        let coverage = check(&files, &quiet, &[]).expect("coverage");
+        let separate = started.elapsed();
+        let changed: Vec<u32> = (1..=HUNKS).map(|n| 2 * n).collect();
+        assert_eq!(
+            coverage.unexplained,
+            [
+                file_ranges("src/big.rs", LineSide::Head, &[2, 2 * HUNKS]),
+                file_ranges("src/big.rs", LineSide::Base, &changed),
+            ]
+        );
+        assert_eq!(coverage.double_covered, [single(4)]);
+
+        let mut whole = single(1);
+        whole.ranges[0].end_line = 2 * HUNKS;
+        let wide = vec![whole; HUNKS as usize];
+        let started = std::time::Instant::now();
+        let coverage = check(&files, &wide, &[]).expect("coverage");
+        let overlapping = started.elapsed();
+        assert_eq!(
+            coverage.double_covered,
+            [file_ranges("src/big.rs", LineSide::Head, &changed)]
+        );
+        // Linear work takes milliseconds; the bound only has to separate it from the quadratic seconds-to-minutes
+        // on a loaded machine.
+        let bound = std::time::Duration::from_secs(5);
+        assert!(
+            separate < bound && overlapping < bound,
+            "separate covers {separate:?}, overlapping covers {overlapping:?}"
         );
     }
 
