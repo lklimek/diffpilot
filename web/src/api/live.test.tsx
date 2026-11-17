@@ -124,3 +124,37 @@ describe("useAnalysisLive with another id", () => {
     expect(FakeEventSource.instances[0]!.readyState).toBe(FakeEventSource.CLOSED);
   });
 });
+
+describe("useAnalysisLive never carries one analysis's state over to another", () => {
+  function snapshotAThenSwitchToB() {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const hook = renderHook(({ id }) => useAnalysisLive(id), { initialProps: { id: ID } });
+    act(() =>
+      FakeEventSource.latest().emit({
+        event: "analysis",
+        summary: at({ state: "running", done: 2, total: 5 }),
+      }),
+    );
+    hook.rerender({ id: "other" });
+    return hook;
+  }
+
+  it("a dropped connection of B before its first snapshot shows no state of A", () => {
+    const { result } = snapshotAThenSwitchToB();
+    act(() => FakeEventSource.latest().drop());
+    expect(result.current.reconnecting).toBe(true);
+    expect(result.current.summary).toBeUndefined();
+  });
+
+  it("a failed fallback read of B before its first snapshot shows B's error and no state of A", async () => {
+    server.use(
+      http.get("/api/v1/analyses/other", () =>
+        HttpResponse.json({ code: "not_found", message: "This analysis does not exist." }, { status: 404 }),
+      ),
+    );
+    const { result } = snapshotAThenSwitchToB();
+    act(() => FakeEventSource.latest().fail());
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(ApiError));
+    expect(result.current.summary).toBeUndefined();
+  });
+});

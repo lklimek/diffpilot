@@ -84,6 +84,8 @@ export function useAnalysisLive(id: AnalysisId): AnalysisLive {
   useEffect(() => {
     let active = true;
     let close = () => {};
+    // State kept across an error only when it is this analysis's own.
+    const own = (current: AnalysisLive & { id?: AnalysisId }) => (current.id === id ? current : {});
     let timer: ReturnType<typeof setTimeout> | undefined;
     const connect = () => {
       close = api.subscribeAnalysis(id, {
@@ -94,7 +96,7 @@ export function useAnalysisLive(id: AnalysisId): AnalysisLive {
         },
         onError: (closed) => {
           if (!closed) {
-            setLive((current) => ({ ...current, id, reconnecting: true }));
+            setLive((current) => ({ ...own(current), id, reconnecting: true }));
             return;
           }
           close();
@@ -105,7 +107,7 @@ export function useAnalysisLive(id: AnalysisId): AnalysisLive {
               timer = setTimeout(connect, ANALYSIS_RECONNECT_MS);
             },
             (error: unknown) => {
-              if (active) setLive((current) => ({ ...current, id, error, reconnecting: false }));
+              if (active) setLive((current) => ({ ...own(current), id, error, reconnecting: false }));
             },
           );
         },

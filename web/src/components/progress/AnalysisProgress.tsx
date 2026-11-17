@@ -53,6 +53,7 @@ const STRIPES = {
 };
 
 function Bar({ state }: { state: AnalysisState }) {
+  // TODO(WP3-PIPE): count paused too ("Paused, k of n") once `AnalysisState.paused` carries done/total.
   const counted =
     state.state === "running"
       ? { now: state.done, max: state.total }
