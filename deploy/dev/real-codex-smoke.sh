@@ -29,7 +29,9 @@
 #                         (SR_SMOKE_PROXY_IMAGE, default smart-review-egress-proxy:local) on the internal network
 #                         `sr-smoke-int` (172.31.251.0/24, removed at the end); the image's own runner unless
 #                         SR_SMOKE_PROVIDER=fake (then SR_DEV_RUNNER_BIN is mounted over it); per-job CODEX_HOME root
-#                         on a capped tmpfs (SR_CODEX_HOMES_ALLOW_TMPFS=1, development only); the proxy's host-name
+#                         on a capped tmpfs (SR_CODEX_HOMES_ALLOW_TMPFS=1, development only); the internal network keeps
+#                         a host address for the host's server, so the preflight's isolation check is skipped
+#                         (SR_RUNNER_DEV_HOST_GATEWAY=1, development only); the proxy's host-name
 #                         log is archived as egress-proxy.log
 #
 # Runner container: own PID namespace with --init, 4 GiB memory, 1024 pids, all capabilities dropped,
@@ -177,7 +179,8 @@ if [[ "$isolation" == supervisor ]]; then
     -e SR_RUNNER_PROVIDER="$provider" -e SR_RUNNER_EGRESS_PROXY="http://$proxy_ip:3128" \
     -e HTTPS_PROXY="http://$proxy_ip:3128" -e https_proxy="http://$proxy_ip:3128" \
     -e NO_PROXY="localhost,127.0.0.1,$gateway" -e no_proxy="localhost,127.0.0.1,$gateway" \
-    -e SR_CODEX_HOMES_ALLOW_TMPFS=1 -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL="$url" -e RUST_LOG=info -e NO_COLOR=1 \
+    -e SR_CODEX_HOMES_ALLOW_TMPFS=1 -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL="$url" -e SR_RUNNER_DEV_HOST_GATEWAY=1 \
+    -e RUST_LOG=info -e NO_COLOR=1 \
     "${SR_SMOKE_RUNNER_IMAGE:-smart-review-runner:local}" > /dev/null
 else
   docker run -d --name "$container" --init --restart no \
