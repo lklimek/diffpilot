@@ -16,6 +16,7 @@ pub mod diff;
 pub mod error;
 pub mod events;
 pub mod feedback;
+pub mod flow_work;
 pub mod health;
 pub mod lines;
 pub mod pr;
@@ -39,6 +40,7 @@ const API_HEADERS: [(&str, &str); 2] = [
 pub fn router(state: AppState) -> Router {
     Router::new()
         .merge(analyses::routes())
+        .merge(flow_work::routes())
         .merge(auth::routes())
         .merge(comments::routes())
         .merge(diff::routes())

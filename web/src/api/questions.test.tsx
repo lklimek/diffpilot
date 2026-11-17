@@ -6,13 +6,14 @@ import type { ReactNode } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../__tests__/fake-event-source";
 import { seedFor } from "../mocks/fixtures";
-import type { AnalysisSummary, AskQuestion, MeResponse } from "./generated/types";
+import type { AnalysisSummary, AskQuestion, MeResponse, Tour } from "./generated/types";
 import {
   ANALYSIS_RECONNECT_MS,
   mergeFetchedQuestions,
   useAskQuestion,
   useQuestionEvents,
   useQuestions,
+  useTour,
 } from "./queries";
 
 const ID = (seedFor("default", "analysis") as AnalysisSummary).id;
@@ -167,4 +168,43 @@ it("refreshes Tour usage from the existing Ask event stream", async () => {
     }),
   );
   expect(client.getQueryData<{ analysis: { usage: unknown } }>(["tour", ID])?.analysis.usage).toEqual(usage);
+});
+
+it("stops showing partial results when Cancel removes review availability", async () => {
+  let cancelled = false;
+  server.use(
+    http.get(`/api/v1/analyses/${ID}/tour`, () =>
+      cancelled
+        ? HttpResponse.json(
+            { code: "analysis_not_finished", message: "The analysis was cancelled." },
+            { status: 409 },
+          )
+        : HttpResponse.json(seedFor("default", "tour") as Tour),
+    ),
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const { result } = renderHook(
+    () => {
+      useQuestionEvents(ID);
+      return useTour(ID);
+    },
+    { wrapper },
+  );
+  await waitFor(() => expect(result.current.isSuccess).toBe(true));
+  cancelled = true;
+  act(() =>
+    FakeEventSource.latest().emit({
+      event: "analysis",
+      summary: {
+        ...(seedFor("default", "analysis") as AnalysisSummary),
+        review_ready: false,
+        state: { state: "cancelled" },
+      },
+    }),
+  );
+  await waitFor(() => expect(result.current.isError).toBe(true));
+  server.resetHandlers();
 });

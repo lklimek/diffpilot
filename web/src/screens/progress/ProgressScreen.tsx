@@ -53,6 +53,7 @@ export function ProgressScreen() {
         )}
         {summary && (
           <AnalysisProgress
+            reviewReady={summary.review_ready}
             state={summary.state}
             progress={summary.progress}
             usage={summary.usage}

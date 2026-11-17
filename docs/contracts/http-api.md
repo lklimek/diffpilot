@@ -35,7 +35,7 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | POST | `/api/v1/analyses/{id}/resume` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/cancel` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/retry` | session_csrf | – | `AnalysisSummary` |
-| GET | `/api/v1/analyses/{id}/tour` | session | – | `Tour` (409 `analysis_not_finished` before) |
+| GET | `/api/v1/analyses/{id}/tour` | session | – | `Tour` (409 `analysis_not_finished` until plan and PR context are accepted) |
 | GET | `/api/v1/analyses/{id}/lines` | session | `RangeQuery` | `LinesResponse` (409 `analysis_not_finished` before the analysis is ready) |
 | GET | `/api/v1/analyses/{id}/diff` | session | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis is ready) |
 | GET / PUT | `/api/v1/analyses/{id}/review-state` | session / session_csrf | – / `ReviewState` | `ReviewState` / 204 (PUT: 409 `analysis_not_finished` before `finished`) |
@@ -158,7 +158,7 @@ mapping, query rules and the endpoint × fixture-state inventory.
   asynchronously. Private notes never leave the local user-scoped row; `Feedback.memory` is the state of the current revision's copy there (`pending`, `written` =
   MemCan confirmed it and no earlier write of unknown outcome can still land, `failed` = the last attempt failed,
   retried on a back-off). Only `written` may be shown as "saved to calibration memory".
-- **Ask** (`…/steps/{step_id}/questions`): only for a `finished` analysis (else `analysis_not_finished`) whose PR data was not explicitly
+- **Ask** (`…/steps/{step_id}/questions`): only for an accepted step in a review-ready or `finished` analysis (else `analysis_not_finished`) whose PR data was not explicitly
   removed (else `conflict`); `step_id` is a canonical step id of the analysis's Tour (`f1.5`; aliases
   such as `f1.05` and unknown steps are `not_found`); `text` is trimmed, 1 to `AskRequest::MAX_TEXT_CHARS` (2000)
   characters, else `invalid_request`, and stored and shown as text. No idempotency key: each request is a new
@@ -418,5 +418,27 @@ claimed. The pause survives restarts. Provider pauses use `reason:"usage_limit"`
 an absent reason); a provider deadline never overrides a user pause. Resume clears the user pause;
 if the provider is still limited, its pause remains. Resume checks the pinned head with GitHub and
 returns `conflict` with the existing moved-head sentence if it changed. Neither action discards results or increments the retry round.
-The Tour and Ask still require a finished analysis; this change does not expose partial Tours.
+Once the plan and PR context are accepted, a paused analysis retains its partial Tour; Ask works on its accepted steps.
 Cancel requires an inline UI confirmation, then discards documents and cancels unfinished jobs. Analytic and private working PR sessions are retained.
+
+### Lazy flow review
+
+`AnalysisSummary.review_ready` is true after accepted plan and PR context, including while running or
+paused; false after Cancel. `background_analysis` is the stored switch (default true). The Tour now
+contains every planned flow. Until accepted, `steps` and graph nodes are empty and `llm.risk` is null;
+clients show `analysis_status`, not a risk label or a review tick. `planned` carries intent, rank and
+verified changed ranges. Accepted flows support ticks, comments and private Ask before the run ends.
+
+Example: `{"analysis_status":{"state":"analysing","started_at":"2026-11-17T20:00:00Z","message":null},
+"planned":{"intent":"Bound retries","importance_rank":2,"ranges":[{"file":"src/rpc.rs","side":"head","ranges":[{"start_line":8,"end_line":19}]}]}}`.
+States: `not_analysed`, `queued`, `analysing`, `analysed`, `failed`. A claimed job's timestamp includes
+repository preparation. Unaccepted planned ranges appear under their flow, not as accepted coverage.
+
+POST `/api/v1/analyses/{id}/flows/{flow}/request` has no body and returns `AnalysisSummary`. Unknown flow
+is 404. PUT `/api/v1/analyses/{id}/background` takes `{"enabled":false}` and returns `AnalysisSummary`.
+Both require session/CSRF and tenant access; requesting work or enabling background checks the current PR
+head. Latest requested flow runs first, then background flows by plan rank. Already claimed work finishes;
+queued work may be withdrawn. A user pause still prevents submission/claim. A failed flow needs explicit
+Retry. Requests/preferences survive restart. With background disabled or a failed flow awaiting Retry, the overall ETA is omitted because
+unscheduled work has no completion time. Existing analysis SSE events invalidate the partial Tour,
+including when a verified flow becomes available; no extra polling is needed.

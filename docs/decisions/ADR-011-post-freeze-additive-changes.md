@@ -155,6 +155,20 @@ These remaining statements in `docs/design-brief.md` are superseded:
 | `AgentAccess.memcan.allow_write?: bool` (default false) | The agent has MemCan again: analytic jobs get search and `add_memory`, Ask jobs search only (ADR-004). |
 | MemCan feedback `private_text_excluded: true`; Ask has no MemCan write tool | Prevent private feedback notes or Ask-written memories from reaching shared analytical context. Legacy calibration text is not read. |
 
+## Lazy review and concise low assessments (owner approval, 2026-11-17)
+
+| Addition | Reason |
+|---|---|
+| Optional `AnalysisSummary.review_ready`, `background_analysis` | Review opens after accepted plan/context; background work is a durable per-analysis preference, default on. |
+| Optional `Flow.analysis_status {state, started_at, message}`, `planned {intent, importance_rank, ranges}` | All planned flows appear before steps exist; pending work cannot be mistaken for accepted assessment. |
+| `POST /api/v1/analyses/{id}/flows/{flow}/request`; `PUT /api/v1/analyses/{id}/background` (`{enabled}`) | CSRF, tenant and moved-head checks; newest demand precedes rank-ordered background work, never interrupts a claimed job. |
+| `analyses.background_analysis`; `flow_work` requests/failures | Single rewritten pre-deployment migration; lazy scheduling adds no stored plan/flow fields or runner protocol change. Coordinator recreates the local DB. |
+| Nullable/optional assessment `headline`, `basis_note`, `not_checked`, `origin`, `blocking`; concise closed shape `{risk:"low", reason}` | Low assessments contain one sentence; full details and action requirements remain mandatory above low. Existing full assessments still parse. |
+
+Existing `analysis` SSE events publish availability and scheduling changes; clients refetch the Tour.
+A failed flow stays explicitly failed until requested again; accepted siblings remain usable. Retry starts
+another analysis job round at a serial boundary, preserving accepted documents and PR/private sessions.
+
 ## Flow file output (owner approval, 2026-11-17)
 
 | Addition | Reason |

@@ -340,6 +340,8 @@ impl Analyses<'_> {
             *stage = self.live_stage(id).await?;
         }
         let mut summary = AnalysisSummary {
+            review_ready: Some(sqlx::query_scalar("SELECT state <> 'cancelled' AND EXISTS(SELECT 1 FROM documents WHERE analysis_id=a.id AND kind='plan' AND key='') AND EXISTS(SELECT 1 FROM documents WHERE analysis_id=a.id AND kind='pr_context' AND key='') FROM analyses a WHERE id=?").bind(id.to_string()).fetch_one(self.pool).await?),
+            background_analysis: Some(sqlx::query_scalar("SELECT background_analysis FROM analyses WHERE id=?").bind(id.to_string()).fetch_one(self.pool).await?),
             models_used: Some(
                 super::jobs::Jobs { pool: self.pool }
                     .models_used(id)
@@ -367,6 +369,13 @@ impl Analyses<'_> {
             finished_at: record.finished_at,
         };
         self.add_progress(&mut summary).await?;
+        let awaiting_retry: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM flow_work WHERE analysis_id=? AND error IS NOT NULL AND requested_at IS NULL)")
+            .bind(id.to_string()).fetch_one(self.pool).await?;
+        if (summary.background_analysis == Some(false) || awaiting_retry)
+            && let Some(progress) = &mut summary.progress
+        {
+            progress.estimate = None;
+        }
         Ok(summary)
     }
 

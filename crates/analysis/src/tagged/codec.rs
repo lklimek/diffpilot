@@ -289,6 +289,7 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
                 step_lines.push(line);
                 steps.push(value);
             }
+            // Low needs only `risk` and `reason`; the verifier requires the rest above low.
             (3, "assessment") => {
                 section.args(1)?;
                 let index = active_step
@@ -299,16 +300,15 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
                 }
                 step["assessment"] = strings(
                     &mut section,
+                    &["risk", "reason"],
                     &[
                         "headline",
-                        "risk",
-                        "reason",
                         "basis_note",
                         "not_checked",
                         "origin",
                         "blocking",
+                        "smallest_correction",
                     ],
-                    &["smallest_correction"],
                 )?;
             }
             (3, "annotation") => {

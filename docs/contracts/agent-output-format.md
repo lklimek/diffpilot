@@ -35,9 +35,11 @@ Maximum document size is 1 MiB.
 - `### annotation <type> <basis> <first>-<last>` under its step. Optional `was`, `is`,
   `text`, `evidence`. Behaviour requires nonempty `was`/`is`; other types require
   `text`. Evidence is space-separated `<file-id>:<side>:<line>` references.
-- `### assessment` under every step, exactly once. Required: `headline`, `risk`,
-  `reason`, `basis_note`, `not_checked`, `origin`, `blocking`. Optional:
-  `smallest_correction`. Flow risk is the highest step risk; every step is assessed.
+- `### assessment` under every step, exactly once. Required: `risk`, `reason`. At
+  `risk: low` the rest may be omitted (concise assessment: band plus one sentence).
+  Above low also required: `headline`, `basis_note`, `not_checked`, `origin`,
+  `blocking`. Optional: `smallest_correction`. Flow risk is the highest step risk;
+  every step is assessed.
 - `## edge <from-step> <to-step>`; optional `label`.
 - `## impact <step> <file-id>:head:<first>-<last>`; required `reason`, `basis`;
   optional `symbol`.
@@ -90,6 +92,14 @@ basis_note: Read receive and its caller; nothing was executed.
 not_checked: Whether shutdown drains messages already in the queue.
 origin: introduced
 blocking: no_action_proposed
+```
+
+A low-risk step may use the concise assessment instead:
+
+```text
+### assessment
+risk: low
+reason: The change affects only the closed-queue branch.
 ```
 
 The parser reconstructs the existing canonical JSON document. Stored documents,

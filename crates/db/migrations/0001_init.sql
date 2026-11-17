@@ -114,6 +114,7 @@ CREATE TABLE analyses (
     state               TEXT NOT NULL CHECK (state IN ('planning', 'running', 'paused', 'failed', 'finished', 'cancelled')),
     flows_total         INTEGER,
     flows_done          INTEGER NOT NULL DEFAULT 0,
+    background_analysis INTEGER NOT NULL DEFAULT 1 CHECK (background_analysis IN (0, 1)),
     paused_until        TEXT,
     user_paused_by      TEXT,
     user_paused_at      TEXT,
@@ -328,4 +329,14 @@ CREATE TABLE working_sessions (
     agent_thread_id TEXT NOT NULL,
     analytic_generation INTEGER NOT NULL,
     PRIMARY KEY (pull_request_id, user_id)
+) STRICT;
+
+-- Durable on-demand ordering and failures; accepted outputs remain in documents.
+CREATE TABLE flow_work (
+    tenant_id TEXT NOT NULL REFERENCES tenants(id),
+    analysis_id TEXT NOT NULL REFERENCES analyses(id) ON DELETE CASCADE,
+    flow_id TEXT NOT NULL,
+    requested_at TEXT,
+    error TEXT,
+    PRIMARY KEY (analysis_id, flow_id)
 ) STRICT;

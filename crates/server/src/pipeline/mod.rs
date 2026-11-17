@@ -7,8 +7,9 @@
 //! (`analysis::verify`); a rejected output is repaired at most twice. Progress is derived from the stored
 //! documents. The driver is restart-safe (`runner-protocol.md` "Pipeline recovery"): stages with a document are
 //! skipped, the others are submitted again, which `JobExecutor::submit` answers with the existing live or
-//! succeeded job of the stage and generation. A failure ends the analysis (Retry runs it again); a cancel
-//! discards its partial results and agent session.
+//! succeeded job of the stage and generation. The Tour opens after planning and PR context; demand then precedes background rank order. A failed
+//! flow stays retryable while other results remain available. Cancel discards analysis data but keeps
+//! the PR-level analytic and working sessions (ADR-004).
 
 use std::borrow::Cow;
 use std::collections::HashSet;

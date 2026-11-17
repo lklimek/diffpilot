@@ -23,6 +23,7 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `jobs` | the queue: kind, priority (0 Ask, 1 batch), state, spec (no secrets), attempt/max, lease, job-token hash, cancel flag, `resumes_at`, `ready_output` + `ready_output_attempt`, result, `stage` (`plan:<n>`, `pr_context`, `flow:<id>`, `ask:<id>`), `generation` (0 first run, 1..2 repair runs), `round` (the analysis's round at enqueue), `github_access_granted` (the last claim got an installation token; the queue executor reports it with the result) | partial unique indexes: one claimed/running job per analysis and per credential, one live or succeeded job per (analysis, stage, generation, round); PR-level insert/update triggers exclude simultaneous claimed/running jobs across analyses and credentials; claim-order and by-analysis indexes |
 | `installation_tokens` | AES-GCM ciphertext and expiry of the installation token per (job, attempt), kept until revocation is confirmed | PK `(job_id, attempt)`; listed for revocation once the attempt is no longer claimed or running |
 | `job_events` | bounded activity log (last 500 per job) | PK `(job_id, attempt, seq)` |
+| `flow_work` | durable flow demands and failures; analysis background switch lives on `analyses` | PK `(analysis_id, flow_id)`; cascade on analysis removal |
 | `review_states` | ticks and last viewed block per user and analysis | – |
 | `questions` | private Ask questions and answers; lists and quotas scoped by authenticated user; fallback history spans the PR, latest 20 final answers | `user_id` selects the owner |
 | `working_sessions` | private Ask thread and fork's analytic generation, with `tenant_id` | PK `(pull_request_id, user_id)`; cascading PR/user foreign keys |
@@ -64,7 +65,7 @@ Schema changes are change requests to the coordinator.
 clear it together with the failure message. `llm_credentials.last_call_failure` accepts `configuration` for a
 required agent skill that could not be provided. These remain additions to the single pre-deployment schema.
 
-User pause keeps existing jobs and documents. The claim query excludes analyses with `user_paused_at`;
+User pause keeps existing jobs and documents. The claim query excludes pipeline jobs of analyses with `user_paused_at` (private Ask remains available);
 state updates preserve the user pause even when a provider limit arrives. Resume clears only the user
 pause and keeps an unexpired job usage-limit pause. Jobs retain the model choice present at submission;
 `models_used` groups the existing JSON specs of claimed jobs without another table or counter.
@@ -73,3 +74,9 @@ Analytic completion advances the generation even when it keeps the same thread i
 only `working_sessions` using the job's durable question owner. A stale fork is not selected at claim. Successful
 analytic output without an archive clears its reference and invalidates forks. Cancel/Re-analyze keep archives;
 explicit PR removal or PR-wide retention deletes them. This migration is rewritten, not upgraded in place.
+
+Lazy review adds `analyses.background_analysis` (boolean, default 1) and `flow_work` keyed by analysis/flow,
+with tenant, nullable requested timestamp and nullable plain error. Lazy scheduling adds no fields to stored
+plan or flow documents; the separate concise-assessment amendment makes low assessment details optional.
+Accepted flow documents override scheduling rows. Newest demand precedes plan rank; failed work is excluded
+from background scheduling. Explicit retry advances the job round only between serial pipeline jobs.

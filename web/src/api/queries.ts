@@ -23,7 +23,7 @@ import { api } from "./client";
 /** The signed-in user and CSRF token. */
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: api.getMe });
 
-/** The finished analysis's tour. */
+/** The review-ready analysis's tour, including pending flow placeholders. */
 export const useTour = (id: AnalysisId) =>
   useQuery({ queryKey: ["tour", id], queryFn: () => api.getTour(id) });
 
@@ -115,6 +115,12 @@ export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
       followAnalysisEvents(id, {
         onEvent: (event) => {
           setLost(false);
+          if (
+            event.event === "analysis" &&
+            event.summary.id === id &&
+            event.summary.review_ready !== undefined
+          )
+            void client.invalidateQueries({ queryKey: ["tour", id] });
           if (event.event === "question") arrive(client, id, event.question, true);
           if (event.event === "analysis" && event.summary.id === id && event.summary.usage !== undefined) {
             client.setQueryData<Tour>(
@@ -422,3 +428,16 @@ export function useSetLlm() {
 export const usePauseAnalysis = () => useMutation({ mutationFn: api.pauseAnalysis });
 /** Continue a user-paused analysis. */
 export const useResumeAnalysis = () => useMutation({ mutationFn: api.resumeAnalysis });
+
+/** Durable flow demand and background preference, with immediate local cache refresh. */
+export function useFlowWork(id: AnalysisId) {
+  const client = useQueryClient();
+  const refresh = () => client.invalidateQueries({ queryKey: ["tour", id] });
+  return {
+    request: useMutation({ mutationFn: (flow: string) => api.requestFlow(id, flow), onSuccess: refresh }),
+    background: useMutation({
+      mutationFn: (enabled: boolean) => api.setBackgroundAnalysis(id, enabled),
+      onSuccess: refresh,
+    }),
+  };
+}

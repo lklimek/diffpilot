@@ -1,3 +1,4 @@
+import { requestFlow, setBackgroundAnalysis } from "./flow-work";
 import { setLlm } from "./set-llm";
 import { pauseAnalysis } from "./pause-analysis";
 import { resumeAnalysis } from "./resume-analysis";
@@ -28,6 +29,8 @@ import { updateComment } from "./update-comment";
 
 /** Handlers of the mocked endpoints (fixtures/pr-482 seed and screen scenarios), one file per endpoint. */
 export const handlers = [
+  requestFlow,
+  setBackgroundAnalysis,
   setLlm,
   pauseAnalysis,
   resumeAnalysis,

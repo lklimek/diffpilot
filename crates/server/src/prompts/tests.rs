@@ -981,7 +981,7 @@ fn analyse_flow_requires_assessments_on_every_step_and_asks_for_questions() {
         .expect("flow prompt");
     let (instructions, _) = split(prompt);
     for rule in [
-        "Every step requires a non-null `assessment`, including low-risk and context steps",
+        "Every step requires an `### assessment`, including low-risk and context steps",
         "The flow risk is the highest step band",
         "use `blocking: no_action_proposed` and omit `smallest_correction`",
         "A severe pre-existing bug that this PR fixes belongs in `introduction.problem_before`",

@@ -67,8 +67,8 @@ type Updates = SelectAll<BoxStream<'static, (JobStage, u32, Item)>>;
 enum FlowEnd {
     /// Its output passed verification and is stored.
     Accepted,
-    /// No accepted output after every repair run: its lines are Unexplained.
-    Unexplained,
+    /// No accepted output; the flow remains explicitly failed until requested again.
+    Failed,
 }
 
 /// A repair run's input: the rejected output and why.
@@ -95,7 +95,7 @@ struct Driver<'a> {
     ended: BTreeMap<FlowId, FlowEnd>,
     /// The generation each submitted stage is at.
     live: HashMap<JobStage, u32>,
-    /// Stages not submitted yet, in order: plan batches, PR context, then the flows in plan order.
+    /// Preparation stages not submitted yet: plan batches, then PR context.
     waiting: VecDeque<JobStage>,
     /// The one stage whose job runs now: the next is submitted only once its result is verified and stored (or
     /// the stage ended), so every job's context pack holds the results of all earlier stages.
@@ -211,6 +211,7 @@ async fn snapshot(
 
 impl Driver<'_> {
     async fn run(&mut self) -> Result<(), PipelineError> {
+        let mut events = self.state.progress.subscribe(self.analysis);
         let mut updates = Updates::new();
         self.set_progress().await?;
         let plan_stored = self.results.plan.is_some();
@@ -243,7 +244,23 @@ impl Driver<'_> {
             self.merge_when_planned().await?;
         }
         self.advance(&mut updates).await?;
-        while let Some((stage, generation, item)) = updates.next().await {
+        loop {
+            self.advance(&mut updates).await?;
+            if self.in_flight.is_none() {
+                if self.results.pr_context.is_some()
+                    && self.results.flows.len() == self.flow_total() as usize
+                {
+                    break;
+                }
+                let _ = events.recv().await;
+                control::wait_for_resume(self.state, self.analysis).await?;
+                continue;
+            }
+            let Some((stage, generation, item)) = updates.next().await else {
+                return Err(PipelineError::NoResult {
+                    stage: "flow".into(),
+                });
+            };
             let item = match item {
                 Item::Job(item) => item,
                 // The limit reset: the job waits for a runner again (unless a later pause was reported since).
@@ -296,10 +313,6 @@ impl Driver<'_> {
                 }
                 None => {}
             }
-            // Every stage resolved: pause timers still pending do not hold the analysis open.
-            if self.in_flight.is_none() && self.waiting.is_empty() {
-                break;
-            }
         }
         self.finish_analysis().await
     }
@@ -307,7 +320,16 @@ impl Driver<'_> {
     /// Submits the next waiting stage once no job runs; stages resolved meanwhile are skipped.
     async fn advance(&mut self, updates: &mut Updates) -> Result<(), PipelineError> {
         while self.in_flight.is_none() {
-            let Some(stage) = self.waiting.pop_front() else {
+            control::wait_for_resume(self.state, self.analysis).await?;
+            let stage = if let Some(stage) = self.waiting.pop_front() {
+                stage
+            } else if self.results.pr_context.is_some() {
+                let Some(id) = self.state.db.flow_work().next(self.analysis).await? else {
+                    return Ok(());
+                };
+                self.ended.remove(&id);
+                JobStage::Flow(id)
+            } else {
                 return Ok(());
             };
             if self.resolved(&stage) {
@@ -323,7 +345,7 @@ impl Driver<'_> {
                         .await?;
                 }
                 (Ok(()), _) => {}
-                // A flow whose prompt is over budget is not sent: its lines are Unexplained with that reason.
+                // A flow whose prompt is over budget is not sent: it stays failed with that reason.
                 (
                     Err(PipelineError::Prompt(PromptError::OverBudget {
                         kind: "analyse_flow",
@@ -333,16 +355,26 @@ impl Driver<'_> {
                     JobStage::Flow(id),
                 ) => {
                     tracing::warn!(analysis = %self.analysis, flow = %id, bytes,
-                        "the flow's prompt is over budget; its lines stay Unexplained");
+                        "the flow's prompt is over budget; it stays failed");
                     let lines = self
                         .verified_plan
                         .as_ref()
                         .and_then(|plan| plan.flow_lines.get(id).cloned())
                         .unwrap_or_default();
                     self.store_unsent(&id.0, lines).await?;
-                    self.ended.insert(id.clone(), FlowEnd::Unexplained);
+                    self.state
+                        .db
+                        .flow_work()
+                        .fail(
+                            self.analysis,
+                            id,
+                            "This flow is too large for the agent request.",
+                        )
+                        .await?;
+                    self.ended.insert(id.clone(), FlowEnd::Failed);
                     self.set_progress().await?;
                 }
+                (Err(PipelineError::Executor(ExecutorError::Superseded)), _) => continue,
                 (Err(error), _) => return Err(error),
             }
         }
@@ -395,19 +427,13 @@ impl Driver<'_> {
             tracing::error!(analysis = %self.analysis, repairs = verdict.repairs.len(),
                 "stored outputs fail the whole-analysis check; their flows are Unexplained in the Tour");
         }
-        let unexplained = self
-            .ended
-            .values()
-            .filter(|end| **end == FlowEnd::Unexplained)
-            .count();
         let total = self.flow_total();
         self.set_state(AnalysisState::Finished { total }).await?;
-        tracing::info!(analysis = %self.analysis, flows = total, unexplained, "analysis finished");
+        tracing::info!(analysis = %self.analysis, flows = total, "analysis finished");
         Ok(())
     }
 
-    /// The plan is known (stored, merged or empty): verify it against the agent hunks, then queue the flows
-    /// without a stored analysis, in plan order.
+    /// The plan is known (stored, merged or empty): verify it and recover accepted flow results.
     async fn plan_known(&mut self, plan: PlanOutput, store: bool) -> Result<(), PipelineError> {
         let verified = match verdict::plan(&plan, &self.facts.listed)? {
             Ok(verified) => verified,
@@ -438,14 +464,9 @@ impl Driver<'_> {
         for id in stored {
             self.ended.insert(id, FlowEnd::Accepted);
         }
-        let ids: Vec<FlowId> = plan.flows.iter().map(|flow| flow.id.clone()).collect();
+
         self.results.plan = Some(plan);
         self.set_progress().await?;
-        for id in ids {
-            if !self.ended.contains_key(&id) {
-                self.waiting.push_back(JobStage::Flow(id));
-            }
-        }
         Ok(())
     }
 
@@ -473,6 +494,22 @@ impl Driver<'_> {
         let output = match result.outcome {
             JobOutcome::Succeeded { output } => output,
             JobOutcome::Failed { kind, message } => {
+                if let JobStage::Flow(id) = &stage
+                    && kind != contracts::job::result::JobFailureKind::Configuration
+                {
+                    self.state
+                        .db
+                        .flow_work()
+                        .fail(
+                            self.analysis,
+                            id,
+                            "The flow analysis failed. Retry this flow.",
+                        )
+                        .await?;
+                    self.ended.insert(id.clone(), FlowEnd::Failed);
+                    self.set_progress().await?;
+                    return Ok(());
+                }
                 return Err(PipelineError::JobFailed {
                     flow: self.flow_ref(&stage),
                     stage: stage.key(),
@@ -480,7 +517,16 @@ impl Driver<'_> {
                     detail: message,
                 });
             }
-            JobOutcome::Cancelled => return Err(PipelineError::Cancelled { stage: stage.key() }),
+            JobOutcome::Cancelled => {
+                if matches!(stage, JobStage::Flow(_))
+                    && control::is_live(&self.state.db.analyses().get(self.analysis).await?.state)
+                {
+                    self.in_flight = None;
+                    self.live.remove(&stage);
+                    return Ok(());
+                }
+                return Err(PipelineError::Cancelled { stage: stage.key() });
+            }
             JobOutcome::UsageLimited { .. } => {
                 return Err(PipelineError::JobFailed {
                     flow: self.flow_ref(&stage),
@@ -522,6 +568,7 @@ impl Driver<'_> {
                                 )
                                 .await?;
                             self.results.pr_context = Some(context);
+                            self.set_progress().await?;
                             None
                         }
                         Err(issues) => Some(issues),
@@ -580,6 +627,11 @@ impl Driver<'_> {
                     tracing::warn!(analysis = %self.analysis, stage = %stage.key(), bytes,
                         "rejected agent output too large for a repair run");
                 }
+                Err(PipelineError::Executor(ExecutorError::Superseded)) => {
+                    self.in_flight = None;
+                    self.live.remove(&stage);
+                    return Ok(());
+                }
                 Err(error) => return Err(error),
             }
         } else {
@@ -588,7 +640,16 @@ impl Driver<'_> {
         }
         match stage {
             JobStage::Flow(id) => {
-                self.ended.insert(id, FlowEnd::Unexplained);
+                self.state
+                    .db
+                    .flow_work()
+                    .fail(
+                        self.analysis,
+                        &id,
+                        "The flow output failed verification after repairs. Retry this flow.",
+                    )
+                    .await?;
+                self.ended.insert(id, FlowEnd::Failed);
                 self.set_progress().await?;
                 Ok(())
             }
@@ -898,15 +959,22 @@ impl Driver<'_> {
     }
 
     fn follow(&self, updates: &mut Updates, stage: JobStage, generation: u32, handle: JobHandle) {
-        let ended = stage.clone();
         let events = self
             .state
             .executor
             .events(&handle)
-            .map(move |update| (stage.clone(), generation, Item::Job(Some(update))))
-            .chain(stream::once(
-                async move { (ended, generation, Item::Job(None)) },
-            ));
+            .map(Some)
+            .chain(stream::once(async { None }))
+            .scan(false, move |finished, update| {
+                // A finished stream must not close a later attempt of this same stage.
+                let suppress = update.is_none() && *finished;
+                if matches!(update, Some(Ok(JobUpdate::Finished { .. }))) {
+                    *finished = true;
+                }
+                futures::future::ready(
+                    (!suppress).then(|| (stage.clone(), generation, Item::Job(update))),
+                )
+            });
         updates.push(events.boxed());
     }
 
@@ -1015,7 +1083,7 @@ impl Driver<'_> {
 
     /// Flows ended (accepted or Unexplained) and planned; total `None` before the plan.
     fn progress(&self) -> (u32, Option<u32>) {
-        let done = u32::try_from(self.ended.len()).unwrap_or(u32::MAX);
+        let done = u32::try_from(self.results.flows.len()).unwrap_or(u32::MAX);
         (done, self.results.plan.is_some().then(|| self.flow_total()))
     }
 

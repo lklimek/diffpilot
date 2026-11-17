@@ -30,10 +30,11 @@ export const SILENT_MS = 45_000;
 interface AnalysisProgressProps {
   /** State of the analysis (brief §4.2). */
   state: AnalysisState;
+  reviewReady?: boolean;
   /** Whole-run facts; absent on older servers. */
   progress?: RunProgress;
   usage?: UsageTotals | null;
-  /** Where "Open review" leads once the analysis has finished. */
+  /** Where "Open review" leads once planning and PR context are accepted. */
   reviewHref: string;
   /** A cancel or retry request is running: the actions are disabled. */
   busy: boolean;
@@ -196,6 +197,7 @@ function Bar({
 /** The single centred progress bar of an analysis with its actions (brief §4.2). */
 export function AnalysisProgress({
   state,
+  reviewReady,
   progress,
   reviewHref,
   usage,
@@ -212,7 +214,10 @@ export function AnalysisProgress({
     state.state === "running" || state.state === "paused" ? state.done : (progress?.flows.done ?? 0);
   const cancelText = `Cancel discards the plan and the ${done} analysed flows. The agent's session for this pull request is kept. Pause keeps everything.`;
   const live = state.state !== "finished" && state.state !== "cancelled";
-  const stage = stageText(state);
+  const stage =
+    reviewReady && state.state === "running" && !state.stage
+      ? "No flow job is running. Open the review to choose a flow or change background analysis."
+      : stageText(state);
   const started =
     (state.state === "planning" || state.state === "running") && state.stage ? state.stage.started_at : null;
   const silence = activity ? activity.now - activity.lastSignalAt : 0;
@@ -230,7 +235,11 @@ export function AnalysisProgress({
     <section aria-label="Analysis progress" className="w-3/5 max-w-[1400px] min-w-[min(100vw_-_4rem,480px)]">
       {/* Changes with the server's state and stage, and the silence notice every tick at most; the time stays outside. */}
       <div aria-live="polite" className="mb-2 grid gap-0.5">
-        <p className="text-[15px] font-semibold">{label(state)}</p>
+        <p className="text-[15px] font-semibold">
+          {reviewReady && state.state === "running"
+            ? `${state.done} of ${state.total} flows analysed. The review is open.`
+            : label(state)}
+        </p>
         {stage && <p className="text-[13px]">{stage}</p>}
         {silent ? (
           <p className="text-[13px]">{`No signal from the server for ${silenceText(silence)}; reconnecting…`}</p>
@@ -287,7 +296,7 @@ export function AnalysisProgress({
               </button>
             </Tooltip>
           )}
-          {state.state === "finished" && (
+          {(state.state === "finished" || reviewReady) && (
             <Tooltip tip="Opens the review of this analysis.">
               <a href={reviewHref} className={buttonClass("primary")}>
                 Open review

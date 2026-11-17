@@ -54,3 +54,8 @@
 
 Question snapshots are queried by user. Live foreign question events are skipped, without closing the stream
 or emitting counts/author markers. The shared broadcast stays server-internal; no other user's Q&A leaves it.
+
+Lazy review reuses `analysis` snapshots: `review_ready` becomes true after accepted plan and PR context,
+and each accepted flow, flow failure, demand or background-switch change publishes a snapshot. The client
+refetches the Tour to read `Flow.analysis_status` and new steps. Cancel sets `review_ready` false and also
+invalidates the partial Tour. No extra polling or replay protocol is added; reconnect snapshots resynchronise it.

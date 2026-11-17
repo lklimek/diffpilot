@@ -23,7 +23,11 @@ export function liveAnalysis(): AnalysisSummary {
   if (stored) return structuredClone(stored);
   const seed = seedNow("analysis") as AnalysisSummary;
   const pinned = scenario().analysis;
-  const usageSeed = { ...seed, usage: scenario().usage ?? seed.usage };
+  const usageSeed = {
+    ...seed,
+    ...(scenario().lazy ? { review_ready: true, background_analysis: true } : {}),
+    usage: scenario().usage ?? seed.usage,
+  };
   const summary = pinned ? { ...usageSeed, state: pinned, finished_at: null } : usageSeed;
   const progress = scenario().progress;
   return progress ? { ...summary, progress: progress(summary.state) } : summary;
@@ -32,7 +36,12 @@ export function liveAnalysis(): AnalysisSummary {
 /** Publishes a new state. */
 export function setLiveState(state: AnalysisState): AnalysisSummary {
   const terminal = ["finished", "failed", "cancelled"].includes(state.state);
-  stored = { ...liveAnalysis(), state, finished_at: terminal ? new Date().toISOString() : null };
+  stored = {
+    ...liveAnalysis(),
+    state,
+    ...(state.state === "cancelled" ? { review_ready: false } : {}),
+    finished_at: terminal ? new Date().toISOString() : null,
+  };
   const progress = scenario().progress;
   if (progress) stored.progress = progress(state);
   for (const listener of listeners) listener(structuredClone(stored));
@@ -98,4 +107,11 @@ export function resetLive(): void {
   streamsOpened = 0;
   stored = null;
   listeners.clear();
+}
+
+/** Changes scheduling facts and publishes the same SSE summary as the server. */
+export function setBackground(enabled: boolean): AnalysisSummary {
+  stored = { ...liveAnalysis(), background_analysis: enabled };
+  for (const listener of listeners) listener(structuredClone(stored));
+  return liveAnalysis();
 }

@@ -121,7 +121,10 @@ fn text(entry: &PendingFeedback, pr: &PrSummary, flows: &[FlowAnalysisOutput]) -
                 text.push_str(&format!(
                     "; LLM assessment: {} risk, \"{}\"",
                     risk_name(assessment.risk),
-                    clip(&assessment.headline, MAX_FIELD_CHARS)
+                    clip(
+                        assessment.headline.as_deref().unwrap_or(&assessment.reason),
+                        MAX_FIELD_CHARS
+                    )
                 ));
             }
             text

@@ -206,10 +206,7 @@ impl Analyses<'_> {
              (SELECT json_array_length(body, '$.flows') FROM documents WHERE analysis_id = a.id AND kind = 'plan' AND key = '') AS flows,
              (SELECT COUNT(*) FROM documents WHERE analysis_id = a.id AND kind = 'plan' AND key <> '') AS plan_done,
              EXISTS(SELECT 1 FROM documents WHERE analysis_id = a.id AND kind = 'pr_context') AS context_done,
-             COALESCE((SELECT CAST(f.key AS INTEGER) FROM documents d, json_each(d.body, '$.flows') f
-                       WHERE d.analysis_id = a.id AND d.kind = 'plan' AND d.key = ''
-                         AND json_extract(f.value, '$.id') = a.failure_flow_id),
-                      (SELECT COUNT(*) FROM documents WHERE analysis_id = a.id AND kind = 'flow')) AS stored_flow_done
+             (SELECT COUNT(*) FROM documents WHERE analysis_id = a.id AND kind = 'flow') AS stored_flow_done
              FROM analyses a WHERE a.id = ?")
             .bind(&id).fetch_one(&mut *tx).await?;
         let rows = sqlx::query(
@@ -234,7 +231,10 @@ impl Analyses<'_> {
         let mut active_part = None;
         let mut started_at = summary.created_at;
         for (index, row) in rows.iter().enumerate() {
-            if index == 0 && meta.try_get::<u32, _>("round")? > 0 {
+            if index == 0
+                && meta.try_get::<u32, _>("round")? > 0
+                && summary.review_ready != Some(true)
+            {
                 started_at = parse_ts(&row.try_get::<String, _>("created_at")?, "jobs.created_at")?;
             }
             let kind: JobKind = parse_wire(&row.try_get::<String, _>("kind")?, "jobs.kind")?;
@@ -704,7 +704,7 @@ mod tests {
         );
     }
     #[tokio::test]
-    async fn failed_flow_keeps_the_count_of_earlier_completed_flows() {
+    async fn failed_flow_counts_accepted_documents_not_plan_position() {
         let db = Db::in_memory().await.unwrap();
         let id = testing::seed_analysis(&db).await.unwrap();
         db.documents()
@@ -727,7 +727,7 @@ mod tests {
             )
             .await
             .unwrap();
-        // f1 may have ended Unexplained; sequential execution still means it completed before f2 failed.
+        // f2 was requested first: a failure there cannot imply that f1 was analysed.
         db.analyses()
             .set_state(
                 id,
@@ -744,7 +744,124 @@ mod tests {
             .await
             .unwrap();
         let progress = db.analyses().summary(id).await.unwrap().progress.unwrap();
-        assert_eq!(progress.flows, stage(1, Some(2), true));
+        assert_eq!(progress.flows, stage(0, Some(2), true));
         assert_eq!(progress.estimate, None);
+    }
+    #[tokio::test]
+    async fn on_demand_and_failed_flows_have_no_whole_run_eta() {
+        let db = Db::in_memory().await.unwrap();
+        let id = testing::seed_analysis(&db).await.unwrap();
+        for (kind, key, body) in [
+            (
+                DocumentKind::Plan,
+                "",
+                serde_json::json!({"flows":[{"id":"f1"},{"id":"f2"}]}),
+            ),
+            (DocumentKind::PrContext, "", serde_json::json!({})),
+            (DocumentKind::Flow, "f1", serde_json::json!({})),
+        ] {
+            db.documents()
+                .put(id, kind, key, &body, Utc::now())
+                .await
+                .unwrap();
+        }
+        let job = db
+            .jobs()
+            .enqueue(
+                NewJob {
+                    spec: testing::job_spec(id, JobKind::AnalyseFlow),
+                    stage: JobStage::Flow(contracts::ids::FlowId("f1".into())),
+                    generation: 0,
+                    priority: JobPriority::Batch,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE jobs SET state='succeeded', claimed_at='2026-11-17T10:00:00Z', finished_at='2026-11-17T10:01:00Z' WHERE id=?")
+            .bind(job.id.to_string()).execute(&db.pool).await.unwrap();
+        db.analyses()
+            .set_state(
+                id,
+                &AnalysisState::Running {
+                    done: 1,
+                    total: 2,
+                    stage: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            db.analyses()
+                .summary(id)
+                .await
+                .unwrap()
+                .progress
+                .unwrap()
+                .estimate
+                .is_some()
+        );
+        db.flow_work()
+            .set_background(id, false, Utc::now())
+            .await
+            .unwrap();
+        assert!(
+            db.analyses()
+                .summary(id)
+                .await
+                .unwrap()
+                .progress
+                .unwrap()
+                .estimate
+                .is_none()
+        );
+        db.flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .unwrap();
+        db.flow_work()
+            .fail(id, &contracts::ids::FlowId("f2".into()), "Retry needed")
+            .await
+            .unwrap();
+        assert!(
+            db.analyses()
+                .summary(id)
+                .await
+                .unwrap()
+                .progress
+                .unwrap()
+                .estimate
+                .is_none()
+        );
+        let created = db.analyses().summary(id).await.unwrap().created_at;
+        sqlx::query("UPDATE analyses SET round=round+1 WHERE id=?")
+            .bind(id.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.jobs()
+            .enqueue(
+                NewJob {
+                    spec: testing::job_spec(id, JobKind::AnalyseFlow),
+                    stage: JobStage::Flow(contracts::ids::FlowId("f2".into())),
+                    generation: 0,
+                    priority: JobPriority::Batch,
+                },
+                created + chrono::TimeDelta::hours(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            db.analyses()
+                .summary(id)
+                .await
+                .unwrap()
+                .progress
+                .unwrap()
+                .started_at,
+            created,
+            "a flow retry must not reset the elapsed analysis time"
+        );
     }
 }

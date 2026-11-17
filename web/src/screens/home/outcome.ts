@@ -30,4 +30,6 @@ export const startsAtOnce = (resolved: ResolvePrResponse) =>
 
 /** The review of a finished analysis, else its progress screen. */
 export const analysisHref = (analysis: AnalysisSummary) =>
-  analysis.state.state === "finished" ? `/analyses/${analysis.id}` : `/analyses/${analysis.id}/progress`;
+  analysis.review_ready || analysis.state.state === "finished"
+    ? `/analyses/${analysis.id}`
+    : `/analyses/${analysis.id}/progress`;

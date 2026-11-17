@@ -210,6 +210,12 @@ const BLOCKING = {
 
 /** The assessment fields of brief §3 (shared by the inspector and the step block). */
 export function AssessmentFields({ assessment }: { assessment: Assessment }) {
+  if (assessment.risk === "low")
+    return (
+      <p>
+        <RiskLabel risk={assessment.risk} /> <CodeText text={assessment.reason} />
+      </p>
+    );
   const rows: [string, ReactNode][] = [
     ["What a production user or operator would notice", assessment.headline],
     [
@@ -220,8 +226,8 @@ export function AssessmentFields({ assessment }: { assessment: Assessment }) {
     ],
     ["Basis", assessment.basis_note],
     ["Not checked", assessment.not_checked],
-    ["Origin", ORIGIN[assessment.origin]],
-    ["Merge impact", BLOCKING[assessment.blocking]],
+    ["Origin", assessment.origin ? ORIGIN[assessment.origin] : null],
+    ["Merge impact", assessment.blocking ? BLOCKING[assessment.blocking] : null],
     ["Smallest correction", assessment.smallest_correction ?? "none given"],
   ];
   return (

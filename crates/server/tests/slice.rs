@@ -183,6 +183,19 @@ fn agent_output(stage: &str) -> Value {
     read_json(&fixtures().join("agent").join(file))
 }
 
+/// A flow fixture as the tagged file a runner would return for a claimed flow job.
+fn tagged_flow_output(spec: &contracts::job::spec::JobSpec, stage: &str) -> Value {
+    let context: analysis::tagged::Context = serde_json::from_value(
+        spec.flow_file
+            .clone()
+            .expect("flow job carries checker context")
+            .context,
+    )
+    .expect("flow context");
+    let document = serde_json::from_value(agent_output(stage)).expect("flow fixture");
+    Value::String(analysis::tagged::encode(&document, &context.catalog()).expect("flow fixture"))
+}
+
 impl JobExecutor for ScriptedExecutor {
     fn submit(&self, request: JobRequest) -> BoxFuture<'_, Result<JobHandle, ExecutorError>> {
         let stage = request.stage.key();
@@ -935,6 +948,85 @@ async fn pipeline_resumes_unfinished_analysis_from_stored_documents() {
     assert_eq!(h.executor.submitted(), ["flow:f2", "flow:f4", "flow:f5"]);
 }
 
+#[tokio::test]
+async fn restart_keeps_demand_and_background_off_with_partial_results() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let now = Utc::now();
+    for (kind, key, output) in [
+        (DocumentKind::Plan, "", "plan:1"),
+        (DocumentKind::PrContext, "", "pr_context"),
+        (DocumentKind::Flow, "f1", "flow:f1"),
+        (DocumentKind::Flow, "f3", "flow:f3"),
+    ] {
+        h.state
+            .db
+            .documents()
+            .put(id, kind, key, &agent_output(output), now)
+            .await
+            .unwrap();
+    }
+    h.state
+        .db
+        .flow_work()
+        .set_background(id, false, now)
+        .await
+        .unwrap();
+    h.state
+        .db
+        .flow_work()
+        .request(id, &contracts::ids::FlowId("f4".into()), now)
+        .await
+        .unwrap();
+    assert_eq!(
+        server::pipeline::resume_unfinished(&h.state).await.unwrap(),
+        1
+    );
+    for _ in 0..200 {
+        if h.state
+            .db
+            .documents()
+            .get::<Value>(id, DocumentKind::Flow, "f4")
+            .await
+            .unwrap()
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    assert_eq!(tour["analysis"]["background_analysis"], false);
+    assert_eq!(
+        tour["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["analysis_status"]["state"] == "analysed")
+            .count(),
+        3
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(h.executor.submitted(), ["flow:f4"]);
+    let (status, body) = json_of(
+        h.send(
+            "PUT",
+            &format!("/api/v1/analyses/{id}/background"),
+            Auth::SessionCsrf,
+            Some(json!({"enabled":true})),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.wait_until_finished(&id.to_string()).await;
+    assert_eq!(
+        *h.executor.submitted.lock().unwrap(),
+        ["flow:f4", "flow:f2", "flow:f5"]
+    );
+}
+
 /// The analysis's one MemCan profile lookup reaches every prompt (fenced as data) and the Tour's facts.
 #[tokio::test]
 async fn memcan_profile_lookup_reaches_every_prompt_and_the_tour() {
@@ -1438,72 +1530,65 @@ async fn lines_caps_deleted_blocks() {
     );
 }
 
-async fn fail_flow_2(h: &Harness, script: Script) -> AnalysisSummary {
-    h.executor.script("flow:f2", script);
-    let (status, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
-    assert_eq!(status, StatusCode::OK, "{resolved}");
-    let (status, created) = h
+/// Pending and failed flow ranges stay explicitly unassessed in their planned flow.
+async fn wait_for_failed_flow(h: &Harness, id: &str, flow: &str) -> Value {
+    for _ in 0..300 {
+        let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+        if status == StatusCode::OK
+            && tour["flows"].as_array().is_some_and(|flows| {
+                flows
+                    .iter()
+                    .any(|f| f["id"] == flow && f["analysis_status"]["state"] == "failed")
+            })
+        {
+            return tour;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("flow {flow} did not fail in time");
+}
+
+#[tokio::test]
+async fn failed_job_keeps_partial_review_and_can_be_requested_again() {
+    let h = harness().await;
+    h.executor.script("flow:f2", Script::Fail);
+    let id = h.create_fixture_analysis().await;
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
+    assert_eq!(tour["analysis"]["review_ready"], true);
+    assert_eq!(tour["analysis"]["state"]["state"], "running");
+    h.executor
+        .script("flow:f2", Script::Output(agent_output("flow:f2")));
+    let (status, body) = h
         .post(
-            "/api/v1/analyses",
-            json!({
-                "pr": { "repo": { "owner": "acme", "name": "node-client" }, "number": 482 },
-                "head_sha": resolved["pr"]["head_sha"],
-            }),
+            &format!("/api/v1/analyses/{id}/flows/f2/request"),
+            json!({}),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "{created}");
-    h.wait_until_ended(created["id"].as_str().expect("id"))
-        .await
-}
-
-/// Jobs run one at a time: a failure in f2 ends the analysis before any later flow is submitted.
-fn assert_failed_in_f2_and_nothing_after_it(h: &Harness, summary: &AnalysisSummary, message: &str) {
-    match &summary.state {
-        AnalysisState::Failed {
-            reason: None,
-            flow: Some(flow),
-            message: text,
-        } => {
-            assert_eq!(flow.id.0, "f2");
-            assert!(text.contains(message), "{text}");
-        }
-        other => panic!("expected a failure in f2, got {other:?}"),
-    }
-    let submitted = h.executor.submitted();
-    for flow in ["flow:f3", "flow:f4", "flow:f5"] {
-        assert!(
-            !submitted.contains(&flow.to_owned()),
-            "{flow} submitted: {submitted:?}"
-        );
-    }
-    assert!(!h.executor.cancelled().contains(&"flow:f2".to_owned()));
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        h.wait_until_finished(&id).await.state,
+        AnalysisState::Finished { total: 5 }
+    );
 }
 
 #[tokio::test]
-async fn failed_job_ends_the_analysis_before_later_jobs() {
-    let h = harness().await;
-    let summary = fail_flow_2(&h, Script::Fail).await;
-    assert_failed_in_f2_and_nothing_after_it(&h, &summary, "The agent run failed");
-}
-
-#[tokio::test]
-async fn schema_invalid_flow_exhausts_repairs_and_leaves_lines_unexplained() {
+async fn schema_invalid_flow_exhausts_repairs_and_stays_explicitly_failed() {
     let h = harness().await;
     h.executor
         .script("flow:f2", Script::Output(json!({ "flow_id": "f2" })));
     let id = h.create_fixture_analysis().await;
-    let summary = h.wait_until_finished(&id).await;
-    assert_eq!(summary.state, AnalysisState::Finished { total: 5 });
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
     assert_eq!(h.executor.specs_of("flow:f2").len(), 3);
-    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
-    assert!(
-        !tour["flows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|flow| flow["id"] == "f2")
-    );
-    assert!(!tour["quiet"]["unexplained"].as_array().unwrap().is_empty());
+    let flow = tour["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == "f2")
+        .unwrap();
+    assert!(flow["steps"].as_array().unwrap().is_empty());
+    assert!(!flow["planned"]["ranges"].as_array().unwrap().is_empty());
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
 }
 
 #[tokio::test]
@@ -1783,32 +1868,21 @@ async fn rejected_flow_output_is_repaired() {
     assert_eq!(tour["flows"].as_array().expect("flows").len(), 5);
 }
 
-/// Deviation from the plan's test wording ("repair exhausted -> failed flow + Retry"), decided by the
-/// coordinator: a flow without accepted output leaves its lines Unexplained and the analysis finishes.
 #[tokio::test]
-async fn exhausted_flow_repairs_leave_its_lines_unexplained() {
+async fn exhausted_flow_repairs_leave_a_retryable_flow_in_partial_review() {
     let h = harness().await;
     h.executor
         .script("flow:f2", Script::Output(rejected_flow("flow:f2")));
     let id = h.create_fixture_analysis().await;
-    let finished = h.wait_until_finished(&id).await;
-    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
     let submitted = h.executor.submitted();
     for run in ["flow:f2", "flow:f2#1", "flow:f2#2"] {
         assert!(submitted.contains(&run.to_owned()), "{submitted:?}");
     }
     assert!(!submitted.contains(&"flow:f2#3".to_owned()));
-    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
-    let flows: Vec<&Value> = tour["flows"].as_array().expect("flows").iter().collect();
-    assert_eq!(flows.len(), 4);
-    assert!(flows.iter().all(|flow| flow["id"] != json!("f2")));
-    assert!(
-        !tour["quiet"]["unexplained"]
-            .as_array()
-            .expect("unexplained")
-            .is_empty(),
-        "the lines of f2 are Unexplained"
-    );
+    assert_eq!(tour["flows"].as_array().unwrap().len(), 5);
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
 }
 
 #[tokio::test]
@@ -2203,7 +2277,7 @@ async fn huge_pull_request_is_planned_in_batches() {
     context["related_work"] = json!([]);
     h.executor.script("pr_context", Script::Output(context));
     for flow in ["f1", "f2"] {
-        // Rejected (the fixture flow's files are not in this repository): the flows end Unexplained.
+        // Rejected (the fixture flow's files are not in this repository): the flows remain explicitly failed.
         let mut output = agent_output("flow:f1");
         output["flow_id"] = json!(flow);
         h.executor
@@ -2242,12 +2316,22 @@ async fn huge_pull_request_is_planned_in_batches() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().expect("id").to_owned();
-    let finished = h.wait_until_finished(&id).await;
-    assert_eq!(finished.state, AnalysisState::Finished { total: 2 });
-    let progress = finished.progress.as_ref().expect("whole-run progress");
+    wait_for_failed_flow(&h, &id, "f1").await;
+    wait_for_failed_flow(&h, &id, "f2").await;
+    let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    let summary: AnalysisSummary = serde_json::from_value(summary).unwrap();
+    assert!(matches!(
+        summary.state,
+        AnalysisState::Running {
+            done: 0,
+            total: 2,
+            ..
+        }
+    ));
+    let progress = summary.progress.as_ref().expect("whole-run progress");
     assert_eq!(progress.planning.done, 2);
     assert_eq!(progress.planning.total, Some(2));
-    assert_eq!(progress.percent, Some(100));
+    assert_ne!(progress.percent, Some(100));
     let submitted = h.executor.submitted();
     for stage in ["plan:1", "plan:2", "flow:f1", "flow:f2"] {
         assert!(
@@ -2276,17 +2360,23 @@ async fn huge_pull_request_is_planned_in_batches() {
         "{titles:?}"
     );
     let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
-    let unexplained: Vec<&str> = tour["quiet"]["unexplained"]
+    assert_eq!(tour["quiet"]["unexplained"], json!([]));
+    let pending: Vec<&str> = tour["flows"]
         .as_array()
-        .expect("unexplained")
+        .unwrap()
         .iter()
-        .map(|row| row["file"].as_str().expect("file"))
+        .flat_map(|f| {
+            assert_eq!(f["analysis_status"]["state"], "failed");
+            f["planned"]["ranges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["file"].as_str().unwrap())
+        })
         .collect();
-    assert_eq!(
-        unexplained,
-        ["a/big.txt", "b/big.txt"],
-        "flows without accepted output"
-    );
+    assert_eq!(pending, ["a/big.txt", "b/big.txt"]);
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
 }
 
 /// What a context pack holds of a stage's stored result.
@@ -2382,7 +2472,7 @@ async fn each_job_is_claimable_only_after_the_previous_result_is_stored() {
 /// A flow whose prompt is over budget is not sent to the agent: its lines are Unexplained with that reason and
 /// the analysis goes on; a flow that was sent and ended without output has no reason.
 #[tokio::test]
-async fn flow_too_large_for_a_prompt_is_unexplained_with_its_reason() {
+async fn flow_too_large_for_a_prompt_stays_failed_with_its_reason() {
     let h = harness().await;
     let (base, head) = h.remote_repo("unsent", |repo| {
         let base = commit(repo, &[("README.txt", "readme\n")], "base");
@@ -2449,28 +2539,24 @@ async fn flow_too_large_for_a_prompt_is_unexplained_with_its_reason() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().expect("id").to_owned();
-    let finished = h.wait_until_ended(&id).await;
-    assert_eq!(finished.state, AnalysisState::Finished { total: 2 });
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
+    assert!(!h.executor.submitted().contains(&"flow:f2".to_owned()));
+    let flow = tour["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == "f2")
+        .unwrap();
     assert!(
-        !h.executor.submitted().contains(&"flow:f2".to_owned()),
-        "the over-budget flow is not sent"
+        flow["analysis_status"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("too large")
     );
-    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
-    assert_eq!(status, StatusCode::OK, "{tour}");
-    assert_eq!(
-        tour["quiet"]["unexplained"],
-        json!([
-            {
-                "file": "a/one.txt", "side": "head",
-                "ranges": [{ "start_line": 1, "end_line": 5 }]
-            },
-            {
-                "file": "b/two.txt", "side": "head",
-                "ranges": [{ "start_line": 1, "end_line": 5 }],
-                "reason": "too_large_for_prompt"
-            }
-        ])
-    );
+    assert_eq!(flow["planned"]["ranges"][0]["file"], "b/two.txt");
+    assert_eq!(tour["quiet"]["unexplained"], json!([]));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
 }
 
 /// A late usage limit of an earlier round's job pauses the shared credential: the new round's waiting job shows
@@ -2785,6 +2871,239 @@ async fn restart_leaves_user_paused_analysis_untouched_even_without_a_remote() {
             .await
             .unwrap()
             .is_empty()
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+#[tokio::test]
+async fn lazy_review_opens_after_context_before_any_flow() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    for stage in ["plan:1", "pr_context"] {
+        let mut claim = None;
+        for _ in 0..200 {
+            claim = h.runner_claim().await;
+            if claim.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let claim = claim.expect("job");
+        let result = JobResult {
+            job_id: claim.spec.job_id,
+            attempt: claim.spec.attempt,
+            outcome: JobOutcome::Succeeded {
+                output: agent_output(stage),
+            },
+            session: None,
+            usage: None,
+            skills_commit: None,
+            llm_call: None,
+        };
+        let uri = RUNNER_RESULT
+            .path
+            .replace("{id}", &claim.spec.job_id.to_string());
+        assert_eq!(
+            h.runner(&uri, claim.job_token.expose(), json!(result))
+                .await
+                .0,
+            StatusCode::NO_CONTENT
+        );
+    }
+    for _ in 0..200 {
+        let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
+        if summary["review_ready"] == true {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    assert_eq!(tour["analysis"]["review_ready"], true);
+    assert_eq!(tour["flows"].as_array().unwrap().len(), 5);
+    assert!(
+        tour["flows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["steps"].as_array().unwrap().is_empty())
+    );
+    assert!(
+        !tour["flows"][0]["planned"]["ranges"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let background = format!("/api/v1/analyses/{id}/background");
+    assert_eq!(
+        json_of(
+            h.send(
+                "PUT",
+                &background,
+                Auth::Session,
+                Some(json!({"enabled":false}))
+            )
+            .await
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        json_of(
+            h.send(
+                "PUT",
+                &background,
+                Auth::SessionCsrf,
+                Some(json!({"enabled":false}))
+            )
+            .await
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(h.runner_claim().await.is_none());
+    let request = format!("/api/v1/analyses/{id}/flows/f4/request");
+    assert_eq!(
+        json_of(h.send("POST", &request, Auth::Session, None).await)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(h.post(&request, json!({})).await.0, StatusCode::OK);
+    let mut claim = None;
+    for _ in 0..200 {
+        claim = h.runner_claim().await;
+        if claim.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let claim = claim.unwrap();
+    let job = h.state.db.jobs().get(claim.spec.job_id).await.unwrap();
+    assert_eq!(
+        job.stage,
+        JobStage::Flow(contracts::ids::FlowId("f4".into()))
+    );
+    // A new demand cannot interrupt f4; it is the next job after its accepted result.
+    assert_eq!(
+        h.post(
+            &format!("/api/v1/analyses/{id}/flows/f2/request"),
+            json!({})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(h.runner_claim().await.is_none());
+    let result = JobResult {
+        job_id: claim.spec.job_id,
+        attempt: claim.spec.attempt,
+        outcome: JobOutcome::Succeeded {
+            output: tagged_flow_output(&claim.spec, "flow:f4"),
+        },
+        session: None,
+        usage: None,
+        skills_commit: None,
+        llm_call: None,
+    };
+    let uri = RUNNER_RESULT
+        .path
+        .replace("{id}", &claim.spec.job_id.to_string());
+    assert_eq!(
+        h.runner(&uri, claim.job_token.expose(), json!(result))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    for _ in 0..200 {
+        if h.state
+            .db
+            .documents()
+            .get::<Value>(
+                serde_json::from_value(json!(id)).unwrap(),
+                DocumentKind::Flow,
+                "f4",
+            )
+            .await
+            .unwrap()
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let (_, partial) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    let f4 = partial["flows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["id"] == "f4")
+        .unwrap();
+    assert_eq!(f4["analysis_status"]["state"], "analysed");
+    assert!(!f4["steps"].as_array().unwrap().is_empty());
+    let mut next = None;
+    for _ in 0..200 {
+        next = h.runner_claim().await;
+        if next.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let next = next.unwrap();
+    assert_eq!(
+        h.state.db.jobs().get(next.spec.job_id).await.unwrap().stage,
+        JobStage::Flow(contracts::ids::FlowId("f2".into()))
+    );
+    // Pause keeps accepted steps usable for private Ask after the active flow finishes.
+    assert_eq!(
+        h.post(&format!("/api/v1/analyses/{id}/pause"), json!({}))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let result = JobResult {
+        job_id: next.spec.job_id,
+        attempt: next.spec.attempt,
+        outcome: JobOutcome::Succeeded {
+            output: tagged_flow_output(&next.spec, "flow:f2"),
+        },
+        session: None,
+        usage: None,
+        skills_commit: None,
+        llm_call: None,
+    };
+    let uri = RUNNER_RESULT
+        .path
+        .replace("{id}", &next.spec.job_id.to_string());
+    assert_eq!(
+        h.runner(&uri, next.job_token.expose(), json!(result))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let step = f4["steps"][0]["id"].as_str().unwrap();
+    let (status, question) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/steps/{step}/questions"),
+            json!({"text":"What changed here?"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{question}");
+    let mut ask = None;
+    for _ in 0..200 {
+        ask = h.runner_claim().await;
+        if ask.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        ask.expect("Ask is runnable while user-paused").spec.kind,
+        JobKind::Ask
     );
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;

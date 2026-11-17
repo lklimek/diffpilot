@@ -219,6 +219,14 @@ pub enum ProfileSource {
 /// One flow.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Flow {
+    /// Present on lazy Tours; absent on older finished Tours.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub analysis_status: Option<FlowAnalysisStatus>,
+    /// Plan metadata and deterministic ranges, available before step analysis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub planned: Option<PlannedFlowDetails>,
     /// Flow id.
     pub id: FlowId,
     /// 1-based position in the tour.
@@ -612,4 +620,40 @@ pub struct GithubThread {
     pub llm_status: Option<ThreadLlmStatus>,
     /// LLM reason for the status.
     pub llm_reason: Option<String>,
+}
+
+/// Work status, separate from risk or the reviewer's ticks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct FlowAnalysisStatus {
+    /// Where the work stands.
+    pub state: FlowAnalysisState,
+    /// Runner claim time for the current attempt, if any.
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Plain failure description; never provider output.
+    pub message: Option<String>,
+}
+/// Progress of one planned flow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowAnalysisState {
+    /// No accepted output or request.
+    NotAnalysed,
+    /// Requested, queued or waiting for a provider limit.
+    Queued,
+    /// The runner claimed this flow.
+    Analysing,
+    /// An accepted output exists.
+    Analysed,
+    /// The attempt or its repairs failed; explicit retry is possible.
+    Failed,
+}
+/// Information from the accepted plan, before step analysis.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PlannedFlowDetails {
+    /// LLM intent from planning.
+    pub intent: String,
+    /// Unique reading rank from planning.
+    pub importance_rank: u32,
+    /// Changed ranges assigned by the verified plan.
+    pub ranges: Vec<crate::common::FileRanges>,
 }

@@ -164,6 +164,14 @@ total: number, } | { "state": "cancelled" };
  */
 export type AnalysisSummary = {
 /**
+ * Plan and PR context are accepted; analysed flows can be reviewed while work continues.
+ */
+review_ready?: boolean,
+/**
+ * Whether unrequested flows are analysed in rank order.
+ */
+background_analysis?: boolean,
+/**
  * Distinct model choices of jobs actually claimed, in first-use order.
  */
 models_used?: Array<ModelChoice>,
@@ -362,7 +370,7 @@ export type Assessment = {
 /**
  * What a production user or operator would notice.
  */
-headline: string,
+headline?: string,
 /**
  * Risk band from the severity skill; never its numeric scores.
  */
@@ -374,23 +382,32 @@ reason: string,
 /**
  * What was read and that nothing was executed.
  */
-basis_note: string,
+basis_note?: string,
 /**
  * What was not checked.
  */
-not_checked: string,
+not_checked?: string,
 /**
  * Introduced by this pull request or pre-existing.
  */
-origin: Origin,
+origin?: Origin,
 /**
  * Whether an action is proposed before merge, as a follow-up, or neither.
  */
-blocking: Blocking,
+blocking?: Blocking,
 /**
- * The smallest correction, or null.
+ * The smallest correction, or null; the agent may omit it for low.
  */
 smallest_correction: string | null, };
+
+/**
+ * Change background work; an already running job is kept.
+ */
+export type BackgroundAnalysisRequest = {
+/**
+ * Analyse remaining flows automatically.
+ */
+enabled: boolean, };
 
 /**
  * Whether a statement was read in the code or inferred.
@@ -850,6 +867,23 @@ side: LineSide,
 range: LineRange, };
 
 /**
+ * Several line ranges of one file on one side.
+ */
+export type FileRanges = {
+/**
+ * Repository-relative path on that side.
+ */
+file: string,
+/**
+ * Commit the lines refer to.
+ */
+side: LineSide,
+/**
+ * The lines, ascending and disjoint.
+ */
+ranges: Array<LineRange>, };
+
+/**
  * A question about the fit of the change at project scale.
  */
 export type FitQuestion = {
@@ -875,6 +909,14 @@ export type FitTopic = "layer_or_repository" | "size_for_problem" | "duplicate_m
  * One flow.
  */
 export type Flow = {
+/**
+ * Present on lazy Tours; absent on older finished Tours.
+ */
+analysis_status?: FlowAnalysisStatus,
+/**
+ * Plan metadata and deterministic ranges, available before step analysis.
+ */
+planned?: PlannedFlowDetails,
 /**
  * Flow id.
  */
@@ -903,6 +945,28 @@ graph: FlowGraph,
  * Steps in order.
  */
 steps: Array<Step>, };
+
+/**
+ * Progress of one planned flow.
+ */
+export type FlowAnalysisState = "not_analysed" | "queued" | "analysing" | "analysed" | "failed";
+
+/**
+ * Work status, separate from risk or the reviewer's ticks.
+ */
+export type FlowAnalysisStatus = {
+/**
+ * Where the work stands.
+ */
+state: FlowAnalysisState,
+/**
+ * Runner claim time for the current attempt, if any.
+ */
+started_at: string | null,
+/**
+ * Plain failure description; never provider output.
+ */
+message: string | null, };
 
 /**
  * Deterministic facts of a flow.
@@ -1607,6 +1671,23 @@ index: number,
  * Total parts, fixed before the first plan job is submitted.
  */
 total: number, };
+
+/**
+ * Information from the accepted plan, before step analysis.
+ */
+export type PlannedFlowDetails = {
+/**
+ * LLM intent from planning.
+ */
+intent: string,
+/**
+ * Unique reading rank from planning.
+ */
+importance_rank: number,
+/**
+ * Changed ranges assigned by the verified plan.
+ */
+ranges: Array<FileRanges>, };
 
 /**
  * The PR context: deterministic facts and LLM content.

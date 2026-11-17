@@ -46,7 +46,22 @@ pub fn output_schema(kind: JobKind) -> Result<Value, StrictSchemaError> {
     match kind {
         JobKind::Plan => strict::output_schema_for::<plan::PlanOutput>(),
         JobKind::PrContext => strict::output_schema_for::<pr_context::PrContextOutput>(),
-        JobKind::AnalyseFlow => strict::output_schema_for::<analyse_flow::FlowAnalysisOutput>(),
+        JobKind::AnalyseFlow => {
+            let mut schema = strict::output_schema_for::<analyse_flow::FlowAnalysisOutput>()?;
+            // The strict subset requires every property of an object. A second closed shape lets low
+            // assessments omit the detailed fields rather than emitting six null placeholders.
+            if let Some(assessment) =
+                schema.pointer_mut("/properties/steps/items/properties/assessment")
+            {
+                let detailed = assessment.clone();
+                *assessment = serde_json::json!({"anyOf": [detailed, {
+                    "type":"object", "additionalProperties":false,
+                    "properties":{"risk":{"type":"string","enum":["low"]},"reason":{"type":"string"}},
+                    "required":["risk","reason"]
+                }]});
+            }
+            Ok(schema)
+        }
         JobKind::Ask => strict::output_schema_for::<ask::AskOutput>(),
     }
 }

@@ -2,6 +2,8 @@
 
 /** Browser-facing routes: method, path with `{param}` placeholders, authentication. */
 export const routes = {
+  requestFlow: { method: "POST", path: "/api/v1/analyses/{id}/flows/{flow}/request", auth: "session_csrf" },
+  setBackgroundAnalysis: { method: "PUT", path: "/api/v1/analyses/{id}/background", auth: "session_csrf" },
   healthz: { method: "GET", path: "/healthz", auth: "public" },
   authLogin: { method: "GET", path: "/auth/github/login", auth: "public" },
   authCallback: { method: "GET", path: "/auth/github/callback", auth: "public" },
