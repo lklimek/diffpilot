@@ -11,7 +11,7 @@ use runner::client::{ClientError, ServerClient};
 use runner::config::{Config, ConfigError, ProviderKind};
 use runner::execute::Executor;
 use runner::provider::LlmProvider;
-use runner::provider::codex::{CodexProvider, CodexSettings, credential_usable};
+use runner::provider::codex::{CodexCredential, CodexProvider, CodexSettings};
 use runner::worker::{CredentialCheck, Timing, Worker};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
@@ -67,16 +67,14 @@ async fn run() -> Result<(), StartError> {
     let (provider, credential_check): (Arc<dyn LlmProvider>, CredentialCheck) =
         match config.provider {
             ProviderKind::Codex => {
-                let master_auth = config.master_auth();
+                let credential = Arc::new(CodexCredential::new(config.master_auth()));
+                recover_credential(&credential, &dirs.codex_homes)?;
                 let provider = CodexProvider::new(CodexSettings {
                     binary: config.codex_bin.clone(),
-                    master_auth: master_auth.clone(),
+                    credential: Arc::clone(&credential),
                     egress_proxy: config.egress_proxy.clone(),
                 });
-                (
-                    Arc::new(provider),
-                    Arc::new(move || credential_usable(&master_auth)),
-                )
+                (Arc::new(provider), Arc::new(move || credential.usable()))
             }
             #[cfg(feature = "fake-provider")]
             ProviderKind::Fake => {
@@ -120,8 +118,25 @@ async fn private_dir(path: &Path) -> Result<(), StartError> {
         })
 }
 
-/// Work dirs of a previous run hold only checkouts; per-job `CODEX_HOME`s are kept for credential recovery
-/// (WP3-RUN, T13).
+/// Writes back the refreshed credential copies a previous run left in per-job `CODEX_HOME`s, then removes them
+/// (T13); before the first claim.
+fn recover_credential(credential: &CodexCredential, codex_homes: &Path) -> Result<(), StartError> {
+    let recovered = credential
+        .recover(codex_homes)
+        .map_err(|source| StartError::Dir {
+            path: codex_homes.to_path_buf(),
+            source,
+        })?;
+    if recovered > 0 {
+        tracing::info!(
+            recovered,
+            "recovered refreshed Codex credentials of interrupted jobs"
+        );
+    }
+    Ok(())
+}
+
+/// Work dirs of a previous run hold only checkouts.
 async fn remove_leftover_work_dirs(work: &Path) -> Result<(), StartError> {
     let dir_error = |source| StartError::Dir {
         path: work.to_path_buf(),

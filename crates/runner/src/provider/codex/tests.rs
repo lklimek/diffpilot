@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use chrono::Utc;
 use contracts::common::RepoRef;
@@ -41,6 +41,7 @@ env > "$PWD/child-env.txt"
 for arg in "$@"; do printf '%s\n' "$arg"; done > "$PWD/child-args.txt"
 cat > "$PWD/child-stdin.txt"
 if [ -f "$PWD/rotate" ]; then cat "$PWD/rotate" > "$CODEX_HOME/auth.json"; fi
+if [ -f "$PWD/symlink-auth" ]; then rm -f "$CODEX_HOME/auth.json"; ln -s "$(cat "$PWD/symlink-auth")" "$CODEX_HOME/auth.json"; fi
 if [ -f "$PWD/background" ]; then sleep 300 </dev/null >/dev/null 2>&1 & echo $! > "$PWD/background.pid"; fi
 cat "$PWD/scenario.jsonl"
 if [ -f "$PWD/hang" ]; then sleep 300; fi
@@ -117,7 +118,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
     };
     let provider = CodexProvider::new(CodexSettings {
         binary: fake_codex().to_path_buf(),
-        master_auth: master_auth.clone(),
+        credential: Arc::new(CodexCredential::new(master_auth.clone())),
         egress_proxy: Some(PROXY.to_owned()),
     });
     Harness {
@@ -400,21 +401,17 @@ fn rotated_auth() -> String {
         .to_string()
 }
 
-fn kept_copy(h: &Harness) -> PathBuf {
-    h.master_auth
-        .with_file_name(format!("auth.json.rotated-{}", h.call.job_id))
+fn usable(h: &Harness) -> bool {
+    h.provider.settings.credential.usable()
 }
 
 #[tokio::test]
-async fn rotated_credential_is_kept_and_the_credential_blocked() {
+async fn rotated_credential_is_written_back_to_the_master() {
     let h = harness("plan.jsonl", 0);
     fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
     run(&h).await.0.expect("success");
-    assert_eq!(fs::read_to_string(kept_copy(&h)).unwrap(), rotated_auth());
-    assert!(
-        !credential_usable(&h.master_auth),
-        "a rotation blocks the credential"
-    );
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), rotated_auth());
+    assert!(usable(&h), "a refresh keeps the credential usable");
 }
 
 #[tokio::test]
@@ -461,7 +458,7 @@ async fn secret_straddling_the_summary_limit_is_scrubbed_whole() {
 }
 
 #[tokio::test]
-async fn rotated_credential_survives_a_dropped_call() {
+async fn rotated_credential_is_written_back_when_the_call_is_dropped() {
     let h = harness("plan.jsonl", 0);
     fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
     fs::write(h.call.job_dir.join("hang"), "").unwrap();
@@ -472,15 +469,19 @@ async fn rotated_credential_survives_a_dropped_call() {
         dropped.is_err(),
         "the hanging call is dropped like at the runtime cap"
     );
-    assert_eq!(fs::read_to_string(kept_copy(&h)).unwrap(), rotated_auth());
-    assert!(!credential_usable(&h.master_auth));
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), rotated_auth());
+    assert!(usable(&h));
 }
 
 #[tokio::test]
-async fn blocked_credential_refuses_the_next_call_without_starting_codex() {
-    let h = harness("plan.jsonl", 0);
-    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
-    run(&h).await.0.expect("success");
+async fn unusable_credential_refuses_the_next_call_without_starting_codex() {
+    let h = harness("plan.jsonl", 1);
+    fs::write(
+        h.call.job_dir.join("scenario.jsonl"),
+        json!({"type": "turn.failed", "error": {"message": "refresh failed: refresh_token_reused"}}).to_string(),
+    )
+    .unwrap();
+    let _ = run(&h).await;
     fs::remove_file(h.call.job_dir.join("child-args.txt")).unwrap();
     fs::remove_file(h.call.codex_home.join("auth.json")).unwrap();
     let (result, _) = run(&h).await;
@@ -495,7 +496,7 @@ async fn blocked_credential_refuses_the_next_call_without_starting_codex() {
 }
 
 #[tokio::test]
-async fn refresh_failure_blocks_the_credential() {
+async fn refresh_reused_marks_credential_unusable() {
     let h = harness("plan.jsonl", 1);
     fs::write(
         h.call.job_dir.join("scenario.jsonl"),
@@ -507,7 +508,7 @@ async fn refresh_failure_blocks_the_credential() {
         matches!(result, Err(ProviderError::CredentialUnusable)),
         "{result:?}"
     );
-    assert!(!credential_usable(&h.master_auth));
+    assert!(!usable(&h));
 }
 
 /// Whether `pid` still runs (a zombie counts as gone).
@@ -653,19 +654,22 @@ async fn kill_and_disarm_unregisters_before_the_leader_is_reaped() {
 }
 
 #[tokio::test]
-async fn rotation_with_a_stalled_settle_ends_the_call_without_agent_text() {
+async fn unreadable_copy_ends_the_call_without_agent_text() {
     let h = harness("plan.jsonl", 1);
-    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
+    // The agent rotates the copy, then replaces it with a symlink: its new tokens stay unknown to the scrubber.
+    let elsewhere = h.call.job_dir.join("elsewhere.json");
+    fs::write(&elsewhere, rotated_auth()).unwrap();
     fs::write(
         h.call.job_dir.join("scenario.jsonl"),
         json!({"type": "turn.failed", "error": {"message": format!("boom {NEW_REFRESH_CANARY}")}})
             .to_string(),
     )
     .unwrap();
-    super::credential::STALL_SETTLE
-        .lock()
-        .unwrap()
-        .push(h.master_auth.clone());
+    fs::write(
+        h.call.job_dir.join("symlink-auth"),
+        elsewhere.to_str().unwrap(),
+    )
+    .unwrap();
     let (result, events) = run(&h).await;
     let all = format!("{result:?} {events:?}");
     assert!(!all.contains(NEW_REFRESH_CANARY), "{all}");
@@ -673,4 +677,5 @@ async fn rotation_with_a_stalled_settle_ends_the_call_without_agent_text() {
         matches!(result, Err(ProviderError::CredentialUnusable)),
         "an uncertain settle ends the call with the fixed error: {result:?}"
     );
+    assert!(!usable(&h));
 }

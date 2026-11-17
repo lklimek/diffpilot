@@ -2,11 +2,8 @@
 //! `CODEX_HOME` and a constructed environment (S1a, S1b, S6 env contract, threat model T2/T5).
 //!
 //! Codex runs as the leader of its own process group; the group is killed when the call ends, is cancelled
-//! (SIGTERM) or dropped, so agent commands left in the background do not outlive the attempt (a process that
-//! starts its own session escapes this; the uid-wide sweep is WP3-RUN, T1d). Stage 2 implements `run` only.
-//! Deferred to WP3-RUN: `resume` and end-of-job compaction (ADR-004), usage-limit `resets_at` from the rollout,
-//! MCP servers in the per-job config (T3c, T6), skills, credential compare-and-swap write-back (T13; until
-//! then [`credential`] keeps a rotated copy and blocks the credential), the two-uid supervisor (T1).
+//! (SIGTERM) or dropped, so agent commands left in the background do not outlive the attempt. The credential
+//! copy is written back with compare-and-swap after Codex exited ([`credential`], T13).
 
 mod credential;
 mod stream;
@@ -30,8 +27,8 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
+pub use credential::CodexCredential;
 use credential::JobCredential;
-pub use credential::credential_usable;
 pub(crate) use stream::{CodexStream, Exit, usage_delta};
 
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
@@ -58,8 +55,8 @@ const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
 pub struct CodexSettings {
     /// The `codex` binary; a bare name is resolved through [`AGENT_PATH`].
     pub binary: PathBuf,
-    /// The master `auth.json` of the runner's credential (runner store; copied into each job).
-    pub master_auth: PathBuf,
+    /// The runner's Codex credential (master in the runner store; copied into each job, written back after).
+    pub credential: Arc<CodexCredential>,
     /// Explicit egress proxy URL for the agent (`http://egress-proxy:3128`), if any.
     pub egress_proxy: Option<String>,
 }
@@ -100,9 +97,9 @@ impl CodexProvider {
                         .map(|memcan| memcan.token.expose()),
                 ),
         );
-        // Dropped after the call (also when the call is dropped): keeps a rotated credential.
+        // Dropped after the call (also when the call is dropped): writes a refreshed credential back.
         let mut credential = JobCredential::install(
-            &self.settings.master_auth,
+            &self.settings.credential,
             &call.codex_home,
             call.job_id,
             known,
@@ -173,7 +170,7 @@ impl CodexProvider {
     async fn exec(
         &self,
         call: &ProviderCall,
-        credential: &mut JobCredential,
+        credential: &mut JobCredential<'_>,
         events: &mpsc::Sender<ProviderEvent>,
     ) -> Result<stream::Finished, ProviderError> {
         let mut child = self.command(call).spawn().map_err(|error| {
@@ -449,7 +446,7 @@ async fn read_until_exit<R: AsyncBufRead + Unpin>(
     group: &mut ProcessGroup,
     lines: &mut Lines<R>,
     parsed: &mut CodexStream,
-    credential: &mut JobCredential,
+    credential: &mut JobCredential<'_>,
     events: &mpsc::Sender<ProviderEvent>,
 ) -> Result<ExitStatus, ProviderError> {
     let mut exit_poll = tokio::time::interval(EXIT_POLL);
@@ -490,7 +487,7 @@ async fn read_until_exit<R: AsyncBufRead + Unpin>(
 async fn forward(
     parsed: &mut CodexStream,
     line: &str,
-    credential: &mut JobCredential,
+    credential: &mut JobCredential<'_>,
     events: &mpsc::Sender<ProviderEvent>,
 ) -> Result<(), ProviderError> {
     if let Some((activity, summary)) = parsed.line(line) {

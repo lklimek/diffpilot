@@ -147,8 +147,8 @@ impl From<Result<(), Stop>> for Step {
     }
 }
 
-/// Whether the runner's LLM credential may be used (false after a rotation or refresh failure until the
-/// operator recovers it); reported with every claim.
+/// Whether the runner's LLM credential may be used (false after a refresh failure or a rejected write-back
+/// until the owner signs in again); reported with every claim.
 pub type CredentialCheck = Arc<dyn Fn() -> bool + Send + Sync>;
 
 /// Claims and runs jobs, one at a time.
