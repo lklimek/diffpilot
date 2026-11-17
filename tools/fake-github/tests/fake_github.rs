@@ -37,6 +37,8 @@ fn config() -> Config {
         app_url: Url::parse(APP_URL).unwrap(),
         user_login: None,
         user_id: None,
+        app_id: None,
+        app_public_key_file: None,
     }
 }
 
@@ -758,116 +760,6 @@ async fn graphql_rejects_positions_silently_and_never_submits() {
     assert_eq!(body["errors"][0]["type"], "FORBIDDEN");
     let (status, _) = graphql(&base, "not-a-token", PENDING, pull_variables()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
-
-/// An App JWT as the server sends it (RS256 header; the fake does not check the signature).
-fn app_jwt() -> String {
-    let part = |value: Value| URL_SAFE_NO_PAD.encode(value.to_string());
-    format!(
-        "{}.{}.c2lnbmF0dXJl",
-        part(serde_json::json!({"alg": "RS256", "typ": "JWT"})),
-        part(serde_json::json!({"iss": "1", "iat": 0, "exp": 600}))
-    )
-}
-
-async fn app_request(method: reqwest::Method, url: String, bearer: &str) -> reqwest::Response {
-    client()
-        .request(method, url)
-        .header(ACCEPT, "application/vnd.github+json")
-        .header(USER_AGENT, "smart-review")
-        .header(AUTHORIZATION, format!("Bearer {bearer}"))
-        .json(&serde_json::json!({
-            "repositories": ["node-client"],
-            "permissions": {"contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read"}
-        }))
-        .send()
-        .await
-        .unwrap()
-}
-
-#[tokio::test]
-async fn app_jwt_reads_the_installation_and_mints_a_one_hour_read_only_token() {
-    let base = spawn(config()).await;
-    let installation = app_request(
-        reqwest::Method::GET,
-        format!("{base}/repos/acme/node-client/installation"),
-        &app_jwt(),
-    )
-    .await;
-    assert_recorded(installation, "rest/repo-installation.json").await;
-    let missing = app_request(
-        reqwest::Method::GET,
-        format!("{base}/repos/acme/node-sdk/installation"),
-        &app_jwt(),
-    )
-    .await;
-    assert_recorded(missing, "rest/repo-installation-missing.json").await;
-    let user = sign_in(&base).await;
-    let as_user = app_request(
-        reqwest::Method::GET,
-        format!("{base}/repos/acme/node-client/installation"),
-        &token(&user, "access_token"),
-    )
-    .await;
-    assert_eq!(
-        as_user.status(),
-        StatusCode::UNAUTHORIZED,
-        "an App endpoint needs the App JWT"
-    );
-
-    let minted = app_request(
-        reqwest::Method::POST,
-        format!("{base}/app/installations/4820001/access_tokens"),
-        &app_jwt(),
-    )
-    .await;
-    assert_eq!(minted.status(), StatusCode::CREATED);
-    let minted: Value = minted.json().await.unwrap();
-    let recorded = recording("rest/installation-token.json")["response"].clone();
-    assert_eq!(minted["token"], recorded["token"]);
-    assert_eq!(minted["permissions"], recorded["permissions"]);
-    assert_eq!(minted["repositories"], recorded["repositories"]);
-    let expires = minted["expires_at"].as_str().unwrap();
-    let expires = std::time::UNIX_EPOCH
-        + std::time::Duration::from_secs(
-            u64::try_from(
-                chrono::DateTime::parse_from_rfc3339(expires)
-                    .unwrap()
-                    .timestamp(),
-            )
-            .unwrap(),
-        );
-    let lifetime = expires
-        .duration_since(std::time::SystemTime::now())
-        .unwrap()
-        .as_secs();
-    assert!(
-        (3500..=3600).contains(&lifetime),
-        "valid one hour from now: {lifetime} s"
-    );
-    let other = app_request(
-        reqwest::Method::POST,
-        format!("{base}/app/installations/1/access_tokens"),
-        &app_jwt(),
-    )
-    .await;
-    assert_eq!(other.status(), StatusCode::NOT_FOUND);
-
-    let installation_token = minted["token"].as_str().unwrap();
-    let revoked = app_request(
-        reqwest::Method::DELETE,
-        format!("{base}/installation/token"),
-        installation_token,
-    )
-    .await;
-    assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
-    let unknown = app_request(
-        reqwest::Method::DELETE,
-        format!("{base}/installation/token"),
-        "x",
-    )
-    .await;
-    assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

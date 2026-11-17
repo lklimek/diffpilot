@@ -1,7 +1,8 @@
 //! Fake GitHub for development and tests: serves the recordings of `fixtures/pr-482/github` — the OAuth web
 //! flow, `GET /user`, the recorded REST endpoints, the GitHub App endpoints (installation, installation token) and
 //! a GraphQL endpoint with review threads and an in-memory pending review. Deterministic; never contacts GitHub.
-//! Tests move the pull request's head with `POST /_fake/head` (`{"sha": "<40 hex>"}`).
+//! Tests move the pull request's head with `POST /_fake/head` (`{"sha": "<40 hex>"}`) and read the App JWTs and
+//! installation tokens issued with `GET /_fake/app-credentials`.
 
 mod app;
 mod fixtures;
@@ -39,6 +40,12 @@ pub struct Config {
     /// Numeric id of the fake user; default: the recorded id.
     #[arg(long, env = "FAKE_GITHUB_USER_ID")]
     pub user_id: Option<i64>,
+    /// GitHub App id the App JWTs must name (`SR_GITHUB_APP_ID`); without it every App call gets 401.
+    #[arg(long, env = "FAKE_GITHUB_APP_ID")]
+    pub app_id: Option<u64>,
+    /// Public key (PEM) of the App's private key the App JWTs must verify against.
+    #[arg(long, env = "FAKE_GITHUB_APP_PUBLIC_KEY_FILE")]
+    pub app_public_key_file: Option<PathBuf>,
 }
 
 /// The fake GitHub could not start.
@@ -70,6 +77,24 @@ pub enum StartError {
         /// The JSON error.
         #[source]
         source: serde_json::Error,
+    },
+    /// The App public key file could not be read.
+    #[error("could not read the GitHub App public key {}; check --app-public-key-file", path.display())]
+    ReadAppKey {
+        /// The key file.
+        path: PathBuf,
+        /// The I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The App public key file holds no RSA public key in PEM form.
+    #[error("the GitHub App public key {} is not an RSA public key in PEM form", path.display())]
+    AppKey {
+        /// The key file.
+        path: PathBuf,
+        /// The key error.
+        #[source]
+        source: jsonwebtoken::errors::Error,
     },
     /// A recording has an unusable method or status.
     #[error("the recording {} has an invalid {field}", path.display())]
@@ -147,7 +172,7 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
             recorded_head,
         }))
         .merge(oauth::routes(oauth))
-        .merge(app::routes(Arc::new(app::App::load(&config.fixture_dir)?)))
+        .merge(app::routes(Arc::new(app::App::load(config)?)))
         .merge(
             Router::new()
                 .route("/graphql", post(graphql::serve))

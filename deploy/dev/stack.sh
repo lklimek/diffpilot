@@ -27,6 +27,8 @@
 #   fake-github  FAKE_GITHUB_LISTEN        127.0.0.1:<free port>
 #                FAKE_GITHUB_FIXTURE_DIR   = SR_DEV_GITHUB_RECORDINGS
 #                FAKE_GITHUB_APP_URL       = SR_PUBLIC_URL (callback <url>/auth/github/callback)
+#                FAKE_GITHUB_APP_ID        = SR_GITHUB_APP_ID
+#                FAKE_GITHUB_APP_PUBLIC_KEY_FILE <state>/github-app-key.pub.pem (App JWTs are verified with it)
 #   fake-memcan  FAKE_MEMCAN_LISTEN        127.0.0.1:<free port>; FAKE_MEMCAN_TOKEN = SR_MEMCAN_TOKEN;
 #                FAKE_MEMCAN_PATH          /mcp (inspection and failure modes: <url>/_fake/*, tools/fake-memcan)
 #   server       SR_PUBLIC_URL             http://127.0.0.1:<public port> (plain HTTP: cookies not Secure)
@@ -35,11 +37,11 @@
 #                SR_DATA_DIR               <state>/server (SQLite database, bare mirrors)
 #                SR_SECRET_KEY             random 32 bytes, base64 (token encryption at rest)
 #                SR_RUNNER_SECRET          random hex, shared with the runner
-#                SR_GITHUB_APP_ID          1 (fake; app tokens are not minted in stage 2)
+#                SR_GITHUB_APP_ID          1 (fake)
 #                SR_GITHUB_CLIENT_ID       fixture-app-client-id   (fixtures/pr-482/github/oauth/access-token.json)
 #                SR_GITHUB_CLIENT_SECRET   fixture-client-secret   (same recording)
-#                SR_GITHUB_APP_PRIVATE_KEY_FILE  <state>/github-app-key.pem (throwaway RSA key; fake GitHub does
-#                                          not check the App JWT signature)
+#                SR_GITHUB_APP_PRIVATE_KEY_FILE  <state>/github-app-key.pem (throwaway RSA key; fake GitHub
+#                                          verifies the App JWTs with its public key)
 #                SR_GITHUB_API_URL         http://127.0.0.1:<fake-github port>
 #                SR_GITHUB_OAUTH_URL       http://127.0.0.1:<fake-github port>
 #                SR_GITHUB_CLONE_URL       = SR_DEV_CLONE_URL, default file://<state>/remotes
@@ -162,6 +164,7 @@ memcan_token="$(sed -n 's/^SR_MEMCAN_TOKEN=//p' "$state/stack.env" 2> /dev/null 
 if ! grep -qs 'PRIVATE KEY' "$state/github-app-key.pem"; then
   (umask 077 && openssl genrsa -out "$state/github-app-key.pem" 2048 2> /dev/null)
 fi
+openssl rsa -in "$state/github-app-key.pem" -pubout -out "$state/github-app-key.pub.pem" 2> /dev/null
 
 common=(PATH="$PATH" HOME="$state/home" LANG=C.UTF-8 NO_COLOR=1 RUST_LOG="${RUST_LOG:-info}")
 # Empty environment: inherited GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE would redirect the fixture's git commands.
@@ -214,7 +217,8 @@ wait_for() {
 
 if ! skipped fake-github; then
   start fake-github "$state" FAKE_GITHUB_LISTEN="127.0.0.1:$github_port" \
-    FAKE_GITHUB_FIXTURE_DIR="$recordings" FAKE_GITHUB_APP_URL="$url" "$fake_github_bin"
+    FAKE_GITHUB_FIXTURE_DIR="$recordings" FAKE_GITHUB_APP_URL="$url" FAKE_GITHUB_APP_ID=1 \
+    FAKE_GITHUB_APP_PUBLIC_KEY_FILE="$state/github-app-key.pub.pem" "$fake_github_bin"
   wait_for fake-github "$github/user"
 fi
 if ! skipped fake-memcan; then
