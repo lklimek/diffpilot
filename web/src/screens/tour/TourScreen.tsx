@@ -138,6 +138,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const [annotationId, setAnnotationId] = useState<AnnotationId | null>(null);
   const [oldCode, setOldCode] = useState(false);
   const [commentLine, setCommentLine] = useState<CommentLineState | null>(null);
+  // A pending comment opened from the pending-review list, shown open at its line.
+  const [revealComment, setRevealComment] = useState<string | null>(null);
   const [unresolved, setUnresolved] = useState<UnresolvedPosts>({});
   const [helpOpen, setHelpOpen] = useState(false);
   const [layout, setLayoutState] = useState(loadLayout);
@@ -175,6 +177,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     setAnnotationId(null);
     setOldCode(false);
     setCommentLine(null);
+    setRevealComment(null);
     mainRef.current?.scrollTo?.({ top: 0 });
   };
 
@@ -278,6 +281,24 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     comments: pendingComments,
     activeLine: commentLine?.target ?? null,
     onComment: comment,
+    revealComment,
+    onEditComment: comments.edit,
+    onDeleteComment: comments.remove,
+  };
+  // The step that shows a pending comment's line; a file comment without a shown line: the first step of its file.
+  const placeOf = (c: PendingComment) => {
+    const all = tour.flows.flatMap((f) => f.steps.map((s) => ({ flow: f, step: s })));
+    const at =
+      all.find(({ step }) => onStep(c, step)) ??
+      (c.kind === "file" ? all.find(({ step }) => step.facts.file === c.path) : undefined);
+    if (!at) return null;
+    return {
+      label: `step ${at.flow.position}.${at.step.number}`,
+      open: () => {
+        go({ block: "step", step_id: at.step.id });
+        setRevealComment(c.id);
+      },
+    };
   };
   const selectStep = (id: StepId) => go({ block: "step", step_id: id });
 
@@ -304,7 +325,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         threadsStatus={tour.pr_context.facts.threads_status}
         code={
           oldCode ? (
-            <DiffCode analysisId={analysisId} query={stepQuery(step)} />
+            <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
           ) : (
             <LinesCode
               ctx={ctx}
@@ -360,6 +381,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         prUrl={tour.analysis.pr.html_url}
         onEdit={comments.edit}
         onDelete={comments.remove}
+        placeOf={placeOf}
       />
     ) : pending.isError ? (
       <StatusMessage kind="error">Cannot read your pending review: {errorText(pending.error)}</StatusMessage>

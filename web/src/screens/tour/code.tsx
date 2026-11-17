@@ -51,6 +51,11 @@ export interface CodeContext {
   activeLine: CommentTarget | null;
   /** A line number was activated: comment on it; `lines` are the displayed lines it belongs to. */
   onComment: (target: CommentTarget, lines: LinesResponse) => void;
+  /** A pending comment to show open where its line is displayed. */
+  revealComment: string | null;
+  /** Edit and delete of a pending comment, on GitHub. */
+  onEditComment: (commentId: string, body: string) => Promise<void>;
+  onDeleteComment: (commentId: string) => Promise<void>;
 }
 
 interface LinesCodeProps {
@@ -80,6 +85,9 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         {...view}
         threads={ctx.threads}
         comments={ctx.comments}
+        revealComment={ctx.revealComment}
+        onEditComment={ctx.onEditComment}
+        onDeleteComment={ctx.onDeleteComment}
         activeLine={active && { side: active.side, line: active.line }}
         highlight={highlight}
         onLineAction={(target) => ctx.onComment(target, data)}
@@ -150,11 +158,28 @@ export function ChunkedCode({
 }
 
 /** Classic diff of a range ("Show old code", inspector section 1). */
-export function DiffCode({ analysisId, query }: { analysisId: AnalysisId; query: RangeQuery }) {
+export function DiffCode({
+  analysisId,
+  query,
+  comments,
+}: {
+  analysisId: AnalysisId;
+  query: RangeQuery;
+  /** The reviewer's pending comments with edit and delete, marked on their lines. */
+  comments?: Pick<CodeContext, "comments" | "onEditComment" | "onDeleteComment">;
+}) {
   const diff = useDiff(analysisId, query);
   if (diff.isPending) return <StatusMessage kind="loading">Loading the diff…</StatusMessage>;
   if (diff.isError) {
     return <StatusMessage kind="error">Cannot show the diff: {errorText(diff.error)}</StatusMessage>;
   }
-  return <ClassicDiff diff={diff.data} highlight={highlight} />;
+  return (
+    <ClassicDiff
+      diff={diff.data}
+      highlight={highlight}
+      comments={comments?.comments}
+      onEditComment={comments?.onEditComment}
+      onDeleteComment={comments?.onDeleteComment}
+    />
+  );
 }

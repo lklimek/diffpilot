@@ -317,6 +317,28 @@ describe("PendingReviewBlock", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toHaveAccessibleDescription(/stays as it was/);
   });
 
+  it("links each comment back to the step that shows its line, or says no step does", async () => {
+    const open = vi.fn();
+    const two = {
+      ...missed,
+      comments: [missed.comments[0]!, { ...missed.comments[0]!, id: "x", line: 999 }],
+    };
+    render(
+      <PendingReviewBlock
+        review={two}
+        prUrl={PR_URL}
+        placeOf={(c) => (c.id === "x" ? null : { label: "step 1.2", open: () => open(c.id) })}
+      />,
+    );
+    const show = screen.getByRole("button", { name: "Show in step 1.2" });
+    expect(show).toHaveAccessibleDescription(
+      "Opens the step that shows this line, with the comment open there.",
+    );
+    await userEvent.click(show);
+    expect(open).toHaveBeenCalledWith("PRRC_fixture482_c1");
+    expect(screen.getByText("No step of this tour shows this line.")).toBeVisible();
+  });
+
   it("is read-only without callbacks", () => {
     render(<PendingReviewBlock review={missed} prUrl={PR_URL} />);
     expect(screen.queryByRole("button", { name: /^(Edit|Delete) comment/ })).not.toBeInTheDocument();

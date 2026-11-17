@@ -52,6 +52,9 @@ const ctx = (activeLine: CodeContext["activeLine"] = null): CodeContext => ({
   analysisId: "6d3a2f1e-0482-4c5e-9a7b-000000000482",
   threads: [],
   comments: [],
+  revealComment: null,
+  onEditComment: () => Promise.resolve(),
+  onDeleteComment: () => Promise.resolve(),
   activeLine,
   onComment: () => {},
 });
