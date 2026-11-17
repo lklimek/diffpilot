@@ -31,7 +31,7 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | GET | `/api/v1/analyses/{id}/tour` | session | – | `Tour` (409 `analysis_not_finished` before) |
 | GET | `/api/v1/analyses/{id}/lines` | session | `RangeQuery` | `LinesResponse` (409 `analysis_not_finished` before the analysis is ready) |
 | GET | `/api/v1/analyses/{id}/diff` | session | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis is ready) |
-| GET / PUT | `/api/v1/analyses/{id}/review-state` | session / session_csrf | – / `ReviewState` | `ReviewState` / 204 |
+| GET / PUT | `/api/v1/analyses/{id}/review-state` | session / session_csrf | – / `ReviewState` | `ReviewState` / 204 (PUT: 409 `analysis_not_finished` before `finished`) |
 | GET | `/api/v1/analyses/{id}/questions` | session | – | `AskQuestion[]` |
 | POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` |
 | GET / POST | `/api/v1/analyses/{id}/feedback` | session / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
@@ -41,7 +41,7 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | DELETE | `…/pending-review/comments/{comment_id}` | session_csrf | – | 204 |
 | GET | `/api/v1/settings` | session | – | `Settings` |
 | PUT | `/api/v1/settings/language` | session_csrf | `SetLanguageRequest` | 204 |
-| GET | `/api/v1/repos/{owner}/{name}/settings` | session | – | `RepoSettings` (read-only) |
+| GET | `/api/v1/repos/{owner}/{name}/settings` | session | – | `RepoSettings` (read-only; 409 `analysis_not_finished` while not known) |
 
 ## Rules
 - **Ranges** (`lines`, `diff`): query `path`, `side` (`head` | `base`), `from`, `to`; `1 ≤ from ≤ to`,
@@ -63,8 +63,22 @@ mapping, query rules and the endpoint × fixture-state inventory.
 - **No installation** (ADR-005 addendum): analysis still runs; `PrContextFacts.related_work_checked = false`
   (UI: "Related work: not checked"); commenting disabled.
 - **Idempotency**: `CreateCommentRequest.idempotency_key` per (user, key) returns the first response.
-- **Settings**: `repos` lists the tenant's known repositories (from `repos`); each opens
-  `/api/v1/repos/{owner}/{name}/settings`.
+- **Settings**: `repos` lists the tenant's repositories with at least one analysis; each opens
+  `/api/v1/repos/{owner}/{name}/settings` (owner and name match case-insensitively; any other repository is
+  `not_found`). Its rules, related repositories and profile source come from the newest stored pre-pass of the
+  repository; without one the route answers `analysis_not_finished` ("Not known yet …"), never invented values.
+  `llm_status` is the newest LLM fact: the outcome of the most recent call the runners reported, or a credential
+  reported unusable after it (`not_working`, threat model T13); `null` before the first call. Installations are
+  read from GitHub with the user token (`GET /user/installations`, suspended ones left out); a GitHub failure is
+  `github_unavailable`, never an empty list. `PUT …/settings/language` accepts only `en` and `pl`.
+- **Review state**: `PUT` replaces the user's whole state (idempotent; repeated ticks are stored once); concurrent
+  writes leave one of them whole. Every ticked step and the last viewed block must be in the analysis's Tour
+  (quiet rows only when the Tour shows them), else `invalid_request` and nothing is stored.
+- **Classic diff** (`diff`): unified hunks of the file that overlap the range on `side`, three context lines,
+  hunks at most six unchanged lines apart merged (as `git diff -U3`); lines of `side` outside the range ±3 are
+  left out, changed lines of the other side are shown whole, at most `RangeQuery::MAX_LINES` of them, else
+  `range_too_large`. A file of the pinned tree outside the pull request diff has no hunks; a binary file is
+  `not_rendered`.
 - Ids in paths are UUIDs (`analysis`, `question`) or server ids (`f1.2` steps); unknown or another tenant's →
   `not_found` (no existence leak).
 
@@ -74,20 +88,20 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 
 | Code | Status | When |
 |---|---|---|
-| `invalid_request` | 400 | malformed JSON, query or path |
+| `invalid_request` | 400 | malformed JSON, query or path; a review state naming a step or block not in the Tour |
 | `not_a_pr_url` | 400 | resolve: not a GitHub PR URL |
-| `range_too_large` | 400 | range over 2000 lines |
+| `range_too_large` | 400 | range over 2000 lines; a diff with over 2000 changed lines of the other side |
 | `unauthenticated` | 401 | no or expired session |
 | `login_not_allowed` | 403 | login not in the tenant allowlist |
 | `csrf_rejected` | 403 | missing or wrong `X-CSRF-Token` |
 | `not_found` | 404 | unknown or not visible |
 | `conflict` | 409 | state conflict (e.g. analysis already live for this head) |
-| `analysis_not_finished` | 409 | tour, questions before `finished`; lines, diff before the analysis is ready (stored base is the merge base) |
+| `analysis_not_finished` | 409 | tour, questions, review-state writes before `finished`; lines, diff before the analysis is ready (stored base is the merge base); repository settings without a stored pre-pass |
 | `pr_head_changed` | 409 | comment write when the PR head moved |
 | `private_repository` | 422 | v1 is public repositories only |
 | `app_not_installed` | 422 | comment routes without the App on the PR repo |
 | `position_rejected` | 422 | GitHub silently rejected (`thread: null`) or target not commentable |
-| `not_rendered` | 422 | file classified as not rendered |
+| `not_rendered` | 422 | file classified as not rendered; diff of a binary file |
 | `internal` | 500 | anything else (no detail) |
 | `github_unavailable` | 502 | GitHub error or unexpected answer |
 
