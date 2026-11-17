@@ -29,6 +29,8 @@ pub enum DocumentKind {
     Flow,
     /// Threads and checks fetched at ingest (key `""`).
     GithubSnapshot,
+    /// Lines the server did not send to the LLM, with the reason (key `plan`, or a flow id).
+    Unsent,
 }
 
 impl DocumentKind {
@@ -40,6 +42,7 @@ impl DocumentKind {
             Self::PrContext => "pr_context",
             Self::Flow => "flow",
             Self::GithubSnapshot => "github_snapshot",
+            Self::Unsent => "unsent",
         }
     }
 }

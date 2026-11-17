@@ -36,6 +36,7 @@ pub mod ingest;
 pub mod lines;
 pub mod prepass;
 pub mod tour;
+pub mod unsent;
 pub mod verdict;
 
 use prepass::PrepassRunError;

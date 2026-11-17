@@ -1,17 +1,22 @@
 import type { ReactNode } from "react";
-import type { FileRanges } from "../../api/generated/types";
+import type { UnexplainedRanges, UnexplainedReason } from "../../api/generated/types";
 import { rangeText } from "../section/format";
 import { fileCount, lineCount, plural } from "./labels";
 import { QuietCard } from "./QuietCard";
 
 interface UnexplainedBlockProps {
   /** Changed lines no flow explains (`QuietRows.unexplained`). */
-  items: FileRanges[];
+  items: UnexplainedRanges[];
   /** Code of an item (code view or its loading / error state); text only without it. */
-  code?: (item: FileRanges) => ReactNode;
+  code?: (item: UnexplainedRanges) => ReactNode;
 }
 
-function rangesText(item: FileRanges): string {
+/** Why the server left lines out of every LLM request (a deterministic fact). */
+const REASON_TEXT: Record<UnexplainedReason, string> = {
+  too_large_for_prompt: "Not sent to the LLM: too large for one request.",
+};
+
+function rangesText(item: UnexplainedRanges): string {
   const count = lineCount(item.ranges);
   const ranges = item.ranges.map(rangeText).join(", ");
   if (item.side === "base") return `removed ${count === 1 ? "line" : "lines"} ${ranges} (base commit)`;
@@ -33,11 +38,12 @@ export function UnexplainedBlock({ items, code }: UnexplainedBlockProps) {
           </p>
           <ul className="m-0 grid list-none gap-3 p-0">
             {items.map((item) => (
-              <li key={`${item.side}:${item.file}`} className="grid gap-1">
+              <li key={`${item.side}:${item.file}:${item.reason ?? ""}`} className="grid gap-1">
                 <p className="flex flex-wrap gap-2">
                   <code className="font-semibold">{item.file}</code>
                   <span className="text-muted">{rangesText(item)}</span>
                 </p>
+                {item.reason && <p>{REASON_TEXT[item.reason]}</p>}
                 {code?.(item)}
               </li>
             ))}

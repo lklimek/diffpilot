@@ -13,6 +13,8 @@ use contracts::agent::plan::{PlanOutput, PlannedFlow, UnassignedHunk};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::{self as agent, JobKind};
 use contracts::api::analyses::{AnalysisState, AnalysisSummary, FlowRef};
+use contracts::api::tour::UnexplainedReason;
+use contracts::common::FileRanges;
 use contracts::ids::{AnalysisId, FlowId, JobId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobOutcome, JobResult};
@@ -31,6 +33,7 @@ use serde_json::Value;
 
 use super::batching;
 use super::context::StoredResults;
+use super::unsent::{self, Unsent};
 use super::verdict::{self, Facts, Outputs};
 use super::{CREDENTIAL_ID, PipelineError, control, diff_files, prepare, prepass};
 use crate::github::oauth::endpoint;
@@ -259,8 +262,32 @@ impl Driver<'_> {
             let Some(stage) = self.waiting.pop_front() else {
                 return Ok(());
             };
-            if !self.resolved(&stage) {
-                self.submit_first(updates, stage).await?;
+            if self.resolved(&stage) {
+                continue;
+            }
+            match (self.submit_first(updates, stage.clone()).await, &stage) {
+                (Ok(()), _) => {}
+                // A flow whose prompt is over budget is not sent: its lines are Unexplained with that reason.
+                (
+                    Err(PipelineError::Prompt(PromptError::OverBudget {
+                        kind: "analyse_flow",
+                        bytes,
+                        ..
+                    })),
+                    JobStage::Flow(id),
+                ) => {
+                    tracing::warn!(analysis = %self.analysis, flow = %id, bytes,
+                        "the flow's prompt is over budget; its lines stay Unexplained");
+                    let lines = self
+                        .verified_plan
+                        .as_ref()
+                        .and_then(|plan| plan.flow_lines.get(id).cloned())
+                        .unwrap_or_default();
+                    self.store_unsent(&id.0, lines).await?;
+                    self.ended.insert(id.clone(), FlowEnd::Unexplained);
+                    self.set_progress().await?;
+                }
+                (Err(error), _) => return Err(error),
             }
         }
         Ok(())
@@ -337,6 +364,11 @@ impl Driver<'_> {
             }
         };
         if store {
+            // Stored before the plan: a stored plan always has its unsent hunks.
+            if !self.unfit.is_empty() {
+                let lines = unsent::unfit_lines(&self.facts.listed, &self.unfit)?;
+                self.store_unsent(unsent::PLAN_KEY, lines).await?;
+            }
             self.put(DocumentKind::Plan, "", &plan).await?;
         }
         self.verified_plan = Some(Arc::new(verified));
@@ -521,6 +553,15 @@ impl Driver<'_> {
             .await?;
         self.batch_plans.insert(batch, plan);
         self.merge_when_planned().await
+    }
+
+    /// Stores lines the server did not send to the LLM because their request is over budget.
+    async fn store_unsent(&self, key: &str, lines: Vec<FileRanges>) -> Result<(), PipelineError> {
+        let unsent = Unsent {
+            reason: UnexplainedReason::TooLargeForPrompt,
+            lines,
+        };
+        Ok(self.put(DocumentKind::Unsent, key, &unsent).await?)
     }
 
     /// `plan` with the hunks no plan prompt could hold, listed as unassigned with their reason.

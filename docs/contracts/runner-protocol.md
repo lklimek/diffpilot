@@ -157,6 +157,9 @@ Durable state only; no in-memory handle is needed after a restart.
   and its document stored (or the stage ended), so a claim never overtakes the previous result and every context
   pack holds all earlier results. A restart re-submits the first unresolved stage (an idempotent submit returns
   its live job).
+- **Not sent.** A flow whose prompt is over budget is never submitted: its lines are Unexplained with reason
+  `too_large_for_prompt` (an `unsent` document), and the analysis goes on. Hunks of a file too large for any plan
+  prompt get the same reason, stored before the plan.
 - **Repair.** When verification rejects the output of a succeeded job of generation g, the pipeline submits
   generation g + 1 with the repair prompt; with g = 2 repair is exhausted: a flow ends without output (its lines
   are Unexplained, the analysis goes on), a plan or PR context fails the analysis. The rejection

@@ -19,13 +19,14 @@ use contracts::api::tour::{
     PatternSite, PrContextBlock, PrContextFacts, QuietRows, Step, StepFacts, StepLlm, Tour,
 };
 use contracts::common::{LineRange, LineSide};
-use contracts::ids::{AnalysisId, AnnotationId, FlowId, StepId};
+use contracts::ids::{AnnotationId, FlowId, StepId};
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use url::Url;
 
 use crate::pipeline::context::StoredResults;
 use crate::pipeline::prepass::{self, PrepassRunError};
+use crate::pipeline::unsent::{self, Unsent};
 use crate::pipeline::verdict::{self, Facts, Outputs, VerdictError, thread_alias};
 use crate::pipeline::{PrDiffError, pr_diff};
 use crate::review::{GithubSnapshot, stored_github_snapshot};
@@ -144,6 +145,14 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         .github_access(summary.id, DocumentKind::PrContext, "")
         .await?
         == Some(true);
+    let unsent: Vec<Unsent> = state
+        .db
+        .documents()
+        .list(summary.id, DocumentKind::Unsent)
+        .await?
+        .into_iter()
+        .map(|(_, unsent)| unsent)
+        .collect();
     Ok(project(&Projection {
         summary,
         skeleton: &skeleton,
@@ -153,6 +162,7 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         files: &facts.files,
         aliases: &aliases,
         related_work_checked,
+        unsent: &unsent,
     }))
 }
 
@@ -174,6 +184,8 @@ pub struct Projection<'a> {
     pub aliases: &'a BTreeMap<FlowId, Vec<String>>,
     /// The accepted PR context was written by an agent with the GitHub tool.
     pub related_work_checked: bool,
+    /// Lines the server did not send to the LLM, with the reason (Unexplained rows show it).
+    pub unsent: &'a [Unsent],
 }
 
 /// Builds the Tour of a finished analysis.
@@ -228,7 +240,7 @@ pub fn project(input: &Projection<'_>) -> Tour {
         },
         flows,
         quiet: QuietRows {
-            unexplained: input.skeleton.coverage.unexplained.clone(),
+            unexplained: unsent::with_reasons(&input.skeleton.coverage.unexplained, input.unsent),
             moves: prepass.identical_moves(),
             not_analysed: prepass.not_analysed_with_binaries(),
         },

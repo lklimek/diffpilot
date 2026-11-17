@@ -671,23 +671,6 @@ side: LineSide,
 range: LineRange, };
 
 /**
- * Several line ranges of one file on one side.
- */
-export type FileRanges = {
-/**
- * Repository-relative path on that side.
- */
-file: string,
-/**
- * Commit the lines refer to.
- */
-side: LineSide,
-/**
- * The lines, ascending and disjoint.
- */
-ranges: Array<LineRange>, };
-
-/**
  * A question about the fit of the change at project scale.
  */
 export type FitQuestion = {
@@ -1520,7 +1503,7 @@ export type QuietRows = {
  * Changed lines no flow explains ("Unexplained — read these yourself"); listed first. Removed lines
  * without a head location are base-side entries.
  */
-unexplained: Array<FileRanges>,
+unexplained: Array<UnexplainedRanges>,
 /**
  * Moves whose text is deterministically identical.
  */
@@ -1842,6 +1825,33 @@ quiet: QuietRows,
  * Every GitHub review thread of the pull request.
  */
 threads: Array<GithubThread>, };
+
+/**
+ * Unexplained lines of one file on one side, with why the server left them out when it decided so.
+ */
+export type UnexplainedRanges = {
+/**
+ * Repository-relative path on that side.
+ */
+file: string,
+/**
+ * Commit the lines refer to.
+ */
+side: LineSide,
+/**
+ * The lines, ascending and disjoint.
+ */
+ranges: Array<LineRange>,
+/**
+ * Why the server did not send these lines to the LLM (deterministic); absent when the LLM did not
+ * explain them.
+ */
+reason?: UnexplainedReason, };
+
+/**
+ * Why the server left Unexplained lines out of every LLM request.
+ */
+export type UnexplainedReason = "too_large_for_prompt";
 
 /**
  * Body of `PATCH /api/v1/analyses/{id}/pending-review/comments/{comment_id}`.

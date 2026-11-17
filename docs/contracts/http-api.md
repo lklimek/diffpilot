@@ -55,6 +55,10 @@ mapping, query rules and the endpoint × fixture-state inventory.
   blocks). Paths outside the PR's files and impact/context files of the head tree are allowed; generated
   material and binary files the pre-pass lists as "not rendered" answer `not_rendered` (422); before the pre-pass
   is stored `analysis_not_finished`.
+- **Unexplained reason** (`Tour.quiet.unexplained[].reason`, optional, closed enum): set only for lines the
+  server did not send to the LLM, a deterministic fact; v1 value `too_large_for_prompt` (a file too large for any
+  plan prompt, or a flow whose prompt is over budget). A file's ranges with and without a reason are separate
+  entries. Lines the LLM was asked about but did not explain carry no reason.
 - **Cancel and retry**: cancel applies to a planning, running, paused or failed analysis (else `conflict`): state
   `cancelled`, unfinished jobs cancelled, stored results and the agent session discarded. Retry applies to a
   failed analysis only (else `conflict`): state `planning`, stored results kept, failed stages submitted again.

@@ -2162,3 +2162,97 @@ async fn each_job_is_claimable_only_after_the_previous_result_is_stored() {
         "plan, PR context, then the flows in plan order"
     );
 }
+
+/// A flow whose prompt is over budget is not sent to the agent: its lines are Unexplained with that reason and
+/// the analysis goes on; a flow that was sent and ended without output has no reason.
+#[tokio::test]
+async fn flow_too_large_for_a_prompt_is_unexplained_with_its_reason() {
+    let h = harness().await;
+    let (base, head) = h.remote_repo("unsent", |repo| {
+        let base = commit(repo, &[("README.txt", "readme\n")], "base");
+        for dir in ["a", "b"] {
+            std::fs::create_dir_all(repo.join(dir)).expect("dir");
+        }
+        let head = commit(
+            repo,
+            &[
+                ("a/one.txt", &numbered(1..=5)),
+                ("b/two.txt", &numbered(1..=5)),
+            ],
+            "head",
+        );
+        (base, head)
+    });
+    let files = analysis::diff::diff(
+        &h._dir.path().join("remotes/acme/unsent.git"),
+        &CommitSha(base.clone()),
+        &CommitSha(head.clone()),
+    )
+    .expect("diff");
+    let hunk_of = |path: &str| {
+        let file = files.iter().find(|file| file.path == path).expect("file");
+        json!([{ "hunk_id": file.hunks[0].id.0, "head_start": null, "head_end": null }])
+    };
+    let plan = json!({
+        "flows": [
+            {
+                "id": "f1", "title": "one", "classification": "behavioural", "importance_rank": 1,
+                "intent": "adds one", "hunks": hunk_of("a/one.txt"), "depends_on": []
+            },
+            {
+                "id": "f2", "title": "two", "classification": "behavioural", "importance_rank": 2,
+                "intent": "x".repeat(140 * 1024), "hunks": hunk_of("b/two.txt"), "depends_on": []
+            }
+        ],
+        "unassigned": []
+    });
+    h.executor.script("plan:1", Script::Output(plan));
+    let mut context = agent_output("pr_context");
+    context["fit_questions"] = json!([]);
+    context["related_work"] = json!([]);
+    h.executor.script("pr_context", Script::Output(context));
+    // Rejected (the fixture flow's files are not in this repository): f1 ends Unexplained after its repairs.
+    h.executor
+        .script("flow:f1", Script::Output(agent_output("flow:f1")));
+    let mut pull = read_json(&fixtures().join("github/rest/pull.json"))["response"].clone();
+    pull["number"] = json!(12);
+    pull["html_url"] = json!("https://github.com/acme/unsent/pull/12");
+    pull["base"]["sha"] = json!(base);
+    pull["head"]["sha"] = json!(head);
+    pull["base"]["repo"]["name"] = json!("unsent");
+    Mock::given(method("GET"))
+        .and(path("/api/repos/acme/unsent/pulls/12"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(pull))
+        .mount(&h.github)
+        .await;
+    let (status, created) = h
+        .post(
+            "/api/v1/analyses",
+            json!({ "pr": { "repo": { "owner": "acme", "name": "unsent" }, "number": 12 }, "head_sha": head }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().expect("id").to_owned();
+    let finished = h.wait_until_ended(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 2 });
+    assert!(
+        !h.executor.submitted().contains(&"flow:f2".to_owned()),
+        "the over-budget flow is not sent"
+    );
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    assert_eq!(
+        tour["quiet"]["unexplained"],
+        json!([
+            {
+                "file": "a/one.txt", "side": "head",
+                "ranges": [{ "start_line": 1, "end_line": 5 }]
+            },
+            {
+                "file": "b/two.txt", "side": "head",
+                "ranges": [{ "start_line": 1, "end_line": 5 }],
+                "reason": "too_large_for_prompt"
+            }
+        ])
+    );
+}

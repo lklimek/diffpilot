@@ -46,6 +46,27 @@ describe("UnexplainedBlock", () => {
     expect(screen.getByRole("article")).toHaveTextContent("3 changed lines in 1 file were not assigned");
   });
 
+  it("says which lines were not sent to the LLM because they were too large", () => {
+    render(
+      <UnexplainedBlock
+        items={[
+          { file: "src/a.rs", side: "head", ranges: [{ start_line: 1, end_line: 2 }] },
+          {
+            file: "src/a.rs",
+            side: "head",
+            ranges: [{ start_line: 5, end_line: 9 }],
+            reason: "too_large_for_prompt",
+          },
+        ]}
+      />,
+    );
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    expect(items[0]).not.toHaveTextContent("Not sent to the LLM");
+    expect(items[1]).toHaveTextContent("lines 5–9");
+    expect(items[1]).toHaveTextContent("Not sent to the LLM: too large for one request");
+  });
+
   it("is never empty", () => {
     render(<UnexplainedBlock items={[]} />);
     expect(screen.getByRole("article")).toHaveTextContent(
