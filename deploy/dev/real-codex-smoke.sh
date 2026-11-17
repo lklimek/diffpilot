@@ -23,6 +23,14 @@
 #   SR_SMOKE_CAP_SECONDS  bound for the analysis (default 2700 = 45 min)
 #   SR_SMOKE_PROVIDER     codex (default) or fake: plumbing dry run without an LLM call (runner built with
 #                         feature fake-provider; replays the pr-482 recordings, so validation may fail)
+#   SR_SMOKE_ISOLATION    none (default; described below) or supervisor: the production runner image
+#                         (SR_SMOKE_RUNNER_IMAGE, default smart-review-runner:local) under its root supervisor with
+#                         the ADR-013 options of deploy/compose.yaml, behind the egress proxy
+#                         (SR_SMOKE_PROXY_IMAGE, default smart-review-egress-proxy:local) on the internal network
+#                         `sr-smoke-int` (172.31.251.0/24, removed at the end); the image's own runner unless
+#                         SR_SMOKE_PROVIDER=fake (then SR_DEV_RUNNER_BIN is mounted over it); per-job CODEX_HOME root
+#                         on a capped tmpfs (SR_CODEX_HOMES_ALLOW_TMPFS=1, development only); the proxy's host-name
+#                         log is archived as egress-proxy.log
 #
 # Runner container: own PID namespace with --init, 4 GiB memory, 1024 pids, all capabilities dropped,
 # no-new-privileges, read-only root, no restart policy; network `sr-smoke` (172.31.250.0/24), which reaches the
@@ -47,8 +55,15 @@ codex_volume="${SR_SMOKE_CODEX_VOLUME:-sr-spike-codex-home}"
 cap="${SR_SMOKE_CAP_SECONDS:-2700}"
 provider="${SR_SMOKE_PROVIDER:-codex}"
 network=sr-smoke gateway=172.31.250.1
+isolation="${SR_SMOKE_ISOLATION:-none}"
+case "$isolation" in
+  none | supervisor) ;;
+  *) echo "real-codex-smoke.sh: SR_SMOKE_ISOLATION must be none or supervisor" >&2; exit 2 ;;
+esac
+inner=sr-smoke-int proxy_ip=172.31.251.3
+if [[ "$isolation" == supervisor ]]; then gateway=172.31.251.1; fi
 run="$(date -u +%Y%m%dt%H%M%S)"
-container="sr-smoke-runner-$run" volume="sr-smoke-runner-$run"
+container="sr-smoke-runner-$run" volume="sr-smoke-runner-$run" proxy="sr-smoke-proxy-$run"
 
 mkdir -p /data/tmp
 private="$(mktemp -d /data/tmp/smart-review-smoke.XXXXXX)"
@@ -68,7 +83,12 @@ fail() {
 }
 
 docker network inspect "$network" > /dev/null 2>&1 ||
-  docker network create --driver bridge --subnet 172.31.250.0/24 --gateway "$gateway" "$network" > /dev/null
+  docker network create --driver bridge --subnet 172.31.250.0/24 --gateway 172.31.250.1 "$network" > /dev/null
+if [[ "$isolation" == supervisor ]]; then
+  # Internal: no route out; the host (server's runner listener) is reachable on the gateway address only.
+  docker network inspect "$inner" > /dev/null 2>&1 ||
+    docker network create --driver bridge --internal --subnet 172.31.251.0/24 --gateway "$gateway" "$inner" > /dev/null
+fi
 runner_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
 
 stack_pid=""
@@ -84,7 +104,14 @@ cleanup() {
   if [[ -n "$stack_pid" ]]; then
     kill -TERM "$stack_pid" 2> /dev/null || true
     wait "$stack_pid" 2> /dev/null || true
+    stack_pid=""
   fi
+  if docker container inspect "$proxy" > /dev/null 2>&1; then
+    docker logs "$proxy" > "$stage/egress-proxy.log" 2>&1 || true
+    docker rm -f "$proxy" > /dev/null 2>&1 || true
+    say "egress proxy stopped and removed"
+  fi
+  if [[ "$isolation" == supervisor ]]; then docker network rm "$inner" > /dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -121,20 +148,53 @@ say "credential copied into volume $volume (account_id present)"
 
 SR_RUNNER_SECRET="$(sed -n 's/^SR_RUNNER_SECRET=//p' "$state/stack.env" | head -n 1)"
 export SR_RUNNER_SECRET
-docker run -d --name "$container" --init --restart no \
-  --memory 4g --memory-swap 4g --pids-limit 1024 \
-  --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --read-only \
-  --tmpfs /tmp:rw,nosuid,nodev,size=512m \
-  --tmpfs /home/runner:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700 \
-  --network "$network" \
-  --mount "type=bind,source=$(realpath "$SR_DEV_RUNNER_BIN"),target=/usr/local/bin/smart-review-runner,readonly" \
-  --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" \
-  -e SR_RUNNER_SERVER_URL="http://$gateway:$runner_port" -e SR_RUNNER_SECRET -e SR_RUNNER_ID=smoke-runner \
-  -e SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner -e SR_RUNNER_PROVIDER="$provider" \
-  -e SR_RUNNER_CODEX_BIN=/usr/local/bin/codex -e RUST_LOG=info -e NO_COLOR=1 -e SR_RUNNER_DEV_NO_ISOLATION=1 \
-  "$image" smart-review-runner > /dev/null
+if [[ "$isolation" == supervisor ]]; then
+  # Egress proxy: the runner network's only way out (no MemCan exception: the dev stack has no MemCan).
+  docker run -d --name "$proxy" --init --read-only --cap-drop ALL --security-opt no-new-privileges \
+    --memory 256m --pids-limit 128 --tmpfs /run/squid:uid=13,gid=13,mode=0750,size=1m \
+    --network "$network" "${SR_SMOKE_PROXY_IMAGE:-smart-review-egress-proxy:local}" > /dev/null
+  docker network connect --ip "$proxy_ip" "$inner" "$proxy"
+  for _ in $(seq 60); do
+    [[ "$(docker inspect -f '{{.State.Health.Status}}' "$proxy")" == healthy ]] && break
+    sleep 1
+  done
+  [[ "$(docker inspect -f '{{.State.Health.Status}}' "$proxy")" == healthy ]] || fail "the egress proxy is not healthy"
+  bin_mount=()
+  if [[ "$provider" == fake ]]; then
+    bin_mount=(--mount "type=bind,source=$(realpath "$SR_DEV_RUNNER_BIN"),target=/usr/local/bin/smart-review-runner,readonly")
+  fi
+  # ADR-013 options as in deploy/compose.yaml; the image's entrypoint is the supervisor, its CMD the preflight.
+  docker run -d --name "$container" --init --restart no --ipc none \
+    --memory 4g --memory-swap 4g --pids-limit 1024 \
+    --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
+    --security-opt no-new-privileges --read-only \
+    --tmpfs /work:rw,nosuid,nodev,size=4g,uid=10001,gid=10001,mode=0711 \
+    --tmpfs /tmp:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700 \
+    --network "$inner" "${bin_mount[@]}" \
+    --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" \
+    --tmpfs /var/lib/smart-review-runner/codex-homes:rw,nosuid,nodev,size=1g,nr_inodes=131072,uid=10001,gid=10001,mode=0711 \
+    -e SR_RUNNER_SERVER_URL="http://$gateway:$runner_port" -e SR_RUNNER_SECRET -e SR_RUNNER_ID=smoke-runner \
+    -e SR_RUNNER_PROVIDER="$provider" -e SR_RUNNER_EGRESS_PROXY="http://$proxy_ip:3128" \
+    -e HTTPS_PROXY="http://$proxy_ip:3128" -e https_proxy="http://$proxy_ip:3128" \
+    -e NO_PROXY="localhost,127.0.0.1,$gateway" -e no_proxy="localhost,127.0.0.1,$gateway" \
+    -e SR_CODEX_HOMES_ALLOW_TMPFS=1 -e RUST_LOG=info -e NO_COLOR=1 \
+    "${SR_SMOKE_RUNNER_IMAGE:-smart-review-runner:local}" > /dev/null
+else
+  docker run -d --name "$container" --init --restart no \
+    --memory 4g --memory-swap 4g --pids-limit 1024 \
+    --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --read-only \
+    --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+    --tmpfs /home/runner:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700 \
+    --network "$network" \
+    --mount "type=bind,source=$(realpath "$SR_DEV_RUNNER_BIN"),target=/usr/local/bin/smart-review-runner,readonly" \
+    --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" \
+    -e SR_RUNNER_SERVER_URL="http://$gateway:$runner_port" -e SR_RUNNER_SECRET -e SR_RUNNER_ID=smoke-runner \
+    -e SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner -e SR_RUNNER_PROVIDER="$provider" \
+    -e SR_RUNNER_CODEX_BIN=/usr/local/bin/codex -e RUST_LOG=info -e NO_COLOR=1 -e SR_RUNNER_DEV_NO_ISOLATION=1 \
+    "$image" smart-review-runner > /dev/null
+fi
 unset SR_RUNNER_SECRET
-say "runner container $container started (provider $provider)"
+say "runner container $container started (provider $provider, isolation $isolation)"
 
 # --- one analysis ---------------------------------------------------------------------------------------------
 jar="$state/smoke.jar"
