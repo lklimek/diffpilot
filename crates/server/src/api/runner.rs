@@ -73,7 +73,10 @@ impl ApiErrorSource for RunnerError {
             Self::Unauthenticated => ApiErrorCode::Unauthenticated,
             Self::Body { .. } | Self::Path(_) | Self::JobMismatch => ApiErrorCode::InvalidRequest,
             Self::Claim(ClaimError::Db(error)) | Self::Db(error) => error.code(),
-            Self::Claim(ClaimError::Random(_)) => ApiErrorCode::Internal,
+            Self::Claim(ClaimError::GithubAccess(_)) => ApiErrorCode::GithubUnavailable,
+            Self::Claim(ClaimError::Random(_) | ClaimError::StoreToken(_)) => {
+                ApiErrorCode::Internal
+            }
         }
     }
 
@@ -83,7 +86,10 @@ impl ApiErrorSource for RunnerError {
             Self::Body { .. } | Self::Path(_) => Cow::Borrowed("The request is not valid."),
             Self::JobMismatch => Cow::Borrowed("The result belongs to another job."),
             Self::Claim(ClaimError::Db(error)) | Self::Db(error) => error.public_message(),
-            Self::Claim(ClaimError::Random(_)) => {
+            Self::Claim(ClaimError::GithubAccess(_)) => {
+                Cow::Borrowed("GitHub did not answer as expected. Try again later.")
+            }
+            Self::Claim(ClaimError::Random(_) | ClaimError::StoreToken(_)) => {
                 Cow::Borrowed("Something went wrong on the server. Try again later.")
             }
         }
@@ -291,7 +297,7 @@ async fn claim_job(
 ) -> RunnerResult<Json<ClaimResponse>> {
     authorize_runner(&state, &headers)?;
     let Json(request) = body.map_err(RunnerError::from)?;
-    let response = claim::claim(&state.db, &request, Utc::now())
+    let response = claim::claim(&state.db, &state.config, &request, Utc::now())
         .await
         .map_err(RunnerError::from)?;
     Ok(Json(response))
@@ -399,7 +405,11 @@ async fn apply_result(
             state = job_state.as_str(),
             "job result recorded"
         );
-        // TODO(WP3-APPTOKEN): revoke the attempt's installation token (`Jobs::github_tokens_to_revoke`).
+        // The result is recorded; a failed sweep is retried by the periodic one.
+        if let Err(error) = claim::revoke_github_tokens(&state.db, &state.config, Utc::now()).await
+        {
+            tracing::warn!(job = %auth.job, %error, "installation token revocation after the result failed");
+        }
     }
     Ok(())
 }
