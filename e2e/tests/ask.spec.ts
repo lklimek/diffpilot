@@ -96,7 +96,7 @@ test("usage limit: the question waits with the time it runs, then is answered", 
   expect(Date.parse(resumesAt), "the run time lies ahead").toBeGreaterThan(Date.now());
   await expect(
     answers(page).getByText(
-      `Waiting for the LLM usage limit to reset; the question runs at ${await clock(page, resumesAt)}.`,
+      `Waiting for the LLM usage limit to reset; the question resumes automatically at ${await clock(page, resumesAt)}.`,
     ),
   ).toBeVisible();
   await checkScreen(page);
