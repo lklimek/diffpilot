@@ -12,9 +12,12 @@ use axum::response::Response;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{TimeDelta, Utc};
+use contracts::routes::{HttpMethod, Listener, ROUTES, RouteAuth};
 use db::repo::DEFAULT_TENANT;
 use db::repo::Db;
 use db::repo::sessions::NewSession;
+use db::repo::tenants::testing::{allow_login, remove_login};
+use db::repo::tokens::testing::{allow_token_writes, fail_token_writes};
 use db::repo::users::GithubProfile;
 use http_body_util::BodyExt;
 use secrecy::{ExposeSecret, SecretString};
@@ -313,7 +316,7 @@ async fn allowlist_rejects_unlisted_login() {
 }
 
 #[tokio::test]
-async fn login_bound_to_github_id() {
+async fn allowlist_binds_github_user_id() {
     let h = harness().await;
     let first = h.sign_in("lklimek", 1001).await;
     assert!(!first.user_id.is_empty());
@@ -341,7 +344,7 @@ async fn login_bound_to_github_id() {
 }
 
 #[tokio::test]
-async fn state_mismatch_rejected() {
+async fn oauth_state_single_use_and_bound_to_browser() {
     let h = harness().await;
     h.mock_github_user("lklimek", 1001).await;
     let callback = |query: String, cookie: Option<String>| {
@@ -554,6 +557,101 @@ async fn browser_transport_from_peer_and_forwarded_proto() {
     );
 }
 
+/// Redirects and the OAuth callback come from `SR_PUBLIC_URL`, never from request headers.
+#[tokio::test]
+async fn callback_url_ignores_host_headers() {
+    let h = harness().await;
+    h.mock_github_user("lklimek", 1001).await;
+    let mut request = get("/auth/github/login");
+    for (name, value) in [
+        ("host", "evil.example"),
+        ("x-forwarded-host", "evil.example"),
+        ("x-forwarded-proto", "http"),
+        ("forwarded", "host=evil.example;proto=http"),
+    ] {
+        request
+            .headers_mut()
+            .insert(name, value.parse().expect("header"));
+    }
+    let response = h.send(request).await;
+    let authorize = Url::parse(&location(&response)).expect("authorize URL");
+    let redirect_uri = authorize
+        .query_pairs()
+        .find(|(key, _)| key == "redirect_uri")
+        .map(|(_, value)| value.into_owned());
+    assert_eq!(redirect_uri.as_deref(), Some(CALLBACK));
+    let cookie = cookie_pair(&response, "__Host-sr_oauth_state").expect("state cookie");
+    let state = authorize
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .map(|(_, value)| value.into_owned())
+        .expect("state");
+    let mut callback = get_with_cookie(
+        &format!("/auth/github/callback?code={CODE}&state={state}"),
+        &cookie,
+    );
+    callback
+        .headers_mut()
+        .insert("host", "evil.example".parse().expect("header"));
+    assert_eq!(
+        location(&h.send(callback).await),
+        "/",
+        "relative to the page's own origin"
+    );
+}
+
+/// Local development over plain HTTP works only by configuring an `http://` public URL; cookies then lack Secure.
+#[tokio::test]
+async fn localhost_development_by_explicit_public_url() {
+    let h = harness_with("http://localhost:3000", &[]).await;
+    h.mock_github_user("lklimek", 1001).await;
+    let response = h.send(get("/auth/github/login")).await;
+    let authorize = Url::parse(&location(&response)).expect("authorize URL");
+    let query: std::collections::HashMap<String, String> =
+        authorize.query_pairs().into_owned().collect();
+    assert_eq!(
+        query["redirect_uri"],
+        "http://localhost:3000/auth/github/callback"
+    );
+    let cookie = cookie_pair(&response, "sr_oauth_state").expect("plain state cookie");
+    let response = h
+        .send(get_with_cookie(
+            &format!("/auth/github/callback?code={CODE}&state={}", query["state"]),
+            &cookie,
+        ))
+        .await;
+    assert_eq!(location(&response), "/");
+    let session = set_cookie(&response, "sr_session").expect("session cookie");
+    assert!(
+        !session.contains("Secure") && session.contains("HttpOnly"),
+        "{session}"
+    );
+    let cookie = cookie_pair(&response, "sr_session").expect("session");
+    assert_eq!(me_login(&h, &cookie).await.as_deref(), Some("lklimek"));
+}
+
+#[test]
+fn plain_http_public_url_warns_unless_local() {
+    let capture = LogCapture::start();
+    for (url, warns) in [
+        ("https://review.example.test", false),
+        ("http://localhost:3000", false),
+        ("http://127.0.0.1:3000", false),
+        ("http://[::1]:3000", false),
+        ("http://review.lan:3000", true),
+        ("http://192.168.1.5:3000", true),
+    ] {
+        let mut config = test_config();
+        config.public_url = Url::parse(url).expect("url");
+        assert_eq!(super::warn_if_public_url_insecure(&config), warns, "{url}");
+    }
+    assert!(
+        capture.text().contains("SR_PUBLIC_URL is plain http"),
+        "{}",
+        capture.text()
+    );
+}
+
 #[tokio::test]
 async fn csrf_required_for_cookie_mutations() {
     let h = harness().await;
@@ -591,6 +689,72 @@ async fn csrf_required_for_cookie_mutations() {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
 
+/// `path` with every `{param}` replaced by a well-formed id.
+fn with_placeholder_ids(path: &str) -> String {
+    let mut uri = String::new();
+    let mut rest = path;
+    while let Some((head, tail)) = rest.split_once('{') {
+        uri.push_str(head);
+        uri.push_str("00000000-0000-4000-8000-000000000000");
+        rest = tail.split_once('}').map_or("", |(_, after)| after);
+    }
+    uri + rest
+}
+
+/// Every state-changing public route of the generated route table rejects a missing or wrong CSRF token before it
+/// acts, so a route added later cannot skip the check (threat model T7a). A route the router does not serve yet
+/// (bare 404, no API error body) cannot change state and is skipped.
+#[tokio::test]
+async fn csrf_required_on_mutations() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let mut checked = 0;
+    for route in ROUTES
+        .iter()
+        .filter(|route| route.listener == Listener::Public && route.method != HttpMethod::Get)
+    {
+        assert_eq!(route.auth, RouteAuth::SessionCsrf, "{}", route.path);
+        let uri = with_placeholder_ids(route.path);
+        for csrf in [None, Some("wrong-token"), Some("")] {
+            let mut request = Request::builder()
+                .method(route.method.as_str())
+                .uri(&uri)
+                .header(COOKIE, &signed_in.cookie)
+                .header("content-type", "application/json");
+            if let Some(csrf) = csrf {
+                request = request.header(CSRF_HEADER, csrf);
+            }
+            let response = h
+                .send(request.body(Body::from("{}")).expect("request"))
+                .await;
+            let status = response.status();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            if status == StatusCode::NOT_FOUND && body.is_empty() {
+                continue;
+            }
+            let case = format!("{} {uri} with {csrf:?}: {body:?}", route.method.as_str());
+            assert_eq!(status, StatusCode::FORBIDDEN, "{case}");
+            let error: Value = serde_json::from_slice(&body).expect("API error");
+            assert_eq!(error["code"], "csrf_rejected", "{case}");
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= 3 * 10,
+        "too few served mutations checked: {checked}"
+    );
+    assert_eq!(
+        me_login(&h, &signed_in.cookie).await.as_deref(),
+        Some("lklimek"),
+        "rejected requests changed nothing"
+    );
+}
+
 #[tokio::test]
 async fn session_id_stored_hashed() {
     let h = harness().await;
@@ -603,14 +767,14 @@ async fn session_id_stored_hashed() {
     let sessions = h.state.db.sessions();
     assert_eq!(
         sessions
-            .touch(token.as_bytes(), Utc::now())
+            .touch(token.as_bytes(), super::liveness(Utc::now()))
             .await
             .expect("lookup"),
         None,
         "the raw token is not stored"
     );
     let stored = sessions
-        .touch(&sha256(token.as_bytes()), Utc::now())
+        .touch(&sha256(token.as_bytes()), super::liveness(Utc::now()))
         .await
         .expect("lookup")
         .expect("session found by hash");
@@ -664,8 +828,199 @@ async fn logout_clears_session() {
     );
 }
 
+/// `/api/v1/me` login for this `Cookie` header, or `None` when the request is signed out.
+async fn me_login(h: &Harness, cookie: &str) -> Option<String> {
+    json_body(h.send(get_with_cookie("/api/v1/me", cookie)).await).await["user"]["login"]
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// A session of `user_id` created `created_ago`, last seen then, with a 7-day expiry; returns its cookie.
+async fn backdated_session(
+    h: &Harness,
+    user_id: &str,
+    name: &str,
+    created_ago: TimeDelta,
+) -> String {
+    let created = Utc::now() - created_ago;
+    let token = format!("{name}-session-token");
+    h.state
+        .db
+        .sessions()
+        .create(
+            &NewSession {
+                token_hash: &sha256(token.as_bytes()),
+                tenant_id: DEFAULT_TENANT,
+                user_id,
+                csrf_token: "csrf",
+                expires_at: created + super::SESSION_TTL,
+            },
+            created,
+        )
+        .await
+        .expect("session");
+    format!("__Host-sr_session={token}")
+}
+
 #[tokio::test]
-async fn token_row_is_ciphertext() {
+async fn idle_session_ends() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let recent = backdated_session(&h, &signed_in.user_id, "recent", TimeDelta::hours(23)).await;
+    let idle = backdated_session(&h, &signed_in.user_id, "idle", TimeDelta::hours(25)).await;
+    assert_eq!(me_login(&h, &recent).await.as_deref(), Some("lklimek"));
+    assert_eq!(
+        me_login(&h, &recent).await.as_deref(),
+        Some("lklimek"),
+        "each use restarts the idle window"
+    );
+    assert_eq!(me_login(&h, &idle).await, None, "idle past the timeout");
+}
+
+#[tokio::test]
+async fn removed_login_loses_access_on_next_request() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let settings = || Request::get("/api/v1/settings").header(COOKIE, &signed_in.cookie);
+    assert_eq!(
+        me_login(&h, &signed_in.cookie).await.as_deref(),
+        Some("lklimek")
+    );
+
+    remove_login(&h.state.db, DEFAULT_TENANT, "lklimek")
+        .await
+        .expect("remove");
+    assert_eq!(me_login(&h, &signed_in.cookie).await, None);
+    let response = h
+        .send(settings().body(Body::empty()).expect("request"))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = h
+        .send(logout_request(
+            Some(&signed_in.cookie),
+            Some(&signed_in.csrf),
+            false,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    allow_login(&h.state.db, DEFAULT_TENANT, "lklimek", 2002)
+        .await
+        .expect("entry bound to another account");
+    assert_eq!(me_login(&h, &signed_in.cookie).await, None);
+}
+
+#[tokio::test]
+async fn session_is_bound_to_its_tenant() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    db::repo::analyses::testing::seed_tenant(&h.state.db, "other")
+        .await
+        .expect("tenant");
+    let now = Utc::now();
+    h.state
+        .db
+        .sessions()
+        .create(
+            &NewSession {
+                token_hash: &sha256(b"other-tenant-token"),
+                tenant_id: "other",
+                user_id: &signed_in.user_id,
+                csrf_token: "csrf",
+                expires_at: now + TimeDelta::hours(1),
+            },
+            now,
+        )
+        .await
+        .expect("session");
+    assert_eq!(
+        me_login(&h, "__Host-sr_session=other-tenant-token").await,
+        None,
+        "a session in a tenant that does not allow its user is not accepted"
+    );
+}
+
+#[tokio::test]
+async fn logout_keeps_tokens_until_the_last_session_ends() {
+    let h = harness().await;
+    let first = h.sign_in("lklimek", 1001).await;
+    let second = h.sign_in("lklimek", 1001).await;
+    let stored = || async { h.state.db.user_tokens().get(&first.user_id).await };
+    let response = h
+        .send(logout_request(
+            Some(&first.cookie),
+            Some(&first.csrf),
+            false,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(
+        stored().await.expect("lookup").is_some(),
+        "the other session still uses the GitHub tokens"
+    );
+    let response = h
+        .send(logout_request(
+            Some(&second.cookie),
+            Some(&second.csrf),
+            false,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        stored().await.expect("lookup"),
+        None,
+        "the last session takes the GitHub tokens with it"
+    );
+}
+
+/// A sign-in whose token write fails leaves no session behind, so logging out the only delivered session still
+/// deletes the pair.
+#[tokio::test]
+async fn failed_token_write_leaves_no_session() {
+    let h = harness().await;
+    let delivered = h.sign_in("lklimek", 1001).await;
+    fail_token_writes(&h.state.db)
+        .await
+        .expect("inject failure");
+    let response = h.callback(&h.start_login().await).await;
+    assert_eq!(location(&response), "/?login_error=oauth_failed");
+    assert_eq!(cookie_pair(&response, "__Host-sr_session"), None);
+    allow_token_writes(&h.state.db)
+        .await
+        .expect("remove failure");
+
+    let response = h
+        .send(logout_request(
+            Some(&delivered.cookie),
+            Some(&delivered.csrf),
+            false,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.state
+            .db
+            .user_tokens()
+            .get(&delivered.user_id)
+            .await
+            .expect("lookup"),
+        None,
+        "the pair ends with the last delivered session"
+    );
+    assert_eq!(
+        h.state
+            .db
+            .sessions()
+            .delete_for_user(&delivered.user_id)
+            .await
+            .expect("count"),
+        0,
+        "no undelivered session left"
+    );
+}
+
+#[tokio::test]
+async fn token_ciphertext_bound_to_row() {
     let h = harness().await;
     let signed_in = h.sign_in("lklimek", 1001).await;
     let stored = h
@@ -791,6 +1146,173 @@ async fn refresh_is_serialised_and_atomic() {
         "the rotated refresh token replaced the old one together with the access token"
     );
     assert!(after.tokens.access_expires_at > Utc::now() + TimeDelta::hours(7));
+}
+
+/// GitHub rotates the pair as soon as it answers; a request dropped meanwhile (browser gone) must still store it.
+#[tokio::test]
+async fn refresh_survives_a_cancelled_request() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    store_pair(
+        &h,
+        &signed_in.user_id,
+        grant("ghu_expiring", 60, "ghr_current"),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_current"))
+        .respond_with(
+            token_response("ghu_rotated", "ghr_rotated").set_delay(Duration::from_millis(300)),
+        )
+        .expect(1)
+        .mount(&h.github)
+        .await;
+    let cancelled = tokio::time::timeout(
+        Duration::from_millis(100),
+        user_access_token(&h.state, &signed_in.user_id),
+    )
+    .await;
+    assert!(
+        cancelled.is_err(),
+        "the caller gave up before GitHub answered"
+    );
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let stored = h
+        .state
+        .db
+        .user_tokens()
+        .get(&signed_in.user_id)
+        .await
+        .expect("lookup")
+        .expect("pair kept");
+    assert_eq!(
+        stored_access(&h, &stored, &signed_in.user_id),
+        "ghu_rotated"
+    );
+    assert_eq!(
+        user_access_token(&h.state, &signed_in.user_id)
+            .await
+            .expect("token")
+            .expose_secret(),
+        "ghu_rotated",
+        "no second refresh"
+    );
+}
+
+/// A pair that no longer decrypts (`SR_SECRET_KEY` replaced, ADR-001) ends the sign-in instead of failing forever.
+#[tokio::test]
+async fn unreadable_tokens_ask_to_sign_in_again() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    let mut config = test_config();
+    config.github.oauth_url = h.state.config.github.oauth_url.clone();
+    config.github.api_url = h.state.config.github.api_url.clone();
+    config.secret_key = secrecy::SecretBox::new(Box::new([9u8; 32]));
+    let rekeyed = AppState::new(
+        config,
+        h.state.db.clone(),
+        Arc::new(QueueExecutor::new(h.state.db.clone())),
+    );
+    let result = user_access_token(&rekeyed, &signed_in.user_id).await;
+    assert!(
+        matches!(result, Err(UserTokenError::SignInRequired)),
+        "{result:?}"
+    );
+    assert_eq!(
+        h.state
+            .db
+            .user_tokens()
+            .get(&signed_in.user_id)
+            .await
+            .expect("lookup"),
+        None
+    );
+    assert_eq!(me_login(&h, &signed_in.cookie).await, None, "session ended");
+}
+
+/// GitHub answers `/user/installations` with 401 for `rejected` and with no installations for `accepted`.
+async fn mock_installations(h: &Harness, rejected: &str, accepted: &str) {
+    for (token, response) in [
+        (rejected, ResponseTemplate::new(401)),
+        (
+            accepted,
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"total_count": 0, "installations": []})),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/api/user/installations"))
+            .and(header("authorization", format!("Bearer {token}").as_str()))
+            .respond_with(response)
+            .mount(&h.github)
+            .await;
+    }
+}
+
+async fn settings_installations(h: &Harness, cookie: &str) -> (StatusCode, Value) {
+    let response = h.send(get_with_cookie("/api/v1/settings", cookie)).await;
+    let status = response.status();
+    (
+        status,
+        json_body(response).await["app_installations"].clone(),
+    )
+}
+
+/// A GitHub 401 for a token the server still holds as fresh marks it expired: the next use refreshes the pair.
+#[tokio::test]
+async fn github_401_refreshes_the_pair_on_next_use() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    h.github.reset().await;
+    mock_installations(&h, ACCESS, "ghu_after_401").await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .and(body_string_contains(format!("refresh_token={REFRESH}")))
+        .respond_with(token_response("ghu_after_401", "ghr_after_401"))
+        .expect(1)
+        .mount(&h.github)
+        .await;
+    assert_eq!(
+        settings_installations(&h, &signed_in.cookie).await,
+        (StatusCode::OK, Value::Null),
+        "not checked"
+    );
+    assert_eq!(
+        settings_installations(&h, &signed_in.cookie).await,
+        (StatusCode::OK, json!([])),
+        "read with the refreshed token"
+    );
+}
+
+/// After a GitHub 401, a refresh GitHub rejects ends the sign-in: the user is asked to sign in again.
+#[tokio::test]
+async fn github_401_then_rejected_refresh_asks_to_sign_in_again() {
+    let h = harness().await;
+    let signed_in = h.sign_in("lklimek", 1001).await;
+    h.github.reset().await;
+    mock_installations(&h, ACCESS, "unused").await;
+    Mock::given(method("POST"))
+        .and(path("/login/oauth/access_token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"error": "bad_refresh_token"})),
+        )
+        .expect(1)
+        .mount(&h.github)
+        .await;
+    assert_eq!(
+        settings_installations(&h, &signed_in.cookie).await,
+        (StatusCode::OK, Value::Null)
+    );
+    assert_eq!(
+        settings_installations(&h, &signed_in.cookie).await,
+        (StatusCode::OK, Value::Null)
+    );
+    let response = h
+        .send(get_with_cookie("/api/v1/settings", &signed_in.cookie))
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(json_body(response).await["message"], "Sign in to continue.");
 }
 
 #[tokio::test]
@@ -962,6 +1484,9 @@ async fn missing_token_row_ends_sessions() {
         .upsert_member(DEFAULT_TENANT, "u-orphan", &profile, now)
         .await
         .expect("user");
+    allow_login(&h.state.db, DEFAULT_TENANT, "Claudius-Maginificent", 77)
+        .await
+        .expect("allowlist");
     h.state
         .db
         .sessions()
@@ -1053,11 +1578,28 @@ async fn forwarded_headers_ignored_from_untrusted_peer() {
     );
 }
 
+/// The PKCE verifiers GitHub received in code exchanges.
+async fn exchanged_verifiers(h: &Harness) -> Vec<String> {
+    h.github
+        .received_requests()
+        .await
+        .expect("recording")
+        .into_iter()
+        .filter_map(|request| {
+            url::form_urlencoded::parse(&request.body)
+                .find(|(key, _)| key == "code_verifier")
+                .map(|(_, value)| value.into_owned())
+        })
+        .collect()
+}
+
+/// Sign-in → refresh → 401 → rejected refresh → logout, captured at TRACE ([`LogCapture`]): no secret in the logs,
+/// error bodies or redirects (threat model T7a, T7b `no_secret_in_logs`).
 #[tokio::test]
-async fn no_token_or_secret_in_logs_or_error_bodies() {
+async fn no_secret_in_logs_over_sign_in_refresh_logout() {
     let capture = LogCapture::start();
     let h = harness().await;
-    let signed_in = h.sign_in("lklimek", 1001).await;
+    let key = h.state.config.secret_key.expose_secret().to_vec();
     let mut exposed = vec![
         h.state
             .config
@@ -1065,21 +1607,47 @@ async fn no_token_or_secret_in_logs_or_error_bodies() {
             .client_secret
             .expose_secret()
             .to_owned(),
+        base64::engine::general_purpose::STANDARD.encode(&key),
+        URL_SAFE_NO_PAD.encode(&key),
+        key.iter().map(|byte| format!("{byte:02x}")).collect(),
+        format!("{key:?}"),
         ACCESS.to_owned(),
         REFRESH.to_owned(),
-        signed_in
-            .cookie
-            .split_once('=')
-            .expect("cookie")
-            .1
-            .to_owned(),
-        signed_in.csrf.clone(),
+        CODE.to_owned(),
     ];
+    let mut bodies = Vec::new();
 
-    // Refused login, failed exchange, refresh, rejected refresh and rejected requests.
+    // Sign-in (twice, so one session can end alone); the OAuth state, PKCE verifier and session ids are secret.
+    h.github.reset().await;
+    h.mock_github_user("lklimek", 1001).await;
+    let mut sessions = Vec::new();
+    for _ in 0..2 {
+        let started = h.start_login().await;
+        exposed.push(started.state.clone());
+        let response = h.callback(&started).await;
+        bodies.push(location(&response));
+        let cookie = cookie_pair(&response, "__Host-sr_session").expect("session cookie");
+        let me = json_body(h.send(get_with_cookie("/api/v1/me", &cookie)).await).await;
+        let csrf = me["csrf_token"].as_str().expect("csrf").to_owned();
+        exposed.push(cookie.split_once('=').expect("cookie").1.to_owned());
+        exposed.push(csrf.clone());
+        sessions.push((cookie, csrf));
+    }
+    exposed.extend(exchanged_verifiers(&h).await);
+    let user_id = h
+        .state
+        .db
+        .users()
+        .find_by_github_id(1001)
+        .await
+        .expect("lookup")
+        .expect("user")
+        .id;
+
+    // Refused login and failed exchange.
     h.github.reset().await;
     h.mock_github_user("mallory", 666).await;
-    let mut bodies = vec![location(&h.callback(&h.start_login().await).await)];
+    bodies.push(location(&h.callback(&h.start_login().await).await));
     h.github.reset().await;
     Mock::given(method("POST"))
         .and(path("/login/oauth/access_token"))
@@ -1089,64 +1657,105 @@ async fn no_token_or_secret_in_logs_or_error_bodies() {
         .mount(&h.github)
         .await;
     bodies.push(location(&h.callback(&h.start_login().await).await));
+
+    // Refresh, then a GitHub 401 for the rotated token and a rejected refresh.
     h.github.reset().await;
     store_pair(
         &h,
-        &signed_in.user_id,
+        &user_id,
         grant("ghu_expiring_canary", 0, "ghr_current_canary"),
     )
     .await;
-    exposed.extend(
-        [
-            "ghu_expiring_canary",
-            "ghr_current_canary",
-            "ghu_rotated_canary",
-            "ghr_rotated_canary",
-        ]
-        .map(str::to_owned),
-    );
+    let canaries = [
+        "ghu_expiring_canary",
+        "ghr_current_canary",
+        "ghu_rotated_canary",
+        "ghr_rotated_canary",
+    ];
+    exposed.extend(canaries.map(str::to_owned));
     Mock::given(method("POST"))
         .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_current_canary"))
         .respond_with(token_response("ghu_rotated_canary", "ghr_rotated_canary"))
         .mount(&h.github)
         .await;
-    user_access_token(&h.state, &signed_in.user_id)
-        .await
-        .expect("refreshed");
-    let wrong_csrf = h
-        .send(logout_request(
-            Some(&signed_in.cookie),
-            Some("wrong"),
-            false,
-        ))
-        .await;
-    bodies.push(json_body(wrong_csrf).await.to_string());
-    h.github.reset().await;
-    store_pair(
-        &h,
-        &signed_in.user_id,
-        grant("ghu_dead_canary", 0, "ghr_dead_canary"),
-    )
-    .await;
-    exposed.extend(["ghu_dead_canary", "ghr_dead_canary"].map(str::to_owned));
     Mock::given(method("POST"))
         .and(path("/login/oauth/access_token"))
+        .and(body_string_contains("refresh_token=ghr_rotated_canary"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"error": "bad_refresh_token"})),
         )
         .mount(&h.github)
         .await;
-    let error = user_access_token(&h.state, &signed_in.user_id)
-        .await
-        .expect_err("rejected refresh");
-    bodies.push(format!("{error} {error:?}"));
+    mock_installations(&h, "ghu_rotated_canary", "unused").await;
+    let (first_cookie, first_csrf) = &sessions[0];
+    for _ in 0..2 {
+        let response = h
+            .send(get_with_cookie("/api/v1/settings", first_cookie))
+            .await;
+        bodies.push(json_body(response).await.to_string());
+    }
+    let signed_out = h
+        .send(get_with_cookie("/api/v1/settings", first_cookie))
+        .await;
+    assert_eq!(
+        signed_out.status(),
+        StatusCode::UNAUTHORIZED,
+        "the rejected refresh ended the sign-in"
+    );
+    bodies.push(json_body(signed_out).await.to_string());
+
+    // Sign in again, rejected and accepted logouts.
+    h.github.reset().await;
+    h.mock_github_user("lklimek", 1001).await;
+    let again = h.sign_in("lklimek", 1001).await;
+    let other = h.sign_in("lklimek", 1001).await;
+    exposed.extend(exchanged_verifiers(&h).await);
+    for signed_in in [&again, &other] {
+        exposed.push(
+            signed_in
+                .cookie
+                .split_once('=')
+                .expect("cookie")
+                .1
+                .to_owned(),
+        );
+        exposed.push(signed_in.csrf.clone());
+    }
+    for (cookie, csrf) in [
+        (first_cookie.as_str(), first_csrf.as_str()),
+        (&again.cookie, "wrong"),
+    ] {
+        let response = h
+            .send(logout_request(Some(cookie), Some(csrf), false))
+            .await;
+        bodies.push(json_body(response).await.to_string());
+    }
+    for (signed_in, everywhere) in [(&again, false), (&other, true)] {
+        let response = h
+            .send(logout_request(
+                Some(&signed_in.cookie),
+                Some(&signed_in.csrf),
+                everywhere,
+            ))
+            .await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
 
     let logs = capture.text();
-    assert!(
-        logs.contains("user signed in"),
-        "logs were captured: {logs}"
-    );
+    for expected in [
+        "user signed in",
+        "GitHub user token refreshed",
+        "ending the sign-in",
+        "user signed out",
+    ] {
+        assert!(logs.contains(expected), "{expected} not logged: {logs}");
+    }
     for secret in &exposed {
+        assert!(
+            secret.len() >= 8,
+            "canary too short to be meaningful: {secret}"
+        );
         assert!(!logs.contains(secret.as_str()), "secret in logs: {secret}");
         for body in &bodies {
             assert!(!body.contains(secret.as_str()), "secret in {body}");

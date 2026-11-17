@@ -21,8 +21,8 @@ use db::error::DbError;
 use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
-use crate::auth::{Session, SessionCsrf, user_access_token};
-use crate::github::rest::{self, is_valid_repo};
+use crate::auth::{Session, SessionCsrf, user_access_token, user_token_rejected};
+use crate::github::rest::{self, GithubError, is_valid_repo};
 use crate::state::AppState;
 
 /// Plain sentences of a failed LLM call, by typed cause.
@@ -160,12 +160,17 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
 }
 
 /// The App installations the user can access; `None` (not checked) when the user's GitHub sign-in is not usable
-/// or GitHub fails: never an empty list standing in for an unknown one.
+/// or GitHub fails: never an empty list standing in for an unknown one. A GitHub 401 makes the next use refresh
+/// the token pair.
 async fn installations(state: &AppState, session: &Session) -> Option<Vec<AppInstallation>> {
     let listed = match user_access_token(state, &session.user_id).await {
-        Ok(token) => rest::user_installations(&state.config.github, &token)
-            .await
-            .map_err(|error| format!("{error:?}")),
+        Ok(token) => {
+            let listed = rest::user_installations(&state.config.github, &token).await;
+            if matches!(listed, Err(GithubError::Unauthorized)) {
+                user_token_rejected(state, &session.user_id, &token).await;
+            }
+            listed.map_err(|error| format!("{error:?}"))
+        }
         Err(error) => Err(format!("{error:?}")),
     };
     listed

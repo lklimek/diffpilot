@@ -48,6 +48,16 @@ pub struct SessionRecord {
     pub expires_at: DateTime<Utc>,
 }
 
+/// When a session counts as live: unexpired at `now`, seen after `seen_after` (idle timeout), and its user's
+/// GitHub id bound to an allowlist entry of the session's tenant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Liveness {
+    /// Current time.
+    pub now: DateTime<Utc>,
+    /// Sessions last seen at or before this time are idle.
+    pub seen_after: DateTime<Utc>,
+}
+
 /// An OAuth login taken by its callback.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OauthLoginRecord {
@@ -60,6 +70,35 @@ pub struct OauthLoginRecord {
 /// Fixed-width RFC 3339 UTC text, so stored timestamps compare correctly as text in SQL.
 pub(super) fn timestamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Micros, true)
+}
+
+/// SQL condition on a `sessions` row for [`Liveness`]; binds `?1` = now and `?2` = seen after.
+macro_rules! live_session {
+    () => {
+        "(sessions.expires_at > ?1 AND sessions.last_seen_at > ?2
+          AND EXISTS (SELECT 1 FROM users JOIN tenant_allowed_logins AS allowed ON allowed.github_id = users.github_id
+                      WHERE users.id = sessions.user_id AND allowed.tenant_id = sessions.tenant_id))"
+    };
+}
+pub(super) use live_session;
+
+/// Insert of a new session (also used by the sign-in transaction of `tokens`).
+pub(super) fn insert_session<'q>(
+    session: &'q NewSession<'q>,
+    now: DateTime<Utc>,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
+    let now = timestamp(now);
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, tenant_id, user_id, csrf_token, created_at, last_seen_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(session.token_hash)
+    .bind(session.tenant_id)
+    .bind(session.user_id)
+    .bind(session.csrf_token)
+    .bind(now.clone())
+    .bind(now)
+    .bind(timestamp(session.expires_at))
 }
 
 /// Parses a stored timestamp of `column`.
@@ -76,37 +115,26 @@ impl Sessions<'_> {
         session: &NewSession<'_>,
         now: DateTime<Utc>,
     ) -> Result<(), DbError> {
-        let now = timestamp(now);
-        sqlx::query(
-            "INSERT INTO sessions (token_hash, tenant_id, user_id, csrf_token, created_at, last_seen_at, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(session.token_hash)
-        .bind(session.tenant_id)
-        .bind(session.user_id)
-        .bind(session.csrf_token)
-        .bind(&now)
-        .bind(&now)
-        .bind(timestamp(session.expires_at))
-        .execute(self.pool)
-        .await?;
+        insert_session(session, now).execute(self.pool).await?;
         Ok(())
     }
 
-    /// The unexpired session with this token hash, marked as seen at `now`; `None` if absent or expired.
+    /// The live session with this token hash (see [`Liveness`]), marked as seen at `live.now`; `None` if absent or
+    /// not live.
     pub async fn touch(
         &self,
         token_hash: &[u8],
-        now: DateTime<Utc>,
+        live: Liveness,
     ) -> Result<Option<SessionRecord>, DbError> {
-        let now = timestamp(now);
-        let row = sqlx::query(
-            "UPDATE sessions SET last_seen_at = ? WHERE token_hash = ? AND expires_at > ?
-             RETURNING tenant_id, user_id, csrf_token, expires_at",
-        )
+        let now = timestamp(live.now);
+        let row = sqlx::query(concat!(
+            "UPDATE sessions SET last_seen_at = ?1 WHERE token_hash = ?3 AND ",
+            live_session!(),
+            " RETURNING tenant_id, user_id, csrf_token, expires_at"
+        ))
         .bind(&now)
+        .bind(timestamp(live.seen_after))
         .bind(token_hash)
-        .bind(&now)
         .fetch_optional(self.pool)
         .await?;
         row.map(|row| {
@@ -187,14 +215,22 @@ impl Sessions<'_> {
         }))
     }
 
-    /// Deletes expired sessions and OAuth logins.
-    pub async fn delete_expired(&self, now: DateTime<Utc>) -> Result<(), DbError> {
-        let now = timestamp(now);
+    /// Deletes sessions that are not live (see [`Liveness`]), the GitHub token pairs of users left without any
+    /// session, and expired OAuth logins, in one transaction.
+    pub async fn delete_expired(&self, live: Liveness) -> Result<(), DbError> {
+        let now = timestamp(live.now);
         let mut tx = self.pool.begin().await?;
-        sqlx::query("DELETE FROM sessions WHERE expires_at <= ?")
+        sqlx::query(concat!("DELETE FROM sessions WHERE NOT ", live_session!()))
             .bind(&now)
+            .bind(timestamp(live.seen_after))
             .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "DELETE FROM user_tokens
+             WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = user_tokens.user_id)",
+        )
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM oauth_logins WHERE expires_at <= ?")
             .bind(&now)
             .execute(&mut *tx)
@@ -224,6 +260,9 @@ mod tests {
             .upsert_member(DEFAULT_TENANT, "u-1", &profile, Utc::now())
             .await
             .expect("user");
+        crate::repo::tenants::testing::allow_login(&db, DEFAULT_TENANT, "lklimek", 42)
+            .await
+            .expect("allowed");
         db
     }
 
@@ -234,6 +273,13 @@ mod tests {
             user_id: "u-1",
             csrf_token: "csrf",
             expires_at,
+        }
+    }
+
+    fn live_at(now: DateTime<Utc>) -> Liveness {
+        Liveness {
+            now,
+            seen_after: now - TimeDelta::hours(1),
         }
     }
 
@@ -251,21 +297,176 @@ mod tests {
             .await
             .expect("create");
         let live = sessions
-            .touch(b"live", now)
+            .touch(b"live", live_at(now))
             .await
             .expect("touch")
             .expect("live");
         assert_eq!(live.user_id, "u-1");
         assert_eq!(live.csrf_token, "csrf");
-        assert_eq!(sessions.touch(b"old", now).await.expect("touch"), None);
-        assert_eq!(sessions.touch(b"unknown", now).await.expect("touch"), None);
-        sessions.delete_expired(now).await.expect("cleanup");
+        assert_eq!(
+            sessions.touch(b"old", live_at(now)).await.expect("touch"),
+            None
+        );
+        assert_eq!(
+            sessions
+                .touch(b"unknown", live_at(now))
+                .await
+                .expect("touch"),
+            None
+        );
+        sessions
+            .delete_expired(live_at(now))
+            .await
+            .expect("cleanup");
         assert!(
             !sessions.delete(b"old").await.expect("delete"),
             "cleaned up"
         );
         assert!(sessions.delete(b"live").await.expect("delete"));
-        assert_eq!(sessions.touch(b"live", now).await.expect("touch"), None);
+        assert_eq!(
+            sessions.touch(b"live", live_at(now)).await.expect("touch"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_session_is_not_live() {
+        let db = db_with_user().await;
+        let sessions = db.sessions();
+        let created = Utc::now();
+        sessions
+            .create(&session(b"s", created + TimeDelta::days(7)), created)
+            .await
+            .expect("create");
+        let later = created + TimeDelta::minutes(30);
+        assert!(
+            sessions
+                .touch(b"s", live_at(later))
+                .await
+                .expect("touch")
+                .is_some(),
+            "seen within the idle window"
+        );
+        let idle = later + TimeDelta::hours(2);
+        assert_eq!(
+            sessions.touch(b"s", live_at(idle)).await.expect("touch"),
+            None,
+            "unseen for longer than the idle window"
+        );
+        sessions
+            .delete_expired(live_at(idle))
+            .await
+            .expect("cleanup");
+        assert!(
+            !sessions.delete(b"s").await.expect("delete"),
+            "idle sessions are cleaned up"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_of_a_removed_or_rebound_login_is_not_live() {
+        let db = db_with_user().await;
+        let sessions = db.sessions();
+        let now = Utc::now();
+        sessions
+            .create(&session(b"s", now + TimeDelta::hours(1)), now)
+            .await
+            .expect("create");
+        let live = |db: &Db| {
+            let db = db.clone();
+            async move {
+                db.sessions()
+                    .touch(b"s", live_at(now))
+                    .await
+                    .expect("touch")
+                    .is_some()
+            }
+        };
+        assert!(live(&db).await, "bound login");
+        crate::repo::tenants::testing::allow_login(&db, DEFAULT_TENANT, "lklimek", 43)
+            .await
+            .expect("rebind");
+        assert!(!live(&db).await, "entry bound to another GitHub id");
+        crate::repo::tenants::testing::allow_login(&db, DEFAULT_TENANT, "lklimek", 42)
+            .await
+            .expect("bind");
+        assert!(live(&db).await);
+        crate::repo::tenants::testing::remove_login(&db, DEFAULT_TENANT, "lklimek")
+            .await
+            .expect("remove");
+        assert!(!live(&db).await, "login removed from the allowlist");
+        sessions
+            .delete_expired(live_at(now))
+            .await
+            .expect("cleanup");
+        assert!(
+            !sessions.delete(b"s").await.expect("delete"),
+            "sessions of removed logins are cleaned up"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_is_live_only_in_a_tenant_that_allows_its_user() {
+        let db = db_with_user().await;
+        crate::repo::analyses::testing::seed_tenant(&db, "other")
+            .await
+            .expect("tenant");
+        let now = Utc::now();
+        db.sessions()
+            .create(
+                &NewSession {
+                    tenant_id: "other",
+                    ..session(b"other", now + TimeDelta::hours(1))
+                },
+                now,
+            )
+            .await
+            .expect("create");
+        assert_eq!(
+            db.sessions()
+                .touch(b"other", live_at(now))
+                .await
+                .expect("touch"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_deletes_token_pairs_left_without_sessions() {
+        let db = db_with_user().await;
+        let now = Utc::now();
+        let pair = crate::repo::tokens::EncryptedTokens {
+            access_ct: vec![1],
+            access_expires_at: now + TimeDelta::hours(8),
+            refresh_ct: vec![2],
+            refresh_expires_at: now + TimeDelta::days(180),
+        };
+        db.user_tokens()
+            .put("u-1", DEFAULT_TENANT, &pair, now)
+            .await
+            .expect("pair");
+        db.sessions()
+            .create(&session(b"s", now + TimeDelta::hours(1)), now)
+            .await
+            .expect("create");
+        db.sessions()
+            .delete_expired(live_at(now))
+            .await
+            .expect("cleanup");
+        assert!(
+            db.user_tokens().get("u-1").await.expect("get").is_some(),
+            "a live session keeps its pair"
+        );
+        let later = now + TimeDelta::hours(2);
+        db.sessions()
+            .delete_expired(live_at(later))
+            .await
+            .expect("cleanup");
+        assert_eq!(
+            db.user_tokens().get("u-1").await.expect("get"),
+            None,
+            "the pair ends with the user's last session"
+        );
     }
 
     #[tokio::test]
