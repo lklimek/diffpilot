@@ -10,28 +10,36 @@ interface BlockNavProps {
 }
 
 const BUTTON =
-  "max-w-1/2 cursor-pointer truncate rounded-md border px-3 py-1.5 disabled:cursor-not-allowed disabled:opacity-55";
+  "max-w-1/2 cursor-pointer truncate rounded-md border px-3 py-1.5 aria-disabled:cursor-not-allowed aria-disabled:opacity-55";
 
 /** Previous / Next under the block. */
 export function BlockNav({ previous, next, onPrevious, onNext }: BlockNavProps) {
   return (
     <div className="mt-3.5 flex items-center gap-2.5 border-t border-border pt-2.5">
-      <Tooltip tip="Previous block (k)" className="max-w-1/2">
+      <Tooltip
+        tip={
+          previous === undefined ? "This is the first block; there is none before it." : "Previous block (k)"
+        }
+        className="max-w-1/2"
+      >
         <button
           type="button"
-          disabled={previous === undefined}
-          onClick={onPrevious}
+          aria-disabled={previous === undefined || undefined}
+          onClick={() => previous !== undefined && onPrevious()}
           className={`${BUTTON} max-w-full border-border bg-surface text-text hover:border-accent`}
         >
           {previous === undefined ? "← Previous" : `← Previous: ${previous}`}
         </button>
       </Tooltip>
       <span className="flex-1" />
-      <Tooltip tip="Next block (j)" className="max-w-1/2">
+      <Tooltip
+        tip={next === undefined ? "This is the last block; there is none after it." : "Next block (j)"}
+        className="max-w-1/2"
+      >
         <button
           type="button"
-          disabled={next === undefined}
-          onClick={onNext}
+          aria-disabled={next === undefined || undefined}
+          onClick={() => next !== undefined && onNext()}
           className={`${BUTTON} max-w-full border-accent bg-accent font-semibold text-on-accent`}
         >
           {next === undefined ? "Next →" : `Next: ${next} →`}

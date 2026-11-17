@@ -7,6 +7,7 @@ import type {
   FeedbackTarget,
   UserFeedbackValue,
 } from "../../api/generated/types";
+import { busyTip } from "../button/button";
 import { growField, useAction } from "../inspector/action";
 import { Tooltip } from "../tooltip/Tooltip";
 
@@ -54,7 +55,7 @@ function sameTarget(a: FeedbackTarget, b: FeedbackTarget): boolean {
 }
 
 const BUTTON =
-  "cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold text-text hover:border-accent aria-pressed:border-accent aria-pressed:bg-accent-bg disabled:cursor-wait disabled:opacity-60";
+  "cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold text-text hover:border-accent aria-pressed:border-accent aria-pressed:bg-accent-bg disabled:cursor-wait disabled:opacity-60 aria-disabled:cursor-wait aria-disabled:opacity-60";
 
 /** correct / wrong / irrelevant / overrated / underrated with an optional note (brief §3 Feedback). */
 export function FeedbackButtons({ target, subject, feedback, onSubmit, onRemove }: FeedbackButtonsProps) {
@@ -133,12 +134,15 @@ function FeedbackForm({
         {VALUES.map(([value, tip]) => {
           const stored = chosen.find((f) => f.value === value);
           return (
-            <Tooltip key={value} tip={stored ? `${tip} Pressed: press again to remove it.` : tip}>
+            <Tooltip
+              key={value}
+              tip={busyTip(stored ? `${tip} Pressed: press again to remove it.` : tip, action.busy)}
+            >
               <button
                 type="button"
                 aria-pressed={stored !== undefined}
-                disabled={action.busy}
-                onClick={() => void (stored ? remove(stored) : submit(value))}
+                aria-disabled={action.busy || undefined}
+                onClick={() => !action.busy && void (stored ? remove(stored) : submit(value))}
                 className={BUTTON}
               >
                 {value}
