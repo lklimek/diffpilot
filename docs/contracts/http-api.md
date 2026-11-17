@@ -35,6 +35,7 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | GET | `/api/v1/analyses/{id}/questions` | session | – | `AskQuestion[]` |
 | POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` |
 | GET / POST | `/api/v1/analyses/{id}/feedback` | session / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
+| DELETE | `…/feedback/{feedback_id}` | session_csrf | – | 204 |
 | GET | `/api/v1/analyses/{id}/pending-review` | session | – | `PendingReview` |
 | POST | `/api/v1/analyses/{id}/pending-review/comments` | session_csrf | `CreateCommentRequest` | 201 `CreateCommentResponse` |
 | PATCH | `…/pending-review/comments/{comment_id}` | session_csrf | `UpdateCommentRequest` | `PendingComment` |
@@ -110,6 +111,18 @@ mapping, query rules and the endpoint × fixture-state inventory.
   | comment placed on another head, its review published meanwhile, deleted again | `comment_published` | freed |
   | comment placed on another head, deletion failed | `pr_head_changed` (may remain) | busy |
 
+- **Feedback** (CCR-F1): one entry per (user, analysis, target, value); several values may coexist on a target.
+  Posting a value again replaces its note (same id); `overrated` and `underrated` exclude each other (posting one
+  removes the other, one transaction); `DELETE …/feedback/{feedback_id}` removes one value of the user's own
+  entries (`not_found` otherwise). `missed_by_llm` is recorded only by the server (a comment on a changed line
+  without annotation) and rejected from clients (`invalid_request`, it is not a `UserFeedbackValue`). A step or
+  annotation target must exist in the analysis's flows under its canonical Tour id (`f3.1`, `f3.1.a2`; aliases
+  such as `f3.01` are rejected), a line target must be a changed line of the analysed diff on its side (added on
+  `head`, removed on `base`), the note at most `FeedbackRequest::MAX_NOTE_CHARS` (2000) characters, else
+  `invalid_request`; a blank note is stored as none. Feedback is stored locally at once and written to MemCan
+  asynchronously; `Feedback.memory` is the state of the current revision's copy there (`pending`, `written` =
+  MemCan confirmed it and no earlier write of unknown outcome can still land, `failed` = the last attempt failed,
+  retried on a back-off). Only `written` may be shown as "saved to calibration memory".
 - **Settings**: `repos` lists the tenant's known repositories (from `repos`); each opens
   `/api/v1/repos/{owner}/{name}/settings`.
 - Ids in paths are UUIDs (`analysis`, `question`) or server ids (`f1.2` steps); unknown or another tenant's →

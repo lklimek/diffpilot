@@ -570,7 +570,12 @@ note: string | null,
 /**
  * When it was recorded.
  */
-created_at: string, };
+created_at: string,
+/**
+ * The copy of this entry's current revision in MemCan (calibration memory for `overrated` /
+ * `underrated`); only `written` means MemCan confirmed it.
+ */
+memory: FeedbackMemory, };
 
 /**
  * Identifier of a feedback entry.
@@ -578,7 +583,14 @@ created_at: string, };
 export type FeedbackId = string;
 
 /**
- * Body of `POST /api/v1/analyses/{id}/feedback`; one entry per user and target (later posts replace it).
+ * State of the MemCan copy of a feedback entry's current revision.
+ */
+export type FeedbackMemory = "pending" | "written" | "failed";
+
+/**
+ * Body of `POST /api/v1/analyses/{id}/feedback`: one entry per user, target and value, so several values may
+ * coexist on a target; posting a value again replaces its note; `overrated` and `underrated` exclude each other
+ * (posting one removes the other). `missed_by_llm` is recorded only by the server.
  */
 export type FeedbackRequest = {
 /**
@@ -590,7 +602,7 @@ target: FeedbackTarget,
  */
 value: UserFeedbackValue,
 /**
- * Optional note.
+ * Optional note, at most 2000 characters (`FeedbackRequest::MAX_NOTE_CHARS`).
  */
 note: string | null, };
 
