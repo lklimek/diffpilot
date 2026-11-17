@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use chrono::DateTime;
+use chrono::{DateTime, TimeDelta};
 use contracts::api::analyses::AnalysisState;
 use contracts::api::events::AnalysisEvent;
 use contracts::api::pr::PrSummary;
@@ -1093,6 +1093,96 @@ async fn restart_after_a_cancelled_result_withdraws_a_provisional_answer() {
     assert_eq!(failed.failure.as_deref(), Some(job::SUPERSEDED));
     let (_, listed) = f.list().await;
     assert_eq!(listed[0]["answer"], Value::Null, "withdrawn from the list");
+}
+
+#[tokio::test]
+async fn restart_after_the_lease_expired_withdraws_the_provisional_answer_of_the_lost_attempt() {
+    let f = fixture(true).await;
+    let (id, claim) = f.stopped_on_a_claimed_job().await;
+    f.provisionally_answered(id, good_answer()).await;
+    // While the server was down the attempt's lease passed: the job is queued again, its ready output dropped.
+    crate::jobs::queue::expire_leases(&f.state.db, Utc::now() + TimeDelta::hours(1))
+        .await
+        .expect("expire");
+    assert_eq!(
+        f.state
+            .db
+            .jobs()
+            .get(claim.spec.job_id)
+            .await
+            .expect("job")
+            .state,
+        JobState::Queued
+    );
+    resume_unanswered(&f.state).await.expect("resume");
+    let withdrawn = f.wait_for(id, |q| q.answer.is_none()).await;
+    assert_ne!(withdrawn.state, AskState::Answered, "{withdrawn:?}");
+    // The next attempt answers again.
+    let claim = f.claim().await.expect("the next attempt");
+    f.post_result(
+        &claim,
+        JobOutcome::Succeeded {
+            output: good_answer(),
+        },
+    )
+    .await;
+    f.wait_for(id, |q| q.state == AskState::Answered).await;
+    let record = f.state.db.questions().get(id, Utc::now()).await.expect("q");
+    assert!(record.answered_at.is_some(), "final");
+}
+
+#[tokio::test]
+async fn restart_shows_again_a_provisional_answer_whose_attempt_still_runs() {
+    let f = fixture(true).await;
+    let (id, claim) = f.stopped_on_a_claimed_job().await;
+    // The runner reported the ready output and the follower stored it; then the server stopped.
+    let uri = contracts::routes::RUNNER_OUTPUT
+        .path
+        .replace("{id}", &claim.spec.job_id.to_string());
+    let ready = contracts::job::protocol::OutputReady {
+        attempt: claim.spec.attempt,
+        output: good_answer(),
+    };
+    let token = claim.job_token.expose().to_owned();
+    let (status, body) = f
+        .runner(&uri, &token, serde_json::to_value(&ready).expect("ready"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    f.provisionally_answered(id, good_answer()).await;
+    resume_unanswered(&f.state).await.expect("resume");
+    let shown = f
+        .wait_for(id, |q| q.state == AskState::Answered && q.answer.is_some())
+        .await;
+    assert_eq!(
+        shown.answer,
+        Some(serde_json::from_value(good_answer()).expect("output"))
+    );
+    let record = f.state.db.questions().get(id, Utc::now()).await.expect("q");
+    assert_eq!(
+        record.answered_at, None,
+        "still provisional before the result"
+    );
+    f.post_result(
+        &claim,
+        JobOutcome::Succeeded {
+            output: good_answer(),
+        },
+    )
+    .await;
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while f
+        .state
+        .db
+        .questions()
+        .get(id, Utc::now())
+        .await
+        .expect("q")
+        .answered_at
+        .is_none()
+    {
+        assert!(tokio::time::Instant::now() < deadline, "never final");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 // --- Acceptance 3: claim order, one ask at a time ----------------------------------------------------------

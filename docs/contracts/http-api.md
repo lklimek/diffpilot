@@ -148,9 +148,13 @@ mapping, query rules and the endpoint × fixture-state inventory.
   link other than `https://github.com/…`), at most 8000 characters and 50 evidence lines inside their file of the
   pinned tree; otherwise the question fails and the answer is never shown. After a server restart every `pending`,
   `answering` or provisionally `answered` question (a ready output whose job result was not applied yet) is
-  followed again to its end; only final answers enter later context packs. `GET …/questions` lists every question
-  of the analysis, oldest first, in any state and of every user of the tenant. Plain text: HTML-like tags (`<`
-  followed by a letter, `/` or `!`) are allowed only inside code spans and closed fenced blocks.
+  followed again to its end (a provisional answer returns to `answering` until the job's current attempt shows
+  it again or its result arrives); only final answers enter later context packs. Logging: the provider's failure
+  text appears only in the server's warn log, scrubbed of known secrets; no log line carries a secret, a token or
+  the question text, and no response, event or stored question carries the provider's text. `GET …/questions`
+  lists every question of the analysis, oldest first, in any state and of every user of the tenant. Plain text:
+  HTML-like tags (`<` followed by a letter, `/` or `!`) are allowed only inside code spans and closed fenced
+  blocks; a GitHub URL carries no user info and no explicit port.
 - **Settings**: `repos` lists the tenant's repositories with at least one analysis; each opens
   `/api/v1/repos/{owner}/{name}/settings` (owner and name match case-insensitively; any other repository is
   `not_found`). Its rules, related repositories and profile source come from the newest stored pre-pass of the

@@ -200,6 +200,13 @@ async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), F
         tracing::error!(question = %id, ?error, "could not cancel the ask job of a superseded analysis");
     }
     let mut current = record.question.state;
+    // Re-attached to a provisional answer: its attempt may be gone (lease expired, requeued). The executor replays
+    // the current attempt's ready output or the result, so the answer is shown again only if it still stands.
+    if current == AskState::Answered {
+        current = set(state, analysis, id, &QuestionUpdate::Answering)
+            .await?
+            .state;
+    }
     let mut updates = state.executor.events(&handle);
     while let Some(update) = updates.next().await {
         let next = match update? {
