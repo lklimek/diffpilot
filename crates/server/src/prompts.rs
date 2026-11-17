@@ -67,6 +67,8 @@ const PACK_PR_CONTEXT_BYTES: usize = 16 * 1024;
 const PACK_FLOWS_BYTES: usize = 48 * 1024;
 const PACK_ASK_FLOW_BYTES: usize = 48 * 1024;
 const PACK_ANSWERS_BYTES: usize = 16 * 1024;
+/// Bound on a pack section's bytes besides its content: fences, label and an omission or clipping note.
+const PACK_SECTION_OVERHEAD: usize = 512;
 
 /// A prompt could not be rendered.
 #[derive(Debug, thiserror::Error)]
@@ -470,11 +472,29 @@ pub fn repair(input: &RepairInput<'_>) -> Result<String, PromptError> {
     within_budget(kind, prompt, PROMPT_BUDGET_BYTES + MAX_REJECTED_BYTES)
 }
 
-/// The context pack: stored results of the analysis as data, within [`CONTEXT_PACK_BUDGET_BYTES`].
+/// The context pack: stored results of the analysis as data, within [`CONTEXT_PACK_BUDGET_BYTES`]. The asked step
+/// of an `ask` pack is reserved first and never shortened; the other sections share what is left, each up to its
+/// own share, in order: rest of the asked flow, earlier questions, PR context, plan, analysed flows.
 pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError> {
+    let pr = input.pr;
+    let (repo, number, head) = (repo(pr), pr.number.to_string(), plain(&pr.head_sha.0));
+    let pack = |blocks: &str| {
+        fill(
+            CONTEXT_PACK,
+            &[
+                ("repo", &repo),
+                ("number", &number),
+                ("head", &head),
+                ("blocks", blocks),
+            ],
+        )
+    };
     let mut blocks = String::new();
+    let mut sections: Vec<(String, Vec<String>, usize, bool)> = Vec::new();
     if let Some(ask) = &input.ask {
-        blocks.push_str(&asked_flow(ask)?);
+        let (asked, label, rest) = asked_flow(ask)?;
+        blocks.push_str(&asked);
+        sections.push((label, rest, PACK_ASK_FLOW_BYTES, true));
         let earlier = ask
             .earlier
             .iter()
@@ -485,16 +505,17 @@ pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError>
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let label = "earlier questions of this step";
-        blocks.push_str(&lines_block(label, earlier, PACK_ANSWERS_BYTES)?);
+        let label = "earlier questions of this step".to_owned();
+        sections.push((label, earlier, PACK_ANSWERS_BYTES, true));
     }
     if let Some(context) = input.pr_context {
-        let context = serde_json::to_string(context)?;
-        blocks.push_str(&json_block(
-            "pr_context output",
-            &context,
+        let context = vec![serde_json::to_string(context)?];
+        sections.push((
+            "pr_context output".to_owned(),
+            context,
             PACK_PR_CONTEXT_BYTES,
-        )?);
+            false,
+        ));
     }
     if let Some(plan) = input.plan {
         let flows = plan
@@ -502,7 +523,12 @@ pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError>
             .iter()
             .map(|flow| serde_json::to_string(&FlowEntry::of(flow)))
             .collect::<Result<Vec<_>, _>>()?;
-        blocks.push_str(&lines_block("plan output: flows", flows, PACK_PLAN_BYTES)?);
+        sections.push((
+            "plan output: flows".to_owned(),
+            flows,
+            PACK_PLAN_BYTES,
+            true,
+        ));
     }
     if !input.flows.is_empty() {
         let flows = input
@@ -520,24 +546,35 @@ pub fn context_pack(input: &ContextPackInput<'_>) -> Result<String, PromptError>
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let label = "analysed flows (summary)";
-        blocks.push_str(&lines_block(label, flows, PACK_FLOWS_BYTES)?);
+        let label = "analysed flows (summary)".to_owned();
+        sections.push((label, flows, PACK_FLOWS_BYTES, true));
     }
-    let pr = input.pr;
-    let pack = fill(
-        CONTEXT_PACK,
-        &[
-            ("repo", &repo(pr)),
-            ("number", &pr.number.to_string()),
-            ("head", &plain(&pr.head_sha.0)),
-            ("blocks", &blocks),
-        ],
-    )?;
-    within_budget("context pack", pack, CONTEXT_PACK_BUDGET_BYTES)
+    // The asked step must fit with the frame and every section's fences and notes; else nothing can be shortened.
+    let reserved = pack(&blocks)?.len() + sections.len() * PACK_SECTION_OVERHEAD;
+    let mut remaining =
+        CONTEXT_PACK_BUDGET_BYTES
+            .checked_sub(reserved)
+            .ok_or(PromptError::OverBudget {
+                kind: "context pack",
+                bytes: reserved,
+                budget: CONTEXT_PACK_BUDGET_BYTES,
+            })?;
+    for (label, entries, share, lines) in sections {
+        let max = share.min(remaining);
+        let section = if lines {
+            lines_block(&label, entries, max)?
+        } else {
+            json_block(&label, &entries.concat(), max)?
+        };
+        remaining = remaining.saturating_sub(section.len().saturating_sub(PACK_SECTION_OVERHEAD));
+        blocks.push_str(&section);
+    }
+    within_budget("context pack", pack(&blocks)?, CONTEXT_PACK_BUDGET_BYTES)
 }
 
-/// The asked step in full, then the rest of its flow analysis (other steps in full) up to its share of the pack.
-fn asked_flow(ask: &AskContext<'_>) -> Result<String, PromptError> {
+/// The asked step in full (a data block), and the label and entries of the rest of its flow analysis: introduction,
+/// the other steps in full, then edges, impact references, pattern repetitions and thread statuses.
+fn asked_flow(ask: &AskContext<'_>) -> Result<(String, String, Vec<String>), PromptError> {
     let flow = ask.flow;
     let unknown = || PromptError::UnknownStep {
         step_id: ask.step_id.0.clone(),
@@ -554,7 +591,7 @@ fn asked_flow(ask: &AskContext<'_>) -> Result<String, PromptError> {
         step_id: &ask.step_id.0,
         step: &flow.steps[index],
     })?;
-    let mut out = data(&format!("asked step {step_id} (full analysis)"), &asked);
+    let asked = data(&format!("asked step {step_id} (full analysis)"), &asked);
     let mut entries = vec![serde_json::to_string(&AnalysedFlowEntry {
         flow_id: &flow.flow_id,
         introduction: &flow.introduction,
@@ -574,8 +611,7 @@ fn asked_flow(ask: &AskContext<'_>) -> Result<String, PromptError> {
         thread_statuses: &flow.thread_statuses,
     })?);
     let label = format!("rest of the flow analysis containing step {step_id}");
-    out.push_str(&lines_block(&label, entries, PACK_ASK_FLOW_BYTES)?);
-    Ok(out)
+    Ok((asked, label, entries))
 }
 
 fn plan_task(input: &PlanInput<'_>) -> Result<String, PromptError> {

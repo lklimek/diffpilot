@@ -1447,3 +1447,81 @@ fn listed_thread_aliases_are_the_emitted_ones() {
     assert_eq!(emitted, listed);
     assert!(instructions.contains("(The server omitted 10 more entries of this list.)"));
 }
+
+#[test]
+fn context_pack_reserves_the_asked_step_before_the_other_sections() {
+    let f = &*FIXTURE;
+    // Asked step of about 25 KiB; every other section over its share.
+    let mut flow = long_flow();
+    flow.steps.last_mut().expect("step").why = format!("LAST STEP WHY {}", "w".repeat(25 * 1024));
+    let mut context = f.pr_context.clone();
+    context.problem = "p".repeat(PACK_PR_CONTEXT_BYTES * 2);
+    let mut plan_output = f.plan.clone();
+    let template = plan_output.flows[0].clone();
+    plan_output.flows = (1..=300)
+        .map(|n| PlannedFlow {
+            id: FlowId(format!("f{n}")),
+            intent: "i".repeat(500),
+            ..template.clone()
+        })
+        .collect();
+    let flows: Vec<FlowAnalysisOutput> = (1..=300)
+        .map(|n| {
+            let mut summary = f.flows[0].clone();
+            summary.flow_id = FlowId(format!("f{n}"));
+            summary.introduction.problem_before = "b".repeat(1_000);
+            summary
+        })
+        .collect();
+    let answer = "a long answer ".repeat(100);
+    let earlier: Vec<AnsweredQuestion<'_>> = (0..100)
+        .map(|_| AnsweredQuestion {
+            question: QUESTION,
+            answer: &answer,
+        })
+        .collect();
+    let step_id = StepId("f1.25".to_owned());
+    let pack = context_pack(&ContextPackInput {
+        pr: &f.pr,
+        plan: Some(&plan_output),
+        pr_context: Some(&context),
+        flows: &flows,
+        ask: Some(AskContext {
+            step_id: &step_id,
+            flow: &flow,
+            earlier: &earlier,
+        }),
+    })
+    .expect("the asked step fits, so the pack fits");
+    assert!(pack.len() <= CONTEXT_PACK_BUDGET_BYTES, "{}", pack.len());
+    let (instructions, blocks) = split(&pack);
+    let asked = blocks
+        .iter()
+        .find(|block| block.label == "asked step f1.25 (full analysis)")
+        .expect("asked step");
+    assert!(asked.content.contains(&flow.steps[24].why));
+    assert!(asked.content.contains("LAST STEP HEADLINE"));
+    assert!(instructions.contains("more entries of this list.)"));
+    assert!(instructions.contains("(The server clipped the block above:"));
+
+    // Only an asked step that cannot fit by itself is an error.
+    flow.steps.last_mut().expect("step").why = "w".repeat(CONTEXT_PACK_BUDGET_BYTES);
+    let input = ContextPackInput {
+        pr: &f.pr,
+        plan: None,
+        pr_context: None,
+        flows: &[],
+        ask: Some(AskContext {
+            step_id: &step_id,
+            flow: &flow,
+            earlier: &[],
+        }),
+    };
+    assert!(matches!(
+        context_pack(&input),
+        Err(PromptError::OverBudget {
+            kind: "context pack",
+            ..
+        })
+    ));
+}
