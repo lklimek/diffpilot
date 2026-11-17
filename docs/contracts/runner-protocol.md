@@ -24,7 +24,10 @@ the same attempt; 400 malformed body.
   sets the lease, and fills `spec.access` at claim time:
   - `github`: an installation token for the **PR repository only** (explicit `repositories` and read-only
     `permissions`, 1 h, ADR-005) — or `null` when the GitHub App is not installed on the PR repository; then the
-    runner configures no `github-mcp-server` and the prompt says related work is not checked;
+    runner configures no `github-mcp-server` and the prompt says related work is not checked. The same holds
+    when the App is unusable as configured (key file, key or App id; logged as an error). Any other mint
+    failure, or a minted token that differs from the request (revoked at once), fails the claim
+    (`github_unavailable`); the job is retried after its lease;
   - `memcan`: URL and token from configuration (runner config limits the MCP to search and `add_memory`).
 - `drop_sessions`: analyses whose session files the runner deletes (cancelled or superseded, ADR-004); it
   acknowledges in the next claim's `dropped_sessions` (at least once; idempotent).
