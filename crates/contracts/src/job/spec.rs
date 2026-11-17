@@ -25,8 +25,11 @@ pub struct JobSpec {
     pub repo: RepoCheckout,
     /// The full prompt, built by the server.
     pub prompt: String,
-    /// The output JSON Schema (Codex strict subset).
+    /// The output JSON Schema (Codex strict subset), or null when `flow_file` is present.
     pub output_schema: Value,
+    /// Flow-only file output and no-secret checker context; absent for JSON jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_file: Option<FlowFile>,
     /// Model and reasoning effort from `select_model`.
     pub model: ModelChoice,
     /// Limits.
@@ -145,4 +148,13 @@ pub struct WorkingSession {
     pub analytic_generation: i64,
     /// Working thread to restore, or none for a lazy fork from the analytic session.
     pub thread_id: Option<String>,
+}
+
+/// Tagged flow output. Fixed paths are relative to the job directory, never model-controlled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FlowFile {
+    /// Versioned analysis checker context, written to `flow-context.json`.
+    pub context: Value,
+    /// Rejected document restored to `out/flow.md` for an edit-only repair.
+    pub previous: Option<String>,
 }

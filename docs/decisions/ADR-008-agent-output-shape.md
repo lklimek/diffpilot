@@ -5,6 +5,8 @@
 - Source: `docs/spikes/S7-llm-capability.md` (WP1-A schema recommendations); brief §1, §3; plan §5.3;
   `docs/contracts/agent-output.md`.
 
+Flow transport is superseded by [ADR-014](ADR-014-flow-file-output.md); the canonical document and API projection below remain in use.
+
 ## Decisions
 - **Job kinds** `plan`, `pr_context`, `analyse_flow`, `ask`, one output schema each (`schemas/agent/`).
 - **Numbers.** No float, score, confidence, percentage or likelihood anywhere. Integers only for line numbers,

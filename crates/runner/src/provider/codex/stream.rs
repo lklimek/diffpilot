@@ -214,6 +214,17 @@ impl CodexStream {
         })
     }
 
+    /// File jobs use the final message only as a completion signal.
+    pub(crate) fn finish_file(mut self, exit: Exit) -> Result<Finished, ProviderError> {
+        let thread_id = self.thread_id.take();
+        let cumulative_usage = self.finish_turn(exit)?;
+        Ok(Finished {
+            output: Value::Null,
+            thread_id,
+            cumulative_usage,
+        })
+    }
+
     /// Whether the turn completed once the process exited with `exit`, whatever its answer;
     /// returns the thread's cumulative usage.
     pub(crate) fn finish_turn(self, exit: Exit) -> Result<Usage, ProviderError> {

@@ -99,8 +99,7 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 
 ## Output before archival
 - When the model turn ends, the provider emits `ProviderEvent::OutputReady` and the runner posts
-  `OutputReady {attempt, output}` **before** session archival, for every job kind. `output` is the parsed final JSON
-  (Codex enforced the output schema); the server validates and verifies it exactly as a result.
+  `OutputReady {attempt, output}` **before** session archival, for every job kind. `output` is the parsed final JSON for JSON jobs, or a JSON string containing the collected tagged file for flow jobs (ADR-014); the server validates and verifies it exactly as a result.
 - Ordering: after every event of that turn; at most once per attempt; before the result.
 - Retry: on a network error or 5xx the runner retries with the same body (backoff 1, 2, 4 s, within the local
   deadline).
@@ -220,3 +219,26 @@ they leave the job directory. Summaries never carry raw command output. `Secret`
 A missing required agent skill is `JobOutcome::Failed { kind: configuration, ... }`. The server preserves the
 kind as the failed analysis's `reason`, presents a fixed administrator-action sentence, and the UI offers no
 Retry for it. This failure occurs before Codex starts; no agent output schema changes are involved.
+
+## Tagged flow output (ADR-014)
+
+`JobSpec.flow_file` is present only for `analyse_flow`. It contains `context` (version 1:
+base/head, full/listed diff, accepted plan, requested flow, move facts, listed thread
+aliases) and `previous` (null, or the rejected tagged text for repair).
+The runner writes `flow-context.json` mode 0444 in the job directory, creates `out`
+mode 0700, hands it to the agent, and restores `previous` as `out/flow.md`. No database
+lookup is needed by the runner. `output_schema` is null for these jobs.
+
+`sr-check` is a separate binary built from `analysis`, installed on the agent PATH.
+`sr-check format` prints the grammar, `sr-check catalog out/flow.md` prints resolved
+file/hunk ids, and `sr-check flow out/flow.md` prints `ok` with exit 0 or line-numbered
+problems with nonzero exit. Git reads use the job's `repo` at pinned base/head.
+
+The model edits the file until the checker succeeds, then sends one completion line.
+No `--output-schema` is passed. After the process sweep, collection uses the existing
+no-link copy-out helper with a 1 MiB limit. Missing, unsafe, oversized or invalid UTF-8
+files fail the attempt with an explicit instruction to write/check `out/flow.md`.
+The result transports the text as a JSON string; the server ignores any checker claim
+and repeats parsing/verification from trusted context. Only canonical JSON is stored.
+Repairs restore the rejected file explicitly because session archives do not contain
+job working files. Plan, PR context and Ask continue using schema-constrained JSON.

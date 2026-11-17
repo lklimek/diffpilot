@@ -51,7 +51,7 @@ pub struct ServeConfig {
     pub privileged: bool,
     /// `SR_RUNNER_STATE_DIR`; per-job `CODEX_HOME`s are handed over below `<state>/codex-homes`.
     pub state_dir: PathBuf,
-    /// `SR_RUNNER_WORK_DIR`; `<work>/<job>/{home,tmp}` are handed over.
+    /// `SR_RUNNER_WORK_DIR`; `<work>/<job>/{home,tmp,out}` are handed over.
     pub work_dir: PathBuf,
     /// How long a sweep may take before the supervisor gives up.
     pub sweep_deadline: Duration,
@@ -448,7 +448,7 @@ impl Server {
         Ok(())
     }
 
-    /// `<state>/codex-homes/<name>` or `<work>/<name>/{home,tmp}`, normalised.
+    /// `<state>/codex-homes/<name>` or `<work>/<name>/{home,tmp,out}`, normalised.
     fn per_job_dir(&self, path: &Path) -> Result<(), String> {
         let parent = path.parent().unwrap_or(Path::new(""));
         let name = path
@@ -458,7 +458,7 @@ impl Server {
         let codex_homes = self.config.state_dir.join("codex-homes");
         let allowed = parent == codex_homes
             || (parent.parent() == Some(self.config.work_dir.as_path())
-                && matches!(name, "home" | "tmp"));
+                && matches!(name, "home" | "tmp" | "out"));
         let plain = path
             .components()
             .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));

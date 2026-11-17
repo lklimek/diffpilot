@@ -14,7 +14,7 @@ Requests (JSON, one per datagram), the whole privileged surface:
   (a zombie leader with running threads counts) until no such thread exists in /proc/*/task/*. Past
   the deadline (SR_SUPERVISOR_SWEEP_DEADLINE_MS, default 5000) or on any error the supervisor exits 70, which ends
   the container (fail closed).
-  handover{path} -> chown an empty runner-owned 0700 dir `<state>/codex-homes/<key>` or `<work>/<key>/{home,tmp}`
+  handover{path} -> chown an empty runner-owned 0700 dir `<state>/codex-homes/<key>` or `<work>/<key>/{home,tmp,out}`
   to agent.
 Helpers, run by the runner as uid `agent` through `spawn` (refused as root), only while no other agent process
 is alive (same-uid processes can stop them and reach their fds through /proc):
@@ -323,7 +323,7 @@ class Supervisor:
 
     def handover(self, path):
         parent, name = os.path.split(path)
-        allowed = parent == self.codex_homes or (os.path.dirname(parent) == self.work_dir and name in ("home", "tmp"))
+        allowed = parent == self.codex_homes or (os.path.dirname(parent) == self.work_dir and name in ("home", "tmp", "out"))
         if os.path.normpath(path) != path or not allowed or not NAME.match(name):
             raise ValueError("not a per-job directory")
         fd = openat2(-100, path, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW, resolve=RESOLVE_NO_SYMLINKS)

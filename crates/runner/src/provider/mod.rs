@@ -46,7 +46,7 @@ pub trait LlmProvider: Send + Sync {
 pub enum ProviderEvent {
     /// Normalised agent activity.
     Activity(JobEvent),
-    /// The model turn ended with this final output (parsed JSON); archival follows. Sent at most once per call.
+    /// Final JSON object or tagged flow file string; archival follows. Sent at most once per call.
     OutputReady(Value),
 }
 
@@ -66,8 +66,10 @@ pub struct ProviderCall {
     pub restore_dir: PathBuf,
     /// The full prompt.
     pub prompt: String,
-    /// Output JSON Schema (Codex strict subset).
+    /// Output JSON Schema for JSON jobs; ignored when `flow_file` is present.
     pub output_schema: Value,
+    /// File output routing and checker context (flow jobs only).
+    pub flow_file: Option<contracts::job::spec::FlowFile>,
     /// Model and reasoning effort.
     pub model: ModelChoice,
     /// Limits of the useful turn.
@@ -82,7 +84,7 @@ pub struct ProviderCall {
 /// `session_id: None` and the next job starts with a context pack.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderOutcome {
-    /// The final structured output (identical to the one sent as [`ProviderEvent::OutputReady`]).
+    /// Final JSON object or tagged flow file string (identical to [`ProviderEvent::OutputReady`]).
     pub output: Value,
     /// Provider session (Codex thread) id after the call; none when archival failed.
     pub session_id: Option<String>,
@@ -156,3 +158,5 @@ mod tests {
         assert_eq!(error.to_string(), "the Codex usage limit was reached");
     }
 }
+
+pub(crate) mod output_file;

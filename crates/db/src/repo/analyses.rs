@@ -713,6 +713,7 @@ pub mod testing {
             },
             prompt: "Analyse the flow.".to_owned(),
             output_schema: serde_json::json!({"type": "object"}),
+            flow_file: None,
             model: ModelChoice {
                 model: "gpt-6.1-sol".to_owned(),
                 reasoning_effort: ReasoningEffort::High,

@@ -128,7 +128,7 @@ impl Isolation {
         if let Ok(entries) = std::fs::read_dir(work) {
             for entry in entries {
                 let job = entry?.path();
-                for dir in [agent_home(&job), agent_tmp(&job)] {
+                for dir in [agent_home(&job), agent_tmp(&job), job.join("out")] {
                     if std::fs::symlink_metadata(&dir).is_ok() {
                         self.remove(&dir).await.map_err(io_error_of)?;
                         removed += 1;
@@ -155,6 +155,19 @@ impl Isolation {
         std::fs::set_permissions(&call.job_dir, std::fs::Permissions::from_mode(0o755))?;
         for dir in [&home, &agent_home(&call.job_dir), &agent_tmp(&call.job_dir)] {
             self.supervisor.handover(dir).await.map_err(io_error)?;
+        }
+        if let Some(spec) = &call.flow_file {
+            let out = call.job_dir.join("out");
+            if spec.previous.is_some() {
+                std::fs::remove_file(out.join("flow.md"))?;
+            }
+            self.supervisor.handover(&out).await.map_err(io_error)?;
+            if let Some(previous) = &spec.previous {
+                self.supervisor
+                    .copy_in(&out, Path::new("flow.md"), previous.as_bytes())
+                    .await
+                    .map_err(io_error)?;
+            }
         }
         for rel in staging_files(&call.codex_home)? {
             let contents = std::fs::read(call.codex_home.join(&rel))?;
@@ -234,6 +247,20 @@ impl Isolation {
         Ok(())
     }
 
+    /// Called only after exec's sweep; the helper rejects links, mounts and oversized files.
+    pub(super) async fn collect_flow(&self, call: &ProviderCall) -> Result<String, ProviderError> {
+        let bytes = self
+            .supervisor
+            .copy_out(
+                &call.job_dir.join("out"),
+                Path::new("flow.md"),
+                crate::provider::output_file::MAX_BYTES,
+            )
+            .await
+            .map_err(|_| crate::provider::output_file::refused())?;
+        String::from_utf8(bytes).map_err(|_| crate::provider::output_file::refused())
+    }
+
     /// The end of a call (ADR-013 step 5): sweep, empty and remove the agent's directories, `/dev/mqueue` and
     /// System V IPC. A directory that can be neither removed nor quarantined poisons the isolation (no next
     /// job); the IPC clean-up is best effort.
@@ -247,6 +274,7 @@ impl Isolation {
             self.codex_home(&call.codex_home),
             agent_home(&call.job_dir),
             agent_tmp(&call.job_dir),
+            call.job_dir.join("out"),
         ] {
             if let Err(error) = self.remove(&dir).await {
                 tracing::error!(job = %call.job_id, %error, "an agent directory stays reachable by the agent; no further job is taken");

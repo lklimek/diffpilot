@@ -22,8 +22,8 @@ ENV CARGO_BUILD_JOBS=2 \
     CARGO_TARGET_DIR=/build
 RUN --mount=type=cache,id=smart-review-cargo-registry,target=/root/.cargo/registry \
     --mount=type=cache,id=smart-review-cargo-target,target=/build \
-    cargo build --release --locked -p runner --bin smart-review-supervisor --bin smart-review-runner \
-    && install -D -m 0755 -t /out /build/release/smart-review-supervisor /build/release/smart-review-runner
+    cargo build --release --locked -p runner -p analysis --bin smart-review-supervisor --bin smart-review-runner --bin sr-check \
+    && install -D -m 0755 -t /out /build/release/smart-review-supervisor /build/release/smart-review-runner /build/release/sr-check
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS fetch
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -60,7 +60,7 @@ RUN apt-get update \
 
 COPY --from=fetch /opt/codex /opt/codex
 COPY --from=fetch /opt/github-mcp/github-mcp-server /usr/local/bin/github-mcp-server
-COPY --from=build /out/smart-review-supervisor /out/smart-review-runner /usr/local/bin/
+COPY --from=build /out/smart-review-supervisor /out/smart-review-runner /out/sr-check /usr/local/bin/
 COPY --chmod=0755 preflight.sh /usr/local/bin/smart-review-runner-preflight
 COPY --chmod=0755 strip-image.sh /usr/local/lib/smart-review/strip-image.sh
 RUN ln -s /opt/codex/bin/codex /usr/local/bin/codex

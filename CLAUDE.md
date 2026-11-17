@@ -19,6 +19,8 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   Codex compacts by itself at 400k tokens; no forced compaction. Each successful useful turn is archived; a lost working session forks the analytic archive, then falls back to a private context pack.
   Model and effort come from `select_model`, a plain Rust function in the server (no table, no setting;
   v1: Sol, high).
+- Flow jobs write tagged `out/flow.md` and run `sr-check`; server and checker share `analysis::tagged` (ADR-014).
+  Plan, PR context and Ask keep JSON. Stored documents and browser contracts stay unchanged.
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,

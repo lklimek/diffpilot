@@ -972,3 +972,131 @@ fn pr_context_does_not_invent_stacked_relationships() {
     output.related_work[0].kind = contracts::common::RelatedWorkKind::CompetingSolution;
     assert!(pr_context(&output, &LineFacts::default()).is_ok());
 }
+
+#[test]
+fn tagged_fixture_checker_matches_server_verifier_and_measures_bytes() {
+    let fixture = Fixture::new();
+    let mut before = 0;
+    let mut after = 0;
+    for (index, output) in fixture.flows.iter().enumerate() {
+        let context = crate::tagged::Context {
+            version: 1,
+            base: fixture.base.clone(),
+            head: fixture.head.clone(),
+            files: fixture.files.clone(),
+            listed: fixture.listed.clone(),
+            plan: fixture.plan.clone(),
+            flow_id: output.flow_id.clone(),
+            moves: fixture.moves.clone(),
+            thread_aliases: fixture
+                .aliases
+                .get(&output.flow_id)
+                .cloned()
+                .unwrap_or_default(),
+        };
+        let text = crate::tagged::encode(output, &context.catalog()).unwrap();
+        assert_eq!(context.check(&text, &fixture.repo).unwrap(), *output);
+        let path = fixture_dir().join(format!("agent/flow-{}.md", index + 1));
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            std::fs::write(&path, &text).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(path).unwrap(), text);
+        before += std::fs::read(fixture_dir().join(format!("agent/flow-{}.json", index + 1)))
+            .unwrap()
+            .len();
+        after += text.len();
+        let mut broken = output.clone();
+        broken.steps[0].assessment = None;
+        let missing = crate::tagged::encode(&broken, &context.catalog()).unwrap();
+        let errors = context.check(&missing, &fixture.repo).unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.message.contains("has no assessment"))
+        );
+        broken = output.clone();
+        broken.steps[0].end_line = 99999;
+        let bad = crate::tagged::encode(&broken, &context.catalog()).unwrap();
+        assert!(
+            context
+                .check(&bad, &fixture.repo)
+                .unwrap_err()
+                .iter()
+                .any(|e| e.kind == VerifyIssueKind::LineOutOfRange)
+        );
+    }
+    println!(
+        "Canonical fixture files: {before} bytes; tagged flow files: {after} bytes; saved {}%",
+        100 * (before - after) / before
+    );
+}
+
+#[test]
+fn tagged_checker_rejects_the_same_semantic_violations_as_canonical_flow_verification() {
+    let fixture = Fixture::new();
+    let original = &fixture.flows[1];
+    let context = crate::tagged::Context {
+        version: 1,
+        base: fixture.base.clone(),
+        head: fixture.head.clone(),
+        files: fixture.files.clone(),
+        listed: fixture.listed.clone(),
+        plan: fixture.plan.clone(),
+        flow_id: original.flow_id.clone(),
+        moves: fixture.moves.clone(),
+        thread_aliases: vec![],
+    };
+    type Mutation = fn(&mut FlowAnalysisOutput);
+    let cases: Vec<(VerifyIssueKind, Mutation)> = vec![
+        (VerifyIssueKind::ChangedLineUncovered, |out| {
+            out.steps.remove(0);
+        }),
+        (VerifyIssueKind::DanglingEdge, |out| {
+            out.edges[0].to_step_id = "missing".into()
+        }),
+        (VerifyIssueKind::FactWithoutEvidence, |out| {
+            out.steps[0].annotations[0].evidence.clear()
+        }),
+        (VerifyIssueKind::BehaviourMissing, |out| {
+            out.steps[0].annotations[0].was.clear()
+        }),
+        (VerifyIssueKind::RemarkMismatch, |out| {
+            out.steps[0].annotations[0].text = Some("Extra remark".into())
+        }),
+        (VerifyIssueKind::LineOutOfRange, |out| {
+            out.steps[0].annotations[0].evidence[0].line = 999999
+        }),
+        (VerifyIssueKind::MoveClaimMismatch, |out| {
+            out.steps[0].kind = contracts::common::FragmentKind::Moved
+        }),
+        (VerifyIssueKind::BaseSideMisused, |out| {
+            out.steps[0].side = LineSide::Base
+        }),
+        (VerifyIssueKind::AgentLimitation, |out| {
+            out.steps[0].why = "The required skill was unavailable.".into()
+        }),
+        (VerifyIssueKind::UnknownThread, |out| {
+            out.thread_statuses
+                .push(contracts::agent::analyse_flow::AgentThreadStatus {
+                    thread_alias: "t999".into(),
+                    status: contracts::common::ThreadLlmStatus::AlreadyAddressed,
+                    reason: "The branch changed.".into(),
+                })
+        }),
+    ];
+    for (kind, mutate) in cases {
+        let mut output = original.clone();
+        mutate(&mut output);
+        let text = crate::tagged::encode(&output, &context.catalog()).unwrap();
+        let errors = context.check(&text, &fixture.repo).unwrap_err();
+        assert!(
+            errors.iter().any(|error| error.kind == kind),
+            "{kind:?}: {errors:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .all(|error| error.to_string().starts_with("line "))
+        );
+    }
+}

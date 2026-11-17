@@ -143,3 +143,10 @@ These remaining statements in `docs/design-brief.md` are superseded:
 | `pull_requests.analytic_generation`; `working_sessions` keyed by PR/user | Re-fork after analytic advancement without allowing user instructions into analysis. |
 | Questions HTTP/SSE filtered to asker; private quotas/history | Shared analyses never expose foreign Q&A, counts or ownership markers. Existing `asked_by`/`mine` retained for compatibility, always caller-owned. |
 | MemCan feedback `private_text_excluded: true`; no agent MemCan access | Prevent private feedback notes or Ask-written memories from reaching shared analytical context. Legacy calibration text is not read. |
+
+## Flow file output (owner approval, 2026-11-17)
+
+| Addition | Reason |
+|---|---|
+| `JobSpec.flow_file?: {context, previous?}` | Self-contained, versioned no-secret flow checker inputs; rejected text restored for edit-only repairs (ADR-014). |
+| Flow `JobOutcome::Succeeded.output` carries a JSON string | Transport tagged file contents through the existing output channel; server parses/checks into unchanged canonical documents. Other job kinds keep JSON objects. |
