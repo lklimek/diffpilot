@@ -11,7 +11,7 @@ is that merge base). An analysis whose stored base is not the merge base is not 
 409 `analysis_not_finished` (`docs/contracts/http-api.md` "Analysis base").
 
 ## Changes
-All three are additive; no existing field, signature or behaviour changed.
+All changes are additive: a new field, variant, route or column, or a stricter rule on a value no client could send before. Existing fields keep their meaning.
 
 | Change | Reason | Effect |
 |---|---|---|
@@ -19,8 +19,40 @@ All three are additive; no existing field, signature or behaviour changed.
 | `Analyses::set_base_sha(id, sha)` (`crates/db`, `173e5cb`) | The pull request row holds the base tip; the pipeline needs to store the merge base (rule above). | Replaces the base while the analysis has no job and no document; afterwards `Conflict` (jobs and documents were made against the stored base); unknown analysis `NotFound`. |
 | `JobExecutor::cancel_analysis(analysis)` (`server::jobs`, `135f245`) | Rule A3: the pipeline talks only to `JobExecutor`, yet an ended analysis must cancel jobs submitted before a server restart, which no in-memory handle knows. | Requests cancellation of every queued, claimed, running or paused job of the analysis (`QueueExecutor`: `Jobs::list_for_analysis` + `Jobs::request_cancel`). The pipeline calls it once when an analysis fails or is cancelled and never reads the jobs table (`runner-protocol.md` "End boundary"). |
 
+### Wire types (`crates/contracts`)
+| Change | Reason |
+|---|---|
+| `CiState::NotChecked` (`api::tour`) | Check runs that could not be read (no token, GitHub error, rate limit) are not reported as "no checks"; nothing is claimed. |
+| `PrContextFacts.threads_status: ThreadsStatus` (`checked`, `partial`, `not_checked`) | A thread list cut at the server's read cap or not read is visible, so an empty list is never read as "no threads". |
+| `PendingReview.incomplete` (`api::comments`) | The pending-review list stopped at the server's cap; absence from it is not proof that a comment does not exist. |
+| `ApiErrorCode::CommentPublished` (409, `api::error`) | An edit or delete that raced a publish of the same review is reported, not silently accepted (ADR-006). |
+| Feedback rules (`api::feedback`): one entry per user, analysis, target and value; `overrated` and `underrated` exclude each other; `missed_by_llm` recorded only by the server; `DELETE …/feedback/{feedback_id}`; `Feedback.memory: FeedbackMemory` (`pending`, `written`, `failed`) | Several values may coexist on a target, a user can retract one, and the state of its MemCan copy is visible (`db-schema.md` "Feedback → MemCan"). |
+| `AnalysisState::Paused { resumes_at, done, total }` (`api::analyses`; `total` null while planning) | A usage-limit pause shows progress and the resume time. |
+| `Counters.dependency_files_not_checked` (`api::tour`) | Changed dependency files that were not parsed are listed instead of being counted as "no dependency change". |
+| `ProjectProfileStatus.memcan: SourceCheck` (`checked`, `not_checked`) | An empty profile source list with MemCan `not_checked` is not read as "no profile". |
+| `ProvenanceBadge::BinaryContent` (`common`) | Files git treats as binary are marked by a deterministic content check; they are neither shown nor analysed. |
+| `UnexplainedRanges.reason: Option<UnexplainedReason>` (`too_large_for_prompt`; `api::tour`) | Lines the server did not send to the LLM say why; absent when the LLM did not explain them. |
+| `DiffLine.eol: Option<LineEnding>` (`crlf`, `no_newline`; `api::code`) | The diff keeps line endings that are not LF. |
+| `Settings.app_installations` is `Option`; null = not checked (`api::settings`) | "GitHub unreachable" is not shown as "no installation". |
+| `AskQuestion.resumes_at` (optional) and `AskRequest::MAX_TEXT_CHARS` = 2000 (`api::questions`) | A pending question shows when the usage limit resets; the question length is bounded. |
+
+### Analysis and verification (`crates/analysis`)
+| Change | Reason |
+|---|---|
+| `VerifyIssueKind::FileTooLarge`, `ImpactInsideDiff`, `MarkupOrLink` (`analysis::verify`) | A file over the read limit, an impact reference on changed lines, and markup or a non-GitHub link in an Ask answer are rejected with a repair message. |
+| `AnalysisVerdict.moves_incomplete` | An incomplete move detection is passed through the verdict so the pipeline records it. |
+
+### Jobs and database
+| Change | Reason |
+|---|---|
+| `JobUpdate::Finished { result, github_access }` (`server::jobs`) | The pipeline learns whether the attempt's agent could read GitHub (`runner-protocol.md`). |
+| `jobs.github_access_granted` and `documents.github_access` (`0001_init.sql`) | Store that fact per claim and with each accepted agent output. |
+| `jobs.round`, `analyses.round`, unique index `jobs_one_live_per_stage` over (analysis, stage, generation, round) | An explicit Retry calls the agent again, while a restart re-uses stored outputs (`runner-protocol.md`). |
+| Document kinds `unsent` and `memcan_profile` (`documents.kind`) | Lines left out of every LLM request with their reason; the analysis's MemCan profile lookup. |
+| `JobSpec.context_pack` built at claim | A lost agent session falls back to a context pack; a claim whose pack cannot be built is released. |
+
 ## Consequences
-- The generated TypeScript types changed only by `total_lines`; the drift test guards them.
+- The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.
 - Further contract changes still need a change request (ADR-010).
 
 ## Known deviations from the brief
