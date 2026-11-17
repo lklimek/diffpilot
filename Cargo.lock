@@ -72,6 +72,7 @@ version = "0.0.0"
 dependencies = [
  "contracts",
  "proptest",
+ "ra-ap-rustc_lexer",
  "regex",
  "serde",
  "serde_json",
@@ -2049,6 +2050,17 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "ra-ap-rustc_lexer"
+version = "0.185.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a17ea5707fdc541d90a990474cf6d37d21033396070d55bdcee0b6cd4ce77f7"
+dependencies = [
+ "memchr",
+ "unicode-ident",
+ "unicode-properties",
+]
 
 [[package]]
 name = "rand"

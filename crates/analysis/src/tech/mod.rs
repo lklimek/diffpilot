@@ -93,10 +93,7 @@ impl TechPlugin for Generic {
             badge,
             rule: rule.to_owned(),
         };
-        if let Some(&(rule, category)) = PATH_RULES
-            .iter()
-            .find(|(rule, _)| path_rule_matches(rule, file.path))
-        {
+        if let Some(&(rule, category)) = PATH_RULES.iter().find(|(rule, _)| glob(rule, file.path)) {
             return Ok(vec![item(
                 category,
                 ProvenanceBadge::ClassifiedByPath,
@@ -135,23 +132,8 @@ impl TechPlugin for Generic {
 }
 
 /// Line rule of the `generic` plugin: comment-only lines (a run of changed lines whose non-blank lines all match),
-/// confirmed by a lexer of the whole file; only for languages with a lexer here (Rust), others stay with the agent.
+/// decided by the Rust compiler's lexer over the whole file; other languages stay with the agent.
 pub const LINE_COMMENT_RULE: &str = r"^\s*//";
-/// Rule of test and bench directories of a package one or two levels below the repository root
-/// (`sdk/tests/`, `crates/x/benches/`) with no source directory above them.
-pub const NESTED_TESTS_RULE: &str =
-    "<package>/tests/**, <package>/benches/** (package at depth 1-2, no source directory above)";
-/// Directory names under which a `tests` or `benches` directory is production code (`src/tests/` via `mod tests;`).
-const SOURCE_ROOTS: &[&str] = &[
-    "src", "lib", "app", "pkg", "internal", "cmd", "source", "sources",
-];
-/// File types in which leading and trailing whitespace of a line carries no meaning; every other type (Python,
-/// YAML, Makefile, unknown) is compared byte for byte.
-const TRIM_INSENSITIVE: &[&str] = &[
-    "*.rs", "*.go", "*.c", "*.h", "*.cc", "*.cpp", "*.cxx", "*.hpp", "*.hh", "*.java", "*.kt",
-    "*.kts", "*.scala", "*.swift", "*.cs", "*.js", "*.jsx", "*.mjs", "*.cjs", "*.ts", "*.tsx",
-    "*.json", "*.proto",
-];
 /// Rule of a generated-file header in the first lines.
 pub const GENERATED_HEADER_RULE: &str = "header: Code generated … DO NOT EDIT / @generated";
 /// Lines searched for a generated-file header.
@@ -159,12 +141,18 @@ const HEADER_LINES: usize = 10;
 /// The project profile on the base ref (brief §2 Project profile).
 pub const PROFILE_PATH: &str = ".claudius/project-profile.md";
 
-/// Path rules of the `generic` plugin, first match wins.
+/// Path rules of the `generic` plugin, first match wins. Paths are chosen by the pull request's author: a production
+/// file placed under a test path is hidden from the agent. Accepted residual risk: the reviewer sees every such file
+/// listed under Not analysed.
 const PATH_RULES: &[(&str, NotAnalysedCategory)] = &[
     ("tests/**", NotAnalysedCategory::Tests),
     ("benches/**", NotAnalysedCategory::Tests),
     ("test/**", NotAnalysedCategory::Tests),
-    (NESTED_TESTS_RULE, NotAnalysedCategory::Tests),
+    ("crates/*/tests/**", NotAnalysedCategory::Tests),
+    ("crates/*/benches/**", NotAnalysedCategory::Tests),
+    ("packages/*/tests/**", NotAnalysedCategory::Tests),
+    ("packages/*/benches/**", NotAnalysedCategory::Tests),
+    ("packages/*/__tests__/**", NotAnalysedCategory::Tests),
     ("**/__tests__/**", NotAnalysedCategory::Tests),
     ("*_test.go", NotAnalysedCategory::Tests),
     ("*_test.py", NotAnalysedCategory::Tests),
@@ -295,12 +283,6 @@ pub fn is_agent_instruction_file(path: &str) -> bool {
     AGENT_INSTRUCTION_RULES.iter().any(|rule| glob(rule, &path))
 }
 
-/// Whether leading and trailing whitespace of a line in `path` carries no meaning (a brace language); otherwise
-/// lines are compared byte for byte.
-pub fn trim_insensitive(path: &str) -> bool {
-    TRIM_INSENSITIVE.iter().any(|rule| glob(rule, path))
-}
-
 /// Whether the item is recognised by the comment line rule (not a whole-file rule).
 pub fn is_line_rule(item: &Classified) -> bool {
     item.rule == LINE_COMMENT_RULE
@@ -336,13 +318,15 @@ pub fn has_generated_header(text: &str) -> bool {
     })
 }
 
-/// Runs of consecutive changed lines whose non-blank lines all start a line comment (at least one), confirmed by
-/// the lexer of the file's language; no lexer, no runs.
+/// Runs of consecutive changed lines whose non-blank lines are all comment-only (at least one); Rust files only.
 fn comment_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
-    if !path.ends_with(".rs") {
+    let Some(comment) = path
+        .ends_with(".rs")
+        .then(|| rust_comment_lines(text))
+        .flatten()
+    else {
         return Vec::new();
-    }
-    let comment = rust_comment_lines(text);
+    };
     let lines: Vec<&str> = text.lines().collect();
     let at = |number: u32| -> Option<usize> { usize::try_from(number).ok()?.checked_sub(1) };
     let mut out = Vec::new();
@@ -368,151 +352,69 @@ fn comment_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
     out
 }
 
-/// Lexer state of Rust source between characters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Lex {
-    Code,
-    Block(u32),
-    Str,
-    Raw(usize),
-}
+/// Per line (index = line - 1): every token on the line is a comment or whitespace, and one is a comment. Tokens
+/// come from `rustc_lexer` after the compiler's BOM and shebang stripping, frontmatter allowed. `None` when the
+/// file has an unterminated literal or comment, an unknown token or invalid frontmatter.
+fn rust_comment_lines(text: &str) -> Option<Vec<bool>> {
+    use ra_ap_rustc_lexer::{FrontmatterAllowed, LiteralKind, TokenKind, strip_shebang, tokenize};
 
-/// Per line (index = line - 1): the line's first non-blank character starts a `//` comment in code, outside
-/// strings, raw strings, char literals and (nested) block comments.
-fn rust_comment_lines(text: &str) -> Vec<bool> {
-    let chars: Vec<char> = text.chars().collect();
-    let ident = |at: Option<usize>| {
-        at.and_then(|at| chars.get(at))
-            .is_some_and(|c| c.is_alphanumeric() || *c == '_')
-    };
-    let mut out = Vec::new();
-    let mut state = Lex::Code;
-    let mut first: Option<bool> = None;
-    let mut i = 0;
-    while let Some(&c) = chars.get(i) {
-        let next = chars.get(i + 1).copied();
-        if c == '\n' {
-            out.push(first.unwrap_or(false));
-            first = None;
-            i += 1;
-            continue;
+    let lines = text.lines().count();
+    let (mut comment, mut other) = (vec![false; lines], vec![false; lines]);
+    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
+    let shebang = strip_shebang(body).unwrap_or(0);
+    if shebang > 0 {
+        *other.first_mut()? = true;
+    }
+    let mut rest = body.get(shebang..)?;
+    let mut line = 0usize;
+    for token in tokenize(rest, FrontmatterAllowed::Yes) {
+        let len = usize::try_from(token.len).ok()?;
+        let (lexeme, tail) = (rest.get(..len)?, rest.get(len..)?);
+        rest = tail;
+        let invalid = match token.kind {
+            TokenKind::BlockComment { terminated, .. } => !terminated,
+            TokenKind::Literal { kind, .. } => match kind {
+                LiteralKind::Char { terminated }
+                | LiteralKind::Byte { terminated }
+                | LiteralKind::Str { terminated }
+                | LiteralKind::ByteStr { terminated }
+                | LiteralKind::CStr { terminated } => !terminated,
+                LiteralKind::RawStr { n_hashes }
+                | LiteralKind::RawByteStr { n_hashes }
+                | LiteralKind::RawCStr { n_hashes } => n_hashes.is_none(),
+                LiteralKind::Int { .. } | LiteralKind::Float { .. } => false,
+            },
+            TokenKind::Frontmatter {
+                has_invalid_preceding_whitespace,
+                invalid_infostring,
+            } => has_invalid_preceding_whitespace || invalid_infostring,
+            TokenKind::Unknown
+            | TokenKind::InvalidIdent
+            | TokenKind::UnknownPrefix
+            | TokenKind::UnknownPrefixLifetime
+            | TokenKind::GuardedStrPrefix => true,
+            _ => false,
+        };
+        if invalid {
+            return None;
         }
-        if first.is_none() && !c.is_whitespace() {
-            first = Some(state == Lex::Code && c == '/' && next == Some('/'));
-        }
-        match state {
-            Lex::Code => match (c, next) {
-                ('/', Some('/')) => {
-                    while chars.get(i).is_some_and(|&c| c != '\n') {
-                        i += 1;
-                    }
-                }
-                ('/', Some('*')) => {
-                    state = Lex::Block(1);
-                    i += 2;
-                }
-                ('"', _) => {
-                    state = Lex::Str;
-                    i += 1;
-                }
-                ('r', _) => {
-                    let prefix_ok = !ident(i.checked_sub(1))
-                        || (matches!(i.checked_sub(1).and_then(|p| chars.get(p)), Some('b' | 'c'))
-                            && !ident(i.checked_sub(2)));
-                    let hashes = chars[i + 1..].iter().take_while(|&&c| c == '#').count();
-                    if prefix_ok && chars.get(i + 1 + hashes) == Some(&'"') {
-                        state = Lex::Raw(hashes);
-                        i += hashes + 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                ('\'', Some('\\')) => {
-                    // Escaped char literal (`'\n'`, `'\''`, `'\u{1F600}'`): up to the closing quote on this line.
-                    let end = chars
-                        .get(i + 3..)
-                        .unwrap_or_default()
-                        .iter()
-                        .take(12)
-                        .position(|&c| c == '\'' || c == '\n');
-                    i += match end {
-                        Some(offset) if chars.get(i + 3 + offset) == Some(&'\'') => offset + 4,
-                        _ => 1,
-                    };
-                }
-                ('\'', Some(inner)) if inner != '\n' && chars.get(i + 2) == Some(&'\'') => i += 3,
-                _ => i += 1,
-            },
-            Lex::Block(depth) => match (c, next) {
-                ('/', Some('*')) => {
-                    state = Lex::Block(depth + 1);
-                    i += 2;
-                }
-                ('*', Some('/')) => {
-                    state = if depth == 1 {
-                        Lex::Code
-                    } else {
-                        Lex::Block(depth - 1)
-                    };
-                    i += 2;
-                }
-                _ => i += 1,
-            },
-            Lex::Str => match (c, next) {
-                ('\\', Some(escaped)) if escaped != '\n' => i += 2,
-                ('"', _) => {
-                    state = Lex::Code;
-                    i += 1;
-                }
-                _ => i += 1,
-            },
-            Lex::Raw(hashes) => {
-                let closes = c == '"'
-                    && chars[i + 1..]
-                        .iter()
-                        .take(hashes)
-                        .filter(|&&c| c == '#')
-                        .count()
-                        == hashes;
-                if closes {
-                    state = Lex::Code;
-                    i += 1 + hashes;
-                } else {
-                    i += 1;
-                }
-            }
+        let first = line;
+        line += lexeme.matches('\n').count();
+        let touched = if lexeme.ends_with('\n') {
+            line.saturating_sub(1)
+        } else {
+            line
+        };
+        let marks = match token.kind {
+            TokenKind::Whitespace => continue,
+            TokenKind::LineComment { .. } | TokenKind::BlockComment { .. } => &mut comment,
+            _ => &mut other,
+        };
+        for flag in marks.iter_mut().take(touched + 1).skip(first) {
+            *flag = true;
         }
     }
-    if first.is_some() || chars.last().is_some_and(|&c| c != '\n') {
-        out.push(first.unwrap_or(false));
-    }
-    out
-}
-
-/// Path rule match; the nested tests rule is a function, the others are globs.
-fn path_rule_matches(rule: &str, path: &str) -> bool {
-    if rule == NESTED_TESTS_RULE {
-        nested_tests(path)
-    } else {
-        glob(rule, path)
-    }
-}
-
-/// A `tests` or `benches` directory of a package at depth 1 or 2 (`crates/x/tests/it.rs`) with no source
-/// directory above it.
-fn nested_tests(path: &str) -> bool {
-    let segments: Vec<&str> = path.split('/').collect();
-    let Some(at) = segments
-        .iter()
-        .take(segments.len().saturating_sub(1))
-        .position(|segment| matches!(*segment, "tests" | "benches"))
-    else {
-        return false;
-    };
-    (1..=2).contains(&at)
-        && !segments[..at]
-            .iter()
-            .any(|segment| SOURCE_ROOTS.contains(segment))
+    Some(comment.iter().zip(&other).map(|(c, o)| *c && !*o).collect())
 }
 
 fn basename(path: &str) -> &str {
@@ -615,7 +517,7 @@ mod tests {
                 None,
                 NotAnalysedCategory::Tests,
                 by_path,
-                NESTED_TESTS_RULE.to_owned()
+                "crates/*/tests/**".to_owned()
             )],
             "every line changed: the whole file"
         );
@@ -651,6 +553,10 @@ mod tests {
             "lib/test/x.js",
             "packages/app/src/benches/run.ts",
             "a/b/c/tests/x.rs",
+            "server/tests/handler.go",
+            "frontend/components/tests/x.ts",
+            "sdk/tests/a.ts",
+            "crates/x/y/tests/a.rs",
         ] {
             assert!(
                 classify(production, Some(three), &[1]).is_empty(),
@@ -660,7 +566,13 @@ mod tests {
         for test in [
             "benches/speed.rs",
             "packages/sdk/tests/a.ts",
+            "packages/sdk/benches/a.ts",
+            "packages/sdk/__tests__/a.ts",
+            "crates/x/tests/it.rs",
+            "crates/x/benches/speed.rs",
             "web/src/__tests__/a.ts",
+            "tests/it.rs",
+            "test/handler_test.js",
         ] {
             assert_eq!(
                 classify(test, Some(three), &[1])[0].1,
@@ -717,12 +629,6 @@ mod tests {
             "beyond the file"
         );
         assert!(classify("src/a.rs", None, &[1]).is_empty(), "binary");
-        assert!(trim_insensitive("src/a.rs") && trim_insensitive("web/a.tsx"));
-        assert!(
-            !trim_insensitive("tool.py")
-                && !trim_insensitive("ci.yaml")
-                && !trim_insensitive("Makefile")
-        );
     }
 
     /// Comment-rule ranges of `lines` when every line changed.
@@ -771,16 +677,49 @@ mod tests {
         assert!(classify("src/a.rs", Some(&text), &[5]).is_empty());
         let block = [
             "/* outer /* nested */",
-            "// inside the outer comment",
-            "*/",
+            "still inside the outer comment",
+            "*/ run();",
             "// after",
         ];
         let text: String = block.iter().map(|l| format!("{l}\n")).collect();
+        assert_eq!(
+            classify("src/a.rs", Some(&text), &[2])[0].0,
+            Some(line(2)),
+            "inside a nested block comment"
+        );
         assert!(
-            classify("src/a.rs", Some(&text), &[2]).is_empty(),
-            "not a line comment"
+            classify("src/a.rs", Some(&text), &[3]).is_empty(),
+            "the comment closes and code runs"
         );
         assert_eq!(classify("src/a.rs", Some(&text), &[4])[0].0, Some(line(4)));
+        let shebang = [
+            "#!/unused \"",
+            "fn main() {",
+            "let _ = \"",
+            "//\"; std::process::exit(1); let _ = \"",
+            "\";",
+            "}",
+        ];
+        let text: String = shebang.iter().map(|l| format!("{l}\n")).collect();
+        assert!(
+            classify("src/a.rs", Some(&text), &[1, 4]).is_empty(),
+            "the shebang is stripped before lexing: line 4 closes a string and runs code"
+        );
+        let frontmatter = ["---", "// in frontmatter", "---", "fn main() {}"];
+        let text: String = frontmatter.iter().map(|l| format!("{l}\n")).collect();
+        assert!(
+            classify("src/a.rs", Some(&text), &[2]).is_empty(),
+            "frontmatter is not a comment"
+        );
+        let unterminated = ["// a note", "fn f() { let s = \"open; }"];
+        let text: String = unterminated.iter().map(|l| format!("{l}\n")).collect();
+        assert!(
+            classify("src/a.rs", Some(&text), &[1]).is_empty(),
+            "an unterminated literal leaves the whole file to the agent"
+        );
+        let open_comment = ["// a note", "/* never closed"];
+        let text: String = open_comment.iter().map(|l| format!("{l}\n")).collect();
+        assert!(classify("src/a.rs", Some(&text), &[1]).is_empty());
         let chars = [
             "let q = '\"';",
             "let e = '\\'';",

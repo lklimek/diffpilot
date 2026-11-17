@@ -392,6 +392,58 @@ fn new_file_with_a_generated_header_goes_to_the_agent() {
 }
 
 #[test]
+fn shebang_with_a_quote_does_not_hide_code() {
+    let files = vec![file(
+        "src/main.rs",
+        None,
+        FileStatus::Modified,
+        vec![hunk(1, (0, 0), (1, 1)), hunk(2, (3, 1), (4, 1))],
+    )];
+    let texts: Texts = [
+        text(
+            LineSide::Base,
+            "src/main.rs",
+            &["fn main() {", "let _ = \"", "// harmless", "\";", "}"],
+        ),
+        text(
+            LineSide::Head,
+            "src/main.rs",
+            &[
+                "#!/unused \"",
+                "fn main() {",
+                "let _ = \"",
+                "//\"; std::process::exit(1); let _ = \"",
+                "\";",
+                "}",
+            ],
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let result = run(&files, &[], &texts);
+    assert!(
+        result
+            .hunks
+            .iter()
+            .all(|hunk| hunk.disposition == Disposition::Agent),
+        "{:?}",
+        result.hunks
+    );
+    let head_lines: Vec<u32> = result
+        .agent_lines
+        .iter()
+        .filter(|ranges| ranges.side == LineSide::Head)
+        .flat_map(|ranges| ranges.ranges.iter().flat_map(|r| r.start_line..=r.end_line))
+        .collect();
+    assert_eq!(
+        head_lines,
+        [1, 4],
+        "the line that calls exit stays with the agent"
+    );
+    assert!(result.not_analysed.is_empty());
+}
+
+#[test]
 fn prepass_flags_agent_instruction_files() {
     let files = vec![
         file(

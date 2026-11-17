@@ -1,11 +1,12 @@
 //! Moved-block detection and whitespace-only changes. Candidates are found liberally: removed and added runs that
 //! share a whitespace-normalised line are aligned with `similar`, and a cluster of aligned lines is a candidate.
-//! Confirmation is conservative: the whole spans are compared again line by line, ignoring only leading and
-//! trailing whitespace in brace languages (`tech::trim_insensitive`) and nothing elsewhere; every line that does
-//! not match, blank lines included, is a differing line. Renamed files are moved blocks of the whole file.
+//! Confirmation is conservative: the whole spans are compared again line by line, byte for byte (only the line
+//! terminator is normalised); every line that does not match, blank lines and indentation included, is a differing
+//! line. Renamed files are moved blocks of the whole file.
 //!
 //! Work: anchors O(L); pairing and confirmation each bounded by `MOVE_WORK_BUDGET` (an alignment costs `(o + n)²`,
-//! an upper bound of Myers); selection O(K log K); over budget, the remaining candidates give no move facts.
+//! an upper bound of Myers); selection O(K log K); over budget, the remaining candidates give no move facts and the
+//! report is marked `incomplete`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -17,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use similar::{Algorithm, DiffOp, capture_diff_slices};
 
 use crate::diff::{FileDiff, FileStatus, Hunk};
-use crate::tech;
 
 /// A block moved between base and head.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +56,8 @@ pub struct MovesReport {
     pub moved: Vec<MovedBlock>,
     /// Changed head ranges whose change is whitespace only (kept in the agent's hunks, marked as a fact).
     pub whitespace_only: Vec<FileRange>,
+    /// The work budget ran out: some candidate moves were not checked (their lines stay with the agent).
+    pub incomplete: bool,
 }
 
 /// A moved step's claim confirmed against a deterministic moved block.
@@ -99,7 +101,7 @@ fn analyse_within<'t>(
     budget: u64,
 ) -> MovesReport {
     let texts = Texts::new(files, text);
-    let mut moved = blocks(files, &texts, budget);
+    let (mut moved, incomplete) = blocks(files, &texts, budget);
     moved.extend(renamed_files(files, &texts));
     moved.sort_by(|a, b| {
         (&a.to.file, a.to.range, &a.from.file, a.from.range).cmp(&(
@@ -122,6 +124,7 @@ fn analyse_within<'t>(
     MovesReport {
         moved,
         whitespace_only,
+        incomplete,
     }
 }
 
@@ -257,9 +260,17 @@ impl MovedBlock {
 /// Remaining alignment work.
 struct Budget {
     left: u64,
+    exhausted: bool,
 }
 
 impl Budget {
+    fn new(left: u64) -> Self {
+        Self {
+            left,
+            exhausted: false,
+        }
+    }
+
     /// Takes the cost of aligning `old` against `new` lines; false (nothing taken) when it does not fit.
     fn take(&mut self, old: usize, new: usize) -> bool {
         let size = u64::try_from(old + new).unwrap_or(u64::MAX);
@@ -267,6 +278,8 @@ impl Budget {
         let fits = cost <= self.left;
         if fits {
             self.left -= cost;
+        } else {
+            self.exhausted = true;
         }
         fits
     }
@@ -355,9 +368,10 @@ fn runs(files: &[FileDiff], texts: &Texts<'_>, side: LineSide) -> Vec<Run> {
     out
 }
 
-/// Candidates by pairing, then confirmation; each phase has its own work budget of `limit`.
-fn blocks(files: &[FileDiff], texts: &Texts<'_>, limit: u64) -> Vec<MovedBlock> {
-    let mut budget = Budget { left: limit };
+/// Candidates by pairing, then confirmation; each phase has its own work budget of `limit`. Also whether a budget
+/// ran out.
+fn blocks(files: &[FileDiff], texts: &Texts<'_>, limit: u64) -> (Vec<MovedBlock>, bool) {
+    let mut budget = Budget::new(limit);
     let removed = runs(files, texts, LineSide::Base);
     let added = runs(files, texts, LineSide::Head);
     let mut anchors: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -398,7 +412,7 @@ fn blocks(files: &[FileDiff], texts: &Texts<'_>, limit: u64) -> Vec<MovedBlock> 
             (a.from_file, a.base, a.to_file, a.head).cmp(&(b.from_file, b.base, b.to_file, b.head))
         })
     });
-    let mut confirming = Budget { left: limit };
+    let mut confirming = Budget::new(limit);
     let mut used: BTreeMap<(LineSide, usize), BTreeMap<u32, u32>> = BTreeMap::new();
     let mut out = Vec::new();
     for candidate in candidates {
@@ -423,7 +437,7 @@ fn blocks(files: &[FileDiff], texts: &Texts<'_>, limit: u64) -> Vec<MovedBlock> 
         }
         out.extend(confirmed(files, texts, &candidate, &mut confirming));
     }
-    out
+    (out, budget.exhausted || confirming.exhausted)
 }
 
 /// Blocks of `new` aligned with `old`: stretches of equal lines with gaps of at most `MAX_GAP` lines.
@@ -506,20 +520,10 @@ fn confirmed(
     if !budget.take(base.len(), head.len()) {
         return None;
     }
-    let trim = tech::trim_insensitive(from) && tech::trim_insensitive(to);
-    let key = |line: &&str| -> String {
-        if trim {
-            line.trim().to_owned()
-        } else {
-            (*line).to_owned()
-        }
-    };
-    let base_keys: Vec<String> = base.iter().map(key).collect();
-    let head_keys: Vec<String> = head.iter().map(key).collect();
     let mut aligned = Vec::new();
     let (mut differing_base, mut differing_head) = (Vec::new(), Vec::new());
     let line = |start: u32, index: usize| start + u32::try_from(index).unwrap_or(u32::MAX);
-    for op in capture_diff_slices(Algorithm::Myers, &base_keys, &head_keys) {
+    for op in capture_diff_slices(Algorithm::Myers, base, head) {
         let (_, old, new) = op.as_tag_tuple();
         if let DiffOp::Equal {
             old_index,
@@ -769,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn identical_cross_file_move_with_reindent_is_text_identical() {
+    fn reindented_cross_file_move_is_a_differing_move() {
         let moved = indented(&FUNCTION);
         let mut head_b = vec!["mod x {"];
         head_b.extend(moved.iter().map(String::as_str));
@@ -807,22 +811,16 @@ mod tests {
             ),
             "the trailing blank line is not part of the block"
         );
-        assert!(block.identical);
-        assert!(block.differing_head_lines.is_empty() && block.differing_base_lines.is_empty());
+        assert!(!block.identical, "indentation is part of the bytes");
+        assert_eq!(block.differing_head_lines, [2, 3, 4, 5, 6]);
+        assert_eq!(block.differing_base_lines, [3, 4, 5, 6, 7]);
         assert_eq!(block.removed_base_lines, [3, 4, 5, 6, 7]);
-        assert_eq!(
-            report.identical(),
-            [IdenticalMove {
-                from: block.from.clone(),
-                to: block.to.clone(),
-                badge: ProvenanceBadge::TextIdentical
-            }]
-        );
+        assert!(report.identical().is_empty());
         assert_eq!(
             report.moved_lines("src/b.rs", 1, 3),
             [MovedLines {
                 range: range(2, 6),
-                differing: vec![]
+                differing: vec![2, 3, 4, 5, 6]
             }]
         );
         assert!(report.moved_lines("src/b.rs", 7, 9).is_empty());
@@ -834,8 +832,9 @@ mod tests {
         let confirmed = report
             .confirm("src/b.rs", range(2, 6), &claim)
             .expect("confirmed");
-        assert_eq!(confirmed.fact.badge, Some(ProvenanceBadge::TextIdentical));
-        assert_eq!(confirmed.fact.differing_lines, 0);
+        assert_eq!(confirmed.fact.badge, None);
+        assert_eq!(confirmed.fact.differing_lines, 5);
+        assert_eq!(confirmed.covered_base_lines, [3, 4, 5, 6, 7]);
     }
 
     #[test]
@@ -1003,7 +1002,7 @@ mod tests {
             src(LineSide::Head, "src/a.rs", &head),
         ]);
         assert!(run(&split, &in_place).moved.is_empty());
-        // The same lines added far from where they were removed are a move.
+        // The same lines added far from where they were removed are a move; re-indented, a differing one.
         let mut far: Vec<&str> = vec!["x();"; 9];
         far.extend(wrapped.iter().map(String::as_str));
         let moved = vec![file(
@@ -1016,7 +1015,9 @@ mod tests {
             src(LineSide::Base, "src/a.rs", body),
             src(LineSide::Head, "src/a.rs", &far),
         ]);
-        assert_eq!(run(&moved, &far).identical().len(), 1);
+        let far = run(&moved, &far);
+        assert_eq!(far.moved.len(), 1);
+        assert!(far.identical().is_empty());
 
         // Two equal lines in otherwise different code are no move.
         let files = vec![
@@ -1118,11 +1119,20 @@ mod tests {
         let indented: Vec<String> = body.iter().map(|line| format!("    {line}  ")).collect();
         let indented: Vec<&str> = indented.iter().map(String::as_str).collect();
         let report = moved_between("src/a.rs", &body, "src/b.rs", &indented);
-        assert_eq!(
-            report.identical().len(),
-            1,
-            "leading and trailing whitespace of a brace language"
-        );
+        assert!(report.identical().is_empty(), "no trimming in any language");
+
+        let template = [
+            "const payload = `",
+            "    privileged payload with extra text",
+            "`;",
+            "export const handler = build(payload);",
+        ];
+        let mut changed = template;
+        changed[1] = "privileged payload with extra text";
+        let report = moved_between("web/a.ts", &template, "web/b.ts", &changed);
+        assert_eq!(report.moved.len(), 1, "a candidate: {report:?}");
+        assert!(report.identical().is_empty(), "the literal's value changed");
+        assert_eq!(report.moved[0].differing_head_lines, [2]);
     }
 
     #[test]
@@ -1142,6 +1152,7 @@ mod tests {
                 }],
             }],
             whitespace_only: vec![],
+            incomplete: false,
         };
         let claim = |base_start, base_end| MovedFrom {
             file: "a.rs".to_owned(),
@@ -1192,10 +1203,11 @@ mod tests {
         ]);
         let text = |side, path: &str| texts.get(&(side, path.to_owned())).map(String::as_str);
         assert_eq!(analyse_within(&files, &text, 1_000).identical().len(), 1);
-        assert!(
-            analyse_within(&files, &text, 99).moved.is_empty(),
-            "over budget: no move facts"
-        );
+        let within = analyse_within(&files, &text, 1_000);
+        assert!(!within.incomplete);
+        let over = analyse_within(&files, &text, 99);
+        assert!(over.moved.is_empty(), "over budget: no move facts");
+        assert!(over.incomplete, "over budget: marked incomplete");
 
         // 20 groups of 50 removed and 50 added runs that all pair within the group: 50 000 alignments of
         // (60 + 60)² = 7.2e8 units, over the budget; detection stops early and in bounded time.
@@ -1234,6 +1246,7 @@ mod tests {
             "{}",
             report.moved.len()
         );
+        assert!(report.incomplete, "the budget ran out");
     }
 
     #[test]
