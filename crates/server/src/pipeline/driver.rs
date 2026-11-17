@@ -8,7 +8,6 @@ use analysis::lines::changed_line_count;
 use analysis::prepass::batches::{merge_plans, plan_batches};
 use analysis::verify::{VerifiedPlan, VerifyIssue, VerifyIssueKind};
 use chrono::{DateTime, Utc};
-use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::plan::{PlanOutput, PlannedFlow, UnassignedHunk};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::{self as agent, JobKind};
@@ -529,23 +528,11 @@ impl Driver<'_> {
                     }
                 }
                 JobStage::Flow(id) => {
-                    let flow: FlowAnalysisOutput = self.parse(&stage, output.clone())?;
-                    let (Some(plan), Some(planned)) =
-                        (self.verified_plan.clone(), self.planned(id))
-                    else {
-                        return Err(self.invalid(&stage, "the flow is not in the plan"));
-                    };
-                    let aliases = self.aliases(&plan.output).remove(id).unwrap_or_default();
-                    match verdict::flow(
-                        Arc::clone(&self.facts),
-                        plan,
-                        planned,
-                        flow.clone(),
-                        aliases,
-                    )
-                    .await?
+                    let context = self.flow_context(id)?;
+                    match verdict::flow_file(Arc::clone(&self.facts), context, output.clone())
+                        .await?
                     {
-                        Ok(_) => {
+                        Ok(flow) => {
                             self.put(DocumentKind::Flow, &id.0, &flow).await?;
                             self.results.flows.push(flow);
                             self.ended.insert(id.clone(), FlowEnd::Accepted);
@@ -574,7 +561,14 @@ impl Driver<'_> {
             match self.prompt(&stage, Some(&repair)) {
                 Ok(prompt) => {
                     return self
-                        .submit(updates, stage, generation + 1, prompt, &codes)
+                        .submit(
+                            updates,
+                            stage,
+                            generation + 1,
+                            prompt,
+                            &codes,
+                            Some(&output),
+                        )
                         .await;
                 }
                 // A rejected output too large to quote cannot be repaired: the stage ends as if exhausted.
@@ -788,7 +782,7 @@ impl Driver<'_> {
             self.load_calibration(id).await;
         }
         let prompt = self.prompt(&stage, None)?;
-        self.submit(updates, stage, 0, prompt, &[]).await
+        self.submit(updates, stage, 0, prompt, &[], None).await
     }
 
     /// Submits the stage's job at `generation` (idempotent per stage and generation) and follows its updates.
@@ -800,6 +794,7 @@ impl Driver<'_> {
         generation: u32,
         prompt: String,
         issue_names: &[&str],
+        previous: Option<&Value>,
     ) -> Result<(), PipelineError> {
         if self
             .state
@@ -836,7 +831,19 @@ impl Driver<'_> {
                 head_sha: pr.head_sha.clone(),
             },
             prompt,
-            output_schema: agent::output_schema(kind)?,
+            output_schema: if matches!(stage, JobStage::Flow(_)) {
+                Value::Null
+            } else {
+                agent::output_schema(kind)?
+            },
+            flow_file: match &stage {
+                JobStage::Flow(id) => Some(contracts::job::spec::FlowFile {
+                    context: serde_json::to_value(self.flow_context(id)?)
+                        .map_err(|e| self.invalid(&stage, &e.to_string()))?,
+                    previous: previous.and_then(Value::as_str).map(str::to_owned),
+                }),
+                _ => None,
+            },
             model: select_model(
                 kind,
                 &ModelContext { changed_lines },
@@ -903,12 +910,35 @@ impl Driver<'_> {
         updates.push(events.boxed());
     }
 
+    fn flow_context(&self, id: &FlowId) -> Result<analysis::tagged::Context, PipelineError> {
+        let stage = JobStage::Flow(id.clone());
+        let plan = self
+            .results
+            .plan
+            .as_ref()
+            .ok_or_else(|| self.invalid(&stage, "missing plan"))?;
+        Ok(analysis::tagged::Context {
+            version: 1,
+            base: self.facts.base.clone(),
+            head: self.facts.head.clone(),
+            files: self.facts.files.clone(),
+            listed: self.facts.listed.clone(),
+            plan: plan.clone(),
+            flow_id: id.clone(),
+            moves: self.facts.prepass.moves.clone(),
+            thread_aliases: self.aliases(plan).remove(id).unwrap_or_default(),
+        })
+    }
+
     fn check_schema(
         &self,
         stage: &JobStage,
         kind: JobKind,
         output: &Value,
     ) -> Result<Option<Vec<VerifyIssue>>, PipelineError> {
+        if matches!(stage, JobStage::Flow(_)) {
+            return Ok(None);
+        }
         let schema = agent::output_schema(kind)?;
         let validator = jsonschema::validator_for(&schema)
             .map_err(|error| self.invalid(stage, &format!("schema does not compile: {error}")))?;

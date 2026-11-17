@@ -1,4 +1,4 @@
-//! The Codex CLI provider: `codex exec --json --output-schema` (new session) or `codex exec resume` (the
+//! The Codex CLI provider: `codex exec --json` (new session) or `codex exec resume` (the
 //! pull request's session) in the job directory with a per-job `CODEX_HOME` and a constructed environment (S1a,
 //! S1b, S6 env contract, threat model T2/T5), saving every successful useful turn (ADR-004).
 //!
@@ -194,7 +194,24 @@ impl CodexProvider {
             .await?;
         let started = stream.thread_id().is_some();
         let thread = stream.thread_id().or(resume).map(str::to_owned);
-        let result = match stream.finish(exit) {
+        let result = if call.flow_file.is_some() {
+            match stream.finish_file(exit) {
+                Ok(mut finished) => {
+                    let text = match &self.settings.isolation {
+                        Some(isolation) => isolation.collect_flow(call).await,
+                        None => super::output_file::collect(&call.job_dir),
+                    };
+                    text.map(|text| {
+                        finished.output = serde_json::Value::String(text);
+                        finished
+                    })
+                }
+                Err(error) => Err(error),
+            }
+        } else {
+            stream.finish(exit)
+        };
+        let result = match result {
             _ if self.cancel_requested(call.job_id) => Err(ProviderError::Cancelled),
             Err(ProviderError::UsageLimit { .. }) => Err(ProviderError::UsageLimit {
                 resets_at: thread
@@ -284,8 +301,10 @@ impl CodexProvider {
         call: &ProviderCall,
     ) -> Result<(Option<String>, SkillFileList), ProviderError> {
         self.write_config(call)?;
-        let schema = serde_json::to_vec(&call.output_schema).map_err(io::Error::other)?;
-        replace_private(&call.codex_home.join(SCHEMA_FILE), &schema)?;
+        if call.flow_file.is_none() {
+            let schema = serde_json::to_vec(&call.output_schema).map_err(io::Error::other)?;
+            replace_private(&call.codex_home.join(SCHEMA_FILE), &schema)?;
+        }
         for dir in [agent_home(&call.job_dir), agent_tmp(&call.job_dir)] {
             match create_private_dir(&dir).await {
                 Err(error) if error.kind() != io::ErrorKind::AlreadyExists => {
@@ -361,8 +380,10 @@ impl CodexProvider {
             args.push("resume".into());
         }
         args.extend(["--json", "--skip-git-repo-check", "--ignore-rules"].map(OsString::from));
-        args.push("--output-schema".into());
-        args.push(codex_home.join(SCHEMA_FILE).into());
+        if call.flow_file.is_none() {
+            args.push("--output-schema".into());
+            args.push(codex_home.join(SCHEMA_FILE).into());
+        }
         if let Invocation::Resume(thread) = invocation {
             args.push(thread.into());
         }

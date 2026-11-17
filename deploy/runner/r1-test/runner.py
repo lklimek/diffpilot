@@ -948,6 +948,57 @@ def plain_git_job(sup):
         called.status == 0 and result == {"uid": AGENT_UID, "codes": [0, 0, 0, 0]},
         result,
     )
+    # The production checker is executable and reads pinned Git objects as the agent uid.
+    file_diff = {"path": "README.md", "old_path": None, "status": "Modified", "binary": False,
+                 "hunks": [{"id": "h1", "base": {"start": 1, "len": 0},
+                            "head": {"start": 2, "len": 1}, "added": [2], "removed": []}]}
+    context = {"version": 1, "base": base, "head": head, "files": [file_diff], "listed": [file_diff],
+               "plan": {"flows": [{"id": "f1", "title": "Update readme", "classification": "docs_comments",
+                                    "importance_rank": 1, "intent": "Describe the head", "depends_on": [],
+                                    "hunks": [{"hunk_id": "h1", "head_start": None, "head_end": None}]}],
+                        "unassigned": []},
+               "flow_id": "f1", "moves": {"moved": [], "whitespace_only": [], "incomplete": False},
+               "thread_aliases": []}
+    context_path = os.path.join(job, "flow-context.json")
+    with open(context_path, "w") as context_file:
+        json.dump(context, context_file)
+    os.chmod(context_path, 0o444)
+    out = os.path.join(job, "out")
+    os.mkdir(out, 0o700)
+    handed = sup.call("handover", path=out)
+    text = """# flow f1
+## introduction
+problem_before: The readme described only the base.
+change: Add a head description.
+example_before_after: Before: one line. After: two lines.
+## step s1 h1
+title: Describe the head
+called_by: A reader opens the readme.
+decides: It documents the head.
+next: The reader continues.
+why: The description changed.
+### assessment
+headline: The documentation wording changes
+risk: low
+reason: Only this description changes.
+basis_note: Read README.md; nothing executed.
+not_checked: Whether the description is useful to a new reader.
+origin: introduced
+blocking: no_action_proposed
+"""
+    copied = run(sup, [*HELPER, "copy-in", out, "flow.md"], key, text.encode())
+    checked = run(sup, ["/usr/local/bin/sr-check", "flow", os.path.join(out, "flow.md")], key)
+    check("sr_check_flow_as_agent", copied.status == 0 and checked.status == 0 and checked.out.strip() == b"ok",
+          {"handover": handed, "status": checked.status, "out": checked.out, "err": checked.err})
+    invalid = text.replace("risk: low", "risk: invalid")
+    run(sup, [*HELPER, "copy-in", out, "bad.md"], key, invalid.encode())
+    rejected = run(sup, ["/usr/local/bin/sr-check", "flow", os.path.join(out, "bad.md")], key)
+    check("sr_check_rejects_invalid_enum_as_agent", rejected.status != 0 and "line " in rejected.err,
+          {"status": rejected.status, "err": rejected.err})
+    kill_all(sup)
+    run(sup, [*HELPER, "clear", out], key)
+    os.rmdir(out)
+    os.remove(context_path)
     kill_all(sup)
     shutil.rmtree(os.path.join(repo, ".git"))
     cleanup_job(sup, key)

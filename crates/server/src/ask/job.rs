@@ -378,6 +378,7 @@ async fn submit(
         },
         prompt,
         output_schema: agent::output_schema(JobKind::Ask)?,
+        flow_file: None,
         model: select_model(
             JobKind::Ask,
             &ModelContext {

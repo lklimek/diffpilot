@@ -33,7 +33,7 @@ pub struct JobResult {
 pub enum JobOutcome {
     /// The agent produced its final output (not yet validated; the server validates it).
     Succeeded {
-        /// The agent's final structured output.
+        /// JSON object for JSON jobs; a string containing the collected tagged file for flow jobs (ADR-014).
         output: Value,
     },
     /// The attempt failed.

@@ -8,6 +8,8 @@
 # Env:   R1_SKIP_BUILD=1          reuse the images built earlier
 #        R1_SKIP_CODEX=1          skip the real-Codex job
 #        R1_SUPERVISOR=rust       run the checks against the Rust smart-review-supervisor (default: python prototype)
+#        R1_{BASE_IMAGE,SKELETON_IMAGE,TEST_IMAGE,RUNNER_TAG}  isolated image tags (defaults below)
+#        R1_WORKSPACE            explicit source context (e.g. a secret-free staging directory)
 #        R1_TMP                   host scratch dir for the preflight's unbounded bind mount (default /data/tmp)
 # A second container (fault injection R1_FAULT_SWEEP_FAILS=1) proves that a failing sweep ends the container.
 # codex-homes is a size- and inode-capped tmpfs here: a stand-in for the bounded persistent filesystem of ADR-013.
@@ -18,11 +20,13 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 run_id="$(date -u +%Y%m%dt%H%M%S)"
+workspace="${R1_WORKSPACE:-$here/../../..}"
 ledger="${1:-/data/tmp/r1-test/${run_id}.log}"
 mkdir -p "$(dirname "$ledger")"
-skeleton=smart-review-runner:skeleton
-base=smart-review-runner:base
-image=smart-review-runner-r1-test:local
+skeleton="${R1_SKELETON_IMAGE:-smart-review-runner:skeleton}"
+base="${R1_BASE_IMAGE:-smart-review-runner:base}"
+image="${R1_TEST_IMAGE:-smart-review-runner-r1-test:local}"
+runner_tag="${R1_RUNNER_TAG:-smart-review-runner:local}"
 container="sr-r1-test-${run_id}"
 failing="sr-r1-fail-${run_id}"
 state="sr-r1-state-${run_id}"
@@ -56,8 +60,8 @@ start() {
 trap cleanup EXIT
 
 if [[ "${R1_SKIP_BUILD:-0}" != 1 ]]; then
-  docker build -q --build-context "workspace=$here/../../.." --target base -t "$base" "$here/.." > /dev/null
-  docker build -q --build-context "workspace=$here/../../.." -t "$skeleton" -t smart-review-runner:local "$here/.." \
+  docker build -q --build-context "workspace=$workspace" --target base -t "$base" "$here/.." > /dev/null
+  docker build -q --build-context "workspace=$workspace" -t "$skeleton" -t "$runner_tag" "$here/.." \
     > /dev/null
   docker build -q --build-arg "RUNNER_IMAGE=$base" -t "$image" "$here" > /dev/null
 fi

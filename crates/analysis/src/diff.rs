@@ -11,9 +11,10 @@ use std::time::Duration;
 
 use contracts::common::LineSide;
 use contracts::ids::{CommitSha, HunkId};
+use serde::{Deserialize, Serialize};
 
 /// Lines of one side of a hunk, `git diff -U0` style: `len == 0` means "after line `start`".
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LineSpan {
     /// First line (1-based), or the line after which lines were added or removed.
     pub start: u32,
@@ -22,7 +23,7 @@ pub struct LineSpan {
 }
 
 /// How a file changed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FileStatus {
     /// New file.
     Added,
@@ -35,7 +36,7 @@ pub enum FileStatus {
 }
 
 /// The diff of one file.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileDiff {
     /// Path at the head commit (at the base commit for deleted files).
     pub path: String,
@@ -50,7 +51,7 @@ pub struct FileDiff {
 }
 
 /// One hunk, without context lines.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hunk {
     /// `h1`, `h2`, … in path order then file order; stable for one base/head pair.
     pub id: HunkId,

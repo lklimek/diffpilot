@@ -195,6 +195,27 @@ pub async fn flow(
     .await
 }
 
+/// The checker and server share both parsing and semantic verification. A client's `ok` is never trusted.
+pub async fn flow_file(
+    facts: Arc<Facts>,
+    context: analysis::tagged::Context,
+    output: serde_json::Value,
+) -> Result<Checked<FlowAnalysisOutput>, VerdictError> {
+    blocking(move || {
+        let text = output.as_str().unwrap_or("");
+        Ok(context.check(text, &facts.mirror).map_err(|problems| {
+            problems
+                .into_iter()
+                .map(|problem| VerifyIssue {
+                    kind: problem.kind,
+                    message: problem.to_string(),
+                })
+                .collect()
+        }))
+    })
+    .await
+}
+
 /// The stored outputs of one analysis.
 #[derive(Clone, Debug)]
 pub struct Outputs {

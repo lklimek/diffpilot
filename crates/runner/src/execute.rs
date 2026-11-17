@@ -239,6 +239,7 @@ impl Executor {
             restore_dir: analytic_dir,
             prompt: spec.prompt.clone(),
             output_schema: spec.output_schema.clone(),
+            flow_file: spec.flow_file.clone(),
             model: spec.model.clone(),
             limits: JobLimits {
                 max_runtime_secs: u32::try_from(remaining.as_secs()).unwrap_or(u32::MAX),
@@ -357,6 +358,15 @@ impl Executor {
             return Err((
                 JobFailureKind::Internal,
                 "the runner could not prepare the job directory",
+            ));
+        }
+        if let Some(file) = &spec.flow_file
+            && (spec.kind != contracts::agent::JobKind::AnalyseFlow
+                || crate::provider::output_file::prepare(job_dir, file).is_err())
+        {
+            return Err((
+                JobFailureKind::Internal,
+                "the flow output directory could not be prepared",
             ));
         }
         let mirror = git::mirror_path(&self.dirs.mirrors, &spec.repo.clone_url);
