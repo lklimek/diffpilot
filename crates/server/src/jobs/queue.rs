@@ -427,6 +427,7 @@ mod tests {
 
     async fn fail_analysis(db: &Db, analysis: contracts::ids::AnalysisId) {
         let failed = contracts::api::analyses::AnalysisState::Failed {
+            reason: None,
             flow: None,
             message: "x".to_owned(),
         };

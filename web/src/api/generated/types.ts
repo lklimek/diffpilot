@@ -77,6 +77,10 @@ total: number | null,
  */
 stage?: AnalysisStage, } | { "state": "failed",
 /**
+ * Typed cause when known; absent on older failures.
+ */
+reason?: ApiErrorCode,
+/**
  * The flow that failed, or null when it failed before any flow existed.
  */
 flow: FlowRef | null,
@@ -93,6 +97,10 @@ total: number, } | { "state": "cancelled" };
  * An analysis and its state.
  */
 export type AnalysisSummary = {
+/**
+ * Whether this reader has saved review state (including explicitly empty state).
+ */
+has_my_state?: boolean,
 /**
  * Analysis id.
  */
@@ -181,7 +189,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable";
+export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable";
 
 /**
  * A GitHub App installation.
@@ -217,6 +225,14 @@ export type AskQuestion = {
  * Question id.
  */
 id: QuestionId,
+/**
+ * GitHub login of the asker; absent only in older stored payloads.
+ */
+asked_by?: string,
+/**
+ * Whether the current reader asked this question.
+ */
+mine?: boolean,
 /**
  * The step.
  */
@@ -377,12 +393,37 @@ url: string | null,
 failing_tests: Array<string>, };
 
 /**
- * Overall CI state.
+ * Checks of one CI source by outcome.
  */
-export type CiState = "passing" | "failing" | "pending" | "none" | "not_checked";
+export type CiCounts = {
+/**
+ * Concluded `success`.
+ */
+passed: number,
+/**
+ * Failed: `failure`, `error`, `timed_out`, `cancelled`, `action_required` and any other conclusion.
+ */
+failed: number,
+/**
+ * Not concluded yet (queued, in progress, a `pending` status).
+ */
+pending: number,
+/**
+ * Concluded `skipped` (check runs only): did not run.
+ */
+skipped: number,
+/**
+ * Concluded `neutral` (check runs only).
+ */
+neutral: number, };
 
 /**
- * CI status of the head commit.
+ * Overall CI state.
+ */
+export type CiState = "passing" | "no_failures" | "failing" | "pending" | "none" | "not_checked";
+
+/**
+ * CI status of the head commit: its check runs and its commit statuses.
  */
 export type CiStatus = {
 /**
@@ -390,13 +431,21 @@ export type CiStatus = {
  */
 state: CiState,
 /**
- * Number of checks.
+ * Number of checks read: check runs plus commit statuses.
  */
 total: number,
 /**
- * Failing checks.
+ * Failing checks (check runs and commit statuses).
  */
-failing: Array<CiCheck>, };
+failing: Array<CiCheck>,
+/**
+ * Check runs by outcome; absent when the check runs were not read.
+ */
+check_runs?: CiCounts,
+/**
+ * Commit statuses (latest per context) by outcome; absent when the statuses were not read.
+ */
+statuses?: CiCounts, };
 
 /**
  * Classification of a flow (brief §3, closed list).
@@ -448,7 +497,11 @@ export type CommitSha = string;
  */
 export type Counters = {
 /**
- * Lines removed from tests.
+ * Added diff lines in deterministically classified test files; not an assertion or test-function count.
+ */
+lines_added_to_tests?: number,
+/**
+ * Removed diff lines from test files, including replacements; label as "changed or removed".
  */
 lines_removed_from_tests: number,
 /**
@@ -611,6 +664,10 @@ export type Feedback = {
  * Feedback id.
  */
 id: FeedbackId,
+/**
+ * Whether this value is a severity calibration example; saved only when `memory` is `written`.
+ */
+calibration_example?: boolean,
 /**
  * What it is about.
  */
@@ -1157,6 +1214,24 @@ user: Me | null,
 csrf_token: string | null, };
 
 /**
+ * What the server knows about MemCan connectivity.
+ */
+export type MemcanState = "not_configured" | "not_checked" | "reachable" | "not_reachable";
+
+/**
+ * Most recent observed MemCan connectivity; never an on-demand health probe.
+ */
+export type MemcanStatus = {
+/**
+ * Outcome observed by the server's client.
+ */
+state: MemcanState,
+/**
+ * Last successful tool call in this server process, retained after a later failure.
+ */
+last_success_at: string | null, };
+
+/**
  * Result of the deterministic move check.
  */
 export type MoveFact = {
@@ -1218,6 +1293,14 @@ export type NotAnalysedCategory = "tests" | "docs_comments" | "generated_mechani
  */
 export type NotAnalysedItem = {
 /**
+ * Whether the server can show code for this side and file; absent on older Tours.
+ */
+renderable?: boolean,
+/**
+ * Detector that actually matched; absent on older stored pre-passes.
+ */
+rule_kind?: RuleKind,
+/**
  * Repository-relative path on that side.
  */
 file: string,
@@ -1234,7 +1317,7 @@ ranges: Array<LineRange> | null,
  */
 badge: ProvenanceBadge,
 /**
- * The rule (path glob or line regex).
+ * The matching rule or detector description.
  */
 rule: string, };
 
@@ -1243,11 +1326,11 @@ rule: string, };
  */
 export type NotAnalysedRule = {
 /**
- * Path glob or line regex.
+ * Detector used to classify the material.
  */
 kind: RuleKind,
 /**
- * The glob or regex.
+ * The pattern or detector description.
  */
 pattern: string,
 /**
@@ -1390,6 +1473,14 @@ llm: PrContextOutput, };
  * Deterministic facts of the PR context.
  */
 export type PrContextFacts = {
+/**
+ * Structured GitHub targets resolved independently of the agent's prose; missing on older Tours.
+ */
+related_work_links?: Array<RelatedWorkLink>,
+/**
+ * Current observed MemCan connection state, separate from the analysis's profile lookup.
+ */
+memcan_status?: MemcanStatus,
 /**
  * CI status of the head commit.
  */
@@ -1596,6 +1687,36 @@ overlap: string, };
 export type RelatedWorkKind = "duplicate" | "competing_solution" | "stacked_pr" | "linked_issue" | "companion_repository";
 
 /**
+ * A validated target syntax and the result of checking it against GitHub.
+ */
+export type RelatedWorkLink = {
+/**
+ * Exact reference in the agent output, used only to associate the item.
+ */
+reference: string,
+/**
+ * Repository in owner/name form, validated by the server.
+ */
+repo: string,
+/**
+ * Positive GitHub issue or pull request number.
+ */
+number: number,
+/**
+ * Resource kind, from GitHub when verified, otherwise inferred from the reference.
+ */
+kind: RelatedWorkTargetKind,
+/**
+ * GitHub confirmed the resource exists and its kind; false if it could not be read.
+ */
+verified: boolean, };
+
+/**
+ * GitHub resource linked from related work (distinct from the LLM's relationship kind).
+ */
+export type RelatedWorkTargetKind = "pull_request" | "issue";
+
+/**
  * A GitHub repository.
  */
 export type RepoRef = {
@@ -1680,7 +1801,7 @@ export type RiskBand = "low" | "medium" | "high";
 /**
  * Kind of rule.
  */
-export type RuleKind = "path_glob" | "line_regex";
+export type RuleKind = "path_glob" | "line_regex" | "lexer" | "header" | "binary";
 
 /**
  * Body of `PUT /api/v1/settings/language`.
@@ -1699,6 +1820,10 @@ export type Settings = {
  * Outcome of the most recent LLM call; null before the first call. No on-demand check.
  */
 llm_status: LlmCallOutcome | null,
+/**
+ * Observed MemCan connection state, without an on-demand probe.
+ */
+memcan_status?: MemcanStatus,
 /**
  * Language of LLM texts.
  */

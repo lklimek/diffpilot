@@ -1,3 +1,4 @@
+import { ciText, ciTip } from "../section/ci";
 import type { CiStatus, PrSummary } from "../../api/generated/types";
 import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -21,27 +22,6 @@ interface TopBarProps {
 
 const BUTTON =
   "cursor-pointer rounded-md border border-border bg-surface px-2 py-0.5 text-[12.5px] font-semibold text-text hover:border-accent";
-
-function ciText(ci: CiStatus): string {
-  switch (ci.state) {
-    case "failing":
-      return `CI: ${ci.failing.length} of ${ci.total} failing`;
-    case "passing":
-      return `CI: ${ci.total} passing`;
-    case "pending":
-      return "CI: running";
-    case "none":
-      return "CI: no checks";
-    case "not_checked":
-      return "CI: not checked";
-  }
-}
-
-function ciTip(ci: CiStatus): string {
-  if (ci.state === "not_checked") return "The CI checks of the head commit could not be read from GitHub.";
-  if (ci.failing.length === 0) return "CI status of the head commit, from GitHub.";
-  return `Failing checks: ${ci.failing.map((c) => c.name).join(", ")}. From GitHub.`;
-}
 
 function pendingText(count: NonNullable<TopBarProps["pendingCount"]>): string {
   if (count === "unavailable") return "not available";

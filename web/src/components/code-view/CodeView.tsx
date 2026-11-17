@@ -277,10 +277,12 @@ function Line({
 }
 
 function WasIs({ annotations, unrated }: { annotations: readonly Annotation[]; unrated: boolean }) {
-  const pairs = [...new Map(annotations.map((a) => [`${a.was}\u0000${a.is}`, a])).values()];
+  const behaviour = annotations.filter((a) => a.type === "behaviour");
+  const pairs = [...new Map(behaviour.map((a) => [`${a.was}\u0000${a.is}`, a])).values()];
   return (
     <>
       {unrated && <span className="block">Risk not rated by the LLM.</span>}
+      {pairs.length === 0 && <span className="block">No behaviour annotation on these lines.</span>}
       {pairs.map((a) => (
         <span key={a.id} className="block">
           Was: {a.was} → Is: {a.is}

@@ -70,7 +70,7 @@ function Answer({
       return (
         <p className="flex flex-wrap items-baseline gap-2 text-high">
           No answer: {question.failure ?? "the job failed."}
-          {onAskAgain && <AskAgain question={question} onAskAgain={onAskAgain} />}
+          {question.mine === true && onAskAgain && <AskAgain question={question} onAskAgain={onAskAgain} />}
         </p>
       );
     case "answered": {
@@ -112,7 +112,7 @@ export function AskAnswers({ questions, onAskAgain, onEvidence }: AskAnswersProp
       {newestFirst.map((q) => (
         <li key={q.id} className="grid gap-1">
           <p className="font-semibold whitespace-pre-wrap">
-            <span className="text-muted">You asked: </span>
+            <span className="text-muted">Asked by {q.mine ? "you" : (q.asked_by ?? "unknown author")}: </span>
             {q.text}
           </p>
           <Answer question={q} onAskAgain={onAskAgain} onEvidence={onEvidence} />

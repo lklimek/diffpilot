@@ -21,6 +21,10 @@ pub struct CreateAnalysisRequest {
 /// An analysis and its state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AnalysisSummary {
+    /// Whether this reader has saved review state (including explicitly empty state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub has_my_state: Option<bool>,
     /// Analysis id.
     pub id: AnalysisId,
     /// The pull request as analysed (its head is the analysis head).
@@ -70,8 +74,12 @@ pub enum AnalysisState {
         #[ts(optional)]
         stage: Option<AnalysisStage>,
     },
-    /// Failed; Retry is offered.
+    /// Failed; configuration problems require administrator action before another attempt.
     Failed {
+        /// Typed cause when known; absent on older failures.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<crate::api::error::ApiErrorCode>,
         /// The flow that failed, or null when it failed before any flow existed.
         flow: Option<FlowRef>,
         /// Plain description of what failed.

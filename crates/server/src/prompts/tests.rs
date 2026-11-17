@@ -457,10 +457,9 @@ fn prompts_forbid_numeric_likelihood() {
             ),
             "{name}"
         );
-        assert!(
-            instructions
-                .contains("output only its band `low`, `medium` or `high`, never its numbers")
-        );
+        assert!(instructions.contains(
+            "output only this product schema's band `low`, `medium` or `high`, never its numbers"
+        ));
     }
 }
 
@@ -974,13 +973,17 @@ fn analyse_flow_asks_for_assessments_on_the_riskiest_steps_and_for_questions() {
         .expect("flow prompt");
     let (instructions, _) = split(prompt);
     for rule in [
-        "give an `assessment` on the step or steps with the highest risk in the flow, at least one per such flow",
+        "Give `assessment` on the step carrying an identified risk; otherwise null",
+        "A severe pre-existing bug that this PR fixes belongs in `introduction.problem_before`",
+        "Never split one statement",
+        "Do not create steps made only of unchanged context",
+        "Never copy behaviour into another annotation",
         "Questions: ask what a careful reviewer would want answered before approving",
         "Each is a `question` annotation ending with \"?\"",
         "There is no minimum number; never invent one.",
         "Never make a step of an import, a visibility change or a signature line alone",
         "Set `flow_id` to \"f1\".",
-        "`blocking` = `blocks_this_pr` when the reviewer should resolve it before merging, else `follow_up`",
+        "`follow_up` requires a named action in `smallest_correction`",
     ] {
         assert!(instructions.contains(rule), "missing {rule:?}");
     }

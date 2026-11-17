@@ -1,9 +1,10 @@
+import { RuleLabel } from "./RuleLabel";
 import { useState, type ReactNode } from "react";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { LineRange, Counters, NotAnalysedItem, NotAnalysedSection } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { dependencyFacts, rangeText } from "../section/format";
-import { NOT_ANALYSED_LABEL, plural } from "./labels";
+import { NOT_ANALYSED_LABEL, plural, testLines } from "./labels";
 import { Note, QuietCard } from "./QuietCard";
 
 interface NotAnalysedBlockProps {
@@ -33,7 +34,7 @@ function recognisedBy(section: NotAnalysedSection): string {
 
 function Counter({ section, counters }: NotAnalysedBlockProps) {
   if (section.category === "tests") {
-    return <p>{plural(counters.lines_removed_from_tests, "line")} removed from tests</p>;
+    return <p>{testLines(counters)}</p>;
   }
   if (section.category === "generated_mechanical") {
     return <p>{dependencyFacts(counters).join(". ")}. Dependency changes are counted, not interpreted.</p>;
@@ -64,9 +65,14 @@ export function NotAnalysedBlock({ section, counters, code }: NotAnalysedBlockPr
           <li key={`${item.side}:${item.file}:${item.rule}`}>
             <code>{item.file}</code> <span className="text-muted">{linesText(item)}</span> · rule{" "}
             <code>{item.rule}</code>
-            {/* TODO(server): NotAnalysedItem needs renderability to distinguish mechanical files from generated files. */}
+            {item.rule_kind && (
+              <>
+                {" "}
+                · <RuleLabel kind={item.rule_kind} />
+              </>
+            )}
             {code &&
-              section.category !== "generated_mechanical" &&
+              (item.renderable ?? section.category !== "generated_mechanical") &&
               item.badge !== "binary_content" &&
               item.ranges?.map((range) => {
                 const key = `${item.side}:${item.file}:${range.start_line}:${range.end_line}`;

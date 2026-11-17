@@ -120,6 +120,7 @@ async fn compute(
     let blobs = mirror::read_blobs(mirror, requests, limits).await?;
     let mut texts: BTreeMap<(LineSide, String), String> = BTreeMap::new();
     let mut unread = 0usize;
+    let mut too_large = Vec::new();
     for ((side, path), blob) in wanted.into_iter().zip(blobs) {
         match blob {
             Blob::Content(bytes) => {
@@ -127,7 +128,15 @@ async fn compute(
                     texts.insert((side, path), text);
                 }
             }
-            Blob::TooLarge { .. } | Blob::OverBudget { .. } => unread += 1,
+            Blob::TooLarge { .. } => {
+                unread += 1;
+                too_large.push(prepass::NotRendered {
+                    file: path,
+                    side,
+                    reason: prepass::NotRenderedReason::TooLarge,
+                });
+            }
+            Blob::OverBudget { .. } => unread += 1,
             Blob::Missing => {}
         }
     }
@@ -137,9 +146,11 @@ async fn compute(
     }
     let (repo, files) = (summary.pr.repo.clone(), files.to_vec());
     tokio::task::spawn_blocking(move || {
-        prepass::prepass(&repo, &files, &base_paths, &|side, path| {
+        let mut result = prepass::prepass(&repo, &files, &base_paths, &|side, path| {
             texts.get(&(side, path.to_owned())).map(String::as_str)
-        })
+        })?;
+        result.not_rendered.extend(too_large);
+        Ok::<_, PrepassError>(result)
     })
     .await
     .map_err(PrepassRunError::Task)?

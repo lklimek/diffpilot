@@ -262,6 +262,7 @@ describe("FeedbackButtons", () => {
         id: "fb1",
         target: step31,
         value: "overrated",
+        calibration_example: true,
         note: null,
         created_at: "2026-11-16T10:05:30Z",
         memory,
@@ -293,7 +294,7 @@ describe("FeedbackButtons", () => {
       />,
     );
     expect(screen.getByRole("list", { name: "Calibration memory" })).toHaveTextContent(
-      "missed by the LLM: Recorded; saving to calibration memory…",
+      "missed by the LLM: Recorded; saving to memory…",
     );
   });
 

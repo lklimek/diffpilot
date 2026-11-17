@@ -94,9 +94,41 @@ async fn analysis_events(
     let events = analysis_stream(snapshot, live);
     Ok(Sse::new(
         events
-            .filter_map(|event| async move { sse_event(&event) })
+            .then(move |mut event| {
+                let state = state.clone();
+                let user = session.user_id.clone();
+                async move {
+                    if let Err(error) = personalize_event(&state, &user, &mut event).await {
+                        tracing::warn!(%error, "SSE ownership projection failed; closing stream");
+                        return None;
+                    }
+                    Some(event)
+                }
+            })
+            .take_while(|event| std::future::ready(event.is_some()))
+            .filter_map(|event| async move { event.and_then(|event| sse_event(&event)) })
             .map(Ok),
     ))
+}
+
+/// Reader-specific fields are computed after the shared broadcast, never cached in that broadcast.
+async fn personalize_event(
+    state: &AppState,
+    user: &str,
+    event: &mut AnalysisEvent,
+) -> Result<(), DbError> {
+    match event {
+        AnalysisEvent::Analysis { summary } => {
+            summary.has_my_state = Some(state.db.review_states().exists(user, summary.id).await?);
+        }
+        AnalysisEvent::Question { question } => {
+            let record = state.db.questions().get(question.id, Utc::now()).await?;
+            question.asked_by = record.question.asked_by;
+            question.mine = Some(record.user_id == user);
+        }
+        AnalysisEvent::Heartbeat { .. } => {}
+    }
+    Ok(())
 }
 
 /// Every question of the analysis in any state, for the snapshot.
@@ -217,6 +249,91 @@ mod tests {
             }
         }
         events
+    }
+
+    #[tokio::test]
+    async fn sse_projects_ownership_per_subscriber_without_replacing_the_event_state() {
+        use contracts::api::questions::AskState;
+        use contracts::ids::{QuestionId, StepId};
+        use db::repo::questions::{NewQuestion, QuestionLimits};
+        let state = test_state().await;
+        let analysis = seed_analysis(&state.db).await.expect("analysis");
+        let id = QuestionId::new_random();
+        state
+            .db
+            .questions()
+            .create(
+                NewQuestion {
+                    id,
+                    analysis_id: analysis,
+                    step_id: StepId("f1.1".to_owned()),
+                    user_id: "u1".to_owned(),
+                    text: "Question".to_owned(),
+                },
+                QuestionLimits {
+                    per_analysis: 10,
+                    per_user: 10,
+                    user_window_start: Utc::now(),
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("question");
+        let mut question = state
+            .db
+            .questions()
+            .get(id, Utc::now())
+            .await
+            .expect("question")
+            .question;
+        question.state = AskState::Answering;
+        let shared = AnalysisEvent::Question { question };
+        for (user, mine) in [("u1", true), ("u2", false)] {
+            let mut event = shared.clone();
+            personalize_event(&state, user, &mut event)
+                .await
+                .expect("projection");
+            let wire = serde_json::to_value(event).expect("wire");
+            assert_eq!(wire["question"]["mine"], mine);
+            assert_eq!(wire["question"]["asked_by"], "lklimek");
+            assert_eq!(
+                wire["question"]["state"], "answering",
+                "ownership reads must not reorder state"
+            );
+        }
+        assert!(
+            serde_json::to_value(shared).expect("wire")["question"]
+                .get("mine")
+                .is_none()
+        );
+        state
+            .db
+            .review_states()
+            .put(
+                "u1",
+                analysis,
+                &contracts::api::review::ReviewState::default(),
+                Utc::now(),
+            )
+            .await
+            .expect("state");
+        for (user, mine) in [("u1", true), ("u2", false)] {
+            let mut event = AnalysisEvent::Analysis {
+                summary: state
+                    .db
+                    .analyses()
+                    .summary(analysis)
+                    .await
+                    .expect("summary"),
+            };
+            personalize_event(&state, user, &mut event)
+                .await
+                .expect("projection");
+            assert_eq!(
+                serde_json::to_value(event).expect("wire")["summary"]["has_my_state"],
+                mine
+            );
+        }
     }
 
     #[tokio::test]

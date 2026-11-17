@@ -907,3 +907,48 @@ proptest::proptest! {
         proptest::prop_assert_eq!(unexplained, expected);
     }
 }
+
+#[test]
+fn reviewer_fields_reject_capability_excuses_but_accept_project_failures() {
+    let facts = LineFacts::default();
+    for text in [
+        "My tool was unavailable.",
+        "I could not load the severity skill.",
+        "As an AI, I cannot review it.",
+    ] {
+        let output = AskOutput {
+            answer: text.to_owned(),
+            evidence: vec![],
+        };
+        assert!(ask(&output, &facts).is_err(), "{text}");
+    }
+    for text in [
+        "The server could not load its configuration file; the error propagates to the caller.",
+        "The export tool was unavailable, so the CLI returned an error.",
+        "The parser could not read the instructions section.",
+    ] {
+        let output = AskOutput {
+            answer: text.to_owned(),
+            evidence: vec![],
+        };
+        assert!(ask(&output, &facts).is_ok(), "{text}");
+    }
+}
+
+#[test]
+fn pr_context_does_not_invent_stacked_relationships() {
+    let mut output = PrContextOutput {
+        problem: "Retries can stall.".to_owned(),
+        why_needed: "Requests must finish.".to_owned(),
+        what_it_gives: "Nonblocking replies.".to_owned(),
+        related_work: vec![contracts::agent::pr_context::RelatedWork {
+            reference: "owner/repo#1550".to_owned(),
+            kind: contracts::common::RelatedWorkKind::StackedPr,
+            overlap: "Already merged beneath the supplied base.".to_owned(),
+        }],
+        fit_questions: vec![],
+    };
+    assert!(pr_context(&output, &LineFacts::default()).is_err());
+    output.related_work[0].kind = contracts::common::RelatedWorkKind::CompetingSolution;
+    assert!(pr_context(&output, &LineFacts::default()).is_ok());
+}

@@ -26,8 +26,8 @@
           "basis": "fact",
           "start_line": 130,
           "end_line": 130,
-          "was": "A timeout on this call came back once as Timeout.",
-          "is": "The same call may be sent up to 3 times.",
+          "was": "",
+          "is": "",
           "text": "broadcast_tx now reaches a retrying send.",
           "evidence": [
             {
@@ -52,8 +52,8 @@
           "basis": "inference",
           "start_line": 129,
           "end_line": 130,
-          "was": "One broadcast per call.",
-          "is": "Up to 3 broadcasts per call.",
+          "was": "",
+          "is": "",
           "text": "Not visible in this repository: does the node reject a repeated broadcast_tx for the same transaction, so that a second send is harmless?",
           "evidence": [
             {
@@ -112,8 +112,8 @@
           "basis": "inference",
           "start_line": 93,
           "end_line": 94,
-          "was": "One attempt with the full timeout.",
-          "is": "Up to 3 attempts, each with the full timeout.",
+          "was": "",
+          "is": "",
           "text": "Every attempt gets the full per-attempt timeout, so the worst case is 3 × timeout plus delays.",
           "evidence": []
         }
@@ -234,8 +234,8 @@
           "basis": "inference",
           "start_line": 99,
           "end_line": 99,
-          "was": "A timeout was returned to the caller.",
-          "is": "A timeout is retried while attempt < 3, for every method.",
+          "was": "",
+          "is": "",
           "text": "mempool::broadcast_tx may submit the same transaction twice if attempt 1 reached the node and only the reply was late.",
           "evidence": [
             {
@@ -250,8 +250,8 @@
           "basis": "inference",
           "start_line": 99,
           "end_line": 99,
-          "was": "A timeout was returned to the caller.",
-          "is": "A timeout is retried while attempt < 3, for every method.",
+          "was": "",
+          "is": "",
           "text": "should_retry receives only the attempt number and no method or idempotency input: can broadcast_tx be sent twice when the reply arrives late?",
           "evidence": [
             {
@@ -324,8 +324,8 @@
           "basis": "inference",
           "start_line": 100,
           "end_line": 100,
-          "was": "No delay.",
-          "is": "Delay = jitter(min(200 ms × 2^(attempt - 1), 4 s)).",
+          "was": "",
+          "is": "",
           "text": "With jitter applied after the cap, can one sleep exceed max_delay (4 s)?",
           "evidence": [
             {
@@ -393,8 +393,8 @@
           "basis": "fact",
           "start_line": 105,
           "end_line": 105,
-          "was": "Callers saw Timeout after one attempt.",
-          "is": "Callers see Exhausted after the last attempt.",
+          "was": "",
+          "is": "",
           "text": "Callers that matched on Timeout no longer see it from send; wallet::fetch_balance maps only Timeout to WalletError::Offline.",
           "evidence": [
             {
@@ -414,8 +414,8 @@
           "basis": "inference",
           "start_line": 104,
           "end_line": 106,
-          "was": "Returned Err(Timeout).",
-          "is": "Returns Err(Exhausted { attempts }).",
+          "was": "",
+          "is": "",
           "text": "Two wildcard sites were found (flow 3): do all callers of send still handle the case that used to be Timeout?",
           "evidence": []
         }
@@ -506,8 +506,8 @@
           "basis": "inference",
           "start_line": 42,
           "end_line": 42,
-          "was": "No retry settings.",
-          "is": "Always the default policy.",
+          "was": "",
+          "is": "",
           "text": "No setter or constructor argument takes a policy: how does a caller that must not retry change it?",
           "evidence": [
             {
@@ -566,8 +566,8 @@
           "basis": "fact",
           "start_line": 28,
           "end_line": 30,
-          "was": "No delay rule.",
-          "is": "backoff = with_jitter(min(exp_delay(base, attempt), max_delay)).",
+          "was": "",
+          "is": "",
           "text": "Jitter is applied after the cap, so one delay can exceed max_delay by up to half; with the default 3 attempts the delays are 200 ms and 400 ms before jitter and never reach the cap.",
           "evidence": [
             {

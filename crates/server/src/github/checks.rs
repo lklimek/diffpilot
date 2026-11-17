@@ -1,8 +1,8 @@
-//! CI status of the analysed head commit from its check runs (REST, user token): the PR-context CI fact.
+//! CI status of the analysed head commit from check runs and commit statuses (REST, user token): the PR-context CI fact.
 
 use std::time::Duration;
 
-use contracts::api::tour::{CiCheck, CiState, CiStatus};
+use contracts::api::tour::{CiCheck, CiCounts, CiState, CiStatus};
 use contracts::common::RepoRef;
 use contracts::ids::CommitSha;
 use reqwest::header::{ACCEPT, USER_AGENT};
@@ -29,12 +29,22 @@ pub const NOT_CHECKED: CiStatus = CiStatus {
     state: CiState::NotChecked,
     total: 0,
     failing: Vec::new(),
+    check_runs: None,
+    statuses: None,
 };
 
 #[derive(Deserialize)]
-struct CheckRunsPage {
+struct CiPage<T> {
     total_count: u32,
-    check_runs: Vec<CheckRun>,
+    #[serde(rename = "check_runs", alias = "statuses")]
+    items: Vec<T>,
+}
+
+#[derive(Deserialize)]
+struct CommitStatus {
+    context: String,
+    state: String,
+    target_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -57,6 +67,8 @@ enum Outcome {
     Passed,
     Failed,
     Running,
+    Skipped,
+    Neutral,
 }
 
 fn outcome(run: &CheckRun) -> Outcome {
@@ -64,7 +76,9 @@ fn outcome(run: &CheckRun) -> Outcome {
         return Outcome::Running;
     }
     match run.conclusion.as_deref() {
-        Some("success" | "neutral" | "skipped") => Outcome::Passed,
+        Some("success") => Outcome::Passed,
+        Some("skipped") => Outcome::Skipped,
+        Some("neutral") => Outcome::Neutral,
         // failure, timed_out, cancelled, action_required, startup_failure, stale and anything unknown: never
         // reported as passing.
         _ => Outcome::Failed,
@@ -128,22 +142,62 @@ fn failing_tests(summary: &str) -> Vec<String> {
     names
 }
 
-fn status_of(runs: &[CheckRun]) -> CiStatus {
-    let outcomes: Vec<Outcome> = runs.iter().map(outcome).collect();
-    let state = if runs.is_empty() {
-        CiState::None
-    } else if outcomes.contains(&Outcome::Failed) {
-        CiState::Failing
-    } else if outcomes.contains(&Outcome::Running) {
-        CiState::Pending
-    } else {
-        CiState::Passing
-    };
-    let failing = runs
+fn count(outcomes: impl Iterator<Item = Outcome>) -> CiCounts {
+    let mut counts = CiCounts::default();
+    for outcome in outcomes {
+        match outcome {
+            Outcome::Passed => counts.passed += 1,
+            Outcome::Failed => counts.failed += 1,
+            Outcome::Running => counts.pending += 1,
+            Outcome::Skipped => counts.skipped += 1,
+            Outcome::Neutral => counts.neutral += 1,
+        }
+    }
+    counts
+}
+
+fn status_outcome(status: &CommitStatus) -> Outcome {
+    match status.state.as_str() {
+        "success" => Outcome::Passed,
+        "pending" => Outcome::Running,
+        _ => Outcome::Failed,
+    }
+}
+
+fn status_of(runs: Option<Vec<CheckRun>>, statuses: Option<Vec<CommitStatus>>) -> CiStatus {
+    let check_counts = runs.as_ref().map(|runs| count(runs.iter().map(outcome)));
+    let status_counts = statuses
+        .as_ref()
+        .map(|statuses| count(statuses.iter().map(status_outcome)));
+    let counts: Vec<CiCounts> = [check_counts, status_counts]
+        .into_iter()
+        .flatten()
+        .collect();
+    let total = counts
         .iter()
-        .zip(&outcomes)
-        .filter(|(_, outcome)| **outcome == Outcome::Failed)
-        .map(|(run, _)| CiCheck {
+        .map(|c| c.passed + c.failed + c.pending + c.skipped + c.neutral)
+        .sum();
+    let complete = check_counts.is_some() && status_counts.is_some();
+    let state = if counts.iter().any(|c| c.failed > 0) {
+        CiState::Failing
+    } else if counts.iter().any(|c| c.pending > 0) {
+        CiState::Pending
+    } else if total == 0 {
+        if complete {
+            CiState::None
+        } else {
+            CiState::NotChecked
+        }
+    } else if complete && counts.iter().all(|c| c.skipped == 0 && c.neutral == 0) {
+        CiState::Passing
+    } else {
+        CiState::NoFailures
+    };
+    let mut failing: Vec<CiCheck> = runs
+        .unwrap_or_default()
+        .iter()
+        .filter(|run| outcome(run) == Outcome::Failed)
+        .map(|run| CiCheck {
             name: run.name.clone(),
             url: run.html_url.as_deref().and_then(github_web_url),
             failing_tests: run
@@ -154,10 +208,23 @@ fn status_of(runs: &[CheckRun]) -> CiStatus {
                 .unwrap_or_default(),
         })
         .collect();
+    failing.extend(
+        statuses
+            .unwrap_or_default()
+            .iter()
+            .filter(|status| status_outcome(status) == Outcome::Failed)
+            .map(|status| CiCheck {
+                name: status.context.clone(),
+                url: status.target_url.as_deref().and_then(github_web_url),
+                failing_tests: Vec::new(),
+            }),
+    );
     CiStatus {
         state,
-        total: u32::try_from(runs.len()).unwrap_or(u32::MAX),
+        total,
         failing,
+        check_runs: check_counts,
+        statuses: status_counts,
     }
 }
 
@@ -169,8 +236,7 @@ fn client() -> Result<Client, GithubError> {
         .map_err(GithubError::Client)
 }
 
-/// The check runs of `head` (`GET /repos/{owner}/{name}/commits/{sha}/check-runs`, latest run per check, at
-/// most 1000) summarised as the CI fact, read with the user's token.
+/// Reads both CI sources independently; a refused, incomplete or failed source stays not checked.
 pub async fn fetch(
     config: &GithubConfig,
     token: &SecretString,
@@ -178,14 +244,39 @@ pub async fn fetch(
     head: &CommitSha,
 ) -> Result<CiStatus, GithubError> {
     let client = client()?;
-    let url = endpoint(
-        &config.api_url,
-        &format!(
-            "repos/{}/{}/commits/{}/check-runs",
-            repo.owner, repo.name, head.0
-        ),
-    );
-    let mut runs = Vec::new();
+    let base = format!("repos/{}/{}/commits/{}", repo.owner, repo.name, head.0);
+    let runs = source(&client, config, token, &format!("{base}/check-runs")).await?;
+    let statuses = source(&client, config, token, &format!("{base}/status")).await?;
+    Ok(status_of(runs, statuses))
+}
+
+async fn source<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    config: &GithubConfig,
+    token: &SecretString,
+    path: &str,
+) -> Result<Option<Vec<T>>, GithubError> {
+    match read_source(client, config, token, path).await {
+        Ok(items) => Ok(items),
+        Err(GithubError::Unauthorized) => Err(GithubError::Unauthorized),
+        Err(_) => {
+            tracing::warn!(
+                source = path,
+                "CI source could not be read; source is not checked"
+            );
+            Ok(None)
+        }
+    }
+}
+
+async fn read_source<T: serde::de::DeserializeOwned>(
+    client: &Client,
+    config: &GithubConfig,
+    token: &SecretString,
+    path: &str,
+) -> Result<Option<Vec<T>>, GithubError> {
+    let url = endpoint(&config.api_url, path);
+    let mut items = Vec::new();
     for page in 1..=MAX_PAGES {
         let mut page_url = url.clone();
         page_url
@@ -203,22 +294,24 @@ pub async fn fetch(
             .map_err(GithubError::Http)?;
         match response.status() {
             StatusCode::OK => {}
-            StatusCode::NOT_FOUND => return Err(GithubError::NotFound),
             StatusCode::UNAUTHORIZED => return Err(GithubError::Unauthorized),
             status => return Err(GithubError::Status(status)),
         }
-        let body: CheckRunsPage = response.json().await.map_err(GithubError::Http)?;
-        let last = body.check_runs.is_empty();
-        runs.extend(body.check_runs);
-        if last || runs.len() >= usize::try_from(body.total_count).unwrap_or(usize::MAX) {
-            return Ok(status_of(&runs));
+        let body: CiPage<T> = response.json().await.map_err(GithubError::Http)?;
+        let empty = body.items.is_empty();
+        items.extend(body.items);
+        if items.len() >= usize::try_from(body.total_count).unwrap_or(usize::MAX) {
+            return Ok(Some(items));
+        }
+        if empty {
+            break;
         }
     }
     tracing::warn!(
-        count = runs.len(),
-        "the head commit has more check runs than are read; CI is not checked"
+        source = path,
+        "CI source exceeded the read cap or ended early; source is not checked"
     );
-    Ok(NOT_CHECKED)
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -297,6 +390,14 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
+        serve_statuses(
+            &server,
+            fixture("github/rest/commit-status.json")["response"]["statuses"]
+                .as_array()
+                .expect("statuses")
+                .clone(),
+        )
+        .await;
         let tour: Tour =
             serde_json::from_value(fixture("api-seed/default/tour.json")).expect("tour");
         assert_eq!(
@@ -305,23 +406,60 @@ mod tests {
         );
     }
 
+    fn commit_status(context: &str, state: &str) -> Value {
+        json!({"context": context, "state": state, "description": null,
+               "target_url": format!("https://github.com/acme/node-client/actions/{context}")})
+    }
+
+    fn statuses_path() -> String {
+        format!("/api/repos/acme/node-client/commits/{HEAD}/status")
+    }
+
+    async fn serve_statuses(server: &MockServer, statuses: Vec<Value>) {
+        Mock::given(method("GET"))
+            .and(path(statuses_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"state": "pending", "total_count": statuses.len(), "statuses": statuses}),
+            ))
+            .mount(server)
+            .await;
+    }
+
+    fn counts(passed: u32, failed: u32, pending: u32, skipped: u32, neutral: u32) -> CiCounts {
+        CiCounts {
+            passed,
+            failed,
+            pending,
+            skipped,
+            neutral,
+        }
+    }
+
+    /// Skipped and neutral runs are counted as such and never make CI "passing".
     #[tokio::test]
-    async fn state_is_derived_from_every_run() {
+    async fn state_is_derived_from_every_run_and_status() {
+        let success = || run("a", "completed", Some("success"));
         let cases = [
-            (vec![], CiState::None),
+            (vec![], vec![], CiState::None),
+            (vec![success()], vec![], CiState::Passing),
             (
-                vec![
-                    run("a", "completed", Some("success")),
-                    run("b", "completed", Some("skipped")),
-                    run("c", "completed", Some("neutral")),
-                ],
-                CiState::Passing,
+                vec![success(), run("b", "completed", Some("skipped"))],
+                vec![],
+                CiState::NoFailures,
             ),
             (
-                vec![
-                    run("a", "completed", Some("success")),
-                    run("b", "in_progress", None),
-                ],
+                vec![success(), run("c", "completed", Some("neutral"))],
+                vec![],
+                CiState::NoFailures,
+            ),
+            (
+                vec![success(), run("b", "in_progress", None)],
+                vec![],
+                CiState::Pending,
+            ),
+            (
+                vec![success()],
+                vec![commit_status("hygiene", "pending")],
                 CiState::Pending,
             ),
             (
@@ -329,20 +467,107 @@ mod tests {
                     run("a", "queued", None),
                     run("b", "completed", Some("timed_out")),
                 ],
+                vec![],
                 CiState::Failing,
             ),
             (
                 vec![run("a", "completed", Some("something_new"))],
+                vec![],
                 CiState::Failing,
             ),
+            (
+                vec![success()],
+                vec![commit_status("deploy", "error")],
+                CiState::Failing,
+            ),
+            (
+                vec![],
+                vec![commit_status("lint", "success")],
+                CiState::Passing,
+            ),
         ];
-        for (runs, expected) in cases {
-            let count = runs.len();
+        for (runs, statuses, expected) in cases {
+            let count = runs.len() + statuses.len();
             let server = serve_runs(runs).await;
+            serve_statuses(&server, statuses).await;
             let status = fetch_from(&server).await.expect("status");
             assert_eq!(status.state, expected, "{status:?}");
             assert_eq!(status.total as usize, count);
         }
+    }
+
+    /// The real #1169 shape: one success and four skipped runs plus a pending status.
+    #[tokio::test]
+    async fn counts_per_source_say_what_was_skipped_and_pending() {
+        let mut runs = vec![run("check", "completed", Some("success"))];
+        for name in ["clippy", "test", "fmt", "deny"] {
+            runs.push(run(name, "completed", Some("skipped")));
+        }
+        let server = serve_runs(runs).await;
+        serve_statuses(&server, vec![commit_status("PR Hygiene", "pending")]).await;
+        let status = fetch_from(&server).await.expect("status");
+        assert_eq!(status.state, CiState::Pending);
+        assert_eq!(status.total, 6);
+        assert_eq!(status.check_runs, Some(counts(1, 0, 0, 4, 0)));
+        assert_eq!(status.statuses, Some(counts(0, 0, 1, 0, 0)));
+        assert!(status.failing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_status_is_listed_as_failing() {
+        let server = serve_runs(vec![]).await;
+        let mut foreign = commit_status("ci/external", "failure");
+        foreign["target_url"] = json!("https://ci.example.test/1");
+        serve_statuses(&server, vec![commit_status("lint", "error"), foreign]).await;
+        let status = fetch_from(&server).await.expect("status");
+        assert_eq!(status.state, CiState::Failing);
+        let failing: Vec<(&str, Option<&str>)> = status
+            .failing
+            .iter()
+            .map(|check| (check.name.as_str(), check.url.as_deref()))
+            .collect();
+        assert_eq!(
+            failing,
+            [
+                (
+                    "lint",
+                    Some("https://github.com/acme/node-client/actions/lint")
+                ),
+                ("ci/external", None)
+            ]
+        );
+    }
+
+    /// A source GitHub refuses (403/404/5xx, e.g. the App lacks `checks:read`) is not checked; the other still
+    /// counts, and CI is then never "passing".
+    #[tokio::test]
+    async fn an_unreadable_source_is_not_checked_and_never_passing() {
+        for code in [403, 404, 502] {
+            let server = serve_runs(vec![run("a", "completed", Some("success"))]).await;
+            Mock::given(method("GET"))
+                .and(path(statuses_path()))
+                .respond_with(ResponseTemplate::new(code))
+                .mount(&server)
+                .await;
+            let status = fetch_from(&server).await.expect("status");
+            assert_eq!(status.state, CiState::NoFailures, "{code}");
+            assert_eq!(status.check_runs, Some(counts(1, 0, 0, 0, 0)));
+            assert_eq!(status.statuses, None, "{code}");
+
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path(checks_path()))
+                .respond_with(ResponseTemplate::new(code))
+                .mount(&server)
+                .await;
+            serve_statuses(&server, vec![commit_status("lint", "success")]).await;
+            let status = fetch_from(&server).await.expect("status");
+            assert_eq!(status.state, CiState::NoFailures, "{code}");
+            assert_eq!((status.check_runs, status.total), (None, 1));
+        }
+        let server = MockServer::start().await;
+        let status = fetch_from(&server).await.expect("status");
+        assert_eq!(status, NOT_CHECKED, "neither source read");
     }
 
     #[tokio::test]
@@ -390,34 +615,60 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
+        serve_statuses(&server, vec![]).await;
         let status = fetch_from(&server).await.expect("status");
         assert_eq!((status.state, status.total), (CiState::Passing, 3));
     }
 
     #[tokio::test]
-    async fn http_failures_are_errors() {
-        for (code, check) in [
-            (
-                401,
-                (|e| matches!(e, GithubError::Unauthorized)) as fn(&GithubError) -> bool,
-            ),
-            (404, |e| matches!(e, GithubError::NotFound)),
-            (403, |e| {
-                matches!(e, GithubError::Status(StatusCode::FORBIDDEN))
-            }),
-            (502, |e| {
-                matches!(e, GithubError::Status(StatusCode::BAD_GATEWAY))
-            }),
-        ] {
-            let server = MockServer::start().await;
-            Mock::given(method("GET"))
-                .and(path(checks_path()))
-                .respond_with(ResponseTemplate::new(code))
-                .mount(&server)
-                .await;
-            let error = fetch_from(&server).await.expect_err("error");
-            assert!(check(&error), "{code}: {error:?}");
+    async fn status_pages_include_late_failure_and_early_end_is_not_checked() {
+        for early_end in [false, true] {
+            let server = serve_runs(vec![run("build", "completed", Some("success"))]).await;
+            for (page, statuses) in [
+                ("1", vec![commit_status("lint", "success")]),
+                (
+                    "2",
+                    if early_end {
+                        vec![]
+                    } else {
+                        vec![commit_status("deploy", "failure")]
+                    },
+                ),
+            ] {
+                Mock::given(method("GET"))
+                    .and(path(statuses_path()))
+                    .and(query_param("page", page))
+                    .respond_with(
+                        ResponseTemplate::new(200)
+                            .set_body_json(json!({"total_count":2,"statuses":statuses})),
+                    )
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+            }
+            let result = fetch_from(&server).await.expect("CI");
+            if early_end {
+                assert_eq!(result.statuses, None);
+                assert_eq!(result.state, CiState::NoFailures);
+            } else {
+                assert_eq!(result.statuses, Some(counts(1, 1, 0, 0, 0)));
+                assert_eq!(result.state, CiState::Failing);
+                assert_eq!(result.failing[0].name, "deploy");
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn rejected_token_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(checks_path()))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        serve_statuses(&server, vec![]).await;
+        let error = fetch_from(&server).await.expect_err("error");
+        assert!(matches!(error, GithubError::Unauthorized), "{error:?}");
     }
 
     #[tokio::test]
@@ -435,9 +686,11 @@ mod tests {
             .expect(u64::from(MAX_PAGES))
             .mount(&server)
             .await;
+        serve_statuses(&server, vec![]).await;
         let status = fetch_from(&server).await.expect("status");
         assert_eq!(
-            status, NOT_CHECKED,
+            (status.state, status.check_runs),
+            (CiState::NotChecked, None),
             "the 1001st run may fail; 1000 passing runs are no proof"
         );
     }

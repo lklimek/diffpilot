@@ -39,6 +39,34 @@ All changes are additive: a new field, variant, route or column, or a stricter r
 | `AnalysisState::{Planning, Running, Paused}.stage: Option<AnalysisStage>` (`kind`, `flow {index, title}`, `started_at`; `api::analyses`) | The progress screen shows the live job's stage (plan, PR context, flow k with title) and whether the runner has it (`started_at` = claim time, null = waiting for the runner), derived from the jobs table; an `analysis` event is sent on every claim. |
 | `AnalysisEvent::Heartbeat { at }` (SSE `heartbeat`, every 15 s; `api::events`) | The client tells an open but silent stream from a dead one; replaces the keep-alive comment. |
 
+### Trust and ownership observations (coordinator-approved, 2026-11-17)
+
+| Change | Reason |
+|---|---|
+| `CiStatus.check_runs`, `statuses`: optional `CiCounts {passed, failed, pending, skipped, neutral}`; `CiState::NoFailures` | Skipped/neutral runs are not successful runs; commit statuses count too. A missing source means not checked. `passing` requires both complete sources and only success, with at least one result. Existing `total` and `failing` include both sources. |
+| `AskQuestion.asked_by`, `mine`; `AnalysisSummary.has_my_state` | Questions remain shared tenant knowledge; each HTTP/SSE response identifies the asker and computes personal flags for its reader. Old stored payloads can omit the fields. |
+| `Counters.lines_added_to_tests` | Existing removed-line count includes replacements. Show diff churn as “N test lines changed or removed, M added”, not proof of weakened tests. |
+| `Settings.memcan_status`, `PrContextFacts.memcan_status`: `MemcanStatus {state, last_success_at}` | Client observations are separate from the stored profile lookup. States: `reachable`, `not_reachable`, `not_configured`, `not_checked` (before the first completed attempt). No status read makes a network call. |
+| `RuleKind::{Lexer, Header, Binary}` | The label names the actual detector, including Rust lexer comments and git binary detection. |
+| `Feedback.calibration_example` | Only `overrated`/`underrated` are calibration examples; all values are recorded as feedback memories. A calibration example is saved only when `memory == written`. |
+
+Ownership follows brief §3: “Fragment 1─* Question (Ask thread, LLM answers)” and “User 1─* ReviewState
+(per analysis): ticks on fragments, last viewed block”. There is no question edit/delete/retry endpoint;
+posting another question creates a new question owned by its sender. Shared broadcasts carry no `mine` or
+`has_my_state`; the SSE handler projects them per subscriber.
+
+Settings installations remain user-scoped, as the existing HTTP contract requires: “Installations are read
+from GitHub with the user token (`GET /user/installations`, suspended ones left out)”. ADR-007's user-token
+lifetime and refresh rules apply. The installation account can differ from the logged-in account; no rule
+limits visible installations to those personally owned by the user. The server does not use `/app/installations`
+for Settings and does not widen the tenant boundary.
+
+MemCan observations live in the server's shared connection configuration, with no lock held across I/O.
+They reset on restart, retain the last successful tool-call time after failure, and reflect the most recently
+completed attempt. Current ADR-001 requires MemCan URL/token at startup: `not_configured` is reserved for a
+configuration without a token; normal startup cannot produce it. Reachable means the client reached MemCan,
+not that every tool or profile lookup succeeded.
+
 ### Analysis and verification (`crates/analysis`)
 | Change | Reason |
 |---|---|
@@ -53,6 +81,14 @@ All changes are additive: a new field, variant, route or column, or a stricter r
 | `jobs.round`, `analyses.round`, unique index `jobs_one_live_per_stage` over (analysis, stage, generation, round) | An explicit Retry calls the agent again, while a restart re-uses stored outputs (`runner-protocol.md`). |
 | Document kinds `unsent` and `memcan_profile` (`documents.kind`) | Lines left out of every LLM request with their reason; the analysis's MemCan profile lookup. |
 | `JobSpec.context_pack` built at claim | A lost agent session falls back to a context pack; a claim whose pack cannot be built is released. |
+
+### Coordinator-approved follow-up (2026-11-17)
+| Change | Reason |
+|---|---|
+| `PrContextFacts.related_work_links?: RelatedWorkLink[]` with `reference`, `repo`, `number`, `kind`, `verified` | Safe GitHub links from strictly parsed server fields, with independent resource verification; agent output schemas unchanged. |
+| `NotAnalysedItem.renderable?: bool`, `rule_kind?: RuleKind` | Open mechanical text when available and name the detector actually used; do not offer generated/binary content. |
+| `JobFailureKind::Configuration`, `ApiErrorCode::Configuration`, `AnalysisState::Failed.reason?: ApiErrorCode` | Required skills fail closed with an administrator-action message and no UI Retry. |
+| `analyses.failure_reason`, `llm_credentials.last_call_failure` accepts `configuration` (`0001_init.sql`) | Preserve the typed cause through stored analysis state and Settings; follows the pre-deployment single-schema convention. |
 
 ## Consequences
 - The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.

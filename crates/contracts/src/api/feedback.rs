@@ -102,6 +102,10 @@ impl From<UserFeedbackValue> for FeedbackValue {
 pub struct Feedback {
     /// Feedback id.
     pub id: FeedbackId,
+    /// Whether this value is a severity calibration example; saved only when `memory` is `written`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub calibration_example: Option<bool>,
     /// What it is about.
     pub target: FeedbackTarget,
     /// The value.

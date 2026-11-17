@@ -74,8 +74,8 @@ function note(id: string, start: number, end: number, extra: Partial<Annotation>
     type: "question",
     basis: "inference",
     range: { start_line: start, end_line: end },
-    was: "one attempt",
-    is: "three attempts",
+    was: "",
+    is: "",
     text: "Is a retry safe here?",
     evidence: [],
     ...extra,
@@ -83,6 +83,21 @@ function note(id: string, start: number, end: number, extra: Partial<Annotation>
 }
 
 describe("CodeView", () => {
+  it("does not display empty was/is for a non-behaviour remark", () => {
+    render(
+      <CodeView
+        lines={plain(1, ["send();"])}
+        annotations={[note("n", 1, 1, { was: "", is: "" })]}
+        band="low"
+      />,
+    );
+    const label = screen.getByText(/LOW · LLM remark: question/);
+    act(() => label.focus());
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip).not.toHaveTextContent("Was:");
+    expect(tooltip).toHaveTextContent("No behaviour annotation on these lines.");
+  });
+
   it("renders numbered lines of the range in a labelled, keyboard-scrollable region", () => {
     render(<CodeView {...stepProps("f1.2")} />);
     const region = screen.getByRole("region", { name: "src/rpc/client.rs, lines 88 to 96" });
@@ -164,7 +179,7 @@ describe("CodeView", () => {
     render(<CodeView {...props} />);
     await userEvent.hover(document.querySelector("[data-highlight]")!);
     const tip = screen.getByRole("tooltip");
-    for (const a of props.annotations) {
+    for (const a of props.annotations.filter((annotation) => annotation.type === "behaviour")) {
       expect(tip).toHaveTextContent(`Was: ${a.was}`);
       expect(tip).toHaveTextContent(`Is: ${a.is}`);
       if (a.text) expect(tip).not.toHaveTextContent(a.text);
@@ -350,7 +365,7 @@ describe("CodeView", () => {
     render(
       <CodeView
         lines={plain(1, [evil])}
-        annotations={[note("x.a1", 1, 1, { was: evil, is: evil })]}
+        annotations={[note("x.a1", 1, 1, { type: "behaviour", was: evil, is: evil, text: null })]}
         threads={[{ ...thread, path: "src/a.rs", line: 1, author: evil, excerpt: evil }]}
         highlight={highlight}
       />,

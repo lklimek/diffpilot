@@ -203,3 +203,21 @@ describe("Home (brief §4.1)", () => {
     expect(router.state.location.pathname).toBe("/");
   });
 });
+
+it("only promises personal state when the server confirms it exists", async () => {
+  server.use(
+    http.post("/api/v1/pr/resolve", () =>
+      HttpResponse.json({
+        pr: analysis.pr,
+        commenting_available: true,
+        head_moved: false,
+        analysis: { ...analysis, state: { state: "finished", total: 5 }, has_my_state: true },
+      }),
+    ),
+  );
+  renderRoute("/");
+  await analyze();
+  expect(await banner("Analysis found.", "status")).toHaveTextContent(
+    "Your ticks, answers and last viewed block are kept",
+  );
+});

@@ -15,7 +15,7 @@
     },
     {
       "reference": "acme/node-sdk#118",
-      "kind": "stacked_pr",
+      "kind": "companion_repository",
       "overlap": "Adopts this retry API and still calls send_once(), which this PR removes."
     }
   ],

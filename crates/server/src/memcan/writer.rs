@@ -105,7 +105,14 @@ pub(crate) async fn sweep(
             .record_memcan_outcome(entry.feedback.id, entry.revision, recorded, now)
             .await?;
         match result {
-            Ok(()) => outcome.written += 1,
+            Ok(()) => {
+                outcome.written += 1;
+                if entry.removed {
+                    tracing::info!(feedback_id = %entry.feedback.id, "MemCan feedback delete confirmed");
+                } else {
+                    tracing::info!(feedback_id = %entry.feedback.id, "MemCan feedback write confirmed");
+                }
+            }
             Err(error) => {
                 outcome.failed += 1;
                 outcome.unavailable = error.is_unavailable();

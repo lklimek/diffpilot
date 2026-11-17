@@ -81,6 +81,14 @@ pub(crate) struct MemcanClient<'a> {
 impl<'a> MemcanClient<'a> {
     /// Connects and completes the MCP handshake.
     pub(crate) async fn connect(config: &'a MemcanConfig) -> Result<Self, MemcanError> {
+        let result = Self::connect_inner(config).await;
+        if let Err(error) = &result {
+            config.observe::<()>(&Err(error));
+        }
+        result
+    }
+
+    async fn connect_inner(config: &'a MemcanConfig) -> Result<Self, MemcanError> {
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(CALL_TIMEOUT)
@@ -101,6 +109,16 @@ impl<'a> MemcanClient<'a> {
 
     /// Calls `tool` and returns its text answer; an error result is [`MemcanError::Rejected`].
     pub(crate) async fn call(
+        &self,
+        tool: &'static str,
+        arguments: Value,
+    ) -> Result<String, MemcanError> {
+        let result = self.call_inner(tool, arguments).await;
+        self.config.observe(&result.as_ref());
+        result
+    }
+
+    async fn call_inner(
         &self,
         tool: &'static str,
         arguments: Value,
@@ -212,6 +230,7 @@ mod tests {
     #[test]
     fn scrub_removes_token_address_and_urls() {
         let config = MemcanConfig {
+            observed: Default::default(),
             url: "http://memcan.lan:8190/mcp-url-CANARY"
                 .parse()
                 .expect("url"),

@@ -56,6 +56,8 @@ pub enum JobOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobFailureKind {
+    /// A required agent skill is unavailable; administrator action is needed.
+    Configuration,
     /// The provider failed (non-zero exit, `turn.failed`, rejected schema).
     ProviderFailed,
     /// The final message was not JSON.

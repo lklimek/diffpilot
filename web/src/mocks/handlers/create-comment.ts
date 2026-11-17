@@ -79,6 +79,7 @@ export const createComment = route(
           note: null,
           created_at: new Date().toISOString(),
           memory: "pending",
+          calibration_example: false,
         });
       }
     });

@@ -34,9 +34,11 @@ describe("PrContextBlock", () => {
     expect(within(llm).getAllByRole("listitem").length).toBeGreaterThanOrEqual(6);
     expect(llm).toHaveTextContent("src/config.rs:23");
     // Facts
-    expect(facts).toHaveTextContent("CI: 1 of 6 checks failing");
+    expect(facts).toHaveTextContent(
+      "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
+    );
     expect(facts).toHaveTextContent("sync_headers::slow_peer_2000_headers");
-    expect(facts).toHaveTextContent("12 lines removed from tests");
+    expect(facts).toHaveTextContent("12 test lines changed or removed, 30 added");
     expect(facts).toHaveTextContent("3 dependencies changed: tokio, tracing, url");
     expect(facts).toHaveTextContent("Project profile: repository file");
     expect(facts).toHaveTextContent("Project profile in MemCan: not checked");
@@ -55,14 +57,14 @@ describe("PrContextBlock", () => {
     context.facts.ci = { state: "not_checked", total: 0, failing: [] };
     renderBlock(tour, context);
     const facts = screen.getByRole("region", { name: "Facts" });
-    expect(facts).toHaveTextContent("CI: not checked");
+    expect(facts).toHaveTextContent("Check runs: not checked. Statuses: not checked.");
     expect(facts).not.toHaveTextContent(/no checks reported|passing/);
   });
 
   it.each([
-    ["passing", "CI: all 6 checks passing"],
-    ["pending", "CI: 6 checks, still running"],
-    ["none", "CI: no checks reported"],
+    ["passing", "Check runs: not checked. Statuses: not checked."],
+    ["pending", "Check runs: not checked. Statuses: not checked."],
+    ["none", "Check runs: not checked. Statuses: not checked."],
   ] as const)("states CI %s as a fact from GitHub", (state, text) => {
     const t = structuredClone(tour);
     t.pr_context.facts.ci = { state, total: state === "none" ? 0 : 6, failing: [] };
@@ -73,7 +75,7 @@ describe("PrContextBlock", () => {
   it("names the kind of related work with a label map", () => {
     renderBlock(tour);
     const llm = screen.getByRole("region", { name: "LLM analysis" });
-    expect(within(llm).getByText("Stacked PR")).toBeInTheDocument();
+    expect(within(llm).getByText("Companion repository")).toBeInTheDocument();
     expect(within(llm).queryByText(/stacked pr/)).not.toBeInTheDocument();
   });
 
@@ -144,6 +146,7 @@ describe("PrContextBlock", () => {
   ])("renders the LLM-supplied related-work reference %s as text, never as a link (T12)", (reference) => {
     const t = structuredClone(tour);
     t.pr_context.llm.related_work = [{ reference, kind: "competing_solution", overlap: "Overlaps." }];
+    t.pr_context.facts.related_work_links = [];
     renderBlock(t);
     const llm = screen.getByRole("region", { name: "LLM analysis" });
     expect(within(llm).getByText(reference)).toBeInTheDocument();
@@ -171,8 +174,8 @@ describe("PrContextBlock", () => {
     const stateTour = seedFor(state, "tour") as Tour;
     const { container } = renderBlock(stateTour);
     const facts = screen.getByRole("region", { name: "Facts" });
-    expect(facts).toHaveTextContent(/CI: /);
-    expect(facts).toHaveTextContent(/\d+ lines removed from tests/);
+    expect(facts).toHaveTextContent(/Check runs: /);
+    expect(facts).toHaveTextContent(/\d+ test lines changed or removed/);
     expect(facts).toHaveTextContent(/\d+ dependencies changed/);
     expect(facts).toHaveTextContent(/Project profile: |No project profile — ratings are component-level/);
     const relatedNotChecked = screen.queryByText("Related work: not checked");

@@ -34,6 +34,11 @@ const ASK: &str = include_str!("../../../prompts/ask.md");
 const REPAIR: &str = include_str!("../../../prompts/repair.md");
 const CONTEXT_PACK: &str = include_str!("../../../prompts/context_pack.md");
 
+/// Skills required by the shared prompt rules, including repair and Ask jobs.
+pub fn required_skills() -> Vec<String> {
+    vec!["severity".to_owned()]
+}
+
 /// Owner default for sub-agents: off (ADR-002; threat model T5, `multi_agent = false`).
 pub const SUB_AGENTS_DEFAULT: bool = false;
 /// Largest `plan`, `pr_context`, `analyse_flow` or `ask` prompt in bytes (about 32k tokens); a repair prompt

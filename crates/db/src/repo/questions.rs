@@ -96,12 +96,13 @@ pub enum QuestionUpdate {
 macro_rules! question_select {
     () => {
         "SELECT q.id, q.analysis_id, q.step_id, q.user_id, q.text, q.state, q.answer, q.failure, q.job_id,
-             q.created_at, q.answered_at,
+             q.created_at, q.answered_at, u.login AS asked_by,
              CASE WHEN q.state = 'pending' THEN
                  CASE WHEN j.state = 'paused' AND j.resumes_at > ?1 THEN j.resumes_at
                       WHEN j.state = 'queued' AND c.paused_until > ?1 THEN c.paused_until END
              END AS resumes_at
          FROM questions q
+         JOIN users u ON u.id = q.user_id
          LEFT JOIN jobs j ON j.id = q.job_id
          LEFT JOIN llm_credentials c ON c.id = j.credential_id"
     };
@@ -122,6 +123,8 @@ fn record_from_row(row: &SqliteRow) -> Result<QuestionRecord, DbError> {
     let job: Option<String> = row.try_get("job_id")?;
     Ok(QuestionRecord {
         question: AskQuestion {
+            asked_by: Some(row.try_get("asked_by")?),
+            mine: None,
             id: parse_wire(&id, "questions.id")?,
             step_id: StepId(row.try_get("step_id")?),
             text: row.try_get("text")?,
@@ -207,6 +210,31 @@ impl Questions<'_> {
         .await?;
         rows.iter()
             .map(|row| record_from_row(row).map(|record| record.question))
+            .collect()
+    }
+
+    /// Shared questions with ownership projected for this reader.
+    pub async fn list_for_user(
+        &self,
+        analysis: AnalysisId,
+        user: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<AskQuestion>, DbError> {
+        let rows = sqlx::query(concat!(
+            question_select!(),
+            " WHERE q.analysis_id = ?2 ORDER BY q.created_at, q.rowid"
+        ))
+        .bind(ts(now))
+        .bind(analysis.to_string())
+        .fetch_all(self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let record = record_from_row(row)?;
+                let mut question = record.question;
+                question.mine = Some(record.user_id == user);
+                Ok(question)
+            })
             .collect()
     }
 

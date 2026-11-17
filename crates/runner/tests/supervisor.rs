@@ -308,6 +308,7 @@ fn sh(script: &str) -> Vec<String> {
     vec!["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()]
 }
 
+// TODO: run this check outside the restricted sandbox, which rejects handover chown with EINVAL.
 async fn helpers(supervisor: &Supervisor, state: &Path) {
     let home = state.join("codex-homes").join("job-1");
     std::fs::DirBuilder::new()

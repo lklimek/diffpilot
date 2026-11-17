@@ -1,15 +1,17 @@
+import { ciText } from "../section/ci";
+import { MemcanStatusLine } from "../section/MemcanStatusLine";
 import { CodeText } from "../section/CodeText";
-import { plural } from "../quiet/labels";
+import { plural, testLines } from "../quiet/labels";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { useId, type ReactNode } from "react";
 import type {
-  CiStatus,
   Evidence,
   FitTopic,
   PrContextBlock as PrContext,
   PrSummary,
   ProjectProfileStatus,
   RelatedWork,
+  RelatedWorkLink,
   RelatedWorkKind,
   ThreadsStatus,
 } from "../../api/generated/types";
@@ -46,30 +48,35 @@ const RELATED_KIND: Record<RelatedWorkKind, string> = {
 
 const CARD = "mb-1.5 rounded-md border border-border bg-surface-2 px-2 py-1.5 text-[12.5px]";
 
-function Related({ item }: { item: RelatedWork }) {
+function Related({ item, target }: { item: RelatedWork; target?: RelatedWorkLink }) {
+  const safe =
+    target &&
+    /^[a-zA-Z0-9-]+\/[a-zA-Z0-9_.-]+$/.test(target.repo) &&
+    !target.repo.split("/").some((s) => s === "." || s === "..") &&
+    Number.isSafeInteger(target.number) &&
+    target.number > 0 &&
+    ["pull_request", "issue"].includes(target.kind);
+  const href = safe
+    ? `https://github.com/${target.repo}/${target.kind === "pull_request" ? "pull" : "issues"}/${target.number}`
+    : undefined;
   return (
     <li className={CARD}>
-      {/* TODO(server): RelatedWork needs repo, number and PR/issue type; reference is untrusted prose. */}
-      <code className="break-all">{item.reference}</code>
+      {href && target ? (
+        <a href={href} target="_blank" rel="noopener noreferrer">
+          <code>
+            {target.repo}#{target.number}
+          </code>
+        </a>
+      ) : (
+        <code className="break-all">{item.reference}</code>
+      )}
+      {(!safe || !target?.verified) && (
+        <span className="block text-muted">Target not checked against GitHub.</span>
+      )}
       <span className="block text-[11px] text-muted">{RELATED_KIND[item.kind]}</span>
       <CodeText text={item.overlap} />
     </li>
   );
-}
-
-function ciLine(ci: CiStatus): string {
-  switch (ci.state) {
-    case "failing":
-      return `CI: ${ci.failing.length} of ${plural(ci.total, "check")} failing`;
-    case "passing":
-      return `CI: all ${plural(ci.total, "check")} passing`;
-    case "pending":
-      return `CI: ${plural(ci.total, "check")}, still running`;
-    case "none":
-      return "CI: no checks reported";
-    case "not_checked":
-      return "CI: not checked";
-  }
 }
 
 function profileLines(profile: ProjectProfileStatus): string[] {
@@ -136,7 +143,11 @@ export function PrContextBlock({ pr, context, threadCount, onEvidence }: PrConte
           ) : (
             <ul className="m-0 list-none p-0">
               {llm.related_work.map((item) => (
-                <Related key={item.reference} item={item} />
+                <Related
+                  key={item.reference}
+                  item={item}
+                  target={facts.related_work_links?.find((link) => link.reference === item.reference)}
+                />
               ))}
             </ul>
           )}
@@ -163,7 +174,7 @@ export function PrContextBlock({ pr, context, threadCount, onEvidence }: PrConte
         <Section title="Facts" subtitle="From GitHub and the diff; no LLM.">
           <ul className="m-0 list-none p-0">
             <Fact>
-              {ciLine(facts.ci)}
+              {ciText(facts.ci)}
               {facts.ci.failing.length > 0 && (
                 <ul className="mt-1 list-disc pl-5">
                   {facts.ci.failing.map((check) => (
@@ -186,7 +197,10 @@ export function PrContextBlock({ pr, context, threadCount, onEvidence }: PrConte
               )}
             </Fact>
             <Fact>{threadsFact(facts.threads_status, threadCount)}</Fact>
-            <Fact>{plural(facts.counters.lines_removed_from_tests, "line")} removed from tests</Fact>
+            <Fact>{testLines(facts.counters)}</Fact>
+            <Fact>
+              <MemcanStatusLine status={facts.memcan_status} />
+            </Fact>
             {dependencyFacts(facts.counters).map((line) => (
               <Fact key={line}>{line}</Fact>
             ))}

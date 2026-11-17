@@ -10,6 +10,8 @@ import { AskForm } from "./AskForm";
 
 const question = (over: Partial<AskQuestion>): AskQuestion => ({
   id: "q1",
+  mine: true,
+  asked_by: "alice",
   step_id: "f1.5",
   text: "Is the reply deduplicated?",
   state: "pending",

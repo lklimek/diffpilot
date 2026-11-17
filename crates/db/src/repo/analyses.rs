@@ -101,7 +101,7 @@ impl SessionState {
 macro_rules! columns {
     () => {
         "a.id, a.tenant_id, a.pull_request_id, a.base_sha, a.head_sha, a.language, a.state,
-    a.flows_total, a.flows_done, a.paused_until, a.failure_flow_id, a.failure_flow_title, a.failure_message,
+    a.flows_total, a.flows_done, a.paused_until, a.failure_flow_id, a.failure_flow_title, a.failure_message, a.failure_reason,
     a.agent_thread_id, a.session_state, a.skills_commit, a.created_by, a.created_at, a.finished_at"
     };
 }
@@ -115,6 +115,7 @@ struct StateColumns {
     failure_flow_id: Option<String>,
     failure_flow_title: Option<String>,
     failure_message: Option<String>,
+    failure_reason: Option<contracts::api::error::ApiErrorCode>,
 }
 
 impl StateColumns {
@@ -127,6 +128,7 @@ impl StateColumns {
             failure_flow_id: None,
             failure_flow_title: None,
             failure_message: None,
+            failure_reason: None,
         };
         match state {
             AnalysisState::Planning { .. } => {}
@@ -146,8 +148,13 @@ impl StateColumns {
                 columns.flows_done = *done;
                 columns.flows_total = *total;
             }
-            AnalysisState::Failed { flow, message } => {
+            AnalysisState::Failed {
+                reason,
+                flow,
+                message,
+            } => {
                 columns.state = "failed";
+                columns.failure_reason = *reason;
                 columns.failure_flow_id = flow.as_ref().map(|flow| flow.id.0.clone());
                 columns.failure_flow_title = flow.as_ref().map(|flow| flow.title.clone());
                 columns.failure_message = Some(message.clone());
@@ -192,6 +199,10 @@ fn state_from_row(row: &SqliteRow) -> Result<AnalysisState, DbError> {
             let id: Option<String> = row.try_get("failure_flow_id")?;
             let title: Option<String> = row.try_get("failure_flow_title")?;
             AnalysisState::Failed {
+                reason: row
+                    .try_get::<Option<String>, _>("failure_reason")?
+                    .map(|kind| parse_wire(&kind, "analyses.failure_reason"))
+                    .transpose()?,
                 flow: id.zip(title).map(|(id, title)| FlowRef {
                     id: FlowId(id),
                     title,
@@ -276,6 +287,17 @@ impl Analyses<'_> {
         record_from_row(&row)
     }
 
+    /// Analysis summary projected for a reader; shared storage never carries personal review state.
+    pub async fn summary_for_user(
+        &self,
+        id: AnalysisId,
+        user: &str,
+    ) -> Result<AnalysisSummary, DbError> {
+        let mut summary = self.summary(id).await?;
+        summary.has_my_state = Some(super::review_state::exists(self.pool, user, id).await?);
+        Ok(summary)
+    }
+
     /// The analysis as the API shows it: state plus the pull request at the analysed head.
     pub async fn summary(&self, id: AnalysisId) -> Result<AnalysisSummary, DbError> {
         let row = sqlx::query(concat!(
@@ -296,6 +318,7 @@ impl Analyses<'_> {
             *stage = self.live_stage(id).await?;
         }
         Ok(AnalysisSummary {
+            has_my_state: None,
             id: record.id,
             pr: PrSummary {
                 repo: RepoRef {
@@ -411,7 +434,7 @@ impl Analyses<'_> {
         let mut tx = super::write_tx(self.pool).await?;
         let updated = sqlx::query(
             "UPDATE analyses SET state = 'planning', flows_total = NULL, flows_done = 0, paused_until = NULL,
-                 failure_flow_id = NULL, failure_flow_title = NULL, failure_message = NULL, finished_at = NULL,
+                 failure_flow_id = NULL, failure_flow_title = NULL, failure_message = NULL, failure_reason = NULL, finished_at = NULL,
                  round = round + 1
              WHERE id = ? AND state = 'failed'",
         )
@@ -484,7 +507,7 @@ impl Analyses<'_> {
         let columns = StateColumns::of(state);
         let updated = sqlx::query(
             "UPDATE analyses SET state = ?, flows_total = ?, flows_done = ?, paused_until = ?, failure_flow_id = ?,
-                 failure_flow_title = ?, failure_message = ?, finished_at = ?
+                 failure_flow_title = ?, failure_message = ?, failure_reason = ?, finished_at = ?
              WHERE id = ?",
         )
         .bind(columns.state)
@@ -494,6 +517,7 @@ impl Analyses<'_> {
         .bind(&columns.failure_flow_id)
         .bind(&columns.failure_flow_title)
         .bind(&columns.failure_message)
+        .bind(columns.failure_reason.map(wire_name).transpose()?)
         .bind(columns.is_terminal().then(|| ts(now)))
         .bind(id.to_string())
         .execute(self.pool)
@@ -812,6 +836,7 @@ mod tests {
 
     fn failed() -> AnalysisState {
         AnalysisState::Failed {
+            reason: None,
             flow: None,
             message: "Planning failed.".to_owned(),
         }
@@ -914,6 +939,7 @@ mod tests {
             ),
             (
                 AnalysisState::Failed {
+                    reason: None,
                     flow: Some(FlowRef {
                         id: FlowId("f2".to_owned()),
                         title: "Retry".to_owned(),
@@ -924,6 +950,7 @@ mod tests {
             ),
             (
                 AnalysisState::Failed {
+                    reason: Some(contracts::api::error::ApiErrorCode::Configuration),
                     flow: None,
                     message: "Planning failed.".to_owned(),
                 },

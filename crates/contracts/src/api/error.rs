@@ -17,6 +17,8 @@ pub struct ApiError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiErrorCode {
+    /// Server configuration requires administrator action.
+    Configuration,
     /// Not signed in.
     Unauthenticated,
     /// The GitHub login is not allowed to sign in.
@@ -57,7 +59,8 @@ pub enum ApiErrorCode {
 
 impl ApiErrorCode {
     /// Every code.
-    pub const ALL: [ApiErrorCode; 18] = [
+    pub const ALL: [ApiErrorCode; 19] = [
+        Self::Configuration,
         Self::Unauthenticated,
         Self::LoginNotAllowed,
         Self::CsrfRejected,
@@ -93,7 +96,7 @@ impl ApiErrorCode {
             | Self::AppNotInstalled
             | Self::PositionRejected
             | Self::NotRendered => 422,
-            Self::Internal => 500,
+            Self::Internal | Self::Configuration => 500,
             Self::GithubUnavailable => 502,
             Self::Unavailable => 503,
         }

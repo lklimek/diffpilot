@@ -124,7 +124,7 @@ pub enum VerifyIssueKind {
     DanglingEdge,
     /// A `fact` without evidence.
     FactWithoutEvidence,
-    /// An annotation with an empty `was` or `is` (the highlight tooltip needs both).
+    /// A behaviour annotation with an empty `was` or `is`.
     BehaviourMissing,
     /// `text` null on a consequence, question or note, or set on a behaviour annotation.
     RemarkMismatch,
@@ -146,6 +146,12 @@ pub enum VerifyIssueKind {
     ImpactInsideDiff,
     /// Markup or a link other than `https://github.com/…` in text shown as plain text (an Ask answer).
     MarkupOrLink,
+    /// Reviewer-facing text describes missing agent capabilities instead of the change.
+    AgentLimitation,
+    /// A risk assessment has no concrete correction or question to resolve.
+    AssessmentActionMissing,
+    /// A stacked relationship asserted without a server-supplied deterministic fact.
+    UnconfirmedStack,
 }
 
 impl VerifyIssueKind {
@@ -173,6 +179,9 @@ impl VerifyIssueKind {
             Self::FileTooLarge => "file_too_large",
             Self::ImpactInsideDiff => "impact_inside_diff",
             Self::MarkupOrLink => "markup_or_link",
+            Self::AgentLimitation => "agent_limitation",
+            Self::AssessmentActionMissing => "assessment_action_missing",
+            Self::UnconfirmedStack => "unconfirmed_stack",
         }
     }
 }
@@ -270,6 +279,11 @@ pub fn pr_context(output: &PrContextOutput, facts: &LineFacts) -> Result<(), Ver
     issues.text("why_needed", &output.why_needed);
     issues.text("what_it_gives", &output.what_it_gives);
     for (index, work) in output.related_work.iter().enumerate() {
+        // TODO: accept stacked relationships only after the server supplies verified base/head facts.
+        if work.kind == contracts::common::RelatedWorkKind::StackedPr {
+            issues.push(VerifyIssueKind::UnconfirmedStack,
+                format!("related_work[{index}]: no deterministic stacked relationship was supplied; omit this item or use an evidenced non-stacked kind"));
+        }
         issues.text(&format!("related_work[{index}].reference"), &work.reference);
         issues.text(&format!("related_work[{index}].overlap"), &work.overlap);
     }
@@ -573,8 +587,16 @@ impl Issues {
 
     /// A required text must not be blank.
     fn text(&mut self, at: &str, text: &str) {
+        self.reviewer_text(at, text);
         if text.trim().is_empty() {
             self.push(VerifyIssueKind::EmptyText, format!("{at} is empty"));
+        }
+    }
+
+    fn reviewer_text(&mut self, at: &str, text: &str) {
+        if wording::agent_limitation(text) {
+            self.push(VerifyIssueKind::AgentLimitation,
+                format!("{at}: describe the change and evidence, not missing agent tools, skills or instructions; do not claim checks you could not perform"));
         }
     }
 

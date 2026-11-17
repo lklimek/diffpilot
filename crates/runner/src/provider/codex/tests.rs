@@ -48,6 +48,10 @@ case " $* " in *model_auto_compact_token_limit*) mode=compaction ;; *) mode=chil
 env > "$PWD/$mode-env.txt"
 for arg in "$@"; do printf '%s\n' "$arg"; done > "$PWD/$mode-args.txt"
 cat > "$PWD/$mode-stdin.txt"
+if [ -f "$PWD/check-skills" ]; then
+  cat "$HOME/.agents/skills/severity/SKILL.md" > "$PWD/$mode-skill.txt" || exit 42
+  id -u > "$PWD/$mode-uid.txt"
+fi
 cp "$CODEX_HOME/config.toml" "$PWD/$mode-config.toml" 2>/dev/null
 find "$CODEX_HOME/sessions" -type f > "$PWD/$mode-sessions.txt" 2>/dev/null
 if [ -f "$PWD/rollout-rel" ]; then
@@ -145,7 +149,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
                 token: Secret::new(MEMCAN_CANARY),
             }),
         },
-        skills: vec!["severity".to_owned()],
+        skills: Vec::new(),
     };
     let provider = CodexProvider::new(CodexSettings {
         binary: fake_codex().to_path_buf(),
@@ -1031,13 +1035,15 @@ async fn golden_resumed_session_with_unknown_events() {
     );
 }
 
-#[tokio::test]
-async fn allowed_skills_are_copied_into_the_agent_home_with_their_commit() {
-    let mut h = harness("plan.jsonl", 0);
+async fn configured_skills(h: &mut Harness) {
     let repo = h._dir.path().join("claudius");
     fs::create_dir_all(repo.join("skills/severity")).unwrap();
     fs::create_dir_all(repo.join("skills/delegate")).unwrap();
-    fs::write(repo.join("skills/severity/SKILL.md"), "severity skill\n").unwrap();
+    fs::write(
+        repo.join("skills/severity/SKILL.md"),
+        "---\nname: severity\ndescription: Rate change risk.\n---\nSeverity guidance.\n",
+    )
+    .unwrap();
     fs::write(repo.join("skills/delegate/SKILL.md"), "delegate skill\n").unwrap();
     for args in [
         &["init", "--quiet", "-b", "main"][..],
@@ -1072,13 +1078,19 @@ async fn allowed_skills_are_copied_into_the_agent_home_with_their_commit() {
     ));
     skills.refresh_if_due().await;
     h.provider.settings.skills = Some(skills);
-    h.call.skills = vec!["severity".to_owned(), "delegate".to_owned()];
+    h.call.skills = vec!["severity".to_owned()];
+}
+
+#[tokio::test]
+async fn allowed_skills_are_copied_into_the_agent_home_with_their_commit() {
+    let mut h = harness("plan.jsonl", 0);
+    configured_skills(&mut h).await;
     let outcome = run(&h).await.0.expect("success");
     assert_eq!(outcome.skills_commit.as_deref().map(str::len), Some(40));
     let root = h.call.job_dir.join("home/.agents/skills");
     assert_eq!(
         fs::read_to_string(root.join("severity/SKILL.md")).unwrap(),
-        "severity skill\n"
+        "---\nname: severity\ndescription: Rate change risk.\n---\nSeverity guidance.\n"
     );
     assert!(
         !root.join("delegate").exists(),
@@ -1520,4 +1532,56 @@ impl std::io::Write for Captured {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn required_skills_fail_closed_before_starting_codex() {
+    let mut h = harness("plan.jsonl", 0);
+    h.call.skills = vec!["severity".to_owned()];
+    assert!(matches!(
+        h.provider.prepare(&h.call).await,
+        Err(ProviderError::Configuration(_))
+    ));
+    assert!(!h.call.job_dir.join("child-args.txt").exists());
+}
+
+#[tokio::test]
+async fn isolated_agent_can_read_required_skills_from_its_discovery_home() {
+    // TODO: repeat with distinct production UIDs; the local sandbox only permits the unprivileged supervisor.
+    let mut h = harness("plan.jsonl", 0);
+    configured_skills(&mut h).await;
+    isolated(&mut h);
+    fs::write(h.call.job_dir.join("check-skills"), "").unwrap();
+    let outcome = run(&h).await.0.expect("agent reads skill");
+    assert!(outcome.skills_commit.is_some());
+    assert!(
+        fs::read_to_string(h.call.job_dir.join("child-skill.txt"))
+            .unwrap()
+            .contains("name: severity")
+    );
+    assert_eq!(
+        fs::read_to_string(h.call.job_dir.join("child-uid.txt"))
+            .unwrap()
+            .trim(),
+        rustix::process::getuid().as_raw().to_string()
+    );
+}
+
+#[tokio::test]
+async fn missing_or_disallowed_required_manifest_is_a_configuration_failure() {
+    let mut h = harness("plan.jsonl", 0);
+    configured_skills(&mut h).await;
+    for required in ["delegate", "missing"] {
+        h.call.skills = vec![required.to_owned()];
+        assert!(matches!(
+            h.provider.prepare(&h.call).await,
+            Err(ProviderError::Configuration(_))
+        ));
+    }
+    h.call.skills = vec!["severity".to_owned()];
+    fs::remove_file(h._dir.path().join("checkout/skills/severity/SKILL.md")).unwrap();
+    assert!(matches!(
+        h.provider.prepare(&h.call).await,
+        Err(ProviderError::Configuration(_))
+    ));
 }

@@ -46,6 +46,14 @@ const MEMORY: Record<FeedbackMemory, string> = {
   failed: "Recorded here; not yet saved to calibration memory (retrying)",
 };
 
+function memoryText(feedback: Feedback): string {
+  if (feedback.calibration_example === true) return MEMORY[feedback.memory];
+  if (feedback.memory === "written") return "Recorded";
+  return feedback.memory === "pending"
+    ? "Recorded; saving to memory…"
+    : "Recorded here; not yet saved to memory (retrying)";
+}
+
 function sameTarget(a: FeedbackTarget, b: FeedbackTarget): boolean {
   if (a.target === "step" && b.target === "step") return a.step_id === b.step_id;
   if (a.target === "annotation" && b.target === "annotation") return a.annotation_id === b.annotation_id;
@@ -160,7 +168,7 @@ function FeedbackForm({
         <ul aria-label="Calibration memory" className="mt-1 list-none p-0 text-[12px] text-muted">
           {mine.map((f) => (
             <li key={f.id}>
-              {f.value === "missed_by_llm" ? "missed by the LLM" : f.value}: {MEMORY[f.memory]}
+              {f.value === "missed_by_llm" ? "missed by the LLM" : f.value}: {memoryText(f)}
             </li>
           ))}
         </ul>

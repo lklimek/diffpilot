@@ -42,13 +42,14 @@ export function BehaviourSection({
   sections,
   onEvidence,
 }: { annotations: readonly Annotation[] } & Sections) {
+  const behaviour = annotations.filter((a) => a.type === "behaviour");
   return (
     <Collapsible sectionKey="behaviour" title="Behaviour: was → is" tone="llm" sections={sections}>
-      {annotations.length === 0 ? (
+      {behaviour.length === 0 ? (
         <Empty>The LLM described no was → is change here.</Empty>
       ) : (
         <ul className="m-0 grid list-none gap-2 p-0">
-          {annotations.map((a) => (
+          {behaviour.map((a) => (
             <li key={a.id}>
               <p className="text-[11px] text-muted">
                 {a.range.start_line === a.range.end_line ? "Line" : "Lines"} {rangeText(a.range)}{" "}
