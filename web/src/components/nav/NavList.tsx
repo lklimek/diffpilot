@@ -211,7 +211,9 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
               onClick={() => onSelect({ block: "pending_review" })}
             >
               Pending review on GitHub{" "}
-              <b className="ml-1 rounded-full bg-surface-2 px-1.5 text-xs">{pendingText(pendingCount)}</b>
+              <b className="ml-1 rounded-full bg-surface-2 px-1.5 text-xs whitespace-nowrap">
+                {pendingText(pendingCount)}
+              </b>
             </button>
           </Tooltip>
         </>

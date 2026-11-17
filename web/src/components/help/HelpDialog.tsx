@@ -60,7 +60,10 @@ export function HelpDialog({ open, onClose }: HelpDialogProps) {
   const dialog = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open) close.current?.focus();
+    if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    close.current?.focus();
+    return () => previous?.focus();
   }, [open]);
 
   if (!open) return null;

@@ -254,21 +254,29 @@ export function StepBlock({
           L{rangeText(facts.range)}
         </GithubLink>
         <Markers step={step} ownComments={ownComments} />
-        <span className="flex-1" />
-        {oldCode && (
-          <Tooltip tip="Show or hide the classic diff of this step (d)">
-            <button type="button" aria-pressed={oldCode.shown} onClick={oldCode.onToggle} className={BUTTON}>
-              Show old code
-            </button>
-          </Tooltip>
-        )}
-        {onSetReviewed && (
-          <ReviewToggle
-            label="Mark reviewed"
-            tip="Tick this step as reviewed by you (x); a flow is reviewed when all its steps are ticked."
-            pressed={reviewed}
-            onChange={onSetReviewed}
-          />
+        {(oldCode || onSetReviewed) && (
+          <div className="ml-auto flex flex-wrap gap-2">
+            {oldCode && (
+              <Tooltip tip="Show or hide the classic diff of this step (d)">
+                <button
+                  type="button"
+                  aria-pressed={oldCode.shown}
+                  onClick={oldCode.onToggle}
+                  className={BUTTON}
+                >
+                  Show old code
+                </button>
+              </Tooltip>
+            )}
+            {onSetReviewed && (
+              <ReviewToggle
+                label="Mark reviewed"
+                tip="Tick this step as reviewed by you (x); a flow is reviewed when all its steps are ticked."
+                pressed={reviewed}
+                onChange={onSetReviewed}
+              />
+            )}
+          </div>
         )}
       </header>
       {/* Wide (21:9): facts and LLM text on the left, the code beside them (mockup .stepgrid). */}

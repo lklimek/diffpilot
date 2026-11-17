@@ -38,7 +38,7 @@ function Comment({
     <li className="grid gap-1 rounded-md border border-border bg-surface-2 px-2.5 py-2">
       <code className="text-xs font-semibold">{where}</code>
       {draft === null ? (
-        <p className="whitespace-pre-wrap">{comment.body}</p>
+        <p className="max-w-[100ch] whitespace-pre-wrap">{comment.body}</p>
       ) : (
         <textarea
           aria-label={`Edit comment on ${where}`}

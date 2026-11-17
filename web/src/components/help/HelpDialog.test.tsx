@@ -68,6 +68,31 @@ describe("HelpDialog", () => {
     expect(screen.getByRole("dialog")).toContainElement(document.activeElement as HTMLElement);
   });
 
+  it("returns focus to the element that had it when it closes", () => {
+    const { rerender } = render(
+      <>
+        <button type="button">Help</button>
+        <HelpDialog open={false} onClose={() => {}} />
+      </>,
+    );
+    const trigger = screen.getByRole("button", { name: "Help" });
+    trigger.focus();
+    rerender(
+      <>
+        <button type="button">Help</button>
+        <HelpDialog open onClose={() => {}} />
+      </>,
+    );
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    rerender(
+      <>
+        <button type="button">Help</button>
+        <HelpDialog open={false} onClose={() => {}} />
+      </>,
+    );
+    expect(trigger).toHaveFocus();
+  });
+
   it("keeps the wording rules", () => {
     const { container } = render(<HelpDialog open onClose={() => {}} />);
     expectTrustWording(container.textContent ?? "");
