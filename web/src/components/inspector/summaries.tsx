@@ -43,7 +43,7 @@ export function FlowSummary({
                   <button
                     type="button"
                     onClick={() => onSelectStep(s.id)}
-                    className="cursor-pointer text-left text-accent underline"
+                    className="min-h-6 cursor-pointer text-left text-accent underline"
                   >
                     {label}
                   </button>

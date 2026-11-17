@@ -41,12 +41,10 @@ describe("StepBlock", () => {
     }
   });
 
-  it("lists questions to check as questions, marking inferences", () => {
+  it("leaves questions to check to the inspector (brief §4.3)", () => {
     render(<StepBlock step={stepOf(tour, "f1.5")} code={null} />);
-    const questions = screen.getByRole("list", { name: "Questions to check" });
-    expect(within(questions).getAllByRole("listitem")).toHaveLength(1);
-    expect(questions).toHaveTextContent("can broadcast_tx be sent twice when the reply arrives late?");
-    expect(questions).toHaveTextContent("inference");
+    expect(screen.queryByText(/Questions to check/)).toBeNull();
+    expect(screen.queryByText(/can broadcast_tx be sent twice/)).toBeNull();
   });
 
   it("keeps the assessment collapsed until clicked", async () => {
@@ -76,12 +74,9 @@ describe("StepBlock", () => {
     expect(screen.getByText("deleted site")).toBeInTheDocument();
   });
 
-  it("says so when the LLM raised no questions and gave no assessment (noq)", () => {
+  it("says so when the LLM gave no assessment (noq)", () => {
     const noq = seedFor("noq", "tour") as Tour;
     render(<StepBlock step={stepOf(noq, "f1.5")} code={null} />);
-    expect(
-      screen.getByText("The LLM raised no questions. That is not evidence of no defects."),
-    ).toBeInTheDocument();
     expect(screen.getByText("The LLM gave no assessment for this step.")).toBeInTheDocument();
   });
 
@@ -117,9 +112,8 @@ describe("StepBlock", () => {
     const wrap = screen.getByText("ctx code").closest("[data-code-slot]")!;
     expect(wrap).toHaveAttribute("data-context");
     expect(wrap).toHaveClass("border-dotted");
-    expect(wrap).toHaveTextContent(
-      "Context (LLM classification): connects the flow. No changed lines in this range (from the diff).",
-    );
+    // "No changed lines" is the code view's caption; the step block does not repeat it.
+    expect(wrap).toHaveTextContent(/^Context \(LLM classification\): connects the flow\.ctx code$/);
     unmount();
     render(<StepBlock step={stepOf(tour, "f1.5")} code={<p>code</p>} />);
     const plain = screen.getByText("code").closest("[data-code-slot]")!;

@@ -1,9 +1,11 @@
 import { useId, type ReactNode } from "react";
-import type { Assessment, ImpactRef, PatternRepetition, Step, StepId } from "../../api/generated/types";
+import type { ImpactRef, PatternRepetition, Step, StepId } from "../../api/generated/types";
 import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
-import { KindLabel, RiskLabel } from "../badge/LlmLabel";
-import { evidenceText, rangeText } from "../section/format";
-import { LlmLine, Section, Subhead } from "../section/Section";
+import { KindLabel } from "../badge/LlmLabel";
+import { AssessmentFields } from "../inspector/StepSections";
+import { GithubLink } from "../inspector/text";
+import { rangeText } from "../section/format";
+import { LlmLine, Section } from "../section/Section";
 import { Tooltip } from "../tooltip/Tooltip";
 import { ReviewToggle } from "./ReviewToggle";
 
@@ -28,56 +30,9 @@ interface StepBlockProps {
   onSelectStep?: (step: StepId) => void;
 }
 
-const ORIGIN = {
-  introduced: "introduced by this PR",
-  pre_existing: "pre-existing",
-  unclear: "unclear",
-} as const;
-const BLOCKING = { blocks_this_pr: "blocks this PR", follow_up: "follow-up" } as const;
 const HATCH = "bg-[image:repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]";
 const BUTTON =
   "cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold whitespace-nowrap text-text hover:border-accent aria-pressed:border-accent aria-pressed:bg-accent-bg";
-
-// Only server-built GitHub links become links (threat model T12); anything else stays text.
-const isGithubUrl = (url: string) => url.startsWith("https://github.com/");
-
-function GithubLink({ url, tip, children }: { url: string; tip: string; children: ReactNode }) {
-  if (!isGithubUrl(url)) return <span className="font-mono text-xs">{children}</span>;
-  return (
-    <Tooltip tip={tip}>
-      <a href={url} target="_blank" rel="noopener noreferrer" className="font-mono text-xs">
-        {children} ↗
-      </a>
-    </Tooltip>
-  );
-}
-
-function AssessmentBody({ assessment }: { assessment: Assessment }) {
-  const rows: [string, ReactNode][] = [
-    ["What a user or operator would notice", assessment.headline],
-    [
-      "Risk at system scale",
-      <>
-        <RiskLabel risk={assessment.risk} /> {assessment.reason}
-      </>,
-    ],
-    ["Basis", assessment.basis_note],
-    ["Not checked", assessment.not_checked],
-    ["Origin", ORIGIN[assessment.origin]],
-    ["Merge impact", BLOCKING[assessment.blocking]],
-    ["Smallest correction", assessment.smallest_correction ?? "none given"],
-  ];
-  return (
-    <dl className="m-0 mt-1">
-      {rows.map(([term, value]) => (
-        <div key={term}>
-          <dt className="mt-1.5 text-[10.5px] font-bold tracking-wide text-muted uppercase">{term}</dt>
-          <dd className="m-0">{value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
 
 function Markers({ step, ownComments }: { step: Step; ownComments: number }) {
   const remarks = step.llm.annotations.length;
@@ -128,10 +83,11 @@ function CodeSlot({ step, changed, children }: { step: Step; changed: number; ch
       data-context
       className={`rounded-md border-l-[5px] border-dotted border-mv-bd ${HATCH}`}
     >
+      {/* With no changed line the code view states that fact itself, once. */}
       <p className="px-2 py-0.5 text-[11px] font-semibold text-muted">
-        Context (LLM classification): connects the flow.{" "}
-        {changed === 0 ? "No changed lines" : `${changed} changed ${changed === 1 ? "line" : "lines"}`} in
-        this range (from the diff).
+        Context (LLM classification): connects the flow.
+        {changed > 0 &&
+          ` ${changed} changed ${changed === 1 ? "line" : "lines"} in this range (from the diff).`}
       </p>
       {children}
     </div>
@@ -211,7 +167,7 @@ function Pattern({
   );
 }
 
-/** Step block: header with ticks and markers, facts, the four LLM facts, code slot, impact, patterns, assessment. */
+/** Step block: header with ticks and markers, facts, the four LLM facts, code slot, collapsed assessment, impact, patterns. */
 export function StepBlock({
   step,
   code,
@@ -224,10 +180,8 @@ export function StepBlock({
   onSelectStep,
 }: StepBlockProps) {
   const headingId = useId();
-  const questionsId = useId();
   const { facts, llm } = step;
   const changed = facts.changed_lines.reduce((n, r) => n + r.end_line - r.start_line + 1, 0);
-  const questions = llm.annotations.filter((a) => a.type === "question");
   const repeated = patterns.filter((p) => p.explained_in === step.id);
   const fourFacts: [string, string][] = [
     ["Called by", llm.called_by],
@@ -320,35 +274,15 @@ export function StepBlock({
             {code}
           </CodeSlot>
         </div>
-        <Section title="Questions and assessment" tone="llm">
-          <LlmLine />
-          <Subhead>
-            <span id={questionsId}>Questions to check</span>
-          </Subhead>
-          {questions.length === 0 ? (
-            <p className="text-[12.5px]">The LLM raised no questions. That is not evidence of no defects.</p>
+        <details className="rounded-lg border border-border bg-surface px-4 py-2 text-[12.5px]">
+          <summary className="cursor-pointer font-semibold">Assessment (LLM)</summary>
+          <p className="mt-1.5 text-[11.5px] text-llm">LLM analysis unless marked otherwise.</p>
+          {llm.assessment ? (
+            <AssessmentFields assessment={llm.assessment} />
           ) : (
-            <ul aria-labelledby={questionsId} className="m-0 list-disc pl-5 text-[12.5px]">
-              {questions.map((q) => (
-                <li key={q.id}>
-                  {q.text}{" "}
-                  <span className="text-muted">
-                    ({q.basis === "fact" ? "fact" : "inference"}
-                    {q.evidence.length > 0 && `; ${q.evidence.map(evidenceText).join(", ")}`})
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <p className="mt-1">The LLM gave no assessment for this step.</p>
           )}
-          <details className="mt-2 border-t border-dashed border-border pt-1 text-[12.5px]">
-            <summary className="cursor-pointer font-semibold">Assessment (LLM)</summary>
-            {llm.assessment ? (
-              <AssessmentBody assessment={llm.assessment} />
-            ) : (
-              <p className="mt-1">The LLM gave no assessment for this step.</p>
-            )}
-          </details>
-        </Section>
+        </details>
         {(llm.impact.length > 0 || repeated.length > 0) && (
           <div className="grid min-w-0 gap-3 @[1300px]:col-span-2">
             {llm.impact.length > 0 && <Impact impacts={llm.impact} impactCode={impactCode} />}
