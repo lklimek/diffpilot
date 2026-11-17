@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef } from "react";
+import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type {
   CommentTarget,
@@ -11,7 +11,12 @@ import type {
 } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
 import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
-import { CommentComposer, type CommentComposerProps, type CommentLine } from "./CommentComposer";
+import {
+  CommentComposer,
+  type CommentComposerProps,
+  type CommentLine,
+  type UnresolvedPosts,
+} from "./CommentComposer";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const target96: CommentTarget = { path: "src/rpc/client.rs", side: "head", start_line: null, line: 96 };
@@ -25,8 +30,18 @@ const created = (over: Partial<CreateCommentResponse> = {}): CreateCommentRespon
   ...over,
 });
 
-function setup(props: Partial<CommentComposerProps> = {}) {
-  const all: CommentComposerProps = {
+type HarnessProps = Omit<CommentComposerProps, "unresolved" | "onUnresolvedChange"> & { mounted?: boolean };
+
+/** The screen's role: keeps the unresolved posts for the session while the composer mounts and unmounts. */
+function Harness({ mounted = true, ...props }: HarnessProps) {
+  const [unresolved, setUnresolved] = useState<UnresolvedPosts>({});
+  return mounted ? (
+    <CommentComposer {...props} unresolved={unresolved} onUnresolvedChange={setUnresolved} />
+  ) : null;
+}
+
+function setup(props: Partial<HarnessProps> = {}) {
+  const all: HarnessProps = {
     available: true,
     line: line96,
     comments: [],
@@ -36,7 +51,7 @@ function setup(props: Partial<CommentComposerProps> = {}) {
     onCancel: vi.fn(),
     ...props,
   };
-  const view = render(<CommentComposer {...all} />);
+  const view = render(<Harness {...all} />);
   return { ...all, ...view, user: userEvent.setup() };
 }
 
@@ -155,19 +170,53 @@ describe("CommentComposer", () => {
     await user.click(addButton());
     await screen.findByRole("alert");
     rerender(
-      <CommentComposer
-        {...props}
-        onCreate={onCreate}
-        line={{ ...line96, target: { ...target96, line: 97 } }}
-      />,
+      <Harness {...props} onCreate={onCreate} line={{ ...line96, target: { ...target96, line: 97 } }} />,
     );
     expect(screen.getByRole("textbox", { name: /client\.rs:97/ })).toHaveValue("");
-    rerender(<CommentComposer {...props} onCreate={onCreate} line={null} />);
-    rerender(<CommentComposer {...props} onCreate={onCreate} line={line96} />);
+    rerender(<Harness {...props} onCreate={onCreate} line={null} />);
+    rerender(<Harness {...props} onCreate={onCreate} line={line96} />);
     expect(field()).toHaveValue("text");
     await user.click(screen.getByRole("button", { name: "Retry" }));
     const keys = onCreate.mock.calls.map((c) => (c[0] as CreateCommentRequest).idempotency_key);
     expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("offers an unresolved post again after the composer was unmounted and remounted (QA-002)", async () => {
+    const onCreate = vi.fn().mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(created());
+    const { user, rerender, ...props } = setup({ onCreate });
+    await user.type(field(), "text");
+    await user.click(addButton());
+    await screen.findByRole("alert");
+    rerender(<Harness {...props} onCreate={onCreate} mounted={false} />);
+    rerender(<Harness {...props} onCreate={onCreate} mounted />);
+    expect(field()).toHaveAttribute("readonly");
+    expect(field()).toHaveValue("text");
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    const [first, second] = onCreate.mock.calls.map((c) => c[0] as CreateCommentRequest);
+    expect(second).toEqual(first);
+  });
+
+  it("keeps a post that was pending at unmount locked after remount, never posting it with a new key (QA-002)", async () => {
+    let reject!: (e: unknown) => void;
+    const onCreate = vi
+      .fn()
+      .mockReturnValueOnce(new Promise<CreateCommentResponse>((_, r) => (reject = r)))
+      .mockResolvedValueOnce(created());
+    const { user, rerender, ...props } = setup({ onCreate });
+    await user.type(field(), "text");
+    await user.click(addButton());
+    rerender(<Harness {...props} onCreate={onCreate} mounted={false} />);
+    rerender(<Harness {...props} onCreate={onCreate} mounted />);
+    expect(field()).toHaveAttribute("readonly");
+    expect(field()).toHaveValue("text");
+    const adding = screen.getByRole("button", { name: /Adding/ });
+    expect(adding).toBeDisabled();
+    await user.click(adding);
+    expect(onCreate).toHaveBeenCalledOnce();
+    reject(new Error("timeout"));
+    await user.click(await screen.findByRole("button", { name: "Retry" }));
+    const [first, second] = onCreate.mock.calls.map((c) => c[0] as CreateCommentRequest);
+    expect(second).toEqual(first);
   });
 
   it("discards an unresolved post into an editable draft that posts with a new key (QA-002)", async () => {
@@ -217,11 +266,7 @@ describe("CommentComposer", () => {
     await user.type(field(), "A");
     await user.click(addButton());
     rerender(
-      <CommentComposer
-        {...props}
-        onCreate={onCreate}
-        line={{ ...line96, target: { ...target96, line: 97 } }}
-      />,
+      <Harness {...props} onCreate={onCreate} line={{ ...line96, target: { ...target96, line: 97 } }} />,
     );
     const other = screen.getByRole("textbox", { name: /client\.rs:97/ });
     await user.type(other, "B");
@@ -234,11 +279,11 @@ describe("CommentComposer", () => {
   it("drops the draft when the line changes, also through null (QA-003)", async () => {
     const { user, rerender, ...props } = setup();
     await user.type(field(), "for 96");
-    rerender(<CommentComposer {...props} line={{ ...line96, target: { ...target96, line: 97 } }} />);
+    rerender(<Harness {...props} line={{ ...line96, target: { ...target96, line: 97 } }} />);
     expect(screen.getByRole("textbox", { name: /client\.rs:97/ })).toHaveValue("");
     await user.type(screen.getByRole("textbox"), "for 97");
-    rerender(<CommentComposer {...props} line={null} />);
-    rerender(<CommentComposer {...props} line={line96} />);
+    rerender(<Harness {...props} line={null} />);
+    rerender(<Harness {...props} line={line96} />);
     expect(field()).toHaveValue("");
   });
 
@@ -249,7 +294,7 @@ describe("CommentComposer", () => {
     await user.type(screen.getByRole("textbox"), "range");
     await user.click(addButton());
     await screen.findByRole("alert");
-    rerender(<CommentComposer {...props} onCreate={onCreate} line={range(93)} />);
+    rerender(<Harness {...props} onCreate={onCreate} line={range(93)} />);
     const fresh = screen.getByRole("textbox", { name: /client\.rs:93–96/ });
     expect(fresh).not.toHaveAttribute("readonly");
     expect(fresh).toHaveValue("");

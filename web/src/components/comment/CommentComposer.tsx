@@ -37,6 +37,10 @@ export interface CommentComposerProps {
   onCancel: () => void;
   /** The text field, for the `c` shortcut. */
   textareaRef?: Ref<HTMLTextAreaElement>;
+  /** Posts not confirmed yet, kept by the screen per analysis for the session (survive unmounting); start `{}`. */
+  unresolved: UnresolvedPosts;
+  /** Updates `unresolved`; takes an updater, so a React state setter fits (`useState<UnresolvedPosts>({})`). */
+  onUnresolvedChange: (update: (posts: UnresolvedPosts) => UnresolvedPosts) => void;
 }
 
 const BUTTON =
@@ -59,13 +63,18 @@ const identity = (t: CommentTarget) => JSON.stringify([t.path, t.side, t.start_l
 
 const KIND = { line: "a line comment", file: "a file comment that links to the line" } as const;
 
-/** A create request whose outcome is not known yet: pending (`error` null) or failed. */
-interface Unresolved {
+/** A create request whose outcome is not known yet: in flight (`error` null) or failed. */
+export interface UnresolvedPost {
+  /** The exact request; Retry sends it again with the same idempotency key. */
   request: CreateCommentRequest;
+  /** Why the last attempt failed; null while it is in flight. */
   error: string | null;
 }
 
-function without(all: Record<string, Unresolved>, key: string): Record<string, Unresolved> {
+/** Unresolved posts by comment target (path, side, start line, line). */
+export type UnresolvedPosts = Readonly<Record<string, UnresolvedPost>>;
+
+function without(all: UnresolvedPosts, key: string): UnresolvedPosts {
   const rest = { ...all };
   delete rest[key];
   return rest;
@@ -154,11 +163,10 @@ function OwnComment({
 
 /** Comment on any displayed line into the user's GitHub pending review (brief §4.3 Dock, ADR-006). */
 export function CommentComposer(props: CommentComposerProps) {
-  const { available, line, onCreate } = props;
+  const { available, line, onCreate, unresolved, onUnresolvedChange: setUnresolved } = props;
   const id = useId();
-  // Requests not confirmed yet, per target. They outlive the line selection: after a failure the server may
-  // have created the comment, so the only ways on are Retry with the same key and payload, or Discard.
-  const [unresolved, setUnresolved] = useState<Record<string, Unresolved>>({});
+  // Unconfirmed posts live with the screen (props): after a failure the server may have created the comment,
+  // so the only ways on are Retry with the same key and payload, or Discard — also after a remount.
   const inFlight = useRef(new Set<string>());
 
   const heading = (
@@ -186,7 +194,8 @@ export function CommentComposer(props: CommentComposerProps) {
     const key = identity(line.target);
     /** Sends `request` once at a time per target; resolves to the response, or null when it failed. */
     const send = async (request: CreateCommentRequest): Promise<CreateCommentResponse | null> => {
-      if (inFlight.current.has(key)) return null;
+      // The registry blocks a target in flight across remounts; the ref also catches a second click in one tick.
+      if (inFlight.current.has(key) || unresolved[key]?.error === null) return null;
       inFlight.current.add(key);
       setUnresolved((all) => ({ ...all, [key]: { request, error: null } }));
       try {
@@ -203,14 +212,7 @@ export function CommentComposer(props: CommentComposerProps) {
     const discard = () => setUnresolved((all) => without(all, key));
     // Draft, error and confirmation belong to one target: another target starts afresh, an old outcome is dropped.
     body = (
-      <Draft
-        key={key}
-        {...props}
-        line={line}
-        unresolved={unresolved[key] ?? null}
-        send={send}
-        discard={discard}
-      />
+      <Draft key={key} {...props} line={line} post={unresolved[key] ?? null} send={send} discard={discard} />
     );
   }
   return (
@@ -221,9 +223,10 @@ export function CommentComposer(props: CommentComposerProps) {
   );
 }
 
-interface DraftProps extends CommentComposerProps {
+interface DraftProps extends Omit<CommentComposerProps, "unresolved"> {
   line: CommentLine;
-  unresolved: Unresolved | null;
+  /** The unresolved post of this target. */
+  post: UnresolvedPost | null;
   send: (request: CreateCommentRequest) => Promise<CreateCommentResponse | null>;
   discard: () => void;
 }
@@ -235,7 +238,7 @@ function Draft({
   onDelete,
   onCancel,
   textareaRef,
-  unresolved,
+  post: unresolved,
   send,
   discard,
 }: DraftProps) {
