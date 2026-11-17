@@ -28,6 +28,24 @@ static RULES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         .collect()
 });
 
+/// Capability excuses are rejected, unlike advisory wording warnings.
+pub(super) fn agent_limitation(text: &str) -> bool {
+    static PATTERN: LazyLock<Option<Regex>> = LazyLock::new(|| {
+        Regex::new(concat!(
+            r"(?i)\bas an ai\b|",
+            r"\b(?:severity skill|my (?:tools?|skills?|instructions?)|required (?:review )?(?:tools?|skills?|instructions?))\b[^.!?\n]{0,60}\b(?:unavailable|missing|not available|not accessible|not loaded|not provided|could not be loaded)\b|",
+            r"\b(?:i|we) (?:cannot|could not|couldn't|am unable to|was unable to|were unable to)\s+(?:load|read|access|find|use)\b[^.!?\n]{0,60}\b(?:skills?|tools?|instructions?)\b|",
+            r"\b(?:cannot|could not|unable to|failed to)\s+(?:load|read|access|find|use)\b[^.!?\n]{0,30}\b(?:severity skill|required (?:review )?(?:skills?|tools?|instructions?))\b|",
+            r"\bjako (?:ai|sztuczna inteligencja|model językowy)\b|",
+            r"\b(?:skill severity|narzędzia agenta|wymagane instrukcje)[^.!?\n]{0,60}\b(?:niedostępn\w*|brak\w*)|",
+            r"\bnie mog(?:ę|łem|łam|liśmy|łyśmy) (?:wczytać|załadować|odczytać)[^.!?\n]{0,60}(?:skill|narzędzi|instrukcj)"
+        )).ok()
+    });
+    PATTERN
+        .as_ref()
+        .is_none_or(|pattern| pattern.is_match(text))
+}
+
 /// Wording warnings in the texts of a `plan` output.
 pub fn plan(output: &PlanOutput) -> Vec<WordingWarning> {
     let mut found = Vec::new();

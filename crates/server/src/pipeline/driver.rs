@@ -809,7 +809,7 @@ impl Driver<'_> {
             session: None,
             // Built at claim from the results stored then (`context::StoredPacks`).
             context_pack: None,
-            skills: Vec::new(),
+            skills: prompts::required_skills(),
             access: AgentAccess::default(),
         };
         let handle = self

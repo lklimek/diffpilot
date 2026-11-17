@@ -383,7 +383,10 @@ fn to_result(
                 }
                 ProviderError::OutputNotJson => failure(JobFailureKind::OutputNotJson, &message),
                 ProviderError::Timeout => failure(JobFailureKind::Timeout, &message),
-                ProviderError::Io(_) => failure(JobFailureKind::Internal, &message),
+                // TODO: add a wire-level configuration failure after contract approval.
+                ProviderError::Configuration(_) | ProviderError::Io(_) => {
+                    failure(JobFailureKind::Internal, &message)
+                }
                 ProviderError::SessionUnavailable
                 | ProviderError::SchemaRejected { .. }
                 | ProviderError::Failed { .. } => failure(JobFailureKind::ProviderFailed, &message),

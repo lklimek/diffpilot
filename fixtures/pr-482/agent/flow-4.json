@@ -26,8 +26,8 @@
           "basis": "fact",
           "start_line": 52,
           "end_line": 53,
-          "was": "Two ways to send: with and without retry.",
-          "is": "One way, always with retry.",
+          "was": "",
+          "is": "",
           "text": "No way is left to send a request exactly once (see flow 1, step 5).",
           "evidence": [
             {
@@ -47,8 +47,8 @@
           "basis": "inference",
           "start_line": 53,
           "end_line": 53,
-          "was": "send_once() existed.",
-          "is": "send_once() is gone.",
+          "was": "",
+          "is": "",
           "text": "Does acme/node-sdk (PR #118) still call send_once()?",
           "evidence": []
         },
@@ -57,8 +57,8 @@
           "basis": "inference",
           "start_line": 52,
           "end_line": 53,
-          "was": "send_once() existed.",
-          "is": "send_once() is gone.",
+          "was": "",
+          "is": "",
           "text": "How does a caller now send a request that must not be repeated?",
           "evidence": []
         }

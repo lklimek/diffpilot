@@ -657,6 +657,7 @@ async fn ask_job_goes_through_the_executor_as_an_interactive_ask_job() {
     );
     assert!(spec.prompt.contains("f1.5"));
     assert_eq!(spec.context_pack, None, "built at claim");
+    assert_eq!(spec.skills, ["severity"], "shared rules require severity");
     assert_eq!(spec.session, None, "set at claim");
     assert_eq!(spec.credential.id, CREDENTIAL_ID);
     assert_eq!(spec.access, contracts::job::access::AgentAccess::default());

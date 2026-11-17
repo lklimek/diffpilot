@@ -51,8 +51,8 @@
           "basis": "inference",
           "start_line": 49,
           "end_line": 50,
-          "was": "JITTER is a tenth.",
-          "is": "JITTER is a half.",
+          "was": "",
+          "is": "",
           "text": "Is the jump from a tenth to a half of the delay intended in a PR that is described as a move?",
           "evidence": []
         }
