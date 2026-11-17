@@ -10,7 +10,7 @@ import type {
 } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { KindLabel } from "../badge/LlmLabel";
-import { dependencyFacts, rangeText } from "../section/format";
+import { PENDING_INCOMPLETE, dependencyFacts, rangeText } from "../section/format";
 import { Collapsible } from "./Collapsible";
 import type { SectionControl } from "./sectionState";
 import { Empty } from "./text";
@@ -293,7 +293,9 @@ export function PendingSummary({ review, sections }: { review: PendingReview | n
     text =
       "Commenting is not available: the smart-review GitHub App is not installed on this repository. Comment on GitHub directly.";
   else
-    text = `${plural(review.comments.length, "comment")} in your GitHub pending review. Edit and delete act on GitHub; you submit the review on GitHub.`;
+    text = `${plural(review.comments.length, "comment")} in your GitHub pending review.${
+      review.incomplete ? ` ${PENDING_INCOMPLETE}` : ""
+    } Edit and delete act on GitHub; you submit the review on GitHub.`;
   return (
     <Collapsible
       sectionKey="pending"

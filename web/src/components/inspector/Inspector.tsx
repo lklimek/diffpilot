@@ -127,6 +127,7 @@ function stepPanel(
         <AssessmentSection assessment={step.llm.assessment} sections={sections} />
         <ThreadsSection
           threads={annotation ? stepThreads.filter((t) => overlaps(t, step, annotation)) : stepThreads}
+          status={tour.pr_context.facts.threads_status}
           sections={sections}
         />
       </>

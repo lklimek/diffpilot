@@ -287,6 +287,27 @@ describe("Inspector summaries", () => {
     expect(document.body).not.toHaveTextContent(/0 dependencies/);
   });
 
+  it.each([
+    ["partial", "f1.5", "Review threads: the list from GitHub is incomplete"],
+    ["not_checked", "f2.2", "Review threads: not checked"],
+  ] as const)("the threads section never reads as complete when the list is %s", (status, stepId, text) => {
+    const t = structuredClone(tour);
+    t.pr_context.facts.threads_status = status;
+    if (status === "not_checked") t.threads = [];
+    render(<Inspector tour={t} block={{ block: "step", step_id: stepId }} />);
+    const threads = region(/^GitHub threads at this location/);
+    expect(threads).toHaveTextContent(text);
+    expect(threads).not.toHaveTextContent("No GitHub review threads on these lines.");
+  });
+
+  it("says when GitHub lists more pending comments than were read", () => {
+    const review: PendingReview = { commenting_available: true, comments: [], incomplete: true };
+    render(<Inspector tour={tour} block={{ block: "pending_review" }} pendingReview={review} />);
+    expect(region(/^Pending review/)).toHaveTextContent(
+      "More pending comments exist on GitHub than are listed here.",
+    );
+  });
+
   it("counts flows the LLM did not rate as not rated", () => {
     const t = structuredClone(tour);
     t.flows[0]!.llm.risk = null;

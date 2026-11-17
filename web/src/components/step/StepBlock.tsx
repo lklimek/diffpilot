@@ -1,10 +1,10 @@
 import { useId, type ReactNode } from "react";
-import type { ImpactRef, PatternRepetition, Step, StepId } from "../../api/generated/types";
+import type { ImpactRef, PatternRepetition, Step, StepId, ThreadsStatus } from "../../api/generated/types";
 import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
 import { KindLabel } from "../badge/LlmLabel";
 import { AssessmentFields } from "../inspector/StepSections";
 import { GithubLink } from "../inspector/text";
-import { rangeText } from "../section/format";
+import { rangeText, threadsNote } from "../section/format";
 import { LlmLine, Section } from "../section/Section";
 import { Tooltip } from "../tooltip/Tooltip";
 import { ReviewToggle } from "./ReviewToggle";
@@ -28,13 +28,24 @@ interface StepBlockProps {
   oldCode?: { shown: boolean; onToggle: () => void };
   /** Opens another step (pattern sites that lie in a step). */
   onSelectStep?: (step: StepId) => void;
+  /** Whether the PR's review threads were read completely (`PrContextFacts.threads_status`). */
+  threadsStatus?: ThreadsStatus;
 }
 
 const HATCH = "bg-[image:repeating-linear-gradient(135deg,transparent_0_6px,rgb(120_130_150/0.16)_6px_7px)]";
 const BUTTON =
   "cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold whitespace-nowrap text-text hover:border-accent aria-pressed:border-accent aria-pressed:bg-accent-bg";
 
-function Markers({ step, ownComments }: { step: Step; ownComments: number }) {
+function Markers({
+  step,
+  ownComments,
+  threadsStatus,
+}: {
+  step: Step;
+  ownComments: number;
+  threadsStatus: ThreadsStatus;
+}) {
+  const note = threadsNote(threadsStatus);
   const remarks = step.llm.annotations.length;
   const threads = step.facts.thread_ids.length;
   const items: [string, string][] = [];
@@ -45,10 +56,14 @@ function Markers({ step, ownComments }: { step: Step; ownComments: number }) {
     ]);
   }
   if (threads > 0) {
+    const count = `${threads} GitHub ${threads === 1 ? "thread" : "threads"}`;
     items.push([
-      `${threads} GitHub ${threads === 1 ? "thread" : "threads"}`,
+      threadsStatus === "partial" ? `${count} (the list from GitHub is incomplete)` : count,
       "Existing GitHub review threads on lines of this step (from GitHub); listed in the inspector.",
     ]);
+  } else if (note) {
+    // Without a complete list, no thread marker must not read as "no threads".
+    items.push([note, "GitHub's review threads of this PR were not read completely."]);
   }
   if (ownComments > 0) {
     items.push([
@@ -178,6 +193,7 @@ export function StepBlock({
   ownComments = 0,
   oldCode,
   onSelectStep,
+  threadsStatus = "checked",
 }: StepBlockProps) {
   const headingId = useId();
   const { facts, llm } = step;
@@ -207,7 +223,7 @@ export function StepBlock({
         >
           L{rangeText(facts.range)}
         </GithubLink>
-        <Markers step={step} ownComments={ownComments} />
+        <Markers step={step} ownComments={ownComments} threadsStatus={threadsStatus} />
         {(oldCode || onSetReviewed) && (
           <div className="ml-auto flex flex-wrap gap-2">
             {oldCode && (

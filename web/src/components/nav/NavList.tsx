@@ -13,7 +13,7 @@ interface NavListProps {
   /** Steps the user ticked. */
   ticked: StepId[];
   /** Comments in the pending review; `"unavailable"` without the GitHub App; no row when omitted. */
-  pendingCount?: number | "unavailable" | "loading";
+  pendingCount?: number | `${number}+` | "unavailable" | "loading";
   /** The block shown in the centre. */
   current: BlockRef;
   /** Called with the block the user picks. */
@@ -73,7 +73,8 @@ function QuietRow({ row, tip, current, onSelect, children }: QuietRowProps) {
 function pendingText(count: NonNullable<NavListProps["pendingCount"]>): string {
   if (count === "unavailable") return "not available";
   if (count === "loading") return "loading…";
-  return plural(count, "comment");
+  // "N+": GitHub has more pending comments than were read.
+  return typeof count === "string" ? `${count} comments` : plural(count, "comment");
 }
 
 /** Left menu: PR context, flows in tour order with risk and ticks, quiet rows, pending review. */

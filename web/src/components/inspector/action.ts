@@ -5,6 +5,12 @@ export function messageOf(error: unknown): string {
   return error instanceof Error && error.message ? error.message : "Something went wrong. Try again.";
 }
 
+/** The API error code of a rejected callback (`ApiError.code`), if it has one. */
+export function codeOf(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : null;
+}
+
 /** Grows a text field with its content, up to 170 px (mockup dock fields). */
 export function growField(field: HTMLTextAreaElement | null): void {
   if (!field) return;
@@ -15,24 +21,32 @@ export function growField(field: HTMLTextAreaElement | null): void {
 /** One callback at a time: `busy` while its promise is pending, `error` when it rejected. */
 export function useAction() {
   const running = useRef(false);
-  const [state, setState] = useState<{ busy: boolean; error: string | null }>({ busy: false, error: null });
+  const [state, setState] = useState<{ busy: boolean; error: string | null; code: string | null }>({
+    busy: false,
+    error: null,
+    code: null,
+  });
   /** Runs `action` unless one is pending; resolves to whether it succeeded. */
   const run = async (action: () => Promise<unknown> | void): Promise<boolean> => {
     if (running.current) return false;
     running.current = true;
-    setState({ busy: true, error: null });
+    setState({ busy: true, error: null, code: null });
     try {
       await action();
-      setState({ busy: false, error: null });
+      setState({ busy: false, error: null, code: null });
       return true;
     } catch (error) {
-      setState({ busy: false, error: messageOf(error) });
+      setState({ busy: false, error: messageOf(error), code: codeOf(error) });
       return false;
     } finally {
       running.current = false;
     }
   };
-  return { ...state, run, setError: (error: string | null) => setState((s) => ({ ...s, error })) };
+  return {
+    ...state,
+    run,
+    setError: (error: string | null) => setState((s) => ({ ...s, error, code: null })),
+  };
 }
 
 /** Sets a ref passed in by the caller (callback or object ref). */

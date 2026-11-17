@@ -4,11 +4,13 @@ import type {
   AnalysisState,
   AnalysisSummary,
   FeedbackMemory,
+  PendingReview,
   AskQuestion,
   MeResponse,
   RepoSettings,
   ResolvePrResponse,
   Settings,
+  ThreadsStatus,
   Tour,
 } from "../api/generated/types";
 import { seedFor, seedNow } from "./fixtures";
@@ -49,6 +51,21 @@ interface Scenario {
   questions?: (seed: AskQuestion[]) => AskQuestion[];
   /** Outcome of the MemCan write of feedback (default `written`). */
   memcan?: FeedbackMemory;
+  /** Changes to the seeded pending review. */
+  pendingReview?: (seed: PendingReview) => PendingReview;
+  /** Comment writes answer 409 `comment_published` (the review was published meanwhile). */
+  commentPublished?: true;
+}
+
+/** The seed tour with review threads read partly, or not at all (no threads listed then). */
+function withThreads(seed: Tour, status: ThreadsStatus): Tour {
+  const tour = structuredClone(seed);
+  tour.pr_context.facts.threads_status = status;
+  if (status === "not_checked") {
+    tour.threads = [];
+    for (const step of tour.flows.flatMap((f) => f.steps)) step.facts.thread_ids = [];
+  }
+  return tour;
 }
 
 /** Facts the server could not establish: dependency files not checked, ranges too large for the LLM. */
@@ -197,6 +214,10 @@ const SCENARIOS = {
   xss: { tour: withXss, questions: xssQuestions },
   "memcan-failed": { memcan: "failed" },
   "repo-not-known": { repoSettings: null },
+  "comment-published": { commentPublished: true },
+  "pending-incomplete": { pendingReview: (seed) => ({ ...seed, incomplete: true }) },
+  "threads-partial": { tour: (seed) => withThreads(seed, "partial") },
+  "threads-not-checked": { tour: (seed) => withThreads(seed, "not_checked") },
   "unchecked-facts": { tour: withUncheckedFacts },
   "llm-unknown": {
     settings: { ...SETTINGS, llm_status: null, language: "pl" },

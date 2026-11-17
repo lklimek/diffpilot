@@ -377,6 +377,35 @@ describe("Tour screen (brief §4.3)", () => {
     expect(within(inspector()).getByRole("group", { name: "Feedback on step 2" })).toBeInTheDocument();
   });
 
+  it("a comment published meanwhile: the composer stays open with the server's sentence (comment_published)", async () => {
+    setScenario("comment-published");
+    await open();
+    await openStep("1", "2");
+    const code = await within(main()).findByRole("region", { name: /lines 88 to 96/ });
+    await user().click(within(code).getByRole("button", { name: "Comment on line 96" }));
+    await user().type(
+      within(inspector()).getByRole("textbox", { name: /^Comment on/ }),
+      "Full timeout per attempt.",
+    );
+    await user().click(within(inspector()).getByRole("button", { name: "Add to GitHub pending review" }));
+    expect(await within(inspector()).findByRole("alert")).toHaveTextContent(
+      "Analyse the pull request again to comment.",
+    );
+    expect(within(inspector()).getByRole("textbox", { name: /^Comment on/ })).toHaveValue(
+      "Full timeout per attempt.",
+    );
+    expect(within(inspector()).queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  it("an incomplete pending-review list is marked in the top bar and the menu", async () => {
+    setScenario("pending-incomplete");
+    await open();
+    await waitFor(() => expect(topBar()).toHaveTextContent("Pending review 0+"));
+    expect(
+      within(nav()).getByRole("button", { name: /Pending review on GitHub: 0\+ comments/ }),
+    ).toBeInTheDocument();
+  });
+
   it("keeps the trust wording in every fixture state", async () => {
     for (const state of ["default", "wrong", "missed", "noq", "noprofile", "resume"] as const) {
       await open(state);

@@ -366,3 +366,32 @@ for (const [scenario, outcome] of [
     await expect(memory).toContainText(`overrated: ${outcome}`, { timeout: 8000 });
   });
 }
+
+test("review threads not checked or partial never read as complete", async ({ page }) => {
+  await page.goto(`/analyses/${ANALYSIS_ID}?scenario=threads-not-checked`);
+  await expect(page.getByRole("region", { name: "Facts" })).toContainText("Review threads: not checked");
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Flow 1:/ })
+    .click();
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Step 5:/ })
+    .click();
+  await expect(page.getByRole("list", { name: "Markers in this step" })).toContainText(
+    "Review threads: not checked",
+  );
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await expect(inspector).toContainText("Review threads: not checked");
+  await expect(inspector).not.toContainText("No GitHub review threads on these lines.");
+
+  await page.goto(`/analyses/${ANALYSIS_ID}?scenario=threads-partial`);
+  // The review resumes at the last viewed step; the facts in question are on PR context.
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^PR context/ })
+    .click();
+  await expect(page.getByRole("region", { name: "Facts" })).toContainText(
+    "Review threads: the list from GitHub is incomplete",
+  );
+});

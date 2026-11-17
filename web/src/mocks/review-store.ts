@@ -40,7 +40,9 @@ function seed(): Store {
     reviewState: seedNow("review-state") as ReviewState,
     questions: (scenario().questions ?? ((q: AskQuestion[]) => q))(seedNow("questions") as AskQuestion[]),
     feedback: seedNow("feedback") as Feedback[],
-    pendingReview: seedNow("pending-review") as PendingReview,
+    pendingReview: (scenario().pendingReview ?? ((r: PendingReview) => r))(
+      seedNow("pending-review") as PendingReview,
+    ),
     memorySeenAt: {},
   };
 }

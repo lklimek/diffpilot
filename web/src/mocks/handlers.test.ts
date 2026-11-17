@@ -92,6 +92,27 @@ describe("msw handlers from fixtures/pr-482", () => {
     },
   );
 
+  it("serve the thread, pending-review and comment_published scenarios", async () => {
+    const api = createApiClient(BASE);
+    setScenario("threads-not-checked");
+    const unchecked = await api.getTour(ID);
+    expect(unchecked.pr_context.facts.threads_status).toBe("not_checked");
+    expect(unchecked.threads).toEqual([]);
+    setScenario("threads-partial");
+    expect((await api.getTour(ID)).pr_context.facts.threads_status).toBe("partial");
+    resetStore();
+    setScenario("pending-incomplete");
+    expect((await api.getPendingReview(ID)).incomplete).toBe(true);
+    setScenario("comment-published");
+    await expect(
+      api.createComment(ID, {
+        idempotency_key: crypto.randomUUID(),
+        target: { path: "src/rpc/client.rs", side: "head", start_line: null, line: 96 },
+        body: "x",
+      }),
+    ).rejects.toMatchObject({ status: 409, code: "comment_published" });
+  });
+
   it("answer the slice flow: resolve, create, tour", async () => {
     const api = createApiClient(BASE);
     const resolved = await api.resolvePr({ url: "https://github.com/acme/node-client/pull/482" });

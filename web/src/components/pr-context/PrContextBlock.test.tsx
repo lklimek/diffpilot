@@ -7,7 +7,7 @@ import { PrContextBlock, type PrContextView } from "./PrContextBlock";
 
 const tour = seedFor("default", "tour") as Tour;
 const renderBlock = (t: Tour, context: PrContextView = t.pr_context) =>
-  render(<PrContextBlock pr={t.analysis.pr} context={context} />);
+  render(<PrContextBlock pr={t.analysis.pr} context={context} threadCount={t.threads.length} />);
 
 describe("PrContextBlock", () => {
   it("separates the LLM analysis from the deterministic facts", () => {
@@ -101,6 +101,19 @@ describe("PrContextBlock", () => {
     const facts = screen.getByRole("region", { name: "Facts" });
     expect(facts).toHaveTextContent("3 dependencies changed: tokio, tracing, url");
     expect(facts).toHaveTextContent("Dependency files not checked: Cargo.lock");
+  });
+
+  it.each([
+    ["checked", "3 review threads on GitHub"],
+    ["partial", "3 review threads listed. Review threads: the list from GitHub is incomplete"],
+    ["not_checked", "Review threads: not checked"],
+  ] as const)("states the review threads as a fact (%s)", (status, text) => {
+    const t = structuredClone(tour);
+    t.pr_context.facts.threads_status = status;
+    render(<PrContextBlock pr={t.analysis.pr} context={t.pr_context} threadCount={3} />);
+    const facts = screen.getByRole("region", { name: "Facts" });
+    expect(facts).toHaveTextContent(text);
+    if (status === "not_checked") expect(facts).not.toHaveTextContent(/\d+ review threads?|no open threads/);
   });
 
   it("says related work was not checked when it could not be looked up", () => {

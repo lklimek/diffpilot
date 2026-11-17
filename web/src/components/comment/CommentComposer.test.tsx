@@ -104,6 +104,42 @@ describe("CommentComposer", () => {
     expect(document.body).not.toHaveTextContent("https://");
   });
 
+  it("a comment_published answer shows the server's sentence, keeps the text and offers no Retry", async () => {
+    const sentence =
+      "The pull request changed while the comment was being saved, and your review was published on GitHub in the meantime. The comment had been published on other code and was removed again. Analyse the pull request again to comment.";
+    const onCreate = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error(sentence), { code: "comment_published" }));
+    const { user } = setup({ onCreate });
+    await user.type(
+      screen.getByRole("textbox", { name: /^Comment on/ }),
+      "Each attempt gets the full timeout.",
+    );
+    await user.click(addButton());
+    expect(await screen.findByRole("alert")).toHaveTextContent(sentence);
+    expect(screen.getByRole("textbox", { name: /^Comment on/ })).toHaveValue(
+      "Each attempt gets the full timeout.",
+    );
+    expect(screen.getByRole("textbox", { name: /^Comment on/ })).not.toHaveAttribute("readonly");
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(document.body).not.toHaveTextContent(/may already be in your GitHub pending review/);
+  });
+
+  it("an edit answered comment_published shows the server's sentence, not 'Not saved'", async () => {
+    const sentence =
+      "This comment was published on GitHub in the meantime; the change was applied to the published comment.";
+    const onEdit = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error(sentence), { code: "comment_published" }));
+    const { user } = setup({ comments: missedComments, onEdit });
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.type(screen.getByRole("textbox", { name: "Edit comment" }), " more");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(sentence);
+    expect(alert).not.toHaveTextContent("Not saved");
+  });
+
   it("asks for text instead of posting an empty comment", async () => {
     const { user, onCreate } = setup();
     await user.click(addButton());

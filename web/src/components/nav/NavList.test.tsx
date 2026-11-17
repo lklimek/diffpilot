@@ -144,6 +144,11 @@ describe("NavList", () => {
     expect(onSelect).toHaveBeenCalledWith({ block: "pending_review" });
   });
 
+  it("marks an incomplete pending-review count", () => {
+    renderNav({ pendingCount: "2+" });
+    expect(screen.getByRole("button", { name: "Pending review on GitHub: 2+ comments" })).toBeInTheDocument();
+  });
+
   it("says when commenting is unavailable and while the count is loading", () => {
     const { unmount } = renderNav({ pendingCount: "unavailable" });
     expect(screen.getByRole("button", { name: /^Pending review on GitHub/ })).toHaveTextContent(

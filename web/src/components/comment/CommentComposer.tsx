@@ -5,7 +5,7 @@ import type {
   CreateCommentResponse,
   PendingComment,
 } from "../../api/generated/types";
-import { assignRef, growField, messageOf, useAction } from "../inspector/action";
+import { assignRef, codeOf, growField, messageOf, useAction } from "../inspector/action";
 import { GithubLink } from "../inspector/text";
 import type { CommentPlacement } from "./placement";
 
@@ -96,6 +96,8 @@ function OwnComment({
   const [draft, setDraft] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const action = useAction();
+  // comment_published: the server applied the change to the published comment; its sentence says so.
+  const published = action.code === "comment_published";
   const save = async () => {
     const body = draft?.trim();
     if (!body) return action.setError("Write a comment first.");
@@ -154,7 +156,7 @@ function OwnComment({
       </div>
       {action.error && (
         <p role="alert" className="text-[12px] text-high">
-          Not saved: {action.error}
+          {published ? action.error : `Not saved: ${action.error}`}
         </p>
       )}
     </li>
@@ -192,8 +194,11 @@ export function CommentComposer(props: CommentComposerProps) {
     );
   } else {
     const key = identity(line.target);
-    /** Sends `request` once at a time per target; resolves to the response, or null when it failed. */
-    const send = async (request: CreateCommentRequest): Promise<CreateCommentResponse | null> => {
+    /**
+     * Sends `request` once at a time per target; resolves to the response, to `{ settled }` when the server
+     * says nothing of the attempt remains, or to null when the outcome is unknown (Retry or Discard).
+     */
+    const send = async (request: CreateCommentRequest): Promise<SendResult> => {
       // The registry blocks a target in flight across remounts; the ref also catches a second click in one tick.
       if (inFlight.current.has(key) || unresolved[key]?.error === null) return null;
       inFlight.current.add(key);
@@ -203,6 +208,12 @@ export function CommentComposer(props: CommentComposerProps) {
         setUnresolved((all) => without(all, key));
         return response;
       } catch (error) {
+        // comment_published on create: the misplaced comment was removed again and the key freed (http-api.md),
+        // so there is nothing to retry; the text stays for the user to keep.
+        if (codeOf(error) === "comment_published") {
+          setUnresolved((all) => without(all, key));
+          return { settled: messageOf(error) };
+        }
         setUnresolved((all) => ({ ...all, [key]: { request, error: messageOf(error) } }));
         return null;
       } finally {
@@ -223,11 +234,14 @@ export function CommentComposer(props: CommentComposerProps) {
   );
 }
 
+/** Outcome of a send: the response, a definite failure with the server's sentence, or unknown (null). */
+type SendResult = CreateCommentResponse | { settled: string } | null;
+
 interface DraftProps extends Omit<CommentComposerProps, "unresolved"> {
   line: CommentLine;
   /** The unresolved post of this target. */
   post: UnresolvedPost | null;
-  send: (request: CreateCommentRequest) => Promise<CreateCommentResponse | null>;
+  send: (request: CreateCommentRequest) => Promise<SendResult>;
   discard: () => void;
 }
 
@@ -247,6 +261,7 @@ function Draft({
   const [text, setText] = useState("");
   const [empty, setEmpty] = useState(false);
   const [done, setDone] = useState<CreateCommentResponse | null>(null);
+  const [settled, setSettled] = useState<string | null>(null);
 
   // A newly chosen line takes the focus (click on a line number, or `c`).
   useEffect(() => field.current?.focus(), []);
@@ -280,8 +295,10 @@ function Draft({
     }
     setEmpty(false);
     setDone(null);
+    setSettled(null);
     const response = await send({ idempotency_key: newIdempotencyKey(), target: line.target, body });
-    if (response) finish(response);
+    if (response && "settled" in response) setSettled(response.settled);
+    else if (response) finish(response);
   };
   const finish = (response: CreateCommentResponse) => {
     setText("");
@@ -292,11 +309,14 @@ function Draft({
     if (!unresolved) return;
     setDone(null);
     const response = await send(unresolved.request);
-    if (response) finish(response);
+    if (response && "settled" in response) setSettled(response.settled);
+    else if (response) finish(response);
   };
 
   const mine = comments.filter((c) => onTarget(c, line.target));
-  const error = empty ? "Write a comment first." : unresolved?.error && `Not confirmed: ${unresolved.error}`;
+  const error = empty
+    ? "Write a comment first."
+    : (unresolved?.error && `Not confirmed: ${unresolved.error}`) || settled;
   const preview = line.placement === "line" || line.placement === "file" ? line.placement : null;
   return (
     <>

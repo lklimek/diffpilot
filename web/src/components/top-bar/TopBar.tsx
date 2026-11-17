@@ -1,4 +1,5 @@
 import type { CiStatus, PrSummary } from "../../api/generated/types";
+import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface TopBarProps {
@@ -11,7 +12,7 @@ interface TopBarProps {
   /** Review progress: flows with every step ticked, out of all flows. */
   progress?: { reviewed: number; total: number };
   /** Comments in the pending review; `"unavailable"` without the GitHub App; no item when omitted. */
-  pendingCount?: number | "unavailable" | "loading";
+  pendingCount?: number | `${number}+` | "unavailable" | "loading";
   /** Opens the pending-review list. */
   onOpenPending?: () => void;
   /** Opens the `?` help; no button without it. */
@@ -103,7 +104,11 @@ export function TopBar({ pr, ci, login, progress, pendingCount, onOpenPending, o
         </Tooltip>
       )}
       {pendingCount !== undefined && (
-        <Tooltip tip="Comments in your GitHub pending review for this PR; opens the list.">
+        <Tooltip
+          tip={`Comments in your GitHub pending review for this PR; opens the list.${
+            typeof pendingCount === "string" && pendingCount.endsWith("+") ? ` ${PENDING_INCOMPLETE}` : ""
+          }`}
+        >
           <button type="button" onClick={onOpenPending} className={BUTTON}>
             Pending review <b>{pendingText(pendingCount)}</b>
           </button>

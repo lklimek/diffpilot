@@ -7,8 +7,9 @@ import type {
   ProjectProfileStatus,
   RelatedWork,
   RelatedWorkKind,
+  ThreadsStatus,
 } from "../../api/generated/types";
-import { dependencyFacts, evidenceText } from "../section/format";
+import { dependencyFacts, evidenceText, threadsNote } from "../section/format";
 import { LlmLine, Section, Subhead } from "../section/Section";
 
 /** The PR context as rendered. */
@@ -19,6 +20,8 @@ interface PrContextBlockProps {
   pr: PrSummary;
   /** Deterministic facts and LLM content of the PR context. */
   context: PrContextView;
+  /** Review threads of the PR as listed (`Tour.threads`); read with `facts.threads_status`. */
+  threadCount: number;
 }
 
 const FIT_TOPIC: Record<FitTopic, string> = {
@@ -76,12 +79,19 @@ function profileLines(profile: ProjectProfileStatus): string[] {
   return unchecked ? [sources, "Project profile in MemCan: not checked"] : [sources];
 }
 
+function threadsFact(status: ThreadsStatus, count: number): string {
+  const note = threadsNote(status);
+  const listed = `${count} review ${count === 1 ? "thread" : "threads"}`;
+  if (status === "not_checked") return note!;
+  return note ? `${listed} listed. ${note}` : `${listed} on GitHub`;
+}
+
 function Fact({ children }: { children: ReactNode }) {
   return <li className="mb-1">{children}</li>;
 }
 
 /** PR context block: LLM analysis (problem, why, what it gives, related work, fit questions) and facts. */
-export function PrContextBlock({ pr, context }: PrContextBlockProps) {
+export function PrContextBlock({ pr, context, threadCount }: PrContextBlockProps) {
   const headingId = useId();
   const { facts, llm } = context;
   return (
@@ -169,6 +179,7 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
                 </ul>
               )}
             </Fact>
+            <Fact>{threadsFact(facts.threads_status, threadCount)}</Fact>
             <Fact>{facts.counters.lines_removed_from_tests} lines removed from tests</Fact>
             {dependencyFacts(facts.counters).map((line) => (
               <Fact key={line}>{line}</Fact>
