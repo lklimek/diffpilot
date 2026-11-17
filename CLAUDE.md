@@ -50,6 +50,9 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   `npx playwright install --with-deps chromium`, then `npm run test:e2e`.
 - Checks: `scripts/check-architecture.sh`, `scripts/check-wording.sh` (after `npm ci` in `web/`; both take
   `--self-test`), `shellcheck` on `scripts/*.sh tools/**/*.sh deploy/**/*.sh` (globstar), `python3 -m pytest -q scripts/tests`.
+- Containers (one heavy job at a time, Docker): `R1_SUPERVISOR=rust R1_SKIP_CODEX=1 deploy/runner/r1-test/run.sh`;
+  `deploy/egress-proxy/test.sh`; `deploy/test-stack.sh`; `deploy/check-production-config.sh --self-test`.
+- db: transactions only through `db::repo::{write_tx, read_tx}` (write = `BEGIN IMMEDIATE`; never a deferred read-then-write).
 - Schema smoke (manual, real Codex, Docker image and login volume of spike S1a): `scripts/schema-smoke.sh [kind ...]`.
 
 ## Conventions

@@ -269,6 +269,8 @@ for the LLM status). An expired lease is the liveness signal. Job states `queued
 succeeded | failed | cancelled | paused{resumes_at}`; expired lease → `queued`, attempt + 1, bounded.
 
 ### 5.4 Security design (WP1-T, reviewed with the contracts; audited again in stage 4)
+The process model behind T1 (supervisor, uids, private socket) is decided in ADR-013.
+
 | # | Requirement | Tested in |
 |---|---|---|
 | T1 | Two uids in the runner image: `runner` owns runner secret, job token, mirror cache, claudius checkout, master `CODEX_HOME`, session store; Codex, `github-mcp-server` and every agent command run as `agent` with a fresh work dir, a per-job `CODEX_HOME` (generated config + copy of `auth.json` + this analysis's session files), read-only skills. `runner` copies `auth.json` and the session files back after the job (one job per credential and per session, so no race). | WP3-RUN, WP3-OPS |
