@@ -282,3 +282,31 @@ fn raw_multiline_values_preserve_carriage_returns_without_json_escaping() {
         assert_eq!(parse(&text, &Catalog::default()).unwrap(), doc);
     }
 }
+
+#[test]
+fn concise_low_assessment_round_trips_and_is_not_padded() {
+    let (mut doc, _) = fixture();
+    let assessment = doc.steps[0].assessment.as_mut().unwrap();
+    assessment.risk = contracts::common::RiskBand::Low;
+    assessment.headline = None;
+    assessment.basis_note = None;
+    assessment.not_checked = None;
+    assessment.origin = None;
+    assessment.blocking = None;
+    assessment.smallest_correction = None;
+    let text = encode(&doc, &Catalog::default()).unwrap();
+    assert!(text.contains("risk: low\nreason: "));
+    assert!(!text.contains("basis_note: \n"));
+    assert_eq!(parse(&text, &Catalog::default()).unwrap(), doc);
+}
+
+#[test]
+fn assessment_still_requires_risk_and_reason() {
+    let (_, text) = fixture();
+    let reason = text
+        .lines()
+        .find(|line| line.starts_with("reason:") && !line.contains("thread"))
+        .unwrap();
+    let error = parse(&text.replacen(reason, "", 1), &Catalog::default()).unwrap_err();
+    assert!(error.message.contains("has no `reason:` line"), "{error}");
+}

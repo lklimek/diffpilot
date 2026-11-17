@@ -1,4 +1,4 @@
-# ADR-014: Defer parallel flow analysis
+# ADR-015: Defer parallel flow analysis
 
 Status: accepted, owner decision, 2026-11-17. No parallel scheduler or runner change is authorised here.
 

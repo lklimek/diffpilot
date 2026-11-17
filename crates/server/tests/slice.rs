@@ -183,6 +183,19 @@ fn agent_output(stage: &str) -> Value {
     read_json(&fixtures().join("agent").join(file))
 }
 
+/// A flow fixture as the tagged file a runner would return for a claimed flow job.
+fn tagged_flow_output(spec: &contracts::job::spec::JobSpec, stage: &str) -> Value {
+    let context: analysis::tagged::Context = serde_json::from_value(
+        spec.flow_file
+            .clone()
+            .expect("flow job carries checker context")
+            .context,
+    )
+    .expect("flow context");
+    let document = serde_json::from_value(agent_output(stage)).expect("flow fixture");
+    Value::String(analysis::tagged::encode(&document, &context.catalog()).expect("flow fixture"))
+}
+
 impl JobExecutor for ScriptedExecutor {
     fn submit(&self, request: JobRequest) -> BoxFuture<'_, Result<JobHandle, ExecutorError>> {
         let stage = request.stage.key();
@@ -2990,7 +3003,7 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         job_id: claim.spec.job_id,
         attempt: claim.spec.attempt,
         outcome: JobOutcome::Succeeded {
-            output: agent_output("flow:f4"),
+            output: tagged_flow_output(&claim.spec, "flow:f4"),
         },
         session: None,
         usage: None,
@@ -3056,7 +3069,7 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         job_id: next.spec.job_id,
         attempt: next.spec.attempt,
         outcome: JobOutcome::Succeeded {
-            output: agent_output("flow:f2"),
+            output: tagged_flow_output(&next.spec, "flow:f2"),
         },
         session: None,
         usage: None,
