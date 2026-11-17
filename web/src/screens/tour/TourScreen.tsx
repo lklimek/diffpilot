@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
 import type {
@@ -30,15 +30,11 @@ import { StatusMessage } from "../../components/status/StatusMessage";
 import { StepBlock } from "../../components/step/StepBlock";
 import { TopBar } from "../../components/top-bar/TopBar";
 import { ChunkedCode, DiffCode, LinesCode, errorText, type CodeContext } from "./code";
+import { DiagramPane } from "./DiagramPane";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
 import { blockTitle, buildSequence, findStep, flowJump, sameBlock, stepQuery } from "./sequence";
 import { Workspace } from "./Workspace";
-
-// Loaded when the diagram is first shown (own chunk).
-const FlowDiagram = lazy(() =>
-  import("../../components/flow-diagram/FlowDiagram").then((m) => ({ default: m.FlowDiagram })),
-);
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
 
@@ -361,32 +357,14 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         </p>
       )}
       {flow && (
-        <section aria-label="Flow diagram" className="mb-3 rounded-lg border border-border bg-surface">
-          <button
-            type="button"
-            aria-expanded={layout.diagram}
-            onClick={() => setLayout({ ...layout, diagram: !layout.diagram })}
-            className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-3 py-1.5 text-left text-[12.5px] font-semibold text-text"
-          >
-            <span aria-hidden>{layout.diagram ? "▾" : "▸"}</span>
-            {layout.diagram ? "Hide flow diagram" : "Show flow diagram"}
-            <span className="font-normal text-muted">
-              Flow {flow.position}: {flow.llm.title}
-            </span>
-          </button>
-          {layout.diagram && (
-            <div className="max-h-[45vh] overflow-auto border-t border-border px-3 py-2">
-              <Suspense fallback={<StatusMessage kind="loading">Loading the diagram…</StatusMessage>}>
-                <FlowDiagram
-                  graph={flow.graph}
-                  title={flow.llm.title}
-                  currentStepId={step?.id ?? null}
-                  onSelectStep={selectStep}
-                />
-              </Suspense>
-            </div>
-          )}
-        </section>
+        <DiagramPane
+          key={flow.id}
+          flow={flow}
+          currentStepId={step?.id ?? null}
+          onSelectStep={selectStep}
+          open={layout.diagram}
+          onToggle={() => setLayout({ ...layout, diagram: !layout.diagram })}
+        />
       )}
       {block ?? <StatusMessage kind="empty">This block is not part of the analysis.</StatusMessage>}
       <BlockNav
