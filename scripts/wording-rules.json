@@ -1,0 +1,5 @@
+{
+  "description": "Banned wording of docs/design-brief.md §1 (plan §12.4): read by scripts/check-wording.mjs (sources) and e2e/support/app.ts (rendered pages). JavaScript regular expressions; `{}` stands for an interpolated value in sources.",
+  "words": "\\bno\\s+risk|\\bnothing\\s+to\\s+review\\b|\\bno\\s+review\\s+needed\\b|\\bnoise\\b|\\bverified\\b|\\bwas\\s+wrong\\b|\\bconfidence\\b",
+  "percent": "(?:\\d+|\\{\\})\\s?%"
+}
