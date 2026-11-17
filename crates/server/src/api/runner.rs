@@ -18,11 +18,12 @@ use contracts::job::state::JobState;
 use contracts::routes::{RUNNER_CLAIM, RUNNER_EVENTS, RUNNER_OUTPUT, RUNNER_RESULT};
 use db::error::DbError;
 use db::repo::jobs::{Completion, OutputRecorded};
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::jobs::claim::{self, ClaimError, hashes_match, lease_until, token_hash};
+use crate::jobs::github_tokens::{self, TokenStoreError};
 use crate::state::AppState;
 
 /// Body caps (threat model T7b, T12).
@@ -65,6 +66,9 @@ pub enum RunnerError {
     /// The queue rejected or failed the request.
     #[error("the job queue rejected the request")]
     Db(#[from] DbError),
+    /// The attempt's installation token could not be read for scrubbing.
+    #[error("the job's installation token could not be read")]
+    InstallationToken(#[from] TokenStoreError),
 }
 
 impl ApiErrorSource for RunnerError {
@@ -73,7 +77,15 @@ impl ApiErrorSource for RunnerError {
             Self::Unauthenticated => ApiErrorCode::Unauthenticated,
             Self::Body { .. } | Self::Path(_) | Self::JobMismatch => ApiErrorCode::InvalidRequest,
             Self::Claim(ClaimError::Db(error)) | Self::Db(error) => error.code(),
-            Self::Claim(ClaimError::Random(_)) => ApiErrorCode::Internal,
+            Self::Claim(
+                ClaimError::GithubAccess(_)
+                | ClaimError::TokenRejected(_)
+                | ClaimError::GithubTimeout,
+            ) => ApiErrorCode::GithubUnavailable,
+            Self::Claim(
+                ClaimError::Random(_) | ClaimError::StoreToken(_) | ClaimError::GithubTask(_),
+            )
+            | Self::InstallationToken(_) => ApiErrorCode::Internal,
         }
     }
 
@@ -83,7 +95,15 @@ impl ApiErrorSource for RunnerError {
             Self::Body { .. } | Self::Path(_) => Cow::Borrowed("The request is not valid."),
             Self::JobMismatch => Cow::Borrowed("The result belongs to another job."),
             Self::Claim(ClaimError::Db(error)) | Self::Db(error) => error.public_message(),
-            Self::Claim(ClaimError::Random(_)) => {
+            Self::Claim(
+                ClaimError::GithubAccess(_)
+                | ClaimError::TokenRejected(_)
+                | ClaimError::GithubTimeout,
+            ) => Cow::Borrowed("GitHub did not answer as expected. Try again later."),
+            Self::Claim(
+                ClaimError::Random(_) | ClaimError::StoreToken(_) | ClaimError::GithubTask(_),
+            )
+            | Self::InstallationToken(_) => {
                 Cow::Borrowed("Something went wrong on the server. Try again later.")
             }
         }
@@ -201,10 +221,23 @@ async fn authorize_job(
     })
 }
 
+/// The attempt's installation token, which the server also knows and scrubs (T3b, T10).
+async fn installation_token(
+    state: &AppState,
+    auth: &Authorized,
+) -> Result<Option<SecretString>, RunnerError> {
+    Ok(github_tokens::load(&state.db, &state.config, auth.job, auth.attempt).await?)
+}
+
 /// Known secret values that must never be stored from runner data (threat model T10).
-fn known_secrets<'a>(state: &'a AppState, job_token: &'a str) -> [&'a str; 4] {
+fn known_secrets<'a>(
+    state: &'a AppState,
+    job_token: &'a str,
+    installation: Option<&'a SecretString>,
+) -> [&'a str; 5] {
     [
         job_token,
+        installation.map_or("", |token| token.expose_secret()),
         state.config.runner_secret.expose_secret(),
         state.config.memcan.token.expose_secret(),
         state.config.github.client_secret.expose_secret(),
@@ -291,7 +324,7 @@ async fn claim_job(
 ) -> RunnerResult<Json<ClaimResponse>> {
     authorize_runner(&state, &headers)?;
     let Json(request) = body.map_err(RunnerError::from)?;
-    let response = claim::claim(&state.db, &request, Utc::now())
+    let response = claim::claim(&state.db, &state.config, &request, Utc::now())
         .await
         .map_err(RunnerError::from)?;
     Ok(Json(response))
@@ -315,7 +348,8 @@ async fn apply_events(
     batch: EventBatch,
 ) -> Result<EventsAck, RunnerError> {
     auth.bind(batch.attempt)?;
-    let secrets = known_secrets(state, &auth.token);
+    let installation = installation_token(state, auth).await?;
+    let secrets = known_secrets(state, &auth.token, installation.as_ref());
     let events: Vec<JobEvent> = batch
         .events
         .into_iter()
@@ -351,7 +385,11 @@ async fn apply_output(
     mut ready: OutputReady,
 ) -> Result<EventsAck, RunnerError> {
     auth.bind(ready.attempt)?;
-    scrub_value(&mut ready.output, &known_secrets(state, &auth.token));
+    let installation = installation_token(state, auth).await?;
+    scrub_value(
+        &mut ready.output,
+        &known_secrets(state, &auth.token, installation.as_ref()),
+    );
     let lease_expires_at = lease_until(Utc::now());
     let recorded = state
         .db
@@ -390,7 +428,11 @@ async fn apply_result(
         return Err(RunnerError::JobMismatch);
     }
     auth.bind(result.attempt)?;
-    scrub_result(&mut result, &known_secrets(state, &auth.token));
+    let installation = installation_token(state, auth).await?;
+    scrub_result(
+        &mut result,
+        &known_secrets(state, &auth.token, installation.as_ref()),
+    );
     let completion = state.db.jobs().complete(&result, Utc::now()).await?;
     if let Completion::Applied { state: job_state } = completion {
         tracing::info!(
@@ -399,7 +441,7 @@ async fn apply_result(
             state = job_state.as_str(),
             "job result recorded"
         );
-        // TODO(WP3-APPTOKEN): revoke the attempt's installation token (`Jobs::github_tokens_to_revoke`).
+        github_tokens::nudge();
     }
     Ok(())
 }
@@ -924,6 +966,80 @@ mod tests {
         }
         assert!(stored.contains(REDACTED));
         assert_eq!(events[0].summary.chars().count(), SUMMARY_MAX_CHARS);
+    }
+
+    /// The attempt's installation token, which the server holds encrypted, is masked in events, output keys and
+    /// values, and result text (T3b, T10).
+    #[tokio::test]
+    async fn server_scrubs_installation_token_from_events_outputs_and_results() {
+        use crate::github::app_token::tests::{
+            MINTED_TOKEN, github_config, minted, mount_installation, mount_mint, write_key,
+        };
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let github = wiremock::MockServer::start().await;
+        mount_installation(&github).await;
+        mount_mint(&github, minted(Utc::now()), 1).await;
+        let mut state = test_state().await;
+        let mut config = crate::config::tests::test_config();
+        config.github = github_config(&github, write_key(dir.path()));
+        state.config = std::sync::Arc::new(config);
+        let harness = Harness {
+            app: runner_router(state.clone()),
+            state,
+        };
+        harness.enqueue(CREDENTIAL).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        assert!(claimed.spec_access.github.is_some(), "a token was minted");
+        let leaked = format!("gh {MINTED_TOKEN} end");
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_EVENTS.path, claimed.job),
+                Some(&claimed.token),
+                batch(1, &leaked),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_OUTPUT.path, claimed.job),
+                Some(&claimed.token),
+                OutputReady {
+                    attempt: 1,
+                    output: json!({ MINTED_TOKEN: [leaked.clone()] }),
+                },
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let mut result = succeeded(claimed.job, 1);
+        result.outcome = JobOutcome::Failed {
+            kind: JobFailureKind::ProviderFailed,
+            message: leaked.clone(),
+        };
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_RESULT.path, claimed.job),
+                Some(&claimed.token),
+                result,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let events = harness
+            .state
+            .db
+            .jobs()
+            .events(claimed.job, 0)
+            .await
+            .expect("events");
+        let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
+        for (place, stored) in [
+            ("event", format!("{events:?}")),
+            ("output", format!("{:?}", job.ready_output)),
+            ("result", format!("{:?}", job.result)),
+        ] {
+            assert!(!stored.contains(MINTED_TOKEN), "{place}: {stored}");
+            assert!(stored.contains(REDACTED), "{place}: {stored}");
+        }
     }
 
     #[tokio::test]

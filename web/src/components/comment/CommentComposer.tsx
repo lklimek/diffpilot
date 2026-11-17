@@ -1,0 +1,413 @@
+import { useEffect, useId, useRef, useState, type Ref } from "react";
+import type {
+  CommentTarget,
+  CreateCommentRequest,
+  CreateCommentResponse,
+  PendingComment,
+} from "../../api/generated/types";
+import { assignRef, growField, messageOf, useAction } from "../inspector/action";
+import { GithubLink } from "../inspector/text";
+import type { CommentPlacement } from "./placement";
+
+/** The displayed line a comment is written on. */
+export interface CommentLine {
+  /** Path, side and line(s). */
+  target: CommentTarget;
+  /** From `commentPlacement(lines, target)`. */
+  placement: CommentPlacement;
+  /** GitHub link to the line at the analysed commit (offered when the file is not in the PR diff). */
+  permalink: string;
+}
+
+/** Props of the comment composer in the inspector dock. */
+export interface CommentComposerProps {
+  /** `PendingReview.commenting_available`: false without the GitHub App on the PR repository. */
+  available: boolean;
+  /** The line being commented on; null = none chosen yet. */
+  line: CommentLine | null;
+  /** The user's pending comments (`PendingReview.comments`); those on `line` can be edited and deleted. */
+  comments: readonly PendingComment[];
+  /** Creates the comment (POST …/pending-review/comments); a failed request is retried with the same key and payload. */
+  onCreate: (request: CreateCommentRequest) => Promise<CreateCommentResponse>;
+  /** Replaces a pending comment's text on GitHub (PATCH). */
+  onEdit: (commentId: string, body: string) => Promise<unknown> | void;
+  /** Deletes a pending comment on GitHub (DELETE). */
+  onDelete: (commentId: string) => Promise<unknown> | void;
+  /** Leaves the line (Cancel or Escape); the screen clears the line highlight. */
+  onCancel: () => void;
+  /** The text field, for the `c` shortcut. */
+  textareaRef?: Ref<HTMLTextAreaElement>;
+  /** Posts not confirmed yet, kept by the screen per analysis for the session (survive unmounting); start `{}`. */
+  unresolved: UnresolvedPosts;
+  /** Updates `unresolved`; takes an updater, so a React state setter fits (`useState<UnresolvedPosts>({})`). */
+  onUnresolvedChange: (update: (posts: UnresolvedPosts) => UnresolvedPosts) => void;
+}
+
+const BUTTON =
+  "cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold text-text hover:border-accent disabled:cursor-wait disabled:opacity-60";
+const PRIMARY =
+  "cursor-pointer rounded-md border border-accent bg-accent px-2.5 py-1 text-[12.5px] font-semibold text-on-accent disabled:cursor-wait disabled:opacity-60";
+const FIELD = "w-full resize-none rounded-md border border-border bg-surface px-2 py-1 font-sans";
+
+/** A version 4 UUID from `crypto.getRandomValues` (`randomUUID` needs a secure context). */
+export function newIdempotencyKey(): string {
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6]! & 0x0f) | 0x40;
+  b[8] = (b[8]! & 0x3f) | 0x80;
+  const hex = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** Identity of a comment target: path, side and the whole line range. */
+const identity = (t: CommentTarget) => JSON.stringify([t.path, t.side, t.start_line, t.line]);
+
+const KIND = { line: "a line comment", file: "a file comment that links to the line" } as const;
+
+/** A create request whose outcome is not known yet: in flight (`error` null) or failed. */
+export interface UnresolvedPost {
+  /** The exact request; Retry sends it again with the same idempotency key. */
+  request: CreateCommentRequest;
+  /** Why the last attempt failed; null while it is in flight. */
+  error: string | null;
+}
+
+/** Unresolved posts by comment target (path, side, start line, line). */
+export type UnresolvedPosts = Readonly<Record<string, UnresolvedPost>>;
+
+function without(all: UnresolvedPosts, key: string): UnresolvedPosts {
+  const rest = { ...all };
+  delete rest[key];
+  return rest;
+}
+
+function where(t: CommentTarget): string {
+  const lines = t.start_line !== null && t.start_line !== t.line ? `${t.start_line}–${t.line}` : `${t.line}`;
+  return `${t.path}:${lines}${t.side === "base" ? " (removed line)" : ""}`;
+}
+
+const onTarget = (c: PendingComment, t: CommentTarget) =>
+  c.path === t.path && c.line === t.line && (c.kind === "file" || c.side === t.side);
+
+function OwnComment({
+  comment,
+  onEdit,
+  onDelete,
+}: { comment: PendingComment } & Pick<CommentComposerProps, "onEdit" | "onDelete">) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const action = useAction();
+  const save = async () => {
+    const body = draft?.trim();
+    if (!body) return action.setError("Write a comment first.");
+    if (await action.run(() => onEdit(comment.id, body))) setDraft(null);
+  };
+  return (
+    <li className="grid gap-1 rounded-md border border-border bg-surface px-2.5 py-1.5">
+      {draft === null ? (
+        <p className="whitespace-pre-wrap">{comment.body}</p>
+      ) : (
+        <textarea
+          aria-label="Edit comment"
+          autoFocus
+          rows={3}
+          value={draft}
+          readOnly={action.busy}
+          onChange={(e) => setDraft(e.target.value)}
+          className={FIELD}
+        />
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        {draft !== null ? (
+          <>
+            <button type="button" disabled={action.busy} onClick={() => void save()} className={BUTTON}>
+              Save
+            </button>
+            <button type="button" onClick={() => setDraft(null)} className={BUTTON}>
+              Cancel
+            </button>
+          </>
+        ) : confirming ? (
+          <>
+            <span>Delete this comment from your GitHub pending review?</span>
+            <button
+              type="button"
+              disabled={action.busy}
+              onClick={() => void action.run(() => onDelete(comment.id))}
+              className={BUTTON}
+            >
+              Delete from GitHub
+            </button>
+            <button type="button" onClick={() => setConfirming(false)} className={BUTTON}>
+              Keep
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" onClick={() => setDraft(comment.body)} className={BUTTON}>
+              Edit
+            </button>
+            <button type="button" onClick={() => setConfirming(true)} className={BUTTON}>
+              Delete
+            </button>
+          </>
+        )}
+      </div>
+      {action.error && (
+        <p role="alert" className="text-[12px] text-high">
+          Not saved: {action.error}
+        </p>
+      )}
+    </li>
+  );
+}
+
+/** Comment on any displayed line into the user's GitHub pending review (brief §4.3 Dock, ADR-006). */
+export function CommentComposer(props: CommentComposerProps) {
+  const { available, line, onCreate, unresolved, onUnresolvedChange: setUnresolved } = props;
+  const id = useId();
+  // Unconfirmed posts live with the screen (props): after a failure the server may have created the comment,
+  // so the only ways on are Retry with the same key and payload, or Discard — also after a remount.
+  const inFlight = useRef(new Set<string>());
+
+  const heading = (
+    <h3 id={`${id}-h`} className="text-[10.5px] font-bold tracking-wide text-muted uppercase">
+      Comment
+    </h3>
+  );
+  let body;
+  if (!available) {
+    body = (
+      <p className="text-[12.5px]">
+        Commenting is not available for this pull request: the smart-review GitHub App is not installed on
+        this repository, so comments cannot be written into your GitHub pending review. Comment on GitHub
+        directly.
+      </p>
+    );
+  } else if (line === null) {
+    body = (
+      <p className="text-[12.5px] text-muted">
+        Click a line number in the code to comment on that line (c comments on the current line). Any
+        displayed line can take a comment, with or without an LLM remark.
+      </p>
+    );
+  } else {
+    const key = identity(line.target);
+    /** Sends `request` once at a time per target; resolves to the response, or null when it failed. */
+    const send = async (request: CreateCommentRequest): Promise<CreateCommentResponse | null> => {
+      // The registry blocks a target in flight across remounts; the ref also catches a second click in one tick.
+      if (inFlight.current.has(key) || unresolved[key]?.error === null) return null;
+      inFlight.current.add(key);
+      setUnresolved((all) => ({ ...all, [key]: { request, error: null } }));
+      try {
+        const response = await onCreate(request);
+        setUnresolved((all) => without(all, key));
+        return response;
+      } catch (error) {
+        setUnresolved((all) => ({ ...all, [key]: { request, error: messageOf(error) } }));
+        return null;
+      } finally {
+        inFlight.current.delete(key);
+      }
+    };
+    const discard = () => setUnresolved((all) => without(all, key));
+    // Draft, error and confirmation belong to one target: another target starts afresh, an old outcome is dropped.
+    body = (
+      <Draft key={key} {...props} line={line} post={unresolved[key] ?? null} send={send} discard={discard} />
+    );
+  }
+  return (
+    <section aria-labelledby={`${id}-h`}>
+      {heading}
+      {body}
+    </section>
+  );
+}
+
+interface DraftProps extends Omit<CommentComposerProps, "unresolved"> {
+  line: CommentLine;
+  /** The unresolved post of this target. */
+  post: UnresolvedPost | null;
+  send: (request: CreateCommentRequest) => Promise<CreateCommentResponse | null>;
+  discard: () => void;
+}
+
+function Draft({
+  line,
+  comments,
+  onEdit,
+  onDelete,
+  onCancel,
+  textareaRef,
+  post: unresolved,
+  send,
+  discard,
+}: DraftProps) {
+  const id = useId();
+  const field = useRef<HTMLTextAreaElement | null>(null);
+  const [text, setText] = useState("");
+  const [empty, setEmpty] = useState(false);
+  const [done, setDone] = useState<CreateCommentResponse | null>(null);
+
+  // A newly chosen line takes the focus (click on a line number, or `c`).
+  useEffect(() => field.current?.focus(), []);
+
+  const location = where(line.target);
+  if (line.placement === "not_in_diff") {
+    return (
+      <>
+        <p className="text-[12.5px]">
+          On <code>{location}</code>. This file is not part of the PR diff, and GitHub does not accept review
+          comments on it. Link to the line instead:{" "}
+          <GithubLink url={line.permalink} tip="Open the line on GitHub at the analysed commit (new tab)">
+            Open the line on GitHub
+          </GithubLink>{" "}
+          <code className="text-[11px] break-all text-muted">{line.permalink}</code>
+        </p>
+        <button type="button" onClick={onCancel} className={`${BUTTON} mt-1`}>
+          Cancel
+        </button>
+      </>
+    );
+  }
+
+  const locked = unresolved !== null;
+  const pending = locked && unresolved.error === null;
+  const submit = async () => {
+    const body = text.trim();
+    if (!body) {
+      setEmpty(true);
+      field.current?.focus();
+      return;
+    }
+    setEmpty(false);
+    setDone(null);
+    const response = await send({ idempotency_key: newIdempotencyKey(), target: line.target, body });
+    if (response) finish(response);
+  };
+  const finish = (response: CreateCommentResponse) => {
+    setText("");
+    setDone(response);
+    requestAnimationFrame(() => growField(field.current));
+  };
+  const retry = async () => {
+    if (!unresolved) return;
+    setDone(null);
+    const response = await send(unresolved.request);
+    if (response) finish(response);
+  };
+
+  const mine = comments.filter((c) => onTarget(c, line.target));
+  const error = empty ? "Write a comment first." : unresolved?.error && `Not confirmed: ${unresolved.error}`;
+  const preview = line.placement === "line" || line.placement === "file" ? line.placement : null;
+  return (
+    <>
+      <form
+        className="grid gap-1 text-[12.5px]"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!locked) void submit();
+        }}
+      >
+        <p className="flex flex-wrap items-center gap-2">
+          <span>
+            On <code>{location}</code>
+          </span>
+          <button type="button" onClick={onCancel} className={BUTTON}>
+            Cancel
+          </button>
+        </p>
+        {line.placement === "file" && (
+          <p className="rounded-md border-l-4 border-l-mv-bd bg-surface px-2 py-1">
+            This line is outside the PR diff, so the comment is posted as a file comment whose text links to
+            the line.
+          </p>
+        )}
+        {line.placement === "on_post" && (
+          <p className="rounded-md border-l-4 border-l-mv-bd bg-surface px-2 py-1">
+            Whether this becomes a line comment or a file comment is decided when it is posted.
+          </p>
+        )}
+        <textarea
+          ref={(el) => {
+            field.current = el;
+            assignRef(textareaRef, el);
+          }}
+          rows={3}
+          value={locked ? unresolved.request.body : text}
+          readOnly={locked}
+          aria-label={`Comment on ${location}`}
+          aria-invalid={empty || undefined}
+          aria-describedby={error ? `${id}-e` : undefined}
+          placeholder="Your comment"
+          onChange={(event) => {
+            setText(event.target.value);
+            setEmpty(false);
+            growField(event.target);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") onCancel();
+          }}
+          className={FIELD}
+        />
+        {error && (
+          <p id={`${id}-e`} role="alert" className="text-[12px] text-high">
+            {error}
+          </p>
+        )}
+        {locked && !pending ? (
+          <>
+            <p className="text-[12px]">
+              The comment may already be in your GitHub pending review. Retry sends the same comment with the
+              same key, so it is not added twice. Discard makes it editable again; check the list below first,
+              because posting it again may add it twice.
+            </p>
+            <p className="flex flex-wrap items-center gap-2">
+              <button type="button" onClick={() => void retry()} className={PRIMARY}>
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setText(unresolved.request.body);
+                  discard();
+                }}
+                className={BUTTON}
+              >
+                Discard
+              </button>
+            </p>
+          </>
+        ) : (
+          <p className="flex flex-wrap items-center gap-2">
+            <button type="submit" disabled={pending} className={PRIMARY}>
+              {pending ? "Adding…" : "Add to GitHub pending review"}
+            </button>
+            <span className="text-[11.5px] text-muted">
+              The first comment creates the pending review; you submit it on GitHub.
+            </span>
+          </p>
+        )}
+        {done && (
+          <p role="status" className="text-[12px]">
+            Added to your GitHub pending review as {KIND[done.comment.kind]}
+            {preview && preview !== done.comment.kind && `, not as the ${preview} comment previewed`}.
+            {done.missed_by_llm_recorded &&
+              " Also recorded as missed by the LLM: this changed line has no LLM remark."}
+          </p>
+        )}
+      </form>
+      {mine.length > 0 && (
+        <>
+          <h4 id={`${id}-mine`} className="mt-2 text-[11.5px] font-semibold text-muted">
+            Your pending comments on this line
+          </h4>
+          <ul aria-labelledby={`${id}-mine`} className="mt-1 grid list-none gap-1.5 p-0 text-[12.5px]">
+            {mine.map((c) => (
+              <OwnComment key={c.id} comment={c} onEdit={onEdit} onDelete={onDelete} />
+            ))}
+          </ul>
+        </>
+      )}
+    </>
+  );
+}

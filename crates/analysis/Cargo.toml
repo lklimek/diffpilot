@@ -8,11 +8,13 @@ publish.workspace = true
 [dependencies]
 contracts.workspace = true
 regex.workspace = true
+serde.workspace = true
+similar.workspace = true
 thiserror.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 
