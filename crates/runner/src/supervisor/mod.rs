@@ -15,12 +15,12 @@ use std::path::Path;
 /// Runs a helper mode (`copy-in`, `copy-out`, `list`, `clear`, `inspect`) and returns the exit code. Helpers
 /// never run as root.
 pub fn helper(args: &[OsString]) -> i32 {
+    if args.first().is_some_and(|mode| mode == serve::EXEC_AGENT) {
+        return exec_agent(args.get(1..).unwrap_or_default());
+    }
     if rustix::process::geteuid().is_root() {
         eprintln!("helpers never run as root");
         return 2;
-    }
-    if args.first().is_some_and(|mode| mode == serve::EXEC_AGENT) {
-        return exec_agent(args.get(2..).unwrap_or_default());
     }
     let arg = |index: usize| args.get(index).map(Path::new);
     let result = match (args.first().and_then(|mode| mode.to_str()), arg(1), arg(2)) {
@@ -65,12 +65,37 @@ pub fn helper(args: &[OsString]) -> i32 {
 
 /// Becomes the agent process `argv` (environment and cwd as the supervisor set them): `oom_score_adj` 1000 so
 /// the OOM killer takes agents first, its own session and process group, then `execve`.
-fn exec_agent(argv: &[OsString]) -> i32 {
+fn exec_agent(args: &[OsString]) -> i32 {
     use std::os::unix::process::CommandExt as _;
+    let (Some(cwd), Some(identity), Some(argv)) = (
+        args.first(),
+        args.get(1).and_then(|identity| identity.to_str()),
+        args.get(3..),
+    ) else {
+        eprintln!("exec-agent: usage: exec-agent CWD UID:GID|- -- ARGV");
+        return 2;
+    };
     let Some((program, rest)) = argv.split_first() else {
         eprintln!("exec-agent: no program");
         return 2;
     };
+    let switch = match identity {
+        "-" => None,
+        pair => match pair
+            .split_once(':')
+            .and_then(|(uid, gid)| Some((uid.parse::<u32>().ok()?, gid.parse::<u32>().ok()?)))
+        {
+            Some((uid, gid)) if uid != 0 && gid != 0 => Some((uid, gid)),
+            _ => {
+                eprintln!("exec-agent: bad UID:GID");
+                return 2;
+            }
+        },
+    };
+    if switch.is_none() && rustix::process::geteuid().is_root() {
+        eprintln!("exec-agent: refusing to run an agent as root");
+        return 2;
+    }
     if let Err(error) = std::fs::write("/proc/self/oom_score_adj", "1000") {
         eprintln!("exec-agent: oom_score_adj: {error}");
         return 126;
@@ -79,7 +104,13 @@ fn exec_agent(argv: &[OsString]) -> i32 {
         eprintln!("exec-agent: setsid: {error}");
         return 126;
     }
-    let error = std::process::Command::new(program).args(rest).exec();
+    let mut command = std::process::Command::new(program);
+    // std switches groups, gid and uid, then changes into `cwd` (as the agent: the directory is the agent's).
+    command.args(rest).current_dir(cwd);
+    if let Some((uid, gid)) = switch {
+        command.uid(uid).gid(gid);
+    }
+    let error = command.exec();
     eprintln!("exec-agent: {error}");
     127
 }

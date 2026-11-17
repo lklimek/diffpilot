@@ -134,10 +134,16 @@ setuid/setgid bits stripped).
   `SCM_RIGHTS`.
 - **Control fd:** the runner's end is its stdin, `SR_SUPERVISOR_FD=0` (no `pre_exec` to place it); the
   supervisor names its own binary in `SR_SUPERVISOR_BIN` for the helper modes.
-- **Spawn:** `std::process::Command` (`uid`/`gid`, `env_clear`, `Stdio::from(OwnedFd)`) of the binary's
-  `exec-agent -- ARGV` mode, which writes `oom_score_adj` 1000, calls `setsid()` and `exec`s `ARGV` (instead of
-  `pre_exec`); umask 077 is set around the spawn. Reaping: `waitpid(-1, WNOHANG)` as subreaper, statuses kept
-  while a sweep reaps.
+- **Spawn:** `std::process::Command` (`env_clear`, `Stdio::from(OwnedFd)`) of the binary's
+  `exec-agent CWD UID:GID -- ARGV` mode, still as root; it writes `oom_score_adj` 1000, calls `setsid()`, then
+  `exec`s `ARGV` through `Command` with `uid`/`gid`/`current_dir` (std: `setgroups(0)`, gid, uid, then `chdir`
+  as the agent). The uid switch is in the wrapper, not in the forked child, because std's `spawn` blocks until
+  the child `exec`s: an agent that SIGSTOPs every process of its uid stopped a child that had already switched,
+  and the supervisor hung (container test, hostile agent). The wrapper is root until its `exec`, so the
+  supervisor treats every unreaped spawned child as running: `exclusive` spawns are refused while one exists,
+  `sweep` SIGKILLs them by pid first (an unreaped child's pid cannot be reused), and `signal` to a spawned pid
+  that is not an agent group yet goes to that child. umask 077 is set around the spawn. Reaping:
+  `waitpid(-1, WNOHANG)` as subreaper, statuses kept while a sweep reaps.
 - **Helper exit codes:** 0 ok; `copy-out` 2 = open refused (link, mount, escape, missing), 3 = not a regular file
   with one link, 4 = larger than MAX; 1 = any other error; 2 also for usage errors. A helper first restores its
   own access to entries the agent locked (mode 000) through an `O_PATH` no-follow descriptor, so `clear` and

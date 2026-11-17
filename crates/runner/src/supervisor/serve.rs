@@ -151,12 +151,21 @@ impl Server {
                 }
             },
             Op::Signal { pid, signal } => match self.spawned.get(&pid) {
-                Some(None) => procs::signal_group(pid, signal, self.target)
-                    .map(|signalled| Reply {
-                        signalled: Some(signalled),
-                        ..Reply::default()
-                    })
-                    .map_err(|error| error.to_string()),
+                Some(None) => match procs::signal_group(pid, signal, self.target) {
+                    // Still the root wrapper (not yet the agent's group): signal the unreaped child itself;
+                    // its pid cannot have been reused.
+                    Err(procs::SignalRefused::NotAgentGroup(_)) => Self::signal_child(pid, signal)
+                        .map(|signalled| Reply {
+                            signalled: Some(signalled),
+                            ..Reply::default()
+                        }),
+                    result => result
+                        .map(|signalled| Reply {
+                            signalled: Some(signalled),
+                            ..Reply::default()
+                        })
+                        .map_err(|error| error.to_string()),
+                },
                 _ => Err("not a running spawned pid".to_owned()),
             },
         };
@@ -179,8 +188,35 @@ impl Server {
     }
 
     /// SIGKILL to every agent process, reaping between rounds; an error means fail closed.
+    /// `signal` to an unreaped spawned child that is not the agent yet.
+    fn signal_child(pid: i32, signal: i32) -> Result<u32, String> {
+        let signal = match signal {
+            2 => Signal::INT,
+            9 => Signal::KILL,
+            15 => Signal::TERM,
+            other => return Err(format!("signal {other} is not allowed")),
+        };
+        let pid = Pid::from_raw(pid).ok_or_else(|| "bad pid".to_owned())?;
+        Ok(u32::from(kill_process(pid, signal).is_ok()))
+    }
+
+    /// An agent thread lives, or a spawned child is not reaped yet (it may still be the root wrapper that is
+    /// about to become the agent).
+    fn agent_running(&mut self) -> bool {
+        self.collect();
+        self.spawned.values().any(Option::is_none) || procs::agent_alive(self.target)
+    }
+
     fn sweep(&mut self) -> Result<Reply, String> {
         let started = std::time::Instant::now();
+        // A spawned child still in its root wrapper has no agent uid yet: kill it by pid. It is an unreaped
+        // child of this process, so the pid cannot have been reused.
+        self.collect();
+        for (&pid, _) in self.spawned.iter().filter(|(_, status)| status.is_none()) {
+            if let Some(pid) = Pid::from_raw(pid) {
+                let _ = kill_process(pid, Signal::KILL);
+            }
+        }
         let (target, deadline) = (self.target, self.config.sweep_deadline);
         let result = if self.config.fail_sweeps {
             Err(procs::SweepFailed {
@@ -295,18 +331,27 @@ impl Server {
         let own_helper = Path::new(program) == self.config.binary
             || std::fs::canonicalize(program).ok()
                 == std::fs::canonicalize(&self.config.binary).ok();
-        if (exclusive || own_helper) && procs::agent_alive(self.target) {
+        if (exclusive || own_helper) && self.agent_running() {
             return Err(
                 "refused: helpers run only after a sweep (an agent process is alive)".to_owned(),
             );
         }
+        // The wrapper starts as root and switches to the agent itself, so `spawn` returns at its exec: an agent
+        // that stops every process of its uid cannot stop a child that std's spawn is still waiting for.
+        let identity = if self.config.privileged {
+            format!("{}:{}", self.config.agent.uid, self.config.agent.gid)
+        } else {
+            "-".to_owned()
+        };
         let mut command = Command::new(&self.config.binary);
         command
             .arg(EXEC_AGENT)
+            .arg(cwd)
+            .arg(identity)
             .arg("--")
             .args(argv)
             .env_clear()
-            .current_dir(cwd)
+            .current_dir("/")
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
@@ -315,11 +360,6 @@ impl Server {
                 .split_once('=')
                 .ok_or_else(|| "env entries are KEY=VALUE".to_owned())?;
             command.env(key, value);
-        }
-        if self.config.privileged {
-            command
-                .uid(self.config.agent.uid)
-                .gid(self.config.agent.gid);
         }
         // Agent files are private to the agent (single-threaded: the mask is restored right after).
         let previous = rustix::process::umask(Mode::from_raw_mode(0o077));
