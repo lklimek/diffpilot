@@ -6,7 +6,8 @@ import type { AnalysisEvent } from "../api/generated/types";
 import { setFixtureState } from "./fixtures";
 import { handlers } from "./handlers";
 import { setMockLanguage } from "./handlers/get-settings";
-import { RUN_STEP_MS, resetLive } from "./live-analysis";
+import { RUN_STEP_MS, resetLive, setLiveState } from "./live-analysis";
+import { resetStore } from "./review-store";
 import { MOVED_HEAD, setScenario } from "./scenarios";
 
 const BASE = location.origin;
@@ -17,6 +18,7 @@ afterEach(() => {
   setScenario(null);
   setMockLanguage(null);
   resetLive();
+  resetStore();
   vi.useRealTimers();
 });
 afterAll(() => server.close());
@@ -54,6 +56,7 @@ describe("msw handlers from fixtures/pr-482", () => {
       head_sha: resolved.pr.head_sha,
     });
     expect(created.state).toEqual({ state: "planning" });
+    setLiveState({ state: "finished", total: 5 });
     const tour = await api.getTour(created.id);
     expect(tour.flows.map((f) => f.id)).toEqual(["f1", "f2", "f3", "f4", "f5"]);
   });

@@ -3,10 +3,12 @@
 import type {
   AnalysisState,
   AnalysisSummary,
+  AskQuestion,
   MeResponse,
   RepoSettings,
   ResolvePrResponse,
   Settings,
+  Tour,
 } from "../api/generated/types";
 import { seedNow } from "./fixtures";
 
@@ -45,7 +47,65 @@ interface Scenario {
   settings?: Settings;
   /** `repos/{owner}/{name}/settings` answer. */
   repoSettings?: RepoSettings;
+  /** Changes to the `tour` answer. */
+  tour?: (seed: Tour) => Tour;
+  /** Changes to the stored questions. */
+  questions?: (seed: AskQuestion[]) => AskQuestion[];
 }
+
+/** Markup and a script URL in agent output (threat model T12): the page must show them as text. */
+export const XSS = {
+  markup: '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>',
+  url: "javascript:window.__xss=3",
+} as const;
+
+/** The seed tour with markup in LLM strings and script URLs in LLM-adjacent links. */
+function withXss(seed: Tour): Tour {
+  const tour = structuredClone(seed);
+  const flow = tour.flows[0]!;
+  const step = flow.steps[0]!;
+  flow.llm.title = `${XSS.markup} retry`;
+  flow.llm.introduction.problem_before = XSS.markup;
+  step.llm.title = `${XSS.markup} trigger`;
+  step.llm.why = XSS.markup;
+  step.facts.github_url = XSS.url;
+  for (const annotation of flow.steps.flatMap((s) => s.llm.annotations)) {
+    annotation.was = XSS.markup;
+    annotation.text = XSS.markup;
+  }
+  tour.pr_context.llm.problem = XSS.markup;
+  tour.pr_context.llm.related_work = tour.pr_context.llm.related_work.map((w) => ({
+    ...w,
+    reference: XSS.url,
+  }));
+  tour.threads = tour.threads.map((t) => ({ ...t, excerpt: XSS.markup, url: XSS.url }));
+  for (const s of flow.steps) {
+    s.facts.github_url = XSS.url;
+    s.llm.impact = s.llm.impact.map((i) => ({ ...i, reason: XSS.markup, github_url: XSS.url }));
+  }
+  flow.llm.pattern_repetitions = flow.llm.pattern_repetitions.map((p) => ({
+    ...p,
+    description: XSS.markup,
+    sites: p.sites.map((site) => ({ ...site, github_url: XSS.url })),
+  }));
+  flow.graph.nodes = flow.graph.nodes.map((n) => ({ ...n, label: `${XSS.markup} ${n.number}` }));
+  flow.graph.edges = flow.graph.edges.map((e) => ({ ...e, label: e.label === null ? null : XSS.markup }));
+  return tour;
+}
+
+/** A pinned LLM answer with markup on the first step of flow 1. */
+const xssQuestions = (seed: AskQuestion[]): AskQuestion[] => [
+  ...seed,
+  {
+    id: "3f1c5a7e-0482-4d2b-9e6f-0000000000x5",
+    step_id: "f1.1",
+    text: XSS.markup,
+    state: "answered",
+    answer: { answer: `${XSS.markup} answer`, evidence: [] },
+    failure: null,
+    created_at: "2026-11-16T10:30:00Z",
+  },
+];
 
 const analysisAt = (state: AnalysisState): AnalysisSummary => ({
   ...(seedNow("analysis") as AnalysisSummary),
@@ -108,6 +168,7 @@ const SCENARIOS = {
       },
     },
   },
+  xss: { tour: withXss, questions: xssQuestions },
   "llm-unknown": {
     settings: { ...SETTINGS, llm_status: null, language: "pl" },
     repoSettings: { ...REPO_SETTINGS, related_repos: [], project_profile: { sources: [] } },

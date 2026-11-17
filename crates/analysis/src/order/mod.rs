@@ -1,6 +1,7 @@
 //! Tour ordering of flows (brief §4.3): behaviour flows by importance, then LLM-classified refactors, then
 //! LLM-classified tests. Quiet rows always follow, Unexplained first among them (fixed by the API shape).
 
+use contracts::agent::plan::PlannedFlow;
 use contracts::api::tour::FlowGroup;
 use contracts::ids::FlowId;
 
@@ -15,6 +16,16 @@ pub struct OrderInput {
     pub importance_rank: u32,
 }
 
+impl From<&PlannedFlow> for OrderInput {
+    fn from(flow: &PlannedFlow) -> Self {
+        Self {
+            id: flow.id.clone(),
+            group: flow.classification.into(),
+            importance_rank: flow.importance_rank,
+        }
+    }
+}
+
 /// Flow ids in tour order: by group, then importance rank, then id.
 pub fn tour_order(flows: &[OrderInput]) -> Vec<FlowId> {
     let mut sorted: Vec<&OrderInput> = flows.iter().collect();
@@ -26,6 +37,8 @@ pub fn tour_order(flows: &[OrderInput]) -> Vec<FlowId> {
 
 #[cfg(test)]
 mod tests {
+    use contracts::common::Classification;
+
     use super::*;
 
     fn input(id: &str, group: FlowGroup, rank: u32) -> OrderInput {
@@ -47,6 +60,32 @@ mod tests {
         ];
         let order: Vec<String> = tour_order(&flows).into_iter().map(|id| id.0).collect();
         assert_eq!(order, ["f4", "f2", "f5", "f3", "f1"]);
+    }
+
+    #[test]
+    fn llm_classified_refactors_and_tests_follow_every_behaviour_flow() {
+        let planned = |id: &str, classification, rank| PlannedFlow {
+            id: FlowId(id.to_owned()),
+            title: String::new(),
+            classification,
+            importance_rank: rank,
+            intent: String::new(),
+            hunks: Vec::new(),
+            depends_on: Vec::new(),
+        };
+        let flows: Vec<OrderInput> = [
+            planned("f1", Classification::Test, 1),
+            planned("f2", Classification::Rename, 2),
+            planned("f3", Classification::Move, 6),
+            planned("f4", Classification::RefactorPure, 3),
+            planned("f5", Classification::DocsComments, 5),
+            planned("f6", Classification::Behavioural, 4),
+        ]
+        .iter()
+        .map(OrderInput::from)
+        .collect();
+        let order: Vec<String> = tour_order(&flows).into_iter().map(|id| id.0).collect();
+        assert_eq!(order, ["f6", "f5", "f3", "f2", "f4", "f1"]);
     }
 
     #[test]

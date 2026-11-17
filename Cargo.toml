@@ -59,6 +59,9 @@ sha2 = "0.11.1"
 getrandom = "0.4.3"
 subtle = "2.6.1"
 similar = "3.2.1"
+ra-ap-rustc_lexer = "0.185.0"
+regex = "1.13.1"
+toml_edit = { version = "0.25.19", default-features = false, features = ["parse"] }
 
 # Tests
 tower = { version = "0.5.3", features = ["util"] }
