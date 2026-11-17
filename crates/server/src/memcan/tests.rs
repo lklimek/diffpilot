@@ -537,6 +537,21 @@ async fn rejected_entries_retry_on_their_own_schedule_without_starving_others() 
         sweep(db, &fake.config(), t0).await.expect("sweep"),
         swept(0, 20, false)
     );
+    // The 21 broken entries tie on attempts and age, so which one the first batch left out is random.
+    let left_out: Vec<FeedbackId> = db
+        .feedback()
+        .pending_memcan(t0, 100)
+        .await
+        .expect("due")
+        .iter()
+        .map(|entry| entry.feedback.id)
+        .filter(|id| broken.contains(id))
+        .collect();
+    assert_eq!(left_out.len(), 1, "one broken entry beyond the batch");
+    let transient = broken
+        .iter()
+        .find(|id| !left_out.contains(id))
+        .expect("tried at t0");
     let second = sweep(db, &fake.config(), t0 + TimeDelta::seconds(1))
         .await
         .expect("sweep");
@@ -551,7 +566,7 @@ async fn rejected_entries_retry_on_their_own_schedule_without_starving_others() 
         "nothing due: no retry storm"
     );
     assert_eq!(fake.calls().len(), calls);
-    fake.allow(&broken[0].to_string());
+    fake.allow(&transient.to_string());
     let retried = sweep(db, &fake.config(), t0 + FIRST_RETRY)
         .await
         .expect("sweep");
