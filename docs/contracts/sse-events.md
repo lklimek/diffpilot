@@ -32,8 +32,10 @@
   {index, title}` (1-based position in the stored plan, its title) only for `flow` and only when the stored plan
   lists it. `started_at` = claim time of the job; null while it waits for the runner (queued, e.g. behind another
   analysis, or paused). `stage` absent = no live job (e.g. between a job's end and the next submit). Facts only:
-  no estimate, no percentage, no provider activity. An `analysis` event is also sent when a runner claims a job
-  of the analysis (the stage starts), not only on progress.
+  no estimate, no percentage, no provider activity. An `analysis` event is also sent whenever a job of the
+  analysis changes state (submitted, claimed, ended, requeued after a lease expiry or a released claim, paused,
+  resumed): the job's follower publishes the summary within its poll interval (250 ms), and the claim route at
+  once. A summary equal to the one published last is not sent again.
 - `question {question}`: full `AskQuestion` on every state change: `pending` → `answering` → `answered` |
   `failed`. `answered` is sent as soon as the job's output arrives before compaction (runner
   `OutputReady`, ADR-004); if that attempt is later requeued or cancelled, a new `question` event returns it to

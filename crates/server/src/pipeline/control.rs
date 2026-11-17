@@ -157,7 +157,6 @@ pub async fn recover_cancellations(state: &AppState) -> Result<usize, ControlErr
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use chrono::TimeDelta;
     use contracts::agent::JobKind;
@@ -172,7 +171,6 @@ mod tests {
 
     use super::*;
     use crate::config::tests::test_config;
-    use crate::jobs::queue::QueueExecutor;
 
     async fn enqueue(db: &Db, analysis: AnalysisId, flow: &str) -> contracts::ids::JobId {
         db.jobs()
@@ -243,8 +241,7 @@ mod tests {
     async fn restart_after_each_cancel_step_finishes_the_clean_up() {
         for done in 1..=4 {
             let db = Db::in_memory().await.expect("db");
-            let executor = Arc::new(QueueExecutor::new(db.clone()));
-            let state = AppState::new(test_config(), db.clone(), executor.clone());
+            let state = AppState::with_queue(test_config(), db.clone());
             let (analysis, jobs) = live(&db).await;
             db.analyses()
                 .set_state(analysis, &AnalysisState::Cancelled, Utc::now())

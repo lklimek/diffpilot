@@ -4,13 +4,11 @@ use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use db::error::DbError;
 use db::repo::Db;
 use server::api;
 use server::config::{Config, ConfigError, LISTEN_ADDR, RUNNER_LISTEN_ADDR};
-use server::jobs::queue::QueueExecutor;
 use server::state::AppState;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
@@ -100,8 +98,7 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         .map_err(|source| StartError::Database { path, source })?;
     let public = bind(LISTEN_ADDR, config.listen_addr).await?;
     let runner = bind(RUNNER_LISTEN_ADDR, config.runner_listen_addr).await?;
-    let executor = Arc::new(QueueExecutor::new(db.clone()));
-    let state = AppState::new(config, db, executor);
+    let state = AppState::with_queue(config, db);
     tokio::spawn(server::jobs::github_tokens::run_worker(
         state.db.clone(),
         state.config.clone(),

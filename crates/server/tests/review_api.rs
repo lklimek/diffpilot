@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -29,7 +28,6 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use server::api;
 use server::config::Config;
-use server::jobs::queue::QueueExecutor;
 use server::secrets::sha256;
 use server::state::AppState;
 use tempfile::TempDir;
@@ -101,8 +99,7 @@ impl Harness {
             Some(timeout) => file_backed_with_busy_timeout(dir.path(), timeout).await,
         }
         .expect("db");
-        let executor = Arc::new(QueueExecutor::new(db.clone()));
-        let state = AppState::new(config(dir.path()), db, executor);
+        let state = AppState::with_queue(config(dir.path()), db);
         let pr: PrSummary = serde_json::from_value(
             read_json(&fixtures().join("api-seed/default/pr-resolve.json"))["pr"].clone(),
         )
