@@ -18,10 +18,13 @@ function linesText(item: NotAnalysedItem): string {
 }
 
 function recognisedBy(section: NotAnalysedSection): string {
-  const byPath = section.items.some((i) => i.badge === "classified_by_path");
-  const byLine = section.items.some((i) => i.badge === "classified_by_line_rule");
-  const how = byPath && byLine ? "file path and line rule" : byLine ? "line rule" : "file path";
-  return `Recognised by ${how}, no LLM.`;
+  const has = (badge: NotAnalysedItem["badge"]) => section.items.some((i) => i.badge === badge);
+  const how = [
+    has("classified_by_path") && "file path",
+    has("classified_by_line_rule") && "line rule",
+    has("binary_content") && "git's binary check",
+  ].filter(Boolean);
+  return `Recognised by ${how.length > 0 ? how.join(" and ") : "file path"}, no LLM.`;
 }
 
 function Counter({ section, counters }: NotAnalysedBlockProps) {

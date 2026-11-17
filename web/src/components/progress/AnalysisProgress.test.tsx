@@ -104,10 +104,18 @@ describe("AnalysisProgress (brief §4.2)", () => {
     expect(buttons()).toEqual([]);
   });
 
-  it("disables the actions while a request runs", () => {
-    show({ state: "failed", flow: null, message: "x" }, true);
-    expect(screen.getByRole("button", { name: "Retry" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Cancel analysis" })).toBeDisabled();
+  it("disables the actions while a request runs", async () => {
+    const { onRetry, onCancel } = show({ state: "failed", flow: null, message: "x" }, true);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    for (const name of ["Retry", "Cancel analysis"]) {
+      const button = screen.getByRole("button", { name });
+      expect(button).toHaveAttribute("aria-disabled", "true");
+      expect(button).not.toHaveAttribute("disabled");
+      expect(button).toHaveAccessibleDescription(/Not available while the current request runs\./);
+    }
   });
 
   it("every button and link has a tooltip; no banned wording in any state", () => {

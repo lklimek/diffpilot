@@ -20,7 +20,17 @@ describe("PrUrlForm", () => {
       "https://github.com/acme/node-client/pull/482",
     );
     const analyze = screen.getByRole("button", { name: "Analyze" });
-    expect(analyze).toBeDisabled();
-    expect(analyze).toHaveAccessibleDescription(/existing analysis/);
+    expect(analyze).toHaveAttribute("aria-disabled", "true");
+    expect(analyze).not.toHaveAttribute("disabled");
+    expect(analyze).toHaveAccessibleDescription(
+      /existing analysis.*Not available while the current request runs\./,
+    );
+  });
+
+  it("does not submit while busy", async () => {
+    const onSubmit = vi.fn();
+    render(<PrUrlForm busy initialUrl="https://github.com/acme/node-client/pull/482" onSubmit={onSubmit} />);
+    await userEvent.click(screen.getByRole("button", { name: "Analyze" }));
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });

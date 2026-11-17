@@ -395,3 +395,59 @@ test("review threads not checked or partial never read as complete", async ({ pa
     "Review threads: the list from GitHub is incomplete",
   );
 });
+
+test("right after a click on a nav row the next row is clickable, without moving the mouse away", async ({
+  page,
+}) => {
+  await openTour(page);
+  const nav = page.getByRole("navigation");
+  for (const [row, next] of [
+    [/^PR context/, /^Flow 1:/],
+    [/^Unexplained/, /^Moves with identical text/],
+    [/^Moves with identical text/, /^Tests/],
+  ] as const) {
+    const clicked = nav.getByRole("button", { name: row });
+    await clicked.click();
+    // The clicked row keeps the focus under the pointer, without a tip over the rows below.
+    await expect(clicked).toBeFocused();
+    await expect(page.getByRole("tooltip").filter({ visible: true })).toHaveCount(0);
+    // No hover away, no force: a tip covering the next row would intercept this click.
+    await nav.getByRole("button", { name: next }).click({ timeout: 3000 });
+    await expect(nav.getByRole("button", { name: next })).toHaveAttribute("aria-current", /.+/);
+  }
+});
+
+test("a binary file is listed in Not analysed with its badge and tooltip", async ({ page }) => {
+  await page.goto(`/analyses/${ANALYSIS_ID}?scenario=binary-file`);
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: /^Mechanical & generated/ })
+    .click();
+  const block = page.getByRole("main").getByRole("article");
+  await expect(block).toContainText("assets/logo.png whole file · rule binary file (git)");
+  await block.getByText("binary file", { exact: true }).hover();
+  await expect(page.getByRole("tooltip").filter({ visible: true })).toHaveText(
+    "Git treats this file as binary; it is not shown or analysed.",
+  );
+});
+
+test("at the first block, Previous is reachable by keyboard and its tip says why it does nothing", async ({
+  page,
+}) => {
+  await openTour(page);
+  const previous = page.getByRole("main").getByRole("button", { name: "← Previous" });
+  await expect(previous).toHaveAttribute("aria-disabled", "true");
+  await page
+    .getByRole("main")
+    .getByRole("heading", { name: /^PR context:/ })
+    .click();
+  await previous.focus();
+  await expect(previous).toBeFocused();
+  await expect(page.getByRole("tooltip").filter({ visible: true })).toHaveText(
+    "This is the first block; there is none before it.",
+  );
+  await page.keyboard.press("Enter");
+  await expect(page.locator("main h2:not([data-column-title])").first()).toHaveText(
+    "PR context: acme/node-client #482",
+  );
+});

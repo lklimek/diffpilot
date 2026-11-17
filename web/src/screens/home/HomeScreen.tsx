@@ -4,7 +4,7 @@ import type { ResolvePrResponse } from "../../api/generated/types";
 import { useCreateAnalysis, useMe, useResolvePr } from "../../api/queries";
 import { AnalyzeHelp } from "../../components/analyze-help/AnalyzeHelp";
 import { Banner } from "../../components/banner/Banner";
-import { buttonClass } from "../../components/button/button";
+import { busyTip, buttonClass } from "../../components/button/button";
 import { PAUSE_REASON, pausedText } from "../../components/progress/paused";
 import { PrUrlForm } from "../../components/pr-form/PrUrlForm";
 import { SignInCard } from "../../components/sign-in/SignInCard";
@@ -104,11 +104,11 @@ export function HomeScreen() {
                     title={`The GitHub App is not installed on ${resolved.pr.repo.owner}/${resolved.pr.repo.name}.`}
                     actions={
                       outcome?.kind === "analyze" && (
-                        <Tooltip tip="Starts the analysis without the GitHub App.">
+                        <Tooltip tip={busyTip("Starts the analysis without the GitHub App.", busy)}>
                           <button
                             type="button"
-                            disabled={busy}
-                            onClick={() => analyze(resolved)}
+                            aria-disabled={busy || undefined}
+                            onClick={() => !busy && analyze(resolved)}
                             className={SMALL_PRIMARY}
                           >
                             Analyze without it
@@ -177,11 +177,16 @@ export function HomeScreen() {
                     title="The PR has moved."
                     actions={
                       <>
-                        <Tooltip tip="Starts a fresh analysis of the current head; ticks are not carried over.">
+                        <Tooltip
+                          tip={busyTip(
+                            "Starts a fresh analysis of the current head; ticks are not carried over.",
+                            busy,
+                          )}
+                        >
                           <button
                             type="button"
-                            disabled={busy}
-                            onClick={() => analyze(resolved)}
+                            aria-disabled={busy || undefined}
+                            onClick={() => !busy && analyze(resolved)}
                             className={SMALL_PRIMARY}
                           >
                             Re-analyze

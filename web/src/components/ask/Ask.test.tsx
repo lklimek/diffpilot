@@ -115,7 +115,10 @@ describe("AskForm", () => {
     const field = screen.getByRole("textbox");
     await user.type(field, "Why?");
     await user.click(screen.getByRole("button", { name: /^Ask/ }));
-    expect(screen.getByRole("button", { name: /Sending/ })).toBeDisabled();
+    const sending = screen.getByRole("button", { name: /Sending/ });
+    expect(sending).toHaveAttribute("aria-disabled", "true");
+    expect(sending).toHaveAccessibleDescription(/Not available while the current request runs\./);
+    await user.click(sending);
     await user.type(field, "{Enter}");
     expect(onAsk).toHaveBeenCalledOnce();
     pending.reject(new Error("The analysis is not finished."));
@@ -178,7 +181,7 @@ describe("AskAnswers", () => {
     resumes.setHours(23, 59, 0, 0);
     render(<AskAnswers questions={[question({ state: "pending", resumes_at: resumes.toISOString() })]} />);
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Waiting for the LLM usage limit to reset; the question runs at 23:59.",
+      "Waiting for the LLM usage limit to reset; the question resumes automatically at 23:59.",
     );
   });
 

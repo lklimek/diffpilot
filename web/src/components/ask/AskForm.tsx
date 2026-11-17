@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type Ref } from "react";
 import type { StepId } from "../../api/generated/types";
+import { busyTip } from "../button/button";
 import { assignRef, growField, useAction } from "../inspector/action";
 import { Tooltip } from "../tooltip/Tooltip";
 
@@ -92,11 +93,16 @@ function AskDraft({ step, onAsk, inputRef }: AskFormProps & { step: { id: StepId
           }}
           className="min-h-8 flex-1 resize-none rounded-md border border-border bg-surface px-2 py-1 font-sans"
         />
-        <Tooltip tip="Asks the LLM about this step (a). The answer arrives whole and stays pinned to the step.">
+        <Tooltip
+          tip={busyTip(
+            "Asks the LLM about this step (a). The answer arrives whole and stays pinned to the step.",
+            action.busy,
+          )}
+        >
           <button
             type="submit"
-            disabled={action.busy}
-            className="cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold disabled:cursor-wait disabled:opacity-60"
+            aria-disabled={action.busy || undefined}
+            className="cursor-pointer rounded-md border border-border bg-surface px-2.5 py-1 text-[12.5px] font-semibold aria-disabled:cursor-wait aria-disabled:opacity-60"
           >
             {action.busy ? "Sending…" : "Ask"}
           </button>

@@ -68,6 +68,26 @@ function withThreads(seed: Tour, status: ThreadsStatus): Tour {
   return tour;
 }
 
+/** The seed tour with a binary file in Mechanical & generated (the pre-pass lists every binary file). */
+function withBinaryFile(seed: Tour): Tour {
+  const tour = structuredClone(seed);
+  const section = tour.quiet.not_analysed.find((s) => s.category === "generated_mechanical");
+  const item = {
+    file: "assets/logo.png",
+    side: "head" as const,
+    ranges: null,
+    badge: "binary_content" as const,
+    rule: "binary file (git)",
+  };
+  if (section) {
+    section.items.push(item);
+    section.file_count += 1;
+  } else {
+    tour.quiet.not_analysed.push({ category: "generated_mechanical", file_count: 1, items: [item] });
+  }
+  return tour;
+}
+
 /** Facts the server could not establish: dependency files not checked, ranges too large for the LLM. */
 function withUncheckedFacts(seed: Tour): Tour {
   const tour = structuredClone(seed);
@@ -214,6 +234,7 @@ const SCENARIOS = {
   xss: { tour: withXss, questions: xssQuestions },
   "memcan-failed": { memcan: "failed" },
   "repo-not-known": { repoSettings: null },
+  "binary-file": { tour: withBinaryFile },
   "comment-published": { commentPublished: true },
   "pending-incomplete": { pendingReview: (seed) => ({ ...seed, incomplete: true }) },
   "threads-partial": { tour: (seed) => withThreads(seed, "partial") },

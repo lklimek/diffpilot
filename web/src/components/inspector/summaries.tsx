@@ -257,7 +257,7 @@ export function QuietSummary({
       sectionKey="quiet"
       title={CATEGORY[row.category]}
       tone="facts"
-      source="Recognised by file path or line rule; no LLM."
+      source="Recognised by file path, line rule or git's binary check; no LLM."
       sections={sections}
     >
       {section ? (

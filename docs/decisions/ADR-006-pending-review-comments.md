@@ -31,3 +31,6 @@
 - **Listing** reads `reviews(states:[PENDING]){comments}` plus `reviewThreads` for sides; tolerant of the
   eventual consistency of `reviewThreads` after deletes.
 - A comment on a changed line without annotation also records feedback `missed_by_llm`.
+
+## Consequences
+- An edit or delete that races a publish of the same review on GitHub is an accepted residual risk (GitHub has no conditional mutation): the change applies to the published comment, and the server reports `comment_published` with the state it read from the mutation's answer, never a silent success (`docs/contracts/http-api.md` "Edit and delete of a comment published meanwhile").
