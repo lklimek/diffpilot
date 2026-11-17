@@ -140,6 +140,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
             memcan: Some(McpHttpEndpoint {
                 url: "http://memcan.example:8190/".to_owned(),
                 token: Secret::new(MEMCAN_CANARY),
+                allow_write: false,
             }),
         },
         skills: Vec::new(),

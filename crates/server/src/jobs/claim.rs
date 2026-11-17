@@ -7,7 +7,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, TimeDelta, Utc};
 use contracts::ids::AnalysisId;
-use contracts::job::access::{AgentAccess, InstallationToken, Secret};
+use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::protocol::{Claim, ClaimRequest, ClaimResponse, LeaseTiming};
 use contracts::job::spec::{SessionRef, WorkingSession};
 use db::error::DbError;
@@ -15,6 +15,7 @@ use db::repo::analyses::SessionState;
 use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
 use db::repo::{DEFAULT_TENANT, Db};
 use futures::future::BoxFuture;
+use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
@@ -190,9 +191,11 @@ pub async fn claim(
                 .await?;
             spec.access = AgentAccess {
                 github,
-                // Shared MCP memory is not an isolation boundary: an Ask could write instructions
-                // later read by analysis. Only the server's bounded profile/calibration projections apply.
-                memcan: None,
+                // An Ask sees user-typed text, so it only reads shared memory (ADR-004).
+                memcan: Some(memcan_endpoint(
+                    config,
+                    !matches!(job.stage, JobStage::Ask(_)),
+                )),
             };
             Some(Claim {
                 job_token: token,
@@ -206,6 +209,15 @@ pub async fn claim(
         claim,
         drop_sessions,
     })
+}
+
+/// The MemCan endpoint of one job; `allow_write` only for jobs that never see user-typed text.
+fn memcan_endpoint(config: &Config, allow_write: bool) -> McpHttpEndpoint {
+    McpHttpEndpoint {
+        url: config.memcan.url.to_string(),
+        token: Secret::new(config.memcan.token.expose_secret()),
+        allow_write,
+    }
 }
 
 /// The claimed job's spec with the PR's session and the context pack of the results stored now: only the
@@ -344,7 +356,6 @@ async fn store_or_revoke(
 
 #[cfg(test)]
 mod tests {
-    use secrecy::ExposeSecret;
     use std::sync::Arc;
 
     use axum::body::Body;
@@ -656,11 +667,13 @@ mod tests {
         let claimed = claim_one(&s, now).await;
         let github = claimed.spec.access.github.expect("installation token");
         assert_eq!(github.token.expose(), MINTED_TOKEN);
-        assert!(
-            claimed.spec.access.memcan.is_none(),
-            "agents cannot read or write shared memory"
-        );
+        let memcan = claimed.spec.access.memcan.expect("MemCan endpoint");
+        assert_eq!(memcan.url, s.config.memcan.url.to_string());
+        let memcan_token = s.config.memcan.token.expose_secret();
+        assert_eq!(memcan.token.expose(), memcan_token);
+        assert!(memcan.allow_write, "analytic jobs may write memories");
         let logs = capture.text();
+        assert!(!logs.contains(memcan_token), "{logs}");
         assert!(!logs.contains(MINTED_TOKEN), "{logs}");
     }
 

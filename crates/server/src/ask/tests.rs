@@ -1381,10 +1381,8 @@ async fn ask_resumes_analysis_session_with_a_context_pack_of_the_step() {
         pack.contains("Unrelated?"),
         "own questions of other steps survive a re-fork"
     );
-    assert!(
-        claim.spec.access.memcan.is_none(),
-        "no shared memory access"
-    );
+    let memcan = claim.spec.access.memcan.as_ref().expect("MemCan endpoint");
+    assert!(!memcan.allow_write, "an Ask job never gets a write tool");
     assert_eq!(
         claim.spec.access.github, None,
         "no App installed in the test config"

@@ -31,7 +31,8 @@ the same attempt; 400 malformed body.
     claim (`github_unavailable`); the job is retried after its lease, and a token received after the budget is
     still stored and revoked by the worker once that lease expires. A rejected token is never handed out: it
     is stored encrypted like any other and revoked;
-  - `memcan`: URL and token from configuration (runner config limits the MCP to search and `add_memory`).
+  - `memcan`: URL and token from configuration, plus `allow_write` (default false). The runner offers search tools;
+    `add_memory` only when `allow_write` is true, which the server sets for analytic jobs and never for Ask.
 - `drop_sessions`: PR database keys whose session files the runner deletes on explicit removal (ADR-004); it
   acknowledges in the next claim's `dropped_sessions` (at least once; idempotent).
 - The job token is for the runner only: never placed in the agent's environment, config, logs or events.
@@ -140,8 +141,8 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
   as untrusted data. The runner supplies this pack on every lazy/re-fork and lost-session fallback, including
   successful analytic restore, but not on a normal working resume. Lost analytic archive starts a new session.
 - Session and pack preparation precede token minting; failure releases the claim without spending an attempt.
-- `access.memcan` is null: agents cannot write private input into shared memory or read other users' notes.
-  Server-side bounded profile/calibration reads remain available. No new result fields are needed.
+- `access.memcan.allow_write` is false for Ask: an Ask cannot write private input into shared memory.
+  Feedback notes never enter shared memory (server side). No new result fields are needed.
 - `jobs.github_access_granted` records whether the attempt's claim got an installation token; the executor
   reports it with the result (`JobUpdate::Finished { github_access }`), the pipeline stores it with the accepted
   PR context (`documents.github_access`), and the Tour's `related_work_checked` reads only that stored fact.
