@@ -1,5 +1,5 @@
 //! Fake MemCan for the tests: a real MCP server (rmcp, streamable HTTP) with the tools the server calls, MemCan's
-//! answer shapes, a bearer check and switchable misbehaviour.
+//! answer shapes, a bearer check and switchable misbehaviour. Searches rank by memory id.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -306,12 +306,18 @@ fn execute(
                 "project:{}",
                 arguments["project"].as_str().unwrap_or_default()
             );
-            let limit = arguments["limit"].as_u64().unwrap_or(10);
+            let limit =
+                usize::try_from(arguments["limit"].as_u64().unwrap_or(10)).unwrap_or(usize::MAX);
+            let matching = inner
+                .memories
+                .values()
+                .filter(|payload| payload["user_id"] == scope.as_str())
+                .count();
             let memories: Vec<Value> = inner
                 .memories
                 .iter()
                 .filter(|(_, payload)| payload["user_id"] == scope.as_str())
-                .take(usize::try_from(limit).unwrap_or(usize::MAX))
+                .take(limit)
                 .map(|(id, payload)| {
                     let mut entry = payload.clone();
                     if let Value::Object(entry) = &mut entry {
@@ -324,7 +330,7 @@ fn execute(
                     entry
                 })
                 .collect();
-            text(json!({"memories": memories, "has_more": false}))
+            text(json!({"memories": memories, "has_more": matching > limit}))
         }
         other => Err(ErrorData::invalid_params(
             format!("unknown tool {other}"),

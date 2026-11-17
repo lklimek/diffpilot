@@ -54,12 +54,12 @@ impl ProfileLookup {
     }
 }
 
-/// The project profile memory of `project` (the analysed repository's short name); `Ok(None)` when MemCan has
-/// none. An error means "not checked", never "no profile".
+/// The project profile memory of `project` (the analysed repository's short name). An error means "not checked",
+/// never "no profile".
 pub async fn project_profile(
     config: &MemcanConfig,
     project: &str,
-) -> Result<Option<String>, MemcanError> {
+) -> Result<ProfileLookup, MemcanError> {
     const TOOL: &str = "search_memories";
     let client = MemcanClient::connect(config).await?;
     let answer = client
@@ -68,7 +68,14 @@ pub async fn project_profile(
             json!({"query": QUERY, "project": project, "limit": SEARCH_LIMIT}),
         )
         .await?;
-    parse_profile(&answer).ok_or(MemcanError::InvalidResponse { tool: TOOL })
+    let lookup = parse_profile(&answer).ok_or(MemcanError::InvalidResponse { tool: TOOL })?;
+    if lookup == ProfileLookup::NotChecked {
+        tracing::warn!(
+            project,
+            "MemCan's bounded search held no project profile but not every memory; the profile is not checked"
+        );
+    }
+    Ok(lookup)
 }
 
 /// The stored lookup of `analysis`; [`ProfileLookup::NotChecked`] when none is stored.
@@ -95,7 +102,7 @@ pub async fn ensure(
         return Ok(lookup);
     }
     let lookup = match project_profile(config, &summary.pr.repo.name).await {
-        Ok(text) => ProfileLookup::Checked { text },
+        Ok(lookup) => lookup,
         Err(error) => {
             tracing::warn!(analysis = %summary.id, %error,
                 "MemCan project profile not readable; the analysis runs without it (not checked)");
@@ -117,6 +124,7 @@ pub async fn ensure(
 #[derive(Deserialize)]
 struct SearchAnswer {
     memories: Vec<serde_json::Value>,
+    has_more: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -126,18 +134,25 @@ struct Memory {
     kind: String,
 }
 
-/// The first project profile in a `search_memories` answer (`Some(None)`: none); `None` if the answer is not one.
-fn parse_profile(answer: &str) -> Option<Option<String>> {
+/// The lookup a `search_memories` answer proves; `None` if the answer is not one. MemCan has no search by type, so
+/// "no profile" holds only when the answer held every memory of the project (`has_more` false, fewer than the
+/// limit); otherwise a profile may rank below the limit and the lookup is not checked.
+fn parse_profile(answer: &str) -> Option<ProfileLookup> {
     let answer: SearchAnswer = serde_json::from_str(answer).ok()?;
-    Some(
-        answer
-            .memories
-            .into_iter()
-            .filter_map(|memory| serde_json::from_value::<Memory>(memory).ok())
-            .filter(|memory| memory.kind == PROFILE_TYPE)
-            .map(|memory| bounded(&memory.memory))
-            .find(|text| !text.is_empty()),
-    )
+    let exhaustive =
+        answer.has_more == Some(false) && answer.memories.len() < SEARCH_LIMIT as usize;
+    let text = answer
+        .memories
+        .into_iter()
+        .filter_map(|memory| serde_json::from_value::<Memory>(memory).ok())
+        .filter(|memory| memory.kind == PROFILE_TYPE)
+        .map(|memory| bounded(&memory.memory))
+        .find(|text| !text.is_empty());
+    Some(match text {
+        Some(text) => ProfileLookup::Checked { text: Some(text) },
+        None if exhaustive => ProfileLookup::Checked { text: None },
+        None => ProfileLookup::NotChecked,
+    })
 }
 
 /// `text` without control characters other than line breaks and tabs, trimmed and cut to [`MAX_PROFILE_CHARS`].

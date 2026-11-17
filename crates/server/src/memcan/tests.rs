@@ -774,10 +774,10 @@ async fn project_profile_present_is_bounded_untrusted_text_of_the_project() {
         profile_memory("dash-evo-tool", "project-profile", "other project"),
     );
 
-    let text = project_profile(&fake.config(), "node-client")
+    let lookup = project_profile(&fake.config(), "node-client")
         .await
-        .expect("checked")
-        .expect("present");
+        .expect("read");
+    let text = lookup.text().expect("present").to_owned();
 
     assert_eq!(text.chars().count(), MAX_PROFILE_CHARS);
     assert!(
@@ -808,7 +808,38 @@ async fn project_profile_absent_is_checked_without_text() {
         profile_memory("dash-evo-tool", "project-profile", "other project"),
     );
     let profile = project_profile(&fake.config(), "node-client").await;
-    assert_eq!(profile.expect("checked"), None);
+    assert_eq!(
+        profile.expect("read"),
+        ProfileLookup::Checked { text: None },
+        "the answer held every memory of the project"
+    );
+}
+
+#[tokio::test]
+async fn profile_outside_a_non_exhaustive_answer_is_not_checked() {
+    let fake = FakeMemcan::start();
+    for rank in 0..10 {
+        fake.insert_memory(
+            &format!("a{rank:02}"),
+            profile_memory("node-client", "review-feedback", "feedback"),
+        );
+    }
+    fake.insert_memory(
+        "b11",
+        profile_memory("node-client", "project-profile", "eleventh"),
+    );
+    let profile = project_profile(&fake.config(), "node-client").await;
+    assert_eq!(
+        profile.expect("read"),
+        ProfileLookup::NotChecked,
+        "a profile ranked 11th was not excluded"
+    );
+    fake.insert_memory(
+        "a00",
+        profile_memory("node-client", "project-profile", "first"),
+    );
+    let found = project_profile(&fake.config(), "node-client").await;
+    assert_eq!(found.expect("read").text(), Some("first"));
 }
 
 #[tokio::test]
