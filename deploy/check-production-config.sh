@@ -2,22 +2,24 @@
 # Fails when a production deployment file enables a development or test switch (ADR-013 "Rust implementation",
 # threat model T1/T4): the dev no-isolation mode, the supervisor's fault injection or unprivileged test mode,
 # the prototype's fault switches, the fake LLM provider, or (production compose only) the tmpfs codex-homes switch.
-# With docker compose available, the rendered configurations are checked too: production with the env file, and
-# the local variant (compose.local.yaml) only with an SR_PUBLIC_URL on localhost.
+# The rendered configurations (docker compose config) are checked too: production with the env file, and the local
+# variant (compose.local.yaml) only with an SR_PUBLIC_URL on localhost. Without docker compose the check fails
+# unless --no-render is given.
 #
-# Usage: deploy/check-production-config.sh [--env-file FILE [--local]] | --self-test
+# Usage: deploy/check-production-config.sh [--env-file FILE [--local]] [--no-render] | --self-test [--no-render]
 #   (no option)       the files, production rendered with .env.example, local rendered with it on localhost
 #   --env-file FILE   production rendered with FILE (for example the deployment's .env)
 #   --local           also the local variant rendered with FILE; fails unless FILE's SR_PUBLIC_URL is on localhost
+#   --no-render       the files only (explicitly no rendering)
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-forbidden='SR_RUNNER_DEV_NO_ISOLATION|SR_SUPERVISOR_TEST_FAULTS|SR_SUPERVISOR_UNPRIVILEGED|R1_FAULT_[A-Z_]+|fake-provider|SR_RUNNER_PROVIDER'
+forbidden='SR_RUNNER_DEV_NO_ISOLATION|SR_RUNNER_DEV_HOST_GATEWAY|SR_SUPERVISOR_TEST_FAULTS|SR_SUPERVISOR_UNPRIVILEGED|R1_FAULT_[A-Z_]+|fake-provider|SR_RUNNER_PROVIDER'
 # Files that build or run the production stack (the local variant runs the same images).
 files=(
   deploy/compose.yaml deploy/compose.local.yaml .env.example
   deploy/server/Dockerfile deploy/server/healthcheck.sh
-  deploy/runner/Dockerfile deploy/runner/preflight.sh deploy/runner/strip-image.sh
+  deploy/runner/Dockerfile deploy/runner/strip-image.sh
   deploy/egress-proxy/Dockerfile deploy/egress-proxy/entrypoint.sh deploy/egress-proxy/squid.conf
 )
 # Production only: the local variant may put codex-homes on a tmpfs.
@@ -37,10 +39,23 @@ scan() {
   return "$found"
 }
 
-have_compose() {
+env_file="" local=0 render=1 self_test=0
+while (($#)); do
+  case "$1" in
+    --env-file) env_file="${2:?--env-file needs a file}"; shift 2 ;;
+    --local) local=1; shift ;;
+    --no-render) render=0; shift ;;
+    --self-test) self_test=1; shift ;;
+    *) echo "check-production-config: unknown argument $1 (see the header)" >&2; exit 2 ;;
+  esac
+done
+
+# can_render: 0 when rendering is wanted and possible; 1 when --no-render; exits 1 when compose is missing.
+can_render() {
+  ((render)) || return 1
   docker compose version > /dev/null 2>&1 && return 0
-  echo "check-production-config: docker compose not available; rendered configuration not checked" >&2
-  return 1
+  echo "check-production-config: docker compose is not available, so the rendered configuration cannot be checked; install it or pass --no-render" >&2
+  exit 1
 }
 
 # rendered ROOT ENV_FILE: `docker compose config` of the production stack has no switch.
@@ -66,7 +81,7 @@ rendered_local() {
   return 0
 }
 
-if [[ "${1:-}" == --self-test ]]; then
+if ((self_test)); then
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' EXIT
   for file in "${files[@]}"; do
@@ -79,7 +94,7 @@ if [[ "${1:-}" == --self-test ]]; then
   cp "$repo/deploy/runner/Dockerfile" "$tmp/deploy/runner/Dockerfile"
   printf '      SR_CODEX_HOMES_ALLOW_TMPFS: "1"\n' >> "$tmp/deploy/compose.yaml"
   if scan "$tmp" > /dev/null; then echo "self-test: tmpfs switch in production compose not caught" >&2; exit 1; fi
-  if have_compose; then
+  if can_render; then
     sed 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' "$repo/.env.example" > "$tmp/local.env"
     rendered_local "$repo" "$tmp/local.env" > /dev/null 2>&1 || { echo "self-test: localhost local variant rejected" >&2; exit 1; }
     if rendered_local "$repo" "$repo/.env.example" > /dev/null 2>&1; then
@@ -91,17 +106,9 @@ if [[ "${1:-}" == --self-test ]]; then
   exit 0
 fi
 
-env_file="" local=0
-while (($#)); do
-  case "$1" in
-    --env-file) env_file="${2:?--env-file needs a file}"; shift 2 ;;
-    --local) local=1; shift ;;
-    *) echo "check-production-config: unknown argument $1 (see the header)" >&2; exit 2 ;;
-  esac
-done
 status=0
 scan "$repo" || status=1
-if have_compose; then
+if can_render; then
   if [[ -n "$env_file" ]]; then
     rendered "$repo" "$env_file" || status=1
     if ((local)); then rendered_local "$repo" "$env_file" || status=1; fi
