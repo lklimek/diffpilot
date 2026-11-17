@@ -4,6 +4,7 @@ import { cancelAnalysis } from "./cancel-analysis";
 import { createAnalysis } from "./create-analysis";
 import { createComment } from "./create-comment";
 import { deleteComment } from "./delete-comment";
+import { deleteFeedback } from "./delete-feedback";
 import { getAnalysis } from "./get-analysis";
 import { getDiff } from "./get-diff";
 import { getLines } from "./get-lines";
@@ -37,6 +38,7 @@ export const handlers = [
   askQuestion,
   listFeedback,
   postFeedback,
+  deleteFeedback,
   getPendingReview,
   createComment,
   updateComment,

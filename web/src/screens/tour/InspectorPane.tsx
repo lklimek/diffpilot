@@ -15,6 +15,7 @@ import type {
 import {
   useAskQuestion,
   useFeedback,
+  useDeleteFeedback,
   usePostFeedback,
   useQuestionEvents,
   useQuestions,
@@ -71,6 +72,7 @@ export function InspectorPane(props: InspectorPaneProps) {
   const ask = useAskQuestion(analysisId);
   const feedback = useFeedback(analysisId);
   const postFeedback = usePostFeedback(analysisId);
+  const deleteFeedback = useDeleteFeedback(analysisId);
   const annotation = step?.llm.annotations.find((a) => a.id === annotationId);
 
   const onAsk = (stepId: StepId, text: string) => ask.mutateAsync({ step: stepId, text });
@@ -146,6 +148,8 @@ export function InspectorPane(props: InspectorPaneProps) {
       onSelectStep={props.onSelectStep}
       dock={
         <>
+          {/* While a comment is written its composer leads the dock, so its line reference is in view. */}
+          {commentLine && comment}
           <AskForm
             step={step ? { id: step.id, label: `Step ${step.number} · ${step.llm.title}` } : null}
             onAsk={onAsk}
@@ -156,13 +160,14 @@ export function InspectorPane(props: InspectorPaneProps) {
             subject={annotation ? "this annotation" : step ? `step ${step.number}` : "this block"}
             feedback={feedback.data ?? []}
             onSubmit={postFeedback.mutateAsync}
+            onRemove={deleteFeedback.mutateAsync}
           />
           {feedback.isError && (
             <p role="alert" className="text-[12px] text-high">
               Stored feedback could not be read: {errorText(feedback.error)}
             </p>
           )}
-          {comment}
+          {!commentLine && comment}
         </>
       }
     />

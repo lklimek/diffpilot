@@ -25,6 +25,10 @@ const LEGEND: ReactNode[] = [
     MEDIUM: dashed bar · <Swatch look="border-l-4 border-dotted border-low-bd" />
     LOW or affected: dotted bar (colour = LLM rating, only on annotated ranges)
   </>,
+  <>
+    <Swatch look="border-l-2 border-mark bg-llm-bg" />
+    LLM remark without a risk rating: thin neutral line
+  </>,
   <>A changed line without colour has no LLM remark.</>,
   <>
     <Swatch look="border-l-[6px] border-double border-mv-bd" />

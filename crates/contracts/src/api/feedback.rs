@@ -8,15 +8,22 @@ use ts_rs::TS;
 use crate::common::LineSide;
 use crate::ids::{AnnotationId, FeedbackId, StepId};
 
-/// Body of `POST /api/v1/analyses/{id}/feedback`; one entry per user and target (later posts replace it).
+/// Body of `POST /api/v1/analyses/{id}/feedback`: one entry per user, target and value, so several values may
+/// coexist on a target; posting a value again replaces its note; `overrated` and `underrated` exclude each other
+/// (posting one removes the other). `missed_by_llm` is recorded only by the server.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct FeedbackRequest {
     /// What the feedback is about.
     pub target: FeedbackTarget,
     /// The value.
     pub value: UserFeedbackValue,
-    /// Optional note.
+    /// Optional note, at most 2000 characters (`FeedbackRequest::MAX_NOTE_CHARS`).
     pub note: Option<String>,
+}
+
+impl FeedbackRequest {
+    /// Longest note accepted, in characters.
+    pub const MAX_NOTE_CHARS: usize = 2000;
 }
 
 /// What a feedback entry is about.
@@ -103,4 +110,19 @@ pub struct Feedback {
     pub note: Option<String>,
     /// When it was recorded.
     pub created_at: DateTime<Utc>,
+    /// The copy of this entry's current revision in MemCan (calibration memory for `overrated` /
+    /// `underrated`); only `written` means MemCan confirmed it.
+    pub memory: FeedbackMemory,
+}
+
+/// State of the MemCan copy of a feedback entry's current revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackMemory {
+    /// Not confirmed yet (queued, or waiting until an earlier unconfirmed write can no longer land).
+    Pending,
+    /// MemCan confirmed the copy.
+    Written,
+    /// The last attempt failed; it is retried later.
+    Failed,
 }

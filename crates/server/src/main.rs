@@ -16,6 +16,8 @@ use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Debug, thiserror::Error)]
 enum StartError {
@@ -57,7 +59,11 @@ fn main() -> ExitCode {
     // Before any thread exists: dotenvy sets process environment variables.
     let dotenv = dotenvy::dotenv();
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .finish()
+        .with(server::memcan::payload_log_cap())
+        .init();
     let result = match tokio::runtime::Runtime::new() {
         Ok(runtime) => runtime.block_on(run(dotenv)),
         Err(source) => Err(StartError::Runtime(source)),
@@ -92,6 +98,10 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     let executor = Arc::new(QueueExecutor::new(db.clone()));
     let state = AppState::new(config, db, executor);
     tokio::spawn(server::jobs::github_tokens::run_worker(
+        state.db.clone(),
+        state.config.clone(),
+    ));
+    tokio::spawn(server::memcan::writer::run_writer(
         state.db.clone(),
         state.config.clone(),
     ));

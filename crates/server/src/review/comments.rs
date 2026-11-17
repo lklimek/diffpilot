@@ -270,7 +270,10 @@ async fn record_missed(
         note: None,
     };
     match state.db.feedback().upsert(feedback, Utc::now()).await {
-        Ok(_) => true,
+        Ok(_) => {
+            crate::memcan::writer::nudge();
+            true
+        }
         Err(error) => {
             tracing::warn!(analysis = %summary.id, ?error,
                 "missed_by_llm feedback could not be stored; the comment stays on GitHub");
@@ -1399,7 +1402,6 @@ mod github_tests {
 
     /// Hard case 2: a comment on the unannotated changed line 96 records `missed_by_llm`.
     #[tokio::test]
-    #[ignore = "needs FeedbackRepo::upsert and ::list from WP3-MEMCAN; un-ignore at the M3b merge"]
     async fn comment_on_unannotated_changed_line_records_missed_by_llm() {
         let f = fixture().await;
         f.head_is(HEAD, 1).await;
@@ -1419,6 +1421,10 @@ mod github_tests {
             .expect("feedback");
         assert_eq!(feedback.len(), 1);
         assert_eq!(feedback[0].value, FeedbackValue::MissedByLlm);
+        assert_eq!(
+            feedback[0].memory,
+            contracts::api::feedback::FeedbackMemory::Pending
+        );
         assert_eq!(
             feedback[0].target,
             FeedbackTarget::Line {

@@ -45,6 +45,23 @@ describe("api client", () => {
     expect(header).toBe("tok-1");
   });
 
+  it("removes a feedback value with DELETE …/feedback/{feedback_id} and the CSRF token", async () => {
+    let seen: { method: string; path: string; csrf: string | null } | null = null;
+    server.use(
+      me("tok-1"),
+      http.delete(`${BASE}/api/v1/analyses/:id/feedback/:feedback_id`, ({ request }) => {
+        seen = {
+          method: request.method,
+          path: new URL(request.url).pathname,
+          csrf: request.headers.get("X-CSRF-Token"),
+        };
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    await expect(createApiClient(BASE).deleteFeedback("a1", "fb 1")).resolves.toBeUndefined();
+    expect(seen).toEqual({ method: "DELETE", path: "/api/v1/analyses/a1/feedback/fb%201", csrf: "tok-1" });
+  });
+
   it("does not send the CSRF header on GET routes", async () => {
     let header: string | null = "unset";
     server.use(

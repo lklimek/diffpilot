@@ -11,6 +11,7 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import {
   MIN_WIDTH_PX,
   STRIP_PX,
+  canHide,
   clampWidth,
   defaultWidth,
   hideColumn,
@@ -64,15 +65,25 @@ function ColumnHead({
   onChange,
 }: { column: Column } & Pick<WorkspaceProps, "layout" | "onChange">) {
   const full = layout.full === column;
+  const hideable = canHide(layout, column);
   return (
     <div className="flex flex-none items-center gap-1.5 border-b border-border bg-surface-2 px-2.5 py-1">
-      <span className="flex-1 text-[13px] font-bold">{TITLE[column]}</span>
-      <Tooltip tip="Hide this column; click its strip to show it again">
+      <h2 data-column-title className="m-0 flex-1 text-[13px] font-bold">
+        {TITLE[column]}
+      </h2>
+      <Tooltip
+        tip={
+          hideable
+            ? "Hide this column; click its strip to show it again"
+            : "At least one column stays visible"
+        }
+      >
         <button
           type="button"
           aria-label={`Hide ${TITLE[column]} column`}
-          onClick={() => onChange(hideColumn(layout, column))}
-          className={SMALL_BUTTON}
+          aria-disabled={!hideable || undefined}
+          onClick={() => hideable && onChange(hideColumn(layout, column))}
+          className={`${SMALL_BUTTON} aria-disabled:cursor-not-allowed aria-disabled:opacity-60`}
         >
           Hide
         </button>

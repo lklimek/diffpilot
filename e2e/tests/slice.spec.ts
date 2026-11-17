@@ -22,7 +22,7 @@ const SECRET_KEYS = ["SR_SECRET_KEY", "SR_RUNNER_SECRET", "SR_GITHUB_CLIENT_SECR
 test.describe.configure({ mode: "serial" });
 
 const stateDir = () => process.env.SR_E2E_STATE_DIR ?? "";
-const heading = (page: Page) => page.getByRole("main").getByRole("heading", { level: 2 }).first();
+const heading = (page: Page) => page.locator("main h2:not([data-column-title])").first();
 // Session cookie and CSRF token of the scenario, for the log scan.
 const sessionSecrets: [string, string][] = [];
 

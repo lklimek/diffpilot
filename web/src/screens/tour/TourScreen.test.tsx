@@ -27,13 +27,20 @@ const user = () => userEvent.setup();
 const main = () => screen.getByRole("main");
 const inspector = () => screen.getByRole("complementary", { name: "Inspector" });
 const nav = () => screen.getByRole("navigation", { name: "Flows and steps" });
+const inspectorHeading = () =>
+  within(inspector())
+    .getAllByRole("heading", { level: 2 })
+    .find((h) => !h.hasAttribute("data-column-title"))!;
 const topBar = () => screen.getAllByRole("banner")[0]!;
-const blockHeading = () => within(main()).getAllByRole("heading", { level: 2 })[0]!;
+const blockHeading = () =>
+  within(main())
+    .getAllByRole("heading", { level: 2 })
+    .find((h) => !h.hasAttribute("data-column-title"))!;
 
 async function open(state?: Parameters<typeof setFixtureState>[0]) {
   if (state) setFixtureState(state);
   const router = renderRoute(`/analyses/${ID}`);
-  await waitFor(() => expect(within(main()).getAllByRole("heading", { level: 2 }).length).toBeGreaterThan(0));
+  await waitFor(() => expect(blockHeading()).toBeDefined());
   return router;
 }
 
@@ -112,6 +119,50 @@ describe("Tour screen (brief §4.3)", () => {
     expect(within(inspector()).getByRole("group", { name: "Ask, feedback and comment" })).toBeVisible();
   });
 
+  it("names the three columns with level-2 headings", async () => {
+    await open();
+    expect(within(nav()).getByRole("heading", { level: 2, name: "Flows" })).toBeInTheDocument();
+    expect(within(main()).getByRole("heading", { level: 2, name: "Review" })).toBeInTheDocument();
+    expect(within(inspector()).getByRole("heading", { level: 2, name: "Inspector" })).toBeInTheDocument();
+  });
+
+  it("Hide on the last visible column is disabled and says why (UX-105)", async () => {
+    await open();
+    await user().click(screen.getByRole("button", { name: "Hide Flows column" }));
+    await user().click(screen.getByRole("button", { name: "Hide Inspector column" }));
+    const hide = screen.getByRole("button", { name: "Hide Review column" });
+    expect(hide).toHaveAttribute("aria-disabled", "true");
+    expect(hide).toHaveAccessibleDescription("At least one column stays visible");
+    await user().click(hide);
+    expect(screen.getByRole("button", { name: "Hide Review column" })).toBeInTheDocument();
+    await user().click(within(nav()).getByRole("button", { name: "Show Flows column" }));
+    expect(screen.getByRole("button", { name: "Hide Review column" })).not.toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  });
+
+  it("says once that the review resumed where it was left; Dismiss and moving on remove it (UX-111)", async () => {
+    await open("resume");
+    expect(blockHeading()).toHaveTextContent("5 Retry allowed?");
+    expect(within(main()).getByText("Resumed where you left off: flow 1, step 5.")).toHaveAttribute(
+      "role",
+      "status",
+    );
+    await user().click(within(main()).getByRole("button", { name: "Dismiss" }));
+    expect(within(main()).queryByText(/Resumed where you left off/)).toBeNull();
+    cleanup();
+    await open("resume");
+    await user().keyboard("j");
+    expect(within(main()).queryByText(/Resumed where you left off/)).toBeNull();
+  });
+
+  it("says nothing about resuming when the review starts at PR context", async () => {
+    await open();
+    expect(blockHeading()).toHaveTextContent("PR context");
+    expect(within(main()).queryByText(/Resumed where you left off/)).toBeNull();
+  });
+
   it("full screen shows one column; Esc returns", async () => {
     await open();
     await user().click(screen.getByRole("button", { name: "Full screen Review column" }));
@@ -134,7 +185,7 @@ describe("Tour screen (brief §4.3)", () => {
     await openStep("1", "5");
     const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
     await user().click(within(code).getByRole("button", { name: /HIGH · LLM remark/ }));
-    expect(within(inspector()).getByRole("heading", { level: 2 })).toHaveTextContent(/line 99/);
+    expect(inspectorHeading()).toHaveTextContent(/line 99/);
     await user().click(within(inspector()).getByRole("button", { name: "wrong" }));
     await waitFor(() =>
       expect(readStore("feedback").map((f) => f.target)).toEqual([
@@ -142,9 +193,7 @@ describe("Tour screen (brief §4.3)", () => {
       ]),
     );
     await user().click(within(inspector()).getByRole("button", { name: "← Back to step" }));
-    expect(within(inspector()).getByRole("heading", { level: 2 })).toHaveTextContent(
-      "Step 5 · Retry allowed?",
-    );
+    expect(inspectorHeading()).toHaveTextContent("Step 5 · Retry allowed?");
   });
 
   it("d shows the old code of the step as a classic diff", async () => {
