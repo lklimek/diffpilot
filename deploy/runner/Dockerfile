@@ -1,6 +1,6 @@
 # Runner image skeleton (ADR-013, threat model T1/T4): pinned Codex CLI and github-mcp-server, git, ripgrep,
 # two uids (runner 10001, agent 10002), no setuid/setgid bits, no Docker socket. The entrypoint is the root
-# supervisor, started with only SETUID, SETGID and CHOWN (see ADR-013 for the run options).
+# supervisor, started with only CHOWN, SETUID, SETGID and KILL (see ADR-013 for the run options).
 #
 # Build: docker build -t smart-review-runner:skeleton deploy/runner
 
@@ -51,8 +51,8 @@ RUN groupadd --gid 10001 runner \
     && install -d -o 10001 -g 10001 -m 0711 /var/lib/smart-review-runner /var/lib/smart-review-runner/codex-homes \
     && install -d -o 10001 -g 10001 -m 0711 /work
 
-# Mount points (ADR-013): state volume at /var/lib/smart-review-runner, a second volume at its codex-homes/
-# (per-job CODEX_HOMEs on another filesystem than the session store, T8b), size-capped tmpfs at /work (checkouts)
+# Mount points (ADR-013): state volume at /var/lib/smart-review-runner, a bounded persistent filesystem at its
+# codex-homes/ (per-job CODEX_HOMEs, separate from the session store, T8b), size-capped tmpfs at /work (checkouts)
 # and at /tmp (runner only, mode 0700).
 ENV SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner \
     SR_RUNNER_WORK_DIR=/work \

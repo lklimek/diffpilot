@@ -6,8 +6,12 @@ probe             one JSON line of findings on stdout, then leaves processes beh
                   stays alive as the group leader, like Codex.
 plant             plants copy-back traps in the per-job CODEX_HOME; one JSON line of what was planted.
 environ-scan PREFIX  JSON: which /proc/*/environ were readable and which contained PREFIX.
+hostile           ignores SIGTERM, starts a fork loop, tries to SIGSTOP runner and supervisor (one JSON line), then
+                  SIGSTOPs every other process of its uid in a tight loop.
+fill              fills $CODEX_HOME: one file until ENOSPC, then empty files until ENOSPC; one JSON line.
 """
 
+import errno
 import json
 import os
 import signal
@@ -127,6 +131,7 @@ def probe(args):
             k: me[k] for k in ("Uid", "Gid", "Groups", "CapInh", "CapPrm", "CapEff", "CapAmb", "NoNewPrivs", "Seccomp")
         },
         "apparmor": open("/proc/self/attr/current").read().strip(),
+        "oom_score_adj": open("/proc/self/oom_score_adj").read().strip(),
         "env_keys": sorted(os.environ),
         "reads": {path: try_read(path) for path in args["deny"]},
         "fds": open_fds(),
@@ -187,6 +192,47 @@ def plant(args):
     print(json.dumps(done), flush=True)
 
 
+def hostile(args):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    subprocess.Popen(
+        ["/bin/sh", "-c", "trap '' TERM; while :; do /bin/sleep 1020 & sleep 0.05; done"], start_new_session=True
+    )
+    tried = {}
+    for name in ("runner_pid", "supervisor_pid"):
+        try:
+            os.kill(args[name], signal.SIGSTOP)
+            tried[name] = "SENT"
+        except OSError as error:
+            tried[name] = f"denied: {error.strerror}"
+    print(json.dumps(tried), flush=True)
+    while True:
+        try:
+            os.kill(-1, signal.SIGSTOP)
+        except OSError:
+            pass
+
+
+def fill():
+    home = os.environ["CODEX_HOME"]
+    report = {"bytes_written": 0}
+    try:
+        with open(os.path.join(home, "big"), "wb") as f:
+            while True:
+                f.write(b"\0" * (1 << 20))
+                f.flush()
+                report["bytes_written"] += 1 << 20
+    except OSError as error:
+        report["bytes_error"] = errno.errorcode.get(error.errno, str(error.errno))
+    report["files_created"] = 0
+    try:
+        while True:
+            open(os.path.join(home, f"f{report['files_created']}"), "x").close()
+            report["files_created"] += 1
+    except OSError as error:
+        report["files_error"] = errno.errorcode.get(error.errno, str(error.errno))
+    print(json.dumps(report), flush=True)
+
+
 def environ_scan(prefix):
     readable, hits = [], []
     for pid in filter(str.isdigit, os.listdir("/proc")):
@@ -207,5 +253,9 @@ if __name__ == "__main__":
         probe(json.loads(sys.stdin.readline()))
     elif mode == "plant":
         plant(json.loads(sys.stdin.readline()))
+    elif mode == "hostile":
+        hostile(json.loads(sys.stdin.readline()))
+    elif mode == "fill":
+        fill()
     elif mode == "environ-scan":
         environ_scan(sys.argv[2])

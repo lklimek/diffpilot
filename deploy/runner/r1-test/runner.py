@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Stand-in runner for the R1 container test (ADR-013). Runs as uid `runner` under supervisor.py, drives a
-stand-in job and a real-Codex job through the supervisor protocol and prints `CHECK <name> PASS|FAIL <detail>`.
+"""Stand-in runner for the R1 container test (ADR-013). Runs as uid `runner` under supervisor.py, drives stand-in
+jobs (benign, hostile, pid exhaustion, CODEX_HOME exhaustion) and a real-Codex job through the supervisor protocol
+and prints `CHECK <name> PASS|FAIL <detail>`. R1_SCENARIO=sweep-failure runs only the fail-closed scenario.
 Canary values start with the prefix C; SR_RUNNER_SECRET is one (set by run.sh)."""
 
+import collections
 import json
 import os
 import re
@@ -17,7 +19,8 @@ STATE = os.environ["SR_RUNNER_STATE_DIR"]
 WORK = os.environ["SR_RUNNER_WORK_DIR"]
 HOMES = os.path.join(STATE, "codex-homes")
 AGENT_UID, RUNNER_UID = 10002, 10001
-CAPS_THREE = "00000000000000c1"  # CHOWN | SETGID | SETUID
+CAPS_FOUR = "00000000000000e1"  # CHOWN | KILL | SETGID | SETUID
+CAP_KILL_BIT = 1 << 5
 ZERO = "0000000000000000"
 C = "".join(("SR", "CANARY"))  # split so that this file itself is no canary hit
 JOB_TOKEN = f"{C}-job-token-" + secrets.token_hex(8)  # lives only in this process's memory
@@ -25,6 +28,7 @@ MASTER = os.path.join(STATE, "credentials/default/auth.json")
 THREAD_A, THREAD_B = "019a0000-aaaa-7000-8000-00000000000a", "019a0000-bbbb-7000-8000-00000000000b"
 ROLLOUT = "sessions/2026/11/17/rollout-2026-11-17T00-00-00-{}.jsonl"
 COPY_CAP = 1 << 20
+HELPER_DEADLINE = 30  # seconds; every wait on an agent process is bounded
 
 results = []
 
@@ -93,13 +97,27 @@ class Proc:
         line, self.buf = self.buf.split(b"\n", 1)
         return line.decode()
 
-    def drain(self):
+    def drain(self, timeout):
+        """(stdout, stderr text), or None when the deadline passes first."""
+        deadline = time.monotonic() + timeout
         out, err = [self.buf], []
-        for fd, sink in ((self.out, out), (self.err, err)):
-            while chunk := os.read(fd, 65536):
-                sink.append(chunk)
-            os.close(fd)
+        open_fds = {self.out: out, self.err: err}
+        while open_fds:
+            left = deadline - time.monotonic()
+            ready = select.select(list(open_fds), [], [], max(left, 0))[0] if left > 0 else []
+            if not ready:
+                return None
+            for fd in ready:
+                chunk = os.read(fd, 65536)
+                if chunk:
+                    open_fds[fd].append(chunk)
+                else:
+                    del open_fds[fd]
+                    os.close(fd)
         return b"".join(out), b"".join(err).decode(errors="replace").strip()
+
+
+Result = collections.namedtuple("Result", "status out err timed_out sweep state_at_timeout")
 
 
 def agent_env(key):
@@ -123,17 +141,28 @@ def spawn(sup, argv, key, stdin=b"", keep_stdin=False):
     if not reply["ok"]:
         raise RuntimeError(f"spawn refused: {reply}")
     if stdin:
-        os.write(in_w, stdin)
+        os.set_blocking(in_w, False)
+        deadline = time.monotonic() + HELPER_DEADLINE
+        while stdin and select.select([], [in_w], [], max(deadline - time.monotonic(), 0))[1]:
+            stdin = stdin[os.write(in_w, stdin) :]
     if not keep_stdin:
         os.close(in_w)
     return Proc(reply["pid"], out_r, err_r)
 
 
-def run(sup, argv, key, stdin=b""):
-    """(exit status, stdout bytes, stderr text) of an agent command."""
+def run(sup, argv, key, stdin=b"", deadline=HELPER_DEADLINE):
+    """Runs an agent command to its end within the deadline; past it the supervisor sweeps every agent process
+    (a stopped or hung helper never blocks the runner)."""
     proc = spawn(sup, argv, key, stdin)
-    out, err = proc.drain()
-    return sup.call("wait", pid=proc.pid)["status"], out, err
+    drained = proc.drain(deadline)
+    swept = state = None
+    if drained is None:
+        state = processes().get(proc.pid, (None, "gone"))[1]
+        swept = sup.call("sweep")
+        drained = proc.drain(5) or (b"", "")
+    return Result(
+        sup.call("wait", pid=proc.pid)["status"], *drained, drained is None or swept is not None, swept, state
+    )
 
 
 def write_private(path, data, mode=0o600):
@@ -215,20 +244,19 @@ def cleanup_job(sup, key):
     return statuses, [d for d in (home, job) if os.path.lexists(d)]
 
 
-def kill_all(sup, key):
-    """The sweep helper as uid agent: kill(-1, SIGKILL) reaches exactly the uid-agent processes."""
-    status, out, _ = run(sup, [PY, SUP, "sweep"], key)
-    return dict(json.loads(out or b"{}"), ok=status == 0)
+def kill_all(sup):
+    """Supervisor sweep: SIGKILL to every uid-agent process, as root with CAP_KILL (fail closed)."""
+    return sup.call("sweep")
 
 
-def signal_group(sup, key, pgid, sig):
-    return run(sup, [PY, SUP, "signal", str(pgid), str(sig)], key)[0]
+def signal_group(sup, pgid, sig):
+    return sup.call("signal", pid=pgid, signal=sig)
 
 
 def copy_out(sup, key, rel, cap=COPY_CAP):
     started = time.monotonic()
-    rc, out, err = run(sup, [PY, SUP, "copy-out", os.path.join(HOMES, key), rel, str(cap)], key)
-    return rc, out, err, time.monotonic() - started
+    r = run(sup, [PY, SUP, "copy-out", os.path.join(HOMES, key), rel, str(cap)], key)
+    return r.status, r.out, r.err, time.monotonic() - started
 
 
 def identity_checks():
@@ -236,13 +264,13 @@ def identity_checks():
     s, me = status(sup_pid), status("self")
     sup_ok = (
         s["Uid"].split()[0] == "0"
-        and s["CapEff"] == s["CapPrm"] == s["CapBnd"] == CAPS_THREE
+        and s["CapEff"] == s["CapPrm"] == s["CapBnd"] == CAPS_FOUR
         and s["CapAmb"] == ZERO
         and s["NoNewPrivs"] == "1"
         and s["Seccomp"] == "2"
     )
     check(
-        "supervisor_caps_only_three",
+        "supervisor_caps_only_four",
         sup_ok,
         f"pid={sup_pid} uid={s['Uid'].split()[0]} CapEff={s['CapEff']} CapPrm={s['CapPrm']} "
         f"CapBnd={s['CapBnd']} NoNewPrivs={s['NoNewPrivs']} Seccomp={s['Seccomp']}",
@@ -329,6 +357,7 @@ def stand_in_job(sup, sup_pid, me):
         and ident.get("Groups") == ""
         and all(ident.get(c) == ZERO for c in ("CapInh", "CapPrm", "CapEff", "CapAmb"))
         and ident.get("NoNewPrivs") == "1"
+        and findings.get("oom_score_adj") == "1000"
     )
     runner_ok = (
         me["Uid"] == "10001\t10001\t10001\t10001"
@@ -342,7 +371,16 @@ def stand_in_job(sup, sup_pid, me):
         agent_ok and runner_ok,
         f"runner Uid={me['Uid']!r} CapEff={me['CapEff']} CapPrm={me['CapPrm']}; agent Uid={ident.get('Uid')!r} "
         f"Groups={ident.get('Groups')!r} CapEff={ident.get('CapEff')} CapPrm={ident.get('CapPrm')} "
-        f"NoNewPrivs={ident.get('NoNewPrivs')}",
+        f"NoNewPrivs={ident.get('NoNewPrivs')} oom_score_adj={findings.get('oom_score_adj')}",
+    )
+    held = {
+        who: [c for c in ("CapInh", "CapPrm", "CapEff", "CapAmb") if int(caps.get(c, "0"), 16) & CAP_KILL_BIT]
+        for who, caps in (("runner", me), ("agent", ident))
+    }
+    check(
+        "cap_kill_not_inherited",
+        bool(ident) and not any(held.values()),
+        f"sets holding CAP_KILL: {held} (bounding set keeps it; NNP and no setuid/file-cap binary)",
     )
     check(
         "default_seccomp_and_apparmor_kept",
@@ -404,7 +442,7 @@ def stand_in_job(sup, sup_pid, me):
     left = probe.line(30)
     time.sleep(0.5)
     before = agent_live()
-    signal_group(sup, key, probe.pid, 15)
+    signal_group(sup, probe.pid, 15)
     probe_status = sup.call("wait", pid=probe.pid)["status"]
     time.sleep(0.5)
     after_group_kill = agent_live()
@@ -415,13 +453,13 @@ def stand_in_job(sup, sup_pid, me):
         f"alive after SIGTERM to the group={len(after_group_kill)}: "
         f"{sorted(set(v[2] for v in after_group_kill.values()))}",
     )
-    killed = kill_all(sup, key)
+    killed = kill_all(sup)
     time.sleep(0.3)
     remaining = {p: v for p, v in processes().items() if v[0] == AGENT_UID}
     check(
         "agent_processes_killed_at_job_end",
         killed["ok"] and not remaining and os.path.exists(f"/proc/{sup_pid}"),
-        f"kill_all={ {k: killed.get(k) for k in ('ok', 'rounds', 'survivors')} } uid-agent processes left="
+        f"sweep={ {k: killed.get(k) for k in ('ok', 'rounds', 'killed', 'ms')} } uid-agent processes left="
         f"{len(remaining)} supervisor alive={os.path.exists(f'/proc/{sup_pid}')}",
     )
     return key, home
@@ -433,9 +471,8 @@ def copy_back_checks(sup, key, home):
         "master_auth": MASTER,
         "foreign_session": os.path.join(STATE, f"sessions/{THREAD_B}/rollout-b.jsonl"),
     }
-    rc, out, err = run(sup, [PY, AGENT, "plant"], key, (json.dumps(plant_args) + "\n").encode())
-    planted = json.loads(out or b"{}")
-    kill_all(sup, key)
+    planted = json.loads(run(sup, [PY, AGENT, "plant"], key, (json.dumps(plant_args) + "\n").encode()).out or b"{}")
+    kill_all(sup)
     try:
         open(os.path.join(home, "auth.json.real")).read()
         naive = "READ"
@@ -446,7 +483,7 @@ def copy_back_checks(sup, key, home):
         naive.startswith("denied"),
         f"runner open of the per-job auth.json: {naive} (hence copy-out runs as agent)",
     )
-    cat_rc, cat_out, cat_err = run(sup, ["/bin/cat", os.path.join(home, "auth.json")], key)
+    cat_rc, cat_out, cat_err = run(sup, ["/bin/cat", os.path.join(home, "auth.json")], key)[:3]
     check(
         "copy_back_as_agent_cannot_reach_runner_files",
         cat_rc != 0 and C.encode() not in cat_out,
@@ -514,19 +551,16 @@ def real_codex_job(sup, sup_pid):
     thread = None
     deadline = time.monotonic() + 120
     seen = set()
-    rollout = None
+    turn_started = False
     while time.monotonic() < deadline:
         line = codex.line(2)
         if line and thread is None and '"thread.started"' in line:
             thread = json.loads(line)["thread_id"]
+        turn_started = turn_started or bool(line and '"turn.started"' in line)
         seen |= {v[2] for v in processes().values() if v[0] == AGENT_UID}
         cmds = " | ".join(v[2] for v in agent_live().values())
-        if thread and "github-mcp-server" in cmds and "sleep 1010" in cmds and rollout is None:
-            rc, out, _ = run(sup, [PY, SUP, "list", home], key)
-            names = [e["path"] for e in json.loads(out or b"[]")]
-            pattern = re.compile(rf"^sessions/\d{{4}}/\d{{2}}/\d{{2}}/rollout-[0-9T:-]+-{re.escape(thread)}\.jsonl$")
-            rollout = next((n for n in names if pattern.match(n)), None)
-        if rollout:
+        if thread and turn_started and "github-mcp-server" in cmds and "sleep 1010" in cmds:
+            time.sleep(2)  # the rollout exists from turn start; it is listed after the sweep
             break
     procs = processes()
     other = {p: v for p, v in procs.items() if v[0] != AGENT_UID and p not in (1, sup_pid, os.getpid())}
@@ -543,7 +577,7 @@ def real_codex_job(sup, sup_pid):
         f"thread={thread} non-agent processes besides tini/supervisor/runner={other} agent CapEff="
         f"{set(agent_caps.values())} seen={names}",
     )
-    rc, out, _ = run(sup, [PY, AGENT, "environ-scan", C], key)
+    out = run(sup, [PY, AGENT, "environ-scan", C], key).out
     scan = json.loads(out or b"{}")
     check(
         "real_codex_env_has_no_runner_secret",
@@ -551,7 +585,7 @@ def real_codex_job(sup, sup_pid):
         f"codex pid {codex.pid} environ readable to agent={codex.pid in scan.get('readable', [])} "
         f"environs with the canary={scan.get('hits')}",
     )
-    signal_group(sup, key, codex.pid, 15)
+    signal_group(sup, codex.pid, 15)
     codex_status = sup.call("wait", pid=codex.pid)["status"]
     time.sleep(0.5)
     survivors = sorted(set(v[2] for v in agent_live().values()))
@@ -560,10 +594,13 @@ def real_codex_job(sup, sup_pid):
         any("sleep 1010" in c for c in survivors),
         f"codex status={codex_status}; alive after SIGTERM to Codex's group: {survivors}",
     )
-    killed = kill_all(sup, key)
+    killed = kill_all(sup)
     time.sleep(0.3)
     left = [p for p, v in processes().items() if v[0] == AGENT_UID]
-    check("real_codex_processes_killed", killed["ok"] and not left, f"rounds={killed.get('rounds')} left={left}")
+    check("real_codex_processes_killed", killed["ok"] and not left, f"sweep={killed} left={left}")
+    names = [e["path"] for e in json.loads(run(sup, [PY, SUP, "list", home], key).out or b"[]")]
+    pattern = re.compile(rf"^sessions/\d{{4}}/\d{{2}}/\d{{2}}/rollout-[0-9T:-]+-{re.escape(thread or '-')}\.jsonl$")
+    rollout = next((n for n in names if pattern.match(n)), None)
     rc_roll, data, _, _ = copy_out(sup, key, rollout or "missing", cap=64 << 20)
     rc_auth, auth, _, _ = copy_out(sup, key, "auth.json")
     first = data.split(b"\n", 1)[0]
@@ -585,13 +622,121 @@ def real_codex_job(sup, sup_pid):
     )
 
 
+def hostile_job(sup, sup_pid):
+    """An agent that SIGSTOPs everything of its uid in a loop, ignores SIGTERM and runs a fork loop; a helper
+    started meanwhile hangs, hits its deadline, and the supervisor sweep ends all of it."""
+    key = "hostile-1"
+    home, job, _, _ = prepare_job(sup, key, {"config.toml": "# hostile\n"})
+    args = {"runner_pid": os.getpid(), "supervisor_pid": sup_pid}
+    hostile = spawn(sup, [PY, AGENT, "hostile"], key, (json.dumps(args) + "\n").encode(), keep_stdin=True)
+    tried = json.loads(hostile.line(20) or "{}")
+    time.sleep(1)
+    stopped = sum(1 for v in agent_live().values() if v[1] == "T")
+    started = time.monotonic()
+    helper = run(sup, [PY, SUP, "list", home], key, deadline=2)
+    elapsed = time.monotonic() - started
+    left = [p for p, v in processes().items() if v[0] == AGENT_UID]
+    check(
+        "hung_helper_hits_deadline_then_swept",
+        helper.timed_out and helper.state_at_timeout == "T" and helper.status == -9 and helper.sweep.get("ok"),
+        f"helper state at the 2 s deadline={helper.state_at_timeout!r} status={helper.status} "
+        f"returned after {elapsed:.2f} s",
+    )
+    states = {who: status(pid)["State"] for who, pid in (("runner", "self"), ("supervisor", sup_pid))}
+    check(
+        "hostile_agent_swept_within_deadline",
+        stopped > 0
+        and helper.sweep.get("ok")
+        and helper.sweep.get("ms", 1e9) < 5000
+        and not left
+        and all(v.startswith("denied") for v in tried.values())
+        and len(tried) == 2
+        and not any(v.startswith("T") for v in states.values()),
+        f"stopped agent processes before={stopped} sweep={helper.sweep} uid-agent left={len(left)} "
+        f"hostile SIGSTOP to runner/supervisor={tried} states={states}",
+    )
+    statuses, left_dirs = cleanup_job(sup, key)
+    if statuses != [0] * 5 or left_dirs:
+        check("hostile_job_dirs_removed", False, f"clear status={statuses} left={left_dirs}")
+
+
+def pid_exhaustion_job(sup):
+    """A fork loop that ignores SIGTERM fills pids_limit; spawning fails, the in-process sweep still works."""
+    key = "forkbomb-1"
+    prepare_job(sup, key, {})
+    bomb = "trap '' TERM HUP; while :; do /bin/sleep 1000 & done"  # holds every free pid
+    spawn(sup, ["/bin/bash", "-c", bomb], key)  # bash, unlike dash, survives a failed fork
+    refused, peak, deadline = None, 0, time.monotonic() + 20
+    while refused is None and time.monotonic() < deadline:
+        with open("/sys/fs/cgroup/pids.current") as f:
+            peak = max(peak, int(f.read()))
+        try:
+            proc = spawn(sup, ["/bin/true"], key)
+            proc.drain(1)
+        except RuntimeError as error:
+            refused = str(error)[:120]
+        time.sleep(0.2)
+    swept = kill_all(sup)
+    after = run(sup, ["/bin/true"], key, deadline=5)
+    check(
+        "pid_exhaustion_sweep_still_works",
+        refused is not None and swept.get("killed", 0) > 400 and after.status == 0 and not agent_live(),
+        f"peak container pids={peak} (pids_limit 512) spawn refused={refused!r} sweep={swept} spawn afterwards={after.status}",
+    )
+    cleanup_job(sup, key)
+
+
+def codex_home_exhaustion_job(sup):
+    """The agent fills its bounded per-job CODEX_HOME (bytes, then inodes): the job fails, runner state is fine."""
+    key = "fill-1"
+    home, _, _, _ = prepare_job(sup, key, {"auth.json": f'{{"canary":"{C}-job-auth-fill"}}'})
+    fill = run(sup, [PY, AGENT, "fill"], key, deadline=120)
+    report = json.loads(fill.out or b"{}")
+    kill_all(sup)
+    probe = os.path.join(STATE, "runner-write-probe")
+    write_private(probe, "x" * (1 << 20))
+    runner_ok = os.path.getsize(probe) == 1 << 20
+    os.remove(probe)
+    auth = copy_out(sup, key, "auth.json")
+    statuses, left = cleanup_job(sup, key)
+    fs = os.statvfs(HOMES)
+    check(
+        "codex_home_exhaustion_fails_job_cleanly",
+        report.get("bytes_error") == "ENOSPC"
+        and report.get("files_error") == "ENOSPC"
+        and runner_ok
+        and auth[0] == 0
+        and statuses == [0] * 5
+        and not left
+        and fs.f_bfree > fs.f_blocks * 0.9,
+        f"agent: {report}; runner wrote 1 MiB to its state dir={runner_ok}; auth.json copy-out={auth[0]}; "
+        f"cleanup={statuses}; codex-homes free after cleanup={fs.f_bfree}/{fs.f_blocks} blocks",
+    )
+
+
+def sweep_failure_scenario(sup):
+    """Run by run.sh in a second container with fault injection: the failing sweep must end the container."""
+    key = "fail-1"
+    prepare_job(sup, key, {})
+    spawn(sup, ["/bin/sleep", "1000"], key)
+    print("SCENARIO sweep-failure: sweep requested", flush=True)
+    reply = sup.call("sweep")
+    print(f"CHECK sweep_failure_terminates_container FAIL the supervisor answered {reply}", flush=True)
+    raise SystemExit(1)
+
+
 def main():
     sup = Supervisor()
+    if os.environ.get("R1_SCENARIO") == "sweep-failure":
+        sweep_failure_scenario(sup)
     assert JOB_TOKEN  # held in memory for the /proc/<runner>/mem read attempt
     sup_pid, me = identity_checks()
     layout()
     key, home = stand_in_job(sup, sup_pid, me)
     copy_back_checks(sup, key, home)
+    hostile_job(sup, sup_pid)
+    pid_exhaustion_job(sup)
+    codex_home_exhaustion_job(sup)
     if os.environ.get("R1_SKIP_CODEX") != "1":
         real_codex_job(sup, sup_pid)
     print(f"RESULT pass={sum(results)} fail={len(results) - sum(results)}", flush=True)

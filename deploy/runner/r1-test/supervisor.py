@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
 """R1 prototype of the runner supervisor (ADR-013). Test only; production is a Rust binary (WP3-RUN).
 
-serve RUNNER_ARGV...   root entrypoint (caps SETUID/SETGID/CHOWN only): forks the runner as uid `runner` with an
-                       inherited SOCK_SEQPACKET control socket (fd in SR_SUPERVISOR_FD) and serves its requests.
+serve RUNNER_ARGV...   root entrypoint (caps CHOWN/SETUID/SETGID/KILL only): forks the runner as uid `runner` with
+                       an inherited SOCK_SEQPACKET control socket (fd in SR_SUPERVISOR_FD) and serves its requests.
 Requests (JSON, one per datagram), the whole privileged surface:
-  spawn{argv, env, cwd} + 3 fds (stdin, stdout, stderr) -> {pid}: new session, uid/gid agent, no groups, exact env.
+  spawn{argv, env, cwd} + 3 fds (stdin, stdout, stderr) -> {pid}: new session, uid/gid agent, no groups, exact env,
+  oom_score_adj 1000.
   wait{pid} -> {status} once reaped.
+  signal{pid, signal} -> the signal to each process of the spawned pid's process group whose uids are all agent.
+  sweep -> {rounds, killed, ms}: SIGKILL (pidfd) to every process with any uid = agent until none is alive. Past
+  the deadline (SR_SUPERVISOR_SWEEP_DEADLINE_MS, default 5000) or on any error the supervisor exits 70, which ends
+  the container (fail closed).
   handover{path} -> chown an empty runner-owned 0700 dir `<state>/codex-homes/<key>` or `<work>/<key>/{home,tmp}`
   to agent.
-Helpers, run by the runner as uid `agent` through `spawn` (refused as root):
-  sweep                  kill(-1, SIGKILL) until /proc shows no other uid-agent process; JSON {rounds, survivors}.
-  signal PGID SIG        kill(-PGID, SIG).
+Helpers, run by the runner as uid `agent` through `spawn` (refused as root), only while no other agent process
+is alive (same-uid processes can stop them and reach their fds through /proc):
   copy-in ROOT REL       stdin -> ROOT/REL (O_EXCL, 0600, parents 0700), no symlink anywhere below ROOT.
   copy-out ROOT REL MAX  ROOT/REL -> stdout: regular file, one link, at most MAX bytes, no symlink below ROOT.
   list ROOT              JSON list of the entries below ROOT (symlinks not followed).
   clear ROOT             removes everything below ROOT (symlinks not followed); ROOT itself stays.
+Test-only fault injection (prototype): R1_FAULT_SWEEP_FAILS=1 makes every sweep fail.
 """
 
 import ctypes
@@ -88,34 +93,43 @@ def run_as(ids, fn):
 
 
 def proc_entries():
-    """(pid, real uid, state) of every process visible in /proc."""
+    """(pid, {real, effective, saved, fs uid}, state, process group) of every process visible in /proc."""
     for name in os.listdir("/proc"):
         if not name.isdigit():
             continue
         try:
             with open(f"/proc/{name}/status") as f:
                 fields = dict(line.split(":", 1) for line in f if ":" in line)
-            yield int(name), int(fields["Uid"].split()[0]), fields["State"].split()[0]
-        except (OSError, KeyError, ValueError):
+            with open(f"/proc/{name}/stat") as f:
+                pgrp = int(f.read().rsplit(")", 1)[1].split()[2])
+            yield int(name), {int(u) for u in fields["Uid"].split()}, fields["State"].split()[0], pgrp
+        except (OSError, KeyError, ValueError, IndexError):
             continue
 
 
-def sweep(agent_uid):
-    """As uid agent: kill(-1, SIGKILL) hits exactly the processes of this uid except the caller; repeat until
-    /proc shows no live one. The kernel fails a fork racing with the pending SIGKILL, so one round normally
-    suffices; the loop is the proof."""
-    me = os.getpid()
-    alive = []
-    for rounds in range(1, 101):
-        try:
-            os.kill(-1, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        alive = [p for p, uid, state in proc_entries() if uid == agent_uid and p != me and state not in "ZX"]
-        if not alive:
-            return {"rounds": rounds, "survivors": []}
-        time.sleep(0.02)
-    return {"rounds": 100, "survivors": alive}
+def uids_of(pid):
+    with open(f"/proc/{pid}/status") as f:
+        for line in f:
+            if line.startswith("Uid:"):
+                return {int(u) for u in line.split()[1:]}
+    return set()
+
+
+def pidfd_signal(pid, sig, accept):
+    """Signals pid only if, once pinned by a pidfd, its uids satisfy accept: a reused pid is never hit."""
+    try:
+        fd = os.pidfd_open(pid)
+    except OSError:
+        return False
+    try:
+        if not accept(uids_of(pid)):
+            return False
+        signal.pidfd_send_signal(fd, sig)
+        return True
+    except OSError:  # exited meanwhile
+        return False
+    finally:
+        os.close(fd)
 
 
 class Supervisor:
@@ -125,6 +139,8 @@ class Supervisor:
         self.state_dir = os.environ.get("SR_RUNNER_STATE_DIR", "/var/lib/smart-review-runner")
         self.codex_homes = os.path.join(self.state_dir, "codex-homes")
         self.work_dir = os.environ.get("SR_RUNNER_WORK_DIR", "/work")
+        self.deadline = int(os.environ.get("SR_SUPERVISOR_SWEEP_DEADLINE_MS", "5000")) / 1000
+        self.runner_status = None
         self.spawned = {}  # pid -> exit status or None
         self.waiters = {}  # pid -> [request id]
         self.runner_argv = runner_argv
@@ -152,7 +168,7 @@ class Supervisor:
         self.wake_r, wake_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
         signal.set_wakeup_fd(wake_w)
         signal.signal(signal.SIGCHLD, lambda *_: None)
-        signal.signal(signal.SIGTERM, lambda *_: run_as(self.runner_ids, lambda: os.kill(self.runner_pid, 15)))
+        signal.signal(signal.SIGTERM, lambda *_: os.kill(self.runner_pid, signal.SIGTERM))
 
     def loop(self):
         poller = select.poll()
@@ -167,22 +183,42 @@ class Supervisor:
                         pass
                 elif fd == self.sock.fileno():
                     self.handle()
-            status = self.reap()
-            if status is not None:
-                run_as(self.agent_ids, lambda: sweep(self.agent_ids[0]))
-                os._exit(os.waitstatus_to_exitcode(status) & 0xFF)
+            self.reap()
+            if self.runner_status is not None:
+                self.sweep()
+                os._exit(os.waitstatus_to_exitcode(self.runner_status) & 0xFF)
+
+    def sweep(self):
+        """SIGKILL every process with any uid = agent until none is alive; fail closed past the deadline."""
+        agent = self.agent_ids[0]
+        start = time.monotonic()
+        rounds = killed = 0
+        try:
+            while True:
+                rounds += 1
+                targets = [p for p, uids, state, _ in proc_entries() if agent in uids and state not in "ZX"]
+                if not targets and os.environ.get("R1_FAULT_SWEEP_FAILS") != "1":
+                    self.reap()
+                    return {"rounds": rounds, "killed": killed, "ms": round((time.monotonic() - start) * 1000)}
+                if time.monotonic() - start > self.deadline:
+                    raise TimeoutError(f"{len(targets)} uid-agent processes alive after {rounds} rounds")
+                killed += sum(pidfd_signal(p, signal.SIGKILL, lambda uids: agent in uids) for p in targets)
+                self.reap()
+                time.sleep(0.005)
+        except BaseException as error:  # noqa: BLE001 - any failure ends the container
+            print(f"supervisor: sweep failed, terminating the container: {error!r}", file=sys.stderr, flush=True)
+            os._exit(70)
 
     def reap(self):
-        runner_status = None
         while True:
             try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
             except ChildProcessError:
-                return runner_status
+                return
             if pid == 0:
-                return runner_status
+                return
             if pid == self.runner_pid:
-                runner_status = status
+                self.runner_status = status
             elif pid in self.spawned:
                 self.spawned[pid] = os.waitstatus_to_exitcode(status)
                 for rid in self.waiters.pop(pid, []):
@@ -205,7 +241,16 @@ class Supervisor:
         request = json.loads(data)
         rid, op = request.get("id"), request.get("op")
         try:
-            if op == "spawn":
+            if op == "sweep":
+                self.reply(rid, **self.sweep())
+            elif op == "signal":
+                pgid, sig = request["pid"], int(request["signal"])
+                if pgid not in self.spawned:
+                    raise ValueError("not a spawned pid")
+                members = [p for p, _, state, pgrp in proc_entries() if pgrp == pgid and state not in "ZX"]
+                agent = {self.agent_ids[0]}
+                self.reply(rid, signalled=sum(pidfd_signal(p, sig, lambda uids: uids == agent) for p in members))
+            elif op == "spawn":
                 self.reply(rid, pid=self.spawn(request, fds))
             elif op == "wait":
                 pid = request["pid"]
@@ -235,6 +280,8 @@ class Supervisor:
         if pid == 0:
             try:
                 signal.set_wakeup_fd(-1)
+                with open("/proc/self/oom_score_adj", "w") as f:
+                    f.write("1000")  # the OOM killer takes agents first; raising needs no capability
                 os.setsid()
                 drop_to(*self.agent_ids)
                 os.umask(0o077)
@@ -297,13 +344,6 @@ def _walk_fd(dirfd, prefix, out):
 
 def helper(argv):
     mode = argv[0]
-    if mode == "sweep":
-        result = sweep(os.getuid())
-        print(json.dumps(result))
-        sys.exit(1 if result["survivors"] else 0)
-    if mode == "signal":
-        os.kill(-int(argv[1]), int(argv[2]))
-        return
     rootfd = os.open(argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     if mode == "copy-in":
         parts = argv[2].split("/")
