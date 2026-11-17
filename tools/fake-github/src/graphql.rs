@@ -3,7 +3,7 @@
 //! answers have GitHub's shape, including the silent `thread: null` for a position outside the diff hunks or a
 //! file outside the pull request (spike S3). Nothing can submit a review.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::Json;
 use axum::body::Bytes;
@@ -20,7 +20,7 @@ use crate::oauth::{Credentials, Oauth};
 /// Recorded submitted review threads of the pull request.
 const REVIEW_THREADS: &str = "graphql/review-threads.json";
 /// The pull request (node id, head) and its files (hunk headers decide which lines take a line thread).
-const PULL: &str = "rest/pull.json";
+pub(crate) const PULL: &str = "rest/pull.json";
 const PULL_FILES: &str = "rest/pull-files.json";
 /// Id of the fake user's pending review while it has comments.
 const PENDING_REVIEW_ID: &str = "PRR_fake_pending";
@@ -50,7 +50,8 @@ struct Pending {
 pub(crate) struct Graphql {
     oauth: Arc<Oauth>,
     pull_id: String,
-    head: String,
+    /// The pull request's current head: recorded, or moved with `POST /_fake/head`.
+    head: Mutex<String>,
     files: Vec<FileLines>,
     threads: Value,
     pending: Mutex<PendingState>,
@@ -150,15 +151,29 @@ impl Graphql {
         Ok(Self {
             oauth,
             pull_id: pull.node_id,
-            head: pull.head.sha,
+            head: Mutex::new(pull.head.sha),
             files: files.into_iter().map(file_lines).collect(),
             threads,
             pending: Mutex::default(),
         })
     }
 
-    fn pending(&self) -> std::sync::MutexGuard<'_, PendingState> {
+    fn pending(&self) -> MutexGuard<'_, PendingState> {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The pull request's current head commit.
+    pub(crate) fn head(&self) -> String {
+        self.head
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Moves the pull request's head (as a push by the author would).
+    pub(crate) fn move_head(&self, sha: String) {
+        tracing::info!(%sha, "fake-github moved the pull request head");
+        *self.head.lock().unwrap_or_else(PoisonError::into_inner) = sha;
     }
 
     fn pull_request(&self, fields: Value) -> Value {
@@ -214,7 +229,7 @@ impl Graphql {
             ]
         };
         let threads = self.thread_nodes(&state.comments);
-        self.pull_request(json!({"id": self.pull_id, "headRefOid": self.head,
+        self.pull_request(json!({"id": self.pull_id, "headRefOid": self.head(),
             "reviews": {"totalCount": reviews.len(),
                 "pageInfo": {"hasNextPage": false, "endCursor": null}, "nodes": reviews},
             "reviewThreads": {"totalCount": threads.len(),
@@ -283,7 +298,7 @@ impl Graphql {
             "startLine": comment.start_line.or(line), "diffSide": comment.side,
             "subjectType": if file_level { "FILE" } else { "LINE" },
             "comments": {"nodes": [{"id": comment.id, "body": comment.body, "state": "PENDING",
-                "commit": {"oid": self.head}, "originalCommit": {"oid": self.head}}]}}}}})
+                "commit": {"oid": self.head()}, "originalCommit": {"oid": self.head()}}]}}}}})
     }
 
     fn not_found(field: &str, id: &Value) -> Value {
@@ -369,7 +384,7 @@ pub(crate) async fn serve(
     } else if query.contains("reviewThreads") {
         graphql.review_threads()
     } else if query.contains("headRefOid") {
-        graphql.pull_request(json!({"id": graphql.pull_id, "headRefOid": graphql.head}))
+        graphql.pull_request(json!({"id": graphql.pull_id, "headRefOid": graphql.head()}))
     } else {
         tracing::warn!("fake-github has no answer for this GraphQL document");
         json!({"data": null, "errors": [{"type": "UNKNOWN_DOCUMENT", "message": "not supported by fake-github"}]})

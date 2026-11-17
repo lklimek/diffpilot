@@ -1,6 +1,7 @@
 //! Fake GitHub for development and tests: serves the recordings of `fixtures/pr-482/github` — the OAuth web
 //! flow, `GET /user`, the recorded REST endpoints, the GitHub App endpoints (installation, installation token) and
 //! a GraphQL endpoint with review threads and an in-memory pending review. Deterministic; never contacts GitHub.
+//! Tests move the pull request's head with `POST /_fake/head` (`{"sha": "<40 hex>"}`).
 
 mod app;
 mod fixtures;
@@ -21,6 +22,7 @@ use axum::routing::post;
 use url::Url;
 
 use crate::fixtures::{RECORDED_ENDPOINTS, RawRecording, load};
+use crate::graphql::{Graphql, PULL};
 
 /// Configuration of the fake GitHub.
 #[derive(Clone, Debug, clap::Args)]
@@ -88,10 +90,14 @@ struct Recorded {
 /// Recorded REST responses by method and path.
 type RecordedEndpoints = HashMap<(Method, String), Recorded>;
 
-/// State of the recorded REST endpoints: the responses and the OAuth state that checks present tokens.
+/// State of the recorded REST endpoints: the responses, the OAuth state that checks present tokens, and the
+/// pull request's path and recorded head (its current head lives in the GraphQL state).
 struct RecordedState {
     endpoints: RecordedEndpoints,
     oauth: Arc<oauth::Oauth>,
+    graphql: Arc<Graphql>,
+    pull_path: String,
+    recorded_head: String,
 }
 
 /// Loads every recording and builds the router; fails when the fixture directory or a recording is missing.
@@ -103,6 +109,8 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
     }
     let oauth = Arc::new(oauth::Oauth::load(config)?);
     let graphql = Arc::new(graphql::Graphql::load(config, Arc::clone(&oauth))?);
+    let recorded_head = graphql.head();
+    let mut pull_path = String::new();
     let mut recorded = RecordedEndpoints::new();
     for file in RECORDED_ENDPOINTS {
         let recording: RawRecording = load(&config.fixture_dir, file)?;
@@ -113,6 +121,9 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
         let method = Method::from_bytes(recording.request.method.as_bytes())
             .map_err(|_| invalid("request.method"))?;
         let status = StatusCode::from_u16(recording.status).map_err(|_| invalid("status"))?;
+        if *file == PULL {
+            recording.request.url.path().clone_into(&mut pull_path);
+        }
         recorded.insert(
             (method, recording.request.url.path().to_owned()),
             Recorded {
@@ -131,12 +142,16 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
         .with_state(Arc::new(RecordedState {
             endpoints: recorded,
             oauth: Arc::clone(&oauth),
+            graphql: Arc::clone(&graphql),
+            pull_path,
+            recorded_head,
         }))
         .merge(oauth::routes(oauth))
         .merge(app::routes(Arc::new(app::App::load(&config.fixture_dir)?)))
         .merge(
             Router::new()
                 .route("/graphql", post(graphql::serve))
+                .route("/_fake/head", post(move_head))
                 .with_state(graphql),
         ))
 }
@@ -195,6 +210,16 @@ async fn serve_recorded(
         .endpoints
         .get(&(method.clone(), uri.path().to_owned()))
     {
+        Some(response) if uri.path() == state.pull_path => {
+            let head = state.graphql.head();
+            if head == state.recorded_head {
+                return json_body(response.status, response.body.clone());
+            }
+            let mut pull: serde_json::Value =
+                serde_json::from_slice(&response.body).unwrap_or_default();
+            pull["head"]["sha"] = serde_json::Value::String(head);
+            json_body(response.status, Bytes::from(pull.to_string()))
+        }
         Some(response) => json_body(response.status, response.body.clone()),
         None => {
             tracing::warn!(
@@ -205,4 +230,21 @@ async fn serve_recorded(
             github_error(StatusCode::NOT_FOUND, "Not Found")
         }
     }
+}
+
+#[derive(serde::Deserialize)]
+struct MoveHead {
+    sha: String,
+}
+
+/// `POST /_fake/head`: the pull request's head becomes `sha` (40 hex digits) for REST and GraphQL.
+async fn move_head(
+    State(graphql): State<Arc<Graphql>>,
+    axum::Json(request): axum::Json<MoveHead>,
+) -> StatusCode {
+    if request.sha.len() != 40 || !request.sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return StatusCode::BAD_REQUEST;
+    }
+    graphql.move_head(request.sha);
+    StatusCode::NO_CONTENT
 }
