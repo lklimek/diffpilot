@@ -21,6 +21,10 @@ pub struct CreateAnalysisRequest {
 /// An analysis and its state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AnalysisSummary {
+    /// Distinct model choices of jobs actually claimed, in first-use order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub models_used: Option<Vec<crate::job::spec::ModelChoice>>,
     /// Provider-reported totals of finished jobs; null without reports.
     #[serde(default)]
     pub usage: Option<crate::api::usage::UsageTotals>,
@@ -68,8 +72,20 @@ pub enum AnalysisState {
         #[ts(optional)]
         stage: Option<AnalysisStage>,
     },
-    /// Waiting for the Codex usage limit to reset.
+    /// Waiting for the user or the provider usage limit.
     Paused {
+        /// User pause takes precedence over a provider usage limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<PauseReason>,
+        /// Login that requested the pause.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        paused_by: Option<String>,
+        /// When the user requested the pause.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        paused_at: Option<DateTime<Utc>>,
         /// When it resumes, if known.
         resumes_at: Option<DateTime<Utc>>,
         /// Flows analysed before the pause.
@@ -222,4 +238,15 @@ pub enum EstimateBasis {
     RecentRuns,
     /// Only historical time per changed line; the flow count is not known yet.
     LinesOnly,
+}
+
+/// Why an analysis waits; absent reasons in older responses mean a usage limit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PauseReason {
+    /// The user decides when to resume.
+    User,
+    /// The provider decides when a job may run again.
+    #[default]
+    UsageLimit,
 }

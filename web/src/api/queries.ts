@@ -119,7 +119,15 @@ export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
           if (event.event === "analysis" && event.summary.id === id && event.summary.usage !== undefined) {
             client.setQueryData<Tour>(
               ["tour", id],
-              (tour) => tour && { ...tour, analysis: { ...tour.analysis, usage: event.summary.usage } },
+              (tour) =>
+                tour && {
+                  ...tour,
+                  analysis: {
+                    ...tour.analysis,
+                    usage: event.summary.usage,
+                    models_used: event.summary.models_used ?? tour.analysis.models_used,
+                  },
+                },
             );
           }
         },
@@ -396,3 +404,21 @@ export function useAnalysisLive(id: AnalysisId): AnalysisLive {
   }, [id]);
   return live.id === id ? live : { reconnecting: false };
 }
+
+/** Save the shared installation model and refresh its audit details. */
+export function useSetLlm() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.setLlm,
+    onSuccess: (selection) => {
+      client.setQueryData<import("./generated/types").Settings>(
+        ["settings"],
+        (old) => old && { ...old, llm_selection: selection },
+      );
+    },
+  });
+}
+/** Pause future jobs; the current one finishes. */
+export const usePauseAnalysis = () => useMutation({ mutationFn: api.pauseAnalysis });
+/** Continue a user-paused analysis. */
+export const useResumeAnalysis = () => useMutation({ mutationFn: api.resumeAnalysis });

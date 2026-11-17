@@ -53,35 +53,42 @@ export function RepoSettingsCard({ settings }: { settings: RepoSettings }) {
       {rules.length === 0 ? (
         <p>No built-in rules apply to this repository.</p>
       ) : (
-        <table className="w-full border-collapse text-xs">
-          <thead>
-            <tr>
-              {COLUMNS.map(([name, tip]) => (
-                <th
-                  key={name}
-                  className="border-b border-border px-2.5 py-1.5 text-left text-[11px] tracking-[.4px] text-muted uppercase"
-                >
-                  <Tooltip tip={tip}>
-                    <span tabIndex={0} className="cursor-help">
-                      {name}
-                    </span>
-                  </Tooltip>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rules.map((rule) => (
-              <tr key={`${rule.kind}:${rule.pattern}:${rule.category}`}>
-                <td className="border-b border-border px-2.5 py-2 font-mono">{rule.pattern}</td>
-                <td className="border-b border-border px-2.5 py-2">
-                  <RuleLabel kind={rule.kind} />
-                </td>
-                <td className="border-b border-border px-2.5 py-2">{SECTION[rule.category]}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <details>
+          <summary className="cursor-pointer text-sm">Show the {rules.length} built-in rules</summary>
+          <div className="max-h-80 overflow-auto">
+            <table className="w-full table-fixed border-collapse text-xs">
+              <thead>
+                <tr>
+                  {COLUMNS.map(([name, tip]) => (
+                    <th
+                      key={name}
+                      className="border-b border-border px-2.5 py-1.5 text-left text-[11px] tracking-[.4px] text-muted uppercase"
+                    >
+                      <Tooltip tip={tip}>
+                        <span tabIndex={0} className="cursor-help">
+                          {name}
+                        </span>
+                      </Tooltip>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rules.map((rule) => (
+                  <tr key={`${rule.kind}:${rule.pattern}:${rule.category}`}>
+                    <td className="border-b border-border px-2.5 py-2 font-mono [overflow-wrap:anywhere]">
+                      {rule.pattern}
+                    </td>
+                    <td className="border-b border-border px-2.5 py-2">
+                      <RuleLabel kind={rule.kind} />
+                    </td>
+                    <td className="border-b border-border px-2.5 py-2">{SECTION[rule.category]}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
       )}
       <h3 className="mt-2 text-sm font-semibold">Related repositories</h3>
       {related_repos.length === 0 ? (

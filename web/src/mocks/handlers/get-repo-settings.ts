@@ -4,6 +4,11 @@ import { apiError, route } from "./common";
 
 /** `GET /api/v1/repos/{owner}/{name}/settings`: acme/node-client only. */
 export const getRepoSettings = route("getRepoSettings", ({ params }) => {
+  if (scenario().manyRepos)
+    return HttpResponse.json({
+      ...REPO_SETTINGS,
+      repo: { owner: String(params.owner), name: String(params.name) },
+    });
   const chosen = scenario().repoSettings;
   if (chosen === null) {
     return apiError(

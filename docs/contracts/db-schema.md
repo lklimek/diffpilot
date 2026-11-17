@@ -16,8 +16,9 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `sessions` | cookie sessions, token hash only, CSRF token | – |
 | `user_tokens` | GitHub user tokens, AES-GCM ciphertext | `version` = CAS counter of the serialised refresh |
 | `repos`, `pull_requests` | known repositories (Settings list) and PR snapshots; PR-level analytic `agent_thread_id`, `analytic_generation` (default 0), and `session_state`, shared across analyses; PR id uses AUTOINCREMENT for archive keys | – |
-| `analyses` | one analysis per PR head and language: state, progress, skills commit, `round` (incremented by each Retry) | partial unique index: one live (not cancelled) per (PR, head, language) |
+| `analyses` | one analysis per PR head and language: state, progress, skills commit, `round` (incremented by each Retry), nullable `user_paused_by` and `user_paused_at` | partial unique index: one live (not cancelled) per (PR, head, language) |
 | `documents` | validated agent output and pre-pass as JSON: `prepass`, `plan`, `pr_context`, `flow` (key = flow id), `github_snapshot` (threads, checks), `unsent` (lines the server did not send to the LLM with their reason; key `plan` or a flow id), `memcan_profile` (the analysis's MemCan project profile lookup: `not_checked`, or `checked` with the bounded profile text or none; a Retry looks a `not_checked` one up again); `github_access` (an accepted agent output's attempt ran with an installation token; NULL for server-built documents) | `json_valid` |
+| `llm_selection` | singleton installation model, reasoning effort, changer login and time | primary key must be 1; effort low/medium/high; no tenant scope |
 | `llm_credentials` | credential ids runners hold (never the secret), pause, unusable, last call outcome | kind `codex_chatgpt` |
 | `jobs` | the queue: kind, priority (0 Ask, 1 batch), state, spec (no secrets), attempt/max, lease, job-token hash, cancel flag, `resumes_at`, `ready_output` + `ready_output_attempt`, result, `stage` (`plan:<n>`, `pr_context`, `flow:<id>`, `ask:<id>`), `generation` (0 first run, 1..2 repair runs), `round` (the analysis's round at enqueue), `github_access_granted` (the last claim got an installation token; the queue executor reports it with the result) | partial unique indexes: one claimed/running job per analysis and per credential, one live or succeeded job per (analysis, stage, generation, round); PR-level insert/update triggers exclude simultaneous claimed/running jobs across analyses and credentials; claim-order and by-analysis indexes |
 | `installation_tokens` | AES-GCM ciphertext and expiry of the installation token per (job, attempt), kept until revocation is confirmed | PK `(job_id, attempt)`; listed for revocation once the attempt is no longer claimed or running |
@@ -28,7 +29,7 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `feedback` | one entry per (user, analysis, target, value) (CCR-F1); `revision` (+1 per replacement or removal); `memcan_state` pending/written/failed of the current revision (exposed as `Feedback.memory`); `removed_at` marks a removed entry kept until MemCan deleted its memory; `attempts` / `next_attempt_at` schedule retries per entry; `unsettled_until` is the end of the settle period of a write with unknown outcome | `target_key`: step id, annotation id, or `<side>:<line>:<path>` for lines; `overrated` / `underrated` exclusive per (user, analysis, target) |
 | `comment_requests` | pending-review idempotency: request hash + response per (user, key) | – |
 
-Every table except `tenants` and `users` has a `NOT NULL tenant_id` (schema test). `CHECK` lists mirror the
+Every table except `tenants`, `users` and installation-wide `llm_selection` has a `NOT NULL tenant_id` (schema test). `CHECK` lists mirror the
 closed contract enums (schema test compares them with the serde names).
 
 ## Feedback → MemCan
@@ -62,6 +63,11 @@ Schema changes are change requests to the coordinator.
 `analyses.failure_reason` preserves the optional API failure code, including `configuration`; state transitions
 clear it together with the failure message. `llm_credentials.last_call_failure` accepts `configuration` for a
 required agent skill that could not be provided. These remain additions to the single pre-deployment schema.
+
+User pause keeps existing jobs and documents. The claim query excludes analyses with `user_paused_at`;
+state updates preserve the user pause even when a provider limit arrives. Resume clears only the user
+pause and keeps an unexpired job usage-limit pause. Jobs retain the model choice present at submission;
+`models_used` groups the existing JSON specs of claimed jobs without another table or counter.
 
 Analytic completion advances the generation even when it keeps the same thread id. Ask completion updates
 only `working_sessions` using the job's durable question owner. A stale fork is not selected at claim. Successful

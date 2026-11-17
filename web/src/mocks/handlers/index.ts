@@ -1,3 +1,6 @@
+import { setLlm } from "./set-llm";
+import { pauseAnalysis } from "./pause-analysis";
+import { resumeAnalysis } from "./resume-analysis";
 import { analysisEvents } from "./analysis-events";
 import { askQuestion } from "./ask-question";
 import { cancelAnalysis } from "./cancel-analysis";
@@ -25,6 +28,9 @@ import { updateComment } from "./update-comment";
 
 /** Handlers of the mocked endpoints (fixtures/pr-482 seed and screen scenarios), one file per endpoint. */
 export const handlers = [
+  setLlm,
+  pauseAnalysis,
+  resumeAnalysis,
   getMe,
   resolvePr,
   createAnalysis,

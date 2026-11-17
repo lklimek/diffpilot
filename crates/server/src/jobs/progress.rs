@@ -61,6 +61,17 @@ impl ProgressHub {
         Ok(event)
     }
 
+    /// Serialises job submission with user pause/cancel without publishing an event.
+    pub async fn serialise<T, F, Fut>(&self, analysis: AnalysisId, work: F) -> T
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = T>,
+    {
+        let channel = self.channel(analysis);
+        let _lock = channel.lock.lock().await;
+        work().await
+    }
+
     /// Stores a new analysis state and publishes the resulting summary.
     pub async fn set_analysis_state(
         &self,

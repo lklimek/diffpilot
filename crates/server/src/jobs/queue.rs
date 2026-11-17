@@ -60,17 +60,61 @@ impl JobExecutor for QueueExecutor {
                 stage: request.stage,
                 generation,
             };
-            match self.db.jobs().enqueue(job, Utc::now()).await {
-                Ok(job) => Ok(JobHandle { job_id: job.id }),
-                // Only the analysis's current round: a Retry never re-uses an earlier round's job.
-                Err(DbError::Conflict) => self
-                    .db
-                    .jobs()
-                    .current_for_stage(analysis, &stage, generation)
-                    .await?
-                    .map(|job| JobHandle { job_id: job.id })
-                    .ok_or(ExecutorError::Db(DbError::Conflict)),
-                Err(error) => Err(error.into()),
+
+            loop {
+                let handle = self
+                    .progress
+                    .serialise(analysis, || async {
+                        if let Some(existing) = self
+                            .db
+                            .jobs()
+                            .current_for_stage(analysis, &stage, generation)
+                            .await?
+                        {
+                            return Ok::<_, ExecutorError>(Some(JobHandle {
+                                job_id: existing.id,
+                            }));
+                        }
+                        let current = self.db.analyses().get(analysis).await?;
+                        if matches!(
+                            current.state,
+                            contracts::api::analyses::AnalysisState::Paused {
+                                reason: Some(contracts::api::analyses::PauseReason::User),
+                                ..
+                            }
+                        ) {
+                            return Ok(None);
+                        }
+                        if matches!(
+                            current.state,
+                            contracts::api::analyses::AnalysisState::Cancelled
+                        ) {
+                            return Err(DbError::Conflict.into());
+                        }
+                        let mut job = job.clone();
+                        let saved = self.db.settings().llm_selection().await?;
+                        job.spec.model = crate::model::select_model(
+                            job.spec.kind,
+                            &crate::model::ModelContext::default(),
+                            saved.as_ref().map(|s| &s.choice),
+                        );
+                        match self.db.jobs().enqueue(job, Utc::now()).await {
+                            Ok(job) => Ok(Some(JobHandle { job_id: job.id })),
+                            Err(DbError::Conflict) => self
+                                .db
+                                .jobs()
+                                .current_for_stage(analysis, &stage, generation)
+                                .await?
+                                .map(|job| Some(JobHandle { job_id: job.id }))
+                                .ok_or(ExecutorError::Db(DbError::Conflict)),
+                            Err(error) => Err(error.into()),
+                        }
+                    })
+                    .await?;
+                if let Some(handle) = handle {
+                    return Ok(handle);
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
             }
         })
     }

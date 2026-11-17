@@ -384,6 +384,13 @@ async fn submit(
             &ModelContext {
                 changed_lines: changed_line_count(&files),
             },
+            state
+                .db
+                .settings()
+                .llm_selection()
+                .await?
+                .as_ref()
+                .map(|s| &s.choice),
         ),
         limits: JobLimits::default(),
         credential: LlmCredentialRef {

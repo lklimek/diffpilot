@@ -1,7 +1,14 @@
 import { useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
-import { useAnalysisLive, useCancelAnalysis, useMe, useRetryAnalysis } from "../../api/queries";
+import {
+  useAnalysisLive,
+  useCancelAnalysis,
+  useMe,
+  useRetryAnalysis,
+  usePauseAnalysis,
+  useResumeAnalysis,
+} from "../../api/queries";
 import { useNow } from "../../app/now";
 import { AnalysisProgress } from "../../components/progress/AnalysisProgress";
 import { StatusMessage } from "../../components/status/StatusMessage";
@@ -18,6 +25,8 @@ export function ProgressScreen() {
   const live = useAnalysisLive(analysisId);
   const cancel = useCancelAnalysis();
   const retry = useRetryAnalysis();
+  const pause = usePauseAnalysis();
+  const resume = useResumeAnalysis();
   const navigate = useNavigate();
   const summary = live.summary;
   const now = useNow();
@@ -29,7 +38,7 @@ export function ProgressScreen() {
     void navigate("/", { replace: true, state });
   }, [cancelledPrUrl, navigate]);
 
-  const failure = cancel.error ?? retry.error;
+  const failure = cancel.error ?? retry.error ?? pause.error ?? resume.error;
   return (
     <div className="flex min-h-screen flex-col">
       <TopBar pr={summary?.pr} login={me.data?.user?.login ?? null} />
@@ -48,7 +57,9 @@ export function ProgressScreen() {
             progress={summary.progress}
             usage={summary.usage}
             reviewHref={`/analyses/${summary.id}`}
-            busy={cancel.isPending || retry.isPending}
+            busy={cancel.isPending || retry.isPending || pause.isPending || resume.isPending}
+            onPause={() => pause.mutate(analysisId)}
+            onResume={() => resume.mutate(analysisId)}
             onCancel={() =>
               cancel.mutate(analysisId, {
                 onSuccess: (cancelled) => {

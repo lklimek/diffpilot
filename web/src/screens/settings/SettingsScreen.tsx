@@ -1,9 +1,11 @@
 import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
-import { useState } from "react";
+import { useEffect } from "react";
+import { useSearchParams } from "react-router";
+import { LlmSelectionCard } from "../../components/settings/LlmSelectionCard";
 import { ApiError } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type { RepoRef } from "../../api/generated/types";
-import { useMe, useRepoSettings, useSetLanguage, useSettings } from "../../api/queries";
+import { useMe, useRepoSettings, useSetLanguage, useSettings, useSetLlm } from "../../api/queries";
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
 import { LanguageCard } from "../../components/settings/LanguageCard";
 import { LlmStatusCard } from "../../components/settings/LlmStatusCard";
@@ -17,9 +19,41 @@ import { TopBar } from "../../components/top-bar/TopBar";
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
 
-function RepoSection({ repos }: { repos: RepoRef[] }) {
-  const [chosen, setChosen] = useState<RepoRef | undefined>(undefined);
-  const selected = chosen ?? repos[0];
+function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
+  const [params, setParams] = useSearchParams();
+  const key = `smart-review:settings:repo:${userId}`;
+  let remembered: string | null = null;
+  try {
+    remembered = localStorage.getItem(key);
+  } catch {
+    /* Browser storage can be unavailable. */
+  }
+  const wanted = params.get("repo") ?? remembered;
+  const selected = repos.find((r) => `${r.owner}/${r.name}` === wanted) ?? repos[0];
+  const selectedName = selected && `${selected.owner}/${selected.name}`;
+  useEffect(() => {
+    if (!selectedName) return;
+    try {
+      localStorage.setItem(key, selectedName);
+    } catch {
+      /* URL still preserves the selection. */
+    }
+    if (params.get("repo") !== selectedName)
+      setParams(
+        (previous) => {
+          const next = new URLSearchParams(previous);
+          next.set("repo", selectedName);
+          return next;
+        },
+        { replace: true },
+      );
+  }, [key, selectedName, params, setParams]);
+  const setChosen = (repo: RepoRef) =>
+    setParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.set("repo", `${repo.owner}/${repo.name}`);
+      return next;
+    });
   const settings = useRepoSettings(selected);
   if (!selected) {
     return (
@@ -30,7 +64,9 @@ function RepoSection({ repos }: { repos: RepoRef[] }) {
   }
   return (
     <div className="grid content-start gap-2">
-      {repos.length > 1 && <RepoList repos={repos} selected={selected} onSelect={setChosen} />}
+      {repos.length > 1 && (
+        <RepoList key={selectedName} repos={repos} selected={selected} onSelect={setChosen} />
+      )}
       {settings.data ? (
         <RepoSettingsCard settings={settings.data} />
       ) : (
@@ -58,7 +94,8 @@ function RepoSection({ repos }: { repos: RepoRef[] }) {
   );
 }
 
-function SettingsContent() {
+function SettingsContent({ userId }: { userId: string }) {
+  const setLlm = useSetLlm();
   const settings = useSettings();
   const setLanguage = useSetLanguage();
   if (settings.isPending) return <StatusMessage kind="loading">Loading the settings…</StatusMessage>;
@@ -66,20 +103,32 @@ function SettingsContent() {
   const { llm_status, language, app_installations, repos } = settings.data;
   return (
     <>
-      <div className="grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(420px,1fr))]">
-        <LlmStatusCard status={llm_status} usage={settings.data.llm_usage} />
-        <SettingsCard title="Memory">
-          <p>
-            <MemcanStatusLine status={settings.data.memcan_status} />
-          </p>
-        </SettingsCard>
-        <LanguageCard
-          language={language}
-          busy={setLanguage.isPending}
-          onChange={(l) => setLanguage.mutate(l)}
-        />
-        <AppInstallationsCard installations={app_installations} signInHref={routes.authLogin.path} />
-        <RepoSection repos={repos} />
+      <div className="grid w-full max-w-[1800px] items-start gap-4 lg:grid-cols-2">
+        <div className="grid min-w-0 items-start gap-4 min-[1600px]:grid-cols-2">
+          {settings.data.llm_selection && (
+            <LlmSelectionCard
+              key={settings.data.llm_selection.changed_at ?? "default"}
+              selection={settings.data.llm_selection}
+              busy={setLlm.isPending}
+              saved={setLlm.isSuccess}
+              error={setLlm.isError ? errorText(setLlm.error) : undefined}
+              onSave={(choice) => setLlm.mutate(choice)}
+            />
+          )}
+          <LlmStatusCard status={llm_status} usage={settings.data.llm_usage} />
+          <SettingsCard title="Memory">
+            <p>
+              <MemcanStatusLine status={settings.data.memcan_status} />
+            </p>
+          </SettingsCard>
+          <LanguageCard
+            language={language}
+            busy={setLanguage.isPending}
+            onChange={(l) => setLanguage.mutate(l)}
+          />
+          <AppInstallationsCard installations={app_installations} signInHref={routes.authLogin.path} />
+        </div>
+        <RepoSection repos={repos} userId={userId} />
       </div>
       {setLanguage.isError && (
         <StatusMessage kind="error">The language was not saved: {errorText(setLanguage.error)}</StatusMessage>
@@ -104,7 +153,7 @@ export function SettingsScreen() {
             <SignInCard loginHref="/auth/github/login" />
           </div>
         )}
-        {user && <SettingsContent />}
+        {user && <SettingsContent userId={user.login} />}
       </main>
     </div>
   );

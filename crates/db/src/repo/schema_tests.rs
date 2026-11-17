@@ -156,7 +156,7 @@ async fn tenant_id_on_every_table() {
     let db = db().await;
     let tables: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-           AND name NOT IN ('_sqlx_migrations', 'tenants', 'users') ORDER BY name",
+           AND name NOT IN ('_sqlx_migrations', 'tenants', 'users', 'llm_selection') ORDER BY name",
     )
     .fetch_all(&db.pool)
     .await
@@ -185,6 +185,9 @@ async fn check_lists_match_contract_enums() {
             stage: None,
         },
         AnalysisState::Paused {
+            reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+            paused_by: None,
+            paused_at: None,
             resumes_at: None,
             done: 0,
             total: None,
