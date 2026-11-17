@@ -9,6 +9,7 @@ publish.workspace = true
 contracts.workspace = true
 axum.workspace = true
 base64.workspace = true
+chrono.workspace = true
 clap.workspace = true
 serde.workspace = true
 # raw_value: recorded responses are served byte for byte.

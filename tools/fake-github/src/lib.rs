@@ -1,7 +1,8 @@
 //! Fake GitHub for development and tests: serves the recordings of `fixtures/pr-482/github` — the OAuth web
-//! flow, `GET /user`, the recorded REST endpoints and a GraphQL endpoint with review threads and an in-memory
-//! pending review. Deterministic; never contacts GitHub.
+//! flow, `GET /user`, the recorded REST endpoints, the GitHub App endpoints (installation, installation token) and
+//! a GraphQL endpoint with review threads and an in-memory pending review. Deterministic; never contacts GitHub.
 
+mod app;
 mod fixtures;
 mod graphql;
 mod oauth;
@@ -132,6 +133,7 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
             oauth: Arc::clone(&oauth),
         }))
         .merge(oauth::routes(oauth))
+        .merge(app::routes(Arc::new(app::App::load(&config.fixture_dir)?)))
         .merge(
             Router::new()
                 .route("/graphql", post(graphql::serve))

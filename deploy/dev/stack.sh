@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Development stack of smart-review on localhost: fake GitHub, server (embedded web UI), runner (fake provider).
+# Development stack of smart-review on localhost: fake GitHub, fake MemCan, server (embedded web UI), runner
+# (fake provider).
 # Runs in the foreground; Ctrl+C or SIGTERM stops every component. Fake credentials only: generated per state
 # dir or taken from the fixture recordings.
 #
-# Usage: deploy/dev/stack.sh [--without COMPONENT]...     COMPONENT: runner | fake-github
+# Usage: deploy/dev/stack.sh [--without COMPONENT]...     COMPONENT: runner | fake-github | fake-memcan
 #
 # Inputs (all optional):
 #   SR_DEV_STATE_DIR        state and logs (default: new dir /data/tmp/smart-review-dev.XXXXXX; relative paths
 #                           are resolved against the working directory); kept on exit;
 #                           reusing it keeps the database, the clone base and the generated secrets
 #   SR_DEV_PORT             public port of the server (default: a free port)
-#   SR_DEV_SERVER_BIN       prebuilt server with feature embed-ui; with the two below, nothing is built
+#   SR_DEV_SERVER_BIN       prebuilt server with feature embed-ui; with the three below, nothing is built
 #   SR_DEV_RUNNER_BIN       prebuilt runner with feature fake-provider
 #   SR_DEV_FAKE_GITHUB_BIN  prebuilt tools/fake-github
+#   SR_DEV_FAKE_MEMCAN_BIN  prebuilt tools/fake-memcan
 #   RUST_LOG                log filter of all components (default: info)
 #   SR_DEV_GITHUB_RECORDINGS  recordings fake GitHub serves (default: fixtures/pr-482/github)
 #   SR_DEV_CLONE_URL        clone base (default: the fixture remote built into <state>/remotes)
@@ -25,6 +27,8 @@
 #   fake-github  FAKE_GITHUB_LISTEN        127.0.0.1:<free port>
 #                FAKE_GITHUB_FIXTURE_DIR   = SR_DEV_GITHUB_RECORDINGS
 #                FAKE_GITHUB_APP_URL       = SR_PUBLIC_URL (callback <url>/auth/github/callback)
+#   fake-memcan  FAKE_MEMCAN_LISTEN        127.0.0.1:<free port>; FAKE_MEMCAN_TOKEN = SR_MEMCAN_TOKEN;
+#                FAKE_MEMCAN_PATH          /mcp (inspection and failure modes: <url>/_fake/*, tools/fake-memcan)
 #   server       SR_PUBLIC_URL             http://127.0.0.1:<public port> (plain HTTP: cookies not Secure)
 #                SR_LISTEN_ADDR            127.0.0.1:<public port>
 #                SR_RUNNER_LISTEN_ADDR     = SR_DEV_RUNNER_LISTEN_ADDR (runner protocol only)
@@ -34,18 +38,22 @@
 #                SR_GITHUB_APP_ID          1 (fake; app tokens are not minted in stage 2)
 #                SR_GITHUB_CLIENT_ID       fixture-app-client-id   (fixtures/pr-482/github/oauth/access-token.json)
 #                SR_GITHUB_CLIENT_SECRET   fixture-client-secret   (same recording)
-#                SR_GITHUB_APP_PRIVATE_KEY_FILE  <state>/github-app-key.pem (placeholder, not a key; unread in stage 2)
+#                SR_GITHUB_APP_PRIVATE_KEY_FILE  <state>/github-app-key.pem (throwaway RSA key; fake GitHub does
+#                                          not check the App JWT signature)
 #                SR_GITHUB_API_URL         http://127.0.0.1:<fake-github port>
 #                SR_GITHUB_OAUTH_URL       http://127.0.0.1:<fake-github port>
 #                SR_GITHUB_CLONE_URL       = SR_DEV_CLONE_URL, default file://<state>/remotes
 #                                          (tools/fake-github/prepare-clone-base.sh)
-#                SR_MEMCAN_URL             http://127.0.0.1:<free port>/mcp (nothing listens: no fake MemCan yet)
-#                SR_MEMCAN_TOKEN           fake-memcan-token
+#                SR_MEMCAN_URL             http://127.0.0.1:<fake-memcan port>/mcp (nothing listens with
+#                                          --without fake-memcan)
+#                SR_MEMCAN_TOKEN           random hex, shared with the fake MemCan
 #   runner       SR_RUNNER_SERVER_URL      http://<SR_RUNNER_LISTEN_ADDR>  (not started with --without runner)
 #                SR_RUNNER_SECRET          = the server's
 #                SR_RUNNER_ID              dev-runner
 #                SR_RUNNER_STATE_DIR       <state>/runner
 #                SR_RUNNER_PROVIDER        fake (fixture replay; ignores SR_RUNNER_CREDENTIAL_ID, default "default")
+#                SR_RUNNER_FAKE_SCRIPT     <state>/fake-provider-script.json (absent: plain replay; format in
+#                                          crates/runner/src/provider/fake.rs)
 #                SR_RUNNER_DEV_NO_ISOLATION 1 (no supervisor in the dev stack; never in the image)
 #
 # The sign-in allowlist gets the fake user `alice` (stage 2 has no allowlist settings route): inserted into
@@ -60,8 +68,8 @@ while (($#)); do
   case "$1" in
     --without)
       case "${2:-}" in
-        runner | fake-github) without+=("$2") ;;
-        *) echo "stack.sh: --without takes runner or fake-github" >&2; exit 2 ;;
+        runner | fake-github | fake-memcan) without+=("$2") ;;
+        *) echo "stack.sh: --without takes runner, fake-github or fake-memcan" >&2; exit 2 ;;
       esac
       shift 2
       ;;
@@ -71,7 +79,7 @@ while (($#)); do
 done
 skipped() { [[ " ${without[*]} " == *" $1 "* ]]; }
 
-for tool in curl git python3 sqlite3; do
+for tool in curl git openssl python3 sqlite3; do
   command -v "$tool" > /dev/null || { echo "stack.sh: $tool is required" >&2; exit 1; }
 done
 
@@ -96,14 +104,17 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # --- binaries -------------------------------------------------------------------------------------------------
-if [[ -n "${SR_DEV_SERVER_BIN:-}" && -n "${SR_DEV_RUNNER_BIN:-}" && -n "${SR_DEV_FAKE_GITHUB_BIN:-}" ]]; then
+if [[ -n "${SR_DEV_SERVER_BIN:-}" && -n "${SR_DEV_RUNNER_BIN:-}" && -n "${SR_DEV_FAKE_GITHUB_BIN:-}" &&
+  -n "${SR_DEV_FAKE_MEMCAN_BIN:-}" ]]; then
   server_bin="$SR_DEV_SERVER_BIN" runner_bin="$SR_DEV_RUNNER_BIN" fake_github_bin="$SR_DEV_FAKE_GITHUB_BIN"
+  fake_memcan_bin="$SR_DEV_FAKE_MEMCAN_BIN"
 else
   echo "building the web UI and the binaries (set SR_DEV_*_BIN to skip)" >&2
   [[ -d "$repo/web/node_modules" ]] || npm --prefix "$repo/web" ci >&2
   npm --prefix "$repo/web" run build >&2
   built="$(cd "$repo" && cargo build --message-format=json-render-diagnostics \
-    -p server --features server/embed-ui -p runner --features runner/fake-provider -p fake-github)"
+    -p server --features server/embed-ui -p runner --features runner/fake-provider -p fake-github \
+    -p fake-memcan)"
   executable() {
     python3 -c 'import json, sys
 for line in sys.stdin:
@@ -115,9 +126,9 @@ for line in sys.stdin:
         print(msg["executable"])' "$1" <<< "$built"
   }
   server_bin="$(executable smart-review-server)" runner_bin="$(executable smart-review-runner)"
-  fake_github_bin="$(executable fake-github)"
+  fake_github_bin="$(executable fake-github)" fake_memcan_bin="$(executable fake-memcan)"
 fi
-for bin in "$server_bin" "$runner_bin" "$fake_github_bin"; do
+for bin in "$server_bin" "$runner_bin" "$fake_github_bin" "$fake_memcan_bin"; do
   [[ -x "$bin" ]] || { echo "stack.sh: not an executable: $bin" >&2; exit 1; }
 done
 
@@ -142,8 +153,12 @@ github="http://127.0.0.1:$github_port"
 secret_key="$(sed -n 's/^SR_SECRET_KEY=//p' "$state/stack.env" 2> /dev/null || true)"
 runner_secret="$(sed -n 's/^SR_RUNNER_SECRET=//p' "$state/stack.env" 2> /dev/null | head -n 1 || true)"
 [[ -n "$secret_key" ]] || secret_key="$(head -c 32 /dev/urandom | base64)"
+memcan_token="$(sed -n 's/^SR_MEMCAN_TOKEN=//p' "$state/stack.env" 2> /dev/null || true)"
 [[ -n "$runner_secret" ]] || runner_secret="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-echo "placeholder: stage 2 mints no GitHub App tokens" > "$state/github-app-key.pem"
+[[ -n "$memcan_token" ]] || memcan_token="$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+if ! grep -qs 'PRIVATE KEY' "$state/github-app-key.pem"; then
+  (umask 077 && openssl genrsa -out "$state/github-app-key.pem" 2048 2> /dev/null)
+fi
 
 common=(PATH="$PATH" HOME="$state/home" LANG=C.UTF-8 NO_COLOR=1 RUST_LOG="${RUST_LOG:-info}")
 # Empty environment: inherited GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE would redirect the fixture's git commands.
@@ -164,7 +179,7 @@ server_env=(
   SR_GITHUB_OAUTH_URL="$github"
   SR_GITHUB_CLONE_URL="${SR_DEV_CLONE_URL:-file://$state/remotes}"
   SR_MEMCAN_URL="http://127.0.0.1:$memcan_port/mcp"
-  SR_MEMCAN_TOKEN=fake-memcan-token
+  SR_MEMCAN_TOKEN="$memcan_token"
 )
 runner_env=(
   SR_RUNNER_SERVER_URL="http://$runner_addr"
@@ -173,6 +188,7 @@ runner_env=(
   SR_RUNNER_STATE_DIR="$state/runner"
   SR_RUNNER_PROVIDER=fake
   SR_RUNNER_DEV_NO_ISOLATION=1
+  SR_RUNNER_FAKE_SCRIPT="$state/fake-provider-script.json"
 )
 (umask 077 && printf '%s\n' "${server_env[@]}" "${runner_env[@]}" > "$state/stack.env")
 
@@ -197,6 +213,11 @@ if ! skipped fake-github; then
   start fake-github "$state" FAKE_GITHUB_LISTEN="127.0.0.1:$github_port" \
     FAKE_GITHUB_FIXTURE_DIR="$recordings" FAKE_GITHUB_APP_URL="$url" "$fake_github_bin"
   wait_for fake-github "$github/user"
+fi
+if ! skipped fake-memcan; then
+  start fake-memcan "$state" FAKE_MEMCAN_LISTEN="127.0.0.1:$memcan_port" FAKE_MEMCAN_TOKEN="$memcan_token" \
+    FAKE_MEMCAN_PATH=/mcp "$fake_memcan_bin"
+  wait_for fake-memcan "http://127.0.0.1:$memcan_port/_fake/state"
 fi
 # The server reads a `.env` of its working directory or a parent: run it in the state dir.
 start server "$state" "${server_env[@]}" "$server_bin"
