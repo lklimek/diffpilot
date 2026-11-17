@@ -1,7 +1,7 @@
 import { HttpResponse } from "msw";
-import type { AnalysisEvent, AskQuestion } from "../../api/generated/types";
-import { seedNow } from "../fixtures";
+import type { AnalysisEvent } from "../../api/generated/types";
 import { liveAnalysis, subscribeLive } from "../live-analysis";
+import { readStore, subscribeQuestions } from "../review-store";
 import { forAnalysis, route } from "./common";
 
 /** `GET /api/v1/analyses/{id}/events` (sse-events.md): snapshot (analysis, every question), then live events. */
@@ -19,9 +19,14 @@ export const analysisEvents = route(
             unsubscribe();
           }
         };
-        unsubscribe = subscribeLive((summary) => send({ event: "analysis", summary }));
+        const unsubscribeLive = subscribeLive((summary) => send({ event: "analysis", summary }));
+        const unsubscribeQuestions = subscribeQuestions((question) => send({ event: "question", question }));
+        unsubscribe = () => {
+          unsubscribeLive();
+          unsubscribeQuestions();
+        };
         send({ event: "analysis", summary: liveAnalysis() });
-        for (const question of seedNow("questions") as AskQuestion[]) send({ event: "question", question });
+        for (const question of readStore("questions")) send({ event: "question", question });
         request.signal.addEventListener("abort", () => unsubscribe());
       },
       cancel() {

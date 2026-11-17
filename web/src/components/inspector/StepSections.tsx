@@ -176,7 +176,8 @@ const ORIGIN = {
 } as const;
 const BLOCKING = { blocks_this_pr: "blocks this PR", follow_up: "follow-up" } as const;
 
-function AssessmentFields({ assessment }: { assessment: Assessment }) {
+/** The assessment fields of brief §3 (shared by the inspector and the step block). */
+export function AssessmentFields({ assessment }: { assessment: Assessment }) {
   const rows: [string, ReactNode][] = [
     ["What a production user or operator would notice", assessment.headline],
     [
