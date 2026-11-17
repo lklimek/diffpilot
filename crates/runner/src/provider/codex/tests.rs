@@ -44,7 +44,8 @@ fn fake_codex() -> &'static Path {
         fs::write(
             &path,
             r#"#!/bin/sh
-case " $* " in *model_auto_compact_token_limit*) mode=compaction ;; *) mode=child ;; esac
+mode=child
+echo call >> "$PWD/invocations.txt"
 env > "$PWD/$mode-env.txt"
 for arg in "$@"; do printf '%s\n' "$arg"; done > "$PWD/$mode-args.txt"
 cat > "$PWD/$mode-stdin.txt"
@@ -58,11 +59,6 @@ if [ -f "$PWD/rollout-rel" ]; then
   rollout="$CODEX_HOME/sessions/$(cat "$PWD/rollout-rel")"
   mkdir -p "$(dirname "$rollout")"
   if [ -f "$PWD/$mode-rollout" ]; then cat "$PWD/$mode-rollout" >> "$rollout"; else echo '{"type":"turn"}' >> "$rollout"; fi
-fi
-if [ "$mode" = compaction ]; then
-  while [ -f "$PWD/hold-compaction" ] && [ ! -f "$PWD/release" ]; do sleep 0.05; done
-  cat "$PWD/compaction.jsonl"
-  exit "$(cat "$PWD/compaction-exit" 2>/dev/null || echo 0)"
 fi
 if [ -f "$PWD/ignore-term" ]; then trap '' TERM; fi
 if [ -f "$PWD/tamper" ]; then printf '\n[mcp_servers.evil]\ncommand = "/bin/evil"\n' >> "$CODEX_HOME/config.toml"; fi
@@ -109,11 +105,6 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
     )
     .unwrap();
     fs::write(job_dir.join("scenario-exit"), exit_code.to_string()).unwrap();
-    fs::copy(
-        fixture("codex/compaction-after-plan.jsonl"),
-        job_dir.join("compaction.jsonl"),
-    )
-    .unwrap();
     fs::write(job_dir.join("rollout-rel"), rollout_rel(THREAD)).unwrap();
     let master_auth = dir.path().join("credentials").join("auth.json");
     fs::create_dir(master_auth.parent().unwrap()).unwrap();
@@ -203,8 +194,8 @@ async fn recorded_success_returns_the_structured_output() {
         Some("019a8f2c-4820-7000-8000-000000000482")
     );
     assert_eq!(
-        outcome.usage.input_tokens, 109_232,
-        "a new thread's usage is its cumulative total after compaction"
+        outcome.usage.input_tokens, 48_210,
+        "a new thread's usage is its useful turn total"
     );
     assert_eq!(
         events.last(),
@@ -268,6 +259,9 @@ async fn codex_env_has_no_secret() {
         "CODEX_HOME",
         "TMPDIR",
         "LANG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
         "HTTPS_PROXY",
         "https_proxy",
         "HTTP_PROXY",
@@ -784,94 +778,8 @@ async fn resume_restores_the_session_and_runs_exec_resume() {
     assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
     assert_eq!(
         outcome.usage.input_tokens,
-        109_232 - 50_000,
+        180_776 - 50_000,
         "usage is the delta of the thread's cumulative totals"
-    );
-}
-
-#[tokio::test]
-async fn compaction_issued_at_job_end() {
-    let h = harness("plan.jsonl", 0);
-    let outcome = run(&h).await.0.expect("success");
-    assert_eq!(
-        lines(&h, "compaction-args.txt"),
-        [
-            "exec",
-            "resume",
-            "--json",
-            "--skip-git-repo-check",
-            "--ignore-rules",
-            "-c",
-            "model_auto_compact_token_limit=1000",
-            THREAD,
-            "-",
-        ]
-    );
-    assert_eq!(child_file(&h, "compaction-stdin.txt"), COMPACTION_PROMPT);
-    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
-    assert!(
-        h.call.session_dir.join(rollout_rel(THREAD)).exists(),
-        "the compacted session is stored for the next job"
-    );
-}
-
-#[tokio::test]
-async fn output_is_ready_before_compaction_ends() {
-    let h = harness("plan.jsonl", 0);
-    fs::write(h.call.job_dir.join("hold-compaction"), "").unwrap();
-    let (tx, mut rx) = mpsc::channel(1024);
-    let release = h.call.job_dir.join("release");
-    let watch = async {
-        while let Some(event) = rx.recv().await {
-            if matches!(event, ProviderEvent::OutputReady(_)) {
-                fs::write(&release, "").unwrap();
-            }
-        }
-    };
-    let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
-        tokio::join!(h.provider.run(&h.call, tx), watch)
-    })
-    .await
-    .expect("the output is announced while compaction still runs");
-    result.expect("success");
-}
-
-#[tokio::test]
-async fn config_regenerated_before_compaction() {
-    let h = harness("plan.jsonl", 0);
-    fs::write(h.call.job_dir.join("tamper"), "").unwrap();
-    run(&h).await.0.expect("success");
-    let compaction = child_file(&h, "compaction-config.toml");
-    assert!(!compaction.contains("evil"), "{compaction}");
-    assert_eq!(
-        compaction,
-        config::config_toml(
-            &h.call.model,
-            Purpose::Compaction,
-            &h.call.access,
-            &h.provider.settings.github_mcp,
-            AGENT_NO_PROXY
-        )
-    );
-    let job = child_file(&h, "child-config.toml");
-    assert!(job.contains("[mcp_servers.github]") && job.contains("[mcp_servers.memcan]"));
-}
-
-#[tokio::test]
-async fn failed_compaction_keeps_the_output_and_loses_the_session() {
-    let h = harness("plan.jsonl", 0);
-    store_session(&h, 1);
-    fs::write(h.call.job_dir.join("compaction-exit"), "1").unwrap();
-    fs::write(
-        h.call.job_dir.join("compaction.jsonl"),
-        json!({"type": "turn.failed", "error": {"message": "stream disconnected"}}).to_string(),
-    )
-    .unwrap();
-    let outcome = run(&h).await.0.expect("the job still succeeds");
-    assert_eq!(outcome.session_id, None);
-    assert!(
-        !h.call.session_dir.exists(),
-        "a lost session is not kept in the store"
     );
 }
 
@@ -956,7 +864,7 @@ async fn usage_limit_carries_resets_at_from_the_rollout() {
         other => panic!("{other:?}"),
     }
     assert!(
-        !h.call.job_dir.join("compaction-args.txt").exists(),
+        child_file(&h, "invocations.txt").lines().count() == 1,
         "no further turn after the limit"
     );
 }
@@ -985,7 +893,7 @@ async fn cancel_kills_codex_that_ignores_sigterm_after_the_grace() {
         matches!(result, Err(ProviderError::Cancelled)),
         "{result:?}"
     );
-    assert!(!h.call.job_dir.join("compaction-args.txt").exists());
+    assert!(child_file(&h, "invocations.txt").lines().count() == 1);
 }
 
 /// Unknown event types and item types a newer Codex may print; they must be skipped, never fail the call.
@@ -1338,25 +1246,6 @@ async fn isolated_runtime_cap_stops_codex_and_still_copies_back() {
     assert!(!agent_home.exists());
 }
 
-#[tokio::test]
-async fn isolated_compaction_stops_at_its_budget_and_still_copies_back() {
-    let mut h = harness("plan.jsonl", 0);
-    let agent_home = isolated(&mut h);
-    h.provider.settings.term_grace = Duration::from_millis(300);
-    // Budget = runtime - END_MARGIN = 31 s; the run stops 5.3 s before it.
-    h.call.limits.max_runtime_secs = 46;
-    fs::write(h.call.job_dir.join("hold-compaction"), "").unwrap();
-    let started = std::time::Instant::now();
-    let outcome = run(&h)
-        .await
-        .0
-        .expect("the job output survives a failed compaction");
-    assert_eq!(outcome.session_id, None, "the session counts as lost");
-    assert!(started.elapsed() < Duration::from_secs(45));
-    assert!(!agent_home.exists());
-    assert!(h.provider.settings.credential.usable());
-}
-
 /// One Codex run whose command line carries the rotated tokens glued to a preceding character.
 fn glued_token_scenario(h: &Harness) {
     let command = format!("echo x{ROTATED_ACCESS} x{ROTATED_REFRESH}");
@@ -1612,4 +1501,62 @@ async fn missing_or_disallowed_required_manifest_is_a_configuration_failure() {
         h.provider.prepare(&h.call).await,
         Err(ProviderError::Configuration(_))
     ));
+}
+
+#[tokio::test]
+async fn useful_turn_is_archived_without_an_extra_turn() {
+    for resumed in [false, true] {
+        let mut h = harness("plan.jsonl", 0);
+        h.call.limits.max_runtime_secs = 10;
+        if resumed {
+            store_session(&h, 1);
+        }
+        let outcome = if resumed {
+            resume(&h).await.0
+        } else {
+            run(&h).await.0
+        }
+        .unwrap();
+        assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+        assert!(h.call.session_dir.join(rollout_rel(THREAD)).exists());
+        assert!(child_file(&h, "invocations.txt").lines().count() == 1);
+        assert!(
+            child_file(&h, "child-config.toml").contains("model_auto_compact_token_limit = 400000")
+        );
+    }
+}
+
+#[tokio::test]
+async fn agent_plain_git_accepts_the_runner_owned_checkout() {
+    let h = harness("plan.jsonl", 0);
+    let repo = h.call.job_dir.join("repo");
+    let commits = crate::test_support::commits();
+    crate::git::checkout(
+        &h._dir.path().join("mirror.git"),
+        &format!("file://{}", crate::test_support::shared_repo().display()),
+        &[&commits.head, &commits.base],
+        &repo,
+    )
+    .await
+    .unwrap();
+    for args in [
+        vec!["diff", &commits.base, &commits.head, "--", "src/config.rs"],
+        vec!["log", "-1"],
+        vec!["show", &commits.base],
+        vec!["blame", "HEAD", "--", "src/config.rs"],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&repo)
+            .env_clear()
+            .envs(agent_env(&h.call, &h.call.codex_home, None))
+            .env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

@@ -1,6 +1,6 @@
 //! LLM providers behind the `LlmProvider` seam; only this module knows Codex (rule A5). A provider runs one
-//! agent call in a prepared job directory, streams normalised events, restores and saves the analysis's
-//! session files and ends every `run` and `resume` by compacting the session (ADR-004).
+//! agent call in a prepared job directory, streams normalised events, restores and saves the pull request's
+//! session files after every successful useful turn (ADR-004).
 
 pub mod codex;
 #[cfg(feature = "fake-provider")]
@@ -18,8 +18,8 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-/// Runs agent calls. `run` starts a new session, `resume` continues one; both compact at the end and send
-/// [`ProviderEvent::OutputReady`] before compacting.
+/// Runs agent calls. `run` starts a new session, `resume` continues one; both send
+/// [`ProviderEvent::OutputReady`] before archiving the session.
 pub trait LlmProvider: Send + Sync {
     /// Starts a new session for `call` (first job, or a lost session seeded with the context pack in the prompt).
     fn run<'a>(
@@ -46,7 +46,7 @@ pub trait LlmProvider: Send + Sync {
 pub enum ProviderEvent {
     /// Normalised agent activity.
     Activity(JobEvent),
-    /// The model turn ended with this final output (parsed JSON); compaction follows. Sent at most once per call.
+    /// The model turn ended with this final output (parsed JSON); archival follows. Sent at most once per call.
     OutputReady(Value),
 }
 
@@ -60,7 +60,7 @@ pub struct ProviderCall {
     /// Per-job `CODEX_HOME` (credential copy, config, session files) on the runner's persistent private
     /// volume (0700, never tmpfs or `/tmp`), so a rotated credential survives a crash before copy-back.
     pub codex_home: PathBuf,
-    /// This analysis's session store (runner uid); only its files are copied into the call.
+    /// This pull request's session store (runner uid); only its files are copied into the call.
     pub session_dir: PathBuf,
     /// The full prompt.
     pub prompt: String,
@@ -68,7 +68,7 @@ pub struct ProviderCall {
     pub output_schema: Value,
     /// Model and reasoning effort.
     pub model: ModelChoice,
-    /// Limits; the runtime cap includes compaction.
+    /// Limits of the useful turn.
     pub limits: JobLimits,
     /// Credentials the agent may hold (GitHub MCP, MemCan MCP).
     pub access: AgentAccess,
@@ -76,14 +76,16 @@ pub struct ProviderCall {
     pub skills: Vec<String>,
 }
 
-/// A finished agent call. A failed compaction after the output does not fail the call: the outcome then has
+/// A finished agent call. Failed archival after the output does not fail the call: the outcome then has
 /// `session_id: None` and the next job starts with a context pack.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderOutcome {
     /// The final structured output (identical to the one sent as [`ProviderEvent::OutputReady`]).
     pub output: Value,
-    /// Provider session (Codex thread) id after the call; none when compaction failed.
+    /// Provider session (Codex thread) id after the call; none when archival failed.
     pub session_id: Option<String>,
+    /// Completed session turns, when the provider can determine them.
+    pub session_turns: Option<u64>,
     /// Usage of this call alone.
     pub usage: Usage,
     /// Commit of the claudius checkout whose skills were exposed.

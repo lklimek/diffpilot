@@ -892,15 +892,15 @@ async fn usage_limit_pauses_the_question_with_its_reset_time() {
 }
 
 #[tokio::test]
-async fn superseded_analysis_cancels_its_open_questions_and_refuses_new_ones() {
+async fn explicit_pr_removal_cancels_its_open_questions_and_refuses_new_ones() {
     let f = fixture(true).await;
     let id = f.asked("f1.5", QUESTION).await;
     let job = f.queued_job(id).await;
-    // What a re-analysis on a moved head does to the old analysis (`pipeline::ingest::create`).
+    // Explicit PR removal requests archival deletion and cancels its jobs.
     f.state
         .db
         .analyses()
-        .request_session_drop(f.analysis)
+        .request_session_drop(1)
         .await
         .expect("drop");
     f.state
@@ -1284,6 +1284,44 @@ async fn ask_after_a_lost_session_still_has_the_project_profile() {
         .find(|block| block.contains("project profile: MemCan memory"))
         .unwrap_or_default();
     assert!(fenced.contains(marker), "{input}");
+}
+
+#[tokio::test]
+async fn ask_on_an_older_analysis_resumes_the_pr_session_from_a_new_head() {
+    let f = fixture(true).await;
+    let previous = f.state.db.analyses().get(f.analysis).await.unwrap();
+    let next = f
+        .state
+        .db
+        .analyses()
+        .create(
+            db::repo::analyses::NewAnalysis {
+                id: AnalysisId::new_random(),
+                tenant_id: previous.tenant_id,
+                pull_request_id: previous.pull_request_id,
+                base_sha: previous.base_sha,
+                head_sha: contracts::ids::CommitSha("b".repeat(40)),
+                language: contracts::common::LlmLanguage::Pl,
+                created_by: previous.created_by,
+            },
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    f.state
+        .db
+        .analyses()
+        .set_session(next.id, "new-head-thread", None)
+        .await
+        .unwrap();
+    let question = f.asked("f1.5", QUESTION).await;
+    f.queued_job(question).await;
+    let claim = f.claim().await.unwrap();
+    assert_eq!(claim.spec.analysis_id, f.analysis);
+    assert_eq!(claim.spec.pull_request_id, previous.pull_request_id);
+    assert_eq!(claim.spec.session.unwrap().thread_id, "new-head-thread");
+    assert_eq!(claim.spec.repo.head_sha, previous.head_sha);
+    assert!(claim.spec.prompt.contains(&previous.head_sha.0));
 }
 
 #[tokio::test]

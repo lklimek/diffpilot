@@ -92,7 +92,12 @@ impl From<sqlx::Error> for DbError {
     fn from(error: sqlx::Error) -> Self {
         match &error {
             sqlx::Error::RowNotFound => Self::NotFound,
-            sqlx::Error::Database(database) if database.is_unique_violation() => Self::Conflict,
+            sqlx::Error::Database(database)
+                if (database.is_unique_violation()
+                    || database.message() == "one running job per pull request") =>
+            {
+                Self::Conflict
+            }
             _ => Self::Storage(StorageError(Inner::Sqlx(Box::new(error)))),
         }
     }

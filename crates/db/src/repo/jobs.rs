@@ -133,7 +133,7 @@ pub struct JobRecord {
     pub lease_expires_at: Option<DateTime<Utc>>,
     /// When a paused job is queued again.
     pub resumes_at: Option<DateTime<Utc>>,
-    /// The output posted before compaction for the current attempt (provisional; the result is authoritative).
+    /// The output posted before archival for the current attempt (provisional; the result is authoritative).
     pub ready_output: Option<Value>,
     /// The final result.
     pub result: Option<JobResult>,
@@ -180,7 +180,7 @@ pub struct ExpiredLease {
     pub state: JobState,
 }
 
-/// Outcome of recording the output posted before compaction.
+/// Outcome of recording the output posted before archival.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputRecorded {
     /// Stored for the attempt; the server may publish it unless `cancel_requested`.
@@ -520,7 +520,9 @@ impl Jobs<'_> {
         }
         query.push(
             ") AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.state IN ('claimed', 'running')
-                   AND (r.analysis_id = j.analysis_id OR r.credential_id = j.credential_id))
+                   AND (r.analysis_id = j.analysis_id OR r.credential_id = j.credential_id
+                       OR (SELECT pull_request_id FROM analyses WHERE id = r.analysis_id) =
+                          (SELECT pull_request_id FROM analyses WHERE id = j.analysis_id)))
                AND NOT EXISTS (SELECT 1 FROM llm_credentials c WHERE c.id = j.credential_id
                    AND (c.unusable_since IS NOT NULL OR c.paused_until > ",
         );
@@ -676,7 +678,7 @@ impl Jobs<'_> {
         .execute(&mut *tx)
         .await?;
         apply_credential_effects(&mut tx, &credential, result, now).await?;
-        // The session the attempt reported becomes the analysis's session (ADR-004) only for the first effective,
+        // The session the attempt reported becomes the PR's session (ADR-004) only for the first effective,
         // not cancelled result: a repeated or late result never restores an older session. A session already asked
         // to be dropped stays dropped.
         if let (Some(session), false) = (
@@ -684,15 +686,16 @@ impl Jobs<'_> {
             matches!(stored.outcome, JobOutcome::Cancelled),
         ) {
             sqlx::query(
-                "UPDATE analyses SET agent_thread_id = ?, skills_commit = COALESCE(?, skills_commit),
+                "UPDATE pull_requests SET agent_thread_id = ?,
                      session_state = CASE WHEN session_state IN ('none', 'active') THEN 'active' ELSE session_state END
-                 WHERE id = (SELECT analysis_id FROM jobs WHERE id = ?)",
+                 WHERE id = (SELECT a.pull_request_id FROM jobs j JOIN analyses a ON a.id = j.analysis_id WHERE j.id = ?)",
             )
             .bind(&session.thread_id)
-            .bind(stored.skills_commit.as_deref())
             .bind(result.job_id.to_string())
             .execute(&mut *tx)
             .await?;
+            sqlx::query("UPDATE analyses SET skills_commit = COALESCE(?, skills_commit) WHERE id = (SELECT analysis_id FROM jobs WHERE id = ?)")
+                .bind(stored.skills_commit.as_deref()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(Completion::Applied { state })
@@ -1317,7 +1320,46 @@ mod tests {
             .await
             .expect("claim");
         assert_eq!(claimed.map(|job| job.id), Some(first));
-        // A second credential is idle, but the analysis's session already runs a job.
+        // A second credential is idle, but the PR's session already runs a job.
+        sqlx::query("UPDATE jobs SET credential_id = 'spare' WHERE id = ?")
+            .bind(second.to_string())
+            .execute(&db.pool)
+            .await
+            .expect("move");
+        let blocked = db
+            .jobs()
+            .claim(ClaimParams {
+                credential_ids: &["spare".to_owned()],
+                job_token_hash: b"hash",
+                lease_until: at(60),
+                now: at(1),
+            })
+            .await
+            .expect("claim");
+        assert_eq!(blocked, None);
+    }
+
+    #[tokio::test]
+    async fn another_analysis_of_the_pr_waits_even_on_another_credential() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let first = enqueue(&db, analysis, "f1", 0).await;
+        let other = AnalysisId::new_random();
+        sqlx::query("INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by, created_at) SELECT ?, tenant_id, pull_request_id, base_sha, 'new-head', 'pl', 'planning', created_by, created_at FROM analyses WHERE id = ?")
+            .bind(other.to_string()).bind(analysis.to_string()).execute(&db.pool).await.unwrap();
+        let second = enqueue(&db, other, "f2", 1).await;
+        let claimed = db
+            .jobs()
+            .claim(ClaimParams {
+                credential_ids: &[CREDENTIAL.to_owned(), "spare".to_owned()],
+                job_token_hash: b"hash",
+                lease_until: at(60),
+                now: at(0),
+            })
+            .await
+            .expect("claim");
+        assert_eq!(claimed.map(|job| job.id), Some(first));
+        // A second credential is idle, but the PR's session already runs a job.
         sqlx::query("UPDATE jobs SET credential_id = 'spare' WHERE id = ?")
             .bind(second.to_string())
             .execute(&db.pool)

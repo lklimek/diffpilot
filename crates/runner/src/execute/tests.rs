@@ -198,6 +198,7 @@ impl LlmProvider for Stub {
 
 fn outcome(output: Value) -> ProviderOutcome {
     ProviderOutcome {
+        session_turns: None,
         output,
         session_id: Some("thread-1".to_owned()),
         usage: Usage {
@@ -418,7 +419,7 @@ async fn requested_session_counts_as_lost_and_the_context_pack_seeds_the_new_one
     let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
     let mut spec = spec(JobKind::Plan, shared_repo());
     spec.session = Some(SessionRef {
-        analysis_id: spec.analysis_id,
+        pull_request_id: spec.pull_request_id,
         thread_id: "old-thread".to_owned(),
     });
     spec.context_pack = Some("CONTEXT PACK".to_owned());
@@ -440,7 +441,7 @@ async fn own_session_is_resumed_without_the_context_pack() {
     let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
     let mut spec = spec(JobKind::Plan, shared_repo());
     spec.session = Some(SessionRef {
-        analysis_id: spec.analysis_id,
+        pull_request_id: spec.pull_request_id,
         thread_id: "thread-1".to_owned(),
     });
     spec.context_pack = Some("CONTEXT PACK".to_owned());
@@ -461,14 +462,14 @@ async fn own_session_is_resumed_without_the_context_pack() {
 }
 
 #[tokio::test]
-async fn session_of_another_analysis_is_never_resumed() {
+async fn session_of_another_pull_request_is_never_resumed() {
     let root = TempDir::new().unwrap();
     let stub = Stub::resumable();
     let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
     let mut spec = spec(JobKind::Plan, shared_repo());
     spec.session = Some(SessionRef {
-        analysis_id: contracts::ids::AnalysisId::new_random(),
-        thread_id: "thread-of-another-analysis".to_owned(),
+        pull_request_id: spec.pull_request_id + 1,
+        thread_id: "thread-of-another-pr".to_owned(),
     });
     spec.context_pack = Some("CONTEXT PACK".to_owned());
     let (result, _) = execute_collect(&executor, spec).await;
@@ -491,7 +492,7 @@ async fn stored_session_is_scrubbed_of_the_sink_secrets() {
     let spec = spec(JobKind::Plan, shared_repo());
     let stored = executor
         .sessions()
-        .dir(spec.analysis_id)
+        .dir(spec.pull_request_id)
         .join("rollout.jsonl");
     let (result, _) = execute_collect(&executor, spec).await;
     assert!(result.session.is_some());
@@ -685,6 +686,67 @@ mod fake {
                 Some(&ProviderEvent::OutputReady(expected)),
                 "{recording}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn job_logs_session_origin_and_usage() {
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&log);
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || Capture(Arc::clone(&captured)))
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let root = TempDir::new().unwrap();
+        let executor = Executor::new(
+            Arc::new(FakeProvider::new(Duration::ZERO)),
+            dirs(root.path()),
+            credential(),
+        );
+        for (session, origin) in [
+            (None, "new session"),
+            (Some(1), "resumed session"),
+            (Some(2), "context pack after a lost session"),
+        ] {
+            log.lock().unwrap().clear();
+            let mut spec = spec(JobKind::Plan, shared_repo());
+            spec.prompt = "Job: plan.".to_owned();
+            spec.session = session.map(|pull_request_id| SessionRef {
+                pull_request_id,
+                thread_id: "thread-1".to_owned(),
+            });
+            let job = spec.job_id;
+            let (result, _) = execute_collect(&executor, spec).await;
+            let usage = result.usage.unwrap();
+            let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+            let line = logged
+                .lines()
+                .find(|line| line.contains("job agent session summary"))
+                .expect("session summary");
+            for expected in [
+                origin.to_owned(),
+                job.to_string(),
+                "kind=Plan".to_owned(),
+                format!("input_tokens={}", usage.input_tokens),
+                format!("cached_input_tokens={}", usage.cached_input_tokens),
+                format!("output_tokens={}", usage.output_tokens),
+                "session_turns=".to_owned(),
+            ] {
+                assert!(line.contains(&expected), "{expected}: {line}");
+            }
         }
     }
 

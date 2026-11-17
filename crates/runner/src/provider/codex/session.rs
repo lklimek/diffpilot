@@ -1,5 +1,5 @@
-//! The agent-session archive of one analysis (ADR-004, threat model T8): the Codex rollout of its thread,
-//! `sessions/YYYY/MM/DD/rollout-<time>-<thread>.jsonl`, copied from the analysis's store into the per-job
+//! The agent-session archive of one pull request (ADR-004, threat model T8): the Codex rollout of its thread,
+//! `sessions/YYYY/MM/DD/rollout-<time>-<thread>.jsonl`, copied from the pull request's store into the per-job
 //! `CODEX_HOME` before a resume and back after the job. Nothing else is ever copied: not `auth.json`, not
 //! another thread's rollout. The per-job copy is agent-writable, so copy-back reads only real directories and
 //! single-link regular files of bounded size, never following a symlink, and scrubs every known secret (T10).
@@ -66,7 +66,7 @@ pub(crate) fn save(
     thread: &str,
     store: &Path,
     scrubber: &Scrubber,
-) -> io::Result<()> {
+) -> io::Result<Option<u64>> {
     if !valid_thread_id(thread) {
         return Err(invalid("not a thread id"));
     }
@@ -78,6 +78,7 @@ pub(crate) fn save(
             "no rollout of the thread",
         ));
     }
+    let mut turns = 0;
     for rel in &rollouts {
         let target = store.join(rel);
         create_private_dirs(target.parent().unwrap_or(store))?;
@@ -85,13 +86,14 @@ pub(crate) fn save(
         temp.push(".tmp");
         let temp = PathBuf::from(temp);
         remove_if_present(&temp)?;
-        copy(&source.join(rel), &temp, scrubber)?;
+        turns += copy(&source.join(rel), &temp, scrubber)?.turns;
         std::fs::rename(&temp, &target)?;
     }
-    remove_others(store, store, &rollouts)
+    remove_others(store, store, &rollouts)?;
+    Ok((turns > 0).then_some(turns))
 }
 
-/// Removes the analysis's stored session (lost or discarded).
+/// Removes the pull request's stored session (lost or discarded).
 pub(crate) fn forget(store: &Path) {
     match std::fs::remove_dir_all(store) {
         Ok(()) => {}
@@ -119,6 +121,8 @@ pub(crate) fn usage_limit_resets_at(codex_home: &Path, thread: &str) -> Option<D
 /// What a rollout says about the thread.
 #[derive(Debug, Default)]
 struct Facts {
+    /// Completed useful turns observed in the rollout.
+    turns: u64,
     /// The latest cumulative usage of the thread.
     cumulative: Option<Usage>,
     /// Reset time of the latest exhausted rate-limit window.
@@ -173,7 +177,7 @@ fn scan(reader: impl BufRead, mut sink: impl FnMut(&str) -> io::Result<()>) -> i
     for line in reader.lines() {
         let line = line?;
         sink(&line)?;
-        if !line.contains("\"token_count\"") {
+        if !line.contains("\"token_count\"") && !line.contains("\"task_complete\"") {
             continue;
         }
         let Ok(record) = serde_json::from_str::<Record>(&line) else {
@@ -182,6 +186,9 @@ fn scan(reader: impl BufRead, mut sink: impl FnMut(&str) -> io::Result<()>) -> i
         let Some(payload) = record.payload.filter(|_| record.kind == "event_msg") else {
             continue;
         };
+        if payload.kind.as_deref() == Some("task_complete") {
+            facts.turns += 1;
+        }
         if payload.kind.as_deref() != Some("token_count") {
             continue;
         }
