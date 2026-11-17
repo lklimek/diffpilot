@@ -20,6 +20,10 @@
 #   SR_SMOKE_IMAGE        Codex image (default smart-review-spike-codex:0.167.0; Codex at /usr/local/bin/codex,
 #                         user 10001, /codex-home owned by it)
 #   SR_SMOKE_CODEX_VOLUME volume holding the Codex login auth.json (default sr-spike-codex-home)
+#   SR_SMOKE_STATE_VOLUME an existing runner state volume that already holds the credential
+#                         (credentials/default/auth.json), e.g. a stopped local compose stack's runner-state: used
+#                         as the runner's state, nothing is copied, so only one live copy of the credential exists;
+#                         unset: a new volume sr-smoke-runner-<run> with a copy of SR_SMOKE_CODEX_VOLUME
 #   SR_SMOKE_CAP_SECONDS  bound for the analysis (default 2700 = 45 min)
 #   SR_SMOKE_PROVIDER     codex (default) or fake: plumbing dry run without an LLM call (runner built with
 #                         feature fake-provider; replays the pr-482 recordings, so validation may fail)
@@ -65,7 +69,7 @@ esac
 inner=sr-smoke-int proxy_ip=172.31.251.3
 if [[ "$isolation" == supervisor ]]; then gateway=172.31.251.1; fi
 run="$(date -u +%Y%m%dt%H%M%S)"
-container="sr-smoke-runner-$run" volume="sr-smoke-runner-$run" proxy="sr-smoke-proxy-$run"
+container="sr-smoke-runner-$run" volume="${SR_SMOKE_STATE_VOLUME:-sr-smoke-runner-$run}" proxy="sr-smoke-proxy-$run"
 
 mkdir -p /data/tmp
 private="$(mktemp -d /data/tmp/smart-review-smoke.XXXXXX)"
@@ -136,17 +140,26 @@ state="$(sed -n 's/^SR_DEV_STATE_DIR=//p' "$private/stack.out")"
 say "stack ready at $url, state $state"
 
 # --- runner container -----------------------------------------------------------------------------------------
-docker volume create "$volume" > /dev/null
-# Mounted at /codex-home first, the empty volume takes that dir's owner (10001) and mode (0700) from the image.
-docker run --rm --init --network none --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges \
-  --mount "type=volume,source=$codex_volume,target=/src,readonly" \
-  --mount "type=volume,source=$volume,target=/codex-home" "$image" sh -c '
-    install -d -m 700 /codex-home/credentials/default &&
-    cp /src/auth.json /codex-home/credentials/default/auth.json &&
-    chmod 600 /codex-home/credentials/default/auth.json &&
-    jq -e "(.tokens.account_id // \"\") | length > 0" /codex-home/credentials/default/auth.json > /dev/null' ||
-  fail "the credential copy failed or has no account_id"
-say "credential copied into volume $volume (account_id present)"
+if [[ -n "${SR_SMOKE_STATE_VOLUME:-}" ]]; then
+  docker volume inspect "$volume" > /dev/null 2>&1 || fail "SR_SMOKE_STATE_VOLUME $volume does not exist"
+  docker run --rm --init --network none --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges \
+    --mount "type=volume,source=$volume,target=/codex-home,readonly" "$image" sh -c '
+      jq -e "(.tokens.account_id // \"\") | length > 0" /codex-home/credentials/default/auth.json > /dev/null' ||
+    fail "the state volume has no credential with an account_id"
+  say "existing state volume $volume used (credential present with account_id; nothing copied)"
+else
+  docker volume create "$volume" > /dev/null
+  # Mounted at /codex-home first, the empty volume takes that dir's owner (10001) and mode (0700) from the image.
+  docker run --rm --init --network none --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges \
+    --mount "type=volume,source=$codex_volume,target=/src,readonly" \
+    --mount "type=volume,source=$volume,target=/codex-home" "$image" sh -c '
+      install -d -m 700 /codex-home/credentials/default &&
+      cp /src/auth.json /codex-home/credentials/default/auth.json &&
+      chmod 600 /codex-home/credentials/default/auth.json &&
+      jq -e "(.tokens.account_id // \"\") | length > 0" /codex-home/credentials/default/auth.json > /dev/null' ||
+    fail "the credential copy failed or has no account_id"
+  say "credential copied into volume $volume (account_id present)"
+fi
 
 SR_RUNNER_SECRET="$(sed -n 's/^SR_RUNNER_SECRET=//p' "$state/stack.env" | head -n 1)"
 export SR_RUNNER_SECRET
