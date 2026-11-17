@@ -93,7 +93,10 @@ impl TechPlugin for Generic {
             badge,
             rule: rule.to_owned(),
         };
-        if let Some(&(rule, category)) = PATH_RULES.iter().find(|(rule, _)| glob(rule, file.path)) {
+        if let Some(&(rule, category)) = PATH_RULES
+            .iter()
+            .find(|(rule, _)| path_rule_matches(rule, file.path))
+        {
             return Ok(vec![item(
                 category,
                 ProvenanceBadge::ClassifiedByPath,
@@ -112,7 +115,7 @@ impl TechPlugin for Generic {
                 changed_ranges(file),
             )]);
         }
-        let comments = comment_runs(text, file.changed_lines);
+        let comments = comment_runs(file.path, text, file.changed_lines);
         Ok(if comments.is_empty() {
             Vec::new()
         } else {
@@ -131,8 +134,24 @@ impl TechPlugin for Generic {
     }
 }
 
-/// Line rule of the `generic` plugin: comment-only lines (a run of changed lines whose non-blank lines all match).
+/// Line rule of the `generic` plugin: comment-only lines (a run of changed lines whose non-blank lines all match),
+/// confirmed by a lexer of the whole file; only for languages with a lexer here (Rust), others stay with the agent.
 pub const LINE_COMMENT_RULE: &str = r"^\s*//";
+/// Rule of test and bench directories of a package one or two levels below the repository root
+/// (`sdk/tests/`, `crates/x/benches/`) with no source directory above them.
+pub const NESTED_TESTS_RULE: &str =
+    "<package>/tests/**, <package>/benches/** (package at depth 1-2, no source directory above)";
+/// Directory names under which a `tests` or `benches` directory is production code (`src/tests/` via `mod tests;`).
+const SOURCE_ROOTS: &[&str] = &[
+    "src", "lib", "app", "pkg", "internal", "cmd", "source", "sources",
+];
+/// File types in which leading and trailing whitespace of a line carries no meaning; every other type (Python,
+/// YAML, Makefile, unknown) is compared byte for byte.
+const TRIM_INSENSITIVE: &[&str] = &[
+    "*.rs", "*.go", "*.c", "*.h", "*.cc", "*.cpp", "*.cxx", "*.hpp", "*.hh", "*.java", "*.kt",
+    "*.kts", "*.scala", "*.swift", "*.cs", "*.js", "*.jsx", "*.mjs", "*.cjs", "*.ts", "*.tsx",
+    "*.json", "*.proto",
+];
 /// Rule of a generated-file header in the first lines.
 pub const GENERATED_HEADER_RULE: &str = "header: Code generated … DO NOT EDIT / @generated";
 /// Lines searched for a generated-file header.
@@ -143,9 +162,9 @@ pub const PROFILE_PATH: &str = ".claudius/project-profile.md";
 /// Path rules of the `generic` plugin, first match wins.
 const PATH_RULES: &[(&str, NotAnalysedCategory)] = &[
     ("tests/**", NotAnalysedCategory::Tests),
-    ("**/tests/**", NotAnalysedCategory::Tests),
+    ("benches/**", NotAnalysedCategory::Tests),
     ("test/**", NotAnalysedCategory::Tests),
-    ("**/test/**", NotAnalysedCategory::Tests),
+    (NESTED_TESTS_RULE, NotAnalysedCategory::Tests),
     ("**/__tests__/**", NotAnalysedCategory::Tests),
     ("*_test.go", NotAnalysedCategory::Tests),
     ("*_test.py", NotAnalysedCategory::Tests),
@@ -276,6 +295,12 @@ pub fn is_agent_instruction_file(path: &str) -> bool {
     AGENT_INSTRUCTION_RULES.iter().any(|rule| glob(rule, &path))
 }
 
+/// Whether leading and trailing whitespace of a line in `path` carries no meaning (a brace language); otherwise
+/// lines are compared byte for byte.
+pub fn trim_insensitive(path: &str) -> bool {
+    TRIM_INSENSITIVE.iter().any(|rule| glob(rule, path))
+}
+
 /// Whether the item is recognised by the comment line rule (not a whole-file rule).
 pub fn is_line_rule(item: &Classified) -> bool {
     item.rule == LINE_COMMENT_RULE
@@ -311,26 +336,183 @@ pub fn has_generated_header(text: &str) -> bool {
     })
 }
 
-/// Runs of consecutive changed lines whose non-blank lines are all comment-only (at least one).
-fn comment_runs(text: &str, changed: &[u32]) -> Vec<LineRange> {
+/// Runs of consecutive changed lines whose non-blank lines all start a line comment (at least one), confirmed by
+/// the lexer of the file's language; no lexer, no runs.
+fn comment_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
+    if !path.ends_with(".rs") {
+        return Vec::new();
+    }
+    let comment = rust_comment_lines(text);
     let lines: Vec<&str> = text.lines().collect();
-    let line = |number: u32| lines.get(usize::try_from(number).ok()?.checked_sub(1)?);
+    let at = |number: u32| -> Option<usize> { usize::try_from(number).ok()?.checked_sub(1) };
     let mut out = Vec::new();
     for run in ranges(changed) {
-        let mut comment = false;
-        let all = (run.start_line..=run.end_line).all(|number| match line(number) {
-            Some(text) if text.trim().is_empty() => true,
-            Some(text) => {
-                comment = true;
-                text.trim_start().starts_with("//")
+        let mut any = false;
+        let all = (run.start_line..=run.end_line).all(|number| {
+            let Some(index) = at(number) else {
+                return false;
+            };
+            match lines.get(index) {
+                Some(text) if text.trim().is_empty() => true,
+                Some(_) => {
+                    any = true;
+                    comment.get(index).copied().unwrap_or(false)
+                }
+                None => false,
             }
-            None => false,
         });
-        if all && comment {
+        if all && any {
             out.push(run);
         }
     }
     out
+}
+
+/// Lexer state of Rust source between characters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lex {
+    Code,
+    Block(u32),
+    Str,
+    Raw(usize),
+}
+
+/// Per line (index = line - 1): the line's first non-blank character starts a `//` comment in code, outside
+/// strings, raw strings, char literals and (nested) block comments.
+fn rust_comment_lines(text: &str) -> Vec<bool> {
+    let chars: Vec<char> = text.chars().collect();
+    let ident = |at: Option<usize>| {
+        at.and_then(|at| chars.get(at))
+            .is_some_and(|c| c.is_alphanumeric() || *c == '_')
+    };
+    let mut out = Vec::new();
+    let mut state = Lex::Code;
+    let mut first: Option<bool> = None;
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        let next = chars.get(i + 1).copied();
+        if c == '\n' {
+            out.push(first.unwrap_or(false));
+            first = None;
+            i += 1;
+            continue;
+        }
+        if first.is_none() && !c.is_whitespace() {
+            first = Some(state == Lex::Code && c == '/' && next == Some('/'));
+        }
+        match state {
+            Lex::Code => match (c, next) {
+                ('/', Some('/')) => {
+                    while chars.get(i).is_some_and(|&c| c != '\n') {
+                        i += 1;
+                    }
+                }
+                ('/', Some('*')) => {
+                    state = Lex::Block(1);
+                    i += 2;
+                }
+                ('"', _) => {
+                    state = Lex::Str;
+                    i += 1;
+                }
+                ('r', _) => {
+                    let prefix_ok = !ident(i.checked_sub(1))
+                        || (matches!(i.checked_sub(1).and_then(|p| chars.get(p)), Some('b' | 'c'))
+                            && !ident(i.checked_sub(2)));
+                    let hashes = chars[i + 1..].iter().take_while(|&&c| c == '#').count();
+                    if prefix_ok && chars.get(i + 1 + hashes) == Some(&'"') {
+                        state = Lex::Raw(hashes);
+                        i += hashes + 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                ('\'', Some('\\')) => {
+                    // Escaped char literal (`'\n'`, `'\''`, `'\u{1F600}'`): up to the closing quote on this line.
+                    let end = chars
+                        .get(i + 3..)
+                        .unwrap_or_default()
+                        .iter()
+                        .take(12)
+                        .position(|&c| c == '\'' || c == '\n');
+                    i += match end {
+                        Some(offset) if chars.get(i + 3 + offset) == Some(&'\'') => offset + 4,
+                        _ => 1,
+                    };
+                }
+                ('\'', Some(inner)) if inner != '\n' && chars.get(i + 2) == Some(&'\'') => i += 3,
+                _ => i += 1,
+            },
+            Lex::Block(depth) => match (c, next) {
+                ('/', Some('*')) => {
+                    state = Lex::Block(depth + 1);
+                    i += 2;
+                }
+                ('*', Some('/')) => {
+                    state = if depth == 1 {
+                        Lex::Code
+                    } else {
+                        Lex::Block(depth - 1)
+                    };
+                    i += 2;
+                }
+                _ => i += 1,
+            },
+            Lex::Str => match (c, next) {
+                ('\\', Some(escaped)) if escaped != '\n' => i += 2,
+                ('"', _) => {
+                    state = Lex::Code;
+                    i += 1;
+                }
+                _ => i += 1,
+            },
+            Lex::Raw(hashes) => {
+                let closes = c == '"'
+                    && chars[i + 1..]
+                        .iter()
+                        .take(hashes)
+                        .filter(|&&c| c == '#')
+                        .count()
+                        == hashes;
+                if closes {
+                    state = Lex::Code;
+                    i += 1 + hashes;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+    if first.is_some() || chars.last().is_some_and(|&c| c != '\n') {
+        out.push(first.unwrap_or(false));
+    }
+    out
+}
+
+/// Path rule match; the nested tests rule is a function, the others are globs.
+fn path_rule_matches(rule: &str, path: &str) -> bool {
+    if rule == NESTED_TESTS_RULE {
+        nested_tests(path)
+    } else {
+        glob(rule, path)
+    }
+}
+
+/// A `tests` or `benches` directory of a package at depth 1 or 2 (`crates/x/tests/it.rs`) with no source
+/// directory above it.
+fn nested_tests(path: &str) -> bool {
+    let segments: Vec<&str> = path.split('/').collect();
+    let Some(at) = segments
+        .iter()
+        .take(segments.len().saturating_sub(1))
+        .position(|segment| matches!(*segment, "tests" | "benches"))
+    else {
+        return false;
+    };
+    (1..=2).contains(&at)
+        && !segments[..at]
+            .iter()
+            .any(|segment| SOURCE_ROOTS.contains(segment))
 }
 
 fn basename(path: &str) -> &str {
@@ -433,7 +615,7 @@ mod tests {
                 None,
                 NotAnalysedCategory::Tests,
                 by_path,
-                "**/tests/**".to_owned()
+                NESTED_TESTS_RULE.to_owned()
             )],
             "every line changed: the whole file"
         );
@@ -462,6 +644,30 @@ mod tests {
             "binary or unread: the whole file"
         );
         assert!(classify("src/testing.rs", Some(three), &[1]).is_empty());
+        for production in [
+            "src/tests/auth.rs",
+            "src/routes/tests/create.ts",
+            "crates/x/src/tests/mod.rs",
+            "lib/test/x.js",
+            "packages/app/src/benches/run.ts",
+            "a/b/c/tests/x.rs",
+        ] {
+            assert!(
+                classify(production, Some(three), &[1]).is_empty(),
+                "{production}"
+            );
+        }
+        for test in [
+            "benches/speed.rs",
+            "packages/sdk/tests/a.ts",
+            "web/src/__tests__/a.ts",
+        ] {
+            assert_eq!(
+                classify(test, Some(three), &[1])[0].1,
+                NotAnalysedCategory::Tests,
+                "{test}"
+            );
+        }
         assert!(
             classify("api/openapi.spec.yaml", Some(three), &[1]).is_empty(),
             "an API spec is no test"
@@ -511,6 +717,97 @@ mod tests {
             "beyond the file"
         );
         assert!(classify("src/a.rs", None, &[1]).is_empty(), "binary");
+        assert!(trim_insensitive("src/a.rs") && trim_insensitive("web/a.tsx"));
+        assert!(
+            !trim_insensitive("tool.py")
+                && !trim_insensitive("ci.yaml")
+                && !trim_insensitive("Makefile")
+        );
+    }
+
+    /// Comment-rule ranges of `lines` when every line changed.
+    fn comment_rule(path: &str, lines: &[&str]) -> Option<Vec<LineRange>> {
+        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        let changed: Vec<u32> = (1..=u32::try_from(lines.len()).expect("small")).collect();
+        let found = classify(path, Some(&text), &changed);
+        found
+            .into_iter()
+            .next()
+            .map(|item| item.0.unwrap_or_default())
+    }
+
+    #[test]
+    fn comment_rule_follows_rust_lexical_context() {
+        let line = |n| vec![range(n, n)];
+        // Inside a raw string a `//` line is data, and the closing line may run code.
+        let raw = ["let url = r#\"", "//good.example", "\"#;"];
+        assert_eq!(
+            comment_rule("src/a.rs", &raw),
+            None,
+            "no line of a raw string is a comment"
+        );
+        let payload = [
+            "let s = r#\"",
+            "//\"#; launch_payload(); let _ = r#\"",
+            "\"#;",
+            "// plain",
+        ];
+        let text: String = payload.iter().map(|l| format!("{l}\n")).collect();
+        assert!(
+            classify("src/a.rs", Some(&text), &[2]).is_empty(),
+            "closes the raw string and runs code"
+        );
+        assert_eq!(classify("src/a.rs", Some(&text), &[4])[0].0, Some(line(4)));
+        let multi = [
+            "let s = \"first",
+            "// inside a string",
+            "\";",
+            "let t = br##\"x\"#",
+            "// still raw",
+            "\"##;",
+        ];
+        let text: String = multi.iter().map(|l| format!("{l}\n")).collect();
+        assert!(classify("src/a.rs", Some(&text), &[2]).is_empty());
+        assert!(classify("src/a.rs", Some(&text), &[5]).is_empty());
+        let block = [
+            "/* outer /* nested */",
+            "// inside the outer comment",
+            "*/",
+            "// after",
+        ];
+        let text: String = block.iter().map(|l| format!("{l}\n")).collect();
+        assert!(
+            classify("src/a.rs", Some(&text), &[2]).is_empty(),
+            "not a line comment"
+        );
+        assert_eq!(classify("src/a.rs", Some(&text), &[4])[0].0, Some(line(4)));
+        let chars = [
+            "let q = '\"';",
+            "let e = '\\'';",
+            "fn f<'a>(x: &'a str) {}",
+            "// comment",
+        ];
+        let text: String = chars.iter().map(|l| format!("{l}\n")).collect();
+        assert_eq!(
+            classify("src/a.rs", Some(&text), &[4])[0].0,
+            Some(line(4)),
+            "char literals and lifetimes do not open strings"
+        );
+        let doc = ["/// Sends a request.", "pub fn send() {}"];
+        assert_eq!(
+            comment_rule("src/a.rs", &doc),
+            None,
+            "a doc comment with its code stays with the agent"
+        );
+        assert_eq!(
+            comment_rule("src/a.rs", &["/// Only a doc line."]),
+            Some(line(1))
+        );
+        assert_eq!(
+            comment_rule("web/a.ts", &["// a note"]),
+            None,
+            "no lexer: not confirmed"
+        );
     }
 
     #[test]
