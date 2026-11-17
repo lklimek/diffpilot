@@ -201,6 +201,24 @@ impl Harness {
             )
             .await
             .expect("pr context");
+        // The GitHub snapshot the pipeline stores at its start: flow 1 rates threads t1 and t2, which
+        // verification accepts only for threads listed in the flow's prompt.
+        let golden = read_json(&fixtures().join("api/default/tour.json"));
+        let mut threads = golden["threads"].clone();
+        for thread in threads.as_array_mut().expect("threads") {
+            for key in ["step_id", "llm_status", "llm_reason"] {
+                thread[key] = Value::Null;
+            }
+        }
+        let snapshot = json!({
+            "ci": golden["pr_context"]["facts"]["ci"],
+            "threads": threads,
+            "threads_status": "checked",
+        });
+        documents
+            .put(id, DocumentKind::GithubSnapshot, "", &snapshot, now)
+            .await
+            .expect("snapshot");
         for n in 1..=5 {
             documents
                 .put(

@@ -19,9 +19,10 @@ use analysis::diff::{self, DiffError, FileDiff};
 use contracts::agent::StrictSchemaError;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary, FlowRef};
 use contracts::ids::AnalysisId;
-use contracts::job::result::JobFailureKind;
 use db::error::DbError;
+use db::repo::settings::CallFailure;
 
+use crate::api::settings::plain_failure;
 use crate::github::mirror::{self, MirrorError};
 use crate::jobs::executor::ExecutorError;
 use crate::prompts::PromptError;
@@ -101,8 +102,9 @@ pub enum PipelineError {
     JobFailed {
         /// The stage key.
         stage: String,
-        /// Why, typed: the user sees only its fixed sentence ([`failure_sentence`]).
-        failure: JobFailure,
+        /// Why, typed: the user sees only its fixed sentence (`api::settings::plain_failure`, shared with
+        /// Settings).
+        failure: CallFailure,
         /// The runner's text (provider output; logs only, never shown to the user).
         detail: String,
         /// The flow, for `analyse_flow` stages.
@@ -144,9 +146,13 @@ impl PipelineError {
                     "The LLM's {what} did not pass the checks, also after two repair runs. Retry the analysis."
                 )),
             ),
-            Self::JobFailed { flow, failure, .. } => {
-                (flow.clone(), Cow::Borrowed(failure_sentence(*failure)))
-            }
+            Self::JobFailed { flow, failure, .. } => (
+                flow.clone(),
+                Cow::Owned(format!(
+                    "The agent run failed. {} Retry the analysis.",
+                    plain_failure(Some(*failure))
+                )),
+            ),
             Self::Db(_)
             | Self::Diff(_)
             | Self::DiffTask(_)
@@ -166,43 +172,6 @@ impl PipelineError {
         AnalysisState::Failed {
             flow,
             message: message.into_owned(),
-        }
-    }
-}
-
-/// Why a job failed, as far as the user is told.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum JobFailure {
-    /// The runner reported a failure of this kind.
-    Job(JobFailureKind),
-    /// The job ended on the usage limit without being queued again.
-    UsageLimited,
-}
-
-/// The fixed plain sentence for a failed job: provider text never reaches the analysis state.
-// TODO(merge wp/3-state): share with `api::settings` (`CallFailure` → sentence).
-pub fn failure_sentence(failure: JobFailure) -> &'static str {
-    match failure {
-        JobFailure::Job(JobFailureKind::ProviderFailed) => {
-            "The agent run failed: the LLM provider reported an error. Retry the analysis."
-        }
-        JobFailure::Job(JobFailureKind::OutputNotJson) => {
-            "The agent run failed: the LLM's answer was not in the expected format. Retry the analysis."
-        }
-        JobFailure::Job(JobFailureKind::CredentialUnusable) => {
-            "The agent run failed: the LLM sign-in is no longer valid. The owner must sign in to the LLM again in Settings."
-        }
-        JobFailure::Job(JobFailureKind::CheckoutFailed) => {
-            "The agent run failed: the repository could not be checked out. Retry the analysis."
-        }
-        JobFailure::Job(JobFailureKind::Timeout) => {
-            "The agent run failed: it reached its time limit. Retry the analysis."
-        }
-        JobFailure::Job(JobFailureKind::Internal) => {
-            "The agent run failed because of a runner error. Retry the analysis."
-        }
-        JobFailure::UsageLimited => {
-            "The agent run stopped at the LLM usage limit. Retry the analysis once the limit resets."
         }
     }
 }

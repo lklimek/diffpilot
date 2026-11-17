@@ -158,6 +158,7 @@ impl From<TourLoadError> for AnalysisApiError {
             TourLoadError::Db(error) => Self::Db(error),
             TourLoadError::Diff(error) => error.into(),
             TourLoadError::Tour(error) => Self::Tour(error),
+            TourLoadError::Prepass(error) => Self::Prepass(error),
         }
     }
 }

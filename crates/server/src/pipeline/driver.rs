@@ -22,6 +22,7 @@ use contracts::job::spec::{
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use db::repo::jobs::{JobStage, MAX_REPAIR_RUNS};
+use db::repo::settings::CallFailure;
 use futures::StreamExt;
 use futures::stream::{self, BoxStream, SelectAll};
 use serde::Serialize;
@@ -30,7 +31,7 @@ use serde_json::Value;
 
 use super::context::{self, StoredResults};
 use super::verdict::{self, Facts, Outputs};
-use super::{CREDENTIAL_ID, JobFailure, PipelineError, control, diff_files, prepare, prepass};
+use super::{CREDENTIAL_ID, PipelineError, control, diff_files, prepare, prepass};
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::memcan::calibration::{CalibrationDirection, CalibrationExample, calibration_examples};
@@ -328,7 +329,7 @@ impl Driver<'_> {
                 return Err(PipelineError::JobFailed {
                     flow: self.flow_ref(&stage),
                     stage: stage.key(),
-                    failure: JobFailure::Job(kind),
+                    failure: CallFailure::Failed(kind),
                     detail: message,
                 });
             }
@@ -337,7 +338,7 @@ impl Driver<'_> {
                 return Err(PipelineError::JobFailed {
                     flow: self.flow_ref(&stage),
                     stage: stage.key(),
-                    failure: JobFailure::UsageLimited,
+                    failure: CallFailure::UsageLimited,
                     detail: "the usage limit was reached".to_owned(),
                 });
             }

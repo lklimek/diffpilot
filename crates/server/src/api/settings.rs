@@ -23,6 +23,7 @@ use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf, user_access_token};
 use crate::github::rest::{self, is_valid_repo};
+use crate::pipeline;
 use crate::state::AppState;
 
 /// Plain sentences of a failed LLM call, by typed cause.
@@ -204,8 +205,8 @@ fn llm_status(
     }
 }
 
-/// The plain sentence for a failed call's typed cause.
-fn plain_failure(failure: Option<CallFailure>) -> &'static str {
+/// The plain sentence for a failed call's typed cause (also the analysis's failed state, `pipeline`).
+pub(crate) fn plain_failure(failure: Option<CallFailure>) -> &'static str {
     match failure {
         Some(CallFailure::UsageLimited) => USAGE_LIMIT,
         Some(CallFailure::Failed(kind)) => match kind {
@@ -221,14 +222,20 @@ fn plain_failure(failure: Option<CallFailure>) -> &'static str {
 
 /// Read-only settings of an analysed repository from its newest stored pre-pass; `None` = not known yet, never
 /// invented values.
-// TODO(WP3-PIPE): read `DocumentKind::Prepass` of `repo.prepass_analysis` as `analysis::prepass::Prepass`: rules
-// from the `analysis::tech` rule list, `related_repos`, and `profile_status(memcan)` with the MemCan profile source
-// the pipeline found; `repo.repo` is GitHub's spelling.
-async fn repo_facts(
-    _state: &AppState,
-    _repo: AnalysedRepo,
-) -> Result<Option<RepoSettings>, DbError> {
-    Ok(None)
+async fn repo_facts(state: &AppState, repo: AnalysedRepo) -> Result<Option<RepoSettings>, DbError> {
+    let Some(id) = repo.prepass_analysis else {
+        return Ok(None);
+    };
+    let Some(prepass) = pipeline::prepass::stored(state, id).await? else {
+        return Ok(None);
+    };
+    Ok(Some(RepoSettings {
+        repo: repo.repo,
+        rules: analysis::tech::rules(),
+        related_repos: prepass.related_repos.clone(),
+        // TODO(WP3-MEMCAN merge): the MemCan profile check; `server::memcan` has no profile read yet.
+        project_profile: prepass.profile_status(None),
+    }))
 }
 
 #[cfg(test)]
@@ -239,6 +246,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use chrono::{DateTime, Utc};
     use contracts::agent::JobKind;
+    use contracts::api::tour::SourceCheck;
     use contracts::common::LlmLanguage;
     use contracts::job::protocol::{ClaimRequest, ClaimResponse, CredentialStatus};
     use contracts::job::result::{JobOutcome, JobResult};
@@ -248,6 +256,7 @@ mod tests {
         RUNNER_CLAIM, RUNNER_RESULT, Route, RouteAuth, SET_LANGUAGE,
     };
     use db::repo::analyses::testing::{job_spec, seed_analysis, seed_tenant};
+    use db::repo::documents::DocumentKind;
     use db::repo::jobs::{JobStage, NewJob};
     use db::repo::{DEFAULT_TENANT, Db};
     use http_body_util::BodyExt;
@@ -676,6 +685,35 @@ mod tests {
         let (status, error) = h.get("/api/v1/repos/ac%24me/node-client/settings").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
         assert_eq!(error["code"], json!("invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn repo_settings_come_from_the_stored_prepass() {
+        let h = harness().await;
+        let id = seed_analysis(&h.state.db).await.expect("analysis");
+        let repo = RepoRef {
+            owner: "acme".to_owned(),
+            name: "node-client".to_owned(),
+        };
+        let profile = analysis::tech::PROFILE_PATH;
+        let prepass = analysis::prepass::prepass(&repo, &[], &[profile.to_owned()], &|_, path| {
+            (path == profile).then_some("Payments service; risk lives in src/ledger.")
+        })
+        .expect("prepass");
+        h.state
+            .db
+            .documents()
+            .put(id, DocumentKind::Prepass, "", &prepass, Utc::now())
+            .await
+            .expect("stored");
+        let (status, settings) = h.get("/api/v1/repos/Acme/Node-Client/settings").await;
+        assert_eq!(status, StatusCode::OK, "{settings}");
+        let settings: RepoSettings = serde_json::from_value(settings).expect("settings");
+        assert_eq!(settings.repo, repo, "GitHub's spelling");
+        assert_eq!(settings.rules, analysis::tech::rules());
+        assert_eq!(settings.related_repos, Vec::new());
+        assert_eq!(settings.project_profile, prepass.profile_status(None));
+        assert_eq!(settings.project_profile.memcan, SourceCheck::NotChecked);
     }
 
     #[tokio::test]

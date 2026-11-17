@@ -115,6 +115,11 @@ pub async fn read(
         },
         None => CommentScope::NotInDiff,
     };
+    // Moved blocks are detected on head lines (their target); base ranges have none.
+    let moved = match query.side {
+        LineSide::Head => prepass.moves.moved_lines(&query.path, from, to),
+        LineSide::Base => Vec::new(),
+    };
     Ok(LinesResponse {
         path: query.path,
         side: query.side,
@@ -124,11 +129,7 @@ pub async fn read(
         lines,
         changed,
         deleted,
-        // Moved blocks are detected on head lines (their target); base ranges have none.
-        moved: match query.side {
-            LineSide::Head => prepass.moves.moved_lines(&query.path, from, to),
-            LineSide::Base => Vec::new(),
-        },
+        moved,
         comments,
     })
 }
@@ -179,7 +180,15 @@ pub async fn diff(
             hunks: Vec::new(),
         });
     };
-    // TODO(WP3-PIPE): also refuse file sides the stored pre-pass lists as not rendered (generated), as for lines.
+    // Generated and binary file sides are never rendered, on either side of the diff.
+    let prepass =
+        ensure_rendered(state, summary, (&mirror, &files), query.side, &query.path).await?;
+    if file
+        .path_on(other_side)
+        .is_some_and(|other| prepass.is_not_rendered(other_side, other))
+    {
+        return Err(LinesError::NotRendered.into());
+    }
     if file.binary {
         return Err(DiffReadError::Binary);
     }

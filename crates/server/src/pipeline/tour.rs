@@ -24,8 +24,9 @@ use db::error::DbError;
 use url::Url;
 
 use crate::pipeline::context::StoredResults;
+use crate::pipeline::prepass::{self, PrepassRunError};
 use crate::pipeline::verdict::{self, Facts, Outputs, VerdictError, thread_alias};
-use crate::pipeline::{PrDiffError, pr_diff, prepass};
+use crate::pipeline::{PrDiffError, pr_diff};
 use crate::review::{GithubSnapshot, stored_github_snapshot};
 use crate::state::AppState;
 
@@ -91,6 +92,9 @@ pub enum TourLoadError {
     /// The diff of the analysis is not available.
     #[error("the diff of the analysis is not available")]
     Diff(#[from] PrDiffError),
+    /// The pre-pass could not be computed.
+    #[error("the pre-pass is not available")]
+    Prepass(#[from] PrepassRunError),
     /// The stored documents do not form a Tour.
     #[error("the Tour could not be built")]
     Tour(#[from] TourError),
@@ -106,11 +110,10 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
     let (Some(plan), Some(pr_context)) = (results.plan, results.pr_context) else {
         return Err(DbError::NotFound.into());
     };
-    let prepass = prepass::stored(state, summary.id)
-        .await?
-        .ok_or(DbError::NotFound)?;
     let snapshot = stored_github_snapshot(state, summary.id).await?;
     let (mirror, files) = pr_diff(state, summary).await?;
+    // Stored by the driver; computed here for an analysis finished without one (deterministic).
+    let prepass = prepass::ensure(state, summary, &mirror, &files).await?;
     let facts = Arc::new(Facts {
         mirror,
         base: summary.pr.base_sha.clone(),
