@@ -757,3 +757,24 @@ async fn job_token_straddling_the_summary_limit_never_leaves_in_part() {
         );
     }
 }
+
+#[tokio::test]
+async fn claim_failing_with_github_unavailable_is_polled_again() {
+    let mut setup = setup(Scripted::new(1, UNIT), Duration::ZERO).await;
+    Mock::given(method("POST"))
+        .and(path("/runner/v1/claim"))
+        .respond_with(
+            ResponseTemplate::new(502).set_body_json(json!({"code": "github_unavailable"})),
+        )
+        .with_priority(1)
+        .up_to_n_times(1)
+        .mount(&setup.server)
+        .await;
+    mount(&setup, "events", ack(false)).await;
+    mount(&setup, "output", ack(false)).await;
+    mount(&setup, "result", ResponseTemplate::new(204)).await;
+    let error = setup.worker.poll_once().await.unwrap_err();
+    assert!(error.is_retryable(), "{error}");
+    let end = setup.worker.poll_once().await.unwrap();
+    assert!(matches!(end, Some(JobEnd::ResultPosted(_))), "{end:?}");
+}

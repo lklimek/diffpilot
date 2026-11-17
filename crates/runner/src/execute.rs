@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use contracts::ids::JobId;
 use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
     SessionReport,
@@ -60,6 +61,8 @@ pub struct Executor {
     provider: Arc<dyn LlmProvider>,
     dirs: RunnerDirs,
     credential: LlmCredentialRef,
+    /// Attempts run as their own task: dropping `execute` cancels the attempt instead of abandoning it.
+    detached: bool,
 }
 
 impl std::fmt::Debug for Executor {
@@ -82,7 +85,16 @@ impl Executor {
             provider,
             dirs,
             credential,
+            detached: false,
         }
+    }
+
+    /// Runs every attempt as its own task (process isolation, ADR-013): agent processes of another uid can
+    /// only be stopped through the supervisor, so a dropped `execute` cancels the provider call and the
+    /// attempt still stops, sweeps, copies back and cleans up before its directories are removed.
+    pub fn with_detached_attempts(mut self) -> Self {
+        self.detached = true;
+        self
     }
 
     /// The LLM credential the runner holds.
@@ -103,6 +115,28 @@ impl Executor {
     /// Runs `spec` to its result. Events and the ready output go to `sink`; a closed sink does not stop the
     /// job. Both job directories are removed when this returns or is dropped.
     pub async fn execute(&self, spec: JobSpec, sink: EventSink) -> JobResult {
+        if !self.detached {
+            return self.execute_here(spec, sink).await;
+        }
+        let attempt = Self {
+            provider: Arc::clone(&self.provider),
+            dirs: self.dirs.clone(),
+            credential: self.credential.clone(),
+            detached: false,
+        };
+        let mut cancel = CancelOnDrop {
+            provider: Arc::clone(&self.provider),
+            job: Some(spec.job_id),
+        };
+        let joined = tokio::spawn(async move { attempt.execute_here(spec, sink).await }).await;
+        cancel.job = None;
+        match joined {
+            Ok(result) => result,
+            Err(error) => std::panic::resume_unwind(error.into_panic()),
+        }
+    }
+
+    async fn execute_here(&self, spec: JobSpec, sink: EventSink) -> JobResult {
         let key = format!("{}-{}", spec.job_id, spec.attempt);
         let job_dir = RemoveOnDrop(self.dirs.work.join(&key));
         let codex_home = RemoveOnDrop(self.dirs.codex_homes.join(&key));
@@ -386,6 +420,27 @@ async fn prepare_dirs(dirs: &[&Path]) -> io::Result<()> {
         tokio::fs::DirBuilder::new().mode(0o700).create(dir).await?;
     }
     Ok(())
+}
+
+/// Cancels a detached attempt's provider call when `execute` is dropped before it finished.
+struct CancelOnDrop {
+    provider: Arc<dyn LlmProvider>,
+    job: Option<JobId>,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if let Some(job) = self.job
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            let provider = Arc::clone(&self.provider);
+            runtime.spawn(async move {
+                if let Err(error) = provider.cancel(job).await {
+                    tracing::warn!(%job, %error, "cannot cancel a dropped attempt");
+                }
+            });
+        }
+    }
 }
 
 /// Removes a directory tree when dropped (also when the job future is dropped by the job loop).

@@ -151,6 +151,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
         term_grace: Duration::from_secs(10),
         github_mcp: PathBuf::from("/opt/github-mcp/github-mcp-server"),
         skills: None,
+        isolation: None,
     });
     Harness {
         _dir: dir,
@@ -1080,4 +1081,107 @@ async fn allowed_skills_are_copied_into_the_agent_home_with_their_commit() {
         !root.join("delegate").exists(),
         "skills outside the allow-list are never given"
     );
+}
+
+/// The supervisor binary next to this test binary (built with the package's tests).
+fn supervisor_binary() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let binary = exe
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join("smart-review-supervisor");
+    assert!(
+        binary.exists(),
+        "build the smart-review-supervisor binary first: {}",
+        binary.display()
+    );
+    binary
+}
+
+/// The harness under an in-process unprivileged supervisor (ADR-013 layout below the temp dir).
+fn isolated(h: &mut Harness) -> PathBuf {
+    let root = h._dir.path().to_path_buf();
+    let agent_homes = root.join("codex-homes");
+    fs::create_dir(&agent_homes).unwrap();
+    let socket = crate::supervisor::serve::in_process(crate::supervisor::serve::ServeConfig {
+        runner: crate::supervisor::serve::Ids {
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+        },
+        agent: crate::supervisor::serve::Ids {
+            uid: rustix::process::getuid().as_raw(),
+            gid: rustix::process::getgid().as_raw(),
+        },
+        privileged: false,
+        state_dir: root.clone(),
+        work_dir: root.clone(),
+        sweep_deadline: Duration::from_secs(5),
+        binary: supervisor_binary(),
+    })
+    .unwrap();
+    let supervisor = crate::supervisor::client::Supervisor::connect(
+        socket,
+        supervisor_binary(),
+        Duration::from_secs(30),
+    )
+    .unwrap();
+    h.provider.settings.isolation = Some(Isolation {
+        supervisor,
+        codex_homes: agent_homes.clone(),
+    });
+    agent_homes.join("codex-home")
+}
+
+#[tokio::test]
+async fn isolated_call_copies_back_and_removes_the_agent_dirs() {
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    let rotated = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "rotated-access", "refresh_token": "rotated-refresh", "account_id": "acct-1"}});
+    fs::write(h.call.job_dir.join("rotate"), rotated.to_string()).unwrap();
+    let outcome = run(&h).await.0.expect("success");
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    let env = fs::read_to_string(h.call.job_dir.join("child-env.txt")).unwrap();
+    assert!(
+        env.lines()
+            .any(|line| line == format!("CODEX_HOME={}", agent_home.display()))
+    );
+    assert!(!env.contains("SR_SUPERVISOR"), "{env}");
+    assert!(
+        fs::read_to_string(&h.master_auth)
+            .unwrap()
+            .contains("rotated-refresh"),
+        "the rotated credential was copied back and written to the master"
+    );
+    let stored = fs::read_dir(&h.call.session_dir).unwrap().count();
+    assert!(stored > 0, "the rollout was copied back and stored");
+    assert!(!agent_home.exists(), "the agent CODEX_HOME is removed");
+    assert!(!h.call.job_dir.join("home").exists() && !h.call.job_dir.join("tmp").exists());
+    assert_eq!(
+        fs::metadata(&h.call.job_dir).unwrap().permissions().mode() & 0o777,
+        0o755
+    );
+}
+
+#[tokio::test]
+async fn isolated_cancel_stops_codex_ignoring_sigterm_with_a_sweep() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    h.provider.settings.term_grace = Duration::from_millis(300);
+    fs::write(h.call.job_dir.join("ignore-term"), "").unwrap();
+    fs::write(h.call.job_dir.join("hang"), "").unwrap();
+    let job = h.call.job_id;
+    let started = std::time::Instant::now();
+    let (result, ()) = tokio::join!(run(&h), async {
+        while !h.call.job_dir.join("child-stdin.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        h.provider.cancel(job).await.unwrap();
+    });
+    assert!(
+        matches!(result.0, Err(ProviderError::Cancelled)),
+        "{:?}",
+        result.0
+    );
+    assert!(started.elapsed() < Duration::from_secs(60));
 }

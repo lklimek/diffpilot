@@ -20,7 +20,7 @@ use crate::scrub::Scrubber;
 /// Rollout directory inside a `CODEX_HOME`.
 pub(crate) const SESSIONS_DIR: &str = "sessions";
 /// Largest rollout copied in either direction.
-const MAX_ROLLOUT_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_ROLLOUT_BYTES: u64 = 256 * 1024 * 1024;
 /// Longest thread id accepted (Codex uses UUIDs).
 const MAX_THREAD_ID_CHARS: usize = 64;
 

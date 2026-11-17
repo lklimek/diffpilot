@@ -9,6 +9,7 @@
 
 mod config;
 mod credential;
+mod isolated;
 mod session;
 mod stream;
 
@@ -34,6 +35,7 @@ use tokio::time::{Duration, Instant, timeout};
 use config::Purpose;
 pub use credential::CodexCredential;
 use credential::JobCredential;
+pub use isolated::Isolation;
 pub(crate) use stream::{CodexStream, Exit, usage_delta};
 
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
@@ -55,6 +57,8 @@ const STDERR_TAIL_BYTES: usize = 4096;
 const EXIT_POLL: Duration = Duration::from_millis(50);
 /// How long stdout may stay open after Codex exited and its group was killed.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
+/// Skill files relative to the skills root, with their contents.
+type SkillFileList = Vec<(PathBuf, Vec<u8>)>;
 /// Where Codex discovers user skills, below the agent's `HOME` (S2).
 const SKILLS_ROOT: &str = ".agents/skills";
 /// Context size that makes the compaction turn compact before it answers (S1b finding 3, S7).
@@ -81,6 +85,9 @@ pub struct CodexSettings {
     pub github_mcp: PathBuf,
     /// The claudius skills given to jobs that ask for them; `None` gives none.
     pub skills: Option<Arc<Skills>>,
+    /// Codex as the agent uid through the supervisor (ADR-013); `None` runs it as the runner's own uid
+    /// (development only).
+    pub isolation: Option<Isolation>,
 }
 
 /// A running call: its current process group and when it was asked to stop.
@@ -127,9 +134,25 @@ impl CodexProvider {
         call: &ProviderCall,
         events: &mpsc::Sender<ProviderEvent>,
     ) -> Result<ProviderOutcome, ProviderError> {
+        let result = self.call_steps(resume, call, events).await;
+        if let Some(isolation) = &self.settings.isolation {
+            isolation.leave(call).await;
+        }
+        result
+    }
+
+    async fn call_steps(
+        &self,
+        resume: Option<&str>,
+        call: &ProviderCall,
+        events: &mpsc::Sender<ProviderEvent>,
+    ) -> Result<ProviderOutcome, ProviderError> {
         let deadline =
             Instant::now() + Duration::from_secs(u64::from(call.limits.max_runtime_secs));
         let _registration = Registration::new(&self.running, call.job_id);
+        if self.cancel_requested(call.job_id) {
+            return Err(ProviderError::Cancelled);
+        }
         let known = Scrubber::new(
             call.access
                 .github
@@ -153,7 +176,10 @@ impl CodexProvider {
             Some(thread) => session::restore(&call.session_dir, thread, &call.codex_home)?,
             None => Usage::default(),
         };
-        let skills_commit = self.prepare(call).await?;
+        let (skills_commit, skill_files) = self.prepare(call).await?;
+        if let Some(isolation) = &self.settings.isolation {
+            isolation.enter(call, &skill_files).await?;
+        }
         let invocation = resume.map_or(Invocation::New, Invocation::Resume);
         let (stream, exit) = self
             .exec(
@@ -162,6 +188,7 @@ impl CodexProvider {
                 &call.prompt,
                 &mut credential,
                 Some(events),
+                deadline,
             )
             .await?;
         let started = stream.thread_id().is_some();
@@ -260,6 +287,9 @@ impl CodexProvider {
             .filter(|budget| *budget >= MIN_COMPACTION)
             .ok_or(ProviderError::Timeout)?;
         self.write_config(call, Purpose::Compaction)?;
+        if let Some(isolation) = &self.settings.isolation {
+            isolation.push_config(call).await?;
+        }
         let (stream, exit) = timeout(
             budget,
             self.exec(
@@ -268,6 +298,7 @@ impl CodexProvider {
                 COMPACTION_PROMPT,
                 credential,
                 None,
+                deadline,
             ),
         )
         .await
@@ -284,9 +315,12 @@ impl CodexProvider {
     }
 
     /// Writes the config and output schema into the per-job `CODEX_HOME`, creates the agent's home and temp
-    /// directories inside the job directory and copies the job's skills to `$HOME/.agents/skills` (S2).
-    /// Returns the claudius commit of the skills given.
-    async fn prepare(&self, call: &ProviderCall) -> Result<Option<String>, ProviderError> {
+    /// directories inside the job directory and copies the job's skills to `$HOME/.agents/skills` (S2; when
+    /// isolated, the files are returned for `copy-in` instead). Returns the claudius commit of the skills given.
+    async fn prepare(
+        &self,
+        call: &ProviderCall,
+    ) -> Result<(Option<String>, SkillFileList), ProviderError> {
         self.write_config(call, Purpose::Job)?;
         let schema = serde_json::to_vec(&call.output_schema).map_err(io::Error::other)?;
         replace_private(&call.codex_home.join(SCHEMA_FILE), &schema)?;
@@ -304,12 +338,15 @@ impl CodexProvider {
             .as_ref()
             .filter(|_| !call.skills.is_empty())
         else {
-            return Ok(None);
+            return Ok((None, Vec::new()));
         };
         let Some(given) = skills.files(&call.skills)? else {
             tracing::warn!(job = %call.job_id, "no claudius checkout yet; the job runs without skills");
-            return Ok(None);
+            return Ok((None, Vec::new()));
         };
+        if self.settings.isolation.is_some() {
+            return Ok((Some(given.commit), given.files));
+        }
         let root = agent_home(&call.job_dir).join(SKILLS_ROOT);
         for (rel, contents) in &given.files {
             let path = root.join(rel);
@@ -319,7 +356,7 @@ impl CodexProvider {
                 .create(path.parent().unwrap_or(&root))?;
             replace_private(&path, contents)?;
         }
-        Ok(Some(given.commit))
+        Ok((Some(given.commit), Vec::new()))
     }
 
     /// (Re)generates `config.toml`, replacing whatever the agent may have left there.
@@ -338,37 +375,51 @@ impl CodexProvider {
     /// above the checkout (T5), environment built from scratch (T2), its own process group.
     fn command(&self, call: &ProviderCall, invocation: Invocation<'_>) -> Command {
         let mut command = Command::new(&self.settings.binary);
-        command.arg("exec");
-        if let Invocation::Resume(_) | Invocation::Compaction(_) = invocation {
-            command.arg("resume");
-        }
-        command.args(["--json", "--skip-git-repo-check", "--ignore-rules"]);
-        match invocation {
-            Invocation::New | Invocation::Resume(_) => {
-                command
-                    .arg("--output-schema")
-                    .arg(call.codex_home.join(SCHEMA_FILE));
-            }
-            Invocation::Compaction(_) => {
-                command.arg("-c").arg(format!(
-                    "model_auto_compact_token_limit={COMPACTION_TOKEN_LIMIT}"
-                ));
-            }
-        }
-        if let Invocation::Resume(thread) | Invocation::Compaction(thread) = invocation {
-            command.arg(thread);
-        }
         command
-            .arg("-")
+            .args(self.codex_args(call, invocation))
             .current_dir(&call.job_dir)
             .env_clear()
-            .envs(agent_env(call, self.settings.egress_proxy.as_deref()))
+            .envs(agent_env(
+                call,
+                &call.codex_home,
+                self.settings.egress_proxy.as_deref(),
+            ))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .process_group(0)
             .kill_on_drop(true);
         command
+    }
+
+    /// The arguments after the binary: fixed flags and paths only.
+    fn codex_args(&self, call: &ProviderCall, invocation: Invocation<'_>) -> Vec<OsString> {
+        let codex_home = match &self.settings.isolation {
+            Some(isolation) => isolation.codex_home(&call.codex_home),
+            None => call.codex_home.clone(),
+        };
+        let mut args: Vec<OsString> = vec!["exec".into()];
+        if let Invocation::Resume(_) | Invocation::Compaction(_) = invocation {
+            args.push("resume".into());
+        }
+        args.extend(["--json", "--skip-git-repo-check", "--ignore-rules"].map(OsString::from));
+        match invocation {
+            Invocation::New | Invocation::Resume(_) => {
+                args.push("--output-schema".into());
+                args.push(codex_home.join(SCHEMA_FILE).into());
+            }
+            Invocation::Compaction(_) => {
+                args.push("-c".into());
+                args.push(
+                    format!("model_auto_compact_token_limit={COMPACTION_TOKEN_LIMIT}").into(),
+                );
+            }
+        }
+        if let Invocation::Resume(thread) | Invocation::Compaction(thread) = invocation {
+            args.push(thread.into());
+        }
+        args.push("-".into());
+        args
     }
 
     /// Runs one Codex invocation to its exit; `events` gets its activities (none for compaction).
@@ -379,7 +430,15 @@ impl CodexProvider {
         prompt: &str,
         credential: &mut JobCredential<'_>,
         events: Option<&mpsc::Sender<ProviderEvent>>,
+        deadline: Instant,
     ) -> Result<(CodexStream, Exit), ProviderError> {
+        if let Some(isolation) = &self.settings.isolation {
+            return self
+                .exec_isolated(
+                    isolation, call, invocation, prompt, credential, events, deadline,
+                )
+                .await;
+        }
         let mut child = self.command(call, invocation).spawn().map_err(|error| {
             tracing::error!(binary = %self.settings.binary.display(), %error, "cannot start Codex; check SR_RUNNER_CODEX_BIN");
             ProviderError::Io(error)
@@ -461,11 +520,28 @@ impl LlmProvider for CodexProvider {
         let result = match running.get_mut(&job) {
             Some(call) => {
                 call.cancelled_at.get_or_insert_with(Instant::now);
-                match call.group {
-                    Some(pid) => signal_group(pid, Signal::TERM)
+                match (call.group, &self.settings.isolation) {
+                    (Some(pid), Some(isolation)) => {
+                        isolation
+                            .supervisor
+                            .signal_now(pid.as_raw_nonzero().get(), 15);
+                        Ok(())
+                    }
+                    (Some(pid), None) => signal_group(pid, Signal::TERM)
                         .map_err(|error| ProviderError::Io(error.into())),
-                    None => Ok(()),
+                    (None, _) => Ok(()),
                 }
+            }
+            // Under the supervisor a dropped attempt is cancelled before its call may have started.
+            None if self.settings.isolation.is_some() => {
+                running.insert(
+                    job,
+                    RunningCall {
+                        group: None,
+                        cancelled_at: Some(Instant::now()),
+                    },
+                );
+                Ok(())
             }
             None => Ok(()),
         };
@@ -485,7 +561,8 @@ impl Registration {
         running
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(job, RunningCall::default());
+            .entry(job)
+            .or_default();
         Self {
             running: Arc::clone(running),
             job,
@@ -595,12 +672,13 @@ fn scrub_error(error: ProviderError, scrubber: &Scrubber) -> ProviderError {
 /// proxy variables; nothing inherited from the runner, no secret.
 pub(crate) fn agent_env(
     call: &ProviderCall,
+    codex_home: &Path,
     egress_proxy: Option<&str>,
 ) -> Vec<(&'static str, OsString)> {
     let mut env: Vec<(&'static str, OsString)> = vec![
         ("HOME", agent_home(&call.job_dir).into_os_string()),
         ("PATH", AGENT_PATH.into()),
-        ("CODEX_HOME", call.codex_home.clone().into_os_string()),
+        ("CODEX_HOME", codex_home.as_os_str().to_owned()),
         ("TMPDIR", agent_tmp(&call.job_dir).into_os_string()),
         ("LANG", "C.UTF-8".into()),
     ];
@@ -733,7 +811,7 @@ fn exit_of(status: ExitStatus) -> Exit {
     }
 }
 
-async fn stderr_tail(mut stderr: tokio::process::ChildStderr) -> String {
+async fn stderr_tail(mut stderr: impl tokio::io::AsyncRead + Unpin) -> String {
     let mut tail: Vec<u8> = Vec::new();
     let mut chunk = [0_u8; 4096];
     while let Ok(read) = stderr.read(&mut chunk).await {

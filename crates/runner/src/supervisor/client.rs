@@ -313,7 +313,8 @@ impl Supervisor {
         max_out: usize,
     ) -> Result<Vec<u8>, SupervisorError> {
         let mode = argv.get(1).cloned().unwrap_or_default();
-        let spawned = std::cell::Cell::new(None);
+        // The helper's pid once spawned (0: not yet).
+        let spawned = std::sync::atomic::AtomicI32::new(0);
         let run = async {
             let AgentProcess {
                 pid,
@@ -323,7 +324,7 @@ impl Supervisor {
             } = self
                 .spawn_as(argv, vec!["LANG=C".to_owned()], Path::new("/"), true)
                 .await?;
-            spawned.set(Some(pid));
+            spawned.store(pid, Ordering::Relaxed);
             let write = async move {
                 if let Some(input) = input {
                     stdin.write_all(input).await?;
@@ -356,7 +357,8 @@ impl Supervisor {
                 tracing::error!(helper = %mode, "a helper missed its deadline; sweeping the agent processes");
                 self.sweep().await?;
                 // Collect the swept helper's status so the supervisor forgets it.
-                if let Some(pid) = spawned.get() {
+                let pid = spawned.load(Ordering::Relaxed);
+                if pid != 0 {
                     let _ = tokio::time::timeout(REQUEST_DEADLINE, self.wait(pid)).await;
                 }
                 Err(SupervisorError::Deadline("a helper"))

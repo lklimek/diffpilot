@@ -11,8 +11,10 @@ use runner::client::{ClientError, ServerClient};
 use runner::config::{Config, ConfigError, ProviderKind};
 use runner::execute::Executor;
 use runner::provider::LlmProvider;
-use runner::provider::codex::{CodexCredential, CodexProvider, CodexSettings};
+use runner::provider::ProviderError;
+use runner::provider::codex::{CodexCredential, CodexProvider, CodexSettings, Isolation};
 use runner::skills::Skills;
+use runner::supervisor::client::{Supervisor, SupervisorError};
 use runner::worker::{CredentialCheck, Timing, Worker};
 use tokio::signal::unix::{SignalKind, signal};
 use tracing_subscriber::EnvFilter;
@@ -34,6 +36,10 @@ enum StartError {
     },
     #[error("could not create the server client")]
     Client(#[from] ClientError),
+    #[error("cannot use the supervisor (SR_SUPERVISOR_FD)")]
+    Supervisor(#[from] SupervisorError),
+    #[error("cannot recover the agent directories of a previous run")]
+    Recover(#[source] ProviderError),
 }
 
 fn main() -> ExitCode {
@@ -54,7 +60,11 @@ fn main() -> ExitCode {
 
 async fn run() -> Result<(), StartError> {
     let config = Config::from_env()?;
-    let dirs = config.dirs();
+    let mut dirs = config.dirs();
+    let isolation = Supervisor::from_env()?.map(|supervisor| Isolation {
+        supervisor,
+        codex_homes: dirs.codex_homes.clone(),
+    });
     for dir in [
         &config.state_dir,
         &dirs.codex_homes,
@@ -63,6 +73,28 @@ async fn run() -> Result<(), StartError> {
         &dirs.work,
     ] {
         private_dir(dir).await?;
+    }
+    match &isolation {
+        Some(isolation) => {
+            // ADR-013 layout: the agent may traverse these roots, not list them; the runner works on a
+            // private staging copy of each per-job CODEX_HOME.
+            for dir in [&config.state_dir, &isolation.codex_homes, &dirs.work] {
+                set_mode(dir, 0o711)?;
+            }
+            dirs.codex_homes = config.state_dir.join(CODEX_STAGING);
+            private_dir(&dirs.codex_homes).await?;
+            let removed = isolation
+                .recover(&dirs.codex_homes, &dirs.work)
+                .await
+                .map_err(StartError::Recover)?;
+            tracing::info!(
+                removed,
+                "process isolation on: agents run as their own uid through the supervisor"
+            );
+        }
+        None => tracing::warn!(
+            "process isolation off (development): agents run as the runner's uid; production runs under smart-review-supervisor (ADR-013)"
+        ),
     }
     remove_leftover_work_dirs(&dirs.work).await?;
     let skills = Arc::new(Skills::new(
@@ -84,6 +116,7 @@ async fn run() -> Result<(), StartError> {
                     term_grace: Timing::v1().term_grace,
                     github_mcp: config.github_mcp_bin.clone(),
                     skills: Some(Arc::clone(&skills)),
+                    isolation: isolation.clone(),
                 });
                 (Arc::new(provider), Arc::new(move || credential.usable()))
             }
@@ -96,7 +129,14 @@ async fn run() -> Result<(), StartError> {
                 )
             }
         };
-    let executor = Arc::new(Executor::new(provider, dirs, config.credential.clone()));
+    let executor = Executor::new(provider, dirs, config.credential.clone());
+    // Under the supervisor an attempt runs to its own end (stop, sweep, copy-back) even when the job loop
+    // stops waiting for it.
+    let executor = Arc::new(if isolation.is_some() {
+        executor.with_detached_attempts()
+    } else {
+        executor
+    });
     let client = ServerClient::new(
         &config.server_url,
         config.runner_secret.clone(),
@@ -117,6 +157,19 @@ async fn run() -> Result<(), StartError> {
     .await;
     tracing::info!("runner stopped");
     Ok(())
+}
+
+/// The runner-private staging `CODEX_HOME`s under the supervisor, below the state directory.
+const CODEX_STAGING: &str = "codex-staging";
+
+fn set_mode(path: &Path, mode: u32) -> Result<(), StartError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|source| {
+        StartError::Dir {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
 }
 
 async fn private_dir(path: &Path) -> Result<(), StartError> {

@@ -574,3 +574,40 @@ fn forward(runner: Option<i32>, signal: Signal) {
         let _ = kill_process(pid, signal);
     }
 }
+
+/// A supervisor serving `config` on a thread of this process, for tests of the runner side; returns the
+/// runner's end of the control socket. Unprivileged: agents are this process's children.
+#[cfg(test)]
+pub(crate) fn in_process(config: ServeConfig) -> io::Result<OwnedFd> {
+    let (mine, theirs) = socketpair(
+        AddressFamily::UNIX,
+        SocketType::SEQPACKET,
+        SocketFlags::CLOEXEC,
+        None,
+    )?;
+    rustix::fs::fcntl_setfl(&mine, OFlags::NONBLOCK)?;
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let socket = UnixDatagram::from_std(std::os::unix::net::UnixDatagram::from(mine))
+                .expect("socket");
+            let mut terminate = signal(SignalKind::terminate()).expect("signal");
+            let mut interrupt = signal(SignalKind::interrupt()).expect("signal");
+            let mut child = signal(SignalKind::child()).expect("signal");
+            let mut server = Server::new(config, None);
+            run_loop(
+                &mut server,
+                &socket,
+                None,
+                &mut terminate,
+                &mut interrupt,
+                &mut child,
+            )
+            .await
+        })
+    });
+    Ok(theirs)
+}
