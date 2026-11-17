@@ -1,31 +1,28 @@
 //! Job claiming for runners: job tokens, lease, credentials and session drops (`runner-protocol.md` Claim).
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, TimeDelta, Utc};
-use contracts::ids::JobId;
 use contracts::job::access::{AgentAccess, InstallationToken, Secret};
 use contracts::job::protocol::{Claim, ClaimRequest, ClaimResponse, LeaseTiming};
 use db::error::DbError;
 use db::repo::jobs::{ClaimParams, JobRecord};
 use db::repo::{DEFAULT_TENANT, Db};
-use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::config::Config;
-use crate::github::app_token::{self, AppTokenError};
+use crate::github::app_token::{self, AppTokenError, Minted, Rejection};
+use crate::jobs::github_tokens::{self, TokenStoreError};
 use crate::jobs::queue::expire_leases;
-use crate::secrets::{Aad, SecretError, TokenCipher};
 
 /// Random bytes of a job token.
 const TOKEN_BYTES: usize = 32;
 
-/// How often pending installation-token revocations are retried (server start included).
-const REVOKE_INTERVAL: Duration = Duration::from_secs(60);
+/// Budget for the GitHub part of a claim (lookup, mint, storage); below the runner's 10 s request timeout.
+const CLAIM_GITHUB_BUDGET: Duration = Duration::from_secs(6);
 
 /// A claim could not be served.
 #[derive(Debug, thiserror::Error)]
@@ -39,9 +36,15 @@ pub enum ClaimError {
     /// GitHub could not mint the job's installation token; the job is retried after its lease.
     #[error("the job's GitHub installation token could not be minted")]
     GithubAccess(#[source] AppTokenError),
-    /// The minted installation token could not be encrypted for revocation; it was revoked.
+    /// GitHub minted a token that differs from the request; it is stored and revoked, never handed out.
+    #[error("GitHub minted an installation token that differs from the request")]
+    TokenRejected(#[source] Rejection),
+    /// GitHub did not answer within the claim's budget; the job is retried after its lease.
+    #[error("GitHub did not mint the job's installation token in time")]
+    GithubTimeout,
+    /// The minted installation token could not be stored for revocation; it was revoked.
     #[error("the job's GitHub installation token could not be stored")]
-    StoreToken(#[source] SecretError),
+    StoreToken(#[source] TokenStoreError),
 }
 
 /// SHA-256 of a bearer value; only this hash of a job token is stored.
@@ -77,7 +80,7 @@ pub async fn claim(
     now: DateTime<Utc>,
 ) -> Result<ClaimResponse, ClaimError> {
     if !expire_leases(db, now).await?.is_empty() {
-        revoke_github_tokens(db, config, now).await?;
+        github_tokens::nudge();
     }
     let resumed = db.jobs().resume_paused(now).await?;
     if !resumed.is_empty() {
@@ -118,7 +121,10 @@ pub async fn claim(
                 runner = %request.runner_id,
                 "runner claimed a job"
             );
-            let github = github_access(db, config, &job, now).await?;
+            let github =
+                tokio::time::timeout(CLAIM_GITHUB_BUDGET, github_access(db, config, &job, now))
+                    .await
+                    .map_err(|_| ClaimError::GithubTimeout)??;
             let mut spec = job.spec;
             // TODO(WP3-RUN): fill `access.memcan` from `Config::memcan`; the stage-2 slice runs without MemCan.
             spec.access = AgentAccess {
@@ -139,23 +145,10 @@ pub async fn claim(
     })
 }
 
-/// Where the encrypted installation token of a job attempt is stored (AES-GCM associated data).
-fn token_aad(row_id: &str) -> Aad<'_> {
-    Aad {
-        table: "installation_tokens",
-        column: "ciphertext",
-        row_id,
-    }
-}
-
-fn token_row_id(job: JobId, attempt: u32) -> String {
-    format!("{job}:{attempt}")
-}
-
 /// Mints the claimed attempt's installation token for the PR repository and stores it encrypted for revocation.
 /// No token when the App is not installed there or not usable as configured (ADR-005); other GitHub failures
 /// fail the claim, so the job is retried after its lease instead of running without the access its prompt
-/// expects.
+/// expects. A rejected token is stored first and then revoked, so a failed revocation is retried by the worker.
 async fn github_access(
     db: &Db,
     config: &Config,
@@ -165,8 +158,8 @@ async fn github_access(
     let repo = db.analyses().summary(job.analysis_id).await?.pr.repo;
     let runtime = TimeDelta::seconds(i64::from(job.spec.limits.max_runtime_secs));
     let token = match app_token::mint_for_job(&config.github, &repo, now, runtime).await {
-        Ok(Some(token)) => token,
-        Ok(None) => {
+        Ok(Minted::Accepted(token)) => token,
+        Ok(Minted::NotInstalled) => {
             tracing::info!(
                 job = %job.id,
                 owner = %repo.owner,
@@ -174,6 +167,27 @@ async fn github_access(
                 "GitHub App not installed on the PR repository; the job runs without GitHub access"
             );
             return Ok(None);
+        }
+        Ok(Minted::Rejected { token, rejection }) => {
+            tracing::error!(
+                job = %job.id,
+                %rejection,
+                "GitHub minted an installation token that differs from the request; it is revoked"
+            );
+            store_or_revoke(db, config, job, &token).await?;
+            match app_token::revoke(&config.github, token.token.expose()).await {
+                Ok(()) => {
+                    db.jobs()
+                        .confirm_github_token_revoked(job.id, job.attempt)
+                        .await?;
+                }
+                Err(error) => tracing::warn!(
+                    job = %job.id,
+                    %error,
+                    "rejected installation token not yet revoked; the worker retries after the lease"
+                ),
+            }
+            return Err(ClaimError::TokenRejected(rejection));
         }
         Err(error) if error.is_configuration() => {
             tracing::error!(
@@ -185,27 +199,7 @@ async fn github_access(
         }
         Err(error) => return Err(ClaimError::GithubAccess(error)),
     };
-    let row_id = token_row_id(job.id, job.attempt);
-    let stored = match TokenCipher::new(&config.secret_key)
-        .encrypt(token_aad(&row_id), token.token.expose())
-    {
-        Ok(ciphertext) => db
-            .jobs()
-            .record_github_token(job.id, job.attempt, &ciphertext, token.expires_at)
-            .await
-            .map_err(ClaimError::Db),
-        Err(error) => Err(ClaimError::StoreToken(error)),
-    };
-    if let Err(error) = stored {
-        if let Err(revoke) = app_token::revoke(&config.github, token.token.expose()).await {
-            tracing::error!(
-                job = %job.id,
-                error = %revoke,
-                "could not revoke an unstored installation token; it expires within an hour"
-            );
-        }
-        return Err(error);
-    }
+    store_or_revoke(db, config, job, &token).await?;
     tracing::info!(
         job = %job.id,
         attempt = job.attempt,
@@ -215,80 +209,42 @@ async fn github_access(
     Ok(Some(token))
 }
 
-/// Revokes the installation tokens of attempts that are no longer claimed or running and confirms each
-/// revocation; an expired token is only confirmed. Failures are logged and retried by the next sweep.
-pub async fn revoke_github_tokens(
+/// Stores the attempt's token for revocation; if that fails, revokes it at once (it was never handed out).
+async fn store_or_revoke(
     db: &Db,
     config: &Config,
-    now: DateTime<Utc>,
-) -> Result<(), DbError> {
-    let pending = db.jobs().github_tokens_to_revoke().await?;
-    if pending.is_empty() {
+    job: &JobRecord,
+    token: &InstallationToken,
+) -> Result<(), ClaimError> {
+    let Err(error) = github_tokens::store(db, config, job.id, job.attempt, token).await else {
         return Ok(());
-    }
-    let cipher = TokenCipher::new(&config.secret_key);
-    for stale in pending {
-        if stale.expires_at > now {
-            let row_id = token_row_id(stale.job, stale.attempt);
-            let token = match cipher.decrypt(token_aad(&row_id), &stale.ciphertext) {
-                Ok(token) => token,
-                Err(error) => {
-                    tracing::error!(
-                        job = %stale.job,
-                        attempt = stale.attempt,
-                        %error,
-                        "stored installation token unreadable; it stays listed until it expires"
-                    );
-                    continue;
-                }
-            };
-            if let Err(error) = app_token::revoke(&config.github, token.expose_secret()).await {
-                tracing::warn!(
-                    job = %stale.job,
-                    attempt = stale.attempt,
-                    %error,
-                    "installation token revocation failed; retried by the next sweep"
-                );
-                continue;
-            }
-        }
-        db.jobs()
-            .confirm_github_token_revoked(stale.job, stale.attempt)
-            .await?;
-        tracing::info!(
-            job = %stale.job,
-            attempt = stale.attempt,
-            "installation token of an ended job attempt revoked"
+    };
+    if let Err(revoke) = app_token::revoke(&config.github, token.token.expose()).await {
+        tracing::error!(
+            job = %job.id,
+            error = %revoke,
+            "could not revoke an unstored installation token; it expires within an hour"
         );
     }
-    Ok(())
-}
-
-/// Runs [`revoke_github_tokens`] at start and every minute, so tokens of leases a follower expired and failed
-/// revocations are not left to expire.
-pub async fn revoke_github_tokens_periodically(db: Db, config: Arc<Config>) {
-    let mut ticks = tokio::time::interval(REVOKE_INTERVAL);
-    loop {
-        ticks.tick().await;
-        if let Err(error) = revoke_github_tokens(&db, &config, Utc::now()).await {
-            tracing::warn!(%error, "installation token sweep could not read the queue; retried in a minute");
-        }
-    }
+    Err(ClaimError::StoreToken(error))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use contracts::agent::JobKind;
     use contracts::common::RepoRef;
-    use contracts::ids::FlowId;
+    use contracts::ids::{FlowId, JobId};
     use contracts::job::protocol::CredentialStatus;
     use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
     use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
     use contracts::routes::RUNNER_RESULT;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
     use db::repo::jobs::{JobStage, NewJob};
+    use secrecy::ExposeSecret;
     use serde_json::json;
     use tempfile::TempDir;
     use tower::ServiceExt;
@@ -301,6 +257,7 @@ mod tests {
         MINTED_TOKEN, github_config, minted, mount_installation, mount_mint, mount_revoke,
         write_key,
     };
+    use crate::jobs::executor::JobExecutor;
     use crate::jobs::queue::QueueExecutor;
     use crate::state::AppState;
     use crate::test_support::logs::LogCapture;
@@ -472,13 +429,13 @@ mod tests {
                 .any(|window| window == MINTED_TOKEN.as_bytes()),
             "never plaintext at rest"
         );
-        let row_id = token_row_id(job, 1);
-        let decrypted = TokenCipher::new(&s.config.secret_key)
-            .decrypt(token_aad(&row_id), &ciphertext)
-            .expect("bound to its row");
+        let decrypted = github_tokens::load(&s.db, &s.config, job, 1)
+            .await
+            .expect("bound to its row")
+            .expect("stored");
         assert_eq!(decrypted.expose_secret(), MINTED_TOKEN);
 
-        revoke_github_tokens(&s.db, &s.config, now)
+        github_tokens::sweep(&s.db, &s.config, now)
             .await
             .expect("sweep");
         assert!(
@@ -499,7 +456,7 @@ mod tests {
                 .expect(1)
                 .mount_as_scoped(&s.github)
                 .await;
-            revoke_github_tokens(&s.db, &s.config, now)
+            github_tokens::sweep(&s.db, &s.config, now)
                 .await
                 .expect("sweep");
             drop(failing);
@@ -513,7 +470,7 @@ mod tests {
             "kept until the revocation is confirmed"
         );
         mount_revoke(&s.github, 204, 1).await;
-        revoke_github_tokens(&s.db, &s.config, now)
+        github_tokens::sweep(&s.db, &s.config, now)
             .await
             .expect("sweep");
         assert_eq!(s.db.jobs().github_token(job, 1).await.expect("read"), None);
@@ -545,8 +502,8 @@ mod tests {
         LeaseExpiry,
     }
 
-    /// Every way a job attempt ends revokes its token at once: results through the runner route, lease expiry
-    /// through the next claim.
+    /// Every way a job attempt ends revokes its token: results through the runner route and lease expiry through
+    /// the next claim nudge the worker.
     #[tokio::test]
     async fn installation_token_revoked_on_job_end() {
         for end in [End::Success, End::Failure, End::Cancel, End::LeaseExpiry] {
@@ -562,6 +519,10 @@ mod tests {
                 s.db.clone(),
                 Arc::new(QueueExecutor::new(s.db.clone())),
             );
+            let worker = tokio::spawn(github_tokens::run_worker(
+                state.db.clone(),
+                state.config.clone(),
+            ));
             let outcome = match end {
                 End::Success => Some(succeeded()),
                 End::Failure => Some(JobOutcome::Failed {
@@ -610,11 +571,11 @@ mod tests {
                         .expect("claim after the lease");
                 }
             }
-            assert_eq!(
-                state.db.jobs().github_token(job, 1).await.expect("read"),
-                None,
+            assert!(
+                revoked_soon(&state.db, job, 1).await,
                 "{end:?}: revocation confirmed"
             );
+            worker.abort();
             let logs = capture.text();
             assert!(!logs.contains(MINTED_TOKEN), "{end:?}: {logs}");
             // Dropping the server verifies exactly one revocation per ended attempt.
@@ -647,6 +608,9 @@ mod tests {
         )
         .await
         .expect("claim after the lease");
+        github_tokens::sweep(&s.db, &s.config, Utc::now())
+            .await
+            .expect("sweep");
         let ended = s.db.jobs().get(job).await.expect("job");
         assert_eq!(ended.state, contracts::job::state::JobState::Cancelled);
         assert_eq!(ended.ready_output, None, "ready output discarded");
@@ -666,21 +630,18 @@ mod tests {
             .await
             .expect("complete");
         let expired = enqueue(&s.db).await;
-        let cipher = TokenCipher::new(&s.config.secret_key);
-        let row_id = token_row_id(expired, 1);
-        let ciphertext = cipher
-            .encrypt(token_aad(&row_id), "ghs_expired")
-            .expect("encrypt");
-        s.db.jobs()
-            .record_github_token(expired, 1, &ciphertext, now - TimeDelta::minutes(1))
-            .await
-            .expect("record");
+        github_tokens::store(
+            &s.db,
+            &s.config,
+            expired,
+            1,
+            &backlog_token("ghs_expired", now - TimeDelta::minutes(1)),
+        )
+        .await
+        .expect("record");
 
         mount_revoke(&s.github, 204, 1).await;
-        let start = tokio::spawn(revoke_github_tokens_periodically(
-            s.db.clone(),
-            Arc::new(s.config),
-        ));
+        let start = tokio::spawn(github_tokens::run_worker(s.db.clone(), Arc::new(s.config)));
         for _ in 0..100 {
             let left = s.db.jobs().github_tokens_to_revoke().await.expect("list");
             if left.is_empty() {
@@ -706,6 +667,284 @@ mod tests {
             .filter(|request| request.method.as_str() == "DELETE")
             .count();
         assert_eq!(deletes, 1);
+    }
+
+    fn backlog_token(token: &str, expires_at: DateTime<Utc>) -> InstallationToken {
+        InstallationToken {
+            token: Secret::new(token),
+            expires_at,
+            repository: RepoRef {
+                owner: "acme".to_owned(),
+                name: "node-client".to_owned(),
+            },
+        }
+    }
+
+    /// Waits up to 5 s for the worker to confirm the revocation of `attempt`.
+    async fn revoked_soon(db: &Db, job: JobId, attempt: u32) -> bool {
+        for _ in 0..250 {
+            if db
+                .jobs()
+                .github_token(job, attempt)
+                .await
+                .expect("read")
+                .is_none()
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    /// After a restart the pipeline cancels the analysis of a running job whose runner is gone; no follower and
+    /// no further claim exist, yet the worker's sweep ends the lease and revokes the token.
+    #[tokio::test]
+    async fn token_revoked_after_restart_and_cancel_without_runner() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let now = Utc::now();
+        installed(&s, now).await;
+        mount_revoke(&s.github, 204, 1).await;
+        let claimed = claim_one(&s, now).await;
+        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        QueueExecutor::new(s.db.clone())
+            .cancel_analysis(analysis)
+            .await
+            .expect("cancel analysis");
+        github_tokens::sweep(
+            &s.db,
+            &s.config,
+            claimed.lease_expires_at + TimeDelta::seconds(1),
+        )
+        .await
+        .expect("sweep");
+        assert_eq!(
+            s.db.jobs().get(job).await.expect("job").state,
+            contracts::job::state::JobState::Cancelled
+        );
+        assert_eq!(
+            s.db.jobs().github_token(job, 1).await.expect("read"),
+            None,
+            "revoked and ciphertext removed"
+        );
+    }
+
+    /// Slow GitHub answers end the claim within its budget, below the runner's 10 s request timeout.
+    #[tokio::test]
+    async fn claim_github_budget_below_runner_timeout() {
+        assert!(CLAIM_GITHUB_BUDGET < Duration::from_secs(10));
+        let s = setup().await;
+        enqueue(&s.db).await;
+        let now = Utc::now();
+        let slow = Duration::from_millis(3_500);
+        Mock::given(method("GET"))
+            .and(path("/api/repos/acme/node-client/installation"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"id": 4242}))
+                    .set_delay(slow),
+            )
+            .mount(&s.github)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(minted(now))
+                    .set_delay(slow),
+            )
+            .mount(&s.github)
+            .await;
+        let started = std::time::Instant::now();
+        let result = claim(&s.db, &s.config, &request(), now).await;
+        let took = started.elapsed();
+        assert!(
+            matches!(result, Err(ClaimError::GithubTimeout)),
+            "{result:?}"
+        );
+        assert!(
+            took < CLAIM_GITHUB_BUDGET + Duration::from_millis(500),
+            "{took:?}"
+        );
+    }
+
+    /// Claims and results only nudge the worker; a slow revocation backlog never delays their answers.
+    #[tokio::test]
+    async fn claim_and_result_do_not_wait_for_revocation_backlog() {
+        let s = setup().await;
+        let first = enqueue(&s.db).await;
+        let now = Utc::now();
+        mount_installation(&s.github).await;
+        mount_mint(&s.github, minted(now), 2).await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(204).set_delay(Duration::from_secs(3)))
+            .mount(&s.github)
+            .await;
+        let backlog = enqueue(&s.db).await;
+        // Attempts the claim below never reaches, so its own token row does not collide.
+        for attempt in 7..=9 {
+            github_tokens::store(
+                &s.db,
+                &s.config,
+                backlog,
+                attempt,
+                &backlog_token(&format!("ghs_backlog_{attempt}"), now + TimeDelta::hours(1)),
+            )
+            .await
+            .expect("backlog");
+        }
+        let claimed = claim_one(&s, now).await;
+        let state = AppState::new(
+            s.config,
+            s.db.clone(),
+            Arc::new(QueueExecutor::new(s.db.clone())),
+        );
+        let started = std::time::Instant::now();
+        let response = crate::api::runner_router(state.clone())
+            .oneshot(
+                Request::post(RUNNER_RESULT.path.replace("{id}", &first.to_string()))
+                    .header(
+                        header::AUTHORIZATION,
+                        format!("Bearer {}", claimed.job_token.expose()),
+                    )
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&result(first, succeeded())).expect("json"),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("infallible");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(started.elapsed() < Duration::from_secs(1), "result waited");
+
+        let second = claim(&state.db, &state.config, &request(), now)
+            .await
+            .expect("claim")
+            .claim
+            .expect("the backlog job");
+        let idle = ClaimRequest {
+            credentials: Vec::new(),
+            ..request()
+        };
+        let started = std::time::Instant::now();
+        claim(
+            &state.db,
+            &state.config,
+            &idle,
+            second.lease_expires_at + TimeDelta::seconds(1),
+        )
+        .await
+        .expect("claim after an expired lease");
+        assert!(started.elapsed() < Duration::from_secs(1), "claim waited");
+    }
+
+    #[tokio::test]
+    async fn sweep_stops_at_rate_limit() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let now = Utc::now();
+        for attempt in 1..=2 {
+            github_tokens::store(
+                &s.db,
+                &s.config,
+                job,
+                attempt,
+                &backlog_token(&format!("ghs_backlog_{attempt}"), now + TimeDelta::hours(1)),
+            )
+            .await
+            .expect("backlog");
+        }
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "30"))
+            .expect(1)
+            .mount(&s.github)
+            .await;
+        let sweep = github_tokens::sweep(&s.db, &s.config, now)
+            .await
+            .expect("sweep");
+        assert_eq!(sweep.failed, 1);
+        assert_eq!(sweep.rate_limited, Some(Some(Duration::from_secs(30))));
+        assert_eq!(
+            s.db.jobs()
+                .github_tokens_to_revoke()
+                .await
+                .expect("list")
+                .len(),
+            2,
+            "both stay listed"
+        );
+    }
+
+    /// A token that differs from the request is never handed out; stored before its revocation, it survives a
+    /// failed DELETE and a restart until GitHub confirms the revocation.
+    #[tokio::test]
+    async fn rejected_token_stored_until_revoked() {
+        let capture = LogCapture::start();
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let now = Utc::now();
+        let mut write = minted(now);
+        write["permissions"]["issues"] = json!("write");
+        mount_installation(&s.github).await;
+        mount_mint(&s.github, write, 1).await;
+        let lease = {
+            let _unavailable = Mock::given(method("DELETE"))
+                .respond_with(ResponseTemplate::new(503))
+                .expect(1)
+                .mount_as_scoped(&s.github)
+                .await;
+            let result = claim(&s.db, &s.config, &request(), now).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(ClaimError::TokenRejected(Rejection::Permissions))
+                ),
+                "{result:?}"
+            );
+            s.db.jobs()
+                .get(job)
+                .await
+                .expect("job")
+                .lease_expires_at
+                .expect("claimed")
+        };
+        assert!(
+            s.db.jobs()
+                .github_token(job, 1)
+                .await
+                .expect("read")
+                .is_some(),
+            "kept for revocation"
+        );
+        mount_revoke(&s.github, 204, 1).await;
+        github_tokens::sweep(&s.db, &s.config, lease + TimeDelta::seconds(1))
+            .await
+            .expect("sweep after a restart");
+        assert_eq!(s.db.jobs().github_token(job, 1).await.expect("read"), None);
+        assert!(!capture.text().contains(MINTED_TOKEN));
+    }
+
+    #[tokio::test]
+    async fn excessive_expiry_rejected_and_revoked() {
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let now = Utc::now();
+        let mut long = minted(now);
+        long["expires_at"] = json!((now + TimeDelta::days(1)).to_rfc3339());
+        mount_installation(&s.github).await;
+        mount_mint(&s.github, long, 1).await;
+        mount_revoke(&s.github, 204, 1).await;
+        let result = claim(&s.db, &s.config, &request(), now).await;
+        assert!(
+            matches!(result, Err(ClaimError::TokenRejected(Rejection::Expiry))),
+            "{result:?}"
+        );
+        assert_eq!(
+            s.db.jobs().github_token(job, 1).await.expect("read"),
+            None,
+            "revoked at once and confirmed"
+        );
     }
 
     #[test]

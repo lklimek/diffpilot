@@ -41,7 +41,7 @@ pub async fn expire_leases(db: &Db, now: DateTime<Utc>) -> Result<Vec<ExpiredLea
             "job lease expired without a runner heartbeat"
         );
     }
-    // Their installation tokens are revoked by `claim::revoke_github_tokens` (claim, result, periodic sweep).
+    // Their installation tokens are revoked by the `github_tokens` worker.
     Ok(expired)
 }
 

@@ -91,7 +91,7 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     let runner = bind(RUNNER_LISTEN_ADDR, config.runner_listen_addr).await?;
     let executor = Arc::new(QueueExecutor::new(db.clone()));
     let state = AppState::new(config, db, executor);
-    tokio::spawn(server::jobs::claim::revoke_github_tokens_periodically(
+    tokio::spawn(server::jobs::github_tokens::run_worker(
         state.db.clone(),
         state.config.clone(),
     ));
