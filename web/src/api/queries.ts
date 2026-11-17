@@ -7,6 +7,7 @@ import type {
   AnalysisSummary,
   AskQuestion,
   CreateCommentRequest,
+  FeedbackId,
   FeedbackRequest,
   LlmLanguage,
   PendingReview,
@@ -133,6 +134,15 @@ export const usePostFeedback = (id: AnalysisId) => {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (request: FeedbackRequest) => api.postFeedback(id, request),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["feedback", id] }),
+  });
+};
+
+/** Removes a stored feedback value; the list is read again. */
+export const useDeleteFeedback = (id: AnalysisId) => {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (feedbackId: FeedbackId) => api.deleteFeedback(id, feedbackId),
     onSuccess: () => client.invalidateQueries({ queryKey: ["feedback", id] }),
   });
 };

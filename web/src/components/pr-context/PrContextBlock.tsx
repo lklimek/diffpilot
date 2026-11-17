@@ -101,7 +101,7 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
           <span className="text-[12px] text-muted">From the diff; no LLM.</span>
         </p>
       )}
-      <div className="grid grid-cols-1 gap-3.5 @[1250px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+      <div className="grid grid-cols-1 items-start gap-3.5 @[1250px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section title="LLM analysis" tone="llm">
           <LlmLine />
           <p>

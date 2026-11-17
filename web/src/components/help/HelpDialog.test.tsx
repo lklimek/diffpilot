@@ -42,6 +42,7 @@ describe("HelpDialog", () => {
       "HIGH: solid bar",
       "MEDIUM: dashed bar",
       "LOW or affected: dotted bar",
+      "LLM remark without a risk rating: thin neutral line",
       "A changed line without colour has no LLM remark.",
       "moved, text identical: double bar",
       "≠ line differs from the moved original",

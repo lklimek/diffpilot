@@ -157,9 +157,17 @@ export function estimateLeftToRightWidth(graph: FlowGraph, measure: Measure): nu
   return widest([...chain.values()]) + 2 * MARGIN;
 }
 
+/** Whether a word may break after `chars[0..n)`: after `_`, `.`, `/` or a whole `::`. */
+function breaksAfter(chars: readonly string[], n: number): boolean {
+  const last = chars[n - 1];
+  if (last === "_" || last === "." || last === "/") return true;
+  return last === ":" && chars[n - 2] === ":" && chars[n] !== ":";
+}
+
 /**
- * Wraps bounded `text` on spaces into lines no wider than `maxWidth`; wider words are split. Beyond
- * `maxLines` the last line ends in "…".
+ * Wraps bounded `text` on spaces into lines no wider than `maxWidth`. Wider words are split after `_`, `::`,
+ * `.` or `/` where possible, else at the last fitting character (never inside `::`). Beyond `maxLines` the last
+ * line ends in "…".
  */
 export function wrapText(
   text: string,
@@ -176,6 +184,10 @@ export function wrapText(
       line = "";
       let n = 1;
       while (n < chars.length && width(chars.slice(0, n + 1).join("")) <= maxWidth) n += 1;
+      let cut = n;
+      while (cut > 1 && !breaksAfter(chars, cut)) cut -= 1;
+      if (cut > 1) n = cut;
+      else if (n > 1 && chars[n - 1] === ":" && chars[n] === ":") n -= 1;
       lines.push(chars.slice(0, n).join(""));
       chars = chars.slice(n);
     }

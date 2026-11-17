@@ -48,6 +48,28 @@ describe("wrapText", () => {
     for (const line of lines) expect(nodeWidth(line)).toBeLessThanOrEqual(120);
   });
 
+  it("splits an identifier after _, ::, . or / before splitting inside a word (UX-107)", () => {
+    for (const [word, width] of [
+      ["RpcClient::send_with_retry_policy_and_backoff", 120],
+      ["MAX_CONCURRENT_REQUESTS", 120],
+      ["src/rpc/client.rs", 70],
+      ["retry.policy.max_attempts", 90],
+    ] as const) {
+      const lines = wrapText(word, width, nodeWidth, 10);
+      expect(lines.join("")).toBe(word);
+      expect(lines.length, word).toBeGreaterThan(1);
+      for (const line of lines.slice(0, -1))
+        expect(line, `${word}: ${lines.join("|")}`).toMatch(/(_|::|\.|\/)$/);
+      for (const line of lines) expect(nodeWidth(line)).toBeLessThanOrEqual(width);
+    }
+  });
+
+  it("never splits between the two colons of ::", () => {
+    const lines = wrapText("Aaaaaaaaaaaaa::b", nodeWidth("Aaaaaaaaaaaaa:"), nodeWidth, 10);
+    expect(lines.join("")).toBe("Aaaaaaaaaaaaa::b");
+    for (const line of lines.slice(0, -1)) expect(line.endsWith(":") && !line.endsWith("::")).toBe(false);
+  });
+
   it("wraps capitals and wide characters by their width, not their count", () => {
     for (const text of [
       "MAX_CONCURRENT_REQUESTS",

@@ -22,7 +22,7 @@ test("sign in → analyze → progress → open review", async ({ page }) => {
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible({ timeout: 10_000 });
   await page.getByRole("link", { name: "Open review" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}$`));
-  await expect(page.getByRole("main").getByRole("heading", { level: 2 }).first()).toHaveText(
+  await expect(page.locator("main h2:not([data-column-title])").first()).toHaveText(
     "PR context: acme/node-client #482",
   );
 });

@@ -6,7 +6,7 @@ export const ANALYSIS_ID = "6d3a2f1e-0482-4c5e-9a7b-000000000482";
 /** Opens the review of the fixture analysis in a fixture state and waits for the first block. */
 export async function openTour(page: Page, state = "default"): Promise<void> {
   await page.goto(`/analyses/${ANALYSIS_ID}?state=${state}`);
-  await expect(page.getByRole("main").getByRole("heading", { level: 2 }).first()).toBeVisible();
+  await expect(page.locator("main h2:not([data-column-title])").first()).toBeVisible();
 }
 
 const BANNED = [
