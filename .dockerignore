@@ -1,4 +1,12 @@
+# Build context of deploy/server/Dockerfile and of the runner's named context `workspace` (repository root).
+# Never send secrets or build output to the daemon.
 config
+.env
+.env.*
+!.env.example
 target
 .git
-web/node_modules
+**/node_modules
+web/dist
+web/test-results
+web/playwright-report

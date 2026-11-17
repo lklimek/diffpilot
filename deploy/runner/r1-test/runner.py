@@ -907,6 +907,8 @@ def main():
     codex_home_exhaustion_job(sup)
     if os.environ.get("R1_SKIP_CODEX") != "1":
         real_codex_job(sup, sup_pid)
+    else:
+        print("# SKIP real-Codex job checks (R1_SKIP_CODEX=1)", flush=True)
     if os.environ.get("R1_SUPERVISOR") == "rust":
         quarantine_job(sup)
     print(f"RESULT pass={sum(results)} fail={len(results) - sum(results)}", flush=True)
