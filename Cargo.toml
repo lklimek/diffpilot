@@ -43,6 +43,8 @@ axum = "0.8.9"
 tower-http = "0.7.1"
 reqwest = { version = "0.13.5", features = ["json"] }
 octocrab = "0.54.9"
+# GitHub App JWT (RS256); aws-lc-rs is the crypto backend rustls already uses.
+jsonwebtoken = { version = "12.0.0", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 # Client only (MemCan); `reqwest` adds rustls for https endpoints.
 rmcp = { version = "3.10.0", default-features = false, features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
 rust-embed = "8.14.0"
@@ -66,6 +68,8 @@ wiremock = "0.6.5"
 proptest = "1.12.0"
 insta = { version = "1.49.0", features = ["json"] }
 tempfile = "3.27.0"
+# Throwaway RSA keys in tests.
+aws-lc-rs = "1.19.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

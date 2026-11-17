@@ -1,15 +1,21 @@
+import { analysisEvents } from "./analysis-events";
+import { cancelAnalysis } from "./cancel-analysis";
 import { createAnalysis } from "./create-analysis";
 import { getAnalysis } from "./get-analysis";
 import { getLines } from "./get-lines";
 import { getMe } from "./get-me";
 import { getPendingReview } from "./get-pending-review";
+import { getRepoSettings } from "./get-repo-settings";
 import { getReviewState } from "./get-review-state";
+import { getSettings } from "./get-settings";
 import { getTour } from "./get-tour";
 import { listFeedback } from "./list-feedback";
 import { listQuestions } from "./list-questions";
 import { resolvePr } from "./resolve-pr";
+import { retryAnalysis } from "./retry-analysis";
+import { setLanguage } from "./set-language";
 
-/** Handlers of the endpoints that have an api-seed (fixtures/pr-482), one file per endpoint. */
+/** Handlers of the mocked endpoints (fixtures/pr-482 seed and screen scenarios), one file per endpoint. */
 export const handlers = [
   getMe,
   resolvePr,
@@ -21,4 +27,10 @@ export const handlers = [
   listQuestions,
   listFeedback,
   getPendingReview,
+  analysisEvents,
+  cancelAnalysis,
+  retryAnalysis,
+  getSettings,
+  setLanguage,
+  getRepoSettings,
 ];

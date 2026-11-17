@@ -24,7 +24,13 @@ the same attempt; 400 malformed body.
   sets the lease, and fills `spec.access` at claim time:
   - `github`: an installation token for the **PR repository only** (explicit `repositories` and read-only
     `permissions`, 1 h, ADR-005) — or `null` when the GitHub App is not installed on the PR repository; then the
-    runner configures no `github-mcp-server` and the prompt says related work is not checked;
+    runner configures no `github-mcp-server` and the prompt says related work is not checked. The same holds
+    when the App is unusable as configured (key file, key or App id; logged as an error). Any other mint
+    failure, a minted token that differs from the request (permissions, repository, visibility, expiry outside
+    the job's runtime cap and GitHub's hour), or GitHub's part of the claim exceeding its 6 s budget fails the
+    claim (`github_unavailable`); the job is retried after its lease, and a token received after the budget is
+    still stored and revoked by the worker once that lease expires. A rejected token is never handed out: it
+    is stored encrypted like any other and revoked;
   - `memcan`: URL and token from configuration (runner config limits the MCP to search and `add_memory`).
 - `drop_sessions`: analyses whose session files the runner deletes (cancelled or superseded, ADR-004); it
   acknowledges in the next claim's `dropped_sessions` (at least once; idempotent).
@@ -70,8 +76,8 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - At the deadline the runner stops the agent (SIGTERM, SIGKILL after 10 s), copies the credential back (CAS),
   discards the attempt and posts no result. Only then may the server hand the job to a new claim, so two
   processes never hold the same refresh token. Two lost heartbeats (30 s) still stay inside the deadline.
-- The server revokes the attempt's installation token when a lease expires or a result arrives (recovery:
-  "Installation-token revocation" below).
+- The server revokes the attempt's installation token after a lease expires or a result arrives (recovery:
+  "Installation-token revocation" below); claims and results never wait for revocations.
 
 ## Credential home (ADR-003)
 - The per-job `CODEX_HOME` (copy of `auth.json`, generated config, the analysis's session files, CAS data)
@@ -147,10 +153,14 @@ Durable state only; no in-memory handle is needed after a restart.
   `Jobs::expire_leases` as usual.
 - **Installation-token revocation.** The encrypted token is stored per (job, attempt) at claim
   (`installation_tokens`). Revocation reads it without removing it (`Jobs::github_token`), calls
-  `DELETE /installation/token`, then confirms (`Jobs::confirm_github_token_revoked`). At start, after every
-  result and after lease expiry, `Jobs::github_tokens_to_revoke` lists every token not used by a claimed or
-  running attempt; expired ones are only confirmed. A crash between read and revocation therefore leaves the
+  `DELETE /installation/token`, then confirms (`Jobs::confirm_github_token_revoked`). One server worker sweeps
+  at start, every minute and when a result or an expired lease nudges it: it first ends overdue leases
+  (`Jobs::expire_leases`), then `Jobs::github_tokens_to_revoke` lists every token not used by a claimed or
+  running attempt; expired ones are only confirmed. Failed revocations stay listed and are retried with
+  exponential backoff (5 s up to 5 min), honouring GitHub's `retry-after` / `x-ratelimit-reset`.
+  A crash between read and revocation therefore leaves the
   token listed, and a re-claim never overwrites the previous attempt's token.
+  The server also masks the attempt's token in events, outputs and results (T10).
 
 ## Secrets and scrubbing
 The runner scrubs every known secret value (installation token, MemCan token, job token, runner secret,
