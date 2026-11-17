@@ -41,6 +41,8 @@ pub enum ApiErrorCode {
     PrHeadChanged,
     /// GitHub rejected the comment position.
     PositionRejected,
+    /// The pending comment was published on GitHub meanwhile; the edit or deletion applied to the published one.
+    CommentPublished,
     /// The requested line range is too large.
     RangeTooLarge,
     /// The file is not rendered (generated material).
@@ -53,7 +55,7 @@ pub enum ApiErrorCode {
 
 impl ApiErrorCode {
     /// Every code.
-    pub const ALL: [ApiErrorCode; 16] = [
+    pub const ALL: [ApiErrorCode; 17] = [
         Self::Unauthenticated,
         Self::LoginNotAllowed,
         Self::CsrfRejected,
@@ -66,6 +68,7 @@ impl ApiErrorCode {
         Self::Conflict,
         Self::PrHeadChanged,
         Self::PositionRejected,
+        Self::CommentPublished,
         Self::RangeTooLarge,
         Self::NotRendered,
         Self::GithubUnavailable,
@@ -79,7 +82,10 @@ impl ApiErrorCode {
             Self::Unauthenticated => 401,
             Self::LoginNotAllowed | Self::CsrfRejected => 403,
             Self::NotFound => 404,
-            Self::Conflict | Self::AnalysisNotFinished | Self::PrHeadChanged => 409,
+            Self::Conflict
+            | Self::AnalysisNotFinished
+            | Self::PrHeadChanged
+            | Self::CommentPublished => 409,
             Self::PrivateRepository
             | Self::AppNotInstalled
             | Self::PositionRejected

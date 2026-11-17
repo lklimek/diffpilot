@@ -42,6 +42,8 @@ pub struct PrContextBlock {
 pub struct PrContextFacts {
     /// CI status of the head commit.
     pub ci: CiStatus,
+    /// Whether `Tour.threads` holds every review thread of the pull request.
+    pub threads_status: ThreadsStatus,
     /// Counters from the pre-pass.
     pub counters: Counters,
     /// Where the project profile came from.
@@ -82,6 +84,18 @@ pub enum CiState {
     /// No checks reported for the head commit.
     None,
     /// The check runs could not be read (no GitHub token, GitHub error or rate limit); nothing is claimed.
+    NotChecked,
+}
+
+/// How completely the pull request's review threads were read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadsStatus {
+    /// Every review thread was read.
+    Checked,
+    /// Only the first threads were read (the server's read cap); more exist on GitHub.
+    Partial,
+    /// The threads could not be read (no token, GitHub error or rate limit).
     NotChecked,
 }
 

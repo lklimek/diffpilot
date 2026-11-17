@@ -139,7 +139,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal";
+export type ApiErrorCode = "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal";
 
 /**
  * A GitHub App installation.
@@ -1311,7 +1311,11 @@ commenting_available: boolean,
 /**
  * Pending comments; the count is their number.
  */
-comments: Array<PendingComment>, };
+comments: Array<PendingComment>,
+/**
+ * The server stopped reading at its cap (more pending comments or reviews exist on GitHub than listed).
+ */
+incomplete: boolean, };
 
 /**
  * The PR context: deterministic facts and LLM content.
@@ -1334,6 +1338,10 @@ export type PrContextFacts = {
  * CI status of the head commit.
  */
 ci: CiStatus,
+/**
+ * Whether `Tour.threads` holds every review thread of the pull request.
+ */
+threads_status: ThreadsStatus,
 /**
  * Counters from the pre-pass.
  */
@@ -1759,6 +1767,11 @@ impact: Array<ImpactRef>, };
  * LLM status of an existing GitHub review thread.
  */
 export type ThreadLlmStatus = "still_valid" | "stale" | "already_addressed";
+
+/**
+ * How completely the pull request's review threads were read.
+ */
+export type ThreadsStatus = "checked" | "partial" | "not_checked";
 
 /**
  * Response of `GET /api/v1/analyses/{id}/tour`.
