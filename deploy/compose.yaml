@@ -109,9 +109,16 @@ services:
         target: /var/lib/smart-review-runner/codex-homes
         bind: { create_host_path: false }
     healthcheck:
-      # The supervisor exits (and the container with it) when the runner stops; healthy = the runner process
-      # is running.
-      test: ["CMD", "/bin/sh", "-c", "grep -qsa smart-review-runner /proc/[0-9]*/cmdline"]
+      # The supervisor exits (and the container with it) when the runner stops; healthy = a process whose
+      # argv[0] is the runner binary exists, so the preflight has passed (/proc/<pid>/exe is not readable here).
+      test:
+        - CMD
+        - /bin/sh
+        - -c
+        - >-
+          for p in /proc/[0-9]*; do
+          [ "$$(tr '\0' '\n' < $$p/cmdline 2> /dev/null | head -n 1)" = /usr/local/bin/smart-review-runner ] && exit 0;
+          done; exit 1
       interval: 30s
       timeout: 5s
       start_period: 30s
