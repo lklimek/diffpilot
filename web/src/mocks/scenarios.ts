@@ -285,6 +285,16 @@ const SCENARIOS = {
   },
   xss: { tour: withXss, questions: xssQuestions },
   "memcan-failed": { memcan: "failed" },
+  "long-answer": {
+    questions: () =>
+      REAL_QUESTIONS.map((question) => ({
+        ...question,
+        answer: {
+          answer: `${"longword".repeat(100)}\n\n\`\`\`text\n${"code".repeat(200)}\n\`\`\``,
+          evidence: [],
+        },
+      })),
+  },
   "repo-not-known": { repoSettings: null },
   "binary-file": { tour: withBinaryFile },
   "comment-published": { commentPublished: true },

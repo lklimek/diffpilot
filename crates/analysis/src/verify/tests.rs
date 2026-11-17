@@ -513,6 +513,16 @@ fn ask_rejects_markup_and_links_outside_github() {
         "Fake close?\n```rust\nlet x = 1;\n``` <br>",
         "Fake close?\n```\nlet x = 1;\n```[x](//evil.example/a)",
         "Read https://github.com:443/acme/x?",
+        "See [PR 470](https://github.com/acme/node-client/pull/470).",
+        "See the [upstream definition](https://github.com/emilk/egui/blob/0.36.2/crates/epaint/src/text/text_layout_types.rs).",
+        "[PR 470]: https://github.com/acme/node-client/pull/470",
+        "- First point\n- Second point",
+        "1. First point\n2. Second point",
+        "**Important** detail",
+        "# Heading",
+        "> Quoted answer",
+        "See [the answer][ref].",
+        "See www.example.org/details.",
     ];
     for answer in rejected {
         assert_eq!(
@@ -527,11 +537,12 @@ fn ask_rejects_markup_and_links_outside_github() {
         "Is `a < b && c > d` still true?",
         "Does `HashMap<K, V>` keep order?",
         "Read HTTPS://GITHUB.COM/acme/x?",
-        "See [PR 470](https://github.com/acme/node-client/pull/470) and <https://github.com/acme/x>?",
         "Does this change?\n```rust\nfn first<T: Clone>(items: &[T]) -> Option<T> { None }\n```\nOr not?",
         "Does ``Vec<`u8`>`` change?",
         "Is std::fmt::Display used, or a // comment in `// keep <b>`?",
         "Is 3 < 4 and a <= b?",
+        "The handle_light_block function returns the response.",
+        "This code is literal: `- item` and `[text](url)`.",
         "Closed with spaces?\n```rust\nlet v: Vec<u8> = vec![];\n```   \nDone?",
     ];
     for answer in allowed {
@@ -703,7 +714,16 @@ fn covering_output(id: &FlowId, lines: &[FileRanges]) -> FlowAnalysisOutput {
                 next: text(),
                 why: text(),
                 annotations: Vec::new(),
-                assessment: None,
+                assessment: Some(contracts::agent::analyse_flow::Assessment {
+                    headline: text(),
+                    risk: contracts::common::RiskBand::Low,
+                    reason: text(),
+                    basis_note: text(),
+                    not_checked: text(),
+                    origin: contracts::common::Origin::Introduced,
+                    blocking: contracts::common::Blocking::NoActionProposed,
+                    smallest_correction: None,
+                }),
             });
         }
     }
@@ -854,7 +874,7 @@ proptest::proptest! {
             .flow_lines
             .iter()
             .zip(&answered)
-            .filter(|(_, answered)| **answered)
+            .filter(|((_, lines), answered)| **answered && !lines.is_empty())
             .map(|((flow, lines), _)| covering_output(flow, lines))
             .collect();
         let mut facts = LineFacts::default();

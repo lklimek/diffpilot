@@ -979,6 +979,17 @@ async fn feedback_reports_calibration_per_value_and_logs_confirmed_operations() 
     sweep(&state.db, &fake.config(), at(3))
         .await
         .expect("sweep");
+    let memories = fake.memories();
+    let correct = memories
+        .values()
+        .find(|memory| memory["value"] == "correct")
+        .expect("correct feedback written");
+    assert_eq!(correct["type"], "review-feedback");
+    assert!(
+        !memories
+            .values()
+            .any(|memory| memory["value"] == "correct" && memory["type"] == "severity-calibration")
+    );
     let entry = post(
         &state,
         analysis,

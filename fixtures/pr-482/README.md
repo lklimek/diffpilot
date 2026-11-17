@@ -18,3 +18,5 @@ wording rules are checked by `crates/contracts/tests/fixtures.rs`.
 The analysis has 5 flows and 17 steps. Steps `f1.1`–`f1.8`, `f2.1`–`f2.2`, `f3.1`–`f3.2`, `f4.1`, `f5.1` are the 14
 steps of `mockup.js`; `f1.9` (client field), `f1.10` (`RetryPolicy`, a new file's lines) and `f5.2` (module tree)
 exist because every changed line must lie in a step. `f1.8` ends at line 109 (the loop's closing braces).
+
+Every agent step carries a risk assessment; `no_action_proposed` avoids invented follow-ups. The `noq` API state deliberately retains older null assessments to exercise the UI fallback for stored analyses.

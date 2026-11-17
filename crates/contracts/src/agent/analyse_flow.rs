@@ -72,7 +72,8 @@ pub struct AgentStep {
     pub why: String,
     /// Annotations anchored to lines inside the step.
     pub annotations: Vec<AgentAnnotation>,
-    /// Assessment, or null unless a production user or operator would notice something.
+    /// Required assessment of the change, including low risk; nullable only when reading older stored output.
+    #[schemars(with = "Assessment")]
     pub assessment: Option<Assessment>,
 }
 
@@ -124,7 +125,7 @@ pub struct Assessment {
     pub not_checked: String,
     /// Introduced by this pull request or pre-existing.
     pub origin: Origin,
-    /// Whether it blocks this pull request or is a follow-up.
+    /// Whether an action is proposed before merge, as a follow-up, or neither.
     pub blocking: Blocking,
     /// The smallest correction, or null.
     pub smallest_correction: Option<String>,

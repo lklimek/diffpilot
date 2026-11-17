@@ -306,7 +306,7 @@ not_checked: string,
  */
 origin: Origin,
 /**
- * Whether it blocks this pull request or is a follow-up.
+ * Whether an action is proposed before merge, as a follow-up, or neither.
  */
 blocking: Blocking,
 /**
@@ -339,7 +339,7 @@ row: QuietRowRef, } | { "block": "pending_review" };
 /**
  * Merge impact of an assessed step.
  */
-export type Blocking = "blocks_this_pr" | "follow_up";
+export type Blocking = "no_action_proposed" | "blocks_this_pr" | "follow_up";
 
 /**
  * Callers and callees of a step symbol.

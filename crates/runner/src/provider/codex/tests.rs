@@ -1082,6 +1082,34 @@ async fn configured_skills(h: &mut Harness) {
 }
 
 #[tokio::test]
+async fn job_logs_skill_names_made_available_to_the_agent() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let sink = Arc::clone(&log);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_ansi(false)
+        .with_writer(move || Captured(Arc::clone(&sink)))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let mut h = harness("plan.jsonl", 0);
+    configured_skills(&mut h).await;
+    run(&h).await.0.unwrap();
+    let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    let line = logged
+        .lines()
+        .find(|line| line.contains("job agent skills available"))
+        .expect("skill log");
+    assert!(
+        line.contains("severity") && line.contains(&h.call.job_id.to_string()),
+        "{line}"
+    );
+    assert!(
+        !line.contains(&h.call.job_dir.display().to_string()),
+        "{line}"
+    );
+}
+
+#[tokio::test]
 async fn allowed_skills_are_copied_into_the_agent_home_with_their_commit() {
     let mut h = harness("plan.jsonl", 0);
     configured_skills(&mut h).await;

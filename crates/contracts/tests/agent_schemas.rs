@@ -114,7 +114,10 @@ fn closed_enums_match_brief() {
         enum_values::<Origin>(),
         ["introduced", "pre_existing", "unclear"]
     );
-    assert_eq!(enum_values::<Blocking>(), ["blocks_this_pr", "follow_up"]);
+    assert_eq!(
+        enum_values::<Blocking>(),
+        ["no_action_proposed", "blocks_this_pr", "follow_up"]
+    );
     assert_eq!(
         enum_values::<RelatedWorkKind>(),
         [
@@ -286,7 +289,7 @@ fn samples() -> Vec<(JobKind, Value)> {
                     {"id": "s2", "title": "Wait", "file": "src/rpc/client.rs", "side": "head", "start_line": 100, "end_line": 103,
                      "symbol": null, "kind": "moved", "moved_from": {"file": "src/rpc/old.rs", "base_start": 1, "base_end": 4},
                      "called_by": "s1", "decides": "Sleeps.", "next": "s1", "why": "Backoff.",
-                     "annotations": [], "assessment": null},
+                     "annotations": [], "assessment": {"headline": "The bounded wait may delay a response.", "risk": "low", "reason": "The wait is confined to a single request.", "basis_note": "Read the wait and callers; nothing executed.", "not_checked": "Runtime timing.", "origin": "introduced", "blocking": "no_action_proposed", "smallest_correction": null}},
                     {"id": "s3", "title": "Single-attempt API removed", "file": "src/rpc/old.rs", "side": "base",
                      "start_line": 1, "end_line": 40, "symbol": "send_once", "kind": "deleted_site", "moved_from": null,
                      "called_by": "mempool before this PR", "decides": "Nothing; removed.", "next": "none",
@@ -295,7 +298,7 @@ fn samples() -> Vec<(JobKind, Value)> {
                                       "was": "send_once sent exactly one request.", "is": "No single-attempt call exists.",
                                       "text": "Callers that cannot tolerate a repeat lose their opt-out.",
                                       "evidence": [{"file": "src/rpc/old.rs", "side": "base", "line": 2}]}],
-                     "assessment": null}
+                     "assessment": {"headline": "The bounded wait may delay a response.", "risk": "low", "reason": "The wait is confined to a single request.", "basis_note": "Read the wait and callers; nothing executed.", "not_checked": "Runtime timing.", "origin": "introduced", "blocking": "no_action_proposed", "smallest_correction": null}}
                 ],
                 "edges": [{"from_step_id": "s1", "to_step_id": "s2", "label": "yes"},
                           {"from_step_id": "s2", "to_step_id": "s1", "label": null}],
@@ -350,7 +353,13 @@ fn mutated_outputs_are_rejected() {
     let (_, flow) = samples().swap_remove(2);
     let validator = validator(JobKind::AnalyseFlow);
     type Mutation = (&'static str, fn(&mut Value));
-    let mutations: [Mutation; 9] = [
+    let mutations: [Mutation; 11] = [
+        ("null assessment", |v| {
+            v["steps"][0]["assessment"] = Value::Null
+        }),
+        ("missing assessment", |v| {
+            v["steps"][0].as_object_mut().unwrap().remove("assessment");
+        }),
         ("unknown side", |v| v["steps"][0]["side"] = json!("left")),
         ("annotation without was", |v| {
             v["steps"][0]["annotations"][0]

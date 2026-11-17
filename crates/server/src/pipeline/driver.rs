@@ -6,7 +6,7 @@ use std::sync::Arc;
 use analysis::diff::FileDiff;
 use analysis::lines::changed_line_count;
 use analysis::prepass::batches::{merge_plans, plan_batches};
-use analysis::verify::{VerifiedPlan, VerifyIssue};
+use analysis::verify::{VerifiedPlan, VerifyIssue, VerifyIssueKind};
 use chrono::{DateTime, Utc};
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::plan::{PlanOutput, PlannedFlow, UnassignedHunk};
@@ -480,68 +480,72 @@ impl Driver<'_> {
                 });
             }
         };
-        self.check_schema(&stage, stage.kind(), &output)?;
-        let issues = match &stage {
-            JobStage::Plan { batch } => {
-                let plan: PlanOutput = self.parse(&stage, output.clone())?;
-                let files = self.batch_files(*batch);
-                match verdict::plan(&plan, &files)? {
-                    Ok(_) => {
-                        self.plan_accepted(*batch, plan).await?;
-                        None
+        let issues = if let Some(issues) = self.check_schema(&stage, stage.kind(), &output)? {
+            Some(issues)
+        } else {
+            match &stage {
+                JobStage::Plan { batch } => {
+                    let plan: PlanOutput = self.parse(&stage, output.clone())?;
+                    let files = self.batch_files(*batch);
+                    match verdict::plan(&plan, &files)? {
+                        Ok(_) => {
+                            self.plan_accepted(*batch, plan).await?;
+                            None
+                        }
+                        Err(issues) => Some(issues),
                     }
-                    Err(issues) => Some(issues),
                 }
-            }
-            JobStage::PrContext => {
-                let context: PrContextOutput = self.parse(&stage, output.clone())?;
-                match verdict::pr_context(Arc::clone(&self.facts), context.clone()).await? {
-                    Ok(()) => {
-                        self.state
-                            .db
-                            .documents()
-                            .put_agent_output(
-                                self.analysis,
-                                DocumentKind::PrContext,
-                                "",
-                                &context,
-                                github_access,
-                                Utc::now(),
-                            )
-                            .await?;
-                        self.results.pr_context = Some(context);
-                        None
+                JobStage::PrContext => {
+                    let context: PrContextOutput = self.parse(&stage, output.clone())?;
+                    match verdict::pr_context(Arc::clone(&self.facts), context.clone()).await? {
+                        Ok(()) => {
+                            self.state
+                                .db
+                                .documents()
+                                .put_agent_output(
+                                    self.analysis,
+                                    DocumentKind::PrContext,
+                                    "",
+                                    &context,
+                                    github_access,
+                                    Utc::now(),
+                                )
+                                .await?;
+                            self.results.pr_context = Some(context);
+                            None
+                        }
+                        Err(issues) => Some(issues),
                     }
-                    Err(issues) => Some(issues),
                 }
-            }
-            JobStage::Flow(id) => {
-                let flow: FlowAnalysisOutput = self.parse(&stage, output.clone())?;
-                let (Some(plan), Some(planned)) = (self.verified_plan.clone(), self.planned(id))
-                else {
-                    return Err(self.invalid(&stage, "the flow is not in the plan"));
-                };
-                let aliases = self.aliases(&plan.output).remove(id).unwrap_or_default();
-                match verdict::flow(
-                    Arc::clone(&self.facts),
-                    plan,
-                    planned,
-                    flow.clone(),
-                    aliases,
-                )
-                .await?
-                {
-                    Ok(_) => {
-                        self.put(DocumentKind::Flow, &id.0, &flow).await?;
-                        self.results.flows.push(flow);
-                        self.ended.insert(id.clone(), FlowEnd::Accepted);
-                        self.set_progress().await?;
-                        None
+                JobStage::Flow(id) => {
+                    let flow: FlowAnalysisOutput = self.parse(&stage, output.clone())?;
+                    let (Some(plan), Some(planned)) =
+                        (self.verified_plan.clone(), self.planned(id))
+                    else {
+                        return Err(self.invalid(&stage, "the flow is not in the plan"));
+                    };
+                    let aliases = self.aliases(&plan.output).remove(id).unwrap_or_default();
+                    match verdict::flow(
+                        Arc::clone(&self.facts),
+                        plan,
+                        planned,
+                        flow.clone(),
+                        aliases,
+                    )
+                    .await?
+                    {
+                        Ok(_) => {
+                            self.put(DocumentKind::Flow, &id.0, &flow).await?;
+                            self.results.flows.push(flow);
+                            self.ended.insert(id.clone(), FlowEnd::Accepted);
+                            self.set_progress().await?;
+                            None
+                        }
+                        Err(issues) => Some(issues),
                     }
-                    Err(issues) => Some(issues),
                 }
+                JobStage::Ask(_) => return Err(self.invalid(&stage, "not a pipeline stage")),
             }
-            JobStage::Ask(_) => return Err(self.invalid(&stage, "not a pipeline stage")),
         };
         let Some(issues) = issues else {
             tracing::debug!(analysis = %self.analysis, stage = %stage.key(), generation, "stage output stored");
@@ -854,13 +858,20 @@ impl Driver<'_> {
         stage: &JobStage,
         kind: JobKind,
         output: &Value,
-    ) -> Result<(), PipelineError> {
+    ) -> Result<Option<Vec<VerifyIssue>>, PipelineError> {
         let schema = agent::output_schema(kind)?;
         let validator = jsonschema::validator_for(&schema)
             .map_err(|error| self.invalid(stage, &format!("schema does not compile: {error}")))?;
         match validator.iter_errors(output).next() {
+            Some(error) if matches!(stage, JobStage::Flow(_)) => Ok(Some(vec![VerifyIssue {
+                kind: VerifyIssueKind::SchemaMismatch,
+                message: format!(
+                    "{}: value does not match the job output schema; include every required field with its declared type",
+                    error.instance_path()
+                ),
+            }])),
             Some(error) => Err(self.invalid(stage, &error.to_string())),
-            None => Ok(()),
+            None => Ok(None),
         }
     }
 

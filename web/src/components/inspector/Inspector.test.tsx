@@ -29,6 +29,14 @@ beforeEach(() => window.localStorage.clear());
 afterEach(() => vi.restoreAllMocks());
 
 describe("Inspector at a step", () => {
+  it("shows a low rating and basis without inventing a follow-up", async () => {
+    render(<Inspector tour={tour} block={atStep("f1.1")} />);
+    await userEvent.click(sectionButton(/^Assessment/));
+    expect(region(/^Assessment/)).toHaveTextContent("LOW");
+    expect(region(/^Assessment/)).toHaveTextContent("no action proposed");
+    expect(region(/^Assessment/)).toHaveTextContent("nothing executed");
+  });
+
   it("shows the eight sections in the order of the brief", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     const names = screen

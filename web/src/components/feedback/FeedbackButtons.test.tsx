@@ -13,6 +13,21 @@ const feedbackOf = (state: (typeof FIXTURE_STATES)[number]) =>
   (seedFor(state, "feedback") ?? []) as Feedback[];
 
 describe("FeedbackButtons", () => {
+  it("explains that correct feedback is stored in MemCan without becoming calibration", () => {
+    render(
+      <FeedbackButtons
+        target={{ target: "step", step_id: "f1.1" }}
+        subject="step"
+        feedback={[]}
+        onSubmit={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "correct" })).toHaveAccessibleDescription(
+      /stored in MemCan as feedback, not as a severity calibration example/,
+    );
+  });
+
   it("offers the five values, each with a tooltip, none pressed without stored feedback", () => {
     render(
       <FeedbackButtons

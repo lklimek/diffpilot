@@ -94,6 +94,13 @@ pub(super) fn flow(
     let changes = Changes::new(context.diff.files());
     let mut issues = Issues::default();
     let flow_id = &context.planned.id;
+    if output.steps.is_empty() {
+        issues.push(
+            VerifyIssueKind::AssessmentMissing,
+            "steps: a flow needs at least one assessed step to supply its risk and basis"
+                .to_owned(),
+        );
+    }
     if &output.flow_id != flow_id {
         let message = format!(
             "flow_id: the output is for {} but this job analyses {flow_id}",
@@ -308,6 +315,10 @@ fn check_step(
             issues.push(VerifyIssueKind::FactWithoutEvidence, message);
         }
         issues.evidence(context.facts, &at, &annotation.evidence);
+    }
+    if step.assessment.is_none() {
+        issues.push(VerifyIssueKind::AssessmentMissing,
+            format!("{at}.assessment is required: rate what this change may break or leave wrong, with a reason and basis, also for low; use blocking no_action_proposed when no action is proposed"));
     }
     if let Some(assessment) = &step.assessment {
         let at = format!("{at}.assessment");
@@ -828,7 +839,16 @@ mod tests {
             next: "send".to_owned(),
             why: "timeouts".to_owned(),
             annotations: Vec::new(),
-            assessment: None,
+            assessment: Some(Assessment {
+                headline: "A response may take longer.".to_owned(),
+                risk: RiskBand::Low,
+                reason: "The wait is bounded to one request.".to_owned(),
+                basis_note: "Read the caller and retry; nothing executed.".to_owned(),
+                not_checked: "Runtime timing.".to_owned(),
+                origin: Origin::Introduced,
+                blocking: Blocking::NoActionProposed,
+                smallest_correction: None,
+            }),
         }
     }
 
@@ -966,6 +986,64 @@ mod tests {
 
     fn kinds(issues: &[VerifyIssue]) -> Vec<VerifyIssueKind> {
         issues.iter().map(|issue| issue.kind).collect()
+    }
+
+    #[test]
+    fn real_flows_with_silent_assessments_are_rejected() {
+        for source in [
+            include_str!("../../../../fixtures/real-regressions/det-1169-flow.json"),
+            include_str!("../../../../fixtures/real-regressions/td-1578-flow.json"),
+        ] {
+            let output: FlowAnalysisOutput = serde_json::from_str(source).unwrap();
+            let mut setup = Setup::new();
+            // Isolate assessment validation: locations are in bounds, with no planned diff to cover.
+            setup.files.clear();
+            setup.plan.flow_lines.clear();
+            setup.aliases.clear();
+            for (side, path) in super::super::flow_files(&output, &[]) {
+                setup.facts.insert(
+                    side,
+                    &path,
+                    FileFacts {
+                        line_count: 2000,
+                        blank_lines: vec![],
+                    },
+                );
+            }
+            let issues = setup.issues(&output);
+            assert_eq!(issues.len(), output.steps.len());
+            assert!(
+                issues
+                    .iter()
+                    .all(|issue| issue.kind.code() == "assessment_missing"),
+                "{issues:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_flow_cannot_lose_its_rating_silently() {
+        let mut output = output();
+        output.steps.clear();
+        assert!(
+            Setup::new()
+                .issues(&output)
+                .iter()
+                .any(|issue| issue.kind == VerifyIssueKind::AssessmentMissing)
+        );
+    }
+
+    #[test]
+    fn every_step_is_rated_without_inventing_an_action_for_low_risk() {
+        let output = output();
+        assert!(output.steps.iter().all(|step| step.assessment.is_some()));
+        assert!(Setup::new().run(&output).is_ok());
+        let mut missing = output;
+        missing.steps[0].assessment = None;
+        assert_eq!(
+            kinds(&Setup::new().issues(&missing)),
+            [VerifyIssueKind::AssessmentMissing]
+        );
     }
 
     #[test]

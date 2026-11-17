@@ -150,6 +150,10 @@ pub enum VerifyIssueKind {
     AgentLimitation,
     /// A risk assessment has no concrete correction or question to resolve.
     AssessmentActionMissing,
+    /// A step has no assessment from which to derive the flow rating.
+    AssessmentMissing,
+    /// A flow output does not match the job schema; the pipeline requests repair before parsing it.
+    SchemaMismatch,
     /// A stacked relationship asserted without a server-supplied deterministic fact.
     UnconfirmedStack,
 }
@@ -180,6 +184,8 @@ impl VerifyIssueKind {
             Self::ImpactInsideDiff => "impact_inside_diff",
             Self::MarkupOrLink => "markup_or_link",
             Self::AgentLimitation => "agent_limitation",
+            Self::SchemaMismatch => "schema_mismatch",
+            Self::AssessmentMissing => "assessment_missing",
             Self::AssessmentActionMissing => "assessment_action_missing",
             Self::UnconfirmedStack => "unconfirmed_stack",
         }

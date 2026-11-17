@@ -192,6 +192,7 @@ impl CodexProvider {
         if let Some(isolation) = &self.settings.isolation {
             isolation.enter(call, &skill_files).await?;
         }
+        tracing::info!(job = %call.job_id, skills = ?call.skills, "job agent skills available");
         let invocation = resume.map_or(Invocation::New, Invocation::Resume);
         let (stream, exit) = self
             .exec(

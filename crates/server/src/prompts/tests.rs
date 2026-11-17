@@ -965,7 +965,7 @@ fn plan_ranks_flows_by_expected_risk_and_bounds_flow_size() {
 }
 
 #[test]
-fn analyse_flow_asks_for_assessments_on_the_riskiest_steps_and_for_questions() {
+fn analyse_flow_requires_assessments_on_every_step_and_asks_for_questions() {
     let prompts = render_all(LlmLanguage::En);
     let (_, prompt) = prompts
         .iter()
@@ -973,7 +973,9 @@ fn analyse_flow_asks_for_assessments_on_the_riskiest_steps_and_for_questions() {
         .expect("flow prompt");
     let (instructions, _) = split(prompt);
     for rule in [
-        "Give `assessment` on the step carrying an identified risk; otherwise null",
+        "Every step requires a non-null `assessment`, including low-risk and context steps",
+        "The flow risk is the highest step band",
+        "use `blocking: no_action_proposed` and `smallest_correction: null`",
         "A severe pre-existing bug that this PR fixes belongs in `introduction.problem_before`",
         "Never split one statement",
         "Do not create steps made only of unchanged context",

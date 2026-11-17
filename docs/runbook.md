@@ -283,7 +283,7 @@ The development host's instance (compose project `smart-review-local`) takes its
 `~/.config/smart-review-local/stack.env` (mode 0600) and the App and MemCan secrets from
 `~/.config/smart-review/secrets.env`; the App key `~/.config/smart-review/github-app.pem` stays readable by the
 host user only, so `deploy/dev/compose.host-uid.yaml` runs the server under that uid (`SR_SERVER_UID`/`_GID` in
-`stack.env`; the data volume was handed to that uid once).
+`stack.env`). Initialize a fresh data volume's ownership before the first server start, as shown below.
 
 ```sh
 cd /data/git-worktrees/home-ubuntu-git-smart-review-wp3-ops   # or any checkout of the same tree
@@ -295,6 +295,16 @@ srl stop               # stop, keeping containers, networks and volumes
 srl start              # start again
 srl logs -f --since 10m server runner
 srl down               # remove containers and networks; volumes (database, Codex credential) stay
+```
+
+For a fresh `server-data` volume, run this once as the host user whose uid/gid are configured in
+`compose.host-uid.yaml`, before starting the server. Docker otherwise creates a root-owned directory and SQLite
+fails with "unable to open database file". This changes only the volume directory's ownership:
+
+```sh
+docker run --rm --network none --user 0:0 \
+  -v smart-review-local_server-data:/var/lib/smart-review ubuntu:26.04 \
+  chown "$(id -u):$(id -g)" /var/lib/smart-review
 ```
 
 Codex login (once per runner-state volume): copy an existing login volume to volume, never from the host
