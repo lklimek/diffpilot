@@ -83,6 +83,7 @@ const DATABASE_FILE: &str = "smart-review.sqlite";
 async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> {
     dotenv_outcome(dotenv)?;
     let config = Config::from_env()?;
+    server::auth::warn_if_public_url_insecure(&config);
     tokio::fs::create_dir_all(&config.data_dir)
         .await
         .map_err(|source| StartError::DataDir {

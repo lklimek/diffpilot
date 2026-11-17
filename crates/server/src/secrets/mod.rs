@@ -2,6 +2,11 @@
 //!
 //! Stored layout: 12-byte random nonce followed by ciphertext and tag. The associated data binds every
 //! ciphertext to its table, column and row id, so a value copied to another row or column fails to decrypt.
+//!
+//! Key: `SR_SECRET_KEY` (ADR-001), read once by `config`, held in a `SecretBox`. No rotation in v1: a replaced
+//! key makes stored values undecryptable; a user token pair then ends its sign-in on next use (the user signs in
+//! again) and an OAuth login in progress fails. Random tokens (session ids, CSRF, OAuth state, PKCE verifier) come
+//! from the OS generator; session ids are stored only as SHA-256; secrets are compared with [`secrets_equal`].
 
 use std::fmt;
 

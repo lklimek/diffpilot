@@ -23,9 +23,10 @@ use axum::extract::{ConnectInfo, FromRequestParts, OptionalFromRequestParts};
 use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue};
-use chrono::{TimeDelta, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use contracts::api::error::ApiErrorCode;
 use db::error::DbError;
+use db::repo::sessions::Liveness;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::config::Config;
@@ -38,14 +39,47 @@ mod tokens;
 
 pub use tokens::{
     UserLock, UserTokenError, end_sign_in, lock_user, store_sign_in_tokens, user_access_token,
+    user_token_rejected,
 };
+pub(crate) use tokens::{end_session, store_sign_in};
 
 /// Lifetime of a session (absolute; the user signs in again afterwards).
 pub const SESSION_TTL: TimeDelta = TimeDelta::days(7);
+/// A session unused for this long ends (idle timeout).
+pub const SESSION_IDLE_TIMEOUT: TimeDelta = TimeDelta::hours(24);
 /// Lifetime of an OAuth login between redirect to GitHub and callback.
 pub const OAUTH_LOGIN_TTL: TimeDelta = TimeDelta::minutes(10);
 /// Header carrying the CSRF token on mutating requests.
 pub const CSRF_HEADER: &str = "x-csrf-token";
+
+/// Which sessions are live at `now`: unexpired, used within [`SESSION_IDLE_TIMEOUT`], and of a user the
+/// session's tenant still allows (a login removed from the allowlist loses access on its next request).
+pub(crate) fn liveness(now: DateTime<Utc>) -> Liveness {
+    Liveness {
+        now,
+        seen_after: now - SESSION_IDLE_TIMEOUT,
+    }
+}
+
+/// Logs a start-up warning when `SR_PUBLIC_URL` is plain HTTP on a host other than localhost: cookies then lack
+/// Secure unless a trusted proxy forwards HTTPS. Returns whether it warned.
+pub fn warn_if_public_url_insecure(config: &Config) -> bool {
+    let url = &config.public_url;
+    let local = match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    let insecure = url.scheme() == "http" && !local;
+    if insecure {
+        tracing::warn!(
+            public_url = %url,
+            "SR_PUBLIC_URL is plain http on a non-local host: session cookies are not Secure unless a trusted proxy forwards https; use an https public URL in production"
+        );
+    }
+    insecure
+}
 
 /// A cookie set by this module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,7 +133,8 @@ impl Cookie {
 }
 
 /// How the browser reached the server: HTTPS when the public URL is https, or when a trusted reverse proxy
-/// (`SR_TRUSTED_PROXIES`) forwarded the request with `X-Forwarded-Proto: https`.
+/// (`SR_TRUSTED_PROXIES`, matched against the TCP peer) forwarded the request with `X-Forwarded-Proto: https`.
+/// No other forwarding header is read; redirect and callback URLs come from `SR_PUBLIC_URL` only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BrowserTransport {
     /// Cookies are Secure and `__Host-` prefixed.
@@ -180,7 +215,11 @@ impl Session {
             return Ok(None);
         };
         let token_hash = sha256(token.as_bytes());
-        let record = state.db.sessions().touch(&token_hash, Utc::now()).await?;
+        let record = state
+            .db
+            .sessions()
+            .touch(&token_hash, liveness(Utc::now()))
+            .await?;
         Ok(record.map(|record| Self {
             user_id: record.user_id,
             tenant_id: record.tenant_id,

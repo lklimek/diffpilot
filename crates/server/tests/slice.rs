@@ -267,7 +267,10 @@ async fn harness() -> Harness {
     let executor = Arc::new(ScriptedExecutor::default());
     let state = AppState::new(config(dir.path(), &github), db, executor.clone());
     let now = Utc::now();
-    // The fixture user `alice` is not in the seeded allowlist: sign her in directly.
+    // The fixture user `alice` is not in the seeded allowlist: allow her and sign her in directly.
+    db::repo::tenants::testing::allow_login(&state.db, DEFAULT_TENANT, "alice", 3001)
+        .await
+        .expect("allowlist");
     let user = state
         .db
         .users()
@@ -906,6 +909,9 @@ async fn other_tenants_analysis_is_not_found() {
     db::repo::analyses::testing::seed_tenant(&h.state.db, "other")
         .await
         .expect("tenant");
+    db::repo::tenants::testing::allow_login(&h.state.db, "other", "alice", 3001)
+        .await
+        .expect("allowlist");
     let now = Utc::now();
     h.state
         .db
