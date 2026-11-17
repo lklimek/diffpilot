@@ -21,6 +21,10 @@ pub struct CreateAnalysisRequest {
 /// An analysis and its state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AnalysisSummary {
+    /// Whole-run progress derived from existing jobs and documents, absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub progress: Option<Box<AnalysisProgress>>,
     /// Whether this reader has saved review state (including explicitly empty state).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -98,6 +102,10 @@ pub enum AnalysisState {
 /// server knows, no estimate.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AnalysisStage {
+    /// Current planning part; present only for a multi-part plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub part: Option<PlanPart>,
     /// What the job does.
     pub kind: StageKind,
     /// The flow analysed (`flow` only); absent when the stored plan does not list it.
@@ -105,6 +113,7 @@ pub struct AnalysisStage {
     #[ts(optional)]
     pub flow: Option<StageFlow>,
     /// When the server handed the job to the runner; null while the job waits for the runner.
+    // TODO: expose preparation separately when the runner protocol has a precise agent-start event.
     pub started_at: Option<DateTime<Utc>>,
 }
 
@@ -136,4 +145,78 @@ pub struct FlowRef {
     pub id: FlowId,
     /// Flow title.
     pub title: String,
+}
+
+/// Position within the fixed plan batches of this run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct PlanPart {
+    /// One-based current part.
+    pub index: u32,
+    /// Total parts, fixed before the first plan job is submitted.
+    pub total: u32,
+}
+
+/// Whole-analysis waiting progress, never review completion or confidence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct AnalysisProgress {
+    /// Start of this run, preserved across parts and server restarts.
+    pub started_at: DateTime<Utc>,
+    /// Plan parts accepted.
+    pub planning: RunStage,
+    /// PR context accepted.
+    pub pr_context: RunStage,
+    /// Flows completed; total unknown until the plan is accepted.
+    pub flows: RunStage,
+    /// Final verification and projection.
+    pub finishing: RunStage,
+    /// Estimated remaining time; null without sufficient observations, or while paused/terminal.
+    pub estimate: Option<AnalysisEstimate>,
+    /// Overall waiting progress, 0..=100; null until a denominator can be estimated or counted.
+    pub percent: Option<u8>,
+}
+
+/// One stage in the short whole-run list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct RunStage {
+    /// Accepted units, not attempts (repairs do not count twice).
+    pub done: u32,
+    /// Unit count; null until known.
+    pub total: Option<u32>,
+    /// Position relative to the currently executing stage.
+    pub state: RunStageState,
+}
+
+/// State of a whole-run stage; pause/failure remain on AnalysisState.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RunStageState {
+    /// Has not started.
+    Pending,
+    /// Current work (possibly paused or failed).
+    Current,
+    /// Completed.
+    Done,
+}
+
+/// A bounded estimate, not a deadline or a guarantee.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct AnalysisEstimate {
+    /// Remaining seconds, never more than seven days.
+    pub remaining_seconds: u32,
+    /// Strongest observation used; before planning ends the flow component is only line-based.
+    pub basis: EstimateBasis,
+    /// True while the flow count is unknown and estimated from changed lines.
+    pub rough: bool,
+}
+
+/// Where waiting-time estimates came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum EstimateBasis {
+    /// Uses completed plan parts or flows of this run, with history for unstarted kinds.
+    ThisAnalysis,
+    /// Uses recent completed runs with known unit counts.
+    RecentRuns,
+    /// Only historical time per changed line; the flow count is not known yet.
+    LinesOnly,
 }

@@ -352,3 +352,40 @@ it("configuration failure asks the administrator and offers no Retry", () => {
   expect(screen.getByText(/Ask the administrator/)).toBeVisible();
   expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
 });
+
+it("shows the plan part without resetting the whole-analysis clock", () => {
+  const at = "2026-11-17T10:00:00Z";
+  render(
+    <AnalysisProgress
+      state={{
+        state: "planning",
+        stage: { kind: "plan", part: { index: 6, total: 23 }, started_at: "2026-11-17T10:35:00Z" },
+      }}
+      progress={{
+        started_at: at,
+        planning: { done: 5, total: 23, state: "current" },
+        pr_context: { done: 0, total: 1, state: "pending" },
+        flows: { done: 0, total: null, state: "pending" },
+        finishing: { done: 0, total: 1, state: "pending" },
+        percent: 12,
+        estimate: { remaining_seconds: 2400, basis: "this_analysis", rough: true },
+      }}
+      activity={{
+        now: Date.parse("2026-11-17T10:40:00Z"),
+        clockOffset: 0,
+        lastSignalAt: Date.parse("2026-11-17T10:40:00Z"),
+        connected: true,
+      }}
+      reviewHref="/review"
+      busy={false}
+      onCancel={() => {}}
+      onRetry={() => {}}
+    />,
+  );
+  expect(screen.getByText("Planning the review, part 6 of 23.")).toBeVisible();
+  expect(screen.getByText(/Analysis started 40 min ago/)).toBeVisible();
+  expect(screen.getByText(/this stage started 5 min ago/)).toBeVisible();
+  expect(screen.getByText(/known after planning/)).toBeVisible();
+  expect(screen.getByText(/About 40 min left.*rough estimate from this analysis/)).toBeVisible();
+  expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "12");
+});

@@ -765,6 +765,11 @@ mod tests {
                 title: "Send an RPC request with retry".to_owned(),
             })
         );
+        let wire = serde_json::to_value(&summary).expect("JSON");
+        assert!(
+            wire["progress"]["planning"].is_object(),
+            "whole-run stages must be present"
+        );
         let started = stage.started_at.expect("started");
         assert!(before <= started && started <= after, "{started}");
         let snapshot = db.analyses().summary(analysis).await.expect("summary");

@@ -103,13 +103,20 @@ not that every tool or profile lookup succeeded.
 | `JobSpec.pull_request_id`; `SessionRef { pull_request_id, thread_id }`; numeric PR keys in `drop_sessions` / `dropped_sessions` | One agent session across every head, language, Retry and Ask of a PR (ADR-004). |
 | Move `agent_thread_id`, `session_state` to `pull_requests`; AUTOINCREMENT PR ids; running-job exclusion per PR | Stable, non-reused archive key; serialize shared-session jobs even with different credentials. Single rewritable migration, no compatibility. |
 | Codex auto-compaction at 400000; archive each successful useful turn | Remove the extra compaction turn and its latency; usage remains the useful turn's delta. |
+## Waiting progress (owner approval, 2026-11-17)
+
+| Addition | Reason |
+|---|---|
+| Optional `AnalysisStage.part {index, total}` | Fixed count of plan batches, including jobs already stored before this change. |
+| Optional `AnalysisSummary.progress` with `started_at`, four stage counters, `percent` and nullable `estimate` | Processing progress and ETA on the waiting screen; never a review score. Derived from existing jobs and documents without a migration or stored-document change. |
+| `AnalysisEstimate {remaining_seconds, basis, rough}`; basis `this_analysis`, `recent_runs`, `lines_only` | Show the source and uncertainty of an estimate; null when history is insufficient. |
 
 ## Consequences
 - The generated TypeScript types and JSON Schemas follow these types; the drift test guards them.
 - Further contract changes still need a change request (ADR-010).
 
 ## Known deviations from the brief
-`docs/design-brief.md` stays unchanged; these statements in it are superseded:
+These remaining statements in `docs/design-brief.md` are superseded:
 
 | Brief statement | Now | Reference |
 |---|---|---|
