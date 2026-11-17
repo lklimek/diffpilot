@@ -1,4 +1,5 @@
 import type {
+  GrammarState,
   HighlighterCore,
   LanguageRegistration,
   ThemeRegistrationRaw,
@@ -15,9 +16,14 @@ export interface Token {
 
 /**
  * Colours the given lines of the file at `path` (brief §7: displayed lines only). Resolves one token list per
- * line, or null when the file has no supported language; rejects when the highlighter cannot load.
+ * line, or null (plain text) when the file has no supported language, the range is over budget or `signal`
+ * aborted; rejects when the highlighter cannot load.
  */
-export type Highlight = (path: string, lines: readonly string[]) => Promise<Token[][] | null>;
+export type Highlight = (
+  path: string,
+  lines: readonly string[],
+  signal?: AbortSignal,
+) => Promise<Token[][] | null>;
 
 /** Languages with a grammar slot; the host supplies one loader per language. */
 export const LANGUAGES = [
@@ -161,6 +167,14 @@ export interface ShikiModules {
 
 /** Lines longer than this stay one plain token (performance; the text is shown in full). */
 export const MAX_TOKENIZED_LINE = 2000;
+/** Ranges with more characters stay plain text without being tokenized (CWE-770). */
+export const MAX_HIGHLIGHT_CHARS = 200_000;
+/** Ranges that produce more tokens stay plain text: bounds tokenizing and the rendered spans (CWE-770). */
+export const MAX_TOKENS = 25_000;
+/** Characters tokenized per synchronous slice; slices yield to the event loop in between. */
+const SLICE_CHARS = 4_000;
+
+const nextTurn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 interface Runtime {
   highlighter: HighlighterCore;
@@ -190,10 +204,11 @@ export function createShikiHighlight(modules: ShikiModules): Highlight {
     };
   };
 
-  return async (path, lines) => {
+  return async (path, lines, signal) => {
     const language = languageOf(path);
     const loader = language && modules.langs[language];
-    if (!language || !loader || lines.length === 0) return null;
+    const chars = lines.reduce((n, line) => n + line.length + 1, 0);
+    if (!language || !loader || lines.length === 0 || chars > MAX_HIGHLIGHT_CHARS) return null;
     runtime ??= start().catch((error: unknown) => {
       runtime = null;
       throw error;
@@ -206,17 +221,36 @@ export function createShikiHighlight(modules: ShikiModules): Highlight {
       grammar.catch(() => grammars.delete(language));
     }
     await grammar;
-    const tokens = highlighter.codeToTokensWithThemes(lines.join("\n"), {
-      lang: language,
-      themes,
-      tokenizeMaxLineLength: MAX_TOKENIZED_LINE,
-    });
-    return tokens.map((line) =>
-      line.map((token) => ({
-        content: token.content,
-        light: readable(token.variants.light?.color, "light"),
-        dark: readable(token.variants.dark?.color, "dark"),
-      })),
-    );
+    const result: Token[][] = [];
+    let count = 0;
+    let state: GrammarState | undefined;
+    for (let start = 0; start < lines.length;) {
+      if (signal?.aborted) return null;
+      let end = start;
+      for (let size = 0; end < lines.length && (end === start || size < SLICE_CHARS); end += 1) {
+        size += lines[end]!.length + 1;
+      }
+      const slice = highlighter.codeToTokensWithThemes(lines.slice(start, end).join("\n"), {
+        lang: language,
+        themes,
+        tokenizeMaxLineLength: MAX_TOKENIZED_LINE,
+        grammarState: state,
+      });
+      state = highlighter.getLastGrammarState(slice);
+      for (const line of slice) {
+        count += line.length;
+        result.push(
+          line.map((token) => ({
+            content: token.content,
+            light: readable(token.variants.light?.color, "light"),
+            dark: readable(token.variants.dark?.color, "dark"),
+          })),
+        );
+      }
+      if (count > MAX_TOKENS) return null;
+      start = end;
+      await nextTurn();
+    }
+    return signal?.aborted ? null : result;
   };
 }

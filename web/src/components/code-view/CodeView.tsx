@@ -240,6 +240,7 @@ function HighlightRun({ rows, annotations, band, selected, line, onSelect }: Hig
   return (
     <Tooltip tip={<WasIs annotations={annotations} />} className="block">
       <div
+        role="mark"
         data-segment
         data-highlight
         data-band={band ?? "none"}

@@ -4,6 +4,8 @@ import { linesFor } from "../../mocks/fixtures";
 import {
   CODE_BACKGROUNDS,
   LANGUAGES,
+  MAX_HIGHLIGHT_CHARS,
+  MAX_TOKENS,
   contrastRatio,
   createShikiHighlight,
   languageOf,
@@ -153,5 +155,81 @@ describe("createShikiHighlight", () => {
       }
     }
     expect(checked).toBeGreaterThan(1000);
+  });
+});
+
+describe("createShikiHighlight budgets (CWE-770)", () => {
+  // Longest stretch without an event-loop turn while `work` runs: a 0 ms timer that re-arms itself.
+  async function longestSlice<T>(work: () => Promise<T>): Promise<[T, number]> {
+    let last = performance.now();
+    let longest = 0;
+    let running = true;
+    const tick = () => {
+      const now = performance.now();
+      longest = Math.max(longest, now - last);
+      last = now;
+      if (running) setTimeout(tick, 0);
+    };
+    setTimeout(tick, 0);
+    const result = await work();
+    running = false;
+    tick();
+    return [result, longest];
+  }
+
+  const warm = async (highlight: ReturnType<typeof createShikiHighlight>) => {
+    await highlight("warm.rs", ["fn a() {}"]);
+  };
+  const pathological = (n: number) => Array.from({ length: n }, () => `${"a+".repeat(999)}a`);
+
+  it("leaves a range over the character budget uncoloured without tokenizing it", async () => {
+    const highlight = createShikiHighlight(modules());
+    await warm(highlight);
+    const lines = pathological(200);
+    expect(lines.join("\n").length).toBeGreaterThan(MAX_HIGHLIGHT_CHARS);
+    const [tokens, slice] = await longestSlice(() => highlight("a.rs", lines));
+    expect(tokens).toBeNull();
+    expect(slice).toBeLessThan(50);
+  });
+
+  it("stops at the token budget in short slices that yield to the event loop", async () => {
+    const highlight = createShikiHighlight(modules());
+    await warm(highlight);
+    const lines = pathological(100);
+    expect(lines.join("\n").length).toBeLessThanOrEqual(MAX_HIGHLIGHT_CHARS);
+    const [tokens, slice] = await longestSlice(() => highlight("a.rs", lines));
+    expect(tokens).toBeNull();
+    expect(slice).toBeLessThan(100);
+  });
+
+  it("colours an ordinary 2000-line range within the budgets in short slices", async () => {
+    const highlight = createShikiHighlight(modules());
+    await warm(highlight);
+    const file = linesFor("default", "src/rpc/client.rs", "head", 1, 224)!.lines;
+    const lines = Array.from({ length: 2000 }, (_, i) => file[i % file.length]!);
+    const [tokens, slice] = await longestSlice(() => highlight("a.rs", lines));
+    expect(tokens!.map(text)).toEqual(lines);
+    expect(tokens!.flat().length).toBeLessThanOrEqual(MAX_TOKENS);
+    expect(slice).toBeLessThan(100);
+  });
+
+  it("keeps the grammar state across slices (a block comment spanning a slice boundary)", async () => {
+    const highlight = createShikiHighlight(modules());
+    const lines = ["/*", ...Array.from({ length: 400 }, () => "x".repeat(60)), "*/", "fn a() {}"];
+    const tokens = (await highlight("a.rs", lines))!;
+    const inComment = tokens[300]![0]!;
+    const fn = tokens.at(-1)!.find((t) => t.content === "fn")!;
+    expect(inComment.light).toBe(tokens[0]![0]!.light);
+    expect(fn.light).not.toBe(inComment.light);
+  });
+
+  it("resolves null when aborted between slices", async () => {
+    const highlight = createShikiHighlight(modules());
+    await warm(highlight);
+    const controller = new AbortController();
+    const file = linesFor("default", "src/rpc/client.rs", "head", 1, 224)!.lines;
+    const pending = highlight("a.rs", [...file, ...file, ...file], controller.signal);
+    controller.abort();
+    expect(await pending).toBeNull();
   });
 });

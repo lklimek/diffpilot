@@ -121,6 +121,14 @@ describe("CodeView", () => {
     for (const segment of segments) expect(segment.className).toMatch(/(^|\s)border-l-5(\s|$)/);
   });
 
+  it("exposes each highlight as a mark described by its was → is text", () => {
+    render(<CodeView {...stepProps("f1.2")} />);
+    const marks = screen.getAllByRole("mark");
+    expect(marks).toHaveLength(1);
+    expect(marks[0]).toHaveAttribute("data-highlight");
+    expect(marks[0]).toHaveAccessibleDescription(/^Was: /);
+  });
+
   it("states only was → is in the hover tooltip of a highlight", async () => {
     const props = stepProps("f1.5");
     render(<CodeView {...props} />);
@@ -319,7 +327,11 @@ describe("CodeView", () => {
       let resolve: (tokens: Token[][]) => void = () => {};
       const highlight = vi.fn<Highlight>(() => new Promise((r) => (resolve = r)));
       render(<CodeView lines={plain(7, ["let a = 1;", "let b = 2;"])} highlight={highlight} />);
-      expect(highlight).toHaveBeenCalledWith("src/a.rs", ["let a = 1;", "let b = 2;"]);
+      expect(highlight).toHaveBeenCalledWith(
+        "src/a.rs",
+        ["let a = 1;", "let b = 2;"],
+        expect.any(AbortSignal),
+      );
       expect(document.querySelector("[data-line='7'] code")).toHaveTextContent("let a = 1;");
       expect(document.querySelector("[data-token]")).toBeNull();
       await act(async () =>
@@ -340,8 +352,47 @@ describe("CodeView", () => {
       const block = { after_line: 7, base_start: 3, lines: ["old();"], total_lines: 1 };
       render(<CodeView lines={plain(7, ["new();"], { deleted: [block] })} highlight={highlight} />);
       expect(highlight).toHaveBeenCalledTimes(2);
-      expect(highlight).toHaveBeenCalledWith("src/a.rs", ["new();"]);
-      expect(highlight).toHaveBeenCalledWith("src/a.rs", ["old();"]);
+      expect(highlight).toHaveBeenCalledWith("src/a.rs", ["new();"], expect.any(AbortSignal));
+      expect(highlight).toHaveBeenCalledWith("src/a.rs", ["old();"], expect.any(AbortSignal));
+    });
+
+    it("drops colours that no longer match the path or highlighter (same lines reference)", async () => {
+      const lines = plain(1, ["let a = 1;"], { path: "src/a.rs" });
+      const colour: Highlight = async (_, l) => l.map((t) => [{ content: t, light: "#111111" }]);
+      const { rerender } = render(<CodeView lines={lines} highlight={colour} />);
+      await act(async () => {});
+      expect(document.querySelector("[data-token]")).not.toBeNull();
+      rerender(<CodeView lines={lines} />);
+      expect(document.querySelector("[data-token]")).toBeNull();
+
+      rerender(<CodeView lines={lines} highlight={colour} />);
+      await act(async () => {});
+      expect(document.querySelector("[data-token]")).not.toBeNull();
+      const unsupported: Highlight = async (path, l) => (path.endsWith(".rs") ? colour(path, l) : null);
+      rerender(
+        <CodeView lines={{ ...lines, path: "LICENSE", lines: lines.lines }} highlight={unsupported} />,
+      );
+      await act(async () => {});
+      expect(document.querySelector("[data-token]")).toBeNull();
+
+      rerender(<CodeView lines={lines} highlight={colour} />);
+      await act(async () => {});
+      expect(document.querySelector("[data-token]")).not.toBeNull();
+      rerender(<CodeView lines={lines} highlight={async () => Promise.reject(new Error("offline"))} />);
+      await act(async () => {});
+      expect(document.querySelector("[data-token]")).toBeNull();
+    });
+
+    it("aborts a running highlight when the lines change", async () => {
+      const signals: AbortSignal[] = [];
+      const highlight: Highlight = (_, __, signal) => {
+        signals.push(signal!);
+        return new Promise(() => {});
+      };
+      const { rerender } = render(<CodeView lines={plain(1, ["a"])} highlight={highlight} />);
+      rerender(<CodeView lines={plain(1, ["b"])} highlight={highlight} />);
+      expect(signals[0]!.aborted).toBe(true);
+      expect(signals.at(-1)!.aborted).toBe(false);
     });
 
     it.each<[string, Highlight]>([

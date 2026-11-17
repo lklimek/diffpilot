@@ -47,6 +47,7 @@ describe("ClassicDiff", () => {
     expect(highlight).toHaveBeenCalledWith(
       "src/rpc/client.rs",
       diff.hunks[0]!.lines.map((l) => l.text),
+      expect.any(AbortSignal),
     );
     expect(document.querySelectorAll("[data-token]")).toHaveLength(3);
   });
