@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use sqlx::{Row, SqlitePool};
 
 use super::Db;
-use super::sessions::{Liveness, live_session, parse_timestamp, timestamp};
+use super::sessions::{
+    Liveness, NewSession, insert_session, live_session, parse_timestamp, timestamp,
+};
 use crate::error::DbError;
 
 /// Access to stored user tokens.
@@ -56,6 +58,32 @@ pub enum PairCondition {
     Absent,
 }
 
+/// Upsert of a sign-in pair; a new row starts at a random version below 2^62, an existing one advances by one.
+fn put_query<'q>(
+    user_id: &'q str,
+    tenant_id: &'q str,
+    tokens: &'q EncryptedTokens,
+    now: DateTime<Utc>,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
+    sqlx::query(
+        "INSERT INTO user_tokens
+             (user_id, tenant_id, access_ct, access_expires_at, refresh_ct, refresh_expires_at, version,
+              updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, random() & 0x3FFFFFFFFFFFFFFF, ?)
+         ON CONFLICT (user_id) DO UPDATE SET tenant_id = excluded.tenant_id,
+             access_ct = excluded.access_ct, access_expires_at = excluded.access_expires_at,
+             refresh_ct = excluded.refresh_ct, refresh_expires_at = excluded.refresh_expires_at,
+             version = user_tokens.version + 1, updated_at = excluded.updated_at",
+    )
+    .bind(user_id)
+    .bind(tenant_id)
+    .bind(&tokens.access_ct)
+    .bind(timestamp(tokens.access_expires_at))
+    .bind(&tokens.refresh_ct)
+    .bind(timestamp(tokens.refresh_expires_at))
+    .bind(timestamp(now))
+}
+
 impl UserTokens<'_> {
     /// Stores the pair of a sign-in, replacing any previous pair (the version still advances; a new row starts
     /// at a random version below 2^62).
@@ -66,25 +94,27 @@ impl UserTokens<'_> {
         tokens: &EncryptedTokens,
         now: DateTime<Utc>,
     ) -> Result<(), DbError> {
-        sqlx::query(
-            "INSERT INTO user_tokens
-                 (user_id, tenant_id, access_ct, access_expires_at, refresh_ct, refresh_expires_at, version,
-                  updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, random() & 0x3FFFFFFFFFFFFFFF, ?)
-             ON CONFLICT (user_id) DO UPDATE SET tenant_id = excluded.tenant_id,
-                 access_ct = excluded.access_ct, access_expires_at = excluded.access_expires_at,
-                 refresh_ct = excluded.refresh_ct, refresh_expires_at = excluded.refresh_expires_at,
-                 version = user_tokens.version + 1, updated_at = excluded.updated_at",
-        )
-        .bind(user_id)
-        .bind(tenant_id)
-        .bind(&tokens.access_ct)
-        .bind(timestamp(tokens.access_expires_at))
-        .bind(&tokens.refresh_ct)
-        .bind(timestamp(tokens.refresh_expires_at))
-        .bind(timestamp(now))
-        .execute(self.pool)
-        .await?;
+        put_query(user_id, tenant_id, tokens, now)
+            .execute(self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Stores a new session and the pair of its sign-in (replacing the previous pair) in one transaction: on
+    /// failure, or when the caller is cancelled before the commit, neither is written.
+    pub async fn put_with_session(
+        &self,
+        tenant_id: &str,
+        tokens: &EncryptedTokens,
+        session: &NewSession<'_>,
+        now: DateTime<Utc>,
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        insert_session(session, now).execute(&mut *tx).await?;
+        put_query(session.user_id, tenant_id, tokens, now)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -247,6 +277,35 @@ impl UserTokens<'_> {
         .execute(self.pool)
         .await?;
         Ok(updated.rows_affected() == 1)
+    }
+}
+
+/// Failure injection for tests (`test-util` feature); never in release builds.
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing {
+    use super::*;
+
+    /// Makes every write of a token pair fail until [`allow_token_writes`].
+    pub async fn fail_token_writes(db: &Db) -> Result<(), DbError> {
+        sqlx::raw_sql(
+            "CREATE TRIGGER fail_token_insert BEFORE INSERT ON user_tokens
+                 BEGIN SELECT RAISE(ABORT, 'injected token write failure'); END;
+             CREATE TRIGGER fail_token_update BEFORE UPDATE ON user_tokens
+                 BEGIN SELECT RAISE(ABORT, 'injected token write failure'); END;",
+        )
+        .execute(&db.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Undoes [`fail_token_writes`].
+    pub async fn allow_token_writes(db: &Db) -> Result<(), DbError> {
+        sqlx::raw_sql(
+            "DROP TRIGGER IF EXISTS fail_token_insert; DROP TRIGGER IF EXISTS fail_token_update;",
+        )
+        .execute(&db.pool)
+        .await?;
+        Ok(())
     }
 }
 
@@ -538,6 +597,49 @@ mod tests {
         assert_eq!(expired.tokens.access_expires_at, now);
         assert_eq!(expired.tokens.refresh_ct, stored.tokens.refresh_ct);
         assert_eq!(expired.version, stored.version + 1);
+    }
+
+    #[tokio::test]
+    async fn sign_in_writes_session_and_pair_in_one_transaction() {
+        let db = db_with_signed_in_user().await;
+        let now = Utc::now();
+        let session = crate::repo::sessions::NewSession {
+            token_hash: b"new",
+            tenant_id: DEFAULT_TENANT,
+            user_id: "u-1",
+            csrf_token: "c",
+            expires_at: now + TimeDelta::hours(1),
+        };
+        testing::fail_token_writes(&db)
+            .await
+            .expect("inject failure");
+        let result = db
+            .user_tokens()
+            .put_with_session(DEFAULT_TENANT, &pair(7), &session, now)
+            .await;
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(
+            session_count(&db).await,
+            1,
+            "the session is rolled back with the pair"
+        );
+        testing::allow_token_writes(&db)
+            .await
+            .expect("remove failure");
+        db.user_tokens()
+            .put_with_session(DEFAULT_TENANT, &pair(7), &session, now)
+            .await
+            .expect("sign-in");
+        assert_eq!(session_count(&db).await, 2);
+        assert_eq!(
+            db.user_tokens()
+                .get("u-1")
+                .await
+                .expect("get")
+                .expect("pair")
+                .tokens,
+            pair(7)
+        );
     }
 
     #[tokio::test]

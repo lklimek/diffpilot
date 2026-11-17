@@ -82,6 +82,25 @@ macro_rules! live_session {
 }
 pub(super) use live_session;
 
+/// Insert of a new session (also used by the sign-in transaction of `tokens`).
+pub(super) fn insert_session<'q>(
+    session: &'q NewSession<'q>,
+    now: DateTime<Utc>,
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
+    let now = timestamp(now);
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, tenant_id, user_id, csrf_token, created_at, last_seen_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(session.token_hash)
+    .bind(session.tenant_id)
+    .bind(session.user_id)
+    .bind(session.csrf_token)
+    .bind(now.clone())
+    .bind(now)
+    .bind(timestamp(session.expires_at))
+}
+
 /// Parses a stored timestamp of `column`.
 pub(super) fn parse_timestamp(text: &str, column: &'static str) -> Result<DateTime<Utc>, DbError> {
     DateTime::parse_from_rfc3339(text)
@@ -96,20 +115,7 @@ impl Sessions<'_> {
         session: &NewSession<'_>,
         now: DateTime<Utc>,
     ) -> Result<(), DbError> {
-        let now = timestamp(now);
-        sqlx::query(
-            "INSERT INTO sessions (token_hash, tenant_id, user_id, csrf_token, created_at, last_seen_at, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(session.token_hash)
-        .bind(session.tenant_id)
-        .bind(session.user_id)
-        .bind(session.csrf_token)
-        .bind(&now)
-        .bind(&now)
-        .bind(timestamp(session.expires_at))
-        .execute(self.pool)
-        .await?;
+        insert_session(session, now).execute(self.pool).await?;
         Ok(())
     }
 

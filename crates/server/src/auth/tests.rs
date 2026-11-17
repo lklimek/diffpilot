@@ -17,6 +17,7 @@ use db::repo::DEFAULT_TENANT;
 use db::repo::Db;
 use db::repo::sessions::NewSession;
 use db::repo::tenants::testing::{allow_login, remove_login};
+use db::repo::tokens::testing::{allow_token_writes, fail_token_writes};
 use db::repo::users::GithubProfile;
 use http_body_util::BodyExt;
 use secrecy::{ExposeSecret, SecretString};
@@ -629,6 +630,28 @@ async fn localhost_development_by_explicit_public_url() {
     assert_eq!(me_login(&h, &cookie).await.as_deref(), Some("lklimek"));
 }
 
+#[test]
+fn plain_http_public_url_warns_unless_local() {
+    let capture = LogCapture::start();
+    for (url, warns) in [
+        ("https://review.example.test", false),
+        ("http://localhost:3000", false),
+        ("http://127.0.0.1:3000", false),
+        ("http://[::1]:3000", false),
+        ("http://review.lan:3000", true),
+        ("http://192.168.1.5:3000", true),
+    ] {
+        let mut config = test_config();
+        config.public_url = Url::parse(url).expect("url");
+        assert_eq!(super::warn_if_public_url_insecure(&config), warns, "{url}");
+    }
+    assert!(
+        capture.text().contains("SR_PUBLIC_URL is plain http"),
+        "{}",
+        capture.text()
+    );
+}
+
 #[tokio::test]
 async fn csrf_required_for_cookie_mutations() {
     let h = harness().await;
@@ -947,6 +970,52 @@ async fn logout_keeps_tokens_until_the_last_session_ends() {
         stored().await.expect("lookup"),
         None,
         "the last session takes the GitHub tokens with it"
+    );
+}
+
+/// A sign-in whose token write fails leaves no session behind, so logging out the only delivered session still
+/// deletes the pair.
+#[tokio::test]
+async fn failed_token_write_leaves_no_session() {
+    let h = harness().await;
+    let delivered = h.sign_in("lklimek", 1001).await;
+    fail_token_writes(&h.state.db)
+        .await
+        .expect("inject failure");
+    let response = h.callback(&h.start_login().await).await;
+    assert_eq!(location(&response), "/?login_error=oauth_failed");
+    assert_eq!(cookie_pair(&response, "__Host-sr_session"), None);
+    allow_token_writes(&h.state.db)
+        .await
+        .expect("remove failure");
+
+    let response = h
+        .send(logout_request(
+            Some(&delivered.cookie),
+            Some(&delivered.csrf),
+            false,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.state
+            .db
+            .user_tokens()
+            .get(&delivered.user_id)
+            .await
+            .expect("lookup"),
+        None,
+        "the pair ends with the last delivered session"
+    );
+    assert_eq!(
+        h.state
+            .db
+            .sessions()
+            .delete_for_user(&delivered.user_id)
+            .await
+            .expect("count"),
+        0,
+        "no undelivered session left"
     );
 }
 

@@ -25,7 +25,7 @@ use url::Url;
 use crate::api::error::ApiFailure;
 use crate::auth::{
     BrowserTransport, Cookie, OAUTH_LOGIN_TTL, SESSION_TTL, Session, SessionCsrf, UserTokenError,
-    end_session, end_sign_in, liveness, lock_user, store_sign_in_tokens,
+    end_session, end_sign_in, liveness, lock_user, store_sign_in,
 };
 use crate::config::Config;
 use crate::github::oauth::{self, OauthError};
@@ -266,26 +266,19 @@ async fn complete_login(
         .users()
         .upsert_member(&tenant_id, &uuid::Uuid::new_v4().to_string(), &profile, now)
         .await?;
-    // Session and tokens are written under the user's lock, never interleaved with a refresh or sign-out; the
-    // session first, so the cleanup of token pairs without sessions never takes the new pair.
+    // Session and tokens are written together under the user's lock, never interleaved with a refresh or
+    // sign-out; a failed write leaves neither.
     let lock = lock_user(&user.id).await;
     let session_token = random_token()?;
     let csrf_token = random_token()?;
-    state
-        .db
-        .sessions()
-        .create(
-            &NewSession {
-                token_hash: &sha256(session_token.as_bytes()),
-                tenant_id: &tenant_id,
-                user_id: &user.id,
-                csrf_token: &csrf_token,
-                expires_at: now + SESSION_TTL,
-            },
-            now,
-        )
-        .await?;
-    store_sign_in_tokens(state, &lock, &tenant_id, &grant, now).await?;
+    let session = NewSession {
+        token_hash: &sha256(session_token.as_bytes()),
+        tenant_id: &tenant_id,
+        user_id: &user.id,
+        csrf_token: &csrf_token,
+        expires_at: now + SESSION_TTL,
+    };
+    store_sign_in(state, &lock, &session, &grant, now).await?;
     drop(lock);
     tracing::info!(login = %user.profile.login, user_id = %user.id, "user signed in");
     Ok(Cookie::Session.set(&session_token, SESSION_TTL, transport.https))

@@ -37,11 +37,11 @@ use crate::state::AppState;
 mod tests;
 mod tokens;
 
-pub(crate) use tokens::end_session;
 pub use tokens::{
     UserLock, UserTokenError, end_sign_in, lock_user, store_sign_in_tokens, user_access_token,
     user_token_rejected,
 };
+pub(crate) use tokens::{end_session, store_sign_in};
 
 /// Lifetime of a session (absolute; the user signs in again afterwards).
 pub const SESSION_TTL: TimeDelta = TimeDelta::days(7);
@@ -59,6 +59,26 @@ pub(crate) fn liveness(now: DateTime<Utc>) -> Liveness {
         now,
         seen_after: now - SESSION_IDLE_TIMEOUT,
     }
+}
+
+/// Logs a start-up warning when `SR_PUBLIC_URL` is plain HTTP on a host other than localhost: cookies then lack
+/// Secure unless a trusted proxy forwards HTTPS. Returns whether it warned.
+pub fn warn_if_public_url_insecure(config: &Config) -> bool {
+    let url = &config.public_url;
+    let local = match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    let insecure = url.scheme() == "http" && !local;
+    if insecure {
+        tracing::warn!(
+            public_url = %url,
+            "SR_PUBLIC_URL is plain http on a non-local host: session cookies are not Secure unless a trusted proxy forwards https; use an https public URL in production"
+        );
+    }
+    insecure
 }
 
 /// A cookie set by this module.

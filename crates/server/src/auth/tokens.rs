@@ -20,6 +20,7 @@ use tracing::Instrument;
 use chrono::{DateTime, TimeDelta, Utc};
 use contracts::api::error::ApiErrorCode;
 use db::error::DbError;
+use db::repo::sessions::NewSession;
 use db::repo::tokens::{EncryptedTokens, PairCondition, StoredTokens};
 use secrecy::{ExposeSecret, SecretString};
 
@@ -156,6 +157,25 @@ pub async fn store_sign_in_tokens(
         .db
         .user_tokens()
         .put(&lock.user_id, tenant_id, &tokens, now)
+        .await?;
+    Ok(())
+}
+
+/// Stores the new session and the token pair of a sign-in for the locked user in one transaction (neither on
+/// failure), replacing the previous pair.
+pub(crate) async fn store_sign_in(
+    state: &AppState,
+    lock: &UserLock,
+    session: &NewSession<'_>,
+    grant: &TokenGrant,
+    now: DateTime<Utc>,
+) -> Result<(), UserTokenError> {
+    let cipher = TokenCipher::new(&state.config.secret_key);
+    let tokens = encrypt(&cipher, &lock.user_id, grant, now)?;
+    state
+        .db
+        .user_tokens()
+        .put_with_session(session.tenant_id, &tokens, session, now)
         .await?;
     Ok(())
 }
