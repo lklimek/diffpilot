@@ -1,5 +1,5 @@
-//! Analysis pipeline orchestration over `JobExecutor` (stage-2 slice: no pre-pass rules, no verification beyond
-//! the output schema, no repair runs, no session resume).
+//! Analysis pipeline orchestration over `JobExecutor` (stage-2 slice: a pre-pass from paths only, no verification
+//! beyond the output schema, no repair runs, no session resume).
 //!
 //! One driver task per analysis. It first prepares the analysis: fetches the base tip and head into the mirror
 //! and stores their merge base as the analysis base (GitHub's three-dot comparison), before any job is submitted
@@ -18,6 +18,7 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 
 use analysis::diff::{self, DiffError, FileDiff};
 use analysis::lines::changed_line_count;
+use analysis::prepass::{self, Prepass, PrepassError};
 use chrono::Utc;
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::plan::PlanOutput;
@@ -41,11 +42,11 @@ use crate::github::mirror::{self, MirrorError};
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::model::{ModelContext, select_model};
+use crate::prompts::{self, JobContext, PromptError};
 use crate::state::AppState;
 
 pub mod ingest;
 pub mod lines;
-pub mod prompt;
 pub mod tour;
 
 /// The LLM credential pipeline jobs run with: the id the runner reports by default (ADR-003: one credential).
@@ -77,6 +78,12 @@ pub enum PipelineError {
     /// The job executor failed.
     #[error("the job executor failed")]
     Executor(#[from] ExecutorError),
+    /// The pre-pass failed.
+    #[error("the pre-pass failed")]
+    Prepass(#[from] PrepassError),
+    /// A prompt could not be rendered.
+    #[error("the prompt could not be rendered")]
+    Prompt(#[from] PromptError),
     /// The output schema of a job kind could not be generated.
     #[error("the output schema could not be generated")]
     Schema(#[from] StrictSchemaError),
@@ -136,6 +143,8 @@ impl PipelineError {
             | Self::DiffTask(_)
             | Self::NotPrepared
             | Self::Executor(_)
+            | Self::Prepass(_)
+            | Self::Prompt(_)
             | Self::Schema(_)
             | Self::NoResult { .. } => (
                 None,
@@ -207,6 +216,7 @@ struct Driver<'a> {
     analysis: AnalysisId,
     summary: AnalysisSummary,
     files: Vec<FileDiff>,
+    prepass: Prepass,
     plan: Option<PlanOutput>,
     paused: bool,
 }
@@ -221,6 +231,8 @@ async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), PipelineErr
     }
     let mirror = prepare(state, &mut summary).await?;
     let files = diff_files(mirror, &summary).await?;
+    // TODO(WP3-PIPE): the full pre-pass (base paths and file texts from the mirror) and its project profile.
+    let prepass = prepass::prepass(&summary.pr.repo, &files, &[], &|_, _| None)?;
     let plan = state
         .db
         .documents()
@@ -231,6 +243,7 @@ async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), PipelineErr
         analysis,
         summary,
         files,
+        prepass,
         plan,
         paused: false,
     };
@@ -363,16 +376,39 @@ impl Driver<'_> {
     ) -> Result<(), PipelineError> {
         let kind = stage.kind();
         let pr = &self.summary.pr;
+        let job = JobContext {
+            pr,
+            language: self.summary.language,
+            sub_agents: prompts::SUB_AGENTS_DEFAULT,
+            prepass: &self.prepass,
+        };
+        let profile = prompts::Profile::default();
         let prompt = match &stage {
-            JobStage::Plan { .. } => prompt::plan(pr, &self.files),
-            JobStage::PrContext => prompt::pr_context(pr),
+            JobStage::Plan { .. } => prompts::plan(&prompts::PlanInput {
+                job,
+                files: &self.files,
+                profile,
+                batch: None,
+            })?,
+            JobStage::PrContext => prompts::pr_context(&prompts::PrContextInput {
+                job,
+                description: None,
+                profile,
+            })?,
             JobStage::Flow(id) => {
                 let planned = self
                     .plan
                     .as_ref()
                     .and_then(|plan| plan.flows.iter().find(|flow| &flow.id == id));
                 match planned {
-                    Some(flow) => prompt::analyse_flow(pr, flow, &self.files),
+                    Some(flow) => prompts::analyse_flow(&prompts::FlowInput {
+                        job,
+                        files: &self.files,
+                        flow,
+                        profile,
+                        threads: &[],
+                        calibration: None,
+                    })?,
                     None => return Err(self.invalid(&stage, "the flow is not in the plan")),
                 }
             }

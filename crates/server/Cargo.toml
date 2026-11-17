@@ -47,6 +47,7 @@ aws-lc-rs.workspace = true
 db = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 http-body-util.workspace = true
+regex.workspace = true
 serde.workspace = true
 tempfile.workspace = true
 tower.workspace = true
