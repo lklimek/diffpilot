@@ -5,9 +5,12 @@ use contracts::api::analyses::AnalysisState;
 use contracts::api::feedback::FeedbackValue;
 use contracts::api::questions::AskState;
 use contracts::common::LlmLanguage;
+use contracts::job::result::JobFailureKind;
 use contracts::job::spec::CredentialKind;
 use contracts::job::state::JobState;
 use serde::Serialize;
+
+use crate::repo::settings::CallFailure;
 
 use super::*;
 
@@ -231,6 +234,29 @@ async fn check_lists_match_contract_enums() {
         (
             "llm_credentials",
             in_list([wire_name(CredentialKind::CodexChatgpt)]),
+        ),
+        (
+            "llm_credentials",
+            in_list(
+                std::iter::once(CallFailure::UsageLimited)
+                    .chain(
+                        [
+                            JobFailureKind::ProviderFailed,
+                            JobFailureKind::OutputNotJson,
+                            JobFailureKind::CredentialUnusable,
+                            JobFailureKind::CheckoutFailed,
+                            JobFailureKind::Timeout,
+                            JobFailureKind::Internal,
+                        ]
+                        .map(CallFailure::Failed),
+                    )
+                    .map(|failure| {
+                        if let CallFailure::Failed(kind) = failure {
+                            assert_eq!(failure.wire(), wire_name(kind));
+                        }
+                        failure.wire().to_owned()
+                    }),
+            ),
         ),
     ];
     for (table, list) in cases {

@@ -117,8 +117,20 @@ pub struct DiffLine {
     pub old_line: Option<u32>,
     /// Line number at the head commit.
     pub new_line: Option<u32>,
-    /// Text without the diff marker.
+    /// Text without the diff marker and line ending.
     pub text: String,
+    /// Line ending when it is not LF: `crlf`, or `no_newline` for a last line without one; null for LF.
+    pub eol: Option<LineEnding>,
+}
+
+/// A line ending other than LF.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum LineEnding {
+    /// CR LF.
+    Crlf,
+    /// The file's last line has no line ending.
+    NoNewline,
 }
 
 /// Kind of a diff line.

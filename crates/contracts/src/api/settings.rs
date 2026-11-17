@@ -15,8 +15,9 @@ pub struct Settings {
     pub llm_status: Option<LlmCallOutcome>,
     /// Language of LLM texts.
     pub language: LlmLanguage,
-    /// GitHub App installations.
-    pub app_installations: Vec<AppInstallation>,
+    /// GitHub App installations the user can access; null = not checked (GitHub could not be reached or the
+    /// user's GitHub sign-in is not usable), never a stand-in for "none installed".
+    pub app_installations: Option<Vec<AppInstallation>>,
     /// The tenant's known repositories (any pull request opened); each one's settings can be opened.
     pub repos: Vec<RepoRef>,
 }

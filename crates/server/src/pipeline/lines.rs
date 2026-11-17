@@ -1,16 +1,17 @@
-//! File content by line range for the lines route (brief §7: never whole files), read only from the pinned base
-//! or head tree of a prepared analysis, with the deterministic gutter facts of the displayed lines: blob reads
-//! here, line arithmetic in `analysis::lines`.
+//! File content by line range for the lines route (brief §7: never whole files) and the classic diff of a range
+//! for the diff route, read only from the pinned base or head tree of a prepared analysis, with the deterministic
+//! gutter facts of the displayed lines: blob reads here, line arithmetic in `analysis::lines`.
 
 use std::path::Path;
 
 use analysis::diff::FileDiff;
 use analysis::lines::{
-    LineWindow, changed_lines_within, deleted_blocks, deletion_markers, line_window, thread_ranges,
+    DiffTexts, DiffTooLarge, LineWindow, changed_lines_within, classic_diff, deleted_blocks,
+    deletion_markers, line_window, thread_ranges,
 };
 use analysis::prepass::Prepass;
 use contracts::api::analyses::AnalysisSummary;
-use contracts::api::code::{CommentScope, DeletedBlock, LinesResponse, RangeQuery};
+use contracts::api::code::{CommentScope, DeletedBlock, DiffResponse, LinesResponse, RangeQuery};
 use contracts::common::LineSide;
 use contracts::ids::CommitSha;
 
@@ -54,6 +55,23 @@ pub async fn ensure_rendered(
         return Err(LinesError::NotRendered);
     }
     Ok(prepass)
+}
+
+/// The classic diff of a range could not be shown.
+#[derive(Debug, thiserror::Error)]
+pub enum DiffReadError {
+    /// The file or the diff could not be read.
+    #[error("the file or the diff could not be read")]
+    Lines(#[from] LinesError),
+    /// More removed or added lines than one response may hold.
+    #[error("the diff of the range is too large")]
+    TooLarge(#[from] DiffTooLarge),
+    /// The file is binary: its change has no lines.
+    #[error("the file is binary")]
+    Binary,
+    /// The diff task did not finish.
+    #[error("the diff task did not finish")]
+    Task(#[source] tokio::task::JoinError),
 }
 
 /// Lines `query.from..=query.to` (clamped to the file) of `query.path` on `query.side` of the analysis, with
@@ -132,4 +150,64 @@ async fn removed_code(
         .await?
         .unwrap_or_default();
     Ok(deleted_blocks(&markers, &base_text, RangeQuery::MAX_LINES))
+}
+
+/// The classic diff of lines `query.from..=query.to` of `query.path` on `query.side`: the hunks overlapping the
+/// range, with context, at most `RangeQuery::MAX_LINES` lines of the other side. The query is validated by the
+/// caller.
+pub async fn diff(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    query: RangeQuery,
+) -> Result<DiffResponse, DiffReadError> {
+    let (mirror, files) = pr_diff(state, summary).await.map_err(LinesError::from)?;
+    let (side_commit, other_commit, other_side) = match query.side {
+        LineSide::Head => (&summary.pr.head_sha, &summary.pr.base_sha, LineSide::Base),
+        LineSide::Base => (&summary.pr.base_sha, &summary.pr.head_sha, LineSide::Head),
+    };
+    let text = read_blob(&mirror, side_commit, &query.path)
+        .await
+        .map_err(LinesError::from)?
+        .ok_or(LinesError::FileNotFound)?;
+    let Some(file) = files
+        .iter()
+        .find(|file| file.path_on(query.side) == Some(query.path.as_str()))
+    else {
+        return Ok(DiffResponse {
+            path: query.path,
+            side: query.side,
+            hunks: Vec::new(),
+        });
+    };
+    // TODO(WP3-PIPE): also refuse file sides the stored pre-pass lists as not rendered (generated), as for lines.
+    if file.binary {
+        return Err(DiffReadError::Binary);
+    }
+    let other = match file.path_on(other_side) {
+        Some(path) => read_blob(&mirror, other_commit, path)
+            .await
+            .map_err(LinesError::from)?
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let (base, head) = match query.side {
+        LineSide::Head => (other, text),
+        LineSide::Base => (text, other),
+    };
+    // Indexing two whole blobs is CPU work: off the async threads, like the diff itself.
+    let (file, side, from, to) = (file.clone(), query.side, query.from, query.to);
+    let hunks = tokio::task::spawn_blocking(move || {
+        let texts = DiffTexts {
+            base: &base,
+            head: &head,
+        };
+        classic_diff(&file, side, texts, from, to, RangeQuery::MAX_LINES)
+    })
+    .await
+    .map_err(DiffReadError::Task)??;
+    Ok(DiffResponse {
+        path: query.path,
+        side: query.side,
+        hunks,
+    })
 }

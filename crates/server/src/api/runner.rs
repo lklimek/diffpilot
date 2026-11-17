@@ -443,6 +443,14 @@ async fn apply_result(
             state = job_state.as_str(),
             "job result recorded"
         );
+        // The provider's raw text (already scrubbed) is for operators: users see a plain sentence by its kind.
+        if let Some(LlmCallOutcome {
+            status: LlmCallStatus::NotWorking { message },
+            ..
+        }) = &result.llm_call
+        {
+            tracing::warn!(job = %auth.job, attempt = result.attempt, %message, "LLM call failed");
+        }
         github_tokens::nudge();
     }
     Ok(())

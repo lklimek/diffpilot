@@ -16,6 +16,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection, SqlitePool};
 
 use crate::error::DbError;
+use crate::repo::settings::CallFailure;
 
 /// Access to the job queue.
 #[derive(Debug)]
@@ -358,12 +359,18 @@ async fn apply_credential_effects(
             LlmCallStatus::Working => None,
             LlmCallStatus::NotWorking { message } => Some(message.as_str()),
         };
+        let failure = match message {
+            Some(_) => CallFailure::of(&result.outcome).map(CallFailure::wire),
+            None => None,
+        };
         sqlx::query(
-            "UPDATE llm_credentials SET last_call_at = ?, last_call_ok = ?, last_call_message = ? WHERE id = ?",
+            "UPDATE llm_credentials SET last_call_at = ?, last_call_ok = ?, last_call_message = ?,
+                 last_call_failure = ? WHERE id = ?",
         )
         .bind(ts(call.at))
         .bind(message.is_none())
         .bind(message)
+        .bind(failure)
         .bind(credential)
         .execute(&mut *tx)
         .await?;

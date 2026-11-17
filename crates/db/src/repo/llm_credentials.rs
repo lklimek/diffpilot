@@ -35,7 +35,7 @@ fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<DateTime<
         .transpose()
 }
 
-fn last_call_from_row(row: &SqliteRow) -> Result<Option<LlmCallOutcome>, DbError> {
+pub(crate) fn last_call_from_row(row: &SqliteRow) -> Result<Option<LlmCallOutcome>, DbError> {
     let Some(at) = optional_ts(row, "last_call_at")? else {
         return Ok(None);
     };
@@ -111,7 +111,8 @@ impl LlmCredentials<'_> {
         };
         updated(
             sqlx::query(
-                "UPDATE llm_credentials SET last_call_at = ?, last_call_ok = ?, last_call_message = ? WHERE id = ?",
+                "UPDATE llm_credentials SET last_call_at = ?, last_call_ok = ?, last_call_message = ?,
+                     last_call_failure = NULL WHERE id = ?",
             )
             .bind(ts(outcome.at))
             .bind(ok)

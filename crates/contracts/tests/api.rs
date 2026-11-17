@@ -600,10 +600,10 @@ fn settings_lists_known_repositories() {
     let settings = Settings {
         llm_status: None,
         language: LlmLanguage::En,
-        app_installations: vec![AppInstallation {
+        app_installations: Some(vec![AppInstallation {
             account: "acme".to_owned(),
             all_repositories: true,
-        }],
+        }]),
         repos: vec![RepoRef {
             owner: "acme".to_owned(),
             name: "node-client".to_owned(),
@@ -620,4 +620,38 @@ fn settings_lists_known_repositories() {
 fn flow_facts_have_no_changed_line_counter() {
     let json = serde_json::to_value(tour()).expect("serialises");
     assert!(json["flows"][0]["facts"].get("changed_lines").is_none());
+}
+
+/// CCR-ST1: installations that could not be checked are null, distinct from an empty list (none installed).
+#[test]
+fn settings_installations_not_checked_is_null_not_empty() {
+    let mut settings = Settings {
+        llm_status: None,
+        language: LlmLanguage::En,
+        app_installations: None,
+        repos: Vec::new(),
+    };
+    let json = serde_json::to_value(&settings).expect("serialises");
+    assert_eq!(json["app_installations"], serde_json::Value::Null);
+    settings.app_installations = Some(Vec::new());
+    let json = serde_json::to_value(&settings).expect("serialises");
+    assert_eq!(json["app_installations"], json!([]));
+}
+
+/// QA-001: a diff line carries its ending when it is not LF.
+#[test]
+fn diff_line_ending_is_null_for_lf_and_named_otherwise() {
+    use contracts::api::code::{DiffLine, DiffLineKind, LineEnding};
+    let line = |eol| DiffLine {
+        kind: DiffLineKind::Removed,
+        old_line: Some(1),
+        new_line: None,
+        text: "x".to_owned(),
+        eol,
+    };
+    let names: Vec<serde_json::Value> = [None, Some(LineEnding::Crlf), Some(LineEnding::NoNewline)]
+        .into_iter()
+        .map(|eol| serde_json::to_value(line(eol)).expect("serialises")["eol"].clone())
+        .collect();
+    assert_eq!(names, [json!(null), json!("crlf"), json!("no_newline")]);
 }

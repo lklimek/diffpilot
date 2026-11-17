@@ -1,5 +1,5 @@
 // Screen scenarios of the msw mocks (Home, progress, Settings), selected with `?scenario=<name>`; orthogonal to
-// the fixture states of fixtures.ts. Settings have no api-seed yet, so their default answer lives here.
+// the fixture states of fixtures.ts. Default settings come from the api-seed; repository settings have none yet.
 import type {
   AnalysisState,
   AnalysisSummary,
@@ -10,18 +10,13 @@ import type {
   Settings,
   Tour,
 } from "../api/generated/types";
-import { seedNow } from "./fixtures";
+import { seedFor, seedNow } from "./fixtures";
 
 /** Head of the fixture PR after it "moved" (scenario `head-moved`). */
 export const MOVED_HEAD = "d41b7a0c8e5f3a2b1c0d9e8f7a6b5c4d3e2f1a0b";
 
-/** Default settings (http-api.md inventory: working, en, 1 repository). */
-export const SETTINGS: Settings = {
-  llm_status: { at: "2026-11-16T09:31:00Z", status: { state: "working" } },
-  language: "en",
-  app_installations: [{ account: "acme", all_repositories: false }],
-  repos: [{ owner: "acme", name: "node-client" }],
-};
+/** Default settings: the api-seed (working, en, 1 installation, 1 repository). */
+export const SETTINGS = seedFor("default", "settings") as Settings;
 
 /** Default read-only settings of acme/node-client. */
 export const REPO_SETTINGS: RepoSettings = {
@@ -136,6 +131,7 @@ const SCENARIOS = {
     analysis: { state: "failed", flow: null, message: "Planning the flows failed." },
   },
   "existing-cancelled": { resolve: withAnalysis({ state: "cancelled" }) },
+  "installations-not-checked": { settings: { ...SETTINGS, app_installations: null } },
   "no-app": {
     resolve: (seed: ResolvePrResponse) => ({ ...seed, commenting_available: false }),
     settings: { ...SETTINGS, app_installations: [] },
@@ -164,7 +160,7 @@ const SCENARIOS = {
       ...SETTINGS,
       llm_status: {
         at: "2026-11-17T08:05:00Z",
-        status: { state: "not_working", message: "Codex usage limit reached. It resets at 14:20." },
+        status: { state: "not_working", message: "The LLM provider's usage limit was reached." },
       },
     },
   },
