@@ -13,12 +13,13 @@ use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
     SessionReport,
 };
-use contracts::job::spec::{JobSpec, LlmCredentialRef};
+use contracts::job::spec::{JobLimits, JobSpec, LlmCredentialRef};
 use tokio::sync::mpsc;
 
 use crate::git;
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
+use crate::sessions::SessionStore;
 
 /// Where `execute` sends a job's normalised events and its ready output, in order, together with the secrets
 /// the receiver holds (job token, runner secret): `execute` scrubs every known secret before it clips text,
@@ -50,7 +51,7 @@ pub struct RunnerDirs {
     pub codex_homes: PathBuf,
     /// Bare mirrors by clone URL.
     pub mirrors: PathBuf,
-    /// Agent-session store per analysis (used from WP3-RUN).
+    /// Agent-session store, one directory per analysis.
     pub sessions: PathBuf,
 }
 
@@ -87,6 +88,11 @@ impl Executor {
     /// The LLM credential the runner holds.
     pub fn credential(&self) -> &LlmCredentialRef {
         &self.credential
+    }
+
+    /// The agent-session store.
+    pub fn sessions(&self) -> SessionStore {
+        SessionStore::new(self.dirs.sessions.clone())
     }
 
     /// The provider, for cancelling a running call.
@@ -149,36 +155,76 @@ impl Executor {
                         .map(|memcan| memcan.token.expose()),
                 ),
         ));
-        // Stage 2 starts a session for every job, seeded with the context pack (ADR-004); a requested
-        // session counts as lost. Resume arrives with WP3-RUN.
-        let prompt = match &spec.context_pack {
-            Some(pack) => format!("{pack}\n\n{}", spec.prompt),
-            None => spec.prompt.clone(),
-        };
-        let session_outcome = match spec.session {
-            Some(_) => SessionOutcome::StartedAfterLoss,
-            None => SessionOutcome::Started,
-        };
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let call = ProviderCall {
             job_id: spec.job_id,
             job_dir: job_dir.to_path_buf(),
             codex_home: codex_home.to_path_buf(),
-            session_dir: self.dirs.sessions.join(spec.analysis_id.to_string()),
-            prompt,
+            session_dir: self.sessions().dir(spec.analysis_id),
+            prompt: spec.prompt.clone(),
             output_schema: spec.output_schema.clone(),
             model: spec.model.clone(),
-            limits: spec.limits,
+            limits: JobLimits {
+                max_runtime_secs: u32::try_from(remaining.as_secs()).unwrap_or(u32::MAX),
+            },
             access: spec.access.clone(),
             skills: spec.skills.clone(),
         };
         let (tx, rx) = mpsc::channel(EVENT_BUFFER);
         let run = async {
-            tokio::time::timeout_at(deadline, self.provider.run(&call, tx))
+            tokio::time::timeout_at(deadline, self.run_session(spec, call, tx))
                 .await
-                .unwrap_or(Err(ProviderError::Timeout))
+                .unwrap_or((Err(ProviderError::Timeout), SessionOutcome::Started))
         };
-        let (outcome, ()) = tokio::join!(run, pump(rx, sink, &scrubber));
+        let ((outcome, session_outcome), ()) = tokio::join!(run, pump(rx, sink, &scrubber));
+        let outcome = match outcome {
+            Ok(mut done) if done.session_id.is_some() && !sink.secrets.is_empty() => {
+                if let Err(error) = self.sessions().scrub(spec.analysis_id, &sink.secrets) {
+                    tracing::warn!(job = %spec.job_id, %error, "cannot scrub the stored agent session; it is discarded");
+                    if let Err(error) = self.sessions().remove(spec.analysis_id) {
+                        tracing::warn!(job = %spec.job_id, %error, "cannot remove an unscrubbed agent session");
+                    }
+                    done.session_id = None;
+                }
+                Ok(done)
+            }
+            other => other,
+        };
         to_result(spec, outcome, session_outcome, &scrubber)
+    }
+
+    /// Resumes the analysis's own session (ADR-004) or starts a new one; a lost session, or one of another
+    /// analysis, starts a new session seeded with the context pack.
+    async fn run_session(
+        &self,
+        spec: &JobSpec,
+        mut call: ProviderCall,
+        events: mpsc::Sender<ProviderEvent>,
+    ) -> (Result<ProviderOutcome, ProviderError>, SessionOutcome) {
+        if let Some(session) = &spec.session {
+            if session.analysis_id == spec.analysis_id {
+                match self
+                    .provider
+                    .resume(&session.thread_id, &call, events.clone())
+                    .await
+                {
+                    Err(ProviderError::SessionUnavailable) => {
+                        tracing::info!(job = %spec.job_id, "the analysis's agent session is unavailable; starting a new one with the context pack");
+                    }
+                    other => return (other, SessionOutcome::Resumed),
+                }
+            } else {
+                tracing::warn!(job = %spec.job_id, "the job names another analysis's session; starting a new one");
+            }
+        }
+        if let Some(pack) = &spec.context_pack {
+            call.prompt = format!("{pack}\n\n{}", spec.prompt);
+        }
+        let outcome = match spec.session {
+            Some(_) => SessionOutcome::StartedAfterLoss,
+            None => SessionOutcome::Started,
+        };
+        (self.provider.run(&call, events).await, outcome)
     }
 
     /// Creates the job directories and checks the repository out; the error is the job's failure.

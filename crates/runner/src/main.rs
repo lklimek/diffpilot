@@ -73,6 +73,7 @@ async fn run() -> Result<(), StartError> {
                     binary: config.codex_bin.clone(),
                     credential: Arc::clone(&credential),
                     egress_proxy: config.egress_proxy.clone(),
+                    term_grace: Timing::v1().term_grace,
                 });
                 (Arc::new(provider), Arc::new(move || credential.usable()))
             }
@@ -100,6 +101,7 @@ async fn run() -> Result<(), StartError> {
         Timing::v1(),
         credential_check,
     )
+    .with_session_retention(config.session_retention)
     .run(shutdown_signal())
     .await;
     tracing::info!("runner stopped");

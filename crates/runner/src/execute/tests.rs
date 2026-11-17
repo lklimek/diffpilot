@@ -39,11 +39,16 @@ enum Behaviour {
     Hang,
     Leak,
     Straddle,
+    /// Succeeds and leaves a session file holding the sink's secret.
+    WriteSession,
 }
 
 struct Stub {
     behaviour: Behaviour,
     seen: Mutex<Option<Seen>>,
+    /// Whether `resume` succeeds; the (thread, prompt) of every resume.
+    resumable: bool,
+    resumed: Mutex<Vec<(String, String)>>,
 }
 
 impl Stub {
@@ -51,6 +56,15 @@ impl Stub {
         Arc::new(Self {
             behaviour,
             seen: Mutex::new(None),
+            resumable: false,
+            resumed: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn resumable() -> Arc<Self> {
+        Arc::new(Self {
+            resumable: true,
+            ..Arc::into_inner(Self::new(Behaviour::Succeed)).unwrap()
         })
     }
 
@@ -102,6 +116,15 @@ impl LlmProvider for Stub {
                     Ok(outcome(json!({"ok": true})))
                 }
                 Behaviour::Fail(error) => Err(error()),
+                Behaviour::WriteSession => {
+                    fs::create_dir_all(&call.session_dir).unwrap();
+                    fs::write(
+                        call.session_dir.join("rollout.jsonl"),
+                        format!("{{\"leak\":\"{SINK_SECRET}\"}}\n"),
+                    )
+                    .unwrap();
+                    Ok(outcome(json!({"ok": true})))
+                }
                 Behaviour::Hang => std::future::pending().await,
                 Behaviour::Straddle => {
                     for secret in [TOKEN_CANARY, SINK_SECRET] {
@@ -137,11 +160,21 @@ impl LlmProvider for Stub {
 
     fn resume<'a>(
         &'a self,
-        _session_id: &'a str,
-        _call: &'a ProviderCall,
+        session_id: &'a str,
+        call: &'a ProviderCall,
         _events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        Box::pin(async { Err(ProviderError::SessionUnavailable) })
+        Box::pin(async move {
+            self.resumed
+                .lock()
+                .unwrap()
+                .push((session_id.to_owned(), call.prompt.clone()));
+            if self.resumable {
+                Ok(outcome(json!({"resumed": true})))
+            } else {
+                Err(ProviderError::SessionUnavailable)
+            }
+        })
     }
 
     fn cancel(&self, _job: contracts::ids::JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
@@ -383,6 +416,74 @@ async fn requested_session_counts_as_lost_and_the_context_pack_seeds_the_new_one
             thread_id: "thread-1".to_owned(),
             outcome: SessionOutcome::StartedAfterLoss
         })
+    );
+}
+
+#[tokio::test]
+async fn own_session_is_resumed_without_the_context_pack() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::resumable();
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.session = Some(SessionRef {
+        analysis_id: spec.analysis_id,
+        thread_id: "thread-1".to_owned(),
+    });
+    spec.context_pack = Some("CONTEXT PACK".to_owned());
+    let prompt = spec.prompt.clone();
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert_eq!(
+        *stub.resumed.lock().unwrap(),
+        [("thread-1".to_owned(), prompt)]
+    );
+    assert!(stub.seen.lock().unwrap().is_none(), "no new session");
+    assert_eq!(
+        result.session,
+        Some(SessionReport {
+            thread_id: "thread-1".to_owned(),
+            outcome: SessionOutcome::Resumed
+        })
+    );
+}
+
+#[tokio::test]
+async fn session_of_another_analysis_is_never_resumed() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::resumable();
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = spec(JobKind::Plan, shared_repo());
+    spec.session = Some(SessionRef {
+        analysis_id: contracts::ids::AnalysisId::new_random(),
+        thread_id: "thread-of-another-analysis".to_owned(),
+    });
+    spec.context_pack = Some("CONTEXT PACK".to_owned());
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(stub.resumed.lock().unwrap().is_empty());
+    assert!(stub.seen().prompt.starts_with("CONTEXT PACK\n\n"));
+    assert_eq!(
+        result.session.map(|s| s.outcome),
+        Some(SessionOutcome::StartedAfterLoss)
+    );
+}
+
+#[tokio::test]
+async fn stored_session_is_scrubbed_of_the_sink_secrets() {
+    let root = TempDir::new().unwrap();
+    let executor = Executor::new(
+        Stub::new(Behaviour::WriteSession),
+        dirs(root.path()),
+        credential(),
+    );
+    let spec = spec(JobKind::Plan, shared_repo());
+    let stored = executor
+        .sessions()
+        .dir(spec.analysis_id)
+        .join("rollout.jsonl");
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(result.session.is_some());
+    assert_eq!(
+        fs::read_to_string(stored).unwrap(),
+        "{\"leak\":\"[redacted]\"}\n"
     );
 }
 

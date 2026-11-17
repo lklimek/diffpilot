@@ -288,6 +288,8 @@ impl<'a> JobCredential<'a> {
         let base = sha256(&original);
         replace_private(&base_file(codex_home), hex(&base).as_bytes())?;
         let copy = codex_home.join(AUTH_FILE);
+        // A copy from an earlier call of the same job (a resume that fell back to a new session) is settled.
+        remove_file(&copy);
         write_new_private(&copy, &original)?;
         let mut scrubber = known;
         scrubber.extend(tokens.iter().map(String::as_str));
@@ -333,6 +335,20 @@ impl<'a> JobCredential<'a> {
         }
         self.scrubber.extend(tokens.iter().map(String::as_str));
         true
+    }
+
+    /// Re-reads the copy so that a rotation since the last activity joins the scrubber; false when the copy
+    /// cannot be read safely (its tokens may then be unknown).
+    pub(crate) fn rescan(&mut self) -> bool {
+        match read_regular(&self.copy) {
+            Ok(current) => {
+                if let Some((tokens, _)) = parse(&current) {
+                    self.scrubber.extend(tokens.iter().map(String::as_str));
+                }
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Ends the job's use of the copy (once, after the agent exited): writes a refreshed copy back

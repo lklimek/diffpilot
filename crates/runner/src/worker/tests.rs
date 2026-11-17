@@ -527,6 +527,9 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
         dirs(root.path()),
         credential(),
     ));
+    let stored = executor.sessions().dir(analysis);
+    std::fs::create_dir_all(stored.join("2026/11/16")).unwrap();
+    std::fs::write(stored.join("2026/11/16/rollout-x.jsonl"), "{}\n").unwrap();
     let client = ServerClient::new(
         &server.uri(),
         Secret::new(RUNNER_SECRET),
@@ -542,6 +545,7 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
         Arc::new(|| true),
     );
     assert_eq!(worker.poll_once().await.unwrap(), None);
+    assert!(!stored.exists(), "the dropped session's files are deleted");
     assert_eq!(worker.poll_once().await.unwrap(), None);
     let claims = server.received_requests().await.unwrap();
     assert!(body::<ClaimRequest>(&claims[0]).dropped_sessions.is_empty());

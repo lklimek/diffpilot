@@ -1,11 +1,15 @@
-//! The Codex CLI provider: `codex exec --json --output-schema` in the job directory with a per-job
-//! `CODEX_HOME` and a constructed environment (S1a, S1b, S6 env contract, threat model T2/T5).
+//! The Codex CLI provider: `codex exec --json --output-schema` (new session) or `codex exec resume` (the
+//! analysis's session) in the job directory with a per-job `CODEX_HOME` and a constructed environment (S1a,
+//! S1b, S6 env contract, threat model T2/T5), ending every successful call with a compaction turn (ADR-004).
 //!
-//! Codex runs as the leader of its own process group; the group is killed when the call ends, is cancelled
-//! (SIGTERM) or dropped, so agent commands left in the background do not outlive the attempt. The credential
-//! copy is written back with compare-and-swap after Codex exited ([`credential`], T13).
+//! Codex runs as the leader of its own process group; the group is killed when a turn ends, is cancelled
+//! (SIGTERM, SIGKILL after the grace) or dropped, so agent commands left in the background do not outlive it.
+//! The credential copy is written back with compare-and-swap after Codex exited ([`credential`], T13); the
+//! session's rollout is copied in before a resume and back after the job ([`session`], T8).
 
+mod config;
 mod credential;
+mod session;
 mod stream;
 
 use std::collections::HashMap;
@@ -19,14 +23,14 @@ use chrono::Utc;
 use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
 use contracts::job::result::Usage;
-use contracts::job::spec::{ModelChoice, ReasoningEffort};
 use futures::future::BoxFuture;
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
+use tokio::time::{Duration, Instant, timeout};
 
+use config::Purpose;
 pub use credential::CodexCredential;
 use credential::JobCredential;
 pub(crate) use stream::{CodexStream, Exit, usage_delta};
@@ -49,6 +53,14 @@ const STDERR_TAIL_BYTES: usize = 4096;
 const EXIT_POLL: Duration = Duration::from_millis(50);
 /// How long stdout may stay open after Codex exited and its group was killed.
 const DRAIN_AFTER_EXIT: Duration = Duration::from_secs(2);
+/// Context size that makes the compaction turn compact before it answers (S1b finding 3, S7).
+const COMPACTION_TOKEN_LIMIT: u32 = 1000;
+/// The compaction turn's prompt; its answer is discarded.
+const COMPACTION_PROMPT: &str = "Reply with OK.";
+/// Time kept free at the end of the runtime cap for stopping Codex and copying files back.
+const END_MARGIN: Duration = Duration::from_secs(15);
+/// Shortest time worth starting a compaction turn with.
+const MIN_COMPACTION: Duration = Duration::from_secs(30);
 
 /// Where the Codex provider finds its binary, credential and egress proxy.
 #[derive(Clone, Debug)]
@@ -59,16 +71,36 @@ pub struct CodexSettings {
     pub credential: Arc<CodexCredential>,
     /// Explicit egress proxy URL for the agent (`http://egress-proxy:3128`), if any.
     pub egress_proxy: Option<String>,
+    /// How long Codex may take to stop after SIGTERM before its group is killed.
+    pub term_grace: Duration,
 }
 
-/// Process groups of running calls, by job.
-type Running = Arc<Mutex<HashMap<JobId, Pid>>>;
+/// A running call: its current process group and when it was asked to stop.
+#[derive(Debug, Default)]
+struct RunningCall {
+    group: Option<Pid>,
+    cancelled_at: Option<Instant>,
+}
+
+/// Running calls, by job.
+type Running = Arc<Mutex<HashMap<JobId, RunningCall>>>;
 
 /// Runs agent calls with the Codex CLI.
 #[derive(Debug)]
 pub struct CodexProvider {
     settings: CodexSettings,
     running: Running,
+}
+
+/// Which `codex exec` invocation.
+#[derive(Clone, Copy, Debug)]
+enum Invocation<'a> {
+    /// A new session.
+    New,
+    /// The job turn in the analysis's session.
+    Resume(&'a str),
+    /// The compaction turn after the job turn.
+    Compaction(&'a str),
 }
 
 impl CodexProvider {
@@ -80,11 +112,16 @@ impl CodexProvider {
         }
     }
 
-    async fn run_call(
+    /// One agent call: the job turn (new or resumed session), the ready output, compaction, session copy-back.
+    async fn call(
         &self,
+        resume: Option<&str>,
         call: &ProviderCall,
         events: &mpsc::Sender<ProviderEvent>,
     ) -> Result<ProviderOutcome, ProviderError> {
+        let deadline =
+            Instant::now() + Duration::from_secs(u64::from(call.limits.max_runtime_secs));
+        let _registration = Registration::new(&self.running, call.job_id);
         let known = Scrubber::new(
             call.access
                 .github
@@ -104,57 +141,190 @@ impl CodexProvider {
             call.job_id,
             known,
         )?;
+        let before = match resume {
+            Some(thread) => session::restore(&call.session_dir, thread, &call.codex_home)?,
+            None => Usage::default(),
+        };
         self.prepare(call).await?;
-        let result = self.exec(call, &mut credential, events).await;
-        if !credential.settle(matches!(result, Err(ProviderError::CredentialUnusable))) {
-            // Rotated tokens may be missing from the scrubber: no agent text leaves.
+        let invocation = resume.map_or(Invocation::New, Invocation::Resume);
+        let (stream, exit) = self
+            .exec(
+                call,
+                invocation,
+                &call.prompt,
+                &mut credential,
+                Some(events),
+            )
+            .await?;
+        let started = stream.thread_id().is_some();
+        let thread = stream.thread_id().or(resume).map(str::to_owned);
+        let result = match stream.finish(exit) {
+            _ if self.cancel_requested(call.job_id) => Err(ProviderError::Cancelled),
+            Err(ProviderError::UsageLimit { .. }) => Err(ProviderError::UsageLimit {
+                resets_at: thread
+                    .as_deref()
+                    .and_then(|thread| session::usage_limit_resets_at(&call.codex_home, thread)),
+            }),
+            Err(
+                ProviderError::Failed { .. }
+                | ProviderError::SchemaRejected { .. }
+                | ProviderError::OutputNotJson,
+            ) if resume.is_some() && !started => {
+                tracing::warn!(job = %call.job_id, "Codex could not resume the analysis's session");
+                Err(ProviderError::SessionUnavailable)
+            }
+            other => other,
+        };
+        let finished = match result {
+            Ok(finished) => finished,
+            Err(error) => {
+                let refresh_failed = matches!(error, ProviderError::CredentialUnusable);
+                if !credential.settle(refresh_failed) {
+                    // Rotated tokens may be missing from the scrubber: no agent text leaves.
+                    return Err(ProviderError::CredentialUnusable);
+                }
+                return Err(scrub_error(error, credential.scrubber()));
+            }
+        };
+        if !credential.rescan() {
+            credential.settle(false);
             return Err(ProviderError::CredentialUnusable);
         }
-        let scrubber = credential.scrubber();
-        let finished = result.map_err(|error| scrub_error(error, scrubber))?;
-        let output = scrubber.value(finished.output);
+        let output = credential.scrubber().value(finished.output);
         // Execute may have stopped listening (job fenced); the outcome still carries the output.
         let _ = events
             .send(ProviderEvent::OutputReady(output.clone()))
             .await;
+        let compacted = match thread.as_deref().filter(|thread| session::valid_thread_id(thread)) {
+            Some(thread) => self
+                .compact(call, thread, &mut credential, deadline)
+                .await
+                .map_err(|error| {
+                    tracing::warn!(job = %call.job_id, %error, "the compaction turn failed; the session counts as lost");
+                })
+                .ok(),
+            None => None,
+        };
+        let certain = credential.settle(false);
+        let session_id = match (compacted, &thread) {
+            (Some(_), Some(thread)) if certain => {
+                match session::save(
+                    &call.codex_home,
+                    thread,
+                    &call.session_dir,
+                    credential.scrubber(),
+                ) {
+                    Ok(()) => Some(thread.clone()),
+                    Err(error) => {
+                        tracing::warn!(job = %call.job_id, %error, "the agent session could not be stored; the next job starts a new one");
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        if session_id.is_none() {
+            session::forget(&call.session_dir);
+        }
         Ok(ProviderOutcome {
             output,
-            session_id: finished.thread_id,
-            // A new thread starts at zero, so its cumulative total is this call's usage.
-            usage: usage_delta(Usage::default(), finished.cumulative_usage),
+            session_id,
+            usage: usage_delta(before, compacted.unwrap_or(finished.cumulative_usage)),
             skills_commit: None,
         })
     }
 
-    /// Writes the lean config and output schema into the per-job `CODEX_HOME` and creates the agent's home and
-    /// temp directories inside the job directory.
-    async fn prepare(&self, call: &ProviderCall) -> Result<(), ProviderError> {
-        write_private(
-            &call.codex_home.join(CONFIG_FILE),
-            config_toml(&call.model).as_bytes(),
+    /// The compaction turn (ADR-004): a resume with a tiny auto-compact limit and a trivial prompt, under a
+    /// regenerated config (T1d), within the call's runtime cap. Returns the thread's cumulative usage after it.
+    async fn compact(
+        &self,
+        call: &ProviderCall,
+        thread: &str,
+        credential: &mut JobCredential<'_>,
+        deadline: Instant,
+    ) -> Result<Usage, ProviderError> {
+        if self.cancel_requested(call.job_id) {
+            return Err(ProviderError::Cancelled);
+        }
+        let budget = deadline
+            .checked_duration_since(Instant::now())
+            .and_then(|left| left.checked_sub(END_MARGIN))
+            .filter(|budget| *budget >= MIN_COMPACTION)
+            .ok_or(ProviderError::Timeout)?;
+        self.write_config(call, Purpose::Compaction)?;
+        let (stream, exit) = timeout(
+            budget,
+            self.exec(
+                call,
+                Invocation::Compaction(thread),
+                COMPACTION_PROMPT,
+                credential,
+                None,
+            ),
         )
-        .await?;
+        .await
+        .map_err(|_| ProviderError::Timeout)??;
+        stream.finish_turn(exit)
+    }
+
+    fn cancel_requested(&self, job: JobId) -> bool {
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&job)
+            .is_some_and(|running| running.cancelled_at.is_some())
+    }
+
+    /// Writes the config and output schema into the per-job `CODEX_HOME` and creates the agent's home and temp
+    /// directories inside the job directory.
+    async fn prepare(&self, call: &ProviderCall) -> Result<(), ProviderError> {
+        self.write_config(call, Purpose::Job)?;
         let schema = serde_json::to_vec(&call.output_schema).map_err(io::Error::other)?;
-        write_private(&call.codex_home.join(SCHEMA_FILE), &schema).await?;
+        replace_private(&call.codex_home.join(SCHEMA_FILE), &schema)?;
         for dir in [agent_home(&call.job_dir), agent_tmp(&call.job_dir)] {
-            create_private_dir(&dir).await?;
+            match create_private_dir(&dir).await {
+                Err(error) if error.kind() != io::ErrorKind::AlreadyExists => {
+                    return Err(error.into());
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
 
+    /// (Re)generates `config.toml`, replacing whatever the agent may have left there.
+    fn write_config(&self, call: &ProviderCall, purpose: Purpose) -> io::Result<()> {
+        replace_private(
+            &call.codex_home.join(CONFIG_FILE),
+            config::config_toml(&call.model, purpose).as_bytes(),
+        )
+    }
+
     /// The `codex exec` command: fixed flags and paths only (no secret, no prompt in argv), cwd = job dir
     /// above the checkout (T5), environment built from scratch (T2), its own process group.
-    fn command(&self, call: &ProviderCall) -> Command {
+    fn command(&self, call: &ProviderCall, invocation: Invocation<'_>) -> Command {
         let mut command = Command::new(&self.settings.binary);
+        command.arg("exec");
+        if let Invocation::Resume(_) | Invocation::Compaction(_) = invocation {
+            command.arg("resume");
+        }
+        command.args(["--json", "--skip-git-repo-check", "--ignore-rules"]);
+        match invocation {
+            Invocation::New | Invocation::Resume(_) => {
+                command
+                    .arg("--output-schema")
+                    .arg(call.codex_home.join(SCHEMA_FILE));
+            }
+            Invocation::Compaction(_) => {
+                command.arg("-c").arg(format!(
+                    "model_auto_compact_token_limit={COMPACTION_TOKEN_LIMIT}"
+                ));
+            }
+        }
+        if let Invocation::Resume(thread) | Invocation::Compaction(thread) = invocation {
+            command.arg(thread);
+        }
         command
-            .args([
-                "exec",
-                "--json",
-                "--skip-git-repo-check",
-                "--ignore-rules",
-                "--output-schema",
-            ])
-            .arg(call.codex_home.join(SCHEMA_FILE))
             .arg("-")
             .current_dir(&call.job_dir)
             .env_clear()
@@ -167,19 +337,22 @@ impl CodexProvider {
         command
     }
 
+    /// Runs one Codex invocation to its exit; `events` gets its activities (none for compaction).
     async fn exec(
         &self,
         call: &ProviderCall,
+        invocation: Invocation<'_>,
+        prompt: &str,
         credential: &mut JobCredential<'_>,
-        events: &mpsc::Sender<ProviderEvent>,
-    ) -> Result<stream::Finished, ProviderError> {
-        let mut child = self.command(call).spawn().map_err(|error| {
+        events: Option<&mpsc::Sender<ProviderEvent>>,
+    ) -> Result<(CodexStream, Exit), ProviderError> {
+        let mut child = self.command(call, invocation).spawn().map_err(|error| {
             tracing::error!(binary = %self.settings.binary.display(), %error, "cannot start Codex; check SR_RUNNER_CODEX_BIN");
             ProviderError::Io(error)
         })?;
         let mut group = ProcessGroup::register(&self.running, call.job_id, child.id());
         let stdin = child.stdin.take().map(|mut stdin| {
-            let prompt = call.prompt.clone();
+            let prompt = prompt.to_owned();
             tokio::spawn(async move {
                 // A Codex that exits early closes stdin; its exit status tells why.
                 let _ = stdin.write_all(prompt.as_bytes()).await;
@@ -202,6 +375,7 @@ impl CodexProvider {
             &mut parsed,
             credential,
             events,
+            self.settings.term_grace,
         )
         .await?;
         drop(group);
@@ -223,7 +397,7 @@ impl CodexProvider {
                 "Codex printed lines that are not JSON events or exceed the line cap; they were skipped"
             );
         }
-        parsed.finish(exit_of(status))
+        Ok((parsed, exit_of(status)))
     }
 }
 
@@ -233,26 +407,31 @@ impl LlmProvider for CodexProvider {
         call: &'a ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        Box::pin(async move { self.run_call(call, &events).await })
+        Box::pin(async move { self.call(None, call, &events).await })
     }
 
     fn resume<'a>(
         &'a self,
-        _session_id: &'a str,
-        _call: &'a ProviderCall,
-        _events: mpsc::Sender<ProviderEvent>,
+        session_id: &'a str,
+        call: &'a ProviderCall,
+        events: mpsc::Sender<ProviderEvent>,
     ) -> BoxFuture<'a, Result<ProviderOutcome, ProviderError>> {
-        // Session resume arrives with WP3-RUN; the caller starts a new session with the context pack.
-        Box::pin(async { Err(ProviderError::SessionUnavailable) })
+        Box::pin(async move { self.call(Some(session_id), call, &events).await })
     }
 
-    /// SIGTERM to the call's process group; Codex then exits with 143 and the call ends as cancelled.
+    /// SIGTERM to the call's process group; Codex then exits with 143 and the call ends as cancelled. A Codex
+    /// still running after the grace is killed; a compaction turn is not started after a cancel.
     fn cancel(&self, job: JobId) -> BoxFuture<'_, Result<(), ProviderError>> {
         // Signalled under the lock that unregisters the group before its leader is reaped, so the id is ours.
-        let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
-        let result = match running.get(&job) {
-            Some(pid) => {
-                signal_group(*pid, Signal::TERM).map_err(|error| ProviderError::Io(error.into()))
+        let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
+        let result = match running.get_mut(&job) {
+            Some(call) => {
+                call.cancelled_at.get_or_insert_with(Instant::now);
+                match call.group {
+                    Some(pid) => signal_group(pid, Signal::TERM)
+                        .map_err(|error| ProviderError::Io(error.into())),
+                    None => Ok(()),
+                }
             }
             None => Ok(()),
         };
@@ -261,9 +440,37 @@ impl LlmProvider for CodexProvider {
     }
 }
 
-/// The process group of a running call, registered for `cancel`. Signalled only while its leader is not
-/// reaped (a zombie leader keeps the id reserved): [`ProcessGroup::kill_and_disarm`] before reaping, SIGKILL on
-/// drop while still armed.
+/// Registers a call as running for `cancel`; unregisters it when the call ends or is dropped.
+struct Registration {
+    running: Running,
+    job: JobId,
+}
+
+impl Registration {
+    fn new(running: &Running, job: JobId) -> Self {
+        running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(job, RunningCall::default());
+        Self {
+            running: Arc::clone(running),
+            job,
+        }
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.job);
+    }
+}
+
+/// The process group of a running Codex invocation, registered for `cancel`. Signalled only while its leader
+/// is not reaped (a zombie leader keeps the id reserved): [`ProcessGroup::kill_and_disarm`] before reaping,
+/// SIGKILL on drop while still armed.
 struct ProcessGroup {
     running: Running,
     job: JobId,
@@ -279,7 +486,9 @@ impl ProcessGroup {
             running
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .insert(job, pid);
+                .entry(job)
+                .or_default()
+                .group = Some(pid);
         }
         Self {
             running: Arc::clone(running),
@@ -298,6 +507,16 @@ impl ProcessGroup {
         !matches!(waitid(WaitId::Pid(pid), options), Ok(None))
     }
 
+    /// Whether a cancel was requested longer than `grace` ago.
+    fn grace_over(&self, grace: Duration) -> bool {
+        self.running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&self.job)
+            .and_then(|call| call.cancelled_at)
+            .is_some_and(|at| at.elapsed() >= grace)
+    }
+
     /// SIGKILL to every process left in the group, then unregister; call before reaping the leader.
     fn kill_and_disarm(&mut self) {
         let mut running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
@@ -306,7 +525,9 @@ impl ProcessGroup {
         {
             tracing::warn!(job = %self.job, %error, "cannot kill the agent's process group");
         }
-        running.remove(&self.job);
+        if let Some(call) = running.get_mut(&self.job) {
+            call.group = None;
+        }
     }
 }
 
@@ -368,71 +589,25 @@ fn agent_tmp(job_dir: &Path) -> PathBuf {
     job_dir.join("tmp")
 }
 
-/// The lean per-job config (S1a, ADR-002): sandbox off (T1–T4 compensate), no project docs, no hooks, no
-/// plugins or analytics, no sub-agents, no bundled skills.
-pub(crate) fn config_toml(model: &ModelChoice) -> String {
-    let effort = match model.reasoning_effort {
-        ReasoningEffort::Low => "low",
-        ReasoningEffort::Medium => "medium",
-        ReasoningEffort::High => "high",
-    };
-    format!(
-        r#"model = {model}
-model_reasoning_effort = "{effort}"
-sandbox_mode = "danger-full-access"
-approval_policy = "never"
-project_doc_max_bytes = 0
-
-[analytics]
-enabled = false
-
-[skills.bundled]
-enabled = false
-
-[features]
-plugins = false
-apps = false
-remote_plugin = false
-plugin_discovery_prefetch = false
-image_generation = false
-browser_use = false
-computer_use = false
-hooks = false
-tool_suggest = false
-goals = false
-daemon_auto_start = false
-multi_agent = false
-"#,
-        model = toml_string(&model.model),
-    )
-}
-
-/// A TOML basic string.
-fn toml_string(value: &str) -> String {
-    let mut out = String::with_capacity(value.len() + 2);
-    out.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            ch if ch.is_control() => out.push_str(&format!("\\u{:04X}", u32::from(ch))),
-            ch => out.push(ch),
-        }
+/// Replaces `path` with a new private file: an agent-planted symlink at `path` is replaced, never followed.
+fn replace_private(path: &Path, contents: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    match std::fs::remove_file(&temp) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+        _ => {}
     }
-    out.push('"');
-    out
-}
-
-async fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let mut file = tokio::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
-        .open(path)
-        .await?;
-    file.write_all(contents).await?;
-    file.flush().await
+        .open(&temp)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    std::fs::rename(&temp, path)
 }
 
 async fn create_private_dir(path: &Path) -> io::Result<()> {
@@ -447,7 +622,8 @@ async fn read_until_exit<R: AsyncBufRead + Unpin>(
     lines: &mut Lines<R>,
     parsed: &mut CodexStream,
     credential: &mut JobCredential<'_>,
-    events: &mpsc::Sender<ProviderEvent>,
+    events: Option<&mpsc::Sender<ProviderEvent>>,
+    term_grace: Duration,
 ) -> Result<ExitStatus, ProviderError> {
     let mut exit_poll = tokio::time::interval(EXIT_POLL);
     let mut open = true;
@@ -457,8 +633,14 @@ async fn read_until_exit<R: AsyncBufRead + Unpin>(
                 Some(line) => forward(parsed, &line, credential, events).await?,
                 None => open = false,
             },
-            _ = exit_poll.tick() => if group.leader_exited() {
-                break;
+            _ = exit_poll.tick() => {
+                if group.leader_exited() {
+                    break;
+                }
+                if group.grace_over(term_grace) {
+                    tracing::warn!("Codex did not stop within the grace after SIGTERM; killing its process group");
+                    group.kill_and_disarm();
+                }
             },
         }
     }
@@ -488,7 +670,7 @@ async fn forward(
     parsed: &mut CodexStream,
     line: &str,
     credential: &mut JobCredential<'_>,
-    events: &mpsc::Sender<ProviderEvent>,
+    events: Option<&mpsc::Sender<ProviderEvent>>,
 ) -> Result<(), ProviderError> {
     if let Some((activity, summary)) = parsed.line(line) {
         if !credential.watch() {
@@ -501,7 +683,9 @@ async fn forward(
             summary: credential.scrubber().text(&summary),
         };
         // A closed receiver means execute stopped listening; Codex keeps running until it is stopped.
-        let _ = events.send(ProviderEvent::Activity(event)).await;
+        if let Some(events) = events {
+            let _ = events.send(ProviderEvent::Activity(event)).await;
+        }
     }
     Ok(())
 }

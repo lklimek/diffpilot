@@ -57,6 +57,11 @@ impl Scrubber {
         both
     }
 
+    /// Whether no secret is known.
+    pub fn is_empty(&self) -> bool {
+        self.secrets.is_empty()
+    }
+
     /// `text` with every known secret replaced.
     pub fn text(&self, text: &str) -> String {
         let mut out = text.to_owned();

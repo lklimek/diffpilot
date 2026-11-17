@@ -32,6 +32,8 @@ const MAX_BATCH: usize = 100;
 const MAX_PENDING_EVENTS: usize = 1000;
 /// Most summary bytes held while requests fail.
 const MAX_PENDING_BYTES: usize = 256 * 1024;
+/// How often expired agent sessions are looked for.
+const SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 /// Idle claim interval in [`LeaseTiming`] seconds.
 const IDLE_POLL_SECS: u32 = 5;
 /// Longest pause between two result attempts, in [`LeaseTiming`] seconds.
@@ -161,6 +163,9 @@ pub struct Worker {
     credential_usable: CredentialCheck,
     /// Sessions the server asked to drop, acknowledged with the next claim.
     dropped_sessions: Vec<AnalysisId>,
+    /// How long an unused agent session is kept; `None` keeps them.
+    session_retention: Option<Duration>,
+    last_sweep: Option<Instant>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -190,13 +195,22 @@ impl Worker {
             timing,
             credential_usable,
             dropped_sessions: Vec::new(),
+            session_retention: None,
+            last_sweep: None,
         }
+    }
+
+    /// Deletes agent sessions not used for `retention` (checked between jobs).
+    pub fn with_session_retention(mut self, retention: Duration) -> Self {
+        self.session_retention = Some(retention);
+        self
     }
 
     /// Claims and runs jobs until `shutdown` completes; a running job is then stopped and cleaned up.
     pub async fn run(mut self, shutdown: impl Future<Output = ()>) {
         tokio::pin!(shutdown);
         loop {
+            self.remove_expired_sessions();
             let polled = tokio::select! {
                 () = &mut shutdown => return,
                 polled = self.poll_once() => polled,
@@ -233,12 +247,49 @@ impl Worker {
         };
         let sent = Instant::now();
         let response = self.client.claim(&request).await?;
-        // Stage 2 stores no session files (WP3-RUN), so dropping them is done once acknowledged.
-        self.dropped_sessions = response.drop_sessions;
+        self.dropped_sessions = self.drop_sessions(response.drop_sessions);
         let Some(claim) = response.claim else {
             return Ok(None);
         };
         Ok(Some(self.run_job(claim, sent).await))
+    }
+
+    /// Deletes the sessions the server dropped; returns those to acknowledge (a failed one is asked again).
+    fn drop_sessions(&self, analyses: Vec<AnalysisId>) -> Vec<AnalysisId> {
+        let sessions = self.executor.sessions();
+        analyses
+            .into_iter()
+            .filter(|analysis| match sessions.remove(*analysis) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(%analysis, %error, "cannot delete a dropped agent session; retrying with the next claim");
+                    false
+                }
+            })
+            .collect()
+    }
+
+    /// Deletes agent sessions past `retention`, at most once per [`SWEEP_INTERVAL`].
+    fn remove_expired_sessions(&mut self) {
+        let Some(retention) = self.session_retention else {
+            return;
+        };
+        if self
+            .last_sweep
+            .is_some_and(|last| last.elapsed() < SWEEP_INTERVAL)
+        {
+            return;
+        }
+        self.last_sweep = Some(Instant::now());
+        match self.executor.sessions().remove_expired(retention) {
+            Ok(0) => {}
+            Ok(removed) => {
+                tracing::info!(removed, "deleted agent sessions past the retention period")
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot delete expired agent sessions; retrying later")
+            }
+        }
     }
 
     async fn run_job(&self, claim: Claim, claim_sent: Instant) -> JobEnd {

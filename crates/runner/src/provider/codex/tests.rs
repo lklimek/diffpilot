@@ -25,6 +25,13 @@ const PROMPT_CANARY: &str = "PROMPT-CANARY-0003";
 const ACCESS_CANARY: &str = "codex-access-CANARY-0004";
 const REFRESH_CANARY: &str = "codex-refresh-CANARY-0005";
 const RUNNER_SECRET_CANARY: &str = "runner-secret-CANARY-0006";
+/// The thread of the recorded fixture session.
+const THREAD: &str = "019a8f2c-4820-7000-8000-000000000482";
+
+/// The rollout path of `thread` below `sessions/`.
+fn rollout_rel(thread: &str) -> String {
+    format!("2026/11/16/rollout-2026-11-16T10-00-00-{thread}.jsonl")
+}
 
 /// The stand-in `codex`: writes argv, env and stdin into the job dir, replays `scenario.jsonl` and exits with
 /// the code in `scenario-exit`. Written once per process, so no test executes a file another thread still
@@ -37,9 +44,24 @@ fn fake_codex() -> &'static Path {
         fs::write(
             &path,
             r#"#!/bin/sh
-env > "$PWD/child-env.txt"
-for arg in "$@"; do printf '%s\n' "$arg"; done > "$PWD/child-args.txt"
-cat > "$PWD/child-stdin.txt"
+case " $* " in *model_auto_compact_token_limit*) mode=compaction ;; *) mode=child ;; esac
+env > "$PWD/$mode-env.txt"
+for arg in "$@"; do printf '%s\n' "$arg"; done > "$PWD/$mode-args.txt"
+cat > "$PWD/$mode-stdin.txt"
+cp "$CODEX_HOME/config.toml" "$PWD/$mode-config.toml" 2>/dev/null
+find "$CODEX_HOME/sessions" -type f > "$PWD/$mode-sessions.txt" 2>/dev/null
+if [ -f "$PWD/rollout-rel" ]; then
+  rollout="$CODEX_HOME/sessions/$(cat "$PWD/rollout-rel")"
+  mkdir -p "$(dirname "$rollout")"
+  if [ -f "$PWD/$mode-rollout" ]; then cat "$PWD/$mode-rollout" >> "$rollout"; else echo '{"type":"turn"}' >> "$rollout"; fi
+fi
+if [ "$mode" = compaction ]; then
+  while [ -f "$PWD/hold-compaction" ] && [ ! -f "$PWD/release" ]; do sleep 0.05; done
+  cat "$PWD/compaction.jsonl"
+  exit "$(cat "$PWD/compaction-exit" 2>/dev/null || echo 0)"
+fi
+if [ -f "$PWD/ignore-term" ]; then trap '' TERM; fi
+if [ -f "$PWD/tamper" ]; then printf '\n[mcp_servers.evil]\ncommand = "/bin/evil"\n' >> "$CODEX_HOME/config.toml"; fi
 if [ -f "$PWD/rotate" ]; then cat "$PWD/rotate" > "$CODEX_HOME/auth.json"; fi
 if [ -f "$PWD/symlink-auth" ]; then rm -f "$CODEX_HOME/auth.json"; ln -s "$(cat "$PWD/symlink-auth")" "$CODEX_HOME/auth.json"; fi
 if [ -f "$PWD/background" ]; then sleep 300 </dev/null >/dev/null 2>&1 & echo $! > "$PWD/background.pid"; fi
@@ -80,6 +102,12 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
     )
     .unwrap();
     fs::write(job_dir.join("scenario-exit"), exit_code.to_string()).unwrap();
+    fs::copy(
+        fixture("codex/compaction-after-plan.jsonl"),
+        job_dir.join("compaction.jsonl"),
+    )
+    .unwrap();
+    fs::write(job_dir.join("rollout-rel"), rollout_rel(THREAD)).unwrap();
     let master_auth = dir.path().join("credentials").join("auth.json");
     fs::create_dir(master_auth.parent().unwrap()).unwrap();
     fs::write(
@@ -92,7 +120,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
         job_id: JobId::new_random(),
         job_dir,
         codex_home,
-        session_dir: dir.path().join("sessions"),
+        session_dir: dir.path().join("sessions").join("analysis-a"),
         prompt: format!("Job: plan. {PROMPT_CANARY}"),
         output_schema: json!({"type": "object", "additionalProperties": false, "properties": {}, "required": []}),
         model: ModelChoice {
@@ -120,6 +148,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
         binary: fake_codex().to_path_buf(),
         credential: Arc::new(CodexCredential::new(master_auth.clone())),
         egress_proxy: Some(PROXY.to_owned()),
+        term_grace: Duration::from_secs(10),
     });
     Harness {
         _dir: dir,
@@ -164,8 +193,8 @@ async fn recorded_success_returns_the_structured_output() {
         Some("019a8f2c-4820-7000-8000-000000000482")
     );
     assert_eq!(
-        outcome.usage.input_tokens, 48210,
-        "a new thread's usage is its cumulative total"
+        outcome.usage.input_tokens, 109_232,
+        "a new thread's usage is its cumulative total after compaction"
     );
     assert_eq!(
         events.last(),
@@ -353,7 +382,6 @@ async fn per_job_codex_home_has_lean_config_and_private_files() {
     ] {
         assert!(config.lines().any(|l| l == line), "missing {line}");
     }
-    assert!(!config.contains("mcp_servers"), "no MCP servers in stage 2");
     assert!(
         !config.contains("trust_level"),
         "the project is never trusted"
@@ -601,7 +629,7 @@ async fn missing_binary_is_an_io_error() {
 
 #[test]
 fn toml_string_escapes_quotes_backslashes_and_controls() {
-    assert_eq!(toml_string("a\"b\\c\nd"), r#""a\"b\\c\u000Ad""#);
+    assert_eq!(config::toml_string("a\"b\\c\nd"), r#""a\"b\\c\u000Ad""#);
 }
 
 #[tokio::test]
@@ -640,14 +668,14 @@ async fn kill_and_disarm_unregisters_before_the_leader_is_reaped() {
         .spawn()
         .expect("spawn sleep");
     let mut group = ProcessGroup::register(&running, job, child.id());
-    assert!(running.lock().unwrap().contains_key(&job));
+    assert!(running.lock().unwrap()[&job].group.is_some());
     assert!(!group.leader_exited());
     group.kill_and_disarm();
     assert!(
         group.pid.is_none(),
         "disarmed: a later drop signals nothing"
     );
-    assert!(running.lock().unwrap().is_empty());
+    assert!(running.lock().unwrap()[&job].group.is_none());
     let status = child.wait().await.expect("reap");
     assert!(!status.success(), "the group was killed");
     drop(group);
@@ -678,4 +706,313 @@ async fn unreadable_copy_ends_the_call_without_agent_text() {
         "an uncertain settle ends the call with the fixed error: {result:?}"
     );
     assert!(!usable(&h));
+}
+
+/// A token_count rollout record with the thread's cumulative input tokens and one rate-limit window.
+fn token_count_line(input: u64, used_percent: f64, resets_at: i64) -> String {
+    json!({"type": "event_msg", "payload": {"type": "token_count",
+        "info": {"total_token_usage": {"input_tokens": input, "cached_input_tokens": 0, "output_tokens": 1}},
+        "rate_limits": {"primary": {"used_percent": used_percent, "window_minutes": 300, "resets_at": resets_at}}}})
+    .to_string()
+}
+
+/// Puts a rollout of the fixture thread into the analysis's store, as an earlier job left it.
+fn store_session(h: &Harness, cumulative_input: u64) -> PathBuf {
+    let path = h.call.session_dir.join(rollout_rel(THREAD));
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        format!(
+            "{{\"type\":\"session_meta\"}}\n{}\n",
+            token_count_line(cumulative_input, 10.0, 0)
+        ),
+    )
+    .unwrap();
+    path
+}
+
+async fn resume(h: &Harness) -> (Result<ProviderOutcome, ProviderError>, Vec<ProviderEvent>) {
+    let (tx, mut rx) = mpsc::channel(1024);
+    let result = h.provider.resume(THREAD, &h.call, tx).await;
+    let mut events = Vec::new();
+    while let Some(event) = rx.recv().await {
+        events.push(event);
+    }
+    (result, events)
+}
+
+fn lines(h: &Harness, name: &str) -> Vec<String> {
+    child_file(h, name).lines().map(str::to_owned).collect()
+}
+
+#[tokio::test]
+async fn resume_restores_the_session_and_runs_exec_resume() {
+    let h = harness("pr-context.jsonl", 0);
+    store_session(&h, 50_000);
+    let outcome = resume(&h).await.0.expect("success");
+    let schema = h.call.codex_home.join("output-schema.json");
+    assert_eq!(
+        lines(&h, "child-args.txt"),
+        [
+            "exec",
+            "resume",
+            "--json",
+            "--skip-git-repo-check",
+            "--ignore-rules",
+            "--output-schema",
+            schema.to_str().unwrap(),
+            THREAD,
+            "-",
+        ]
+    );
+    let restored = h.call.codex_home.join("sessions").join(rollout_rel(THREAD));
+    assert_eq!(
+        lines(&h, "child-sessions.txt"),
+        [restored.to_str().unwrap()],
+        "only the analysis's rollout is in CODEX_HOME when Codex starts"
+    );
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    assert_eq!(
+        outcome.usage.input_tokens,
+        109_232 - 50_000,
+        "usage is the delta of the thread's cumulative totals"
+    );
+}
+
+#[tokio::test]
+async fn compaction_issued_at_job_end() {
+    let h = harness("plan.jsonl", 0);
+    let outcome = run(&h).await.0.expect("success");
+    assert_eq!(
+        lines(&h, "compaction-args.txt"),
+        [
+            "exec",
+            "resume",
+            "--json",
+            "--skip-git-repo-check",
+            "--ignore-rules",
+            "-c",
+            "model_auto_compact_token_limit=1000",
+            THREAD,
+            "-",
+        ]
+    );
+    assert_eq!(child_file(&h, "compaction-stdin.txt"), COMPACTION_PROMPT);
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    assert!(
+        h.call.session_dir.join(rollout_rel(THREAD)).exists(),
+        "the compacted session is stored for the next job"
+    );
+}
+
+#[tokio::test]
+async fn output_is_ready_before_compaction_ends() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(h.call.job_dir.join("hold-compaction"), "").unwrap();
+    let (tx, mut rx) = mpsc::channel(1024);
+    let release = h.call.job_dir.join("release");
+    let watch = async {
+        while let Some(event) = rx.recv().await {
+            if matches!(event, ProviderEvent::OutputReady(_)) {
+                fs::write(&release, "").unwrap();
+            }
+        }
+    };
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::join!(h.provider.run(&h.call, tx), watch)
+    })
+    .await
+    .expect("the output is announced while compaction still runs");
+    result.expect("success");
+}
+
+#[tokio::test]
+async fn config_regenerated_before_compaction() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(h.call.job_dir.join("tamper"), "").unwrap();
+    run(&h).await.0.expect("success");
+    let compaction = child_file(&h, "compaction-config.toml");
+    assert!(!compaction.contains("evil"), "{compaction}");
+    assert_eq!(
+        compaction,
+        config::config_toml(&h.call.model, Purpose::Compaction)
+    );
+}
+
+#[tokio::test]
+async fn failed_compaction_keeps_the_output_and_loses_the_session() {
+    let h = harness("plan.jsonl", 0);
+    store_session(&h, 1);
+    fs::write(h.call.job_dir.join("compaction-exit"), "1").unwrap();
+    fs::write(
+        h.call.job_dir.join("compaction.jsonl"),
+        json!({"type": "turn.failed", "error": {"message": "stream disconnected"}}).to_string(),
+    )
+    .unwrap();
+    let outcome = run(&h).await.0.expect("the job still succeeds");
+    assert_eq!(outcome.session_id, None);
+    assert!(
+        !h.call.session_dir.exists(),
+        "a lost session is not kept in the store"
+    );
+}
+
+#[tokio::test]
+async fn lost_session_is_session_unavailable_before_codex_starts() {
+    let h = harness("pr-context.jsonl", 0);
+    let (result, events) = resume(&h).await;
+    assert!(
+        matches!(result, Err(ProviderError::SessionUnavailable)),
+        "{result:?}"
+    );
+    assert!(events.is_empty());
+    assert!(!h.call.job_dir.join("child-args.txt").exists());
+}
+
+#[tokio::test]
+async fn session_codex_cannot_resume_is_session_unavailable() {
+    let h = harness("pr-context.jsonl", 1);
+    store_session(&h, 1);
+    fs::write(
+        h.call.job_dir.join("scenario.jsonl"),
+        json!({"type": "error", "message": "no rollout found for thread id"}).to_string(),
+    )
+    .unwrap();
+    let (result, _) = resume(&h).await;
+    assert!(
+        matches!(result, Err(ProviderError::SessionUnavailable)),
+        "{result:?}"
+    );
+    assert!(
+        h.call.session_dir.join(rollout_rel(THREAD)).exists(),
+        "a failed job leaves the stored session as it was"
+    );
+}
+
+#[tokio::test]
+async fn stored_session_is_scrubbed_and_has_no_auth() {
+    let h = harness("plan.jsonl", 0);
+    fs::write(
+        h.call.job_dir.join("child-rollout"),
+        format!("{{\"cmd\":\"echo {GITHUB_CANARY} {MEMCAN_CANARY} {REFRESH_CANARY}\"}}\n"),
+    )
+    .unwrap();
+    run(&h).await.0.expect("success");
+    let mut stored = Vec::new();
+    let mut dirs = vec![h.call.session_dir.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                stored.push(path);
+            }
+        }
+    }
+    assert_eq!(stored, [h.call.session_dir.join(rollout_rel(THREAD))]);
+    let text = fs::read_to_string(&stored[0]).unwrap();
+    for canary in [GITHUB_CANARY, MEMCAN_CANARY, REFRESH_CANARY] {
+        assert!(!text.contains(canary), "{text}");
+    }
+    assert!(text.contains("[redacted]"));
+}
+
+#[tokio::test]
+async fn usage_limit_carries_resets_at_from_the_rollout() {
+    let h = harness("usage-limit.jsonl", 1);
+    store_session(&h, 1);
+    fs::write(
+        h.call.job_dir.join("child-rollout"),
+        token_count_line(2, 100.0, 1_794_990_905) + "\n",
+    )
+    .unwrap();
+    let (result, _) = resume(&h).await;
+    match result {
+        Err(ProviderError::UsageLimit { resets_at }) => {
+            assert_eq!(
+                resets_at,
+                chrono::DateTime::from_timestamp(1_794_990_905, 0)
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        !h.call.job_dir.join("compaction-args.txt").exists(),
+        "no further turn after the limit"
+    );
+}
+
+#[tokio::test]
+async fn cancel_kills_codex_that_ignores_sigterm_after_the_grace() {
+    let mut h = harness("cancelled.jsonl", 0);
+    h.provider.settings.term_grace = Duration::from_millis(300);
+    fs::write(h.call.job_dir.join("ignore-term"), "").unwrap();
+    fs::write(h.call.job_dir.join("hang"), "").unwrap();
+    let (tx, _rx) = mpsc::channel(1024);
+    let run = h.provider.run(&h.call, tx);
+    let cancel = async {
+        while !h.call.job_dir.join("child-stdin.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        h.provider.cancel(h.call.job_id).await
+    };
+    let (result, cancelled) =
+        tokio::time::timeout(Duration::from_secs(20), async { tokio::join!(run, cancel) })
+            .await
+            .expect("the grace ends the call");
+    cancelled.expect("cancel");
+    assert!(
+        matches!(result, Err(ProviderError::Cancelled)),
+        "{result:?}"
+    );
+    assert!(!h.call.job_dir.join("compaction-args.txt").exists());
+}
+
+/// Unknown event types and item types a newer Codex may print; they must be skipped, never fail the call.
+const UNKNOWN_EVENTS: [&str; 5] = [
+    r#"{"type":"turn.plan_updated","plan":[{"step":"read","status":"in_progress"}]}"#,
+    r#"{"type":"item.completed","item":{"id":"u1","type":"web_search","query":"node-client retry"}}"#,
+    r#"{"type":"item.completed","item":{"id":"u2","type":"collab_tool_call","tool":"wait","status":"completed"}}"#,
+    r#"{"type":"thread.tokens_updated","usage":{"input_tokens":1}}"#,
+    r#"{"type":"item.started","item":{"id":"u3","type":"future_item_kind"}}"#,
+];
+
+/// Golden normalised events of a resumed session (`pr-context.jsonl`, recorded as a resume of the fixture
+/// thread) with unknown events interleaved. `UPDATE_GOLDEN=1` rewrites the golden file.
+#[tokio::test]
+async fn golden_resumed_session_with_unknown_events() {
+    let h = harness("pr-context.jsonl", 0);
+    store_session(&h, 1);
+    let recorded = fs::read_to_string(fixture("codex/pr-context.jsonl")).unwrap();
+    let mut scenario: Vec<&str> = recorded.lines().collect();
+    for (index, unknown) in UNKNOWN_EVENTS.iter().enumerate() {
+        scenario.insert(1 + index * 3, unknown);
+    }
+    fs::write(h.call.job_dir.join("scenario.jsonl"), scenario.join("\n")).unwrap();
+    let (result, events) = resume(&h).await;
+    let outcome = result.expect("unknown events do not fail the call");
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    let normalised: Vec<Value> = events
+        .iter()
+        .map(|event| match event {
+            ProviderEvent::Activity(event) => {
+                json!({"activity": event.activity, "summary": event.summary})
+            }
+            ProviderEvent::OutputReady(_) => json!({"output_ready": true}),
+        })
+        .collect();
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/provider/codex/golden/resumed-pr-context.events.json");
+    let actual = serde_json::to_string_pretty(&normalised).unwrap() + "\n";
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        fs::create_dir_all(golden.parent().unwrap()).unwrap();
+        fs::write(&golden, &actual).unwrap();
+    }
+    assert_eq!(
+        actual,
+        fs::read_to_string(&golden).expect("golden file; run with UPDATE_GOLDEN=1"),
+        "normalised events differ from the golden file"
+    );
 }

@@ -2,6 +2,7 @@
 //! its value.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use contracts::job::access::Secret;
 use contracts::job::spec::{CredentialKind, LlmCredentialRef};
@@ -27,11 +28,15 @@ pub const CODEX_BIN: &str = "SR_RUNNER_CODEX_BIN";
 pub const EGRESS_PROXY: &str = "SR_RUNNER_EGRESS_PROXY";
 /// `codex` (default) or `fake` (only in builds with the `fake-provider` feature).
 pub const PROVIDER: &str = "SR_RUNNER_PROVIDER";
+/// Days an agent session is kept after its last job (default 14).
+pub const SESSION_RETENTION_DAYS: &str = "SR_RUNNER_SESSION_RETENTION_DAYS";
 
 const DEFAULT_RUNNER_ID: &str = "runner";
 const DEFAULT_STATE_DIR: &str = "/var/lib/smart-review-runner";
 const DEFAULT_CREDENTIAL_ID: &str = "default";
 const DEFAULT_CODEX_BIN: &str = "codex";
+const DEFAULT_SESSION_RETENTION_DAYS: u64 = 14;
+const SECS_PER_DAY: u64 = 24 * 3600;
 
 /// Which provider runs the agent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +69,8 @@ pub struct Config {
     pub egress_proxy: Option<String>,
     /// The provider.
     pub provider: ProviderKind,
+    /// How long an agent session is kept after its last job.
+    pub session_retention: Duration,
 }
 
 /// Invalid or missing configuration.
@@ -88,6 +95,9 @@ pub enum ConfigError {
         "environment variable {0} is reserved: v1 supports only the credential 'default'; unset it"
     )]
     UnsupportedCredentialId(&'static str),
+    /// A number variable is not a positive whole number.
+    #[error("environment variable {0} must be a positive whole number")]
+    NotPositive(&'static str),
     /// Unknown provider name.
     #[error("environment variable {0} must be 'codex' (or 'fake' in fake-provider builds)")]
     UnknownProvider(&'static str),
@@ -140,6 +150,14 @@ impl Config {
             Some("fake") => ProviderKind::Fake,
             Some(_) => return Err(ConfigError::UnknownProvider(PROVIDER)),
         };
+        let retention_days = match get(SESSION_RETENTION_DAYS) {
+            Some(days) => days
+                .parse::<u64>()
+                .ok()
+                .filter(|days| (1..=3650).contains(days))
+                .ok_or(ConfigError::NotPositive(SESSION_RETENTION_DAYS))?,
+            None => DEFAULT_SESSION_RETENTION_DAYS,
+        };
         Ok(Self {
             server_url,
             runner_secret,
@@ -155,6 +173,7 @@ impl Config {
             ),
             egress_proxy,
             provider,
+            session_retention: Duration::from_secs(retention_days * SECS_PER_DAY),
         })
     }
 
@@ -216,6 +235,10 @@ mod tests {
         assert_eq!(config.credential.id, "default");
         assert_eq!(config.provider, ProviderKind::Codex);
         assert_eq!(
+            config.session_retention,
+            Duration::from_secs(14 * 24 * 3600)
+        );
+        assert_eq!(
             config.master_auth(),
             PathBuf::from("/var/lib/smart-review-runner/credentials/default/auth.json")
         );
@@ -251,6 +274,24 @@ mod tests {
         let mut pairs = BASE.to_vec();
         pairs.push((CREDENTIAL_ID, "default"));
         assert_eq!(config(&pairs).unwrap().credential.id, "default");
+    }
+
+    #[test]
+    fn session_retention_must_be_a_positive_number_of_days() {
+        for days in ["0", "-1", "x", "1.5"] {
+            let mut pairs = BASE.to_vec();
+            pairs.push((SESSION_RETENTION_DAYS, days));
+            assert!(
+                matches!(config(&pairs), Err(ConfigError::NotPositive(_))),
+                "{days}"
+            );
+        }
+        let mut pairs = BASE.to_vec();
+        pairs.push((SESSION_RETENTION_DAYS, "3"));
+        assert_eq!(
+            config(&pairs).unwrap().session_retention,
+            Duration::from_secs(3 * 24 * 3600)
+        );
     }
 
     #[test]
