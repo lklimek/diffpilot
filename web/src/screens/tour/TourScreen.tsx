@@ -15,7 +15,6 @@ import type {
 import { useCommentActions, useLines, useMe, usePendingReview, useTour } from "../../api/queries";
 import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
-import type { LineRef } from "../../components/code-view/CodeView";
 import type { UnresolvedPosts } from "../../components/comment/CommentComposer";
 import { FlowIntroBlock } from "../../components/flow-intro/FlowIntroBlock";
 import { isFlowReviewed } from "../../components/flow-intro/progress";
@@ -30,7 +29,7 @@ import { UnexplainedBlock } from "../../components/quiet/UnexplainedBlock";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { StepBlock } from "../../components/step/StepBlock";
 import { TopBar } from "../../components/top-bar/TopBar";
-import { DiffCode, LinesCode, RangeCode, errorText, type CodeContext } from "./code";
+import { ChunkedCode, DiffCode, LinesCode, errorText, type CodeContext } from "./code";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
 import { blockTitle, buildSequence, findStep, flowJump, sameBlock, stepQuery } from "./sequence";
@@ -248,15 +247,11 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     : pending.isPending
       ? ("loading" as const)
       : undefined;
-  const activeLine: LineRef | null = commentLine && {
-    side: commentLine.target.side,
-    line: commentLine.target.line,
-  };
   const ctx: CodeContext = {
     analysisId,
     threads: tour.threads,
     comments: pendingComments,
-    activeLine,
+    activeLine: commentLine?.target ?? null,
     onComment: comment,
   };
   const selectStep = (id: StepId) => go({ block: "step", step_id: id });
@@ -301,15 +296,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         }
         patterns={found.flow.llm.pattern_repetitions}
         impactCode={(impact) => (
-          <RangeCode
-            ctx={ctx}
-            query={{
-              path: impact.file,
-              side: "head",
-              from: impact.range.start_line,
-              to: impact.range.end_line,
-            }}
-          />
+          <ChunkedCode ctx={ctx} path={impact.file} side="head" ranges={[impact.range]} />
         )}
         reviewed={ticked.includes(step.id)}
         onSetReviewed={(on) => setTicks([step.id], on)}
@@ -324,17 +311,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
       block = (
         <UnexplainedBlock
           items={tour.quiet.unexplained}
-          code={(item) => (
-            <RangeCode
-              ctx={ctx}
-              query={{
-                path: item.file,
-                side: item.side,
-                from: Math.min(...item.ranges.map((r) => r.start_line)),
-                to: Math.max(...item.ranges.map((r) => r.end_line)),
-              }}
-            />
-          )}
+          code={(item) => <ChunkedCode ctx={ctx} path={item.file} side={item.side} ranges={item.ranges} />}
         />
       );
     } else if (row.row === "moves") {
@@ -342,15 +319,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         <MovesBlock
           moves={tour.quiet.moves}
           code={(move) => (
-            <RangeCode
-              ctx={ctx}
-              query={{
-                path: move.to.file,
-                side: move.to.side,
-                from: move.to.range.start_line,
-                to: move.to.range.end_line,
-              }}
-            />
+            <ChunkedCode ctx={ctx} path={move.to.file} side={move.to.side} ranges={[move.to.range]} />
           )}
         />
       );
