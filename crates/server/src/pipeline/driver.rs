@@ -48,6 +48,10 @@ use crate::review::{self, GithubSnapshot};
 use crate::state::AppState;
 
 /// One item of the merged streams of a stage at a generation.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "almost every item is a job update; a rare timer item does not justify boxing each update"
+)]
 enum Item {
     /// An update of the stage's job, or `None` at the end of its stream.
     Job(Option<Result<JobUpdate, ExecutorError>>),
