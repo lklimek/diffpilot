@@ -10,7 +10,7 @@ use contracts::ids::AnalysisId;
 use db::error::DbError;
 use db::repo::analyses::NewAnalysis;
 
-use crate::auth::{Session, UserTokenError, user_access_token};
+use crate::auth::{Session, UserTokenError, user_access_token, user_token_rejected};
 use crate::github::rest::{self, GithubError, GithubPull};
 use crate::pipeline;
 use crate::review::comments::commenting_available;
@@ -53,7 +53,14 @@ async fn fetch_pull(
         return Err(IngestError::InvalidRepository);
     }
     let token = user_access_token(state, &session.user_id).await?;
-    let pull = rest::get_pull(&state.config.github, &token, pr).await?;
+    let pull = match rest::get_pull(&state.config.github, &token, pr).await {
+        Ok(pull) => pull,
+        Err(GithubError::Unauthorized) => {
+            user_token_rejected(state, &session.user_id, &token).await;
+            return Err(GithubError::Unauthorized.into());
+        }
+        Err(error) => return Err(error.into()),
+    };
     if pull.private {
         return Err(IngestError::PrivateRepository);
     }
