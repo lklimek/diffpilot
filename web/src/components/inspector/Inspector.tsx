@@ -168,7 +168,14 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
             #{tour.analysis.pr.number} {tour.analysis.pr.title}
           </span>
         ),
-        body: <PrContextSummary context={tour.pr_context} sections={sections} />,
+        body: (
+          <PrContextSummary
+            context={tour.pr_context}
+            quiet={tour.quiet}
+            flows={tour.flows}
+            sections={sections}
+          />
+        ),
       };
     case "quiet":
       return {

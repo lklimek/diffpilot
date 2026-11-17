@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Tour } from "../../api/generated/types";
 import { seedFor } from "../../mocks/fixtures";
-import { blockTitle, buildSequence, findStep, sameBlock } from "./sequence";
+import { blockTitle, buildSequence, findStep, flowJump, sameBlock } from "./sequence";
 
 const tour = seedFor("default", "tour") as Tour;
 
@@ -41,5 +41,17 @@ describe("tour sequence (brief §4.3)", () => {
     expect(sameBlock({ block: "step", step_id: "f1.1" }, { block: "step", step_id: "f1.1" })).toBe(true);
     expect(sameBlock({ block: "step", step_id: "f1.1" }, { block: "step", step_id: "f1.2" })).toBe(false);
     expect(sameBlock({ block: "pr_context" }, { block: "flow_intro", flow_id: "f1" })).toBe(false);
+  });
+
+  it("n / p jump to the next or previous flow introduction, clamped at the ends", () => {
+    const intro = (flow_id: string) => ({ block: "flow_intro", flow_id }) as const;
+    expect(flowJump(tour, { block: "pr_context" }, 1)).toEqual(intro("f1"));
+    expect(flowJump(tour, { block: "pr_context" }, -1)).toBeUndefined();
+    expect(flowJump(tour, { block: "step", step_id: "f2.1" }, 1)).toEqual(intro("f3"));
+    expect(flowJump(tour, { block: "step", step_id: "f2.1" }, -1)).toEqual(intro("f1"));
+    expect(flowJump(tour, intro("f1"), -1)).toEqual(intro("f1"));
+    expect(flowJump(tour, intro("f5"), 1)).toEqual(intro("f5"));
+    expect(flowJump(tour, { block: "pending_review" }, -1)).toEqual(intro("f5"));
+    expect(flowJump(tour, { block: "quiet", row: { row: "moves" } }, 1)).toEqual(intro("f1"));
   });
 });

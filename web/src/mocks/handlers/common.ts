@@ -1,5 +1,5 @@
 import { HttpResponse, http, type HttpResponseResolver, type PathParams } from "msw";
-import { routes, type RouteName } from "../../api/generated/routes";
+import { routes, type RouteName } from "../../api/routes";
 import type { AnalysisSummary, ApiErrorCode, MeResponse } from "../../api/generated/types";
 import { seedNow } from "../fixtures";
 

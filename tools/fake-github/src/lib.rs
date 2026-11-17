@@ -1,7 +1,9 @@
 //! Fake GitHub for development and tests: serves the recordings of `fixtures/pr-482/github` — the OAuth web
-//! flow, `GET /user` and the recorded REST endpoints. Deterministic; never contacts GitHub.
+//! flow, `GET /user`, the recorded REST endpoints and a GraphQL endpoint with review threads and an in-memory
+//! pending review. Deterministic; never contacts GitHub.
 
 mod fixtures;
+mod graphql;
 mod oauth;
 
 use std::collections::HashMap;
@@ -14,6 +16,7 @@ use axum::extract::State;
 use axum::http::header::{CONTENT_TYPE, USER_AGENT};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+use axum::routing::post;
 use url::Url;
 
 use crate::fixtures::{RECORDED_ENDPOINTS, RawRecording, load};
@@ -98,6 +101,7 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
         });
     }
     let oauth = Arc::new(oauth::Oauth::load(config)?);
+    let graphql = Arc::new(graphql::Graphql::load(config, Arc::clone(&oauth))?);
     let mut recorded = RecordedEndpoints::new();
     for file in RECORDED_ENDPOINTS {
         let recording: RawRecording = load(&config.fixture_dir, file)?;
@@ -127,7 +131,12 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
             endpoints: recorded,
             oauth: Arc::clone(&oauth),
         }))
-        .merge(oauth::routes(oauth)))
+        .merge(oauth::routes(oauth))
+        .merge(
+            Router::new()
+                .route("/graphql", post(graphql::serve))
+                .with_state(graphql),
+        ))
 }
 
 /// A JSON response with a pre-serialised body.

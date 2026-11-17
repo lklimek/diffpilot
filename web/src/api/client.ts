@@ -1,13 +1,23 @@
 // The only fetch layer of the web app: typed calls to the routes of crates/contracts.
-import { routes, type RouteName } from "./generated/routes";
+import { routes, type RouteName } from "./routes";
 import type {
   AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
   ApiErrorCode,
+  AskQuestion,
+  AskRequest,
   CreateAnalysisRequest,
+  CreateCommentRequest,
+  CreateCommentResponse,
+  DiffResponse,
+  Feedback,
+  FeedbackId,
+  FeedbackRequest,
   LinesResponse,
   MeResponse,
+  PendingComment,
+  PendingReview,
   RangeQuery,
   ResolvePrRequest,
   ResolvePrResponse,
@@ -16,7 +26,9 @@ import type {
   ReviewState,
   SetLanguageRequest,
   Settings,
+  StepId,
   Tour,
+  UpdateCommentRequest,
 } from "./generated/types";
 
 /** A failed API call: `status` 0 when the server was not reached; `message` is plain text for the user. */
@@ -127,7 +139,26 @@ export function createApiClient(baseUrl = "") {
     getTour: (id: AnalysisId) => call<Tour>("getTour", { params: { id } }),
     getLines: (id: AnalysisId, query: RangeQuery) =>
       call<LinesResponse>("getLines", { params: { id }, query: { ...query } }),
+    getDiff: (id: AnalysisId, query: RangeQuery) =>
+      call<DiffResponse>("getDiff", { params: { id }, query: { ...query } }),
     getReviewState: (id: AnalysisId) => call<ReviewState>("getReviewState", { params: { id } }),
+    putReviewState: (id: AnalysisId, body: ReviewState) =>
+      call<void>("putReviewState", { params: { id }, body }),
+    listQuestions: (id: AnalysisId) => call<AskQuestion[]>("listQuestions", { params: { id } }),
+    askQuestion: (id: AnalysisId, stepId: StepId, body: AskRequest) =>
+      call<AskQuestion>("askQuestion", { params: { id, step_id: stepId }, body }),
+    listFeedback: (id: AnalysisId) => call<Feedback[]>("listFeedback", { params: { id } }),
+    postFeedback: (id: AnalysisId, body: FeedbackRequest) =>
+      call<Feedback>("postFeedback", { params: { id }, body }),
+    deleteFeedback: (id: AnalysisId, feedbackId: FeedbackId) =>
+      call<void>("deleteFeedback", { params: { id, feedback_id: feedbackId } }),
+    getPendingReview: (id: AnalysisId) => call<PendingReview>("getPendingReview", { params: { id } }),
+    createComment: (id: AnalysisId, body: CreateCommentRequest) =>
+      call<CreateCommentResponse>("createComment", { params: { id }, body }),
+    updateComment: (id: AnalysisId, commentId: string, body: UpdateCommentRequest) =>
+      call<PendingComment>("updateComment", { params: { id, comment_id: commentId }, body }),
+    deleteComment: (id: AnalysisId, commentId: string) =>
+      call<void>("deleteComment", { params: { id, comment_id: commentId } }),
     cancelAnalysis: (id: AnalysisId) => call<AnalysisSummary>("cancelAnalysis", { params: { id } }),
     retryAnalysis: (id: AnalysisId) => call<AnalysisSummary>("retryAnalysis", { params: { id } }),
     getSettings: () => call<Settings>("getSettings"),

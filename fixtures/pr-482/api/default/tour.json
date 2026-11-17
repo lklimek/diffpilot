@@ -24,10 +24,11 @@
   "pr_context": {
     "facts": {
       "ci": {
-        "state": "none",
+        "state": "not_checked",
         "total": 0,
         "failing": []
       },
+      "threads_status": "not_checked",
       "counters": {
         "lines_removed_from_tests": 0,
         "dependencies_changed": []

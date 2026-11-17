@@ -58,12 +58,35 @@ export interface CodeViewProps {
   onLoadDeleted?: (block: DeletedBlock) => void;
 }
 
-const BANDS: Record<RiskBand | "none", { label: string; bar: string; text: string }> = {
-  high: { label: "▲ HIGH", bar: "border-solid border-high-bd bg-high-bg", text: "text-high" },
-  medium: { label: "◆ MEDIUM", bar: "border-dashed border-med-bd bg-med-bg", text: "text-med" },
-  low: { label: "● LOW", bar: "border-dotted border-low-bd bg-low-bg", text: "text-low" },
-  none: { label: "◇ not rated", bar: "border-dotted border-llm bg-llm-bg", text: "text-llm" },
-};
+// The bar pattern is the colour-independent signal; an unrated remark gets a thin neutral line of its own, so it
+// never reads as LOW (UX-102). The 5 px border stays reserved (transparent) so nothing shifts.
+const BANDS: Record<RiskBand | "none", { label: string | null; pattern: string; bar: string; text: string }> =
+  {
+    high: {
+      label: "▲ HIGH",
+      pattern: "solid",
+      bar: "border-solid border-high-bd bg-high-bg",
+      text: "text-high",
+    },
+    medium: {
+      label: "◆ MEDIUM",
+      pattern: "dashed",
+      bar: "border-dashed border-med-bd bg-med-bg",
+      text: "text-med",
+    },
+    low: {
+      label: "● LOW",
+      pattern: "dotted",
+      bar: "border-dotted border-low-bd bg-low-bg",
+      text: "text-low",
+    },
+    none: {
+      label: null,
+      pattern: "thin",
+      bar: "border-solid border-transparent bg-llm-bg bg-[linear-gradient(var(--color-mark),var(--color-mark))] bg-size-[2px_auto] bg-origin-border bg-no-repeat",
+      text: "text-llm",
+    },
+  };
 
 // Every segment reserves the same 5 px left bar column, so line numbers and code never shift (UX-002).
 const SEGMENT = "border-l-5 min-w-full w-max";
@@ -214,13 +237,18 @@ function Line({
   );
 }
 
-function WasIs({ annotations }: { annotations: readonly Annotation[] }) {
+function WasIs({ annotations, unrated }: { annotations: readonly Annotation[]; unrated: boolean }) {
   const pairs = [...new Map(annotations.map((a) => [`${a.was}\u0000${a.is}`, a])).values()];
-  return pairs.map((a) => (
-    <span key={a.id} className="block">
-      Was: {a.was} → Is: {a.is}
-    </span>
-  ));
+  return (
+    <>
+      {unrated && <span className="block">Risk not rated by the LLM.</span>}
+      {pairs.map((a) => (
+        <span key={a.id} className="block">
+          Was: {a.was} → Is: {a.is}
+        </span>
+      ))}
+    </>
+  );
 }
 
 interface HighlightRunProps {
@@ -236,15 +264,18 @@ function HighlightRun({ rows, annotations, band, selected, line, onSelect }: Hig
   const descriptionId = useId();
   const look = BANDS[band ?? "none"];
   const ids = annotations.map((a) => a.id);
-  const text = `${look.label} · LLM remark: ${[...new Set(annotations.map((a) => a.type))].join(", ")}`;
+  const remark = `LLM remark: ${[...new Set(annotations.map((a) => a.type))].join(", ")}`;
+  const text = look.label ? `${look.label} · ${remark}` : remark;
+  const description = <WasIs annotations={annotations} unrated={band === null} />;
   const labelClass = `${STRIP} border-0 bg-transparent text-left text-[10.5px] leading-[17px] font-bold ${look.text}`;
   return (
-    <Tooltip tip={<WasIs annotations={annotations} />} className="block">
+    <Tooltip tip={description} className="block">
       <div
         role="mark"
         data-segment
         data-highlight
         data-band={band ?? "none"}
+        data-bar={look.pattern}
         data-selected={selected || undefined}
         onClick={onSelect && (() => onSelect(ids))}
         className={`${SEGMENT} ${look.bar} ${onSelect ? "cursor-pointer" : "cursor-help"} ${
@@ -252,7 +283,7 @@ function HighlightRun({ rows, annotations, band, selected, line, onSelect }: Hig
         }`}
       >
         <span id={descriptionId} hidden>
-          <WasIs annotations={annotations} />
+          {description}
         </span>
         {onSelect ? (
           <button

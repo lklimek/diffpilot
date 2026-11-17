@@ -1,29 +1,45 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useParams } from "react-router";
+import { Navigate, useParams } from "react-router";
 import { ApiError } from "../../api/client";
-import type { BlockRef, RangeQuery, Tour } from "../../api/generated/types";
-import { useLines, useMe, useReviewState, useTour } from "../../api/queries";
+import type {
+  AnalysisId,
+  AnnotationId,
+  BlockRef,
+  CommentTarget,
+  LinesResponse,
+  PendingComment,
+  Step,
+  StepId,
+  Tour,
+} from "../../api/generated/types";
+import { useCommentActions, useLines, useMe, usePendingReview, useTour } from "../../api/queries";
+import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
-import { CodeView } from "../../components/code-view/CodeView";
+import type { UnresolvedPosts } from "../../components/comment/CommentComposer";
 import { FlowIntroBlock } from "../../components/flow-intro/FlowIntroBlock";
+import { isFlowReviewed } from "../../components/flow-intro/progress";
+import { HelpDialog } from "../../components/help/HelpDialog";
+import { quietTitle } from "../../components/inspector/summaries";
 import { shortcutAction } from "../../components/help/shortcuts";
 import { NavList } from "../../components/nav/NavList";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
+import { MovesBlock } from "../../components/quiet/MovesBlock";
+import { NotAnalysedBlock } from "../../components/quiet/NotAnalysedBlock";
+import { PendingReviewBlock } from "../../components/quiet/PendingReviewBlock";
+import { UnexplainedBlock } from "../../components/quiet/UnexplainedBlock";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { StepBlock } from "../../components/step/StepBlock";
 import { TopBar } from "../../components/top-bar/TopBar";
-import { blockTitle, buildSequence, findStep, sameBlock } from "./sequence";
+import { ChunkedCode, DiffCode, LinesCode, errorText, type CodeContext } from "./code";
+import { DiagramPane } from "./DiagramPane";
+import { InspectorPane, type CommentLineState } from "./InspectorPane";
+import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
+import { blockTitle, buildSequence, findStep, flowJump, sameBlock, stepQuery } from "./sequence";
+import { Workspace } from "./Workspace";
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
 
-function errorText(error: unknown): string {
-  if (error instanceof ApiError && error.code === "analysis_not_finished") {
-    return "This analysis has not finished yet; the review opens when it has.";
-  }
-  return error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
-}
-
-// Ignore j / k while the user types or uses modifier keys.
+// Ignore shortcuts while the user types or uses modifier keys.
 function isTyping(event: KeyboardEvent): boolean {
   const target = event.target as HTMLElement | null;
   return (
@@ -35,62 +51,23 @@ function isTyping(event: KeyboardEvent): boolean {
   );
 }
 
-function StepCode({ analysisId, tour, stepId }: { analysisId: string; tour: Tour; stepId: string }) {
-  const found = findStep(tour, stepId);
-  const query: RangeQuery | undefined = found && {
-    path: found.step.facts.file,
-    side: found.step.facts.side,
-    from: found.step.facts.range.start_line,
-    to: found.step.facts.range.end_line,
-  };
-  const lines = useLines(analysisId, query);
-  if (lines.isPending) return <StatusMessage kind="loading">Loading the code…</StatusMessage>;
-  if (lines.isError)
-    return <StatusMessage kind="error">Cannot show the code: {errorText(lines.error)}</StatusMessage>;
-  return <CodeView lines={lines.data} annotations={found?.step.llm.annotations ?? []} />;
-}
+const onStep = (c: PendingComment, step: Step) =>
+  c.path === step.facts.file &&
+  c.line !== null &&
+  (c.side ?? step.facts.side) === step.facts.side &&
+  c.line >= step.facts.range.start_line &&
+  (c.start_line ?? c.line) <= step.facts.range.end_line;
 
-/** The review screen (thin slice): left menu and one block at a time with Previous / Next and `j` / `k`. */
+/** The review screen (brief §4.3): top bar, three columns, one block at a time. */
 export function TourScreen() {
   const { analysisId = "" } = useParams();
   const me = useMe();
   const tour = useTour(analysisId);
-  const reviewState = useReviewState(analysisId);
-  const [chosen, setChosen] = useState<BlockRef | null>(null);
-  const main = useRef<HTMLElement>(null);
-
-  const sequence = useMemo(() => (tour.data ? buildSequence(tour.data) : []), [tour.data]);
-  const lastViewed = reviewState.data?.last_viewed;
-  const resumed = lastViewed && sequence.some((b) => sameBlock(b, lastViewed)) ? lastViewed : PR_CONTEXT;
-  const current = chosen ?? resumed;
-  const index = sequence.findIndex((b) => sameBlock(b, current));
-  const previous = index > 0 ? sequence[index - 1] : undefined;
-  const next = index >= 0 ? sequence[index + 1] : undefined;
-
-  const go = (block: BlockRef | undefined) => {
-    if (!block) return;
-    setChosen(block);
-    main.current?.scrollTo({ top: 0 });
-  };
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || isTyping(event)) return;
-      const action = shortcutAction(event.key);
-      if (action === "next_block") go(next);
-      else if (action === "previous_block") go(previous);
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  });
-
+  const review = useReviewStateStore(analysisId);
   const login = me.data?.user?.login ?? null;
-  if (tour.isPending || (reviewState.isPending && !chosen)) {
-    return (
-      <Shell login={login}>
-        <StatusMessage kind="loading">Loading the review…</StatusMessage>
-      </Shell>
-    );
+
+  if (tour.error instanceof ApiError && tour.error.code === "analysis_not_finished") {
+    return <Navigate to={`/analyses/${encodeURIComponent(analysisId)}/progress`} replace />;
   }
   if (tour.isError) {
     return (
@@ -100,30 +77,347 @@ export function TourScreen() {
       </Shell>
     );
   }
+  if (tour.isPending || review.status === "loading") {
+    return (
+      <Shell login={login}>
+        <StatusMessage kind="loading">Loading the review…</StatusMessage>
+      </Shell>
+    );
+  }
+  // Session state (block, comment line, unconfirmed posts) belongs to one analysis.
+  return <TourView key={analysisId} analysisId={analysisId} tour={tour.data} review={review} login={login} />;
+}
 
-  const data = tour.data;
-  let block;
-  if (current.block === "flow_intro") {
-    const flow = data.flows.find((f) => f.id === current.flow_id);
-    block = flow && (
+interface TourViewProps {
+  analysisId: AnalysisId;
+  tour: Tour;
+  /** Ticks and last viewed block of this analysis. */
+  review: ReturnType<typeof useReviewStateStore>;
+  login: string | null;
+}
+
+/** Where a resumed review opens, e.g. "flow 1, step 5". */
+function resumedAt(tour: Tour, block: BlockRef): string {
+  switch (block.block) {
+    case "step": {
+      const found = findStep(tour, block.step_id);
+      return found ? `flow ${found.flow.position}, step ${found.step.number}` : "a step";
+    }
+    case "flow_intro": {
+      const flow = tour.flows.find((f) => f.id === block.flow_id);
+      return flow ? `the introduction of flow ${flow.position}` : "a flow introduction";
+    }
+    case "quiet":
+      return quietTitle(block.row);
+    case "pending_review":
+      return "your pending review";
+    case "pr_context":
+      return "PR context";
+  }
+}
+
+function TourView({ analysisId, tour, review, login }: TourViewProps) {
+  const { state, change: save, loadError, saveError } = review;
+  const pending = usePendingReview(analysisId);
+  const comments = useCommentActions(analysisId);
+  const ticked = state.ticked_steps;
+
+  const sequence = useMemo(() => buildSequence(tour), [tour]);
+  const [current, setCurrent] = useState<BlockRef>(() => {
+    const last = state.last_viewed;
+    const known =
+      last &&
+      (sequence.some((b) => sameBlock(b, last)) || last.block === "quiet" || last.block === "pending_review");
+    return known ? last : PR_CONTEXT;
+  });
+  // A review opened elsewhere than at its start says once where it resumed (mockup "returning to a review").
+  const [resumed, setResumed] = useState<BlockRef | null>(() =>
+    current.block === "pr_context" ? null : current,
+  );
+  const [annotationId, setAnnotationId] = useState<AnnotationId | null>(null);
+  const [oldCode, setOldCode] = useState(false);
+  const [commentLine, setCommentLine] = useState<CommentLineState | null>(null);
+  const [unresolved, setUnresolved] = useState<UnresolvedPosts>({});
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [layout, setLayoutState] = useState(loadLayout);
+  const [focusNext, setFocusNext] = useState<"ask" | "comment" | null>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const askRef = useRef<HTMLTextAreaElement>(null);
+  const commentRef = useRef<HTMLTextAreaElement>(null);
+
+  const setLayout = (next: TourLayout) => {
+    saveLayout(next);
+    setLayoutState(next);
+  };
+  const openInspector = () => {
+    if (layout.full !== "inspector" && (layout.full !== null || layout.hidden.inspector)) {
+      setLayout(showColumn(layout, "inspector"));
+    }
+  };
+
+  const index = sequence.findIndex((b) => sameBlock(b, current));
+  const previous = index > 0 ? sequence[index - 1] : undefined;
+  const next = index >= 0 ? sequence[index + 1] : undefined;
+  const found = current.block === "step" ? findStep(tour, current.step_id) : undefined;
+  const step = found?.step;
+  const flow =
+    found?.flow ??
+    (current.block === "flow_intro" ? tour.flows.find((f) => f.id === current.flow_id) : undefined);
+  const stepLines = useLines(analysisId, step && stepQuery(step));
+  const offersOldCode =
+    step !== undefined && (step.facts.changed_lines.length > 0 || step.facts.side === "base");
+
+  const go = (block: BlockRef | undefined) => {
+    if (!block) return;
+    setCurrent(block);
+    setResumed(null);
+    setAnnotationId(null);
+    setOldCode(false);
+    setCommentLine(null);
+    mainRef.current?.scrollTo?.({ top: 0 });
+  };
+
+  // The review screen never scrolls the page: no reserved scrollbar gutter, the columns get the full width.
+  useEffect(() => {
+    const style = document.documentElement.style;
+    const before = style.scrollbarGutter;
+    style.scrollbarGutter = "auto";
+    return () => {
+      style.scrollbarGutter = before;
+    };
+  }, []);
+
+  // The last viewed block is part of the stored review state (resume).
+  const lastViewed = state.last_viewed;
+  useEffect(() => {
+    if (!lastViewed || !sameBlock(lastViewed, current)) save((s) => ({ ...s, last_viewed: current }));
+  }, [current, lastViewed, save]);
+
+  useEffect(() => {
+    const field = focusNext === "ask" ? askRef.current : focusNext === "comment" ? commentRef.current : null;
+    if (!field) return;
+    field.focus();
+    setFocusNext(null);
+  }, [focusNext, layout]);
+
+  const setTicks = (steps: StepId[], on: boolean) =>
+    save((s) => ({
+      ...s,
+      ticked_steps: on
+        ? [...s.ticked_steps, ...steps.filter((id) => !s.ticked_steps.includes(id))]
+        : s.ticked_steps.filter((id) => !steps.includes(id)),
+    }));
+
+  const comment = (target: CommentTarget, lines: LinesResponse) => {
+    setCommentLine({ target, lines });
+    openInspector();
+  };
+  // `c`: back to the open comment, else a comment on the step's first changed line.
+  const commentOnCurrentLine = () => {
+    if (commentLine) {
+      openInspector();
+      setFocusNext("comment");
+    } else if (step && stepLines.data) {
+      const line = step.facts.changed_lines[0]?.start_line ?? step.facts.range.start_line;
+      comment({ path: step.facts.file, side: step.facts.side, start_line: null, line }, stepLines.data);
+    }
+  };
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || helpOpen || isTyping(event)) return;
+      switch (shortcutAction(event.key)) {
+        case "next_block":
+          return go(next);
+        case "previous_block":
+          return go(previous);
+        case "next_flow":
+          return go(flowJump(tour, current, 1));
+        case "previous_flow":
+          return go(flowJump(tour, current, -1));
+        case "tick_step":
+          if (step) setTicks([step.id], !ticked.includes(step.id));
+          return;
+        case "toggle_old_code":
+          if (offersOldCode) setOldCode((shown) => !shown);
+          return;
+        case "comment":
+          event.preventDefault();
+          return commentOnCurrentLine();
+        case "ask":
+          event.preventDefault();
+          openInspector();
+          return setFocusNext("ask");
+        case "help":
+          return setHelpOpen(true);
+        case "close":
+          if (commentLine) setCommentLine(null);
+          else if (annotationId) setAnnotationId(null);
+          else if (layout.full) setLayout({ ...layout, full: null });
+          return;
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  });
+
+  const pendingComments = pending.data?.comments ?? [];
+  const pendingCount = pending.isSuccess
+    ? pending.data.commenting_available
+      ? pending.data.comments.length
+      : ("unavailable" as const)
+    : pending.isPending
+      ? ("loading" as const)
+      : undefined;
+  const ctx: CodeContext = {
+    analysisId,
+    threads: tour.threads,
+    comments: pendingComments,
+    activeLine: commentLine?.target ?? null,
+    onComment: comment,
+  };
+  const selectStep = (id: StepId) => go({ block: "step", step_id: id });
+
+  let block: ReactNode;
+  if (current.block === "flow_intro" && flow) {
+    block = (
       <FlowIntroBlock
         flow={flow}
-        dependencies={data.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
-        ticked={reviewState.data?.ticked_steps ?? []}
+        dependencies={tour.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
+        ticked={ticked}
+        onSetReviewed={(on) =>
+          setTicks(
+            flow.steps.map((s) => s.id),
+            on,
+          )
+        }
       />
     );
-  } else if (current.block === "step") {
-    const found = findStep(data, current.step_id);
-    block = found && (
+  } else if (step && found) {
+    block = (
       <StepBlock
-        key={found.step.id}
-        step={found.step}
-        code={<StepCode analysisId={analysisId} tour={data} stepId={found.step.id} />}
+        key={step.id}
+        step={step}
+        code={
+          oldCode ? (
+            <DiffCode analysisId={analysisId} query={stepQuery(step)} />
+          ) : (
+            <LinesCode
+              ctx={ctx}
+              lines={stepLines}
+              annotations={step.llm.annotations}
+              band={step.llm.assessment?.risk ?? null}
+              kind={step.llm.kind}
+              selectedAnnotation={annotationId}
+              onSelectAnnotation={(ids) => {
+                setAnnotationId(ids[0] ?? null);
+                openInspector();
+              }}
+            />
+          )
+        }
+        patterns={found.flow.llm.pattern_repetitions}
+        impactCode={(impact) => (
+          <ChunkedCode ctx={ctx} path={impact.file} side="head" ranges={[impact.range]} />
+        )}
+        reviewed={ticked.includes(step.id)}
+        onSetReviewed={(on) => setTicks([step.id], on)}
+        ownComments={pendingComments.filter((c) => onStep(c, step)).length}
+        oldCode={offersOldCode ? { shown: oldCode, onToggle: () => setOldCode((s) => !s) } : undefined}
+        onSelectStep={selectStep}
       />
     );
-  } else {
-    block = <PrContextBlock pr={data.analysis.pr} context={data.pr_context} />;
+  } else if (current.block === "quiet") {
+    const row = current.row;
+    if (row.row === "unexplained") {
+      block = (
+        <UnexplainedBlock
+          items={tour.quiet.unexplained}
+          code={(item) => <ChunkedCode ctx={ctx} path={item.file} side={item.side} ranges={item.ranges} />}
+        />
+      );
+    } else if (row.row === "moves") {
+      block = (
+        <MovesBlock
+          moves={tour.quiet.moves}
+          code={(move) => (
+            <ChunkedCode ctx={ctx} path={move.to.file} side={move.to.side} ranges={[move.to.range]} />
+          )}
+        />
+      );
+    } else {
+      const section = tour.quiet.not_analysed.find((s) => s.category === row.category);
+      block = section && <NotAnalysedBlock section={section} counters={tour.pr_context.facts.counters} />;
+    }
+  } else if (current.block === "pending_review") {
+    block = pending.isSuccess ? (
+      <PendingReviewBlock
+        review={pending.data}
+        prUrl={tour.analysis.pr.html_url}
+        onEdit={comments.edit}
+        onDelete={comments.remove}
+      />
+    ) : pending.isError ? (
+      <StatusMessage kind="error">Cannot read your pending review: {errorText(pending.error)}</StatusMessage>
+    ) : (
+      <StatusMessage kind="loading">Loading your pending review…</StatusMessage>
+    );
+  } else if (current.block === "pr_context") {
+    block = <PrContextBlock pr={tour.analysis.pr} context={tour.pr_context} />;
   }
+
+  const progressAlert =
+    review.status === "unreadable"
+      ? `Your ticks and last viewed block could not be read. Changes stay on this page and are saved once they can be read: ${errorText(loadError)}`
+      : saveError !== null
+        ? `Your ticks and last viewed block are not saved: ${errorText(saveError)}`
+        : null;
+  const centre = (
+    <>
+      {resumed && sameBlock(resumed, current) && (
+        <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1 text-[12.5px]">
+          <p role="status" className="m-0 flex-1">
+            Resumed where you left off: {resumedAt(tour, resumed)}.
+          </p>
+          <button
+            type="button"
+            onClick={() => setResumed(null)}
+            className="min-h-6 cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] hover:border-accent"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+      {progressAlert && (
+        <p
+          role="alert"
+          className="mb-2 rounded-md border border-l-4 border-high-bd bg-high-bg px-3 py-1.5 text-[12.5px]"
+        >
+          {progressAlert}
+        </p>
+      )}
+      {flow && (
+        <DiagramPane
+          key={flow.id}
+          flow={flow}
+          currentStepId={step?.id ?? null}
+          onSelectStep={selectStep}
+          open={layout.diagram}
+          onToggle={() => setLayout({ ...layout, diagram: !layout.diagram })}
+        />
+      )}
+      {block ?? <StatusMessage kind="empty">This block is not part of the analysis.</StatusMessage>}
+      <BlockNav
+        previous={previous && blockTitle(tour, previous)}
+        next={next && blockTitle(tour, next)}
+        onPrevious={() => go(previous)}
+        onNext={() => go(next)}
+      />
+      <p className="sr-only" aria-live="polite">
+        {blockTitle(tour, current)}
+      </p>
+    </>
+  );
 
   return (
     <div className="flex h-screen flex-col">
@@ -133,30 +427,54 @@ export function TourScreen() {
       >
         Skip to content
       </a>
-      <TopBar pr={data.analysis.pr} ci={data.pr_context.facts.ci} login={login} />
-      <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[var(--width-nav)_minmax(0,1fr)]">
-        <nav aria-label="Flows and steps" className="overflow-auto border-r border-border bg-surface p-3.5">
+      <TopBar
+        pr={tour.analysis.pr}
+        ci={tour.pr_context.facts.ci}
+        login={login}
+        progress={{
+          reviewed: tour.flows.filter((f) => isFlowReviewed(f, ticked)).length,
+          total: tour.flows.length,
+        }}
+        pendingCount={pendingCount}
+        onOpenPending={() => go({ block: "pending_review" })}
+        onHelp={() => setHelpOpen(true)}
+      />
+      <Workspace
+        layout={layout}
+        onChange={setLayout}
+        mainRef={mainRef}
+        nav={
           <NavList
-            flows={data.flows}
-            quiet={data.quiet}
-            ticked={reviewState.data?.ticked_steps ?? []}
+            flows={tour.flows}
+            quiet={tour.quiet}
+            ticked={ticked}
+            pendingCount={pendingCount}
             current={current}
             onSelect={go}
           />
-        </nav>
-        <main id="main" ref={main} tabIndex={-1} className="overflow-auto px-6 pt-4 pb-10">
-          {block ?? <StatusMessage kind="empty">This block is not part of the analysis.</StatusMessage>}
-          <BlockNav
-            previous={previous && blockTitle(data, previous)}
-            next={next && blockTitle(data, next)}
-            onPrevious={() => go(previous)}
-            onNext={() => go(next)}
+        }
+        main={centre}
+        inspector={
+          <InspectorPane
+            analysisId={analysisId}
+            tour={tour}
+            block={current}
+            step={step}
+            annotationId={annotationId}
+            onBackToStep={() => setAnnotationId(null)}
+            onSelectStep={selectStep}
+            pending={pending}
+            comments={comments}
+            commentLine={commentLine}
+            onCancelComment={() => setCommentLine(null)}
+            unresolved={unresolved}
+            onUnresolvedChange={setUnresolved}
+            askRef={askRef}
+            commentRef={commentRef}
           />
-          <p className="sr-only" aria-live="polite">
-            {blockTitle(data, current)}
-          </p>
-        </main>
-      </div>
+        }
+      />
+      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
     </div>
   );
 }

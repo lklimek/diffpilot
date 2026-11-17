@@ -6,6 +6,8 @@
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use tracing_subscriber::layer::SubscriberExt;
+
 thread_local! {
     static BUFFER: RefCell<Option<Arc<Mutex<Vec<u8>>>>> = const { RefCell::new(None) };
 }
@@ -23,7 +25,9 @@ impl LogCapture {
                 .with_max_level(tracing::Level::TRACE)
                 .with_ansi(false)
                 .with_writer(|| ThreadWriter)
-                .finish();
+                .finish()
+                // The same payload cap as the server's log setup.
+                .with(crate::memcan::payload_log_cap());
             // Fails only if another global subscriber exists, which this crate's tests never install.
             let _ = tracing::subscriber::set_global_default(subscriber);
         });

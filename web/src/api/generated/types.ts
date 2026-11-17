@@ -139,7 +139,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal";
+export type ApiErrorCode = "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal";
 
 /**
  * A GitHub App installation.
@@ -332,7 +332,7 @@ failing_tests: Array<string>, };
 /**
  * Overall CI state.
  */
-export type CiState = "passing" | "failing" | "pending" | "none";
+export type CiState = "passing" | "failing" | "pending" | "none" | "not_checked";
 
 /**
  * CI status of the head commit.
@@ -570,7 +570,12 @@ note: string | null,
 /**
  * When it was recorded.
  */
-created_at: string, };
+created_at: string,
+/**
+ * The copy of this entry's current revision in MemCan (calibration memory for `overrated` /
+ * `underrated`); only `written` means MemCan confirmed it.
+ */
+memory: FeedbackMemory, };
 
 /**
  * Identifier of a feedback entry.
@@ -578,7 +583,14 @@ created_at: string, };
 export type FeedbackId = string;
 
 /**
- * Body of `POST /api/v1/analyses/{id}/feedback`; one entry per user and target (later posts replace it).
+ * State of the MemCan copy of a feedback entry's current revision.
+ */
+export type FeedbackMemory = "pending" | "written" | "failed";
+
+/**
+ * Body of `POST /api/v1/analyses/{id}/feedback`: one entry per user, target and value, so several values may
+ * coexist on a target; posting a value again replaces its note; `overrated` and `underrated` exclude each other
+ * (posting one removes the other). `missed_by_llm` is recorded only by the server.
  */
 export type FeedbackRequest = {
 /**
@@ -590,7 +602,7 @@ target: FeedbackTarget,
  */
 value: UserFeedbackValue,
 /**
- * Optional note.
+ * Optional note, at most 2000 characters (`FeedbackRequest::MAX_NOTE_CHARS`).
  */
 note: string | null, };
 
@@ -1311,7 +1323,11 @@ commenting_available: boolean,
 /**
  * Pending comments; the count is their number.
  */
-comments: Array<PendingComment>, };
+comments: Array<PendingComment>,
+/**
+ * The server stopped reading at its cap (more pending comments or reviews exist on GitHub than listed).
+ */
+incomplete: boolean, };
 
 /**
  * The PR context: deterministic facts and LLM content.
@@ -1334,6 +1350,10 @@ export type PrContextFacts = {
  * CI status of the head commit.
  */
 ci: CiStatus,
+/**
+ * Whether `Tour.threads` holds every review thread of the pull request.
+ */
+threads_status: ThreadsStatus,
 /**
  * Counters from the pre-pass.
  */
@@ -1759,6 +1779,11 @@ impact: Array<ImpactRef>, };
  * LLM status of an existing GitHub review thread.
  */
 export type ThreadLlmStatus = "still_valid" | "stale" | "already_addressed";
+
+/**
+ * How completely the pull request's review threads were read.
+ */
+export type ThreadsStatus = "checked" | "partial" | "not_checked";
 
 /**
  * Response of `GET /api/v1/analyses/{id}/tour`.

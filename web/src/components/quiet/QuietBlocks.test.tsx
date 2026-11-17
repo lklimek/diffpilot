@@ -208,14 +208,24 @@ describe("PendingReviewBlock", () => {
   });
 
   it("says when the pending review has no comments", () => {
-    render(<PendingReviewBlock review={{ commenting_available: true, comments: [] }} prUrl={PR_URL} />);
+    render(
+      <PendingReviewBlock
+        review={{ commenting_available: true, comments: [], incomplete: false }}
+        prUrl={PR_URL}
+      />,
+    );
     expect(screen.getByRole("article")).toHaveTextContent(
       "Your pending review on GitHub has no comments yet.",
     );
   });
 
   it("says when commenting is not available", () => {
-    render(<PendingReviewBlock review={{ commenting_available: false, comments: [] }} prUrl={PR_URL} />);
+    render(
+      <PendingReviewBlock
+        review={{ commenting_available: false, comments: [], incomplete: false }}
+        prUrl={PR_URL}
+      />,
+    );
     expect(screen.getByRole("article")).toHaveTextContent(
       "Commenting is not available: the GitHub App is not installed on this repository.",
     );

@@ -194,6 +194,13 @@ pub const POST_FEEDBACK: Route = route(
     "/api/v1/analyses/{id}/feedback",
     SessionCsrf,
 );
+/// Removes one of the user's feedback entries (one value on one target).
+pub const DELETE_FEEDBACK: Route = route(
+    "deleteFeedback",
+    Delete,
+    "/api/v1/analyses/{id}/feedback/{feedback_id}",
+    SessionCsrf,
+);
 /// The user's pending review on GitHub.
 pub const GET_PENDING_REVIEW: Route = route(
     "getPendingReview",
@@ -267,6 +274,7 @@ pub const ROUTES: &[Route] = &[
     ASK_QUESTION,
     LIST_FEEDBACK,
     POST_FEEDBACK,
+    DELETE_FEEDBACK,
     GET_PENDING_REVIEW,
     CREATE_COMMENT,
     UPDATE_COMMENT,

@@ -2,6 +2,7 @@
 
 pub mod app_token;
 pub mod checks;
+pub mod graphql;
 pub mod mirror;
 pub mod oauth;
 pub mod rest;

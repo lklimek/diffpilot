@@ -22,7 +22,7 @@ const SECRET_KEYS = ["SR_SECRET_KEY", "SR_RUNNER_SECRET", "SR_GITHUB_CLIENT_SECR
 test.describe.configure({ mode: "serial" });
 
 const stateDir = () => process.env.SR_E2E_STATE_DIR ?? "";
-const heading = (page: Page) => page.getByRole("main").getByRole("heading", { level: 2 }).first();
+const heading = (page: Page) => page.locator("main h2:not([data-column-title])").first();
 // Session cookie and CSRF token of the scenario, for the log scan.
 const sessionSecrets: [string, string][] = [];
 
@@ -72,15 +72,20 @@ test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, conte
       response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/analyses",
   );
   await page.getByRole("button", { name: "Analyze" }).click();
+  // Without a GitHub App installation on the fixture repository Home asks first.
+  const withoutApp = page.getByRole("button", { name: "Analyze without it" });
+  const asked = await Promise.race([created.then(() => false), withoutApp.waitFor().then(() => true)]);
+  if (asked) await withoutApp.click();
   const response = await created;
   expect(response.status(), await response.text()).toBe(201);
   const { id } = (await response.json()) as { id: string };
-  await expect(page.getByText("The analysis has started.")).toBeVisible();
+  await expect(page).toHaveURL(new RegExp(`/analyses/${id}/progress$`));
   await shoot(page, "progress");
 
   await waitUntilFinished(page, id);
-  // The thin slice has no progress screen: submitting the URL again opens the finished analysis.
-  await page.getByRole("button", { name: "Analyze" }).click();
+  const openReview = page.getByRole("link", { name: "Open review" });
+  await expect(openReview).toBeVisible({ timeout: FINISH_TIMEOUT_MS });
+  await openReview.click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${id}$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
   await shoot(page, "pr-context");

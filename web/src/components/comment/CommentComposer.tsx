@@ -259,9 +259,8 @@ function Draft({
           On <code>{location}</code>. This file is not part of the PR diff, and GitHub does not accept review
           comments on it. Link to the line instead:{" "}
           <GithubLink url={line.permalink} tip="Open the line on GitHub at the analysed commit (new tab)">
-            Open the line on GitHub
-          </GithubLink>{" "}
-          <code className="text-[11px] break-all text-muted">{line.permalink}</code>
+            line {line.target.line} on GitHub
+          </GithubLink>
         </p>
         <button type="button" onClick={onCancel} className={`${BUTTON} mt-1`}>
           Cancel
@@ -301,6 +300,15 @@ function Draft({
   const preview = line.placement === "line" || line.placement === "file" ? line.placement : null;
   return (
     <>
+      {/* The line reference stays in view while the dock scrolls (sticky inside the composer section). */}
+      <p className="sticky top-0 z-[1] -mt-0.5 flex flex-wrap items-center gap-2 bg-surface-2 py-0.5 text-[12.5px]">
+        <span>
+          On <code>{location}</code>
+        </span>
+        <button type="button" onClick={onCancel} className={BUTTON}>
+          Cancel
+        </button>
+      </p>
       <form
         className="grid gap-1 text-[12.5px]"
         onSubmit={(event) => {
@@ -308,14 +316,6 @@ function Draft({
           if (!locked) void submit();
         }}
       >
-        <p className="flex flex-wrap items-center gap-2">
-          <span>
-            On <code>{location}</code>
-          </span>
-          <button type="button" onClick={onCancel} className={BUTTON}>
-            Cancel
-          </button>
-        </p>
         {line.placement === "file" && (
           <p className="rounded-md border-l-4 border-l-mv-bd bg-surface px-2 py-1">
             This line is outside the PR diff, so the comment is posted as a file comment whose text links to

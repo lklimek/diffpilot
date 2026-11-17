@@ -1,10 +1,8 @@
 import { useId, type ReactNode } from "react";
 import type {
-  CiState,
   CiStatus,
   FitTopic,
   PrContextBlock as PrContext,
-  PrContextFacts,
   PrSummary,
   ProjectProfileStatus,
   RelatedWork,
@@ -13,16 +11,8 @@ import type {
 import { evidenceText } from "../section/format";
 import { LlmLine, Section, Subhead } from "../section/Section";
 
-/**
- * CI status including `not_checked` (the server could not read the checks). Mirrors the approved contract
- * addition `CiState::NotChecked`; replace with `CiStatus` once the generated type has it.
- */
-export type CiFact = Omit<CiStatus, "state"> & { state: CiState | "not_checked" };
-
-/** The PR context as rendered: the contract type with CI widened by `not_checked`. */
-export type PrContextView = Omit<PrContext, "facts"> & {
-  facts: Omit<PrContextFacts, "ci"> & { ci: CiFact };
-};
+/** The PR context as rendered. */
+export type PrContextView = PrContext;
 
 interface PrContextBlockProps {
   /** The pull request. */
@@ -59,7 +49,7 @@ function Related({ item }: { item: RelatedWork }) {
   );
 }
 
-function ciLine(ci: CiFact): string {
+function ciLine(ci: CiStatus): string {
   switch (ci.state) {
     case "failing":
       return `CI: ${ci.failing.length} of ${ci.total} checks failing`;
@@ -101,7 +91,7 @@ export function PrContextBlock({ pr, context }: PrContextBlockProps) {
           <span className="text-[12px] text-muted">From the diff; no LLM.</span>
         </p>
       )}
-      <div className="grid grid-cols-1 gap-3.5 @[1250px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+      <div className="grid grid-cols-1 items-start gap-3.5 @[1250px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section title="LLM analysis" tone="llm">
           <LlmLine />
           <p>

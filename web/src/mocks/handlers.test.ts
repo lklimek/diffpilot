@@ -6,7 +6,8 @@ import type { AnalysisEvent } from "../api/generated/types";
 import { setFixtureState } from "./fixtures";
 import { handlers } from "./handlers";
 import { setMockLanguage } from "./handlers/get-settings";
-import { RUN_STEP_MS, resetLive } from "./live-analysis";
+import { RUN_STEP_MS, resetLive, setLiveState } from "./live-analysis";
+import { resetStore } from "./review-store";
 import { MOVED_HEAD, setScenario } from "./scenarios";
 
 const BASE = location.origin;
@@ -17,6 +18,7 @@ afterEach(() => {
   setScenario(null);
   setMockLanguage(null);
   resetLive();
+  resetStore();
   vi.useRealTimers();
 });
 afterAll(() => server.close());
@@ -45,6 +47,29 @@ describe("msw handlers from fixtures/pr-482", () => {
     }
   });
 
+  it("remove one feedback value of the analysis; an unknown id is not_found", async () => {
+    const api = createApiClient(BASE);
+    const created = await api.postFeedback(ID, {
+      target: { target: "step", step_id: "f1.5" },
+      value: "wrong",
+      note: null,
+    });
+    await api.postFeedback(ID, {
+      target: { target: "step", step_id: "f1.5" },
+      value: "irrelevant",
+      note: null,
+    });
+    await api.deleteFeedback(ID, created.id);
+    const left = (await api.listFeedback(ID)).filter(
+      (f) => JSON.stringify(f.target) === '{"target":"step","step_id":"f1.5"}',
+    );
+    expect(left.map((f) => f.value)).toEqual(["irrelevant"]);
+    await expect(api.deleteFeedback(ID, created.id)).rejects.toMatchObject({
+      status: 404,
+      code: "not_found",
+    });
+  });
+
   it("answer the slice flow: resolve, create, tour", async () => {
     const api = createApiClient(BASE);
     const resolved = await api.resolvePr({ url: "https://github.com/acme/node-client/pull/482" });
@@ -54,6 +79,7 @@ describe("msw handlers from fixtures/pr-482", () => {
       head_sha: resolved.pr.head_sha,
     });
     expect(created.state).toEqual({ state: "planning" });
+    setLiveState({ state: "finished", total: 5 });
     const tour = await api.getTour(created.id);
     expect(tour.flows.map((f) => f.id)).toEqual(["f1", "f2", "f3", "f4", "f5"]);
   });

@@ -14,9 +14,9 @@ use contracts::agent::plan::{PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::tour::{
-    Annotation, CiState, CiStatus, Counters, Flow, FlowFacts, FlowGraph, FlowGroup, FlowLlm,
-    GraphEdge, GraphNode, ImpactRef, PatternRepetition, PatternSite, PrContextBlock,
-    PrContextFacts, ProjectProfileStatus, QuietRows, Step, StepFacts, StepLlm, Tour,
+    Annotation, Counters, Flow, FlowFacts, FlowGraph, FlowGroup, FlowLlm, GraphEdge, GraphNode,
+    ImpactRef, PatternRepetition, PatternSite, PrContextBlock, PrContextFacts,
+    ProjectProfileStatus, QuietRows, Step, StepFacts, StepLlm, ThreadsStatus, Tour,
 };
 use contracts::common::{LineRange, LineSide};
 use contracts::ids::{AnnotationId, FlowId, StepId};
@@ -24,6 +24,7 @@ use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use url::Url;
 
+use crate::github::checks::NOT_CHECKED;
 use crate::pipeline::{PrDiffError, pr_diff};
 use crate::state::AppState;
 
@@ -155,11 +156,9 @@ pub fn project(
         analysis: summary.clone(),
         pr_context: PrContextBlock {
             facts: PrContextFacts {
-                ci: CiStatus {
-                    state: CiState::None,
-                    total: 0,
-                    failing: Vec::new(),
-                },
+                // TODO(WP3-PIPE): CI and threads from `review::stored_github_snapshot`; until wired, not checked.
+                ci: NOT_CHECKED,
+                threads_status: ThreadsStatus::NotChecked,
                 counters: Counters {
                     lines_removed_from_tests: 0,
                     dependencies_changed: Vec::new(),

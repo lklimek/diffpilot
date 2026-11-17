@@ -8,9 +8,9 @@ use std::process::{Output, Stdio};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
+use analysis::blob::{self, Blob, BlobError, Limits};
 use contracts::common::RepoRef;
 use contracts::ids::CommitSha;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::config::Config;
@@ -21,12 +21,9 @@ use crate::github::rest::is_valid_repo;
 const FETCH_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Longest a local read may take.
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
-/// Largest file the server reads for display (the lines endpoint answers `not_rendered` above it).
-pub const MAX_BLOB_BYTES: u64 = 8 * 1024 * 1024;
+pub use analysis::blob::{MAX_BLOB_BYTES, is_tree_path};
 /// Longest wait for another fetch into the same mirror (one fetch plus its local checks).
 const LOCK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
-/// Longest `cat-file --batch` header line read.
-const HEADER_LIMIT: u64 = 4096;
 
 /// One lock per mirror: fetches into the same bare repository are serialised.
 static MIRROR_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Arc<tokio::sync::Mutex<()>>>>> =
@@ -66,6 +63,9 @@ pub enum MirrorError {
     /// A commit is still missing after the fetch.
     #[error("commit {0} is not in the repository")]
     MissingCommit(CommitSha),
+    /// The blocking file read did not complete.
+    #[error("the file read did not complete")]
+    Task(#[source] tokio::task::JoinError),
 }
 
 /// The mirror directory of `repo` (lower-cased: GitHub names are case-insensitive).
@@ -191,18 +191,8 @@ fn check(output: Output, operation: &'static str) -> Result<Output, MirrorError>
     }
 }
 
-/// A repository-relative path that names a tree entry: no leading or trailing `/`, no empty, `.` or `..`
-/// component, no control characters.
-pub fn is_tree_path(path: &str) -> bool {
-    !path.is_empty()
-        && !path.chars().any(char::is_control)
-        && path
-            .split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
-}
-
 /// The blob at `path` in the tree of `commit`; `None` when the path is not a file there. Blobs over
-/// [`MAX_BLOB_BYTES`] are refused before any content is read.
+/// [`MAX_BLOB_BYTES`] are refused before any content is read (the shared bounded reader, `analysis::blob`).
 pub async fn read_blob(
     mirror: &Path,
     commit: &CommitSha,
@@ -211,52 +201,34 @@ pub async fn read_blob(
     if !is_tree_path(path) {
         return Ok(None);
     }
-    let read = async {
-        // The object name goes through stdin, so no part of it can act as an option.
-        let mut command = git(mirror);
-        command
-            .args(["cat-file", "--batch"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = command.spawn()?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(format!("{}:{path}\n", commit.0).as_bytes())
-                .await?;
-        }
-        let Some(stdout) = child.stdout.take() else {
-            return Ok(None);
-        };
-        let mut stdout = BufReader::new(stdout);
-        let mut header = String::new();
-        (&mut stdout)
-            .take(HEADER_LIMIT)
-            .read_line(&mut header)
-            .await?;
-        // `<oid> blob <size>`, or `<name> missing` / `ambiguous`.
-        let mut fields = header.trim_end().split(' ');
-        let (kind, size) = (fields.nth(1), fields.next());
-        let Some(size) = size.and_then(|size| size.parse::<u64>().ok()) else {
-            return Ok(None);
-        };
-        if kind != Some("blob") {
-            return Ok(None);
-        }
-        if size > MAX_BLOB_BYTES {
-            return Err(MirrorError::BlobTooLarge { size });
-        }
-        let mut blob = Vec::with_capacity(usize::try_from(size).unwrap_or_default());
-        stdout.take(size).read_to_end(&mut blob).await?;
-        Ok(Some(blob))
+    let (mirror, commit, path) = (mirror.to_path_buf(), commit.clone(), path.to_owned());
+    let limits = Limits {
+        max_blob_bytes: MAX_BLOB_BYTES,
+        total_bytes: MAX_BLOB_BYTES,
+        timeout: READ_TIMEOUT,
     };
-    // `kill_on_drop` ends git when the read fails or times out.
-    tokio::time::timeout(READ_TIMEOUT, read)
-        .await
-        .map_err(|_| MirrorError::Timeout {
-            operation: "cat-file",
-            timeout: READ_TIMEOUT,
-        })?
+    let answers =
+        tokio::task::spawn_blocking(move || blob::read_blobs(&mirror, &[(&commit, &path)], limits))
+            .await
+            .map_err(MirrorError::Task)?
+            .map_err(|error| match error {
+                BlobError::Io(error) => MirrorError::Io(error),
+                BlobError::Git { message } => MirrorError::Git {
+                    operation: "cat-file",
+                    message,
+                },
+                BlobError::Timeout { .. } => MirrorError::Timeout {
+                    operation: "cat-file",
+                    timeout: READ_TIMEOUT,
+                },
+            })?;
+    match answers.into_iter().next() {
+        Some(Blob::Content(bytes)) => Ok(Some(bytes.to_vec())),
+        Some(Blob::TooLarge { size } | Blob::OverBudget { size }) => {
+            Err(MirrorError::BlobTooLarge { size })
+        }
+        Some(Blob::Missing) | None => Ok(None),
+    }
 }
 
 /// The merge base of `base` and `head`: the commit a pull request's changes are compared with (GitHub's

@@ -43,7 +43,7 @@ export function FlowSummary({
                   <button
                     type="button"
                     onClick={() => onSelectStep(s.id)}
-                    className="cursor-pointer text-left text-accent underline"
+                    className="min-h-6 cursor-pointer text-left text-accent underline"
                   >
                     {label}
                   </button>
@@ -95,43 +95,69 @@ export function FlowSummary({
   );
 }
 
-const SOURCE = { repository_file: "repository file", memcan: "MemCan" } as const;
+const CATEGORY: Record<NotAnalysedCategory, string> = {
+  tests: "Tests",
+  docs_comments: "Docs & comments",
+  generated_mechanical: "Mechanical & generated",
+};
+const RISK_ORDER = [
+  ["high", "HIGH"],
+  ["medium", "MEDIUM"],
+  ["low", "LOW"],
+  [null, "not rated"],
+] as const;
 
-/** Summary of the PR context: deterministic facts apart from the LLM analysis. */
-export function PrContextSummary({ context, sections }: { context: PrContextBlock } & Sections) {
+/**
+ * Summary of the PR context. The centre lists CI, counters and profile; the inspector complements it with the
+ * coverage of the quiet rows (deterministic) and the LLM's split at a glance.
+ */
+export function PrContextSummary({
+  context,
+  quiet,
+  flows,
+  sections,
+}: { context: PrContextBlock; quiet: QuietRows; flows: readonly Flow[] } & Sections) {
   const { facts, llm } = context;
-  const sources = facts.project_profile.sources;
-  const deps = facts.counters.dependencies_changed;
+  const unexplained = quiet.unexplained.reduce(
+    (n, f) => n + f.ranges.reduce((m, r) => m + r.end_line - r.start_line + 1, 0),
+    0,
+  );
+  const notAnalysed = quiet.not_analysed.filter((s) => s.file_count > 0);
+  const files = notAnalysed.reduce((n, s) => n + s.file_count, 0);
+  const risks = RISK_ORDER.map(
+    ([risk, label]) => [flows.filter((f) => f.llm.risk === risk).length, label] as const,
+  )
+    .filter(([n]) => n > 0)
+    .map(([n, label]) => `${n} ${label}`);
   return (
     <>
       <Collapsible
-        sectionKey="context-facts"
-        title="Facts"
+        sectionKey="context-coverage"
+        title="Coverage"
         tone="facts"
-        source="From the diff, the pre-pass and the repository; no LLM."
+        source="From the diff and the pre-pass; no LLM."
         sections={sections}
       >
         <ul className="m-0 list-disc pl-5">
           <li>
-            {plural(facts.flow_count, "flow")}, {plural(facts.step_count, "step")}
-          </li>
-          <li>{plural(facts.counters.lines_removed_from_tests, "line")} removed from tests</li>
-          <li>
-            {plural(deps.length, "dependency", "dependencies")} changed
-            {deps.length > 0 && `: ${deps.join(", ")}`}
+            Unexplained: {plural(unexplained, "changed line")} in {plural(quiet.unexplained.length, "file")}
+            {unexplained > 0 && " — read these yourself"}
           </li>
           <li>
-            {sources.length > 0
-              ? `Project profile: ${sources.map((s) => SOURCE[s]).join(" and ")}`
-              : "No project profile — ratings are component-level"}
+            Not analysed: {plural(files, "file")}
+            {notAnalysed.length > 0 &&
+              ` (${notAnalysed.map((s) => `${CATEGORY[s.category]} ${s.file_count}`).join(", ")})`}
           </li>
-          {facts.agent_instruction_files.length > 0 && (
-            <li>Agent instruction files in this PR: {facts.agent_instruction_files.join(", ")}</li>
-          )}
+          <li>Moves with identical text: {quiet.moves.length}</li>
         </ul>
       </Collapsible>
       <Collapsible sectionKey="context-llm" title="LLM analysis at a glance" tone="llm" sections={sections}>
         <ul className="m-0 list-disc pl-5">
+          <li>
+            The LLM split this PR into {plural(facts.flow_count, "flow")} with{" "}
+            {plural(facts.step_count, "step")}.
+          </li>
+          {risks.length > 0 && <li>Flows by LLM risk: {risks.join(", ")}</li>}
           <li>
             {facts.related_work_checked
               ? `Related work: ${plural(llm.related_work.length, "item")}`
@@ -147,12 +173,6 @@ export function PrContextSummary({ context, sections }: { context: PrContextBloc
     </>
   );
 }
-
-const CATEGORY: Record<NotAnalysedCategory, string> = {
-  tests: "Tests",
-  docs_comments: "Docs & comments",
-  generated_mechanical: "Mechanical & generated",
-};
 
 /** Title of a quiet row. */
 export function quietTitle(row: QuietRowRef): string {
