@@ -208,11 +208,14 @@ impl Questions<'_> {
             .collect()
     }
 
-    /// Questions neither answered nor failed (`pending`, `answering`) of every tenant, oldest first.
+    /// Questions of every tenant whose end is not stored yet, oldest first: `pending`, `answering`, or `answered`
+    /// from a ready output while their job has not ended (its result may still replace the answer).
     pub async fn unanswered(&self, now: DateTime<Utc>) -> Result<Vec<QuestionRecord>, DbError> {
         let rows = sqlx::query(concat!(
             question_select!(),
-            " WHERE q.state IN ('pending', 'answering') ORDER BY q.created_at, q.rowid"
+            " WHERE q.state IN ('pending', 'answering')
+                 OR (q.state = 'answered' AND j.state IN ('queued', 'claimed', 'running', 'paused'))
+             ORDER BY q.created_at, q.rowid"
         ))
         .bind(ts(now))
         .fetch_all(self.pool)
@@ -631,5 +634,28 @@ mod tests {
             .await
             .expect("answering");
         assert_eq!(resumes(at(33)).await, None, "only a pending question waits");
+        // Answered from a ready output while its job has not ended: still open.
+        db.questions()
+            .update(id, &QuestionUpdate::Answered(output("Q?")), at(34))
+            .await
+            .expect("answered");
+        let open = |now| {
+            let db = db.clone();
+            async move {
+                db.questions()
+                    .unanswered(now)
+                    .await
+                    .expect("open")
+                    .iter()
+                    .map(|record| record.question.id)
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(open(at(34)).await, [id]);
+        db.jobs()
+            .request_cancel(claimed.id, at(35))
+            .await
+            .expect("cancel");
+        assert!(open(at(35)).await.is_empty(), "its job ended");
     }
 }
