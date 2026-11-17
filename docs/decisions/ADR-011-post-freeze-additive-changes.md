@@ -152,7 +152,8 @@ These remaining statements in `docs/design-brief.md` are superseded:
 | `JobSpec.working_session?: {user_key, analytic_generation, thread_id?}` | Self-contained archive routing: Ask restores its valid working fork, else analytic; saves only its private fork (ADR-004). |
 | `pull_requests.analytic_generation`; `working_sessions` keyed by PR/user | Re-fork after analytic advancement without allowing user instructions into analysis. |
 | Questions HTTP/SSE filtered to asker; private quotas/history | Shared analyses never expose foreign Q&A, counts or ownership markers. Existing `asked_by`/`mine` retained for compatibility, always caller-owned. |
-| MemCan feedback `private_text_excluded: true`; no agent MemCan access | Prevent private feedback notes or Ask-written memories from reaching shared analytical context. Legacy calibration text is not read. |
+| `AgentAccess.memcan.allow_write?: bool` (default false) | The agent has MemCan again: analytic jobs get search and `add_memory`, Ask jobs search only (ADR-004). |
+| MemCan feedback `private_text_excluded: true`; Ask has no MemCan write tool | Prevent private feedback notes or Ask-written memories from reaching shared analytical context. Legacy calibration text is not read. |
 
 ## Flow file output (owner approval, 2026-11-17)
 

@@ -22,7 +22,14 @@ pub(crate) const GITHUB_TOOLS: [&str; 10] = [
     "list_commits",
     "get_commit",
 ];
-/// MemCan tools the model is offered: search and `add_memory` (R6a; defence in depth only, AR-1).
+/// MemCan search tools: all an Ask job's model is offered (ADR-004).
+pub(crate) const MEMCAN_READ_TOOLS: [&str; 4] = [
+    "search",
+    "search_memories",
+    "search_code",
+    "search_standards",
+];
+/// MemCan tools offered to analytic jobs: search and `add_memory` (R6a; defence in depth only, AR-1).
 pub(crate) const MEMCAN_TOOLS: [&str; 5] = [
     "search",
     "search_memories",
@@ -128,7 +135,11 @@ required = false
 "#,
         url = toml_string(url),
         bearer = toml_string(&format!("Bearer {}", memcan.token.expose())),
-        enabled = toml_array(&MEMCAN_TOOLS),
+        enabled = if memcan.allow_write {
+            toml_array(&MEMCAN_TOOLS)
+        } else {
+            toml_array(&MEMCAN_READ_TOOLS)
+        },
     )
 }
 
@@ -194,6 +205,10 @@ mod tests {
     }
 
     fn access(memcan_url: &str) -> AgentAccess {
+        access_with(memcan_url, true)
+    }
+
+    fn access_with(memcan_url: &str, allow_write: bool) -> AgentAccess {
         AgentAccess {
             github: Some(InstallationToken {
                 token: Secret::new(GITHUB_CANARY),
@@ -206,6 +221,7 @@ mod tests {
             memcan: Some(McpHttpEndpoint {
                 url: memcan_url.to_owned(),
                 token: Secret::new(MEMCAN_CANARY),
+                allow_write,
             }),
         }
     }
@@ -250,6 +266,19 @@ required = false
 "#;
         assert_eq!(mcp_part(&config), expected);
         assert_eq!(config.matches("[mcp_servers.").count(), 2);
+    }
+
+    #[test]
+    fn read_only_memcan_access_offers_no_write_tool() {
+        let config = job_config(&access_with("http://agentic.lan:8190/mcp", false));
+        let memcan = &mcp_part(&config)[mcp_part(&config).find("[mcp_servers.memcan]").unwrap()..];
+        assert!(
+            memcan.contains(
+                r#"enabled_tools = ["search", "search_memories", "search_code", "search_standards"]"#
+            ),
+            "{memcan}"
+        );
+        assert!(!memcan.contains("add_memory"), "{memcan}");
     }
 
     #[test]

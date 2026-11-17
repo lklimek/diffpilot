@@ -24,10 +24,14 @@
   for Ask and absent otherwise. Its `user_key`, `analytic_generation`, and optional working `thread_id` select
   restore-first and save locations. Runner rejects missing/mismatched routing and non-hex archive keys.
   The server derives ownership from the authenticated question, never from runner output.
-- **No indirect private-memory channel.** Agents receive no MemCan endpoint/bearer. The server still reads
+- **No indirect private-memory channel.** Agents have MemCan access, split by job kind: analytic jobs (plan,
+  PR context, flows, repairs) get search tools and `add_memory`; Ask jobs, which see user-typed text, get
+  search tools only (`allow_write: false` in the job's MemCan endpoint, enforced by the runner's Codex
+  `enabled_tools`), so an Ask cannot write text that a later analysis reads. The server also reads
   bounded project profiles and calibration examples. Feedback notes stay local; shared calibration contains
   only the fixed feedback value and public analysis facts, marked `private_text_excluded: true`. Legacy
-  calibration records without that marker are ignored. This supersedes the prior full-agent-MemCan decision.
+  calibration records without that marker are ignored. The bearer keeps its full permissions (AR-1); the
+  Ask restriction limits what the model is offered, not what the bearer can do.
 - **Automatic compaction only.** Every useful new or resumed Codex turn sets
   `model_auto_compact_token_limit = 400000`. No extra turn, trivial prompt or deadline reserve.
   Measured forced compaction cost was 35–147 s per job; the owner approved removing it on 2026-11-17.

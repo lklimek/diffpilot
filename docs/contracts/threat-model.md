@@ -32,8 +32,9 @@ User input flows:
   A marker injection cannot enter later analytic restore sets or another user's archive.
 - Feedback note (including comment-derived feedback): private user-scoped row only. Shared MemCan records
   contain the fixed enum value and public target facts, never the note. Legacy calibration records without
-  `private_text_excluded` are rejected. Agents receive no MemCan bearer or MCP endpoint, closing the indirect
-  Ask-write → analytic-read path. AR-1 is no longer accepted for smart-review jobs.
+  `private_text_excluded` are rejected. Ask jobs get MemCan search tools only (`allow_write: false`; no
+  `add_memory`), closing the indirect Ask-write → analytic-read path; analytic jobs keep search and
+  `add_memory`. AR-1 stays accepted: the bearer's full permissions are unchanged, the tool list is defence in depth.
 - Unsent comment body: local component state. Submitted/edited pending comment: own user-token GitHub
   request, own pending-review list only; `viewerDidAuthor` required, foreign ids return 404. Pending threads
   are excluded from the shared PR snapshot. Published review comments are public PR data.
