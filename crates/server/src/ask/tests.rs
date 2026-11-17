@@ -38,6 +38,7 @@ use super::*;
 use crate::api::{router, runner_router};
 use crate::config::tests::test_config;
 use crate::jobs::executor::{ExecutorError, JobExecutor, JobHandle, JobRequest, JobUpdate};
+use crate::jobs::progress::ProgressHub;
 use crate::jobs::queue::QueueExecutor;
 use crate::pipeline::{self, CREDENTIAL_ID};
 use crate::test_support::logs::LogCapture;
@@ -163,7 +164,7 @@ async fn fixture_with(queue: bool, github: Option<crate::config::GithubConfig>) 
     let other = seed_analysis(&db).await.expect("seed");
     let scripted = Arc::new(Scripted::default());
     let executor: Arc<dyn JobExecutor> = if queue {
-        Arc::new(QueueExecutor::new(db.clone()))
+        Arc::new(QueueExecutor::new(db.clone(), ProgressHub::default()))
     } else {
         scripted.clone()
     };

@@ -354,6 +354,7 @@ mod tests {
         write_key,
     };
     use crate::jobs::executor::JobExecutor;
+    use crate::jobs::progress::ProgressHub;
     use crate::jobs::queue::QueueExecutor;
     use crate::pipeline::context::StoredPacks;
     use crate::state::AppState;
@@ -382,11 +383,7 @@ mod tests {
 
     /// Handler state over the setup's database and configuration.
     fn state_with(s: &Setup) -> AppState {
-        let mut state = AppState::new(
-            test_config(),
-            s.db.clone(),
-            Arc::new(QueueExecutor::new(s.db.clone())),
-        );
+        let mut state = AppState::with_queue(test_config(), s.db.clone());
         state.config = s.config.clone();
         state
     }
@@ -1046,7 +1043,7 @@ mod tests {
         mount_revoke(&s.github, 204, 1).await;
         let claimed = claim_one(&s, now).await;
         let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
-        QueueExecutor::new(s.db.clone())
+        QueueExecutor::new(s.db.clone(), ProgressHub::default())
             .cancel_analysis(analysis)
             .await
             .expect("cancel analysis");
