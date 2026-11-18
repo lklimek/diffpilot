@@ -72,3 +72,23 @@ describe("Tour: state of the analysis (paused, usage limit, failed)", () => {
     expect(within(banner).getByRole("button", { name: "Retry" })).toBeVisible();
   });
 });
+
+describe("Tour: unsent comment drafts survive navigation", () => {
+  const inspector = () => screen.getByRole("complementary", { name: "Inspector" });
+  const commentOn95 = async () => {
+    const code = await within(main()).findByRole("region", { name: /lines 88 to 96/ });
+    await user().click(within(code).getByRole("button", { name: "Comment on line 95" }));
+    return within(inspector()).getByRole("textbox", { name: "Comment on src/rpc/client.rs:95" });
+  };
+
+  it("Next and back to the line restore the text; a reload of the tab too", async () => {
+    await open(null, "#f1.2");
+    await user().type(await commentOn95(), "Is the deadline respected?");
+    await user().click(within(main()).getByRole("button", { name: /^Next/ }));
+    expect(within(inspector()).queryByRole("textbox", { name: /^Comment on/ })).toBeNull();
+    await user().click(within(main()).getByRole("button", { name: /^← Previous/ }));
+    expect(await commentOn95()).toHaveValue("Is the deadline respected?");
+    expect(within(inspector()).getByText("Draft")).toBeVisible();
+    expect(JSON.stringify(window.sessionStorage)).toContain("Is the deadline respected?");
+  });
+});

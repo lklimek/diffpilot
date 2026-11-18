@@ -44,6 +44,7 @@ import { TopBar } from "../../components/top-bar/TopBar";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { ChunkedCode, DiffCode, FileDiffCode, LinesCode, errorText, type CodeContext } from "./code";
 import { DiagramPane } from "./DiagramPane";
+import { useCommentDrafts } from "./drafts";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
 import {
@@ -194,6 +195,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   // A pending comment opened from the pending-review list, shown open at its line.
   const [revealComment, setRevealComment] = useState<string | null>(null);
   const [unresolved, setUnresolved] = useState<UnresolvedPosts>({});
+  const [drafts, setDraft] = useCommentDrafts(analysisId);
   const [helpOpen, setHelpOpen] = useState(false);
   const [layout, setLayoutState] = useState(loadLayout);
   const [focusNext, setFocusNext] = useState<"ask" | "comment" | null>(null);
@@ -692,6 +694,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
             onCancelComment={() => setCommentLine(null)}
             unresolved={unresolved}
             onUnresolvedChange={setUnresolved}
+            drafts={drafts}
+            onDraftChange={setDraft}
             askRef={askRef}
             commentRef={commentRef}
           />
