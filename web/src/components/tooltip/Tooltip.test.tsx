@@ -88,6 +88,28 @@ describe("Tooltip", () => {
     expect(screen.getByRole("tooltip")).toBeVisible();
   });
 
+  it("gives way to a nested trigger's own tip while the pointer is on it, then shows again", async () => {
+    const user = userEvent.setup();
+    render(
+      <Tooltip tip="Was → is of the row">
+        <div tabIndex={0} data-testid="row">
+          code
+          <Tooltip tip="Icon tip">
+            <button type="button">Icon</button>
+          </Tooltip>
+        </div>
+      </Tooltip>,
+    );
+    await user.hover(screen.getByTestId("row"));
+    expect(screen.getByText("Was → is of the row")).toBeVisible();
+    await user.hover(screen.getByRole("button", { name: "Icon" }));
+    expect(screen.getByText("Icon tip")).toBeVisible();
+    expect(screen.getByText("Was → is of the row")).not.toBeVisible();
+    await user.hover(screen.getByTestId("row"));
+    expect(screen.getByText("Icon tip")).not.toBeVisible();
+    expect(screen.getByText("Was → is of the row")).toBeVisible();
+  });
+
   it("opens beside its trigger with placement right, off the rows below", async () => {
     const user = userEvent.setup();
     render(
