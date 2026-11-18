@@ -12,7 +12,7 @@ export interface NetPoint {
   closed: number;
   /** PRs the user opened. */
   opened: number;
-  /** The current day or week, still running (drawn lighter). */
+  /** The current day or week, still running (drawn as a dashed outline). */
   partial: boolean;
   /** Label this bar on the axis. */
   tick: boolean;
@@ -130,7 +130,7 @@ export function NetChart({ points, unit }: NetChartProps) {
           running total since the first {unit} shown
         </span>
         <span>
-          <i className="mr-1.5 inline-block h-3 w-3 rounded-sm bg-c-pos align-[-2px] opacity-45" />
+          <i className="mr-1.5 inline-block h-3 w-3 rounded-sm border-[1.5px] border-dashed border-c-pos align-[-2px]" />
           {now} so far
         </span>
       </div>
@@ -176,11 +176,23 @@ export function NetChart({ points, unit }: NetChartProps) {
           ))}
           {rows.map((row, i) => (
             <g key={`${row.label}-${i}`} data-point={i}>
-              {row.net !== 0 ? (
+              {/* The running day or week: a dashed outline, visible on both themes and at net 0. */}
+              {row.partial ? (
+                <path
+                  data-partial
+                  d={
+                    row.net !== 0
+                      ? barPath(cx(i) - bar / 2, bar, y(0), y(row.net))
+                      : `M${cx(i) - bar / 2},${y(0) - 3}h${bar}v6h${-bar}Z`
+                  }
+                  strokeWidth={1.5}
+                  strokeDasharray="4 3"
+                  className={`fill-none ${row.net < 0 ? "stroke-c-neg" : "stroke-c-pos"}`}
+                />
+              ) : row.net !== 0 ? (
                 <path
                   d={barPath(cx(i) - bar / 2, bar, y(0), y(row.net))}
                   className={row.net > 0 ? "fill-c-pos" : "fill-c-neg"}
-                  opacity={row.partial ? 0.45 : undefined}
                 />
               ) : (
                 <line
@@ -260,7 +272,12 @@ export function NetChart({ points, unit }: NetChartProps) {
         </Tooltip>
       </div>
       {table && (
-        <div className="max-h-[260px] overflow-auto rounded-md border border-border">
+        <div
+          role="region"
+          tabIndex={0}
+          aria-label={`Net per ${unit} as a table`}
+          className="max-h-[260px] overflow-auto rounded-md border border-border"
+        >
           <table className="w-full max-w-[640px] border-collapse text-[12.5px] tabular-nums [&_td]:border-b [&_td]:border-border [&_td]:px-2.5 [&_td]:py-0.5 [&_td]:text-right [&_td:first-child]:text-left [&_th]:border-b [&_th]:border-border [&_th]:px-2.5 [&_th]:py-0.5 [&_th]:text-right [&_th:first-child]:text-left">
             <caption className="sr-only">Net closed minus opened pull requests</caption>
             <thead>

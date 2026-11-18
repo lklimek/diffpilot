@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { HistoryEvent, HistoryKind } from "../../api/generated/types";
 import {
   chartPoints,
@@ -164,5 +164,45 @@ describe("chart labels", () => {
       { label: "9 Nov", merged: 1, reviews: 0, partial: false },
       { label: "16 Nov", merged: 2, reviews: 1, partial: true },
     ]);
+  });
+});
+
+describe("bucketing across the end of summer time (Europe/Warsaw, Sun 25 Oct 2026)", () => {
+  // Node applies a changed TZ at once; the first assertion proves it did, so the case cannot pass vacuously.
+  const zone = process.env.TZ;
+  beforeAll(() => {
+    process.env.TZ = "Europe/Warsaw";
+  });
+  afterAll(() => {
+    if (zone === undefined) delete process.env.TZ;
+    else process.env.TZ = zone;
+  });
+  const utc = (kind: HistoryKind, iso: string, item: string) =>
+    ({ kind, at: iso, item_id: item }) as HistoryEvent;
+
+  it("counts by local day and week on the 25-hour Sunday and the Monday after it", () => {
+    expect(new Date("2026-10-24T12:00:00Z").getTimezoneOffset()).toBe(-120);
+    expect(new Date("2026-10-26T12:00:00Z").getTimezoneOffset()).toBe(-60);
+    const events = [
+      // Sun 25 Oct 23:30 CET: a weekend event, counted on Fri 23 Oct.
+      utc("pr_merged", "2026-10-25T22:30:00Z", "acme/a#1"),
+      // Mon 26 Oct 00:30 CET (still Sunday in UTC): Monday, in the week of 26 Oct.
+      utc("pr_opened", "2026-10-25T23:30:00Z", "acme/a#2"),
+      // Sun 25 Oct 02:30 CEST, before the clocks went back: Friday too.
+      utc("pr_merged", "2026-10-25T00:30:00Z", "acme/a#3"),
+    ];
+    const now = new Date("2026-10-27T09:00:00Z");
+    const days = dailySeries(events, now, 3);
+    expect(days.map((d) => [d.day, d.closed, d.opened])).toEqual([
+      ["2026-10-23", 2, 0],
+      ["2026-10-26", 0, 1],
+      ["2026-10-27", 0, 0],
+    ]);
+    const weeks = weeklySeries(events, now, 2);
+    expect(weeks.map((w) => [w.day, w.closed, w.opened])).toEqual([
+      ["2026-10-19", 2, 0],
+      ["2026-10-26", 0, 1],
+    ]);
+    expect(weeklyCounts(events, ["pr_merged"], now, 2).map((w) => w.count)).toEqual([2, 0]);
   });
 });

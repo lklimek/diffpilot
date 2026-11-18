@@ -13,7 +13,9 @@ import itemsJson from "../../../../fixtures/dashboard/api/items.json";
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
 import {
   REFRESH_RECONNECT_MS,
+  REFRESH_SILENCE_MS,
   SUMMARY_KEY,
+  refreshKey,
   loadAllItems,
   resetSentTimeZones,
   useDashboardSummary,
@@ -134,7 +136,7 @@ describe("useRefreshEvents (R5)", () => {
     act(() => source.emit({ event: "refresh", data: JSON.stringify({ event: "refresh", status: other }) }));
     expect(client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh?.percent).toBe(60);
 
-    const ranking = { ...progress, state: "ranking" as const, scanned_at: "2026-11-18T10:29:00Z" };
+    const ranking = { ...progress, state: "ranking" as const, scanned_at: "2026-11-18T09:24:00Z" };
     act(() => source.emit({ event: "refresh", data: JSON.stringify({ event: "refresh", status: ranking }) }));
     expect(invalidate).toHaveBeenCalledWith({ queryKey: SUMMARY_KEY });
 
@@ -159,6 +161,46 @@ describe("useRefreshEvents (R5)", () => {
       await vi.advanceTimersByTimeAsync(REFRESH_RECONNECT_MS);
     });
     expect(FakeEventSource.instances).toHaveLength(2);
+  });
+});
+
+describe("useRefreshEvents silence watchdog", () => {
+  it("reopens a stream that stays silent for REFRESH_SILENCE_MS; any event restarts the wait", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { client, wrapper: w } = wrapper();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    renderHook(() => useRefreshEvents(SCANNING), { wrapper: w });
+    const first = FakeEventSource.latest();
+
+    // A heartbeat before the deadline keeps the stream.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_SILENCE_MS - 1000);
+    });
+    act(() =>
+      first.emit({
+        event: "heartbeat",
+        data: JSON.stringify({ event: "heartbeat", at: "2026-11-18T09:27:00Z" }),
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_SILENCE_MS - 1000);
+    });
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(first.readyState).not.toBe(FakeEventSource.CLOSED);
+
+    // Silence for the whole window: close, re-read summary and refresh, reopen after the delay.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(first.readyState).toBe(FakeEventSource.CLOSED);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: SUMMARY_KEY });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: refreshKey(SCANNING.id) });
+    expect(FakeEventSource.instances).toHaveLength(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_RECONNECT_MS);
+    });
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.latest().url).toBe(first.url);
   });
 });
 
@@ -216,6 +258,28 @@ describe("useSaveBrowserTimeZone (R6b)", () => {
     await waitFor(() => expect(second.result.current.data?.schedule.time_zone).toBeNull());
     expect(sent).toHaveLength(1);
     server.events.removeAllListeners();
+  });
+
+  it("reports a refused zone (422), so the note can point to Settings", async () => {
+    setDashboardScenario("no-time-zone-refused");
+    const { result } = renderHook(
+      () => {
+        const summary = useDashboardSummary(true);
+        return useSaveBrowserTimeZone(summary.data);
+      },
+      { wrapper: wrapper().wrapper },
+    );
+    expect(result.current).toEqual({ failed: false });
+    await waitFor(() => expect(result.current).toEqual({ failed: true }));
+    // A later visit in the same page load knows it failed without sending again.
+    const again = renderHook(
+      () => {
+        const summary = useDashboardSummary(true);
+        return useSaveBrowserTimeZone(summary.data);
+      },
+      { wrapper: wrapper().wrapper },
+    );
+    expect(again.result.current).toEqual({ failed: true });
   });
 
   it("sends nothing when a zone is stored", async () => {

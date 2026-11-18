@@ -151,7 +151,7 @@ export function DashboardScreen() {
           onNavigate={go}
           onHelp={() => setHelpOpen(true)}
           keysEnabled={!helpOpen}
-          staleNote={stale && `${stale} snapshot. It is replaced when a scan finishes.`}
+          stale={stale ? { at: stale, note: "It is replaced when a scan finishes." } : null}
           now={now}
         />
       )}

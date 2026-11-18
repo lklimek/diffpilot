@@ -5,7 +5,7 @@ import { expect, test, type Page } from "@playwright/test";
 // Runs only with SCREENSHOT_DIR set, e.g. SCREENSHOT_DIR=/data/artifacts/smart-review/<date>/v1.1-dashboard-screens.
 const dir = process.env.SCREENSHOT_DIR;
 
-/** 10:27 in Warsaw on the fixture day, as in the mockup. */
+/** 10:27 in Warsaw on the fixture day, as in the mockup: after every fixture scan (08:14, 09:24). */
 const NOW = new Date("2026-11-18T09:27:00Z");
 const SCENARIOS = [
   "normal",
@@ -17,6 +17,7 @@ const SCENARIOS = [
   "error",
   "first-run",
   "no-time-zone",
+  "no-time-zone-refused",
   "review-new",
   "review-found",
   "review-moved",
@@ -58,6 +59,15 @@ for (const [width, height] of [
         colorScheme,
         viewport: { width, height },
         timezoneId: "Europe/Warsaw",
+      });
+      // `no-time-zone` is shot before R6b stores the zone: its PUT is held for that page.
+      await context.addInitScript(() => {
+        if (new URLSearchParams(location.search).get("dashboard") !== "no-time-zone") return;
+        const send = window.fetch.bind(window);
+        window.fetch = (input, init) =>
+          init?.method === "PUT" && String(input).endsWith("/settings/dashboard/time-zone")
+            ? new Promise<Response>(() => {})
+            : send(input, init);
       });
       const page = await context.newPage();
       await page.clock.setFixedTime(NOW);

@@ -46,16 +46,21 @@ export interface DashboardView {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-/** The daily refresh cannot run without a time zone (the scheduled run's failure is the refresh control's). */
-function timeZoneNotes(summary: DashboardSummary): DashboardNote[] {
+/**
+ * The daily refresh cannot run without a time zone (the scheduled run's failure is the refresh control's);
+ * `saveFailed`: this page could not save the browser's zone.
+ */
+function timeZoneNotes(summary: DashboardSummary, saveFailed: boolean): DashboardNote[] {
   const { schedule } = summary;
   if (!schedule.enabled || schedule.time_zone !== null) return [];
   return [
     {
       id: "time_zone",
-      tone: "info",
+      tone: saveFailed ? "warn" : "info",
       title: `The daily refresh at ${schedule.time} starts once your time zone is known.`,
-      text: "This page saves your browser's time zone; you can change it in Settings.",
+      text: saveFailed
+        ? "Your browser's time zone could not be saved; set it in Settings."
+        : "This page saves your browser's time zone; you can change it in Settings.",
     },
   ];
 }
@@ -84,11 +89,13 @@ function limitNotes(summary: DashboardSummary, holder: RefreshStatus | undefined
 
 /**
  * The dashboard's view of `summary`. `snapshotRefresh` is the status of the refresh holding the snapshot when that
- * is not the latest refresh (R2b); without it, its ranking and counts are unknown.
+ * is not the latest refresh (R2b); without it, its ranking and counts are unknown. `timeZoneSaveFailed`: R6b
+ * refused or failed.
  */
 export function dashboardView(
   summary: DashboardSummary,
   snapshotRefresh: RefreshStatus | undefined,
+  timeZoneSaveFailed = false,
 ): DashboardView {
   const latest = summary.latest_refresh;
   const snapshot = summary.snapshot;
@@ -109,7 +116,7 @@ export function dashboardView(
         : null,
     stale: snapshot !== null && (scanning !== null || failure !== null),
     empty: snapshot !== null && snapshot.item_counts.total === 0,
-    notes: [...timeZoneNotes(summary), ...limitNotes(summary, holder)],
+    notes: [...timeZoneNotes(summary, timeZoneSaveFailed), ...limitNotes(summary, holder)],
   };
 }
 

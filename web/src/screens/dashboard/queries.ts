@@ -2,7 +2,7 @@
 // every item of its revision (R1b, cursor paging, ETag), live refresh events (R5), Refresh (R2), Cancel (R3),
 // Rank again (R4) and the browser's time zone on the first visit (R6b).
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { ApiError, api } from "../../api/client";
 import type { DashboardSummary, RefreshId, RefreshStatus, WorkItem } from "../../api/generated/types";
 
@@ -215,15 +215,28 @@ export function browserTimeZone(): string | null {
 
 /** Zones sent during this page load: a refused one is not sent again until the page reloads. */
 const sentZones = new Set<string>();
+/** Zones whose save failed during this page load. */
+const failedZones = new Set<string>();
 
 /** Forgets the zones sent (tests). */
 export function resetSentTimeZones(): void {
   sentZones.clear();
+  failedZones.clear();
 }
 
-/** Sends the browser's time zone once while the summary has none (R6b, plan §A.5); then reads the summary again. */
-export function useSaveBrowserTimeZone(summary: DashboardSummary | undefined): void {
+/** The browser's zone cannot be saved in this page load: unknown to the browser, or refused or failed before. */
+const cannotSave = () => {
+  const zone = browserTimeZone();
+  return zone === null || failedZones.has(zone);
+};
+
+/**
+ * Sends the browser's time zone once while the summary has none (R6b, plan §A.5); then reads the summary again.
+ * `failed`: the browser gives no zone, or the server refused (422) or could not be reached.
+ */
+export function useSaveBrowserTimeZone(summary: DashboardSummary | undefined): { failed: boolean } {
   const client = useQueryClient();
+  const [failed, setFailed] = useState(cannotSave);
   const missing = summary !== undefined && summary.schedule.time_zone === null;
   useEffect(() => {
     if (!missing) return;
@@ -232,8 +245,11 @@ export function useSaveBrowserTimeZone(summary: DashboardSummary | undefined): v
     sentZones.add(zone);
     api.setDashboardTimeZone({ time_zone: zone }).then(
       () => client.invalidateQueries({ queryKey: SUMMARY_KEY }),
-      // An unknown zone (422) stays unset: the schedule note points to Settings.
-      () => {},
+      () => {
+        failedZones.add(zone);
+        setFailed(true);
+      },
     );
   }, [client, missing]);
+  return { failed };
 }

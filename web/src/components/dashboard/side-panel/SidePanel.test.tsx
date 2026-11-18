@@ -50,16 +50,19 @@ describe("SidePanel", () => {
 
   it("resizes with the arrow keys on its splitter, remembers the width and resets on double-click", () => {
     viewport(3440);
+    // Before any resize the value is the default width, clamp(340px, 22vw, 560px).
+    vi.stubGlobal("innerWidth", 2000);
     panel();
     const splitter = screen.getByRole("separator", { name: "Resize the side panel" });
+    expect(splitter).toHaveAttribute("aria-valuenow", "440");
     fireEvent.keyDown(splitter, { key: "ArrowLeft" });
-    expect(splitter).toHaveAttribute("aria-valuenow", "424");
+    expect(splitter).toHaveAttribute("aria-valuenow", "464");
     fireEvent.keyDown(splitter, { key: "ArrowRight" });
     fireEvent.keyDown(splitter, { key: "ArrowRight" });
-    expect(splitter).toHaveAttribute("aria-valuenow", "376");
-    expect(JSON.parse(window.localStorage.getItem(SIDE_PANEL_STORAGE_KEY)!)).toMatchObject({ width: 376 });
+    expect(splitter).toHaveAttribute("aria-valuenow", "416");
+    expect(JSON.parse(window.localStorage.getItem(SIDE_PANEL_STORAGE_KEY)!)).toMatchObject({ width: 416 });
     fireEvent.doubleClick(splitter);
-    expect(splitter).not.toHaveAttribute("aria-valuenow");
+    expect(splitter).toHaveAttribute("aria-valuenow", "440");
   });
 });
 
@@ -80,8 +83,9 @@ describe("side panel sections", () => {
     expect(screen.getAllByRole("row").map((row) => row.textContent)).toEqual([
       "Tue 17 NovClosedOpenedNetNote",
       "PRs62+45 merged",
-      "Reviews5——given",
     ]);
+    // Reviews have no closed or opened count: their own line, not a row under "Closed".
+    expect(screen.getByText(/^Reviews given:/)).toHaveTextContent("Reviews given: 5");
   });
 
   it("draws throughput per week as labelled images", async () => {
@@ -100,6 +104,14 @@ describe("side panel sections", () => {
       screen.getByRole("img", { name: "Your PRs merged: 2 Nov 9, 9 Nov 14, 16 Nov 10 (last so far)" }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole("img")).toHaveLength(2);
+    // The running week is dashed, not lighter (opacity darkens it on the dark theme).
+    const partial = [...document.querySelectorAll("rect[data-partial]")];
+    expect(partial).toHaveLength(2);
+    for (const bar of partial) {
+      expect(bar).toHaveAttribute("stroke-dasharray");
+      expect(bar).not.toHaveAttribute("opacity");
+    }
+    expect(screen.getByText("The last bar is this week so far (dashed).")).toBeInTheDocument();
   });
 
   it("buckets review ages and draws them on one scale", async () => {
@@ -110,6 +122,8 @@ describe("side panel sections", () => {
     expect(
       screen.getByRole("img", { name: "Your PRs waiting on others: ≤ 2 d 1, 3–7 d 1, 8–14 d 1, > 14 d 0" }),
     ).toBeInTheDocument();
+    // The age of review requests to the user is not in the scan data: said, not silently dropped.
+    expect(screen.getByText("Review-request age is not collected yet.")).toBeInTheDocument();
   });
 
   it("lists scan notes, repositories the token cannot see and stale TODOs", () => {
