@@ -62,6 +62,8 @@ export const REPO_SETTINGS: RepoSettings = {
 interface Scenario {
   showLess?: boolean;
   lazy?: boolean;
+  /** `background_analysis` of a lazy analysis (default off: flows run on request only). */
+  background?: boolean;
   llmSaveFails?: boolean;
   manyRepos?: boolean;
   /** `me` answer. */
@@ -239,6 +241,11 @@ const REPORTED_USAGE: UsageTotals = {
 const SCENARIOS = {
   "show-less": { showLess: true },
   "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5 } },
+  "lazy-background": {
+    lazy: true,
+    background: true,
+    analysis: { state: "running", done: 1, total: 5, stage: flowStage(2, "2026-11-17T18:04:00Z") },
+  },
   "lazy-paused": {
     lazy: true,
     analysis: {

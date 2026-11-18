@@ -25,6 +25,9 @@ interface FlowIntroBlockProps {
   onSetReviewed?: (reviewed: boolean) => void;
 }
 
+const lineCount = (ranges: readonly { start_line: number; end_line: number }[]) =>
+  ranges.reduce((n, r) => n + r.end_line - r.start_line + 1, 0);
+
 const RISK_EDGE = { high: "border-l-high-bd", medium: "border-l-med-bd", low: "border-l-low-bd" } as const;
 const TERM = "pt-0.5 text-[11px] font-semibold tracking-wide text-muted uppercase";
 
@@ -73,6 +76,13 @@ export function FlowIntroBlock({
           </p>
           {status.message && <p className="text-[13px]">{status.message}</p>}
           {flow.planned && (
+            <p className="text-[13px] font-semibold">
+              {new Set(flow.planned.ranges.map((r) => r.file)).size}{" "}
+              {new Set(flow.planned.ranges.map((r) => r.file)).size === 1 ? "file" : "files"},{" "}
+              {flow.planned.ranges.reduce((n, r) => n + lineCount(r.ranges), 0)} changed lines
+            </p>
+          )}
+          {flow.planned && (
             <dl className="m-0 grid grid-cols-1 gap-x-3 gap-y-1.5 text-[13px] sm:grid-cols-[minmax(10rem,auto)_1fr]">
               <dt className={TERM}>Intent</dt>
               <dd className="m-0 max-w-[100ch]">
@@ -86,7 +96,8 @@ export function FlowIntroBlock({
                   {flow.planned.ranges.map((r, i) => (
                     <li key={i}>
                       <code>{r.file}</code>: {r.side === "base" ? "removed lines" : "lines"}{" "}
-                      {r.ranges.map((n) => `${n.start_line}–${n.end_line}`).join(", ")}
+                      {r.ranges.map((n) => `${n.start_line}–${n.end_line}`).join(", ")} ({lineCount(r.ranges)}{" "}
+                      {lineCount(r.ranges) === 1 ? "line" : "lines"})
                     </li>
                   ))}
                 </ul>
@@ -94,14 +105,26 @@ export function FlowIntroBlock({
             </dl>
           )}
           {onRequest && status.state !== "analysing" && (
-            <Tooltip tip="Prioritises this flow after the running job; opening a pending flow also requests it.">
+            <Tooltip
+              tip={
+                status.state === "queued"
+                  ? "Moves this requested flow to the front: it runs after the job that is running now."
+                  : status.state === "failed"
+                    ? "Runs the LLM analysis of this flow again, after the job that is running now."
+                    : "Runs the LLM analysis of this flow, after the job that is running now. Nothing runs until you ask."
+              }
+            >
               <button
                 type="button"
                 aria-disabled={busy || undefined}
-                className={buttonClass("plain")}
+                className={buttonClass(status.state === "queued" ? "plain" : "primary")}
                 onClick={() => !busy && onRequest()}
               >
-                {status.state === "failed" ? "Retry this flow" : "Analyse this flow now"}
+                {status.state === "failed"
+                  ? "Retry this flow"
+                  : status.state === "queued"
+                    ? "Analyse this flow now"
+                    : "Analyse this flow"}
               </button>
             </Tooltip>
           )}

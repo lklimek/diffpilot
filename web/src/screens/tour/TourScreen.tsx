@@ -189,7 +189,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const questions = useQuestions(analysisId);
   const ask = useAskQuestion(analysisId);
   const now = useNow();
-  const requested = useRef<string | null>(null);
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
   const pending = usePendingReview(analysisId);
   const comments = useCommentActions(analysisId);
@@ -281,14 +280,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     if (!block) return;
     openFragment(blockFragment(block));
   };
-
-  useEffect(() => {
-    const id = flow?.id ?? null;
-    if (!workAllowed || requested.current === id) return;
-    requested.current = id;
-    if (id && (flow?.analysis_status?.state === "not_analysed" || flow?.analysis_status?.state === "queued"))
-      work.request.mutate(id);
-  }, [flow, work.request, workAllowed]);
 
   const showEvidence = (item: Evidence) => {
     const found = tour.flows
@@ -644,6 +635,41 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       : saveError !== null
         ? `Your ticks and last viewed block are not saved: ${errorText(saveError)}`
         : null;
+  // Flows run on request only; "Analyse all remaining flows" (background_analysis) is the opt-in for the rest.
+  const background = tour.analysis.background_analysis === true;
+  const pendingFlows = tour.flows.filter((f) => f.analysis_status && f.analysis_status.state !== "analysed");
+  const flowWork = tour.analysis.review_ready && workAllowed && (
+    <FlowWork
+      done={tour.flows.length - pendingFlows.length}
+      total={tour.flows.length}
+      remainingLines={pendingFlows.reduce(
+        (n, f) =>
+          n +
+          (f.planned?.ranges ?? []).reduce(
+            (m, r) => m + r.ranges.reduce((k, x) => k + x.end_line - x.start_line + 1, 0),
+            0,
+          ),
+        0,
+      )}
+      background={background}
+      parked={
+        !background &&
+        tour.analysis.state.state === "running" &&
+        pendingFlows.length > 0 &&
+        !pendingFlows.some(
+          (f) => f.analysis_status?.state === "queued" || f.analysis_status?.state === "analysing",
+        )
+      }
+      busy={work.background.isPending}
+      onBackground={(enabled) => work.background.mutate(enabled)}
+      progressHref={`/analyses/${analysisId}/progress`}
+      error={
+        work.request.error || work.background.error
+          ? errorText(work.request.error || work.background.error)
+          : undefined
+      }
+    />
+  );
   const centre = (
     <>
       <AnalysisStateBanner
@@ -656,21 +682,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           work.resume.error || work.retry.error ? errorText(work.resume.error || work.retry.error) : undefined
         }
       />
-      {tour.analysis.review_ready && workAllowed && (
-        <FlowWork
-          done={tour.flows.filter((f) => f.analysis_status?.state === "analysed").length}
-          total={tour.flows.length}
-          background={tour.analysis.background_analysis ?? true}
-          busy={work.background.isPending}
-          onBackground={(enabled) => work.background.mutate(enabled)}
-          progressHref={`/analyses/${analysisId}/progress`}
-          error={
-            work.request.error || work.background.error
-              ? errorText(work.request.error || work.background.error)
-              : undefined
-          }
-        />
-      )}
       {resumed && sameBlock(resumed, current) && (
         <div className="mb-2 flex items-center gap-2 rounded-md border border-border bg-surface px-3 py-1 text-[12.5px]">
           <p role="status" className="m-0 flex-1">
@@ -772,21 +783,24 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         onChange={setLayout}
         mainRef={mainRef}
         nav={
-          <NavList
-            flows={tour.flows}
-            analysis={tour.analysis.state}
-            quiet={tour.quiet}
-            ticked={ticked}
-            pendingCount={pendingCount}
-            current={current}
-            onSelect={go}
-            questionCounts={questionCounts}
-            questions={{
-              count: questions.isSuccess ? myQuestions.length : questions.isError ? "error" : "loading",
-              open: questionsView,
-              onOpen: () => openFragment("questions"),
-            }}
-          />
+          <>
+            {flowWork}
+            <NavList
+              flows={tour.flows}
+              analysis={tour.analysis.state}
+              quiet={tour.quiet}
+              ticked={ticked}
+              pendingCount={pendingCount}
+              current={current}
+              onSelect={go}
+              questionCounts={questionCounts}
+              questions={{
+                count: questions.isSuccess ? myQuestions.length : questions.isError ? "error" : "loading",
+                open: questionsView,
+                onOpen: () => openFragment("questions"),
+              }}
+            />
+          </>
         }
         main={centre}
         inspector={

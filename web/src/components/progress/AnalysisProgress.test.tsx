@@ -527,6 +527,30 @@ it.each([
   expect(screen.getByRole("link", { name: `${verb} review` })).toBeVisible();
 });
 
+it("plan ready with background off: not stuck; says so and offers Open review and Analyse all remaining flows", async () => {
+  const onBackground = vi.fn();
+  render(
+    <AnalysisProgress
+      state={{ state: "running", done: 1, total: 5 }}
+      reviewReady
+      backgroundAnalysis={false}
+      onBackground={onBackground}
+      busy={false}
+      reviewHref="/analyses/a1"
+      onCancel={() => {}}
+      onRetry={() => {}}
+    />,
+  );
+  expect(
+    screen.getByText(
+      "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows.",
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole("link", { name: "Open review" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Analyse all remaining flows" }));
+  expect(onBackground).toHaveBeenCalledWith(true);
+});
+
 it("a failure without a flow after planning never claims it failed before planning", () => {
   const state: AnalysisState = {
     state: "failed",

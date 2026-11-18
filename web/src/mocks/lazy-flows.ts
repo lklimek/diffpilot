@@ -25,16 +25,32 @@ export function lazyTour(seed: Tour): Tour {
   }
   return tour;
 }
+const timers = new Set<ReturnType<typeof setTimeout>>();
+const later = (ms: number, run: () => void) => {
+  const timer = setTimeout(() => {
+    timers.delete(timer);
+    run();
+  }, ms);
+  timers.add(timer);
+};
+
+/** Back to every flow pending (tests). */
+export function resetLazyFlows(): void {
+  for (const timer of timers) clearTimeout(timer);
+  timers.clear();
+  states.clear();
+}
+
 export function requestLazyFlow(id: string) {
   if (states.get(id)?.state === "analysed" || states.get(id)?.state === "analysing") return;
   states.set(id, { state: "queued", started_at: null, message: null });
   setLiveState(liveAnalysis().state);
-  setTimeout(() => {
+  later(1_000, () => {
     states.set(id, { state: "analysing", started_at: new Date().toISOString(), message: null });
     setLiveState(liveAnalysis().state);
-    setTimeout(() => {
+    later(70_000, () => {
       states.set(id, { state: "analysed", started_at: null, message: null });
       setLiveState({ state: "running", done: 2, total: 5 });
-    }, 70_000);
-  }, 1_000);
+    });
+  });
 }

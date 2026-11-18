@@ -25,7 +25,7 @@ export function liveAnalysis(): AnalysisSummary {
   const pinned = scenario().analysis;
   const usageSeed = {
     ...seed,
-    ...(scenario().lazy ? { review_ready: true, background_analysis: true } : {}),
+    ...(scenario().lazy ? { review_ready: true, background_analysis: scenario().background ?? false } : {}),
     usage: scenario().usage ?? seed.usage,
   };
   const summary = pinned ? { ...usageSeed, state: pinned, finished_at: null } : usageSeed;

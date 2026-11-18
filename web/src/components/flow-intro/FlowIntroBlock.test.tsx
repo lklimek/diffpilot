@@ -106,6 +106,40 @@ it("shows pending planned ranges without an assessment or review tick", () => {
   expect(screen.queryByText("▲ HIGH")).not.toBeInTheDocument();
 });
 
+it("a flow not analysed yet shows its files with line counts and a primary Analyse this flow", async () => {
+  const onRequest = vi.fn();
+  const pending = {
+    ...f1,
+    steps: [],
+    analysis_status: { state: "not_analysed", started_at: null, message: null },
+    planned: {
+      intent: "Bound RPC retries",
+      importance_rank: 1,
+      ranges: [
+        {
+          file: "src/client.rs",
+          side: "head",
+          ranges: [
+            { start_line: 4, end_line: 8 },
+            { start_line: 20, end_line: 20 },
+          ],
+        },
+        { file: "src/retry.rs", side: "head", ranges: [{ start_line: 1, end_line: 10 }] },
+      ],
+    },
+  } as Tour["flows"][number];
+  render(<FlowIntroBlock flow={pending} dependencies={[]} ticked={[]} onRequest={onRequest} />);
+  expect(screen.getByText("2 files, 16 changed lines")).toBeVisible();
+  expect(screen.getByText("src/client.rs").closest("li")).toHaveTextContent(
+    "src/client.rs: lines 4–8, 20–20 (6 lines)",
+  );
+  const analyse = screen.getByRole("button", { name: "Analyse this flow" });
+  expect(analyse).toHaveAccessibleDescription(/runs the LLM analysis of this flow/i);
+  expect(analyse).not.toHaveAccessibleDescription(/opening/i);
+  await userEvent.click(analyse);
+  expect(onRequest).toHaveBeenCalledOnce();
+});
+
 it("a pending flow says what it waits for in a paused or failed analysis, never Queued forever", () => {
   const queued = {
     ...f1,

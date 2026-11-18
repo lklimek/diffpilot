@@ -74,6 +74,43 @@ describe("Tour: state of the analysis (paused, usage limit, failed)", () => {
   });
 });
 
+describe("Tour: flows are analysed on request only", () => {
+  const work = () => within(nav()).getByRole("region", { name: "Analysis work" });
+
+  it("opening a flow not analysed yet requests nothing; Analyse this flow does", async () => {
+    const requested: string[] = [];
+    server.events.on("request:start", ({ request }) => {
+      if (request.method === "POST" && /\/flows\/[^/]+\/request$/.test(new URL(request.url).pathname)) {
+        requested.push(new URL(request.url).pathname);
+      }
+    });
+    await open("lazy-flows");
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 2:/ }));
+    expect(await within(main()).findByRole("button", { name: "Analyse this flow" })).toBeVisible();
+    expect(requested).toEqual([]);
+    await user().click(within(main()).getByRole("button", { name: "Analyse this flow" }));
+    await waitFor(() => expect(requested).toHaveLength(1));
+  });
+
+  it("with background off (the default) the left panel says nothing runs and offers Analyse all remaining flows", async () => {
+    await open("lazy-flows");
+    expect(await within(work()).findByRole("status")).toHaveTextContent(
+      "Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows.",
+    );
+    await user().click(within(work()).getByRole("button", { name: "Analyse all remaining flows" }));
+    expect(
+      await within(work()).findByRole("button", { name: "Analysing all remaining flows — Stop" }),
+    ).toBeVisible();
+  });
+
+  it("reads the switch from the analysis: on, it offers Stop", async () => {
+    await open("lazy-background");
+    const stop = await within(work()).findByRole("button", { name: "Analysing all remaining flows — Stop" });
+    await user().click(stop);
+    expect(await within(work()).findByRole("button", { name: "Analyse all remaining flows" })).toBeVisible();
+  });
+});
+
 describe("Tour: unsent comment drafts survive navigation", () => {
   const inspector = () => screen.getByRole("complementary", { name: "Inspector" });
   const commentOn95 = async () => {
