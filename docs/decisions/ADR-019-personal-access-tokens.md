@@ -30,19 +30,23 @@ secrets (runner secret, per-job token; `docs/contracts/http-api.md` "Listeners a
    revocation ends the stream within 15 s. Reads backed by the user's GitHub token (pending review, App
    installations in Settings) work while the server holds the user's token pair (ADR-020) and otherwise answer as
    v1 does without one.
-5. **One central extractor.** A middleware on the public API router handles `Authorization: Bearer srp_…`: a request
-   with both a session cookie and a bearer token → 400 `invalid_request`; a route not marked `read` or a non-safe
+5. **One central extractor.** A middleware on the public API router handles `Authorization: Bearer srp_…` (any other
+   `Authorization` value, e.g. an authenticating proxy's, passes to the session check untouched): a request
+   with both a session cookie and an `srp_` bearer token → 400 `invalid_request`; a route not marked `read` or a non-safe
    method → 403 `token_not_accepted`; unknown, malformed, expired, revoked or unlisted → 401 `unauthenticated` with
    `WWW-Authenticate: Bearer` (no reason given); valid but missing the route's scope → 403 `insufficient_scope`.
    On success it inserts a `TokenPrincipal`; the existing session extractor yields the principal from the cookie or
    from that extension, so v1 handlers are unchanged. `SessionCsrf` never consults it. A contract test over
    `ROUTES` asserts: every `GET` with session auth is `read` except R8; no non-`GET` route is.
 6. **Never confused with runner bearers.** Different prefix (`srp_`), different listener (public vs runner),
-   different extractors (the runner extractor never reads `access_tokens` and rejects `srp_` values early), different
-   route groups (`/api/v1/*` vs `/runner/v1/*`). A runner secret or job token sent to the public API is an unknown
-   token (401).
+   different extractors (the runner extractor never reads `access_tokens` and refuses `srp_` values before any
+   lookup: 401), different route groups (`/api/v1/*` vs `/runner/v1/*`). A runner secret or job token sent to the
+   public API is not an `srp_` token: the session check answers 401.
 7. **Abuse limits and audit.** Per token 120 requests/min, per client address 30 failed bearer attempts/min
-   (trusted-proxy address, as v1) → 429 `rate_limited` with `Retry-After`. One `info` line on target `audit` per
+   (trusted-proxy address, as v1; an IPv6 address counts as its /64) → 429 `rate_limited` with `Retry-After`. The
+   token is checked first: only failures are counted and throttled, so a valid token is never refused by its
+   address's failure limit. GitHub-backed reads (pending review, related-link checks, App installations) are reused
+   for 60 s per user for tokens, so polling does not spend the user's GitHub budget. One `info` line on target `audit` per
    token request (token id, user id, method, route template, status, duration) and per create/revoke; the token,
    its hash and query strings are never logged.
 

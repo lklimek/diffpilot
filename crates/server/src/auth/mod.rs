@@ -222,6 +222,11 @@ impl Session {
         }
     }
 
+    /// Whether the request authenticated with a personal access token.
+    pub(crate) fn is_access_token(&self) -> bool {
+        matches!(self.credential, Credential::AccessToken(_))
+    }
+
     /// Whether the session or token still passes the checks of a new request (SSE heartbeat): the session is
     /// live, or the token is neither revoked nor expired; either way the user is still on the allow-list.
     pub(crate) async fn is_live(&self, state: &AppState) -> Result<bool, DbError> {

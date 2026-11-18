@@ -19,6 +19,7 @@ use contracts::routes::{CREATE_COMMENT, DELETE_COMMENT, GET_PENDING_REVIEW, UPDA
 
 use crate::api::analyses::{AnalysisApiError, visible_analysis};
 use crate::api::error::{ApiErrorSource, ApiFailure};
+use crate::auth::access_tokens::github_read;
 use crate::auth::{Session, SessionCsrf};
 use crate::github::graphql::GraphqlError;
 use crate::github::review::PendingReviewError;
@@ -171,9 +172,13 @@ async fn list(
 ) -> CommentsResult<Json<PendingReview>> {
     let Path(id) = id.map_err(failure)?;
     let summary = visible(&state, &session, id).await?;
-    let review = comments::list(&state, &session.user_id, &summary)
-        .await
-        .map_err(failure)?;
+    let review = github_read(
+        &session,
+        format!("pending-review:{id}"),
+        comments::list(&state, &session.user_id, &summary),
+    )
+    .await
+    .map_err(failure)?;
     Ok(Json(review))
 }
 

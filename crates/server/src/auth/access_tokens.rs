@@ -7,18 +7,19 @@
 //! carrying a bearer token writes one `info` line on target `audit` (token id, user id, method, route template,
 //! status, duration); never the token, its hash, other headers or the query string.
 
+use std::any::Any;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
-use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, MatchedPath, Request, State};
 use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::request::Parts;
-use axum::http::{HeaderValue, Method, Uri};
+use axum::http::{HeaderMap, HeaderValue, Method, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
@@ -30,7 +31,7 @@ use db::repo::Db;
 use db::repo::access_tokens::{TOUCH_INTERVAL, TokenCredential};
 use subtle::ConstantTimeEq;
 
-use super::Cookie;
+use super::{Cookie, Session};
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::config::Config;
 use crate::secrets::{SecretError, random_token, sha256};
@@ -262,7 +263,14 @@ impl IntoResponse for TokenAuthError {
 #[derive(Debug)]
 struct Limiter<K> {
     limit: u32,
-    windows: Mutex<HashMap<K, Window>>,
+    table: Mutex<Table<K>>,
+}
+
+#[derive(Debug)]
+struct Table<K> {
+    windows: HashMap<K, Window>,
+    /// Last drop of ended windows, at most one scan a second.
+    pruned_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -275,31 +283,28 @@ impl<K: Eq + Hash + Clone> Limiter<K> {
     fn new(limit: u32) -> Self {
         Self {
             limit,
-            windows: Mutex::new(HashMap::new()),
+            table: Mutex::new(Table {
+                windows: HashMap::new(),
+                pruned_at: None,
+            }),
         }
     }
 
-    /// Seconds to wait when `key` is at its limit; `None` while it may proceed. Counts nothing.
-    fn blocked(&self, key: &K, now: Instant) -> Option<u64> {
-        let windows = self.windows.lock().unwrap_or_else(PoisonError::into_inner);
-        windows
-            .get(key)
-            .filter(|window| now.duration_since(window.started) < WINDOW)
-            .filter(|window| window.count >= self.limit)
-            .map(|window| retry_after(window, now))
-    }
-
-    /// Counts one event of `key`; `Err(seconds to wait)` when it is over the limit.
+    /// Counts one event of `key` and decides under one lock; `Err(seconds to wait)` when it is over the limit.
+    /// Once [`MAX_TRACKED`] keys have open windows, a new key counts on the shared `overflow` key.
     fn hit(&self, key: K, overflow: K, now: Instant) -> Result<(), u64> {
-        let mut windows = self.windows.lock().unwrap_or_else(PoisonError::into_inner);
-        if windows.len() >= MAX_TRACKED && !windows.contains_key(&key) {
-            windows.retain(|_, window| now.duration_since(window.started) < WINDOW);
-        }
-        let key = if windows.len() >= MAX_TRACKED && !windows.contains_key(&key) {
-            overflow
-        } else {
-            key
+        let mut table = self.table.lock().unwrap_or_else(PoisonError::into_inner);
+        let Table { windows, pruned_at } = &mut *table;
+        let full = |windows: &HashMap<K, Window>| {
+            windows.len() >= MAX_TRACKED && !windows.contains_key(&key)
         };
+        if full(windows)
+            && pruned_at.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(1))
+        {
+            windows.retain(|_, window| now.duration_since(window.started) < WINDOW);
+            *pruned_at = Some(now);
+        }
+        let key = if full(windows) { overflow } else { key };
         let window = windows.entry(key).or_insert(Window {
             started: now,
             count: 0,
@@ -336,7 +341,7 @@ pub struct TokenGate {
 #[derive(Debug)]
 struct Limits {
     tokens: Limiter<AccessTokenId>,
-    /// Keyed by client address; `None` = unknown address or the shared overflow counter.
+    /// Keyed by client address (IPv6: its /64); `None` = unknown address or the shared overflow counter.
     failures: Limiter<Option<IpAddr>>,
 }
 
@@ -378,16 +383,19 @@ impl TokenGate {
             TokenUse::Read(scope) => Some(scope),
             TokenUse::Identify => None,
         };
-        let client = client_address(parts, &self.state.config);
-        if let Some(retry_after_seconds) = self.limits.failures.blocked(&client, Instant::now()) {
-            return Err(TokenAuthError::RateLimited {
-                retry_after_seconds,
-            });
-        }
+        // Authentication first: a valid token is never refused by the failure limit of its address, which only
+        // counts and throttles failures. Malformed tokens never reach the database; a well-formed one costs one
+        // primary-key read, as a session cookie does.
         let Some((credential, principal)) = self.authenticate(parts, audit).await? else {
-            // The attempt that reaches the limit still answers 401; the next one is blocked above.
-            let _ = self.limits.failures.hit(client, None, Instant::now());
-            return Err(TokenAuthError::Invalid);
+            let client = client_address(parts, &self.state.config);
+            return Err(
+                match self.limits.failures.hit(client, None, Instant::now()) {
+                    Ok(()) => TokenAuthError::Invalid,
+                    Err(retry_after_seconds) => TokenAuthError::RateLimited {
+                        retry_after_seconds,
+                    },
+                },
+            );
         };
         if needed.is_some_and(|scope| !credential.record.scopes.contains(&scope)) {
             return Err(TokenAuthError::InsufficientScope);
@@ -478,26 +486,51 @@ fn bearer(parts: &Parts) -> Option<&str> {
     scheme.eq_ignore_ascii_case("bearer").then(|| token.trim())
 }
 
-/// The client address for the failed-attempt limit: the TCP peer, or, when the peer is a trusted proxy
-/// (`SR_TRUSTED_PROXIES`), the last `X-Forwarded-For` entry, which that proxy appended.
+/// Whether the request presents a personal access token: an `Authorization: Bearer srp_…` header. Any other
+/// `Authorization` value (an authenticating proxy's Basic or bearer credential) is not ours and passes untouched.
+fn is_token_attempt(headers: &HeaderMap) -> bool {
+    headers.get_all(AUTHORIZATION).iter().any(|value| {
+        value
+            .to_str()
+            .ok()
+            .and_then(|value| value.split_once(' '))
+            .is_some_and(|(scheme, token)| {
+                scheme.eq_ignore_ascii_case("bearer")
+                    && token.trim_start().starts_with(TOKEN_PREFIX)
+            })
+    })
+}
+
+/// The client key of the failed-attempt limit: the TCP peer, or, when the peer is a trusted proxy
+/// (`SR_TRUSTED_PROXIES`), the last `X-Forwarded-For` entry, which that proxy appended; an IPv6 address counts as
+/// its /64 network (one subscriber's prefix).
 fn client_address(parts: &Parts, config: &Config) -> Option<IpAddr> {
     let peer = parts
         .extensions
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ConnectInfo(peer)| peer.ip().to_canonical())?;
-    if !config.trusted_proxies.iter().any(|net| net.contains(&peer)) {
-        return Some(peer);
-    }
-    let forwarded = parts
-        .headers
-        .get_all("x-forwarded-for")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .last()
-        .and_then(|address| address.trim().parse::<IpAddr>().ok())
-        .map(|address| address.to_canonical());
-    Some(forwarded.unwrap_or(peer))
+    let forwarded = || {
+        parts
+            .headers
+            .get_all("x-forwarded-for")
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .last()
+            .and_then(|address| address.trim().parse::<IpAddr>().ok())
+            .map(|address| address.to_canonical())
+    };
+    let client = if config.trusted_proxies.iter().any(|net| net.contains(&peer)) {
+        forwarded().unwrap_or(peer)
+    } else {
+        peer
+    };
+    Some(match client {
+        IpAddr::V6(address) => IpAddr::V6(Ipv6Addr::from_bits(
+            address.to_bits() & !u128::from(u64::MAX),
+        )),
+        address @ IpAddr::V4(_) => address,
+    })
 }
 
 fn query_carries_token(uri: &Uri) -> bool {
@@ -515,13 +548,13 @@ struct AuditIds {
     user_id: Option<String>,
 }
 
-/// Middleware of the public API router (`route_layer`): requests without `Authorization` pass unchanged;
-/// requests with one are admitted as a [`TokenPrincipal`] or refused (ADR-019 §5).
+/// Middleware of the public API router (`route_layer`): requests without `Authorization: Bearer srp_…` pass
+/// unchanged; requests with one are admitted as a [`TokenPrincipal`] or refused (ADR-019 §5).
 pub async fn check(State(gate): State<TokenGate>, request: Request, next: Next) -> Response {
     if query_carries_token(request.uri()) {
         return TokenAuthError::TokenInQuery.into_response();
     }
-    if !request.headers().contains_key(AUTHORIZATION) {
+    if !is_token_attempt(request.headers()) {
         return next.run(request).await;
     }
     let started = Instant::now();
@@ -551,6 +584,56 @@ pub async fn check(State(gate): State<TokenGate>, request: Request, next: Next) 
         "access token request"
     );
     response
+}
+
+/// How long a GitHub-backed read is reused for an access token: agents poll, and every GitHub call spends the
+/// user's own GitHub budget (5000 requests an hour), which the browser needs too.
+pub(crate) const GITHUB_READ_TTL: Duration = Duration::from_secs(60);
+/// Most cached GitHub-backed reads; beyond it (after dropping ended ones) a read is not cached.
+const MAX_CACHED_READS: usize = 1024;
+
+type CachedRead = (Instant, Arc<dyn Any + Send + Sync>);
+
+/// GitHub-backed reads served to access tokens, by (user id, key). In-process: one server process.
+static GITHUB_READS: LazyLock<Mutex<HashMap<(String, String), CachedRead>>> =
+    LazyLock::new(Mutex::default);
+
+/// The result of a GitHub-backed `read` for `session`. For an access token a success is reused for
+/// [`GITHUB_READ_TTL`] per (user, `key`), so a polling agent does not spend the user's GitHub budget; a browser
+/// session always reads.
+pub(crate) async fn github_read<T, E>(
+    session: &Session,
+    key: String,
+    read: impl Future<Output = Result<T, E>>,
+) -> Result<T, E>
+where
+    T: Clone + Send + Sync + 'static,
+{
+    if !session.is_access_token() {
+        return read.await;
+    }
+    let key = (session.user_id.clone(), key);
+    let now = Instant::now();
+    let fresh = |(at, _): &CachedRead| now.duration_since(*at) < GITHUB_READ_TTL;
+    {
+        let reads = GITHUB_READS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(value) = reads
+            .get(&key)
+            .filter(|entry| fresh(entry))
+            .and_then(|(_, value)| value.downcast_ref::<T>())
+        {
+            return Ok(value.clone());
+        }
+    }
+    let value = read.await?;
+    let mut reads = GITHUB_READS.lock().unwrap_or_else(PoisonError::into_inner);
+    if reads.len() >= MAX_CACHED_READS {
+        reads.retain(|_, entry| fresh(entry));
+    }
+    if reads.len() < MAX_CACHED_READS || reads.contains_key(&key) {
+        reads.insert(key, (now, Arc::new(value.clone())));
+    }
+    Ok(value)
 }
 
 /// Test helper: a token of `user_id` in the default tenant stored with `scopes` and `expires_at`; returns the

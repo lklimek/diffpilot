@@ -263,7 +263,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `token_limit_reached` | 409 | the user has 10 live access tokens |
 | `invalid_dashboard_settings` | 422 | dashboard settings or time zone break a rule of plan §F.6; the message names the field and the rule |
 | `github_rate_limited` | 429 | starting a refresh while the user's GitHub rate limit is exhausted; `Retry-After` and the message give the reset time |
-| `rate_limited` | 429 | over an access token's request rate (120/min) or a client's failed bearer attempts (30/min); `Retry-After` |
+| `rate_limited` | 429 | over an access token's request rate (120/min), or a failed attempt past a client's 30 failed bearer attempts/min; `Retry-After` |
 
 ## Endpoint × fixture-state inventory
 Fixture PR `acme/node-client#482` (`fixtures/pr-482/`): `api-seed/default/` plus merge patches per state.
@@ -622,13 +622,16 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   (anything else: 400 `invalid_request`); `expires_in_days` one of 30, 90, 365 (`CreateAccessToken::EXPIRY_DAYS`).
   A name, scope or expiry outside these rules answers 400 `invalid_request`, a name in use 409 `conflict`. At most
   10 live (not revoked, not expired) tokens per user. R8 lists tokens that are not revoked, newest first.
-- **Token check** (middleware on the public router, WP11-TOKENS): both a session cookie and a bearer token → 400
+- **Token check** (middleware on the public router, WP11-TOKENS; only `Authorization: Bearer srp_…` is a token
+  attempt, any other `Authorization` value passes to the session check): both a session cookie and such a token → 400
   `invalid_request`; a token on a route that is not `read` or with a non-safe method → 403 `token_not_accepted`;
   unknown, malformed, expired or revoked token, or its user off the allow-list → 401 `unauthenticated` with
   `WWW-Authenticate: Bearer` (no reason given); valid without the route's scope → 403 `insufficient_scope`; over the
-  rate limits → 429 `rate_limited` with `Retry-After`. `GET /api/v1/me` answers a token with its user and
-  `csrf_token: null`. Runner bearers sent to the public API are unknown tokens; `srp_` tokens are rejected on the
-  runner listener.
+  rate limits → 429 `rate_limited` with `Retry-After` (the token is checked first; only failures count against the
+  per-address limit, IPv6 per /64). `GET /api/v1/me` answers a token with its user and `csrf_token: null`. Runner
+  bearers sent to the public API reach the session check (401); `srp_` tokens are refused on the runner listener
+  before any lookup (401). GitHub-backed reads (pending review, related-link checks, App installations) are reused
+  for 60 s per user for tokens.
 - **Refresh states** (the one state table; `RefreshState`, `RankingState` and `db::repo::dashboard` follow it).
   The current snapshot is that of the user's newest refresh in `ranking` or `finished`; `failed` and `cancelled`
   refreshes never hold one, so the previous snapshot stays. A stored snapshot stays current whatever happens to

@@ -27,7 +27,9 @@ curl -sS -H "Authorization: Bearer $SR_TOKEN" https://review.example/api/v1/dash
 ```
 
 - Header only: `?access_token=…` answers 400 `invalid_request` (a token must never appear in a URL).
-- No cookie with a token: a request carrying both a session cookie and a bearer token answers 400 `invalid_request`.
+- No cookie with a token: a request carrying both a session cookie and an `srp_` bearer token answers 400
+  `invalid_request`. Any other `Authorization` value is not a token attempt and goes to the session check (401
+  without a session).
 - No CSRF token is needed or used (a bearer token is not an ambient credential).
 - CORS is unchanged (same-origin only); call the API from a server-side agent, not from a web page.
 - Check the token: `GET /api/v1/me` answers `{"user": {...}, "csrf_token": null}` for a valid token.
@@ -57,10 +59,15 @@ marked `read` in `routes.rs`; every other route answers 403 `token_not_accepted`
 
 Never with a token: refreshing, cancelling or ranking the dashboard, any settings change, starting or steering an
 analysis, asking, feedback, pending comments, listing or creating tokens (`/api/v1/settings/access-tokens`), and
-the runner listener. Reaching an analysis: v1 has no analysis list; follow the `review.analysis_id` of a pull
+the runner listener (it answers 401 to an `srp_` token). Reaching an analysis: v1 has no analysis list; follow the `review.analysis_id` of a pull
 request item (A3). Reads backed by the user's GitHub token (A14, installations in A15) answer as for a browser
 without a GitHub sign-in when the server holds none: 401 `unauthenticated` with the message "Your GitHub sign-in
 has ended. Sign in again." and **no** `WWW-Authenticate` header (the access token itself is fine).
+
+**Do not poll faster than once a minute.** Reads backed by the user's GitHub token (A9 related-link checks, A14,
+installations in A15) spend the user's own GitHub budget (5000 requests an hour, shared with the browser and the
+dashboard refresh); for a token the server reuses each such read for 60 s per user, so polling them faster only
+returns the same answer. A2 is a cheap database read.
 
 JSON Schemas of every response above are checked in under `schemas/api/` (generated from the contract types;
 `ApiError` in `api_error.schema.json`).
@@ -127,7 +134,7 @@ fields and treat unknown enum values (`kind`, `component`, `status`, `tier`, `To
 | E5 | 404 | `not_found` | unknown id, or another user's refresh or tenant's analysis | — |
 | E6 | 409 | `cursor_expired` | the ranking changed since the cursor was issued | start paging again |
 | E7 | 409 | `analysis_not_finished` | Tour, lines, diff or repository settings before the analysis is ready | retry later |
-| E8 | 429 | `rate_limited` + `Retry-After` | over 120 requests per minute for this token, or over 30 failed token attempts per minute from this address | wait `Retry-After` seconds |
+| E8 | 429 | `rate_limited` + `Retry-After` | over 120 requests per minute for this token, or a failed attempt past 30 failed token attempts per minute from this address (IPv6: its /64); a valid token is never refused by the failure limit | wait `Retry-After` seconds |
 | E9 | 503 | `unavailable` + `Retry-After` | the server is busy | retry after `Retry-After` |
 | E10 | 5xx | `internal`, `github_unavailable` | server or GitHub failure | retry later |
 

@@ -642,9 +642,7 @@ async fn revoked_expired_or_unlisted_user_token_is_rejected() {
         ("wrong secret", format!("Bearer {wrong_secret}")),
         ("unknown id", format!("Bearer {unknown_id}")),
         ("malformed", "Bearer srp_short".to_owned()),
-        ("runner secret", format!("Bearer {runner_secret}")),
-        ("empty", "Bearer ".to_owned()),
-        ("other scheme", format!("Basic {}", s.token)),
+        ("lower-case scheme", format!("bearer {wrong_secret}")),
     ] {
         let request = Request::get(&uri)
             .header(AUTHORIZATION, header)
@@ -664,6 +662,20 @@ async fn revoked_expired_or_unlisted_user_token_is_rejected() {
             json!({"code": "unauthenticated", "message": "The access token is not valid."}),
             "{case}: no reason given"
         );
+    }
+    // Not a personal access token: the session check answers, without a bearer challenge.
+    for (case, header) in [
+        ("runner secret", format!("Bearer {runner_secret}")),
+        ("empty", "Bearer ".to_owned()),
+        ("other scheme", format!("Basic {}", s.token)),
+    ] {
+        let request = Request::get(&uri)
+            .header(AUTHORIZATION, header)
+            .body(Body::empty())
+            .expect("request");
+        let response = send(&s.app, request).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{case}");
+        assert!(response.headers().get(WWW_AUTHENTICATE).is_none(), "{case}");
     }
     let twice = Request::get(&uri)
         .header(AUTHORIZATION, format!("Bearer {}", s.token))
@@ -796,14 +808,11 @@ async fn runner_listener_rejects_personal_tokens() {
 }
 
 #[tokio::test]
-async fn per_token_and_failed_attempt_limits_answer_429() {
+async fn per_token_limit_answers_429_with_retry_after() {
     let s = setup().await;
     for n in 0..REQUESTS_PER_TOKEN_PER_MINUTE {
-        assert_eq!(
-            get_with_token(&s.app, GET_ME.path, &s.token).await.0,
-            StatusCode::OK,
-            "{n}"
-        );
+        let (status, _) = get_with_token(&s.app, GET_ME.path, &s.token).await;
+        assert_eq!(status, StatusCode::OK, "{n}");
     }
     let response = send(&s.app, request("GET", GET_ME.path, Some(&s.token), None)).await;
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -814,38 +823,170 @@ async fn per_token_and_failed_attempt_limits_answer_429() {
         .expect("seconds");
     assert!((1..=60).contains(&retry), "{retry}");
     let (other, _) = read_token(&s.state, "u1").await;
-    assert_eq!(
-        get_with_token(&s.app, GET_ME.path, &other).await.0,
-        StatusCode::OK,
-        "per token"
-    );
+    let (status, _) = get_with_token(&s.app, GET_ME.path, &other).await;
+    assert_eq!(status, StatusCode::OK, "per token");
+}
 
-    let from = |address: &str, token: &str| {
-        let mut request = request("GET", GET_ME.path, Some(token), None);
-        request
-            .extensions_mut()
-            .insert(ConnectInfo(address.parse::<SocketAddr>().expect("address")));
-        request
-    };
-    let wrong = format!("{}{}", &other[..13], "C".repeat(43));
-    for n in 0..FAILED_ATTEMPTS_PER_CLIENT_PER_MINUTE {
-        assert_eq!(
-            send(&s.app, from("192.0.2.7:4000", &wrong)).await.status(),
-            StatusCode::UNAUTHORIZED,
-            "{n}"
-        );
+fn from(address: &str, token: &str) -> Request<Body> {
+    let mut request = request("GET", GET_ME.path, Some(token), None);
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(address.parse::<SocketAddr>().expect("address")));
+    request
+}
+
+/// Only failures are counted and throttled: past 30 failures a minute an address gets 429 for further failures,
+/// while a valid token from the same address (or with no known address at all) is still admitted.
+#[tokio::test]
+async fn failed_attempts_are_throttled_but_never_block_a_valid_token() {
+    let s = setup().await;
+    let wrong = format!("{}{}", &s.token[..13], "C".repeat(43));
+    for address in ["192.0.2.7:4000", "192.0.2.7:4001"] {
+        for n in 0..FAILED_ATTEMPTS_PER_CLIENT_PER_MINUTE / 2 {
+            let status = send(&s.app, from(address, &wrong)).await.status();
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{address} {n}");
+        }
     }
-    let (status, error) = status_and_body(&s.app, from("192.0.2.7:4001", &other)).await;
+    let (status, error) = status_and_body(&s.app, from("192.0.2.7:4002", &wrong)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(error["code"], "rate_limited");
+    let status = send(&s.app, from("192.0.2.7:4003", &s.token))
+        .await
+        .status();
     assert_eq!(
         status,
-        StatusCode::TOO_MANY_REQUESTS,
-        "blocked before the lookup"
+        StatusCode::OK,
+        "a valid token from the throttled address"
     );
-    assert_eq!(error["code"], "rate_limited");
-    assert_eq!(
-        send(&s.app, from("192.0.2.8:4000", &other)).await.status(),
-        StatusCode::OK
-    );
+    let status = send(&s.app, from("192.0.2.8:4000", &wrong)).await.status();
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "another address");
+    // No address known (every client shares one key): failures there never lock out a valid token either.
+    for _ in 0..=FAILED_ATTEMPTS_PER_CLIENT_PER_MINUTE {
+        send(&s.app, request("GET", GET_ME.path, Some(&wrong), None)).await;
+    }
+    let (status, _) = get_with_token(&s.app, GET_ME.path, &s.token).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// An IPv6 client counts as its /64: rotating the interface id does not reset the failure limit.
+#[tokio::test]
+async fn ipv6_failures_count_per_64_prefix() {
+    let s = setup().await;
+    let wrong = format!("{}{}", &s.token[..13], "D".repeat(43));
+    for n in 0..FAILED_ATTEMPTS_PER_CLIENT_PER_MINUTE {
+        let address = format!("[2001:db8:1:2::{:x}]:443", n + 1);
+        let status = send(&s.app, from(&address, &wrong)).await.status();
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{address}");
+    }
+    let status = send(&s.app, from("[2001:db8:1:2:ffff::1]:443", &wrong))
+        .await
+        .status();
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let status = send(&s.app, from("[2001:db8:1:3::1]:443", &wrong))
+        .await
+        .status();
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "another /64");
+}
+
+/// Only `Authorization: Bearer srp_…` is a token attempt: an authenticating proxy's own credential passes to the
+/// session check untouched, with or without a session cookie.
+#[tokio::test]
+async fn other_authorization_headers_pass_to_the_session() {
+    let s = setup().await;
+    let uri = uri(&GET_REVIEW_STATE, s.analysis);
+    for header in [
+        "Basic dXNlcjpwYXNz",
+        "Bearer eyJhbGciOiJSUzI1NiJ9.proxy-id-token",
+    ] {
+        let with_cookie = Request::get(&uri)
+            .header(AUTHORIZATION, header)
+            .header(COOKIE, &s.cookie)
+            .body(Body::empty())
+            .expect("request");
+        assert_eq!(
+            send(&s.app, with_cookie).await.status(),
+            StatusCode::OK,
+            "{header}"
+        );
+        let mutation = Request::put(contracts::routes::SET_LANGUAGE.path)
+            .header("content-type", "application/json")
+            .header(AUTHORIZATION, header)
+            .header(COOKIE, &s.cookie)
+            .header(CSRF_HEADER, CSRF)
+            .body(Body::from(json!({ "language": "pl" }).to_string()))
+            .expect("request");
+        assert_eq!(
+            send(&s.app, mutation).await.status(),
+            StatusCode::NO_CONTENT,
+            "{header}"
+        );
+        let alone = Request::get(&uri)
+            .header(AUTHORIZATION, header)
+            .body(Body::empty())
+            .expect("request");
+        let (status, error) = status_and_body(&s.app, alone).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{header}");
+        assert_eq!(error["code"], "unauthenticated", "{header}");
+    }
+}
+
+/// GitHub-backed reads (here App installations in Settings) are read from GitHub at most once a minute per user
+/// for access tokens; a browser session still reads every time.
+#[tokio::test]
+async fn token_reads_backed_by_github_are_cached_per_user() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let github = MockServer::start().await;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut config = crate::config::tests::test_config();
+    config.data_dir = dir.path().to_owned();
+    config.github.api_url = url::Url::parse(&format!("{}/api", github.uri())).expect("url");
+    let state = AppState::with_queue(config, db::repo::Db::in_memory().await.expect("db"));
+    seed_analysis(&state.db).await.expect("analysis");
+    let cookie = session_cookie(&state, DEFAULT_TENANT).await;
+    let lock = crate::auth::lock_user("u1").await;
+    crate::auth::store_sign_in_tokens(
+        &state,
+        &lock,
+        DEFAULT_TENANT,
+        &crate::github::oauth::TokenGrant {
+            access_token: secrecy::SecretString::from("ghu_cache_test"),
+            expires_in: 28_800,
+            refresh_token: secrecy::SecretString::from("ghr_cache_test"),
+            refresh_token_expires_in: 15_638_400,
+        },
+        Utc::now(),
+    )
+    .await
+    .expect("pair");
+    drop(lock);
+    Mock::given(method("GET"))
+        .and(path("/api/user/installations"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"total_count": 0, "installations": []})),
+        )
+        .expect(4)
+        .mount(&github)
+        .await;
+    let app = api::router(state.clone());
+    let (token, _) = read_token(&state, "u1").await;
+    for _ in 0..3 {
+        let (status, settings) =
+            get_with_token(&app, contracts::routes::GET_SETTINGS.path, &token).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(settings["app_installations"], json!([]));
+    }
+    for _ in 0..3 {
+        let request = request(
+            "GET",
+            contracts::routes::GET_SETTINGS.path,
+            None,
+            Some(&cookie),
+        );
+        assert_eq!(send(&app, request).await.status(), StatusCode::OK);
+    }
+    github.verify().await;
 }
 
 #[test]
@@ -854,15 +995,13 @@ fn limiter_counts_per_key_and_window() {
     let start = Instant::now();
     assert_eq!(limiter.hit("a", "x", start), Ok(()));
     assert_eq!(limiter.hit("a", "x", start), Ok(()));
-    assert_eq!(limiter.blocked(&"a", start), Some(60));
+    assert_eq!(limiter.hit("a", "x", start), Err(60));
     assert_eq!(
         limiter.hit("a", "x", start + Duration::from_secs(45)),
         Err(15)
     );
     assert_eq!(limiter.hit("b", "x", start), Ok(()));
-    let later = start + WINDOW;
-    assert_eq!(limiter.blocked(&"a", later), None);
-    assert_eq!(limiter.hit("a", "x", later), Ok(()));
+    assert_eq!(limiter.hit("a", "x", start + WINDOW), Ok(()));
 }
 
 #[test]
@@ -875,11 +1014,15 @@ fn limiter_memory_is_bounded() {
     // New keys share the overflow counter while every window is open, so they are still limited.
     assert_eq!(limiter.hit(Some(MAX_TRACKED), None, start), Ok(()));
     assert!(limiter.hit(Some(MAX_TRACKED + 1), None, start).is_err());
-    let len = limiter.windows.lock().expect("lock").len();
+    assert!(
+        limiter.hit(Some(MAX_TRACKED + 2), None, start).is_err(),
+        "every further new key is limited"
+    );
+    let len = limiter.table.lock().expect("lock").windows.len();
     assert_eq!(len, MAX_TRACKED + 1);
     // Ended windows make room again.
     assert_eq!(limiter.hit(Some(usize::MAX), None, start + WINDOW), Ok(()));
-    assert_eq!(limiter.windows.lock().expect("lock").len(), 1);
+    assert_eq!(limiter.table.lock().expect("lock").windows.len(), 1);
 }
 
 #[test]
@@ -910,6 +1053,12 @@ fn client_address_trusts_forwarded_for_only_from_a_trusted_proxy() {
         (Some("172.29.73.1:1"), Some("not-an-ip"), ip("172.29.73.1")),
         (Some("172.29.73.1:1"), None, ip("172.29.73.1")),
         (Some("[::ffff:192.0.2.1]:1"), None, ip("192.0.2.1")),
+        (Some("[2001:db8:1:2:3:4:5:6]:1"), None, ip("2001:db8:1:2::")),
+        (
+            Some("172.29.73.1:1"),
+            Some("2001:db8:9:9::7"),
+            ip("2001:db8:9:9::"),
+        ),
         (None, Some("198.51.100.9"), None),
     ];
     for (peer, forwarded, expected) in cases {

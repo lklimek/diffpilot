@@ -21,6 +21,7 @@ use db::error::DbError;
 use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
+use crate::auth::access_tokens::github_read;
 use crate::auth::{Session, SessionCsrf, user_access_token, user_token_rejected};
 use crate::github::rest::{self, GithubError, is_valid_repo};
 use crate::memcan::profile;
@@ -194,7 +195,11 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
         memcan_status: Some(state.config.memcan.status()),
         llm_status: llm_status(last_call, unusable_since),
         language: user.language,
-        app_installations: installations(state, session).await,
+        app_installations: github_read(session, "installations".to_owned(), async {
+            installations(state, session).await.ok_or(())
+        })
+        .await
+        .ok(),
         repos: state
             .db
             .settings()
