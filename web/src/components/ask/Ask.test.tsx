@@ -191,6 +191,36 @@ describe("AskForm", () => {
   });
 });
 
+describe("AskForm: a collapsible Inspector section", () => {
+  const control = (open: boolean) => ({
+    isOpen: vi.fn(() => open),
+    toggle: vi.fn(),
+    reveal: vi.fn(),
+  });
+
+  it("opens and closes with the chevron like the other sections; the header keeps the step's question count", async () => {
+    const sections = control(false);
+    const { rerender } = render(<AskForm step={step5} onAsk={() => {}} sections={sections} count={2} />);
+    const header = screen.getByRole("button", { name: /^Ask about/ });
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    expect(header).toHaveTextContent("2 questions on this step");
+    expect(screen.queryByRole("textbox")).toBeNull();
+    await userEvent.click(header);
+    expect(sections.toggle).toHaveBeenCalledWith("ask");
+    rerender(<AskForm step={step5} onAsk={() => {}} sections={control(true)} count={2} />);
+    expect(screen.getByRole("button", { name: /^Ask about/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("textbox", { name: "Ask the LLM about Step 5" })).toBeVisible();
+  });
+
+  it("says where answers appear: below the field, newest first", () => {
+    render(<AskForm step={step5} onAsk={() => {}} sections={control(true)} count={0} />);
+    const ask = screen.getByRole("region", { name: /^Ask/ });
+    expect(ask).toHaveTextContent("answers appear below the field, newest first");
+    expect(ask).not.toHaveTextContent(/pinned/);
+    expect(screen.getByRole("button", { name: "Ask" })).not.toHaveAccessibleDescription(/pinned/);
+  });
+});
+
 describe("AskAnswers", () => {
   it("shows the current file's name in bold in an answer's evidence", async () => {
     const user = userEvent.setup();

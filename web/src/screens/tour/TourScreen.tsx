@@ -1,6 +1,7 @@
 import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
+import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
 import { ApiError } from "../../api/client";
@@ -234,6 +235,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const [focusNext, setFocusNext] = useState<"ask" | "comment" | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const askRef = useRef<HTMLTextAreaElement>(null);
+  // Inspector sections (Ask included), remembered per user; scoped reveals close again on another block.
+  const sections = useSectionState(JSON.stringify(current));
   const commentRef = useRef<HTMLTextAreaElement>(null);
 
   const setLayout = (next: TourLayout) => {
@@ -403,6 +406,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         case "ask":
           event.preventDefault();
           openInspector();
+          sections.reveal("ask");
           return setFocusNext("ask");
         case "help":
           return setHelpOpen(true);
@@ -822,6 +826,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             drafts={drafts}
             reanalyseHref={`/?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
             askRef={askRef}
+            sections={sections}
             commentRef={commentRef}
           />
         }

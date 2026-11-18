@@ -415,6 +415,25 @@ describe("Tour screen (brief §4.3)", () => {
     expect(await within(answers).findByText("It is not.")).toBeInTheDocument();
   });
 
+  it("a collapsed Ask stays collapsed across steps; a expands it and focuses the field", async () => {
+    await open();
+    await openStep("1", "5");
+    const header = within(inspector()).getByRole("button", { name: /^Ask about/ });
+    await user().click(header);
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    await openStep("1", "6");
+    expect(within(inspector()).getByRole("button", { name: /^Ask about/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    await user().keyboard("a");
+    expect(within(inspector()).getByRole("button", { name: /^Ask about/ })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(within(inspector()).getByRole("textbox", { name: /Ask the LLM about Step 6/ })).toHaveFocus();
+  });
+
   it("a lost answer stream is announced at the pinned answers", async () => {
     await open();
     await openStep("1", "5");
