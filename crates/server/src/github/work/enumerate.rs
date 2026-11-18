@@ -90,9 +90,9 @@ const ISSUE_NODES: &str = "number title url body createdAt updatedAt authorAssoc
 assignees(first: 20) { nodes { login } } labels(first: 20) { nodes { name } } \
 comments(last: 50) { totalCount nodes { body } } milestone { title number state }";
 
-/// Pages read per repository by [`WorkClient::authored_pull_requests`]: the 500 pull requests updated most
-/// recently (100 per page).
-pub const AUTHORED_PAGES: usize = 5;
+/// Pages read per repository by [`WorkClient::authored_pull_requests`] (100 pull requests each): paging stops at
+/// the window start, so only a repository with more than 3000 pull requests updated in the window is cut.
+pub const AUTHORED_PAGES: usize = 30;
 
 /// Pull requests some logins authored in a set of repositories, read by repository (Q16).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -101,6 +101,8 @@ pub struct AuthoredPulls {
     pub found: BTreeMap<ItemRef, HistoryPr>,
     /// Repositories read.
     pub repositories: Vec<RepoRef>,
+    /// Repositories the token cannot see (not counted in `repositories`).
+    pub unreadable: Vec<RepoRef>,
     /// Repositories read only back to this update time (more than [`AUTHORED_PAGES`] pages in the window).
     pub cut_short: Vec<(RepoRef, Timestamp)>,
     /// One note per owner or repository that could not be listed.
@@ -127,7 +129,7 @@ struct AuthoredNode {
 
 /// One repository's pull requests updated at or after `since`, newest update first, by `authors`.
 struct RepoAuthored {
-    /// GitHub's name of the repository (the configured one may differ in case).
+    /// GitHub's name of the repository (the configured one may differ in case); `None` when not visible.
     name: Option<String>,
     found: Vec<(u32, HistoryPr)>,
     cut_short: Option<Timestamp>,
@@ -242,6 +244,7 @@ impl<T: TokenSource> WorkClient<T> {
         .await;
         for (repo, read) in wanted.into_iter().zip(reads) {
             match read {
+                Ok(RepoAuthored { name: None, .. }) => result.unreadable.push(repo),
                 Ok(read) => {
                     let name = read.name.unwrap_or_else(|| repo_name(&repo));
                     for (number, pr) in read.found {
@@ -280,7 +283,7 @@ impl<T: TokenSource> WorkClient<T> {
             cut_short: None,
         };
         let mut after = String::new();
-        for page_number in 1..=AUTHORED_PAGES {
+        for page_number in 1..=self.authored_pages {
             let lookup = format!(
                 "repository(owner: {}, name: {}) {{ nameWithOwner pullRequests(first: {}, orderBy: {{field: \
                  UPDATED_AT, direction: DESC}}{after}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ number \
@@ -325,7 +328,7 @@ impl<T: TokenSource> WorkClient<T> {
             }
             match page.page_info.end_cursor {
                 Some(cursor) if page.page_info.has_next_page => {
-                    if page_number == AUTHORED_PAGES {
+                    if page_number == self.authored_pages {
                         read.cut_short = oldest;
                     }
                     after = format!(", after: {}", literal(&cursor));

@@ -1713,3 +1713,29 @@ async fn issues_opened_within_the_look_back_days_are_marked_new() {
         "{tip}"
     );
 }
+
+/// The public events of a login search refuses could not be read: no note may claim they reach back to the window
+/// start (they were not read at all).
+#[tokio::test]
+async fn unread_event_feed_is_not_reported_as_reaching_back_to_the_window_start() {
+    let w = world().await;
+    w.faults(
+        json!([{"on": "rest", "matching": "users/alice-helper/events", "times": 100,
+        "answer": {"kind": "server_error", "html": false}}]),
+    )
+    .await;
+    let done = w.refreshed().await;
+    assert_eq!(done.state, RefreshState::Finished, "{:?}", done.failure);
+    let meta = w.summary(ALICE).await.snapshot.expect("snapshot");
+    let notes: Vec<&str> = meta.notes.iter().map(|n| n.text.as_str()).collect();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("public events of alice-helper could not be read")),
+        "{notes:?}"
+    );
+    assert!(
+        !notes.iter().any(|n| n.contains("which reach back to")),
+        "an unread feed is described as read back to a date: {notes:?}"
+    );
+}

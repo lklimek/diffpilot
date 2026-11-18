@@ -427,9 +427,10 @@ fn issue_tags(
         tags.push(tag(
             "new",
             format!(
-                "Opened {} (UTC), within your look-back of {} days",
+                "Opened {} (UTC), within your look-back of {} {}",
                 opened.to_zoned(TimeZone::UTC).date(),
-                look_back.days
+                look_back.days,
+                if look_back.days == 1 { "day" } else { "days" }
             ),
         ));
     }

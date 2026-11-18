@@ -1095,8 +1095,9 @@ async fn authored_pull_requests_are_read_per_repository_whoever_merged_them() {
     );
 }
 
+/// A busy repository is read to the window start: dashpay/platform has ~1200 pull requests updated in 12 weeks.
 #[tokio::test(start_paused = true)]
-async fn authored_pull_requests_stop_after_five_pages_and_say_where() {
+async fn authored_pull_requests_page_to_the_window_start() {
     let fake = Fake::start().await;
     let since: contracts::time::Timestamp = "2026-08-25T22:00:00Z".parse().unwrap();
     let mut client = fake.client();
@@ -1112,7 +1113,37 @@ async fn authored_pull_requests_stop_after_five_pages_and_say_where() {
         .await
         .unwrap();
 
-    assert_eq!(fake.requests_on("graphql").await.len(), AUTHORED_PAGES);
+    // Seven pull requests updated in the window, then the older one that ends the paging.
+    assert_eq!(fake.requests_on("graphql").await.len(), 8);
+    assert!(found.cut_short.is_empty(), "{:?}", found.cut_short);
+    assert_eq!(found.found.len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn authored_pull_requests_stop_at_the_page_cap_and_say_where() {
+    let fake = Fake::start().await;
+    let since: contracts::time::Timestamp = "2026-08-25T22:00:00Z".parse().unwrap();
+    let mut client = fake.client();
+    client.page_size = 1;
+    client.authored_pages = 3;
+
+    let found = client
+        .authored_pull_requests(
+            &[repo("acme/platform"), repo("acme/secret")],
+            &[],
+            &logins(&["alice-helper"]),
+            since,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(fake.requests_on("graphql").await.len(), 3 + 1);
     assert_eq!(found.cut_short.len(), 1, "{:?}", found.cut_short);
     assert_eq!(found.cut_short[0].0, repo("acme/platform"));
+    assert_eq!(found.repositories, [repo("acme/platform")]);
+    assert_eq!(
+        found.unreadable,
+        [repo("acme/secret")],
+        "not visible to the token"
+    );
 }
