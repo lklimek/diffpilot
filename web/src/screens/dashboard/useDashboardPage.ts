@@ -115,7 +115,7 @@ export function useDashboardPage() {
   const items = useDashboardItems(data?.revision, data?.snapshot != null);
   useRefreshEvents(data?.latest_refresh);
   useRefreshEvents(snapshotRefresh.data);
-  useSaveBrowserTimeZone(data);
+  const timeZoneSave = useSaveBrowserTimeZone(data);
   const now = useNow();
   const [filter, setFilter] = useKindFilter();
   const start = useStartRefresh();
@@ -142,7 +142,10 @@ export function useDashboardPage() {
     }
   }, [client, data, itemsRevision, items.isPlaceholderData]);
 
-  const view = useMemo(() => data && dashboardView(data, snapshotRefresh.data), [data, snapshotRefresh.data]);
+  const view = useMemo(
+    () => data && dashboardView(data, snapshotRefresh.data, timeZoneSave.failed),
+    [data, snapshotRefresh.data, timeZoneSave.failed],
+  );
   const nowDate = useMemo(() => new Date(now), [now]);
 
   return {

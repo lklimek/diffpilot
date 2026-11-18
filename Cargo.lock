@@ -2676,6 +2676,7 @@ dependencies = [
  "jsonschema",
  "jsonwebtoken",
  "mime_guess",
+ "proptest",
  "regex",
  "reqwest",
  "rmcp",

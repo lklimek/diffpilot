@@ -81,6 +81,7 @@ export const KIND_LABEL: Record<ItemKind, string> = { pr: "PR", issue: "Issue", 
 export const Spinner = () => (
   <span
     aria-hidden
+    data-spinner
     className="inline-block h-[11px] w-[11px] flex-none animate-spin rounded-full border-2 border-accent border-t-transparent motion-reduce:animate-none motion-reduce:opacity-60"
   />
 );

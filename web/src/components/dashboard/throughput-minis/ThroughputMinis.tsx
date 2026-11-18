@@ -44,7 +44,7 @@ export function ThroughputMinis({ weeks }: { weeks: ThroughputWeek[] }) {
           labels={labels}
           lastPartial={lastPartial}
         />
-        {lastPartial && <p className="text-xs text-muted">The last bar is this week so far (lighter).</p>}
+        {lastPartial && <p className="text-xs text-muted">The last bar is this week so far (dashed).</p>}
       </div>
     </AsideSection>
   );

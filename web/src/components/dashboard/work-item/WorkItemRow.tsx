@@ -141,7 +141,7 @@ export function WorkItemRow({
           </>
         ) : (
           <p className="col-span-2 col-start-3 m-0 text-[12.5px] text-muted italic @min-[1600px]:col-span-2 @min-[1600px]:col-start-4 @min-[1600px]:row-start-1">
-            Not judged yet; the LLM ranks it next.
+            Not judged yet: scored from computed parts and fixed estimates.
           </p>
         )}
         <div className="col-start-4 row-start-1 flex items-center justify-end gap-2 pt-px @min-[1600px]:col-start-6">

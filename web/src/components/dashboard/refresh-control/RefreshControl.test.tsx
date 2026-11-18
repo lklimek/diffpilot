@@ -7,6 +7,8 @@ import { RefreshControl } from "./RefreshControl";
 const snapshot = SUMMARY.snapshot!;
 const finished = SUMMARY.latest_refresh!;
 const button = () => screen.getByRole("button", { name: /Refresh|Retry/ });
+/** The visible scan line of the top bar. */
+const info = () => document.querySelector<HTMLElement>("[data-scan-info]")!;
 
 function renderControl(latest: RefreshStatus | null, extra: { schedule?: ScheduleStatus; now?: Date } = {}) {
   const onRefresh = vi.fn();
@@ -25,7 +27,7 @@ function renderControl(latest: RefreshStatus | null, extra: { schedule?: Schedul
 describe("RefreshControl", () => {
   it("says how and when the snapshot was refreshed, with judged and reused counts", () => {
     const onRefresh = renderControl(finished);
-    expect(screen.getByRole("status")).toHaveTextContent(
+    expect(info()).toHaveTextContent(
       /Refreshed manually at \d\d:\d\d · 2 h 13 min ago · judged 6 · reused 31/,
     );
     fireEvent.click(button());
@@ -34,12 +36,12 @@ describe("RefreshControl", () => {
 
   it("says automatically for a scheduled refresh", () => {
     renderControl({ ...finished, trigger: "scheduled" });
-    expect(screen.getByRole("status")).toHaveTextContent(/Refreshed automatically at/);
+    expect(info()).toHaveTextContent(/Refreshed automatically at/);
   });
 
   it("blocks Refresh while a scan runs, keeping the button focusable with its reason", () => {
     const onRefresh = renderControl(SCANNING);
-    expect(screen.getByRole("status")).toHaveTextContent(/Scanning… .* · showing/);
+    expect(info()).toHaveTextContent(/Scanning… .* · showing/);
     const refresh = button();
     expect(refresh).toHaveTextContent("Refreshing…");
     expect(refresh).toHaveAttribute("aria-disabled", "true");
@@ -52,7 +54,7 @@ describe("RefreshControl", () => {
 
   it("allows Refresh while the LLM ranks: a new scan supersedes the ranking", () => {
     const onRefresh = renderControl(RANKING);
-    expect(screen.getByRole("status")).toHaveTextContent("LLM ranking 10 / 14");
+    expect(info()).toHaveTextContent("LLM ranking 10 / 14");
     fireEvent.click(button());
     expect(onRefresh).toHaveBeenCalledOnce();
     fireEvent.focus(button());
@@ -94,6 +96,73 @@ describe("RefreshControl", () => {
 
   it("before the first refresh says so", () => {
     renderControl(null);
-    expect(screen.getByRole("status")).toHaveTextContent("Not refreshed yet");
+    expect(info()).toHaveTextContent("Not refreshed yet");
+  });
+
+  it("announces state changes only: the ticking scan line is not a live region", () => {
+    const at = (now: Date, latest: RefreshStatus) => (
+      <RefreshControl
+        latest={latest}
+        snapshot={snapshot}
+        schedule={SUMMARY.schedule}
+        onRefresh={() => {}}
+        now={now}
+      />
+    );
+    const later = new Date(NOW.getTime() + 5 * 60_000);
+    const { rerender } = render(at(NOW, finished));
+    expect(info()).not.toHaveAttribute("role");
+    expect(info()).not.toHaveAttribute("aria-live");
+    expect(info().closest("[aria-live]")).toBeNull();
+    const live = screen.getByRole("status");
+    expect(live).toHaveTextContent(/^Refreshed at \d\d:\d\d\.$/);
+    const idle = live.textContent;
+    rerender(at(later, finished));
+    expect(live.textContent).toBe(idle);
+
+    rerender(at(NOW, SCANNING));
+    expect(live).toHaveTextContent("Scanning GitHub and MemCan.");
+    rerender(at(later, SCANNING));
+    expect(live).toHaveTextContent("Scanning GitHub and MemCan.");
+    rerender(at(NOW, RANKING));
+    expect(live).toHaveTextContent("The scan finished; the LLM is ranking.");
+    rerender(at(NOW, { ...RANKING, ranking: { ...RANKING.ranking!, judged: 12 } }));
+    expect(live).toHaveTextContent("The scan finished; the LLM is ranking.");
+    rerender(at(NOW, FAILED));
+    expect(live).toHaveTextContent("The refresh failed.");
+  });
+
+  it("no spinner while the ranking waits for a review analysis or is paused", () => {
+    const { unmount } = renderControlRanking("waiting_for_analysis");
+    expect(info()).toHaveTextContent(/Refreshed \d\d:\d\d · LLM ranking waits for a review analysis/);
+    expect(info().querySelector("[data-spinner]")).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "The scan finished; the LLM ranking waits for a review analysis.",
+    );
+    unmount();
+
+    renderControlRanking("paused", "2026-11-18T11:00:00Z");
+    expect(info()).toHaveTextContent(/Refreshed \d\d:\d\d · LLM ranking paused until \d\d:\d\d/);
+    expect(info().querySelector("[data-spinner]")).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^The scan finished; the LLM ranking is paused until \d\d:\d\d\.$/,
+    );
+  });
+
+  it("a running ranking shows the spinner", () => {
+    renderControl(RANKING);
+    expect(info().querySelector("[data-spinner]")).not.toBeNull();
   });
 });
+
+function renderControlRanking(state: "waiting_for_analysis" | "paused", resumesAt: string | null = null) {
+  return render(
+    <RefreshControl
+      latest={{ ...RANKING, ranking: { ...RANKING.ranking!, state, resumes_at: resumesAt } }}
+      snapshot={snapshot}
+      schedule={SUMMARY.schedule}
+      onRefresh={() => {}}
+      now={NOW}
+    />,
+  );
+}

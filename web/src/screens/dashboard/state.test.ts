@@ -26,7 +26,7 @@ const withLatest = (
 const PROVISIONAL_SNAPSHOT = {
   ...SUMMARY.snapshot!,
   refresh_id: RANKING.id,
-  scanned_at: "2026-11-18T10:29:00Z",
+  scanned_at: "2026-11-18T09:24:00Z",
   ranked_at: null,
 };
 const ranked = (
@@ -62,7 +62,7 @@ describe('dashboardView: refresh states (http-api.md "Refresh states")', () => {
       expect(view.ranking).toEqual({
         status: { ...RANKING.ranking, state },
         refreshId: RANKING.id,
-        scannedAt: "2026-11-18T10:29:00Z",
+        scannedAt: "2026-11-18T09:24:00Z",
       });
       expect(view.stale).toBe(false);
     }
@@ -130,6 +130,18 @@ describe("dashboardView: schedule and limit notes", () => {
       "The daily refresh at 06:00 starts once your time zone is known.",
     ]);
     expect(titles({ ...SUMMARY, schedule: { ...noZone, enabled: false } })).toEqual([]);
+  });
+
+  it("says where to set the zone once saving the browser's zone failed, not that the page saves it", () => {
+    const summary = { ...SUMMARY, schedule: { ...SUMMARY.schedule, time_zone: null } };
+    const [saving] = dashboardView(summary, undefined, false).notes;
+    expect(saving?.text).toBe("This page saves your browser's time zone; you can change it in Settings.");
+    const [failed] = dashboardView(summary, undefined, true).notes;
+    expect(failed).toMatchObject({
+      tone: "warn",
+      title: "The daily refresh at 06:00 starts once your time zone is known.",
+      text: "Your browser's time zone could not be saved; set it in Settings.",
+    });
   });
 
   it("counts items left provisional by the ranking limit and items of an older prompt", () => {

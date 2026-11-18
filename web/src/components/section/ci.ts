@@ -21,6 +21,9 @@ export function ciText(ci: CiStatus): string {
     return `${sources} Nothing failed among the checks read, but not everything ran successfully.`;
   return sources;
 }
+/** Tooltip of the CI summary when it links to the PR's checks on GitHub. */
+export const CHECKS_LINK_TIP = "Open the checks on GitHub (new tab).";
+
 /** Tooltip identifies what was actually read, including partial GitHub permission failures. */
 export function ciTip(ci: CiStatus): string {
   return `${ciText(ci)} From GitHub for the head commit. ${ci.failing.length ? `Failing checks: ${ci.failing.map((c) => c.name).join(", ")}.` : ""}`.trim();

@@ -42,13 +42,15 @@ export function QueueAge({ yoursWaiting, waitingOnYou }: QueueAgeProps) {
       }
     >
       <div className="grid gap-3">
-        {waitingOnYou && (
+        {waitingOnYou ? (
           <MiniBarChart
             title="PRs waiting on your review"
             values={waitingOnYou}
             labels={[...AGE_BUCKETS]}
             max={max}
           />
+        ) : (
+          <p className="text-xs text-muted">Review-request age is not collected yet.</p>
         )}
         <MiniBarChart
           title="Your PRs waiting on others"

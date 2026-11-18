@@ -2,7 +2,7 @@ import { Tooltip } from "../tooltip/Tooltip";
 import { ModelsUsed } from "../usage/ModelsUsed";
 import { UsageLine } from "../usage/UsageLine";
 import type { UsageTotals } from "../../api/generated/types";
-import { ciText } from "../section/ci";
+import { CHECKS_LINK_TIP, ciText } from "../section/ci";
 import { MemcanStatusLine } from "../section/MemcanStatusLine";
 import { CodeText } from "../section/CodeText";
 import { plural, testLines } from "../quiet/labels";
@@ -35,6 +35,8 @@ interface PrContextBlockProps {
   usage?: UsageTotals | null;
   modelsUsed?: import("../../api/generated/types").ModelChoice[];
   onEvidence?: (evidence: Evidence) => void;
+  /** The PR's checks page on GitHub; the CI summary links to it (new tab) when given. */
+  checksHref?: string;
 }
 
 const FIT_TOPIC: Record<FitTopic, string> = {
@@ -116,6 +118,7 @@ export function PrContextBlock({
   onEvidence,
   usage,
   modelsUsed,
+  checksHref,
 }: PrContextBlockProps) {
   const headingId = useId();
   const { facts, llm } = context;
@@ -198,7 +201,15 @@ export function PrContextBlock({
         <Section title="Facts" subtitle="From GitHub and the diff; no LLM.">
           <ul className="m-0 list-none p-0">
             <Fact>
-              {ciText(facts.ci)}
+              {checksHref ? (
+                <Tooltip tip={CHECKS_LINK_TIP}>
+                  <a href={checksHref} target="_blank" rel="noopener noreferrer">
+                    {ciText(facts.ci)} ↗
+                  </a>
+                </Tooltip>
+              ) : (
+                ciText(facts.ci)
+              )}
               {facts.ci.failing.length > 0 && (
                 <ul className="mt-1 list-disc pl-5">
                   {facts.ci.failing.map((check) => (

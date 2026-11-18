@@ -1,6 +1,7 @@
 import { HttpResponse } from "msw";
 import type { AskQuestion, AskRequest } from "../../api/generated/types";
 import { ANSWER_MS, publishQuestion, updateStore } from "../review-store";
+import { scenario } from "../scenarios";
 import { forAnalysis, route } from "./common";
 
 const ANSWER =
@@ -35,7 +36,7 @@ export const askQuestion = route(
       };
       save(answered);
       publishQuestion(answered);
-    }, ANSWER_MS);
+    }, scenario().answerMs ?? ANSWER_MS);
     return HttpResponse.json(question, { status: 202 });
   }),
 );

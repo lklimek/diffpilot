@@ -64,7 +64,10 @@ describe("WorkList", () => {
     const notJudged = screen.getByRole("heading", { name: /Not judged yet/ })
       .nextElementSibling as HTMLElement;
     expect(within(notJudged).getByText("fix(ui): restore the focus ring on tabs")).toBeInTheDocument();
-    expect(within(notJudged).getByText("Not judged yet; the LLM ranks it next.")).toBeInTheDocument();
+    // State-neutral: after a failed, cancelled or capped ranking nothing ranks it "next".
+    expect(
+      within(notJudged).getByText("Not judged yet: scored from computed parts and fixed estimates."),
+    ).toBeInTheDocument();
   });
 
   it("marks provisional scores with ~ and every estimate in the breakdown", async () => {
@@ -99,7 +102,21 @@ describe("WorkList", () => {
     const onHelp = vi.fn();
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     render(<List onNavigate={onNavigate} onHelp={onHelp} />);
+    // The P0 alarm comes first, whatever the kind switch says.
     fireEvent.keyDown(document.body, { key: "j" });
+    const alarm = screen.getByRole("group", { name: "P0 alarm PLAT-1187" });
+    expect(alarm).toHaveAttribute("data-current", "true");
+    expect(document.activeElement).toBe(alarm);
+    fireEvent.keyDown(document.body, { key: "g" });
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/acme/platform/issues/1187",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    open.mockClear();
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(alarm).not.toHaveAttribute("data-current");
     const first = document.querySelector("li[data-current]")!;
     expect(first.getAttribute("data-item")).toBe("acme~platform~pr~1203");
     expect(document.activeElement).toBe(
@@ -174,14 +191,29 @@ describe("WorkList", () => {
         kind="pr"
         onKindChange={() => {}}
         reviewHref={reviewHref}
-        staleNote="08:12 snapshot. It is replaced when a scan finishes."
+        stale={{ at: "08:12", note: "It is replaced when a scan finishes." }}
         now={NOW}
       />,
     );
     const rows = document.querySelector("[data-stale]")!;
-    expect(rows).toHaveAccessibleDescription("08:12 snapshot. It is replaced when a scan finishes.");
+    expect(rows).toHaveAccessibleDescription(
+      "Previous snapshot · 08:12 It is replaced when a scan finishes.",
+    );
+    expect(within(rows as HTMLElement).getByText("Previous snapshot · 08:12")).toBeInTheDocument();
     expect(rows.className).not.toMatch(/opacity/);
     expect(rows.className).toMatch(/border-dashed/);
+    expect(rows.className).toMatch(/bg-surface-2/);
+  });
+
+  it("counts the P0 alarms of a hidden kind among the listed items", async () => {
+    render(<List />);
+    const listed = () =>
+      document.querySelectorAll("li[data-item]").length + document.querySelectorAll("[data-alarm]").length;
+    const header = () => screen.getByText(/of 14 items, ranked/);
+    expect(header()).toHaveTextContent(`${listed()} of 14 items, ranked`);
+    expect(header()).toHaveTextContent("11 of 14 items, ranked");
+    await userEvent.click(screen.getByRole("button", { name: /Issues 4/ }));
+    expect(header()).toHaveTextContent(`${listed()} of 14 items, ranked`);
   });
 
   it("says when no item of the chosen kind needs the user", async () => {

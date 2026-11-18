@@ -7,7 +7,7 @@ interface MiniColumnChartProps {
   /** One column per label, oldest first. */
   values: number[];
   labels: string[];
-  /** The last column is the running period (drawn lighter, labelled `now`). */
+  /** The last column is the running period (drawn dashed, labelled `now`). */
   lastPartial?: boolean;
 }
 
@@ -38,16 +38,20 @@ export function MiniColumnChart({ title, note, values, labels, lastPartial = fal
           const x = slot * i + slot / 2 - bar / 2;
           const yTop = H - bottom - h;
           const last = i === values.length - 1;
+          const partial = last && lastPartial;
           return (
             <g key={i}>
+              {/* The running period: a dashed outline, visible on both themes and at 0. */}
               <rect
                 x={x}
-                y={yTop}
+                y={partial ? Math.min(yTop, H - bottom - 3) : yTop}
                 width={bar}
-                height={Math.max(h, 1)}
+                height={partial ? Math.max(h, 3) : Math.max(h, 1)}
                 rx={3}
-                className="fill-c-pos"
-                opacity={last && lastPartial ? 0.55 : undefined}
+                data-partial={partial || undefined}
+                className={partial ? "fill-none stroke-c-pos" : "fill-c-pos"}
+                strokeWidth={partial ? 1.5 : undefined}
+                strokeDasharray={partial ? "3 2" : undefined}
               >
                 <title>{`${labels[i]}: ${value}`}</title>
               </rect>
