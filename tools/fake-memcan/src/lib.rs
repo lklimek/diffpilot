@@ -349,9 +349,7 @@ fn execute(
         }
         "list_todos" => {
             let list = params::<todos::ListParams>(call)?;
-            todos::list(&shared.lock().state.todos, list)
-                .map_err(|message| ErrorData::internal_error(message, None))
-                .and_then(text)
+            todos::list(&shared.lock().state.todos, list).and_then(text)
         }
         _ => Err(ErrorData::invalid_params("tool not found", None)),
     }

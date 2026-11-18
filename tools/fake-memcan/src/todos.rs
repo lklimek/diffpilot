@@ -3,6 +3,7 @@
 //! limit default 100 clamped to 1–200, order priority (high first) then `created_at` then id, `has_more` past
 //! the limit.
 
+use rmcp::ErrorData;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -61,14 +62,17 @@ fn priority_rank(priority: &str) -> u8 {
     }
 }
 
-/// The `list_todos` answer, or the text of MemCan's internal error for an unknown status.
-pub(crate) fn list(todos: &[Todo], params: ListParams) -> Result<Value, String> {
+/// The `list_todos` answer, or MemCan's internal error for an unknown status.
+pub(crate) fn list(todos: &[Todo], params: ListParams) -> Result<Value, ErrorData> {
     if let Some(status) = params.status.as_deref()
         && !STATUSES.contains(&status)
     {
-        return Err(format!(
-            "list_todos failed: invalid status '{status}', must be one of: {}",
-            STATUSES.join(", ")
+        return Err(ErrorData::internal_error(
+            format!(
+                "list_todos failed: invalid status '{status}', must be one of: {}",
+                STATUSES.join(", ")
+            ),
+            None,
         ));
     }
     let owner = params
