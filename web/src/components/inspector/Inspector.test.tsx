@@ -47,14 +47,16 @@ describe("Inspector at a step", () => {
     STEP_SECTIONS.forEach((pattern, i) => expect(names[i]).toMatch(pattern));
   });
 
-  it("names the step, links its lines on GitHub and says once that it is LLM analysis", () => {
+  it("names the step, links its lines on GitHub and tags LLM sections instead of a caption", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Step 5 · Retry allowed?");
     const link = screen.getByRole("link", { name: /src\/rpc\/client\.rs:99/ });
     expect(link).toHaveAttribute("href", step(tour, "f1.5").facts.github_url);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
-    expect(screen.getAllByText("LLM analysis unless marked otherwise.")).toHaveLength(1);
+    expect(screen.queryByText(/unless marked otherwise/)).toBeNull();
+    expect(within(region(/^Why/)).getByText("LLM")).toHaveAccessibleDescription(/written by the LLM/);
+    expect(within(region(/^Classic diff/)).queryByText("LLM")).toBeNull();
   });
 
   it("keeps Questions and Assessment collapsed and the others open by default", () => {
@@ -91,9 +93,10 @@ describe("Inspector at a step", () => {
     expect(consequences).toHaveTextContent("inference");
   });
 
-  it("hides unavailable call hierarchy", () => {
+  it("states an unavailable call hierarchy in one line, without a section", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     expect(screen.queryByRole("region", { name: /Call hierarchy/ })).toBeNull();
+    expect(screen.getByText("Call hierarchy: not available for this language yet.")).toBeVisible();
   });
 
   it("lists callers and callees with GitHub links when the plugin returns them", () => {
@@ -129,7 +132,7 @@ describe("Inspector at a step", () => {
     );
   });
 
-  it("says that no questions is not evidence of no defects (noq)", () => {
+  it("hides Questions and Assessment when the LLM gave none (noq)", () => {
     const noq = seedFor("noq", "tour") as Tour;
     render(<Inspector tour={noq} block={atStep("f1.5")} />);
     expect(screen.queryByRole("region", { name: /Questions to check/ })).toBeNull();
@@ -149,11 +152,13 @@ describe("Inspector at a step", () => {
   it("lists the GitHub threads of the step with their LLM status as LLM analysis", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     const threads = region(/^GitHub threads/);
+    expect(within(threads).getByText("GitHub")).toHaveAccessibleDescription(/from GitHub/);
     expect(threads).toHaveTextContent("@bob");
     expect(threads).toHaveTextContent("Should we retry non-idempotent calls at all?");
     expect(threads).toHaveTextContent("2 comments");
     const status = within(threads).getByText("still valid");
     expect(status).toHaveAccessibleDescription(/LLM/);
+    expect(status.closest("div")).toContainElement(within(threads).getByText("LLM"));
     expect(threads).toHaveTextContent("should_retry still retries every method");
     expect(within(threads).getByRole("link", { name: /Open the thread on GitHub/ })).toHaveAttribute(
       "target",
@@ -178,9 +183,8 @@ describe("Inspector at a step", () => {
     expect(why).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("renders the pinned answers and the dock slots", () => {
-    render(<Inspector tour={tour} block={atStep("f1.5")} answers={<p>pinned</p>} dock={<p>dock slot</p>} />);
-    expect(within(region(/^Ask: pinned answers/)).getByText("pinned")).toBeVisible();
+  it("renders the dock slot", () => {
+    render(<Inspector tour={tour} block={atStep("f1.5")} dock={<p>dock slot</p>} />);
     expect(screen.getByRole("group", { name: "Ask, feedback and comment" })).toHaveTextContent("dock slot");
   });
 });

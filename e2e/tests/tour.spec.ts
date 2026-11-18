@@ -34,7 +34,7 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
     "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
   );
   await expect(banner).toContainText("flows reviewed 0 / 5");
-  await expect(page.getByRole("main")).toContainText("LLM analysis unless marked otherwise.");
+  await expect(page.getByRole("main").locator('[data-provenance="llm"]').first()).toBeVisible();
   await expect(inspector(page)).toContainText("Unexplained: 6 changed lines in 1 file — read these yourself");
   await checkScreen(page);
 });

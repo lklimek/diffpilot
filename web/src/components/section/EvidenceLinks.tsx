@@ -24,13 +24,11 @@ export function EvidenceLinks({
       </summary>
       {files.map((file) => (
         <div key={file} className="flex flex-wrap items-center gap-1">
-          {file !== currentFile && (
-            <Tooltip tip={file}>
-              <span tabIndex={0} className="font-mono">
-                {file.split("/").at(-1)}
-              </span>
-            </Tooltip>
-          )}
+          <Tooltip tip={file === currentFile ? `${file} (the current file)` : file}>
+            <span tabIndex={0} className={`font-mono ${file === currentFile ? "font-bold" : ""}`}>
+              {file.split("/").at(-1)}
+            </span>
+          </Tooltip>
           {evidence
             .filter((e) => e.file === file)
             .map((item, i) => {

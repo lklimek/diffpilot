@@ -102,7 +102,7 @@ for (const state of ["default", "wrong", "missed", "noq", "noprofile", "resume"]
   });
 }
 
-test("noq: the step says the LLM raised no questions", async ({ page }) => {
+test("noq: the step hides Questions and Assessment when the LLM gave none", async ({ page }) => {
   await openTour(page, "noq");
   await page
     .getByRole("navigation")
