@@ -11,7 +11,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 
 ## Architecture rules (never break; details in plan §3–§5)
 - Crates: `contracts` (wire types, no IO) <- `analysis`, `db`, `runner`; `server` -> `contracts`, `analysis`, `db`.
-  Nothing depends on `server` or `runner`. `runner` has no DB access and no GitHub client code.
+  Nothing depends on `server` or `runner`. `server` may dev-depend on the test tool `fake-github` (tests only). `runner` has no DB access and no GitHub client code.
 - All database code (sqlx, migrations, row types) lives in `crates/db` behind its repository API; nothing else uses sqlx.
 - Pipeline and Ask use only the `JobExecutor` trait; `JobSpec` is self-contained; runner core is
   `execute(JobSpec, EventSink) -> JobResult`.
