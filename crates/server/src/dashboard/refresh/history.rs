@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use chrono::{DateTime, Days, NaiveDate, Utc};
+use chrono::{DateTime, Days, NaiveDate, TimeDelta, Utc};
 use chrono_tz::Tz;
 use contracts::api::dashboard::{HistoryEvent, HistoryKind, ScanNote};
 
@@ -22,11 +22,19 @@ pub(super) fn window_start(now: DateTime<Utc>, zone: Tz) -> (NaiveDate, DateTime
     let first = today
         .checked_sub_days(Days::new(WINDOW_DAYS))
         .unwrap_or(today);
-    let start = first
-        .and_hms_opt(0, 0, 0)
-        .and_then(|midnight| midnight.and_local_timezone(zone).earliest())
-        .map_or(now, |at| at.with_timezone(&Utc));
-    (first, start)
+    (first, first_instant(first, zone).unwrap_or(now))
+}
+
+/// The first instant of local date `day`: midnight, or the end of a DST gap that starts at midnight.
+fn first_instant(day: NaiveDate, zone: Tz) -> Option<DateTime<Utc>> {
+    let midnight = day.and_hms_opt(0, 0, 0)?;
+    // Gaps last at most a few hours; minute steps find the first local time that exists.
+    (0..=6 * 60).find_map(|minutes| {
+        (midnight + TimeDelta::minutes(minutes))
+            .and_local_timezone(zone)
+            .earliest()
+            .map(|at| at.with_timezone(&Utc))
+    })
 }
 
 /// Dated events, one per pull request and kind; for reviews the newest in the window.
@@ -88,13 +96,23 @@ fn from_details(
     }
 }
 
-/// Events of a login's public event feed (Q14, the fallback for a login search refuses).
-fn from_user_events(feed: &[UserEvent], start: DateTime<Utc>, events: &mut Events) {
+/// Events of a login's public event feed (Q14, the fallback for a login search refuses). The actor of an
+/// `opened` event is the author; a closing event counts only for a pull request a scanned login authored.
+fn from_user_events(
+    rules: &ScoreRules,
+    feed: &[UserEvent],
+    start: DateTime<Utc>,
+    events: &mut Events,
+) {
     for event in feed {
+        let own = event
+            .author
+            .as_deref()
+            .is_some_and(|author| rules.is_scanned(author));
         let kind = match (event.kind.as_str(), event.action.as_deref(), event.merged) {
             ("PullRequestEvent", Some("opened"), _) => HistoryKind::PrOpened,
-            ("PullRequestEvent", Some("closed"), Some(true)) => HistoryKind::PrMerged,
-            ("PullRequestEvent", Some("closed"), _) => HistoryKind::PrClosedUnmerged,
+            ("PullRequestEvent", Some("closed"), Some(true)) if own => HistoryKind::PrMerged,
+            ("PullRequestEvent", Some("closed"), _) if own => HistoryKind::PrClosedUnmerged,
             ("PullRequestReviewEvent", ..) => HistoryKind::ReviewGiven,
             _ => continue,
         };
@@ -131,7 +149,7 @@ pub(super) async fn collect<T: TokenSource>(
             }
             Err(WorkError::Unsearchable) => match client.user_events(login).await {
                 Ok(feed) => {
-                    from_user_events(&feed, start, &mut events);
+                    from_user_events(rules, &feed, start, &mut events);
                     notes.push(ScanNote {
                         text: format!(
                             "GitHub search refuses {login}: its chart history comes from its last 300 public \
@@ -195,10 +213,10 @@ mod tests {
         );
     }
 
-    /// Review repro: Chile starts DST at local midnight (2026-09-06 00:00 does not exist in America/Santiago);
-    /// the window must still start at that date's first instant, never at `now`.
+    /// Chile starts DST at local midnight (2026-09-06 00:00 does not exist in America/Santiago): the window
+    /// starts at that date's first instant, never at `now`.
     #[test]
-    fn review_window_start_survives_a_midnight_dst_gap() {
+    fn window_start_survives_a_midnight_dst_gap() {
         let now = at("2026-11-29T15:00:00Z");
         let (first, start) = window_start(now, chrono_tz::America::Santiago);
         assert_eq!(first, NaiveDate::from_ymd_opt(2026, 9, 6).expect("date"));
@@ -258,14 +276,27 @@ mod tests {
         ]);
         let mut events = Events::default();
         from_details(&rules, &details, start, &mut events);
-        let feed = [UserEvent {
+        let event = |number, action: &str, merged, author: Option<&str>, when| UserEvent {
             kind: "PullRequestEvent".to_owned(),
-            item: item(1190),
-            action: Some("opened".to_owned()),
-            merged: None,
-            created_at: at("2026-11-02T11:00:00Z"),
-        }];
-        from_user_events(&feed, start, &mut events);
+            item: item(number),
+            action: Some(action.to_owned()),
+            merged,
+            author: author.map(str::to_owned),
+            created_at: at(when),
+        };
+        let feed = [
+            event(1190, "opened", None, None, "2026-11-02T11:00:00Z"),
+            // A scanned login closed someone else's PR, and a closing event without its author: neither counts.
+            event(
+                1300,
+                "closed",
+                Some(true),
+                Some("renata-s"),
+                "2026-11-05T09:00:00Z",
+            ),
+            event(1301, "closed", Some(false), None, "2026-11-05T10:00:00Z"),
+        ];
+        from_user_events(&rules, &feed, start, &mut events);
         let events: Vec<(HistoryKind, String, DateTime<Utc>)> = events
             .into_events()
             .into_iter()

@@ -81,7 +81,9 @@ pub(super) fn verdict(files: &[PullFile], owned: &[String]) -> OwnedChange {
             // Too large or binary: no patch to inspect, the raw count stands.
             None => {
                 let count = usize::try_from(file.additions + file.deletions).unwrap_or(usize::MAX);
-                distinct.extend((0..count).map(|i| format!("{path}:{i}")));
+                // Only whether the threshold is reached matters: a huge generated file adds at most that many.
+                let marked = count.min(SIGNIFICANT_DISTINCT_LINES);
+                distinct.extend((0..marked).map(|i| format!("{path}:{i}")));
                 count
             }
             Some(patch) => {
@@ -168,6 +170,11 @@ mod tests {
         assert_eq!(
             verdict(&[file("src/sync/README.md", None, 40)], &owned),
             OwnedChange::None
+        );
+        assert_eq!(
+            verdict(&[file("src/sync/generated.rs", None, u64::MAX / 4)], &owned),
+            OwnedChange::Significant,
+            "a huge patch-less file is counted without one string per line"
         );
     }
 }
