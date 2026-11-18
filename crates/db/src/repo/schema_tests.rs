@@ -88,7 +88,95 @@ async fn migrations_apply_to_an_empty_file_and_reopen() {
         .fetch_one(&db.pool)
         .await
         .expect("migration table");
-    assert_eq!(applied, 1);
+    assert_eq!(applied, i64::try_from(MIGRATIONS.len()).expect("count"));
+}
+
+/// Migration 0002 upgrades a database made by 0001 in place: analyses, jobs, flow work and questions keep
+/// their rows, and the new counter starts at 0 with its constraint.
+#[tokio::test]
+async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    migrate(&pool, 1).await.expect("0001");
+    let db = Db { pool };
+    seed(&db).await;
+    insert_job(&db, "j1", "a1", "c1", "succeeded")
+        .await
+        .expect("job");
+    sqlx::raw_sql(
+        "INSERT INTO flow_work (tenant_id, analysis_id, flow_id, requested_at, error)
+           VALUES ('default', 'a1', 'f1', '2026-11-17T10:00:00.000000Z', NULL),
+                  ('default', 'a1', 'f2', NULL, 'The flow analysis failed. Retry this flow.');
+         INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, created_at)
+           VALUES ('q1', 'default', 'a1', 'f1.1', 'u1', 'why?', 'pending', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("rows of the old schema");
+    let counts =
+        "SELECT (SELECT COUNT(*) FROM analyses) || '/' || (SELECT COUNT(*) FROM jobs) || '/' ||
+        (SELECT COUNT(*) FROM flow_work) || '/' || (SELECT COUNT(*) FROM questions)";
+    let before: String = sqlx::query_scalar(counts)
+        .fetch_one(&db.pool)
+        .await
+        .expect("counts");
+    assert_eq!(before, "2/1/2/1");
+
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+
+    let after: String = sqlx::query_scalar(counts)
+        .fetch_one(&db.pool)
+        .await
+        .expect("counts");
+    assert_eq!(after, before, "no row is lost");
+    let flows: Vec<(String, Option<String>, Option<String>, i64)> = sqlx::query_as(
+        "SELECT flow_id, requested_at, error, auto_retries FROM flow_work ORDER BY flow_id",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .expect("flow work");
+    assert_eq!(
+        flows,
+        [
+            (
+                "f1".to_owned(),
+                Some("2026-11-17T10:00:00.000000Z".to_owned()),
+                None,
+                0
+            ),
+            (
+                "f2".to_owned(),
+                None,
+                Some("The flow analysis failed. Retry this flow.".to_owned()),
+                0
+            )
+        ]
+    );
+    let negative = sqlx::query("UPDATE flow_work SET auto_retries = -1 WHERE flow_id = 'f1'")
+        .execute(&db.pool)
+        .await;
+    assert!(negative.is_err(), "the counter cannot go below zero");
+    let versions: Vec<i64> =
+        sqlx::query_scalar("SELECT version FROM _sqlx_migrations WHERE success ORDER BY version")
+            .fetch_all(&db.pool)
+            .await
+            .expect("versions");
+    assert_eq!(versions, [1, 2]);
+    // Running the migrator again changes nothing (the checksum of 0001 still matches).
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("idempotent");
 }
 
 #[tokio::test]

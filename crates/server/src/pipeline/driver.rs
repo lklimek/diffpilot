@@ -16,12 +16,13 @@ use contracts::api::tour::UnexplainedReason;
 use contracts::common::FileRanges;
 use contracts::ids::{AnalysisId, FlowId, JobId};
 use contracts::job::access::AgentAccess;
-use contracts::job::result::{JobOutcome, JobResult};
+use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{
     CredentialKind, JobLimits, JobPriority, JobSpec, LlmCredentialRef, RepoCheckout,
 };
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
+use db::repo::flow_work::NextFlow;
 use db::repo::jobs::{JobStage, MAX_REPAIR_RUNS};
 use db::repo::settings::CallFailure;
 use futures::StreamExt;
@@ -34,7 +35,8 @@ use super::batching;
 use super::context::StoredResults;
 use super::unsent::{self, Unsent};
 use super::verdict::{self, Facts, Outputs};
-use super::{CREDENTIAL_ID, PipelineError, control, diff_files, prepare, prepass};
+use super::{CREDENTIAL_ID, PipelineError, control, diff_files, prepare, prepass, statistics};
+use crate::api::settings::plain_failure;
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::memcan::calibration::{CalibrationDirection, CalibrationExample, calibration_examples};
@@ -95,8 +97,11 @@ struct Driver<'a> {
     ended: BTreeMap<FlowId, FlowEnd>,
     /// The generation each submitted stage is at.
     live: HashMap<JobStage, u32>,
-    /// Preparation stages not submitted yet: plan batches, then PR context.
+    /// Stages to submit before any flow is picked by demand: plan batches, then PR context, then flows whose
+    /// succeeded job a restart left without a stored result.
     waiting: VecDeque<JobStage>,
+    /// The last look for flow work found none admitted: the driver ends until work is admitted again.
+    idle: bool,
     /// The one stage whose job runs now: the next is submitted only once its result is verified and stored (or
     /// the stage ended), so every job's context pack holds the results of all earlier stages.
     in_flight: Option<JobStage>,
@@ -183,6 +188,7 @@ pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), 
         ended: BTreeMap::new(),
         live: HashMap::new(),
         waiting: VecDeque::new(),
+        idle: false,
         in_flight: None,
         memcan_profile,
         calibration: HashMap::new(),
@@ -243,6 +249,12 @@ impl Driver<'_> {
         } else {
             self.merge_when_planned().await?;
         }
+        // Results a restart interrupted before they were stored are replayed whatever work is admitted now.
+        if self.results.plan.is_some() && self.results.pr_context.is_some() {
+            let unstored = self.state.db.flow_work().unstored(self.analysis).await?;
+            self.waiting
+                .extend(unstored.into_iter().map(JobStage::Flow));
+        }
         self.advance(&mut updates).await?;
         loop {
             self.advance(&mut updates).await?;
@@ -251,6 +263,9 @@ impl Driver<'_> {
                     && self.results.flows.len() == self.flow_total() as usize
                 {
                     break;
+                }
+                if self.idle {
+                    return self.park().await;
                 }
                 let _ = events.recv().await;
                 control::wait_for_resume(self.state, self.analysis).await?;
@@ -319,16 +334,22 @@ impl Driver<'_> {
 
     /// Submits the next waiting stage once no job runs; stages resolved meanwhile are skipped.
     async fn advance(&mut self, updates: &mut Updates) -> Result<(), PipelineError> {
+        self.idle = false;
         while self.in_flight.is_none() {
             control::wait_for_resume(self.state, self.analysis).await?;
             let stage = if let Some(stage) = self.waiting.pop_front() {
                 stage
             } else if self.results.pr_context.is_some() {
-                let Some(id) = self.state.db.flow_work().next(self.analysis).await? else {
-                    return Ok(());
-                };
-                self.ended.remove(&id);
-                JobStage::Flow(id)
+                match self.state.db.flow_work().next(self.analysis).await? {
+                    NextFlow::Run(id) => {
+                        self.ended.remove(&id);
+                        JobStage::Flow(id)
+                    }
+                    next => {
+                        self.idle = next == NextFlow::Idle;
+                        return Ok(());
+                    }
+                }
             } else {
                 return Ok(());
             };
@@ -395,6 +416,21 @@ impl Driver<'_> {
             JobStage::Flow(id) => self.ended.contains_key(id),
             JobStage::Ask(_) => true,
         }
+    }
+
+    /// Ends the driver while flows remain but none is admitted (failed for good, or not requested with background
+    /// analysis off): the analysis stays `running` without a stage, and a flow request, background analysis
+    /// switched on or a restart with admitted work starts a driver again.
+    async fn park(&self) -> Result<(), PipelineError> {
+        let (done, total) = self.progress();
+        tracing::info!(analysis = %self.analysis, done, total,
+            "no flow work is admitted; the analysis waits for a flow request or background analysis");
+        let summary = self.state.db.analyses().summary(self.analysis).await?;
+        if let Err(error) = statistics::log_end(self.state, &summary).await {
+            tracing::warn!(analysis = %self.analysis, ?error,
+                "analysis statistics unavailable when the flow work stopped");
+        }
+        Ok(())
     }
 
     /// Final verification over every stored output (wording warnings logged, incomplete move detection
@@ -494,16 +530,23 @@ impl Driver<'_> {
         let output = match result.outcome {
             JobOutcome::Succeeded { output } => output,
             JobOutcome::Failed { kind, message } => {
+                // No flow retry helps a misconfigured server or an unusable credential: those end the analysis.
                 if let JobStage::Flow(id) = &stage
-                    && kind != contracts::job::result::JobFailureKind::Configuration
+                    && !matches!(
+                        kind,
+                        JobFailureKind::Configuration | JobFailureKind::CredentialUnusable
+                    )
                 {
+                    tracing::warn!(analysis = %self.analysis, flow = %id, ?kind,
+                        "flow job failed; the flow is marked failed with its cause");
+                    let cause = plain_failure(Some(CallFailure::Failed(kind)));
                     self.state
                         .db
                         .flow_work()
                         .fail(
                             self.analysis,
                             id,
-                            "The flow analysis failed. Retry this flow.",
+                            &format!("The flow analysis failed. {cause} Retry this flow."),
                         )
                         .await?;
                     self.ended.insert(id.clone(), FlowEnd::Failed);
@@ -1012,23 +1055,22 @@ impl Driver<'_> {
         kind: JobKind,
         output: &Value,
     ) -> Result<Option<Vec<VerifyIssue>>, PipelineError> {
+        // A flow's tagged file has no JSON schema: its grammar is checked with its content.
         if matches!(stage, JobStage::Flow(_)) {
             return Ok(None);
         }
         let schema = agent::output_schema(kind)?;
         let validator = jsonschema::validator_for(&schema)
             .map_err(|error| self.invalid(stage, &format!("schema does not compile: {error}")))?;
-        match validator.iter_errors(output).next() {
-            Some(error) if matches!(stage, JobStage::Flow(_)) => Ok(Some(vec![VerifyIssue {
+        Ok(validator.iter_errors(output).next().map(|error| {
+            vec![VerifyIssue {
                 kind: VerifyIssueKind::SchemaMismatch,
                 message: format!(
                     "{}: value does not match the job output schema; include every required field with its declared type",
                     error.instance_path()
                 ),
-            }])),
-            Some(error) => Err(self.invalid(stage, &error.to_string())),
-            None => Ok(None),
-        }
+            }]
+        }))
     }
 
     fn parse<T: DeserializeOwned>(

@@ -98,7 +98,8 @@ impl Statistics {
     }
 }
 
-/// Called only by the guarded live-to-terminal transition, before cancellation deletes documents.
+/// Called by the guarded live-to-terminal transition, before cancellation deletes documents, and when the
+/// driver ends for lack of admitted flow work (the run so far).
 pub async fn log_end(state: &AppState, summary: &AnalysisSummary) -> Result<(), DbError> {
     let jobs = state.db.jobs().statistics(summary.id).await?;
     let facts = state

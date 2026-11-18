@@ -8,7 +8,9 @@
 //! documents. The driver is restart-safe (`runner-protocol.md` "Pipeline recovery"): stages with a document are
 //! skipped, the others are submitted again, which `JobExecutor::submit` answers with the existing live or
 //! succeeded job of the stage and generation. The Tour opens after planning and PR context; demand then precedes background rank order. A failed
-//! flow stays retryable while other results remain available. Cancel discards analysis data but keeps
+//! flow is retried automatically twice at most and stays retryable on request while other results remain
+//! available. While flows remain but none is admitted the driver ends; a flow request or background analysis
+//! starts one again. Cancel discards analysis data but keeps
 //! the PR-level analytic and working sessions (ADR-004).
 
 use std::borrow::Cow;
@@ -196,6 +198,14 @@ impl PipelineError {
     }
 }
 
+/// Whether a driver task of `analysis` runs in this process.
+pub fn is_driven(analysis: AnalysisId) -> bool {
+    DRIVING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(&analysis)
+}
+
 /// Starts the driver task of `analysis` unless one runs already.
 pub fn start(state: &AppState, analysis: AnalysisId) {
     {
@@ -215,14 +225,20 @@ pub fn start(state: &AppState, analysis: AnalysisId) {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&analysis);
-        // A Retry between this driver's end and its removal found the slot taken: start the next driver now.
-        if ended {
-            match state.db.analyses().summary(analysis).await {
-                Ok(summary) if control::is_live(&summary.state) => start(&state, analysis),
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::error!(%analysis, ?error, "could not re-read the ended analysis");
-                }
+        // A Retry between this driver's end and its removal found the slot taken, and so did a flow request or
+        // background switch while the driver stopped for lack of admitted work: start the next driver now.
+        let again = async {
+            let summary = state.db.analyses().summary(analysis).await?;
+            Ok::<_, DbError>(
+                control::is_live(&summary.state)
+                    && (ended || state.db.flow_work().has_work(analysis).await?),
+            )
+        };
+        match again.await {
+            Ok(true) => start(&state, analysis),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(%analysis, ?error, "could not re-read the analysis after its driver ended");
             }
         }
     });
@@ -254,16 +270,21 @@ async fn end(state: &AppState, analysis: AnalysisId, error: PipelineError) -> bo
     }
 }
 
-/// Starts a driver for every analysis left planning, running or paused (server start).
+/// Starts a driver for every analysis left planning, running or paused that has work (server start); returns
+/// how many. An open review without admitted flow work waits for a request without a driver.
 pub async fn resume_unfinished(state: &AppState) -> Result<usize, DbError> {
-    let unfinished = state.db.analyses().unfinished().await?;
-    for analysis in &unfinished {
+    let mut started = 0;
+    for analysis in state.db.analyses().unfinished().await? {
+        if state.db.flow_work().parked(analysis.id).await? {
+            continue;
+        }
         start(state, analysis.id);
+        started += 1;
     }
-    if !unfinished.is_empty() {
-        tracing::info!(analyses = unfinished.len(), "resuming unfinished analyses");
+    if started > 0 {
+        tracing::info!(analyses = started, "resuming unfinished analyses");
     }
-    Ok(unfinished.len())
+    Ok(started)
 }
 
 /// Fetches the base tip and head into the mirror and stores their merge base as the analysis base; returns the

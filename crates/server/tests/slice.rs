@@ -120,6 +120,8 @@ enum Script {
     Fail,
     /// Fails with this runner text.
     FailWith(String),
+    /// Fails with this typed cause.
+    FailKind(JobFailureKind),
     Configuration,
     Pending,
     /// Paused by the usage limit; returns the fixture output once notified.
@@ -250,6 +252,10 @@ impl JobExecutor for ScriptedExecutor {
             Some(Script::FailWith(message)) => JobOutcome::Failed {
                 kind: JobFailureKind::ProviderFailed,
                 message,
+            },
+            Some(Script::FailKind(kind)) => JobOutcome::Failed {
+                kind,
+                message: "private diagnostic of the runner".to_owned(),
             },
             Some(Script::Pending) => return stream::pending().boxed(),
             Some(Script::PausedUntil(notify)) => {
@@ -1618,6 +1624,33 @@ async fn lines_caps_deleted_blocks() {
 }
 
 /// Pending and failed flow ranges stay explicitly unassessed in their planned flow.
+/// Waits until `stage` was submitted `runs` times, then checks that no further run follows.
+async fn settled_runs(h: &Harness, stage: &str, runs: usize) {
+    for _ in 0..500 {
+        if h.executor.specs_of(stage).len() >= runs {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(h.executor.specs_of(stage).len(), runs, "runs of {stage}");
+}
+
+/// Waits until no driver task works on the analysis (nothing is admitted).
+async fn wait_parked(analysis: AnalysisId) {
+    for _ in 0..250 {
+        if !server::pipeline::is_driven(analysis) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the driver did not park");
+}
+
+fn analysis_id(id: &str) -> AnalysisId {
+    serde_json::from_value(json!(id)).expect("analysis id")
+}
+
 async fn wait_for_failed_flow(h: &Harness, id: &str, flow: &str) -> Value {
     for _ in 0..300 {
         let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
@@ -1664,8 +1697,9 @@ async fn schema_invalid_flow_exhausts_repairs_and_stays_explicitly_failed() {
     h.executor
         .script("flow:f2", Script::Output(json!({ "flow_id": "f2" })));
     let id = h.create_fixture_analysis().await;
+    // Three runs (two repairs) per turn; the first turn and two automatic retries.
+    settled_runs(&h, "flow:f2", 9).await;
     let tour = wait_for_failed_flow(&h, &id, "f2").await;
-    assert_eq!(h.executor.specs_of("flow:f2").len(), 3);
     let flow = tour["flows"]
         .as_array()
         .unwrap()
@@ -2403,6 +2437,9 @@ async fn huge_pull_request_is_planned_in_batches() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().expect("id").to_owned();
+    // Each flow fails for good after its first turn and two automatic retries (three runs each).
+    settled_runs(&h, "flow:f1", 9).await;
+    settled_runs(&h, "flow:f2", 9).await;
     wait_for_failed_flow(&h, &id, "f1").await;
     wait_for_failed_flow(&h, &id, "f2").await;
     let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
@@ -2447,7 +2484,17 @@ async fn huge_pull_request_is_planned_in_batches() {
         "{titles:?}"
     );
     let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
-    assert_eq!(tour["quiet"]["unexplained"], json!([]));
+    let unexplained: Vec<&str> = tour["quiet"]["unexplained"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rows| rows["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        unexplained,
+        ["a/big.txt", "b/big.txt"],
+        "the lines of failed flows stay listed as not explained"
+    );
     let pending: Vec<&str> = tour["flows"]
         .as_array()
         .unwrap()
@@ -2641,7 +2688,17 @@ async fn flow_too_large_for_a_prompt_stays_failed_with_its_reason() {
             .contains("too large")
     );
     assert_eq!(flow["planned"]["ranges"][0]["file"], "b/two.txt");
-    assert_eq!(tour["quiet"]["unexplained"], json!([]));
+    // Both flows failed for good: their lines stay listed as not explained, the unsent ones with the reason.
+    settled_runs(&h, "flow:f1", 9).await;
+    let tour = wait_for_failed_flow(&h, &id, "f1").await;
+    let lines = json!([{ "start_line": 1, "end_line": 5 }]);
+    assert_eq!(
+        tour["quiet"]["unexplained"],
+        json!([
+            { "file": "a/one.txt", "side": "head", "ranges": lines },
+            { "file": "b/two.txt", "side": "head", "ranges": lines, "reason": "too_large_for_prompt" }
+        ])
+    );
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;
 }
@@ -3291,4 +3348,353 @@ async fn repair_run_superseded_by_background_off_resumes_with_background_on() {
     assert_eq!(h.stage_of(&repair).await, ("flow:f1".to_owned(), 1));
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;
+}
+
+/// A failed flow is retried automatically twice, after the flows not analysed yet; then it stays failed with
+/// its cause, the driver ends, and the user's Retry still runs it.
+#[tokio::test]
+async fn failed_flow_is_retried_automatically_twice_then_waits_for_the_user() {
+    let h = harness().await;
+    h.executor.script("flow:f2", Script::Fail);
+    let id = h.create_fixture_analysis().await;
+    settled_runs(&h, "flow:f2", 3).await;
+    let order: Vec<String> = h
+        .executor
+        .specs
+        .lock()
+        .expect("lock")
+        .iter()
+        .map(|(stage, _, _)| stage.clone())
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "plan:1",
+            "pr_context",
+            "flow:f1",
+            "flow:f2",
+            "flow:f3",
+            "flow:f4",
+            "flow:f5",
+            "flow:f2",
+            "flow:f2"
+        ]
+    );
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
+    assert_eq!(tour["analysis"]["state"]["state"], "running");
+    assert_eq!(tour["analysis"]["state"]["done"], 4);
+    wait_parked(analysis_id(&id)).await;
+    assert_eq!(
+        server::pipeline::resume_unfinished(&h.state)
+            .await
+            .expect("resume"),
+        0,
+        "an analysis without admitted work is not prepared again at start"
+    );
+    h.executor.unscript("flow:f2");
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f2/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        h.wait_until_finished(&id).await.state,
+        AnalysisState::Finished { total: 5 }
+    );
+}
+
+/// With background analysis off and nothing requested the driver ends and the analysis stays `running`
+/// without a stage; a flow request starts the work again.
+#[tokio::test]
+async fn analysis_without_admitted_work_parks_and_a_flow_request_restarts_it() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    let background = format!("/api/v1/analyses/{id}/background");
+    let off = h
+        .send(
+            "PUT",
+            &background,
+            Auth::SessionCsrf,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(off.status(), StatusCode::OK);
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&first.spec, "flow:f1"),
+        },
+    )
+    .await;
+    wait_parked(analysis_id(&id)).await;
+    let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(summary["state"]["state"], "running", "{summary}");
+    assert_eq!(summary["state"]["done"], 1, "{summary}");
+    assert_eq!(summary["state"]["stage"], Value::Null, "{summary}");
+    assert!(h.runner_claim().await.is_none());
+    assert_eq!(
+        server::pipeline::resume_unfinished(&h.state)
+            .await
+            .expect("resume"),
+        0
+    );
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f4/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let next = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&next).await, ("flow:f4".to_owned(), 0));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+#[tokio::test]
+async fn failed_flow_job_keeps_its_cause() {
+    let h = harness().await;
+    h.executor
+        .script("flow:f2", Script::FailKind(JobFailureKind::Timeout));
+    let id = h.create_fixture_analysis().await;
+    settled_runs(&h, "flow:f2", 3).await;
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
+    let flow = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|f| f["id"] == "f2")
+        .expect("f2");
+    assert_eq!(
+        flow["analysis_status"]["message"],
+        "The flow analysis failed. The LLM call took too long and was stopped. Retry this flow."
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// A flow retry cannot help when the credential is unusable: the analysis stops with the sign-in sentence.
+#[tokio::test]
+async fn unusable_credential_in_a_flow_job_stops_the_analysis_with_the_sign_in_sentence() {
+    let h = harness().await;
+    h.executor.script(
+        "flow:f2",
+        Script::FailKind(JobFailureKind::CredentialUnusable),
+    );
+    let id = h.create_fixture_analysis().await;
+    let failed = h
+        .wait_for_state(&id, |state| matches!(state, AnalysisState::Failed { .. }))
+        .await;
+    let AnalysisState::Failed { flow, message, .. } = failed.state else {
+        unreachable!("waited for failed");
+    };
+    assert_eq!(flow.map(|flow| flow.id.0), Some("f2".to_owned()));
+    assert!(
+        message.contains("Sign-in to the LLM provider is needed"),
+        "{message}"
+    );
+    assert_eq!(
+        h.executor.specs_of("flow:f2").len(),
+        1,
+        "no automatic retry"
+    );
+}
+
+/// The Tour's flow status comes from the documents its content was built from: a flow stored after that read is
+/// not called analysed with its placeholder content.
+#[tokio::test]
+async fn tour_of_an_earlier_read_does_not_call_a_flow_stored_since_analysed() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    let analysis = analysis_id(&id);
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    let read = server::pipeline::context::StoredResults::load(&h.state.db, analysis)
+        .await
+        .expect("results");
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&first.spec, "flow:f1"),
+        },
+    )
+    .await;
+    for _ in 0..200 {
+        let stored: Option<Value> = h
+            .state
+            .db
+            .documents()
+            .get(analysis, DocumentKind::Flow, "f1")
+            .await
+            .expect("read");
+        if stored.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let summary = h
+        .state
+        .db
+        .analyses()
+        .summary(analysis)
+        .await
+        .expect("summary");
+    let tour = server::pipeline::tour::load_from(&h.state, &summary, read)
+        .await
+        .expect("tour");
+    let flow = tour
+        .flows
+        .iter()
+        .find(|flow| flow.id.0 == "f1")
+        .expect("f1");
+    assert!(flow.steps.is_empty(), "built from the earlier read");
+    assert_ne!(
+        flow.analysis_status.as_ref().map(|status| status.state),
+        Some(contracts::api::tour::FlowAnalysisState::Analysed)
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// A flow job that succeeded before a restart, its verified document not stored yet, is recovered at start
+/// without a new agent call, also when background analysis was switched off meanwhile.
+#[tokio::test]
+async fn restart_recovers_a_succeeded_flow_job_with_background_off() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    let analysis = analysis_id(&id);
+    h.open_review(&id).await;
+    let flow = JobStage::Flow(contracts::ids::FlowId("f1".to_owned()));
+    let jobs = h.state.db.jobs();
+    for _ in 0..300 {
+        let queued = jobs
+            .list_for_analysis(analysis, &[JobState::Queued])
+            .await
+            .expect("jobs");
+        if queued.iter().any(|job| job.stage == flow) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Background off withdraws the queued first flow: no driver works on the analysis afterwards.
+    let background = format!("/api/v1/analyses/{id}/background");
+    let off = h
+        .send(
+            "PUT",
+            &background,
+            Auth::SessionCsrf,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(off.status(), StatusCode::OK);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let withdrawn = jobs
+        .list_for_analysis(analysis, &[JobState::Cancelled])
+        .await
+        .expect("jobs")
+        .into_iter()
+        .find(|job| job.stage == flow)
+        .expect("the withdrawn flow job");
+    // The state a crash leaves: the flow started by background work, the switch turned off after the claim,
+    // the job succeeded, its document not stored.
+    let now = Utc::now();
+    h.state
+        .db
+        .flow_work()
+        .set_background(analysis, true, now)
+        .await
+        .expect("on");
+    let mut spec = withdrawn.spec.clone();
+    spec.job_id = JobId::new_random();
+    h.state
+        .executor
+        .submit(JobRequest {
+            spec,
+            priority: JobPriority::Batch,
+            stage: flow.clone(),
+            generation: 0,
+            pr_repo: contracts::common::RepoRef {
+                owner: "acme".to_owned(),
+                name: "node-client".to_owned(),
+            },
+        })
+        .await
+        .expect("submit");
+    let claim = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&claim).await, ("flow:f1".to_owned(), 0));
+    h.state
+        .db
+        .flow_work()
+        .set_background(analysis, false, now)
+        .await
+        .expect("off");
+    h.complete(
+        &claim,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&claim.spec, "flow:f1"),
+        },
+    )
+    .await;
+    let known = jobs
+        .list_for_analysis(analysis, &[])
+        .await
+        .expect("jobs")
+        .len();
+
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    let mut stored = None::<Value>;
+    for _ in 0..300 {
+        stored = h
+            .state
+            .db
+            .documents()
+            .get(analysis, DocumentKind::Flow, "f1")
+            .await
+            .expect("read");
+        if stored.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        stored.is_some(),
+        "the succeeded job's result is stored at start"
+    );
+    assert_eq!(
+        jobs.list_for_analysis(analysis, &[])
+            .await
+            .expect("jobs")
+            .len(),
+        known,
+        "no new agent call"
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// A plan output that does not match its schema gets a repair run like any other rejected output.
+#[tokio::test]
+async fn schema_invalid_plan_output_is_repaired() {
+    let h = harness().await;
+    h.executor.script("plan:1#0", Script::Output(json!({})));
+    let id = h.create_fixture_analysis().await;
+    assert_eq!(
+        h.wait_until_finished(&id).await.state,
+        AnalysisState::Finished { total: 5 }
+    );
+    let runs = h.executor.specs_of("plan:1");
+    assert_eq!(runs.len(), 2);
+    assert!(
+        runs[1].1.prompt.contains("schema_mismatch"),
+        "{}",
+        runs[1].1.prompt
+    );
 }

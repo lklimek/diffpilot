@@ -15,8 +15,9 @@ use contracts::agent::plan::PlannedFlow;
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::tour::{
-    Annotation, Flow, FlowFacts, FlowGroup, FlowLlm, GithubThread, ImpactRef, PatternRepetition,
-    PatternSite, PrContextBlock, PrContextFacts, QuietRows, Step, StepFacts, StepLlm, Tour,
+    Annotation, Flow, FlowAnalysisState, FlowAnalysisStatus, FlowFacts, FlowGroup, FlowLlm,
+    GithubThread, ImpactRef, PatternRepetition, PatternSite, PrContextBlock, PrContextFacts,
+    QuietRows, Step, StepFacts, StepLlm, Tour,
 };
 use contracts::common::{LineRange, LineSide};
 use contracts::ids::{AnnotationId, FlowId, StepId};
@@ -112,9 +113,26 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         return Err(TourLoadError::NotFinished);
     }
     let results = StoredResults::load(&state.db, summary.id).await?;
+    load_from(state, summary, results).await
+}
+
+/// The Tour of `results`, the stored outputs read earlier: a flow stored since is still shown as it was then.
+pub async fn load_from(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    results: StoredResults,
+) -> Result<Tour, TourLoadError> {
     let (Some(plan), Some(pr_context)) = (results.plan, results.pr_context) else {
         return Err(DbError::NotFound.into());
     };
+    // The status belongs to the documents read: `analysed` only for a flow whose document `results` holds.
+    let mut waiting = BTreeMap::new();
+    for planned in &plan.flows {
+        if !results.flows.iter().any(|flow| flow.flow_id == planned.id) {
+            let status = state.db.flow_work().status(summary.id, &planned.id).await?;
+            waiting.insert(planned.id.clone(), status);
+        }
+    }
     let snapshot = stored_github_snapshot(state, summary.id).await?;
     let (mirror, files) = pr_diff(state, summary).await?;
     // Stored by the driver; computed here for an analysis finished without one (deterministic).
@@ -156,7 +174,7 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         .into_iter()
         .map(|(_, unsent)| unsent)
         .collect();
-    let mut tour = project(&Projection {
+    Ok(project(&Projection {
         summary,
         skeleton: &skeleton,
         pr_context,
@@ -167,11 +185,8 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         related_work_checked,
         unsent: &unsent,
         memcan_profile: profile::stored(&state.db, summary.id).await?.found(),
-    });
-    for flow in &mut tour.flows {
-        flow.analysis_status = Some(state.db.flow_work().status(summary.id, &flow.id).await?);
-    }
-    Ok(tour)
+        waiting: &waiting,
+    }))
 }
 
 /// Everything the Tour is projected from.
@@ -196,6 +211,8 @@ pub struct Projection<'a> {
     pub unsent: &'a [Unsent],
     /// The analysis's MemCan profile lookup: `None` not checked, else whether a profile was found.
     pub memcan_profile: Option<bool>,
+    /// The status of each planned flow without a stored document (not analysed, queued, analysing, failed).
+    pub waiting: &'a BTreeMap<FlowId, FlowAnalysisStatus>,
 }
 
 /// Builds a Tour with accepted steps and explicit placeholders for pending flows.
@@ -221,6 +238,11 @@ pub fn project(input: &Projection<'_>) -> Tour {
             &links,
         ));
     }
+    let analysed = FlowAnalysisStatus {
+        state: FlowAnalysisState::Analysed,
+        started_at: None,
+        message: None,
+    };
     for planned in &input.skeleton.plan.output.flows {
         let details = contracts::api::tour::PlannedFlowDetails {
             intent: planned.intent.clone(),
@@ -235,16 +257,20 @@ pub fn project(input: &Projection<'_>) -> Tour {
         };
         if let Some(flow) = flows.iter_mut().find(|f| f.id == planned.id) {
             flow.planned = Some(details);
+            flow.analysis_status = Some(analysed.clone());
         } else {
             flows.push(Flow {
                 id: planned.id.clone(),
                 position: 0,
                 group: planned.classification.into(),
-                analysis_status: Some(contracts::api::tour::FlowAnalysisStatus {
-                    state: contracts::api::tour::FlowAnalysisState::NotAnalysed,
-                    started_at: None,
-                    message: None,
-                }),
+                // A stored flow the check of the whole analysis left out keeps `analysed` (its document exists).
+                analysis_status: Some(
+                    input
+                        .waiting
+                        .get(&planned.id)
+                        .cloned()
+                        .unwrap_or_else(|| analysed.clone()),
+                ),
                 facts: FlowFacts {
                     files: details.ranges.iter().map(|r| r.file.clone()).collect(),
                     step_count: 0,
@@ -282,9 +308,15 @@ pub fn project(input: &Projection<'_>) -> Tour {
     for (flow, position) in flows.iter_mut().zip(1u32..) {
         flow.position = position;
     }
+    // Lines of flows still waiting are shown under their flow; a failed flow's lines stay Unexplained.
+    let failed = |flow: &Flow| {
+        flow.analysis_status
+            .as_ref()
+            .is_some_and(|status| status.state == FlowAnalysisState::Failed)
+    };
     let pending: Vec<_> = flows
         .iter()
-        .filter(|f| f.steps.is_empty())
+        .filter(|f| f.steps.is_empty() && !failed(f))
         .flat_map(|f| f.planned.iter().flat_map(|p| p.ranges.iter()))
         .collect();
     let mut unexplained = unsent::with_reasons(&input.skeleton.coverage.unexplained, input.unsent);
