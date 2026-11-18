@@ -163,6 +163,8 @@ pub struct WorkClient<T> {
     last_search: Mutex<Option<Instant>>,
     calls: Semaphore,
     pub(crate) page_size: u32,
+    /// Gap between the starts of two searches ([`SEARCH_INTERVAL`]; tests on real time shorten it).
+    pub(crate) search_interval: Duration,
 }
 
 impl<T> std::fmt::Debug for WorkClient<T> {
@@ -266,6 +268,7 @@ impl<T: TokenSource> WorkClient<T> {
             last_search: Mutex::new(None),
             calls: Semaphore::new(MAX_CONCURRENT_CALLS),
             page_size: PAGE_SIZE,
+            search_interval: SEARCH_INTERVAL,
         })
     }
 
@@ -309,7 +312,7 @@ impl<T: TokenSource> WorkClient<T> {
         loop {
             if let Some(last) = last_search.as_mut() {
                 if let Some(at) = **last {
-                    sleep_until(at + SEARCH_INTERVAL).await;
+                    sleep_until(at + self.search_interval).await;
                 }
                 **last = Some(Instant::now());
             }
