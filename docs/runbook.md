@@ -345,6 +345,9 @@ so far, without `total_seconds`; an analysis can log it many times before its on
 A park releases the in-memory run facts (an analysis whose head moved may stay parked for good): after a park
 the final event carries changed lines/files, agent files and plan batches only when a driver ran again, and
 `initial_estimate_seconds` never (the first `analysis parked` event has it).
+A parked analysis stays `running` for good unless its flows are all analysed or it is cancelled, also after its
+pull request head moved. Server start checks every such analysis for admitted work; with many analyses this can
+add seconds to the start (`resuming unfinished analyses`), but it does not grow memory.
 
 The error line `could not store the ended analysis state` means a driver stopped on an error and the database
 refused the write of `failed` (full disk, read-only file system): the analysis still reads as planning/running

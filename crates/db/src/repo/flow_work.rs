@@ -2,11 +2,12 @@
 use super::{
     Db,
     documents::DocumentKind,
-    jobs::{parse_ts, ts},
+    jobs::{parse_ts, parse_wire, ts},
 };
 use crate::error::DbError;
 use chrono::{DateTime, Utc};
 use contracts::agent::plan::PlanOutput;
+use contracts::api::error::ApiErrorCode;
 use contracts::api::tour::{FlowAnalysisState, FlowAnalysisStatus};
 use contracts::ids::{AnalysisId, FlowId};
 use sqlx::Row;
@@ -22,8 +23,11 @@ pub const RETRY_BY_USER: &str = "Retry this flow.";
 /// requested, or an automatic retry is left and background analysis is on.
 const RETRY_AUTOMATICALLY: &str = "It will be tried again automatically.";
 
-/// Shown in place of [`RETRY_BY_USER`] in a failed analysis: a flow request is refused there, its Retry works.
-const RETRY_ANALYSIS: &str = "Retry the analysis to analyse this flow again.";
+/// Shown in place of [`RETRY_BY_USER`] in a failed analysis: a flow request is refused there until its Retry.
+const RETRY_ANALYSIS: &str = "Retry the analysis; then this flow can be analysed again.";
+
+/// Shown in place of [`RETRY_BY_USER`] in an analysis failed on server configuration: it offers no Retry.
+const ASK_ADMINISTRATOR: &str = "Ask the administrator to fix the server configuration.";
 
 /// Shown in place of [`RETRY_BY_USER`] in a cancelled analysis: neither a flow request nor a Retry works there.
 const START_ANALYSIS: &str = "Start a new analysis to analyse this flow.";
@@ -237,7 +241,7 @@ impl FlowWork<'_> {
             message: None,
         };
         if let Some(row) = sqlx::query(
-            "SELECT w.requested_at, w.error, a.state,
+            "SELECT w.requested_at, w.error, a.state, a.failure_reason,
                     a.state IN ('planning','running','paused')
                     AND (w.requested_at IS NOT NULL OR (a.background_analysis=1 AND w.auto_retries < ?)) AS retried
              FROM flow_work w JOIN analyses a ON a.id=w.analysis_id WHERE w.analysis_id=? AND w.flow_id=?",
@@ -253,7 +257,16 @@ impl FlowWork<'_> {
             // again by itself or once the analysis ended (a flow request is refused then).
             let instead = match row.try_get::<String, _>("state")?.as_str() {
                 _ if row.try_get::<bool, _>("retried")? => Some(RETRY_AUTOMATICALLY),
-                "failed" => Some(RETRY_ANALYSIS),
+                "failed" => Some(
+                    match row
+                        .try_get::<Option<String>, _>("failure_reason")?
+                        .map(|reason| parse_wire(&reason, "analyses.failure_reason"))
+                        .transpose()?
+                    {
+                        Some(ApiErrorCode::Configuration) => ASK_ADMINISTRATOR,
+                        _ => RETRY_ANALYSIS,
+                    },
+                ),
                 "cancelled" => Some(START_ANALYSIS),
                 _ => None,
             };
@@ -769,6 +782,7 @@ mod tests {
     #[tokio::test]
     async fn ended_analysis_promises_no_automatic_flow_retry() {
         use contracts::api::analyses::AnalysisState;
+        use contracts::api::error::ApiErrorCode;
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
         let f1 = FlowId("f1".into());
@@ -776,28 +790,48 @@ mod tests {
             .fail(id, &f1, "The flow analysis failed. Retry this flow.")
             .await
             .unwrap();
-        let failed = AnalysisState::Failed {
-            reason: None,
+        let failed = |reason, message: &str| AnalysisState::Failed {
+            reason,
             flow: None,
-            message: "The analysis stopped because of a server error. Retry the analysis.".into(),
+            message: message.into(),
         };
-        // A flow request is refused once the analysis ended: the message names what still works.
-        for (ended, action) in [
-            (failed, "Retry the analysis to analyse this flow again."),
-            (
-                AnalysisState::Cancelled,
-                "Start a new analysis to analyse this flow.",
-            ),
-        ] {
-            db.analyses()
-                .set_state(id, &ended, Utc::now())
+        // A flow request is refused once the analysis ended: the message names what still works, whether or not
+        // the flow would be retried automatically in a live analysis.
+        for background in [true, false] {
+            db.flow_work()
+                .set_background(id, background, Utc::now())
                 .await
                 .unwrap();
-            assert_eq!(
-                db.flow_work().status(id, &f1).await.unwrap().message,
-                Some(format!("The flow analysis failed. {action}")),
-                "nothing runs in an analysis that is {ended:?}"
-            );
+            for (ended, action) in [
+                (
+                    failed(
+                        None,
+                        "The analysis stopped because of a server error. Retry the analysis.",
+                    ),
+                    "Retry the analysis; then this flow can be analysed again.",
+                ),
+                (
+                    failed(
+                        Some(ApiErrorCode::Configuration),
+                        "The server is misconfigured: a required agent skill is missing. Ask the administrator.",
+                    ),
+                    "Ask the administrator to fix the server configuration.",
+                ),
+                (
+                    AnalysisState::Cancelled,
+                    "Start a new analysis to analyse this flow.",
+                ),
+            ] {
+                db.analyses()
+                    .set_state(id, &ended, Utc::now())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    db.flow_work().status(id, &f1).await.unwrap().message,
+                    Some(format!("The flow analysis failed. {action}")),
+                    "nothing runs in an analysis that is {ended:?} (background {background})"
+                );
+            }
         }
     }
 

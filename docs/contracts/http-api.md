@@ -343,9 +343,10 @@ ETA sums remaining plan parts times this run's mean completed plan duration (fal
 per changed agent line), one recent mean PR-context duration if needed, and remaining flows times this run's
 mean flow duration (fallback: recent mean). Before planning ends, flow time uses recent seconds per changed
 agent line and is `rough`. History is at most the 30 newest review-ready analyses (not cancelled, accepted plan
-and PR context; most never finish while flows run on request) in the same tenant, current-round successful
-jobs lasting 1 second to 3 hours; a flow counts once its document is accepted, and flow seconds per changed
-agent line come only from finished analyses. Completed generations of a stage (including repairs) contribute to its
+and PR context; most never finish while flows run on request) in the same tenant, successful jobs lasting
+1 second to 3 hours; a flow counts once its document is accepted, and flow seconds per changed agent line come
+only from finished analyses. A stage counts its jobs of the newest round in which it succeeded
+(a flow retry or Retry starts a new round). Completed generations of a stage (including repairs) contribute to its
 one duration; this analysis supplies samples only once the stage's document is accepted. Missing data for any remaining kind, or an estimate over
 7 days, yields null. Basis prefers `this_analysis`, otherwise `lines_only` before planning ends, else
 `recent_runs`. Queue delay and future repair runs are unknown. Paused and terminal analyses have no ETA.
@@ -473,8 +474,9 @@ explicit Retry, which runs it once more. Its `analysis_status.message` names the
 `The flow analysis failed. <cause sentence of the failed call>` followed by `It will be tried again
 automatically.` while the analysis is planning, running or paused and the server will run the flow again by
 itself (it is requested, or an automatic retry is left and background analysis is on), in a `failed` analysis
-(where a flow request answers 409) by `Retry the analysis to analyse this flow again.`, in a `cancelled` one by
-`Start a new analysis to analyse this flow.`, else by `Retry this flow.` (likewise after `The flow output failed
+(where a flow request answers 409) by `Retry the analysis; then this flow can be analysed again.` (with reason
+`configuration`, which offers no Retry: `Ask the administrator to fix the server configuration.`), in a
+`cancelled` one by `Start a new analysis to analyse this flow.`, else by `Retry this flow.` (likewise after `The flow output failed
 verification after repairs.`). A flow too large for the agent
 request (`This flow is too large for the agent request.`) is never retried automatically: the same plan and
 diff give the same prompt. An unusable LLM credential fails the analysis instead (state `failed`

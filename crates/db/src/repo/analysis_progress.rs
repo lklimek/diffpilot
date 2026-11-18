@@ -171,6 +171,7 @@ impl Analyses<'_> {
 
     /// Samples of the 30 newest review-ready analyses (most never finish while flows run on request): plan and PR
     /// context of each, and each flow whose document is accepted; flows are `whole` only in a finished analysis.
+    /// A stage counts its jobs of the newest round in which it succeeded (a retry starts a new round).
     async fn recent_timings(
         &self,
         tenant: &str,
@@ -185,7 +186,9 @@ impl Analyses<'_> {
              SELECT j.kind, SUM((julianday(j.finished_at) - julianday(j.claimed_at)) * 86400) AS seconds,
                     COUNT(DISTINCT j.stage) AS count, j.kind <> 'analyse_flow' OR a.state = 'finished' AS whole,
                     (SELECT body FROM documents WHERE analysis_id = a.id AND kind = 'prepass' AND key = '') AS prepass
-             FROM recent r JOIN analyses a ON a.id = r.id JOIN jobs j ON j.analysis_id = a.id AND j.round = a.round
+             FROM recent r JOIN analyses a ON a.id = r.id JOIN jobs j ON j.analysis_id = a.id
+               AND j.round = (SELECT MAX(k.round) FROM jobs k
+                    WHERE k.analysis_id = a.id AND k.stage = j.stage AND k.state = 'succeeded')
              WHERE j.state = 'succeeded' AND j.kind <> 'ask'
                AND (j.kind <> 'analyse_flow' OR EXISTS(SELECT 1 FROM documents d
                     WHERE d.analysis_id = a.id AND d.kind = 'flow' AND d.key = j.flow_id))
@@ -807,11 +810,23 @@ mod tests {
                 .await
                 .unwrap();
         }
+        let next_round = || async {
+            sqlx::query("UPDATE analyses SET round = round + 1 WHERE id = ?")
+                .bind(old.to_string())
+                .execute(&db.pool)
+                .await
+                .unwrap();
+        };
         timed_job(&db, old, JobStage::Plan { batch: 1 }, 600).await;
         timed_job(&db, old, JobStage::PrContext, 120).await;
+        // Rejected, then run again in the round of its retry: only the newest round of a stage counts.
+        timed_job(&db, old, flow("f1"), 900).await;
+        next_round().await;
         timed_job(&db, old, flow("f1"), 300).await;
         // Succeeded but not accepted (a repair pending): no flow sample.
         timed_job(&db, old, flow("f2"), 900).await;
+        // Another flow's retry: earlier rounds keep their samples.
+        next_round().await;
         let parked = AnalysisState::Running {
             done: 1,
             total: 2,

@@ -299,6 +299,8 @@ async fn end(state: &AppState, analysis: AnalysisId, error: PipelineError) -> bo
 /// how many. An open review without admitted flow work waits for a request without a driver.
 pub async fn resume_unfinished(state: &AppState) -> Result<usize, DbError> {
     let mut started = 0;
+    // TODO: every parked analysis stays `running` for good (never end one: that would discard its partial review),
+    // so this reads all of them at each start; filter the ones that can only be parked in SQL inside `unfinished()`.
     for analysis in state.db.analyses().unfinished().await? {
         if state.db.flow_work().parked(analysis.id).await? {
             continue;
