@@ -94,6 +94,9 @@ pub struct StoredIssue {
     pub private: bool,
     /// Comment count.
     pub comments: u32,
+    /// Opened; absent in snapshots stored before it was recorded.
+    #[serde(default)]
+    pub opened_at: Option<Timestamp>,
 }
 
 /// A MemCan TODO of the snapshot.

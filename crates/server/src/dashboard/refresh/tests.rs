@@ -1653,3 +1653,34 @@ async fn history_counts_merges_of_a_refused_login_whoever_merged_them() {
         );
     }
 }
+
+/// Look-back days (G9, K5) mark an issue opened within them, counted back from the scan, as new (the reference
+/// skill's `isNew`: age ≤ look-back days).
+#[tokio::test]
+async fn issues_opened_within_the_look_back_days_are_marked_new() {
+    let w = world().await;
+    let done = w.refreshed().await;
+    assert_eq!(done.state, RefreshState::Finished, "{:?}", done.failure);
+    let issues = w.items("?kind=issue").await;
+    let new: Vec<&str> = issues
+        .items
+        .iter()
+        .filter(|item| item.tags.iter().any(|tag| tag.text == "new"))
+        .map(|item| item.id.as_str())
+        // Opened exactly 7 days before the test clock: on the edge, the scan runs a moment later.
+        .filter(|id| *id != "CON-1520")
+        .collect();
+    // Scanned at 2026-11-18T09:00Z with the default 7 days: 1187 (1 day), 1525 (3), 1215 (4); not 1210 (9),
+    // 305 (12), 1150 (39).
+    assert_eq!(new, ["PLAT-1187", "CON-1525", "PLAT-1215"]);
+    let tip = &issues.items[0]
+        .tags
+        .iter()
+        .find(|t| t.text == "new")
+        .expect("tag")
+        .tip;
+    assert!(
+        tip.contains("2026-11-17") && tip.contains("7 days"),
+        "{tip}"
+    );
+}
