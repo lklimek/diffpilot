@@ -2,8 +2,8 @@
 //! LLM text read from it.
 
 use chrono::{DateTime, Utc};
-use contracts::agent::judge_work::ValidAnswer;
-use contracts::api::dashboard::{ItemKey, ItemText, ScoreComponent};
+use contracts::agent::judge_work::{JudgeItem, ValidAnswer};
+use contracts::api::dashboard::{ItemKey, ItemText, PartStatus, ScoreComponent};
 use serde::{Deserialize, Serialize};
 
 use crate::dashboard::score::{EligibilityJudgement, Freshness, JudgedPart, Judgement};
@@ -41,13 +41,30 @@ pub(super) struct BodyEligibility {
 }
 
 impl Body {
-    /// The stored form of a validated answer. An eligibility answer counts only when the scorer asked for it: an
-    /// unasked flip could hide an item.
-    pub fn of(answer: ValidAnswer, eligibility_asked: bool) -> Self {
+    /// The stored form of a validated answer to `item`. The judge sets only asked parts and estimated defaults
+    /// sent for confirmation: an answer for a part computed from facts is dropped (AR-9). An eligibility answer
+    /// counts only when the scorer asked for it: an unasked flip could hide an item.
+    pub fn of(answer: ValidAnswer, item: &JudgeItem) -> Self {
+        let settable = |component: ScoreComponent| {
+            item.asks.contains(&component)
+                || item
+                    .known
+                    .iter()
+                    .any(|k| k.component == component && k.status == PartStatus::Estimated)
+        };
+        let eligibility_asked = item.asks_eligibility;
         Self {
             parts: answer
                 .parts
                 .into_iter()
+                .filter(|part| {
+                    let keep = settable(part.component);
+                    if !keep {
+                        tracing::debug!(item = %item.key, component = ?part.component,
+                            "dashboard judge answer for a part computed from facts dropped; the computed value stays");
+                    }
+                    keep
+                })
                 .map(|part| BodyPart {
                     component: part.component,
                     points: part.points,

@@ -36,7 +36,9 @@ In smart-review the runner must not hold user tokens (T3, ADR-005) or contain Gi
 5. **The LLM judges only what the skill leaves to judgement** (plan §B.1), and **never twice for the same judged
    inputs** (plan §B.4): unchanged items reuse their stored judgement, no job is created when nothing changed, and
    per-refresh and per-day caps bound the rest. A prompt or schema change takes effect only through an explicit
-   prompt-version bump.
+   prompt-version bump. A judgement sets only the parts the scorer asks about, including the computed defaults
+   sent for confirmation (status `estimated`); an answer for a part computed from facts is dropped, the rest of
+   the answer counts (owner decision on AR-9, 2026-11-18).
 6. **MemCan TODOs** are read by the server's MemCan client with `list_todos` per MemCan project (limit 100,
    open statuses filtered client-side, per-status calls when `has_more`) for each user with "show my MemCan TODOs"
    on (default on); no writes. MemCan has no users or project listing, so the projects are a per-user setting:

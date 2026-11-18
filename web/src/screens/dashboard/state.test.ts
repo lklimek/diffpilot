@@ -144,15 +144,33 @@ describe("dashboardView: schedule and limit notes", () => {
     });
   });
 
-  it("counts items left provisional by the ranking limit and items of an older prompt", () => {
-    const limited = withLatest({ ...FINISHED, left_provisional: 1 }, { older_prompt_judgements: 4 });
-    expect(titles(limited)).toEqual([
-      "1 item left provisional: daily ranking limit.",
+  /** `FINISHED` with `left` items left provisional and the server's ranking step detail. */
+  const limitedBy = (left: number, detail: string | null, state: "finished" | "failed" = "finished") => ({
+    ...FINISHED,
+    left_provisional: left,
+    steps: FINISHED.steps.map((step) => (step.key === "ranking" ? { ...step, detail } : step)),
+    ranking: { ...FINISHED.ranking!, state },
+  });
+
+  it("names the ranking limit the server applied, and counts items of an older prompt", () => {
+    const perRefresh = withLatest(
+      limitedBy(18, "18 items left provisional: this refresh's ranking limit (48)"),
+      { older_prompt_judgements: 4 },
+    );
+    expect(titles(perRefresh)).toEqual([
+      "18 items left provisional: this refresh's ranking limit (48).",
       "4 items judged with an older ranking prompt.",
     ]);
-    expect(titles(withLatest({ ...FINISHED, left_provisional: 3 }))).toEqual([
-      "3 items left provisional: daily ranking limit.",
+    expect(titles(withLatest(limitedBy(1, "1 item left provisional: today's ranking limit (120)")))).toEqual([
+      "1 item left provisional: today's ranking limit (120).",
     ]);
+  });
+
+  it("names no limit when the ranking failed or the server named none", () => {
+    expect(titles(withLatest(limitedBy(3, "3 items could not be judged (PLAT-1)", "failed")))).toEqual([
+      "3 items left provisional.",
+    ]);
+    expect(titles(withLatest(limitedBy(1, null)))).toEqual(["1 item left provisional."]);
   });
 });
 
