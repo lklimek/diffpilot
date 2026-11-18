@@ -1,9 +1,9 @@
 //! Fake MemCan for development and the full-stack tests: a real MCP server (rmcp, streamable HTTP) with the tools
-//! the smart-review server calls (`_import_records`, `delete_memory`, `search_memories`), following MemCan's
-//! contract (memcan-server `serve.rs`, memcan-core `import.rs` at dd00d97): record validation and the
+//! the smart-review server calls (`_import_records`, `delete_memory`, `search_memories`, `list_todos`), following
+//! MemCan's contract (memcan-server `serve.rs`, memcan-core `import.rs` at dd00d97): record validation and the
 //! `imported`/`skipped`/`errors` counters, MemCan's JSON-RPC errors, `has_more` past the limit. Also MemCan's
 //! bearer check and a control endpoint (`/_fake/*`, same bearer) to inspect what was written or deleted and to
-//! switch failure modes. Memories are kept in memory only.
+//! switch failure modes, and to seed the TODOs `list_todos` reads. Memories and TODOs are kept in memory only.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -25,6 +25,10 @@ use rmcp::transport::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+mod todos;
+
+pub use todos::Todo;
 
 /// Longest time a request waits in [`Mode::Hang`] before it gets a 503.
 const HANG_LIMIT: Duration = Duration::from_secs(120);
@@ -85,6 +89,9 @@ pub struct Snapshot {
     pub calls: Vec<Call>,
     /// HTTP requests refused for a missing or wrong bearer token.
     pub unauthorized: u64,
+    /// TODOs `list_todos` reads (seeded with `POST /_fake/todos`).
+    #[serde(default)]
+    pub todos: Vec<Todo>,
 }
 
 #[derive(Debug)]
@@ -106,7 +113,8 @@ impl Shared {
     }
 }
 
-/// The fake's router: MCP at `config.path`, control at `/_fake/state`, `/_fake/mode` and `/_fake/reset`.
+/// The fake's router: MCP at `config.path`, control at `/_fake/state`, `/_fake/mode`, `/_fake/todos` and
+/// `/_fake/reset`.
 pub fn router(config: Config) -> Router {
     let shared = Shared(Arc::new(Mutex::new(Inner {
         token: config.token,
@@ -121,6 +129,7 @@ pub fn router(config: Config) -> Router {
     let control = Router::new()
         .route("/_fake/state", get(state))
         .route("/_fake/mode", post(set_mode))
+        .route("/_fake/todos", post(set_todos))
         .route("/_fake/reset", post(reset))
         .with_state(shared.clone());
     Router::new()
@@ -184,6 +193,12 @@ async fn state(State(shared): State<Shared>) -> Json<Snapshot> {
 async fn set_mode(State(shared): State<Shared>, Json(mode): Json<Mode>) -> StatusCode {
     tracing::info!(?mode, "fake-memcan mode changed");
     shared.lock().state.mode = mode;
+    StatusCode::NO_CONTENT
+}
+
+async fn set_todos(State(shared): State<Shared>, Json(todos): Json<Vec<Todo>>) -> StatusCode {
+    tracing::info!(count = todos.len(), "fake-memcan TODOs replaced");
+    shared.lock().state.todos = todos;
     StatusCode::NO_CONTENT
 }
 
@@ -331,6 +346,12 @@ fn execute(
             let has_more = memories.len() > limit;
             memories.truncate(limit);
             text(json!({"memories": memories, "has_more": has_more}))
+        }
+        "list_todos" => {
+            let list = params::<todos::ListParams>(call)?;
+            todos::list(&shared.lock().state.todos, list)
+                .map_err(|message| ErrorData::internal_error(message, None))
+                .and_then(text)
         }
         _ => Err(ErrorData::invalid_params("tool not found", None)),
     }
