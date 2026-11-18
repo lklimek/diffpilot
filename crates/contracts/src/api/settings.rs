@@ -123,7 +123,11 @@ pub struct LlmSelection {
     pub efforts: Vec<crate::job::spec::ReasoningEffort>,
     /// Current choice, or the server default before the first save.
     pub current: crate::job::spec::ModelChoice,
-    /// Login of the last editor; null for the default.
+    /// Reasoning effort of the dashboard ranking (`judge_work`; default low); absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub judge_effort: Option<crate::job::spec::ReasoningEffort>,
+    /// Login of the last editor of the model, effort or ranking effort; null for the default.
     pub changed_by: Option<String>,
     /// Time of the last save; null for the default.
     pub changed_at: Option<DateTime<Utc>>,
@@ -136,4 +140,11 @@ pub struct LlmModelOption {
     pub id: String,
     /// Plain display name.
     pub label: String,
+}
+
+/// Body of `PUT /api/v1/settings/llm/judge-effort`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SetJudgeEffortRequest {
+    /// Reasoning effort of the dashboard ranking.
+    pub reasoning_effort: crate::job::spec::ReasoningEffort,
 }

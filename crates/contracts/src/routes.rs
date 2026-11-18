@@ -1,6 +1,8 @@
 //! Every HTTP route: method, path (axum syntax), authentication and listener. The server router and the generated
 //! `web/src/api/generated/routes.ts` are built from [`ROUTES`].
 
+use crate::api::access_tokens::TokenScope;
+
 /// HTTP method.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HttpMethod {
@@ -42,6 +44,9 @@ pub enum RouteAuth {
     RunnerSecret,
     /// `Authorization: Bearer <job token>`.
     JobToken,
+    /// Session cookie, or a personal access token with this scope (`Authorization: Bearer srp_…`, ADR-019);
+    /// safe methods only.
+    SessionOrToken(TokenScope),
 }
 
 impl RouteAuth {
@@ -53,6 +58,7 @@ impl RouteAuth {
             Self::SessionCsrf => "session_csrf",
             Self::RunnerSecret => "runner_secret",
             Self::JobToken => "job_token",
+            Self::SessionOrToken(scope) => scope.as_str(),
         }
     }
 }
@@ -108,6 +114,9 @@ const fn runner_route(name: &'static str, path: &'static str, auth: RouteAuth) -
 
 use HttpMethod::{Delete, Get, Patch, Post, Put};
 use RouteAuth::{JobToken, Public, RunnerSecret, Session, SessionCsrf};
+
+/// Session or a `read` personal access token.
+const READ: RouteAuth = RouteAuth::SessionOrToken(TokenScope::Read);
 
 /// Liveness for compose health checks.
 pub const HEALTHZ: Route = route("healthz", Get, "/healthz", Public);
@@ -283,6 +292,96 @@ pub const SET_BACKGROUND_ANALYSIS: Route = route(
     SessionCsrf,
 );
 
+/// R1: the user's dashboard summary.
+pub const GET_DASHBOARD: Route = route("getDashboard", Get, "/api/v1/dashboard", READ);
+/// R1b: ranked items of the latest snapshot (`ItemQuery`).
+pub const LIST_DASHBOARD_ITEMS: Route =
+    route("listDashboardItems", Get, "/api/v1/dashboard/items", READ);
+/// R2: starts a refresh.
+pub const START_DASHBOARD_REFRESH: Route = route(
+    "startDashboardRefresh",
+    Post,
+    "/api/v1/dashboard/refreshes",
+    SessionCsrf,
+);
+/// R2b: one refresh.
+pub const GET_DASHBOARD_REFRESH: Route = route(
+    "getDashboardRefresh",
+    Get,
+    "/api/v1/dashboard/refreshes/{id}",
+    READ,
+);
+/// R3: cancels a refresh.
+pub const CANCEL_DASHBOARD_REFRESH: Route = route(
+    "cancelDashboardRefresh",
+    Post,
+    "/api/v1/dashboard/refreshes/{id}/cancel",
+    SessionCsrf,
+);
+/// R4: ranks the refresh's snapshot again (Retry ranking).
+pub const RANK_DASHBOARD_REFRESH: Route = route(
+    "rankDashboardRefresh",
+    Post,
+    "/api/v1/dashboard/refreshes/{id}/rank",
+    SessionCsrf,
+);
+/// R5: SSE stream of a refresh.
+pub const DASHBOARD_REFRESH_EVENTS: Route = route(
+    "dashboardRefreshEvents",
+    Get,
+    "/api/v1/dashboard/refreshes/{id}/events",
+    READ,
+);
+/// R6: the user's dashboard settings.
+pub const GET_DASHBOARD_SETTINGS: Route = route(
+    "getDashboardSettings",
+    Get,
+    "/api/v1/settings/dashboard",
+    READ,
+);
+/// R6: saves the user's dashboard settings.
+pub const SET_DASHBOARD_SETTINGS: Route = route(
+    "setDashboardSettings",
+    Put,
+    "/api/v1/settings/dashboard",
+    SessionCsrf,
+);
+/// R6b: stores the browser's time zone.
+pub const SET_DASHBOARD_TIME_ZONE: Route = route(
+    "setDashboardTimeZone",
+    Put,
+    "/api/v1/settings/dashboard/time-zone",
+    SessionCsrf,
+);
+/// R7: saves the installation-wide reasoning effort of the dashboard ranking.
+pub const SET_JUDGE_EFFORT: Route = route(
+    "setJudgeEffort",
+    Put,
+    "/api/v1/settings/llm/judge-effort",
+    SessionCsrf,
+);
+/// R8: the user's personal access tokens (session only: a token never lists tokens).
+pub const LIST_ACCESS_TOKENS: Route = route(
+    "listAccessTokens",
+    Get,
+    "/api/v1/settings/access-tokens",
+    Session,
+);
+/// R9: creates a personal access token; the response carries the secret once.
+pub const CREATE_ACCESS_TOKEN: Route = route(
+    "createAccessToken",
+    Post,
+    "/api/v1/settings/access-tokens",
+    SessionCsrf,
+);
+/// R10: revokes a personal access token.
+pub const REVOKE_ACCESS_TOKEN: Route = route(
+    "revokeAccessToken",
+    Delete,
+    "/api/v1/settings/access-tokens/{id}",
+    SessionCsrf,
+);
+
 /// Every route.
 pub const ROUTES: &[Route] = &[
     REQUEST_FLOW,
@@ -318,6 +417,20 @@ pub const ROUTES: &[Route] = &[
     SET_LANGUAGE,
     SET_LLM,
     GET_REPO_SETTINGS,
+    GET_DASHBOARD,
+    LIST_DASHBOARD_ITEMS,
+    START_DASHBOARD_REFRESH,
+    GET_DASHBOARD_REFRESH,
+    CANCEL_DASHBOARD_REFRESH,
+    RANK_DASHBOARD_REFRESH,
+    DASHBOARD_REFRESH_EVENTS,
+    GET_DASHBOARD_SETTINGS,
+    SET_DASHBOARD_SETTINGS,
+    SET_DASHBOARD_TIME_ZONE,
+    SET_JUDGE_EFFORT,
+    LIST_ACCESS_TOKENS,
+    CREATE_ACCESS_TOKEN,
+    REVOKE_ACCESS_TOKEN,
     RUNNER_CLAIM,
     RUNNER_EVENTS,
     RUNNER_OUTPUT,

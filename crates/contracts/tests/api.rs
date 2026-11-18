@@ -7,6 +7,7 @@ use contracts::agent::analyse_flow::AgentAnnotation;
 use contracts::agent::analyse_flow::{Assessment, FlowIntroduction};
 use contracts::agent::ask::AskOutput;
 use contracts::agent::pr_context::PrContextOutput;
+use contracts::api::access_tokens::{CreateAccessToken, CreatedAccessToken};
 use contracts::api::analyses::{
     AnalysisStage, AnalysisState, AnalysisSummary, CreateAnalysisRequest, FlowRef, StageFlow,
     StageKind,
@@ -15,6 +16,9 @@ use contracts::api::auth::MeResponse;
 use contracts::api::code::{CommentScope, DeletedBlock, DiffResponse, LinesResponse, RangeQuery};
 use contracts::api::comments::{
     CreateCommentRequest, CreateCommentResponse, PendingReview, UpdateCommentRequest,
+};
+use contracts::api::dashboard::{
+    DashboardEvent, DashboardSettingsView, DashboardSummary, ItemPage, ItemQuery,
 };
 use contracts::api::error::{ApiError, ApiErrorCode};
 use contracts::api::events::AnalysisEvent;
@@ -240,6 +244,14 @@ fn error_codes_map_to_statuses() {
         ("github_unavailable", 502),
         ("internal", 500),
         ("unavailable", 503),
+        ("refresh_running", 409),
+        ("github_rate_limited", 429),
+        ("invalid_dashboard_settings", 422),
+        ("cursor_expired", 409),
+        ("insufficient_scope", 403),
+        ("token_not_accepted", 403),
+        ("token_limit_reached", 409),
+        ("rate_limited", 429),
     ];
     assert_eq!(ApiErrorCode::ALL.len(), expected.len());
     for (code, (name, status)) in ApiErrorCode::ALL.into_iter().zip(expected) {
@@ -572,6 +584,13 @@ fn no_floats_in_api_types() {
         ("RepoSettings", schema::<RepoSettings>()),
         ("AnalysisEvent", schema::<AnalysisEvent>()),
         ("ApiError", schema::<ApiError>()),
+        ("DashboardSummary", schema::<DashboardSummary>()),
+        ("ItemPage", schema::<ItemPage>()),
+        ("ItemQuery", schema::<ItemQuery>()),
+        ("DashboardEvent", schema::<DashboardEvent>()),
+        ("DashboardSettingsView", schema::<DashboardSettingsView>()),
+        ("CreatedAccessToken", schema::<CreatedAccessToken>()),
+        ("CreateAccessToken", schema::<CreateAccessToken>()),
     ];
     for (name, schema) in schemas {
         assert!(!contains_float(&schema), "{name}");

@@ -55,11 +55,27 @@ pub enum ApiErrorCode {
     Internal,
     /// The server is busy (e.g. its database is locked); retry after `Retry-After`.
     Unavailable,
+    /// A dashboard refresh of the user is already running.
+    RefreshRunning,
+    /// GitHub's rate limit for the user's token is reached; the message names the reset time.
+    GithubRateLimited,
+    /// Dashboard settings break a rule; the message names the field and the rule.
+    InvalidDashboardSettings,
+    /// The list changed since the cursor was issued; read it again from the start.
+    CursorExpired,
+    /// The access token lacks the scope the route needs.
+    InsufficientScope,
+    /// The route does not accept access tokens.
+    TokenNotAccepted,
+    /// The user has the maximum number of live access tokens.
+    TokenLimitReached,
+    /// Too many requests; retry after `Retry-After`.
+    RateLimited,
 }
 
 impl ApiErrorCode {
     /// Every code.
-    pub const ALL: [ApiErrorCode; 19] = [
+    pub const ALL: [ApiErrorCode; 27] = [
         Self::Configuration,
         Self::Unauthenticated,
         Self::LoginNotAllowed,
@@ -79,6 +95,14 @@ impl ApiErrorCode {
         Self::GithubUnavailable,
         Self::Internal,
         Self::Unavailable,
+        Self::RefreshRunning,
+        Self::GithubRateLimited,
+        Self::InvalidDashboardSettings,
+        Self::CursorExpired,
+        Self::InsufficientScope,
+        Self::TokenNotAccepted,
+        Self::TokenLimitReached,
+        Self::RateLimited,
     ];
 
     /// The HTTP status code of a response with this code.
@@ -86,16 +110,24 @@ impl ApiErrorCode {
         match self {
             Self::InvalidRequest | Self::NotAPrUrl | Self::RangeTooLarge => 400,
             Self::Unauthenticated => 401,
-            Self::LoginNotAllowed | Self::CsrfRejected => 403,
+            Self::LoginNotAllowed
+            | Self::CsrfRejected
+            | Self::InsufficientScope
+            | Self::TokenNotAccepted => 403,
             Self::NotFound => 404,
             Self::Conflict
             | Self::AnalysisNotFinished
             | Self::PrHeadChanged
-            | Self::CommentPublished => 409,
+            | Self::CommentPublished
+            | Self::RefreshRunning
+            | Self::CursorExpired
+            | Self::TokenLimitReached => 409,
             Self::PrivateRepository
             | Self::AppNotInstalled
             | Self::PositionRejected
-            | Self::NotRendered => 422,
+            | Self::NotRendered
+            | Self::InvalidDashboardSettings => 422,
+            Self::GithubRateLimited | Self::RateLimited => 429,
             Self::Internal | Self::Configuration => 500,
             Self::GithubUnavailable => 502,
             Self::Unavailable => 503,

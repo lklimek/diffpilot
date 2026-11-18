@@ -1,6 +1,49 @@
 // This file is generated from crates/contracts by the test generated_artifacts_are_current (UPDATE_GENERATED=1 rewrites it). Do not edit.
 
 /**
+ * A token as listed in Settings (`GET /api/v1/settings/access-tokens`); never carries the secret or its hash.
+ */
+export type AccessToken = {
+/**
+ * Public id.
+ */
+id: AccessTokenId,
+/**
+ * The user's name for the token, 1–60 characters, unique among the user's tokens.
+ */
+name: string,
+/**
+ * Recognisable start of the token, `srp_<id>`.
+ */
+prefix: string,
+/**
+ * What the token may do.
+ */
+scopes: Array<TokenScope>,
+/**
+ * Creation time.
+ */
+created_at: string,
+/**
+ * The token stops working at this time.
+ */
+expires_at: string,
+/**
+ * Last accepted use (recorded at most once a minute); null before the first.
+ */
+last_used_at: string | null, };
+
+/**
+ * Public id of a token: 8 base62 characters, shown in Settings and part of the token (`srp_<id>_<secret>`).
+ */
+export type AccessTokenId = string;
+
+/**
+ * The whole token `srp_<id>_<secret>`: sent once in [`CreatedAccessToken`], never shown by `Debug`.
+ */
+export type AccessTokenSecret = string;
+
+/**
  * A bounded estimate, not a deadline or a guarantee.
  */
 export type AnalysisEstimate = {
@@ -282,7 +325,7 @@ message: string, };
 /**
  * Machine-readable API error code.
  */
-export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable";
+export type ApiErrorCode = "configuration" | "unauthenticated" | "login_not_allowed" | "csrf_rejected" | "not_found" | "invalid_request" | "not_a_pr_url" | "private_repository" | "app_not_installed" | "analysis_not_finished" | "conflict" | "pr_head_changed" | "position_rejected" | "comment_published" | "range_too_large" | "not_rendered" | "github_unavailable" | "internal" | "unavailable" | "refresh_running" | "github_rate_limited" | "invalid_dashboard_settings" | "cursor_expired" | "insufficient_scope" | "token_not_accepted" | "token_limit_reached" | "rate_limited";
 
 /**
  * A GitHub App installation.
@@ -406,6 +449,47 @@ blocking?: Blocking,
  * The smallest correction, or null; the agent may omit it for low.
  */
 smallest_correction: string | null, };
+
+/**
+ * A pull request of the user that waits on other people.
+ */
+export type AwaitingItem = {
+/**
+ * Display alias, e.g. `PLAT-1176`.
+ */
+id: string,
+/**
+ * Repository.
+ */
+repo: RepoRef,
+/**
+ * Pull request number.
+ */
+number: number,
+/**
+ * Title.
+ */
+title: string,
+/**
+ * GitHub link, built by the server.
+ */
+url: string,
+/**
+ * Logins and teams (`team:<slug>`) whose review is requested.
+ */
+waiting_on: Array<string>,
+/**
+ * Since when it waits (the oldest open request).
+ */
+waiting_since: string,
+/**
+ * Deterministic tags from scan facts (e.g. CI passing).
+ */
+tags: Array<FactTag>,
+/**
+ * Its score in tenths, when it is also ranked.
+ */
+total_tenths: number | null, };
 
 /**
  * Change background work; an already running job is kept.
@@ -617,6 +701,23 @@ dependencies_changed: Array<string>,
 dependency_files_not_checked: Array<string>, };
 
 /**
+ * Body of `POST /api/v1/settings/access-tokens`.
+ */
+export type CreateAccessToken = {
+/**
+ * Name, 1–60 characters, unique among the user's tokens.
+ */
+name: string,
+/**
+ * Requested scopes; v1.1 accepts only `read`.
+ */
+scopes: Array<TokenScope>,
+/**
+ * Lifetime in days: one of [`CreateAccessToken::EXPIRY_DAYS`].
+ */
+expires_in_days: number, };
+
+/**
  * Body of `POST /api/v1/analyses`.
  */
 export type CreateAnalysisRequest = {
@@ -658,6 +759,135 @@ comment: PendingComment,
  * The line was changed and had no annotation, so `missed_by_llm` feedback was recorded.
  */
 missed_by_llm_recorded: boolean, };
+
+/**
+ * Response of `POST /api/v1/settings/access-tokens` (201): the only response that carries the secret.
+ */
+export type CreatedAccessToken = {
+/**
+ * The token; store it now, it cannot be shown again.
+ */
+token: AccessTokenSecret,
+/**
+ * The new token as listed.
+ */
+access_token: AccessToken, };
+
+/**
+ * Server-sent event of `GET /api/v1/dashboard/refreshes/{id}/events`; the SSE `event` field is the tag.
+ */
+export type DashboardEvent = { "event": "refresh",
+/**
+ * The refresh.
+ */
+status: RefreshStatus, } | { "event": "heartbeat",
+/**
+ * Server time of sending.
+ */
+at: string, };
+
+/**
+ * Per-user dashboard settings (body of `PUT /api/v1/settings/dashboard`); validated by the server (plan §F.6).
+ */
+export type DashboardSettings = {
+/**
+ * Other GitHub logins of the user, scanned with the own login.
+ */
+linked_logins: Array<string>,
+/**
+ * Repositories with their rules, one row each.
+ */
+repositories: Array<RepositoryRule>,
+/**
+ * Owners listed when GitHub search refuses a scanned login.
+ */
+enumerate_owners: Array<string>,
+/**
+ * Days an issue counts as new (1–30).
+ */
+lookback_days: number,
+/**
+ * Label that marks a pull request ready for a human.
+ */
+ready_label: string,
+/**
+ * Bot authors whose items are left out.
+ */
+skip_authors: Array<string>,
+/**
+ * Show the user's MemCan TODOs.
+ */
+include_todos: boolean,
+/**
+ * MemCan projects read besides the repositories' short names.
+ */
+memcan_extra_projects: Array<string>,
+/**
+ * Daily automatic refresh on.
+ */
+schedule_enabled: boolean,
+/**
+ * Its local time, `HH:MM` (24 h, 15-minute steps).
+ */
+schedule_time: string,
+/**
+ * IANA time zone; null until the browser sends one.
+ */
+time_zone: string | null, };
+
+/**
+ * Response of `GET`/`PUT /api/v1/settings/dashboard`.
+ */
+export type DashboardSettingsView = {
+/**
+ * The user's settings (the defaults when never saved).
+ */
+settings: DashboardSettings,
+/**
+ * The defaults ("Reset to defaults").
+ */
+defaults: DashboardSettings,
+/**
+ * The signed-in login, always scanned.
+ */
+own_login: string,
+/**
+ * MemCan is configured on this server.
+ */
+memcan_configured: boolean,
+/**
+ * Effective MemCan projects: the repositories' short names plus the extras, deduplicated.
+ */
+memcan_projects: Array<string>,
+/**
+ * Repositories and owners of these settings the GitHub token could not see at the latest refresh.
+ */
+unreachable: Array<string>, };
+
+/**
+ * Response of `GET /api/v1/dashboard`: the user's dashboard without its items.
+ */
+export type DashboardSummary = {
+/**
+ * Opaque; changes whenever the stored snapshot or its ranking changes (poll this, then fetch the items).
+ */
+revision: string,
+/**
+ * The newest refresh of the user, live or ended; null before the first.
+ */
+latest_refresh: RefreshStatus | null,
+/**
+ * The snapshot the items come from; null before the first successful scan.
+ */
+snapshot: SnapshotMeta | null,
+/**
+ * The daily automatic refresh.
+ */
+schedule: ScheduleStatus,
+/**
+ * Items of the snapshot whose judgement came from an older ranking prompt (re-judged within the caps).
+ */
+older_prompt_judgements: number, };
 
 /**
  * Removed code shown at its deletion marker.
@@ -771,6 +1001,32 @@ side: LineSide,
  * 1-based line number on that side.
  */
 line: number, };
+
+/**
+ * A labelled scan fact.
+ */
+export type Fact = {
+/**
+ * Label.
+ */
+label: string,
+/**
+ * Value.
+ */
+value: string, };
+
+/**
+ * A deterministic tag from scan facts.
+ */
+export type FactTag = {
+/**
+ * Short text.
+ */
+text: string,
+/**
+ * Tooltip with the underlying fact.
+ */
+tip: string, };
 
 /**
  * A stored feedback entry.
@@ -1184,6 +1440,28 @@ kind: NodeKind,
 label: string, };
 
 /**
+ * A dated event for the charts.
+ */
+export type HistoryEvent = {
+/**
+ * What happened.
+ */
+kind: HistoryKind,
+/**
+ * When.
+ */
+at: string,
+/**
+ * The pull request, `owner/name#number`; one event per pull request and kind.
+ */
+item_id: string, };
+
+/**
+ * Kind of a history event; pull requests and reviews only (OD16).
+ */
+export type HistoryKind = "pr_opened" | "pr_merged" | "pr_closed_unmerged" | "review_given";
+
+/**
  * A moved block whose text is identical after whitespace normalisation. The UI says "Body text identical"
  * and nothing more: identical text does not mean unchanged behaviour, and no call-site flow is linked in v1
  * (ADR-008).
@@ -1230,6 +1508,165 @@ basis: Basis,
  * GitHub link.
  */
 github_url: string, };
+
+/**
+ * Ranked items by kind and tier.
+ */
+export type ItemCounts = {
+/**
+ * All ranked items.
+ */
+total: number,
+/**
+ * Pull requests.
+ */
+pr: number,
+/**
+ * Issues.
+ */
+issue: number,
+/**
+ * MemCan TODOs.
+ */
+todo: number,
+/**
+ * Tier P0 (alarms).
+ */
+p0: number,
+/**
+ * Tier P1.
+ */
+p1: number,
+/**
+ * Tier P2.
+ */
+p2: number,
+/**
+ * Tier P3.
+ */
+p3: number,
+/**
+ * Items in the group "Not judged yet" (score state `unjudged`; also counted in their tier).
+ */
+not_judged: number, };
+
+/**
+ * Kind of a work item.
+ */
+export type ItemKind = "pr" | "issue" | "todo";
+
+/**
+ * Response of `GET /api/v1/dashboard/items`: ranked items of the latest snapshot, in rank order.
+ */
+export type ItemPage = {
+/**
+ * The summary's `revision` the page belongs to.
+ */
+revision: string,
+/**
+ * Items of this page.
+ */
+items: Array<WorkItem>,
+/**
+ * Cursor of the next page; null on the last.
+ */
+next_cursor: string | null, };
+
+/**
+ * Query of `GET /api/v1/dashboard/items`; every filter is optional.
+ */
+export type ItemQuery = {
+/**
+ * Only this tier.
+ */
+tier?: Tier,
+/**
+ * Only this kind.
+ */
+kind?: ItemKind,
+/**
+ * Only this repository, `owner/name`.
+ */
+repo?: string,
+/**
+ * Only this score state.
+ */
+state?: ScoreState,
+/**
+ * Only items changed at or after this time (TODOs: their change time).
+ */
+updated_since?: string,
+/**
+ * Page size, [`ItemQuery::DEFAULT_LIMIT`] when absent, at most [`ItemQuery::MAX_LIMIT`].
+ */
+limit?: number,
+/**
+ * `next_cursor` of the previous page.
+ */
+cursor?: string, };
+
+/**
+ * Score of an item: the sum of its parts, in tenths of a point.
+ */
+export type ItemScore = {
+/**
+ * Sum of the parts' points, in tenths.
+ */
+total_tenths: number,
+/**
+ * Whether every part is final.
+ */
+state: ScoreState,
+/**
+ * Tier, computed by the server (P0 = alarm; otherwise P1 ≥ 65, P2 35–<65, P3 < 35 points).
+ */
+tier: Tier,
+/**
+ * The components, in display order.
+ */
+parts: Array<ScorePart>, };
+
+/**
+ * LLM-written text of an item (shown with the "LLM" tag).
+ */
+export type ItemText = {
+/**
+ * Why it ranks where it does.
+ */
+why: string,
+/**
+ * The next action.
+ */
+next: string,
+/**
+ * Reason of a P0 alarm; null when none.
+ */
+alarm: string | null,
+/**
+ * When it was judged.
+ */
+judged_at: string,
+/**
+ * Carried over from before the item changed.
+ */
+inherited: boolean, };
+
+/**
+ * Counts by item kind.
+ */
+export type KindCounts = {
+/**
+ * Pull requests.
+ */
+pr: number,
+/**
+ * Issues.
+ */
+issue: number,
+/**
+ * MemCan TODOs.
+ */
+todo: number, };
 
 /**
  * A line ending other than LF.
@@ -1363,7 +1800,11 @@ efforts: Array<ReasoningEffort>,
  */
 current: ModelChoice,
 /**
- * Login of the last editor; null for the default.
+ * Reasoning effort of the dashboard ranking (`judge_work`; default low); absent on older servers.
+ */
+judge_effort?: ReasoningEffort,
+/**
+ * Login of the last editor of the model, effort or ranking effort; null for the default.
  */
 changed_by: string | null,
 /**
@@ -1580,6 +2021,16 @@ items: Array<NotAnalysedItem>, };
 export type Origin = "introduced" | "pre_existing" | "unclear";
 
 /**
+ * Who decides a part.
+ */
+export type PartSource = "computed" | "llm" | "not_applicable";
+
+/**
+ * How a part's value was reached.
+ */
+export type PartStatus = "computed" | "judged" | "overridden" | "inherited" | "estimated" | "pending";
+
+/**
  * A pattern explained once and applied in several places ("same pattern × N").
  */
 export type PatternRepetition = {
@@ -1709,6 +2160,19 @@ importance_rank: number,
  * Changed ranges assigned by the verified plan.
  */
 ranges: Array<FileRanges>, };
+
+/**
+ * An ownership policy file (JSON format of `stale_prs_are_bad`).
+ */
+export type PolicyRef = {
+/**
+ * Repository holding the file.
+ */
+repo: RepoRef,
+/**
+ * Relative path ending `.json`.
+ */
+path: string, };
 
 /**
  * The PR context: deterministic facts and LLM content.
@@ -1932,9 +2396,133 @@ from: number,
 to: number, };
 
 /**
+ * State of the LLM ranking (plan §B.3).
+ */
+export type RankingState = "waiting_for_analysis" | "running" | "paused" | "failed" | "interrupted" | "finished";
+
+/**
+ * The LLM ranking of a stored snapshot.
+ */
+export type RankingStatus = {
+/**
+ * State.
+ */
+state: RankingState,
+/**
+ * Items judged so far.
+ */
+judged: number,
+/**
+ * Items queued for judgement in this refresh.
+ */
+total: number,
+/**
+ * When a usage-limit pause ends; null unless `paused`.
+ */
+resumes_at: string | null,
+/**
+ * Plain text of a failure; null unless `failed` or `interrupted`.
+ */
+message: string | null, };
+
+/**
  * Reasoning effort of the model.
  */
 export type ReasoningEffort = "low" | "medium" | "high";
+
+/**
+ * Why a refresh failed.
+ */
+export type RefreshFailure = {
+/**
+ * Cause.
+ */
+code: RefreshFailureCode,
+/**
+ * Plain message for the user.
+ */
+message: string,
+/**
+ * Earliest time a new refresh can succeed (GitHub rate-limit reset); null when not limited.
+ */
+retry_at: string | null, };
+
+/**
+ * Cause of a failed refresh.
+ */
+export type RefreshFailureCode = "github_rate_limited" | "github_unavailable" | "sign_in_required" | "timed_out" | "interrupted" | "internal";
+
+/**
+ * Identifier of a dashboard refresh (one scan and its ranking).
+ */
+export type RefreshId = string;
+
+/**
+ * State of a refresh. At most one refresh per user is `scanning` or `ranking`.
+ */
+export type RefreshState = "scanning" | "ranking" | "finished" | "failed" | "cancelled";
+
+/**
+ * One refresh: scan progress, ranking and outcome (`GET /api/v1/dashboard/refreshes/{id}`, SSE `refresh`).
+ */
+export type RefreshStatus = {
+/**
+ * Id.
+ */
+id: RefreshId,
+/**
+ * What started it.
+ */
+trigger: RefreshTrigger,
+/**
+ * State.
+ */
+state: RefreshState,
+/**
+ * Items the LLM judged in this refresh.
+ */
+judged: number,
+/**
+ * Items whose stored judgement was reused at no cost (judged inputs unchanged).
+ */
+reused: number,
+/**
+ * Items left provisional by the per-refresh or daily ranking limit.
+ */
+left_provisional: number,
+/**
+ * Scan steps in order.
+ */
+steps: Array<ScanStep>,
+/**
+ * Scan progress, 0–100.
+ */
+percent: number,
+/**
+ * Start time.
+ */
+started_at: string,
+/**
+ * When the scan finished and the snapshot was stored; null while scanning or when it failed.
+ */
+scanned_at: string | null,
+/**
+ * The LLM ranking of the snapshot; null before the scan finished.
+ */
+ranking: RankingStatus | null,
+/**
+ * Why the refresh failed; null unless `failed`.
+ */
+failure: RefreshFailure | null,
+/**
+ * Plain log lines of the scan (at most 200, oldest first); no tokens, no query strings.
+ */
+log: Array<string>, };
+
+/**
+ * What started a refresh.
+ */
+export type RefreshTrigger = "manual" | "scheduled";
 
 /**
  * One piece of related work.
@@ -2023,6 +2611,31 @@ related_repos: Array<RepoRef>,
 project_profile: ProjectProfileStatus, };
 
 /**
+ * Settings of one repository row.
+ */
+export type RepositoryRule = {
+/**
+ * The repository.
+ */
+repo: RepoRef,
+/**
+ * Display alias prefix (`[A-Z0-9][A-Z0-9-]{0,11}`); null = the bare repository name.
+ */
+alias: string | null,
+/**
+ * Include its open issues.
+ */
+watch_issues: boolean,
+/**
+ * File naming the owned paths; null = no ownership policy.
+ */
+ownership_policy: PolicyRef | null,
+/**
+ * Release and long-lived branch patterns; empty = the built-ins.
+ */
+branch_patterns: Array<string>, };
+
+/**
  * Body of `POST /api/v1/pr/resolve`.
  */
 export type ResolvePrRequest = {
@@ -2066,6 +2679,27 @@ analysis: AnalysisSummary | null,
  * The analysis is for an older head than the pull request now has.
  */
 head_moved: boolean, };
+
+/**
+ * The user's smart-review analysis of a pull request item.
+ */
+export type ReviewLink = {
+/**
+ * The newest analysis of the pull request.
+ */
+analysis_id: AnalysisId,
+/**
+ * Head commit it analysed.
+ */
+analysed_head: CommitSha,
+/**
+ * The pull request head moved since.
+ */
+head_moved: boolean,
+/**
+ * The user has saved review state on it.
+ */
+has_my_state: boolean, };
 
 /**
  * Review state of one user for one analysis; a flow is reviewed when all its steps are ticked.
@@ -2113,6 +2747,140 @@ state: RunStageState, };
 export type RunStageState = "pending" | "current" | "done";
 
 /**
+ * Something the scan missed or approximated (plain text).
+ */
+export type ScanNote = {
+/**
+ * The note.
+ */
+text: string,
+/**
+ * The item it concerns (`WorkItem.key`), if one.
+ */
+item: string | null, };
+
+/**
+ * A step of the scan, shown as a list with progress.
+ */
+export type ScanStep = {
+/**
+ * Which step.
+ */
+key: ScanStepKey,
+/**
+ * Its state.
+ */
+state: StepState,
+/**
+ * Units done (e.g. PR details read); null when the step has no count.
+ */
+done: number | null,
+/**
+ * Units in total; null when not known yet or not counted.
+ */
+total: number | null,
+/**
+ * Plain detail, e.g. the item being read or why the step failed.
+ */
+detail: string | null, };
+
+/**
+ * The scan steps, in order (plan §A.4).
+ */
+export type ScanStepKey = "search_prs" | "issues" | "pr_details" | "context" | "history" | "todos" | "ranking";
+
+/**
+ * The daily automatic refresh (ADR-020).
+ */
+export type ScheduleStatus = {
+/**
+ * On or off.
+ */
+enabled: boolean,
+/**
+ * Local time of day, `HH:MM`.
+ */
+time: string,
+/**
+ * IANA time zone; null until known (the schedule does not run without it).
+ */
+time_zone: string | null,
+/**
+ * Next scheduled instant; null when off or without a time zone.
+ */
+next_run_at: string | null,
+/**
+ * The most recent scheduled run; null before the first.
+ */
+last_run: ScheduledRun | null, };
+
+/**
+ * Outcome of a scheduled run.
+ */
+export type ScheduledOutcome = "started" | "skipped" | "needs_sign_in" | "failed";
+
+/**
+ * One scheduled run.
+ */
+export type ScheduledRun = {
+/**
+ * Its scheduled instant (the configured local time on that local date).
+ */
+at: string,
+/**
+ * What happened.
+ */
+outcome: ScheduledOutcome,
+/**
+ * Plain reason for `skipped`, `needs_sign_in` and `failed`.
+ */
+reason: string | null, };
+
+/**
+ * The twelve score components (daily-priorities `scoreParts`).
+ */
+export type ScoreComponent = "advancement" | "defect_severity" | "unblocks" | "human_waiting" | "recency" | "change_impact" | "completion" | "change_size" | "urgency_bonus" | "blocked_penalty" | "default_branch_bonus" | "milestone_bonus";
+
+/**
+ * One score component.
+ */
+export type ScorePart = {
+/**
+ * Which component.
+ */
+component: ScoreComponent,
+/**
+ * Points in tenths; null while pending.
+ */
+points_tenths: number | null,
+/**
+ * Who decides it.
+ */
+source: PartSource,
+/**
+ * How the value was reached.
+ */
+status: PartStatus,
+/**
+ * Plain basis of the value (an estimate names its rule).
+ */
+basis: string, };
+
+/**
+ * Whether a score is final.
+ */
+export type ScoreState = "final" | "provisional" | "unjudged";
+
+/**
+ * Body of `PUT /api/v1/settings/llm/judge-effort`.
+ */
+export type SetJudgeEffortRequest = {
+/**
+ * Reasoning effort of the dashboard ranking.
+ */
+reasoning_effort: ReasoningEffort, };
+
+/**
  * Body of `PUT /api/v1/settings/language`.
  */
 export type SetLanguageRequest = {
@@ -2120,6 +2888,15 @@ export type SetLanguageRequest = {
  * Language of LLM texts.
  */
 language: LlmLanguage, };
+
+/**
+ * Body of `PUT /api/v1/settings/dashboard/time-zone`.
+ */
+export type SetTimeZoneRequest = {
+/**
+ * IANA time zone name.
+ */
+time_zone: string, };
 
 /**
  * Response of `GET /api/v1/settings`.
@@ -2172,6 +2949,55 @@ changed_files: number,
  * `ResolvePrResponse.planning_estimate`); null without enough history.
  */
 estimate: AnalysisEstimate | null, };
+
+/**
+ * Facts of the stored snapshot besides its items.
+ */
+export type SnapshotMeta = {
+/**
+ * The refresh that produced it.
+ */
+refresh_id: RefreshId,
+/**
+ * When its scan finished.
+ */
+scanned_at: string,
+/**
+ * When its ranking finished; null while ranking or when it did not finish.
+ */
+ranked_at: string | null,
+/**
+ * Ranked items by kind and tier.
+ */
+item_counts: ItemCounts,
+/**
+ * Items left out of the ranking (drafts of others, skipped bot authors, no owned change).
+ */
+excluded: number,
+/**
+ * The user's pull requests waiting on other people.
+ */
+awaiting: Array<AwaitingItem>,
+/**
+ * Dated pull request and review events of the chart window (12 weeks), across the scanned logins.
+ */
+history: Array<HistoryEvent>,
+/**
+ * State of the MemCan TODOs.
+ */
+todos: TodosState,
+/**
+ * What the scan missed or approximated.
+ */
+notes: Array<ScanNote>,
+/**
+ * Configured repositories and owners the user's GitHub token cannot see (`owner/name` or `owner`).
+ */
+unreachable: Array<string>,
+/**
+ * What the scan read before exclusion.
+ */
+checked: KindCounts, };
 
 /**
  * Whether a source was checked.
@@ -2309,6 +3135,11 @@ moved_from: MovedFrom | null,
 impact: Array<ImpactRef>, };
 
 /**
+ * State of a scan step.
+ */
+export type StepState = "waiting" | "running" | "done" | "failed" | "skipped";
+
+/**
  * LLM status of an existing GitHub review thread.
  */
 export type ThreadLlmStatus = "still_valid" | "stale" | "already_addressed";
@@ -2317,6 +3148,38 @@ export type ThreadLlmStatus = "still_valid" | "stale" | "already_addressed";
  * How completely the pull request's review threads were read.
  */
 export type ThreadsStatus = "checked" | "partial" | "not_checked";
+
+/**
+ * Priority tier.
+ */
+export type Tier = "p0" | "p1" | "p2" | "p3";
+
+/**
+ * State of the MemCan TODOs in the snapshot.
+ */
+export type TodosState = {
+/**
+ * State.
+ */
+status: TodosStatus,
+/**
+ * When the TODO rows shown were read; null when none were read.
+ */
+read_at: string | null,
+/**
+ * When MemCan could not be reached; null unless `not_refreshed`.
+ */
+failed_at: string | null, };
+
+/**
+ * Whether the TODO rows are current.
+ */
+export type TodosStatus = "read" | "not_refreshed" | "off" | "not_configured";
+
+/**
+ * What a token may do; a list on each token. Open enum: clients treat unknown values as opaque.
+ */
+export type TokenScope = "read";
 
 /**
  * Response of `GET /api/v1/analyses/{id}/tour`.
@@ -2421,3 +3284,72 @@ last_7_days: UsageTotals | null, };
  * Feedback values a reviewer can choose.
  */
 export type UserFeedbackValue = "correct" | "wrong" | "irrelevant" | "overrated" | "underrated";
+
+/**
+ * One ranked item.
+ */
+export type WorkItem = {
+/**
+ * Display alias, e.g. `PLAT-1187` or `TODO-3fa91c2e`.
+ */
+id: string,
+/**
+ * Stable, opaque, URL-safe key.
+ */
+key: string,
+/**
+ * Kind.
+ */
+kind: ItemKind,
+/**
+ * Repository; null for TODOs (their MemCan project is a tag).
+ */
+repo: RepoRef | null,
+/**
+ * Pull request or issue number; null for TODOs.
+ */
+number: number | null,
+/**
+ * Title.
+ */
+title: string,
+/**
+ * Link built by the server (GitHub, or the MemCan UI); null for a TODO without a configured MemCan UI.
+ */
+url: string | null,
+/**
+ * Author login; null for TODOs.
+ */
+author: string | null,
+/**
+ * From a private repository (shown only to this user).
+ */
+private: boolean,
+/**
+ * When a judged input last changed (TODOs: their change time).
+ */
+updated_at: string,
+/**
+ * Deterministic tags from scan facts.
+ */
+tags: Array<FactTag>,
+/**
+ * Deterministic facts from the scan.
+ */
+facts: Array<Fact>,
+/**
+ * Score with its parts.
+ */
+score: ItemScore,
+/**
+ * LLM-written text; null before the first judgement.
+ */
+llm: ItemText | null,
+/**
+ * Display aliases of items the LLM merged into this one (only from server-suggested pairs).
+ */
+also_ids: Array<string>,
+/**
+ * The user's smart-review analysis of this pull request, read at request time; null when none.
+ */
+review: ReviewLink | null, };

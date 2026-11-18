@@ -1,0 +1,1935 @@
+{
+  "revision": "r-0812-ranked",
+  "items": [
+    {
+      "id": "PLAT-1187",
+      "key": "acme~platform~issue~1187",
+      "kind": "issue",
+      "repo": {
+        "owner": "acme",
+        "name": "platform"
+      },
+      "number": 1187,
+      "title": "Block sync stalls after the 2.4 upgrade on three nodes",
+      "url": "https://github.com/acme/platform/issues/1187",
+      "author": "renata-s",
+      "private": false,
+      "updated_at": "2026-11-18T07:14:00Z",
+      "tags": [
+        {
+          "text": "production report",
+          "tip": "Label set on GitHub by the reporter"
+        },
+        {
+          "text": "assigned to you",
+          "tip": "You are an assignee of this issue"
+        }
+      ],
+      "facts": [
+        {
+          "label": "State",
+          "value": "open, 14 comments, 3 reporters"
+        },
+        {
+          "label": "Labels",
+          "value": "bug, production report"
+        },
+        {
+          "label": "Milestone",
+          "value": "v2.4"
+        }
+      ],
+      "score": {
+        "total_tenths": 1070,
+        "state": "final",
+        "tier": "p0",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "not started"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 170,
+            "source": "llm",
+            "status": "judged",
+            "basis": "stalled sync on production nodes; likelihood 8, impact 9"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 150,
+            "source": "computed",
+            "status": "computed",
+            "basis": "@renata-s asked you today"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 150,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change today"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 100,
+            "source": "llm",
+            "status": "judged",
+            "basis": "useful user-facing fix or feature"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "several steps left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "no diff"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 300,
+            "source": "llm",
+            "status": "judged",
+            "basis": "confirmed production defect: 3 operator reports with logs"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "not a pull request"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "milestone v2.4 = current release"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Confirmed production defect on the current release; three operators are affected.",
+        "next": "Ask @renata-s whether PLAT-1203 covers the stalled peers, then answer the operators on the issue.",
+        "alarm": "Three operators report stalled block sync since yesterday after upgrading to 2.4. No workaround is known, and the 2.4 release notes call the upgrade safe.",
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "PLAT-1203",
+      "key": "acme~platform~pr~1203",
+      "kind": "pr",
+      "repo": {
+        "owner": "acme",
+        "name": "platform"
+      },
+      "number": 1203,
+      "title": "fix(sync): retry header fetch after peer timeout",
+      "url": "https://github.com/acme/platform/pull/1203",
+      "author": "mira-k",
+      "private": false,
+      "updated_at": "2026-11-17T07:14:00Z",
+      "tags": [
+        {
+          "text": "review requested 1 d",
+          "tip": "Your review was requested yesterday at 16:05"
+        },
+        {
+          "text": "CI passing",
+          "tip": "6 checks passed on head 9c41e7a"
+        },
+        {
+          "text": "fixes PLAT-1187",
+          "tip": "Linked with \"Fixes #1187\" in the description"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Head",
+          "value": "9c41e7a, +412 −88 in 14 files"
+        },
+        {
+          "label": "Reviews",
+          "value": "none yet; requested from you and @jun-park"
+        },
+        {
+          "label": "Threads",
+          "value": "0 unresolved"
+        },
+        {
+          "label": "Base",
+          "value": "main (default branch)"
+        }
+      ],
+      "score": {
+        "total_tenths": 1479,
+        "state": "final",
+        "tier": "p1",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "open PR"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 140,
+            "source": "llm",
+            "status": "judged",
+            "basis": "fixes the stall in PLAT-1187; likelihood 7, impact 7"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "PLAT-1187 waits on it"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 150,
+            "source": "computed",
+            "status": "computed",
+            "basis": "review requested from you 1 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 127,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 1 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 100,
+            "source": "llm",
+            "status": "judged",
+            "basis": "useful user-facing fix or feature"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "one bounded step left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 112,
+            "source": "computed",
+            "status": "computed",
+            "basis": "500 changed lines"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 300,
+            "source": "llm",
+            "status": "judged",
+            "basis": "release blocker: fixes a confirmed production defect"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "base is the default branch (main)"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "milestone v2.4 = current release"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Likely fix for the production sync stall (PLAT-1187); small, focused change with a regression test.",
+        "next": "Review now; the retry loop in header_sync.rs is the part to read closely.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "NC-482",
+      "key": "acme~node-client~pr~482",
+      "kind": "pr",
+      "repo": {
+        "owner": "acme",
+        "name": "node-client"
+      },
+      "number": 482,
+      "title": "feat(rpc): retry with backoff on timeout",
+      "url": "https://github.com/acme/node-client/pull/482",
+      "author": "dana",
+      "private": false,
+      "updated_at": "2026-11-16T07:14:00Z",
+      "tags": [
+        {
+          "text": "review requested 3 d",
+          "tip": "Requested on Sun 15 Nov"
+        },
+        {
+          "text": "CI failing",
+          "tip": "test (integration) failed on head d41b7a0"
+        },
+        {
+          "text": "analysed",
+          "tip": "A smart-review analysis exists for head 52d2da1; the PR has moved to d41b7a0 since"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Head",
+          "value": "d41b7a0 (analysed: 52d2da1)"
+        },
+        {
+          "label": "CI",
+          "value": "1 failing: test (integration)"
+        },
+        {
+          "label": "Reviews",
+          "value": "requested from you"
+        },
+        {
+          "label": "Base",
+          "value": "main (default branch)"
+        }
+      ],
+      "score": {
+        "total_tenths": 816,
+        "state": "final",
+        "tier": "p1",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "open PR"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no pre-existing defect"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 100,
+            "source": "computed",
+            "status": "computed",
+            "basis": "review requested from you 3 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 108,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 2 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 100,
+            "source": "llm",
+            "status": "judged",
+            "basis": "useful user-facing fix or feature"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "one bounded step left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 108,
+            "source": "computed",
+            "status": "computed",
+            "basis": "640 changed lines"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "base is the default branch (main)"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 100,
+            "source": "computed",
+            "status": "computed",
+            "basis": "milestone 1.9 = next release"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Useful resilience feature for node operators; you already analysed an earlier head of it.",
+        "next": "Open your review; the PR moved since, so re-analyze the new head first.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": {
+        "analysis_id": "6d3a2f1e-0482-4c5e-9a7b-000000000482",
+        "analysed_head": "52d2da140191a9d47becf6a446310be803c007fc",
+        "head_moved": true,
+        "has_my_state": true
+      }
+    },
+    {
+      "id": "WUI-311",
+      "key": "acme~wallet-ui~pr~311",
+      "kind": "pr",
+      "repo": {
+        "owner": "acme",
+        "name": "wallet-ui"
+      },
+      "number": 311,
+      "title": "feat(wallet): show pending withdrawals",
+      "url": "https://github.com/acme/wallet-ui/pull/311",
+      "author": "alice",
+      "private": false,
+      "updated_at": "2026-11-18T07:14:00Z",
+      "tags": [
+        {
+          "text": "CI failing",
+          "tip": "test (e2e) failed on head 5d2a0f3"
+        },
+        {
+          "text": "2 unresolved threads",
+          "tip": "From @tobias-w, yesterday"
+        },
+        {
+          "text": "your PR",
+          "tip": "You are the author"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Head",
+          "value": "5d2a0f3, +301 −79 in 9 files"
+        },
+        {
+          "label": "Reviews",
+          "value": "@tobias-w commented"
+        },
+        {
+          "label": "CI",
+          "value": "1 failing: test (e2e)"
+        },
+        {
+          "label": "Base",
+          "value": "main (default branch)"
+        }
+      ],
+      "score": {
+        "total_tenths": 815,
+        "state": "final",
+        "tier": "p1",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "open PR"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no pre-existing defect"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "WUI-298 builds on it"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no outstanding request to you"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 150,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change today"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 100,
+            "source": "llm",
+            "status": "judged",
+            "basis": "useful user-facing fix or feature"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "one bounded step left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 115,
+            "source": "computed",
+            "status": "computed",
+            "basis": "380 changed lines"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "base is the default branch (main)"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 100,
+            "source": "computed",
+            "status": "computed",
+            "basis": "milestone v2.5 = next release"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Your own user-facing feature for v2.5; blocked only by a failing end-to-end test and two review threads.",
+        "next": "Fix the failing e2e test (withdrawals.spec), then answer @tobias-w's two threads.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "WUI-320",
+      "key": "acme~wallet-ui~pr~320",
+      "kind": "pr",
+      "repo": {
+        "owner": "acme",
+        "name": "wallet-ui"
+      },
+      "number": 320,
+      "title": "fix(ui): restore the focus ring on tabs",
+      "url": "https://github.com/acme/wallet-ui/pull/320",
+      "author": "jun-park",
+      "private": false,
+      "updated_at": "2026-11-18T07:14:00Z",
+      "tags": [
+        {
+          "text": "review requested today",
+          "tip": "Your review was requested today at 09:50"
+        },
+        {
+          "text": "CI passing",
+          "tip": "4 checks passed"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Head",
+          "value": "1e07b2d, +31 −9 in 2 files"
+        },
+        {
+          "label": "Reviews",
+          "value": "none yet"
+        },
+        {
+          "label": "Base",
+          "value": "main (default branch)"
+        }
+      ],
+      "score": {
+        "total_tenths": 814,
+        "state": "final",
+        "tier": "p1",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "open PR"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 40,
+            "source": "llm",
+            "status": "judged",
+            "basis": "accessibility defect, rare harm; likelihood 3, impact 1"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 150,
+            "source": "computed",
+            "status": "computed",
+            "basis": "review requested from you 0 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 150,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change today"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "small user-facing accessibility fix"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "one bounded step left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 124,
+            "source": "computed",
+            "status": "computed",
+            "basis": "40 changed lines"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "base is the default branch (main)"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no milestone"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Keyboard users cannot see which tab has focus; a 40-line CSS fix.",
+        "next": "Quick review: check the dark-theme colour of the ring.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "DOC-77",
+      "key": "acme~docs-site~pr~77",
+      "kind": "pr",
+      "repo": {
+        "owner": "acme",
+        "name": "docs-site"
+      },
+      "number": 77,
+      "title": "docs: describe the node upgrade path",
+      "url": "https://github.com/acme/docs-site/pull/77",
+      "author": "renata-s",
+      "private": false,
+      "updated_at": "2026-11-16T07:14:00Z",
+      "tags": [
+        {
+          "text": "review requested 2 d",
+          "tip": "Requested on Mon 16 Nov"
+        },
+        {
+          "text": "CI passing",
+          "tip": "2 checks passed"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Head",
+          "value": "ab90e11, +198 −12 in 3 files"
+        },
+        {
+          "label": "Base",
+          "value": "main (default branch)"
+        }
+      ],
+      "score": {
+        "total_tenths": 777,
+        "state": "final",
+        "tier": "p1",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "open PR"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no pre-existing defect"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 150,
+            "source": "computed",
+            "status": "computed",
+            "basis": "review requested from you 2 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 108,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 2 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "operator documentation for a current upgrade"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 100,
+            "source": "llm",
+            "status": "judged",
+            "basis": "only approval left; CI green"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 119,
+            "source": "computed",
+            "status": "computed",
+            "basis": "210 changed lines"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "base is the default branch (main)"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no milestone"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Operators need this page for the 2.4 upgrade; short and ready.",
+        "next": "Read and approve if the rollback section matches PLAT-1203.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "CON-1534",
+      "key": "acme~consensus~pr~1534",
+      "kind": "pr",
+      "repo": {
+        "owner": "acme",
+        "name": "consensus"
+      },
+      "number": 1534,
+      "title": "refactor(abci): move proposal checks into the validator",
+      "url": "https://github.com/acme/consensus/pull/1534",
+      "author": "jun-park",
+      "private": false,
+      "updated_at": "2026-11-14T07:14:00Z",
+      "tags": [
+        {
+          "text": "review requested 6 d",
+          "tip": "Requested on Thu 12 Nov"
+        },
+        {
+          "text": "not ready: 3 unresolved threads",
+          "tip": "Threads from @olek-d are still open"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Head",
+          "value": "77c3d0e, +980 −470 in 21 files"
+        },
+        {
+          "label": "Threads",
+          "value": "3 unresolved"
+        },
+        {
+          "label": "Base",
+          "value": "main (default branch)"
+        }
+      ],
+      "score": {
+        "total_tenths": 616,
+        "state": "final",
+        "tier": "p2",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "open PR"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no pre-existing defect"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "CON-1520 waits on it"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 100,
+            "source": "computed",
+            "status": "computed",
+            "basis": "review requested from you 6 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 76,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 4 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "responsibility moves into the validator; fewer duplicate checks"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "several steps left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 90,
+            "source": "computed",
+            "status": "computed",
+            "basis": "1,450 changed lines"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "base is the default branch (main)"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no milestone"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Puts validation in the right component and unblocks CON-1520; not urgent.",
+        "next": "Wait for @jun-park to resolve the three threads, then review.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "PLAT-1210",
+      "key": "acme~platform~issue~1210",
+      "kind": "issue",
+      "repo": {
+        "owner": "acme",
+        "name": "platform"
+      },
+      "number": 1210,
+      "title": "Wallet balance shows a stale value after a reorg",
+      "url": "https://github.com/acme/platform/issues/1210",
+      "author": "olek-d",
+      "private": false,
+      "updated_at": "2026-11-15T07:14:00Z",
+      "tags": [
+        {
+          "text": "assigned to you",
+          "tip": "Assigned on Mon 9 Nov"
+        }
+      ],
+      "facts": [
+        {
+          "label": "State",
+          "value": "open, 4 comments"
+        },
+        {
+          "label": "Milestone",
+          "value": "v2.4"
+        }
+      ],
+      "score": {
+        "total_tenths": 561,
+        "state": "final",
+        "tier": "p2",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "not started"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 120,
+            "source": "llm",
+            "status": "judged",
+            "basis": "wrong balance shown briefly; likelihood 3, impact 9"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "assigned to you 9 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 91,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 3 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 100,
+            "source": "llm",
+            "status": "judged",
+            "basis": "useful user-facing fix or feature"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "several steps left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "no diff"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "not a pull request"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "milestone v2.4 = current release"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Real but uncommon: users see a wrong balance for up to a minute after a reorg.",
+        "next": "Reproduce on the test network with the reorg script; decide whether it belongs in v2.4.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "PLAT-1199",
+      "key": "acme~platform~pr~1199",
+      "kind": "pr",
+      "repo": {
+        "owner": "acme",
+        "name": "platform"
+      },
+      "number": 1199,
+      "title": "feat(api): paginate identity lookups",
+      "url": "https://github.com/acme/platform/pull/1199",
+      "author": "olek-d",
+      "private": false,
+      "updated_at": "2026-11-12T07:14:00Z",
+      "tags": [
+        {
+          "text": "review requested 9 d",
+          "tip": "Requested on Mon 9 Nov"
+        },
+        {
+          "text": "CI passing",
+          "tip": "6 checks passed"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Head",
+          "value": "0b51f9c, +1,512 −328 in 26 files"
+        },
+        {
+          "label": "Base",
+          "value": "main (default branch)"
+        }
+      ],
+      "score": {
+        "total_tenths": 485,
+        "state": "final",
+        "tier": "p2",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 200,
+            "source": "computed",
+            "status": "computed",
+            "basis": "open PR"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no pre-existing defect"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "review requested from you 9 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 52,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 6 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 100,
+            "source": "llm",
+            "status": "judged",
+            "basis": "useful user-facing fix or feature"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "one bounded step left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 83,
+            "source": "computed",
+            "status": "computed",
+            "basis": "1,840 changed lines"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "base is the default branch (main)"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": -100,
+            "source": "computed",
+            "status": "computed",
+            "basis": "milestone v3.0 = later than the next release"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Useful API feature, but large and planned for v3.0.",
+        "next": "Review the pagination cursor type first; the rest is mechanical.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "TODO-3fa91c2e",
+      "key": "memcan~3fa91c2e-0000-4000-8000-000000000000",
+      "kind": "todo",
+      "repo": null,
+      "number": null,
+      "title": "Write the migration note for config v3",
+      "url": "http://memcan.example/ui/tasks/3fa91c2e-0000-4000-8000-000000000000",
+      "author": null,
+      "private": false,
+      "updated_at": "2026-11-13T07:14:00Z",
+      "tags": [
+        {
+          "text": "in progress",
+          "tip": "MemCan status"
+        },
+        {
+          "text": "platform",
+          "tip": "MemCan project"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Project",
+          "value": "platform (MemCan)"
+        },
+        {
+          "label": "Status",
+          "value": "in progress"
+        },
+        {
+          "label": "Owner",
+          "value": "alice"
+        }
+      ],
+      "score": {
+        "total_tenths": 413,
+        "state": "final",
+        "tier": "p2",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 100,
+            "source": "computed",
+            "status": "computed",
+            "basis": "TODO in progress"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no pre-existing defect"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "PLAT-1176 release notes wait on it"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 100,
+            "source": "computed",
+            "status": "computed",
+            "basis": "@renata-s asked 4 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 63,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 5 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "concrete internal benefit"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "one bounded step left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "no diff"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "not a pull request"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no GitHub milestone (MemCan TODO)"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Release notes for PLAT-1176 need it; @renata-s asked for it on Friday.",
+        "next": "Draft the three breaking keys; ask @renata-s to proofread.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "NC-490",
+      "key": "acme~node-client~pr~490",
+      "kind": "pr",
+      "repo": {
+        "owner": "acme",
+        "name": "node-client"
+      },
+      "number": 490,
+      "title": "chore(deps): bump tokio to 1.48",
+      "url": "https://github.com/acme/node-client/pull/490",
+      "author": "alice",
+      "private": false,
+      "updated_at": "2026-11-10T07:14:00Z",
+      "tags": [
+        {
+          "text": "draft",
+          "tip": "Draft PR"
+        },
+        {
+          "text": "your PR",
+          "tip": "You are the author"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Head",
+          "value": "c2f4410, +64 −56 in 2 files"
+        },
+        {
+          "label": "Base",
+          "value": "main (default branch)"
+        }
+      ],
+      "score": {
+        "total_tenths": 406,
+        "state": "final",
+        "tier": "p2",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 150,
+            "source": "computed",
+            "status": "computed",
+            "basis": "draft PR"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no pre-existing defect"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no outstanding request to you"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 34,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 8 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "housekeeping or cosmetic"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "one bounded step left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 122,
+            "source": "computed",
+            "status": "computed",
+            "basis": "120 changed lines"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "base is the default branch (main)"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no milestone"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Housekeeping; nothing depends on it.",
+        "next": "Mark ready once the dependency review is done.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "CON-1520",
+      "key": "acme~consensus~issue~1520",
+      "kind": "issue",
+      "repo": {
+        "owner": "acme",
+        "name": "consensus"
+      },
+      "number": 1520,
+      "title": "Investigate memory growth in the mempool",
+      "url": "https://github.com/acme/consensus/issues/1520",
+      "author": "olek-d",
+      "private": false,
+      "updated_at": "2026-11-11T07:14:00Z",
+      "tags": [
+        {
+          "text": "assigned to you",
+          "tip": "Assigned on Wed 11 Nov"
+        },
+        {
+          "text": "blocked by CON-1534",
+          "tip": "CON-1534 is an open pull request in the same repository"
+        }
+      ],
+      "facts": [
+        {
+          "label": "State",
+          "value": "open, 6 comments"
+        },
+        {
+          "label": "Milestone",
+          "value": "1.9"
+        }
+      ],
+      "score": {
+        "total_tenths": 243,
+        "state": "final",
+        "tier": "p3",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "not started"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 100,
+            "source": "llm",
+            "status": "judged",
+            "basis": "memory growth on one node; likelihood 4, impact 6"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 100,
+            "source": "computed",
+            "status": "computed",
+            "basis": "assigned to you 7 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 43,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 7 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 100,
+            "source": "llm",
+            "status": "judged",
+            "basis": "useful user-facing fix or feature"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "several steps left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "no diff"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": -200,
+            "source": "llm",
+            "status": "judged",
+            "basis": "CON-1534 is open and changes the same code"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "not a pull request"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 100,
+            "source": "computed",
+            "status": "computed",
+            "basis": "milestone 1.9 = next release"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Slow memory growth seen on one test node; the refactor in CON-1534 changes the code involved.",
+        "next": "Wait for CON-1534 to merge, then profile again.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "WUI-305",
+      "key": "acme~wallet-ui~issue~305",
+      "kind": "issue",
+      "repo": {
+        "owner": "acme",
+        "name": "wallet-ui"
+      },
+      "number": 305,
+      "title": "Dark theme: low contrast on disabled buttons",
+      "url": "https://github.com/acme/wallet-ui/issues/305",
+      "author": "jun-park",
+      "private": false,
+      "updated_at": "2026-11-06T07:14:00Z",
+      "tags": [
+        {
+          "text": "mentions you",
+          "tip": "@alice mentioned in a comment 12 d ago"
+        }
+      ],
+      "facts": [
+        {
+          "label": "State",
+          "value": "open, 3 comments"
+        }
+      ],
+      "score": {
+        "total_tenths": 151,
+        "state": "final",
+        "tier": "p3",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "not started"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 40,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no pre-existing defect"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 50,
+            "source": "computed",
+            "status": "computed",
+            "basis": "mention 12 d ago"
+          },
+          {
+            "component": "recency",
+            "points_tenths": 11,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 12 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "concrete internal benefit"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "several steps left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "no diff"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "not a pull request"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no milestone"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Cosmetic contrast issue; you were asked for an opinion only.",
+        "next": "Reply with the contrast token to use; no code needed from you.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    },
+    {
+      "id": "TODO-91bd0a44",
+      "key": "memcan~91bd0a44-0000-4000-8000-000000000000",
+      "kind": "todo",
+      "repo": null,
+      "number": null,
+      "title": "Revisit the flaky test in the sync suite",
+      "url": "http://memcan.example/ui/tasks/91bd0a44-0000-4000-8000-000000000000",
+      "author": null,
+      "private": false,
+      "updated_at": "2026-10-29T07:14:00Z",
+      "tags": [
+        {
+          "text": "postponed",
+          "tip": "MemCan status"
+        },
+        {
+          "text": "consensus",
+          "tip": "MemCan project"
+        }
+      ],
+      "facts": [
+        {
+          "label": "Project",
+          "value": "consensus (MemCan)"
+        },
+        {
+          "label": "Status",
+          "value": "postponed"
+        }
+      ],
+      "score": {
+        "total_tenths": 150,
+        "state": "final",
+        "tier": "p3",
+        "parts": [
+          {
+            "component": "advancement",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "not started"
+          },
+          {
+            "component": "defect_severity",
+            "points_tenths": 60,
+            "source": "llm",
+            "status": "judged",
+            "basis": "flaky CI only; likelihood 4, impact 2"
+          },
+          {
+            "component": "unblocks",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no open dependents"
+          },
+          {
+            "component": "human_waiting",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no outstanding request to you"
+          },
+          {
+            "component": "recency",
+            "points_tenths": -10,
+            "source": "computed",
+            "status": "computed",
+            "basis": "last change 20 d ago"
+          },
+          {
+            "component": "change_impact",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "concrete internal benefit"
+          },
+          {
+            "component": "completion",
+            "points_tenths": 50,
+            "source": "llm",
+            "status": "judged",
+            "basis": "one bounded step left"
+          },
+          {
+            "component": "change_size",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "no diff"
+          },
+          {
+            "component": "urgency_bonus",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "no confirmed production defect or release blocker"
+          },
+          {
+            "component": "blocked_penalty",
+            "points_tenths": 0,
+            "source": "llm",
+            "status": "judged",
+            "basis": "nothing blocks the next action"
+          },
+          {
+            "component": "default_branch_bonus",
+            "points_tenths": 0,
+            "source": "not_applicable",
+            "status": "computed",
+            "basis": "not a pull request"
+          },
+          {
+            "component": "milestone_bonus",
+            "points_tenths": 0,
+            "source": "computed",
+            "status": "computed",
+            "basis": "no GitHub milestone (MemCan TODO)"
+          }
+        ]
+      },
+      "llm": {
+        "why": "Fails about once a week in CI; retried automatically, so low impact.",
+        "next": "Pick up after v2.4 ships.",
+        "alarm": null,
+        "judged_at": "2026-11-18T08:15:04Z",
+        "inherited": false
+      },
+      "also_ids": [],
+      "review": null
+    }
+  ],
+  "next_cursor": null
+}
