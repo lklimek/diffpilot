@@ -2385,6 +2385,52 @@ mod tests {
         assert_eq!(claim(&db, 3).await, None, "the credential is busy");
     }
 
+    /// Judge jobs leave the analysis-job rules as they were: per-PR, per-analysis and cancelled-analysis
+    /// exclusions still hold, and a running judge job blocks only its own credential.
+    #[tokio::test]
+    async fn analysis_job_exclusions_unchanged() {
+        let db = db().await;
+        let cancelled = seed_analysis(&db).await.expect("seed");
+        enqueue(&db, cancelled, "f1", -1).await;
+        db.analyses()
+            .set_state(
+                cancelled,
+                &contracts::api::analyses::AnalysisState::Cancelled,
+                at(0),
+            )
+            .await
+            .expect("cancel");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let mut judge = judge_job(refresh, 1);
+        judge.spec.credential.id = "spare".to_owned();
+        db.jobs().enqueue(judge, at(0)).await.expect("judge job");
+        let first = enqueue(&db, analysis, "f1", 1).await;
+        enqueue(&db, analysis, "f2", 2).await;
+        let both = [CREDENTIAL.to_owned(), "spare".to_owned()];
+        let jobs = db.jobs();
+        let claim_on = |now: i64| {
+            jobs.claim(ClaimParams {
+                credential_ids: &both,
+                job_token_hash: b"hash",
+                lease_until: at(now + 60),
+                now: at(now),
+            })
+        };
+        let judging = claim_on(3).await.expect("claim").expect("judge job");
+        assert_eq!(judging.kind, JobKind::JudgeWork);
+        let analysing = claim_on(4).await.expect("claim").expect("analysis job");
+        assert_eq!(
+            analysing.id, first,
+            "another credential is free; the cancelled analysis's older job is skipped"
+        );
+        assert_eq!(
+            claim_on(5).await.expect("claim"),
+            None,
+            "one running job per analysis and per credential"
+        );
+    }
+
     #[tokio::test]
     async fn judge_result_never_touches_a_pull_request_session() {
         let db = db().await;
