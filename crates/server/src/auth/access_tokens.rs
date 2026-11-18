@@ -47,7 +47,9 @@ const BASE62: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnop
 
 /// Accepted requests per token and minute.
 pub const REQUESTS_PER_TOKEN_PER_MINUTE: u32 = 120;
-/// Failed bearer attempts per client address and minute; further attempts answer 429 without a lookup.
+/// Failed bearer attempts per client address and minute; a failed attempt past it answers 429 instead of 401.
+/// Malformed tokens are refused before any lookup; a well-formed one is looked up by id and compared in constant
+/// time first, so a valid token is never refused by this limit.
 pub const FAILED_ATTEMPTS_PER_CLIENT_PER_MINUTE: u32 = 30;
 const WINDOW: Duration = Duration::from_secs(60);
 /// Counters kept per limiter; beyond this, ended windows are dropped and new clients share one counter.
