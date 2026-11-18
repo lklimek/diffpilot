@@ -130,6 +130,33 @@ pub enum ScanEnd {
     /// The user cancelled it: state `cancelled`; the previous snapshot stays.
     Cancelled,
 }
+/// Result of [`Dashboard::start_refresh`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StartOutcome {
+    /// Started in `scanning`. `superseded`: the user's refresh that was `ranking`, now `finished` with ranking
+    /// `cancelled` (its snapshot stays current until the new one is stored).
+    Started {
+        /// The new refresh.
+        refresh: Box<RefreshRecord>,
+        /// The superseded ranking refresh, if one was live.
+        superseded: Option<RefreshId>,
+    },
+    /// Another refresh of the user is `scanning`: R2 answers 409 `refresh_running`; the schedule counts it as done.
+    ScanRunning,
+}
+
+/// Result of [`Dashboard::restart_ranking`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RestartOutcome {
+    /// Back in `ranking` (ranking state `running`, counts kept).
+    Restarted(Box<RefreshRecord>),
+    /// Another refresh of the user is live (R4: 409 `refresh_running`).
+    RefreshRunning,
+    /// Not `finished` with ranking `failed`, `interrupted` or `cancelled`, or not the current snapshot (R4: 409
+    /// `conflict`).
+    NotRetryable,
+}
+
 /// A refresh that was live when the server stopped (startup recovery).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterruptedRefresh {
@@ -230,15 +257,17 @@ impl Dashboard<'_> {
         })
     }
 
-    /// Starts a refresh in `scanning`; `Conflict` while another of the user's refreshes is scanning or ranking.
-    /// Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never the one holding the latest snapshot.
+    /// R2 and the schedule, in one write transaction: a refresh of the user in `ranking` is superseded
+    /// ([`Dashboard::finish_ranking`] with `cancelled`), then a new one starts in `scanning`; a `scanning` one
+    /// blocks ([`StartOutcome::ScanRunning`]). Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never
+    /// the one holding the current snapshot.
     pub async fn start_refresh(
         &self,
         tenant_id: &str,
         user_id: &str,
         trigger: RefreshTrigger,
         now: DateTime<Utc>,
-    ) -> Result<RefreshRecord, DbError> {
+    ) -> Result<StartOutcome, DbError> {
         Err(DbError::NotImplemented {
             operation: "dashboard::start_refresh",
         })
@@ -356,15 +385,15 @@ impl Dashboard<'_> {
         })
     }
 
-    /// Retry ranking (R4): a `finished` refresh holding the current snapshot whose ranking ended `failed`,
-    /// `interrupted` or `cancelled` goes back to `ranking` (ranking state `running`, counts kept). `Conflict` while
-    /// another refresh of the user is live, for any other ranking outcome, or for an older snapshot.
+    /// Retry ranking (R4), in one write transaction: a `finished` refresh holding the current snapshot whose
+    /// ranking ended `failed`, `interrupted` or `cancelled` goes back to `ranking` (ranking state `running`, counts
+    /// kept). `NotFound` for an unknown id or another user's refresh.
     pub async fn restart_ranking(
         &self,
         tenant_id: &str,
         user_id: &str,
         id: RefreshId,
-    ) -> Result<RefreshRecord, DbError> {
+    ) -> Result<RestartOutcome, DbError> {
         Err(DbError::NotImplemented {
             operation: "dashboard::restart_ranking",
         })
