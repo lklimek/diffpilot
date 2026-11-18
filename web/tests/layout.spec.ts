@@ -103,6 +103,8 @@ test("opening a changed step reveals its first changed line and keeps code insid
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const width = await page.locator("[data-column=main]").evaluate((el) => el.clientWidth);
+  // Default side columns follow the mockup proportions, so the code column keeps about 700 px at 1280.
+  expect(width).toBeGreaterThanOrEqual(690);
   await page
     .getByRole("navigation")
     .getByRole("button", { name: /^Step 3:/ })
