@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from "react";
-import type { StepId } from "../../api/generated/types";
+import type { CommentTarget, StepId } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { assignRef, growField, useAction } from "../inspector/action";
 import type { SectionControl } from "../inspector/sectionState";
@@ -13,7 +13,7 @@ export interface AskFormProps {
   onAsk: (step: StepId, text: string) => Promise<unknown> | void;
   /** The text field, for the `a` shortcut. */
   inputRef?: Ref<HTMLTextAreaElement>;
-  /** Questions and answers of the step (e.g. `AskAnswers`), shown below the field. */
+  /** The conversation (e.g. `AskThread`), shown above the field, which stays at the bottom. */
   answers?: ReactNode;
   /** The Inspector's section state: with it, Ask collapses like the other sections (key `ask`). */
   sections?: SectionControl;
@@ -21,10 +21,30 @@ export interface AskFormProps {
   count?: number;
   /** A problem with the answers (e.g. the lost answer stream), announced above them; opens a collapsed Ask. */
   notice?: string | null;
+  /** Text to put in at the cursor ("Ask about this line"): opens Ask and focuses the field; nothing is sent. */
+  insert?: { text: string } | null;
+  /** `insert` went in; the next one may follow. */
+  onInserted?: () => void;
+}
+
+/** A code line or range as the Ask field takes it: `path:line` or `path:start-end`, old code said. */
+export function lineReference(target: CommentTarget): string {
+  const lines = target.start_line === null ? `${target.line}` : `${target.start_line}-${target.line}`;
+  return `${target.path}:${lines}${target.side === "base" ? " (old code)" : ""}`;
 }
 
 /** One-line question field that grows while typing; Enter sends, Shift+Enter adds a line. */
-export function AskForm({ step, onAsk, inputRef, answers, sections, count, notice }: AskFormProps) {
+export function AskForm({
+  step,
+  onAsk,
+  inputRef,
+  answers,
+  sections,
+  count,
+  notice,
+  insert,
+  onInserted,
+}: AskFormProps) {
   if (step === null) {
     return (
       <section aria-label="Ask">
@@ -44,6 +64,8 @@ export function AskForm({ step, onAsk, inputRef, answers, sections, count, notic
       sections={sections}
       count={count}
       notice={notice}
+      insert={insert}
+      onInserted={onInserted}
     />
   );
 }
@@ -56,12 +78,13 @@ function AskDraft({
   sections,
   count,
   notice,
+  insert,
+  onInserted,
 }: AskFormProps & { step: { id: StepId; label: string } }) {
   const open = sections ? sections.isOpen("ask") : true;
   const subject = step.label;
   const id = useId();
   const field = useRef<HTMLTextAreaElement | null>(null);
-  const answersBox = useRef<HTMLDivElement>(null);
   const [text, setText] = useState("");
   const [empty, setEmpty] = useState(false);
   const action = useAction();
@@ -75,9 +98,8 @@ function AskDraft({
     }
     setEmpty(false);
     if (await action.run(() => onAsk(step.id, question))) {
-      setText("");
-      // Newest first: the new question is at the top of the answers.
-      if (answersBox.current) answersBox.current.scrollTop = 0;
+      // Only the sent text goes: a line reference inserted meanwhile (appended, see below) stays.
+      setText((now) => (now.startsWith(text) ? now.slice(text.length).trimStart() : now));
       requestAnimationFrame(() => growField(field.current));
     }
   };
@@ -91,9 +113,38 @@ function AskDraft({
   useEffect(() => {
     if (alerting && !open) reveal?.("ask");
   }, [alerting, open, reveal]);
+
+  // Inserted text goes in at the cursor (the field keeps it while unfocused), spaced from its neighbours; while a
+  // question is being sent, after it, so clearing the sent text keeps it.
+  const inserted = useRef<{ text: string } | null>(null);
+  const caret = useRef<{ at: number; value: string } | null>(null);
+  useEffect(() => {
+    if (!insert || inserted.current === insert) return;
+    inserted.current = insert;
+    const element = field.current;
+    const from = action.busy ? text.length : (element?.selectionStart ?? text.length);
+    const before = text.slice(0, from);
+    const after = text.slice(action.busy ? from : (element?.selectionEnd ?? from));
+    const piece = `${before && !/\s$/.test(before) ? " " : ""}${insert.text}${/^\s/.test(after) ? "" : " "}`;
+    caret.current = { at: before.length + piece.length, value: before + piece + after };
+    setText(caret.current.value);
+    setEmpty(false);
+    if (!open) reveal?.("ask");
+    onInserted?.();
+  }, [insert, text, open, reveal, onInserted, action.busy]);
+  useEffect(() => {
+    const element = field.current;
+    // Once the new text is rendered and Ask is open.
+    if (!caret.current || !open || !element || element.value !== caret.current.value) return;
+    element.focus();
+    element.setSelectionRange(caret.current.at, caret.current.at);
+    caret.current = null;
+    growField(element);
+  });
   return (
-    <section aria-labelledby={`${id}-h`}>
-      <h3 id={`${id}-h`} className="m-0 text-[10.5px] font-bold tracking-wide text-muted uppercase">
+    // `data-dock-grow`: in a resized Inspector dock, Ask takes the room; only its conversation gives room back.
+    <section aria-labelledby={`${id}-h`} data-dock-grow className="flex flex-1 flex-col">
+      <h3 id={`${id}-h`} className="m-0 shrink-0 text-[10.5px] font-bold tracking-wide text-muted uppercase">
         {sections ? (
           <button
             type="button"
@@ -108,9 +159,10 @@ function AskDraft({
           <AskCaption subject={subject} count={count} />
         )}
       </h3>
-      <div id={`${id}-b`} hidden={!open}>
+      <div id={`${id}-b`} hidden={!open} className="flex flex-1 flex-col">
+        {answers && <div className="mt-1 flex flex-1 flex-col">{answers}</div>}
         <form
-          className="mt-1 flex items-start gap-2"
+          className="mt-1 flex shrink-0 items-start gap-2"
           onSubmit={(event) => {
             event.preventDefault();
             void send();
@@ -143,7 +195,7 @@ function AskDraft({
           />
           <Tooltip
             tip={busyTip(
-              "Asks the LLM about this step (a). The answer arrives whole, below the field.",
+              "Asks the LLM about this step (a). The answer arrives whole, above the field.",
               action.busy,
             )}
           >
@@ -166,18 +218,6 @@ function AskDraft({
             {notice}
           </p>
         )}
-        {answers && (
-          // Bounded, with its own scroll: Feedback and Comment below stay in view in the dock.
-          <div
-            ref={answersBox}
-            role="region"
-            aria-label="Answers"
-            tabIndex={0}
-            className="mt-2 max-h-[24vh] overflow-y-auto overscroll-contain"
-          >
-            {answers}
-          </div>
-        )}
       </div>
     </section>
   );
@@ -188,7 +228,7 @@ function AskCaption({ subject, count }: { subject: string; count?: number }) {
     <span>
       Ask{" "}
       <span className="text-[12px] font-normal tracking-normal normal-case">
-        about {subject}; answers appear below the field, newest first
+        about {subject}; one conversation per analysis, newest at the bottom
         {count !== undefined &&
           count > 0 &&
           ` · ${count} ${count === 1 ? "question" : "questions"} on this step`}

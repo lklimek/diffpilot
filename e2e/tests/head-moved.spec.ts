@@ -84,7 +84,7 @@ test("head moved: comment refused with pr_head_changed, Start analysis, the supe
   // The PR keeps its agent session over a fresh analysis: the old analysis still takes questions (refused only when the
   // PR's data was explicitly removed, http-api.md Ask) and the question is answered on it.
   await expect(inspector(page).getByRole("alert")).toHaveCount(0);
-  const asked = inspector(page).getByRole("list", { name: "Questions asked about this step" });
+  const asked = inspector(page).getByRole("list", { name: "Ask conversation" });
   await expect(asked).toContainText("Asked by you: Is this still current?");
   await expect(asked).toContainText("Answered on the superseded analysis.", { timeout: 60_000 });
   await checkScreen(page);

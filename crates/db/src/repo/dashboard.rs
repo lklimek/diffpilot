@@ -307,27 +307,41 @@ impl Dashboard<'_> {
         found(saved.rows_affected())
     }
 
-    /// Stores the time zone, creating a defaults row when there is none.
-    pub async fn set_time_zone(
+    /// Stores the browser's time zone unless the user's row already holds one (R6b, first dashboard visit),
+    /// creating a defaults row when there is none. `true` when stored, `false` when a stored zone was kept.
+    pub async fn set_time_zone_if_unset(
         &self,
         tenant_id: &str,
         user_id: &str,
         time_zone: &str,
         now: DateTime<Utc>,
-    ) -> Result<(), DbError> {
+    ) -> Result<bool, DbError> {
+        let mut tx = write_tx(self.pool).await?;
         let saved = sqlx::query(
             "INSERT INTO dashboard_settings (user_id, tenant_id, time_zone, updated_at) VALUES (?, ?, ?, ?)
              ON CONFLICT (user_id) DO UPDATE SET time_zone = excluded.time_zone, updated_at = excluded.updated_at
-             WHERE dashboard_settings.tenant_id = excluded.tenant_id",
+             WHERE dashboard_settings.tenant_id = excluded.tenant_id AND dashboard_settings.time_zone IS NULL",
         )
         .bind(user_id)
         .bind(tenant_id)
         .bind(time_zone)
         .bind(ts(now))
-        .execute(self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(missing_owner)?;
-        found(saved.rows_affected())
+        if saved.rows_affected() > 0 {
+            tx.commit().await?;
+            return Ok(true);
+        }
+        let kept =
+            sqlx::query("SELECT 1 FROM dashboard_settings WHERE tenant_id = ? AND user_id = ?")
+                .bind(tenant_id)
+                .bind(user_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        found(u64::from(kept.is_some()))?;
+        Ok(false)
     }
 
     /// Records the scheduled run of a local date, creating a defaults row when there is none.
@@ -1342,7 +1356,7 @@ mod tests {
     async fn time_zone_and_scheduled_run_create_a_defaults_row_and_survive_saves() {
         let db = db().await;
         let dash = db.dashboard();
-        dash.set_time_zone(T, "u1", "Europe/Warsaw", at(0))
+        dash.set_time_zone_if_unset(T, "u1", "Europe/Warsaw", at(0))
             .await
             .expect("zone");
         let stored = dash.settings(T, "u1").await.expect("read").expect("row");
@@ -1395,6 +1409,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stored_time_zone_is_kept_by_the_first_visit_save() {
+        let db = db().await;
+        let dash = db.dashboard();
+        dash.set_time_zone_if_unset(T, "u1", "Europe/Warsaw", at(0))
+            .await
+            .expect("first zone");
+        dash.set_time_zone_if_unset(T, "u1", "UTC", at(1))
+            .await
+            .expect("a stored zone is no error");
+        let stored = dash.settings(T, "u1").await.expect("read").expect("row");
+        assert_eq!(
+            (stored.settings.time_zone.as_deref(), stored.updated_at),
+            (Some("Europe/Warsaw"), at(0)),
+            "the zone chosen first stays"
+        );
+        dash.save_settings(T, "u1", &DashboardSettings::default(), at(2))
+            .await
+            .expect("Settings clears the zone");
+        dash.set_time_zone_if_unset(T, "u1", "UTC", at(3))
+            .await
+            .expect("zone again");
+        let stored = dash.settings(T, "u1").await.expect("read").expect("row");
+        assert_eq!(stored.settings.time_zone.as_deref(), Some("UTC"));
+    }
+
+    #[tokio::test]
     async fn settings_are_scoped_by_tenant_and_user() {
         let db = db().await;
         let dash = db.dashboard();
@@ -1412,7 +1452,11 @@ mod tests {
             ..DashboardSettings::default()
         };
         assert_err(dash.save_settings("other", "u1", &zone, at(1)).await, false);
-        assert_err(dash.set_time_zone("other", "u1", "UTC", at(1)).await, false);
+        assert_err(
+            dash.set_time_zone_if_unset("other", "u1", "UTC", at(1))
+                .await,
+            false,
+        );
         assert_err(dash.record_scheduled_run("other", "u1", &run).await, false);
         let stored = dash.settings(T, "u1").await.expect("read").expect("row");
         assert_eq!(
@@ -1422,7 +1466,8 @@ mod tests {
         );
         assert_err(dash.save_settings(T, "nobody", &zone, at(1)).await, false);
         assert_err(
-            dash.set_time_zone("missing", "u2", "UTC", at(1)).await,
+            dash.set_time_zone_if_unset("missing", "u2", "UTC", at(1))
+                .await,
             false,
         );
     }
@@ -1435,7 +1480,7 @@ mod tests {
             .execute(&db.pool)
             .await
             .expect("user");
-        dash.set_time_zone(T, "u1", "Europe/Warsaw", at(0))
+        dash.set_time_zone_if_unset(T, "u1", "Europe/Warsaw", at(0))
             .await
             .expect("on, zone");
         let off = DashboardSettings {
@@ -1444,7 +1489,7 @@ mod tests {
             ..DashboardSettings::default()
         };
         dash.save_settings(T, "u2", &off, at(0)).await.expect("off");
-        dash.set_time_zone("other", "u3", "America/New_York", at(0))
+        dash.set_time_zone_if_unset("other", "u3", "America/New_York", at(0))
             .await
             .expect("other tenant");
         dash.save_settings(T, "u4", &DashboardSettings::default(), at(0))

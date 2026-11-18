@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Array_of_AskQuestion",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/AskQuestion"
+  },
+  "$defs": {
+    "AskQuestion": {
+      "description": "A private question and its LLM answer, pinned to the step; returned only to its asker.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Question id.",
+          "$ref": "#/$defs/QuestionId"
+        },
+        "asked_by": {
+          "description": "GitHub login of the asker; absent only in older stored payloads.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mine": {
+          "description": "Always true in current HTTP/SSE responses; absent only in older payloads.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "step_id": {
+          "description": "The step.",
+          "$ref": "#/$defs/StepId"
+        },
+        "text": {
+          "description": "The question.",
+          "type": "string"
+        },
+        "state": {
+          "description": "State.",
+          "$ref": "#/$defs/AskState"
+        },
+        "answer": {
+          "description": "The LLM answer once answered.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AskOutput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure": {
+          "description": "Plain description when failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "description": "When it was asked.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "resumes_at": {
+          "description": "While `pending` and waiting for the LLM usage limit to reset: when its job is queued again; absent\notherwise.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "step_id",
+        "text",
+        "state",
+        "created_at"
+      ]
+    },
+    "QuestionId": {
+      "description": "Identifier of an Ask question.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "StepId": {
+      "description": "Identifier of a step, assigned by the server in step order: `\"<flow>.<n>\"`, e.g. `f2.3`.",
+      "type": "string"
+    },
+    "AskState": {
+      "description": "State of a question.",
+      "oneOf": [
+        {
+          "description": "Queued.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "The agent is working on it.",
+          "type": "string",
+          "const": "answering"
+        },
+        {
+          "description": "Answered.",
+          "type": "string",
+          "const": "answered"
+        },
+        {
+          "description": "Failed.",
+          "type": "string",
+          "const": "failed"
+        }
+      ]
+    },
+    "AskOutput": {
+      "description": "An LLM answer to a question about a step.",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "description": "The answer; a suspected defect is stated as a risk scenario saying what was not checked.",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Lines read that support the answer.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          }
+        }
+      },
+      "required": [
+        "answer",
+        "evidence"
+      ]
+    },
+    "Evidence": {
+      "description": "A line the agent actually read and cites as evidence.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "head for the checked-out code; base only for removed code read from the base commit.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "line": {
+          "description": "1-based line number on that side.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "line"
+      ]
+    },
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    }
+  }
+}

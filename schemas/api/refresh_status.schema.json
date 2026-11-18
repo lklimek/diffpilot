@@ -1,0 +1,413 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RefreshStatus",
+  "description": "One refresh: scan progress, ranking and outcome (`GET /api/v1/dashboard/refreshes/{id}`, SSE `refresh`).",
+  "type": "object",
+  "properties": {
+    "id": {
+      "description": "Id.",
+      "$ref": "#/$defs/RefreshId"
+    },
+    "trigger": {
+      "description": "What started it.",
+      "$ref": "#/$defs/RefreshTrigger"
+    },
+    "state": {
+      "description": "State.",
+      "$ref": "#/$defs/RefreshState"
+    },
+    "judged": {
+      "description": "Items the LLM judged in this refresh.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "reused": {
+      "description": "Items whose stored judgement was reused at no cost (judged inputs unchanged).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "left_provisional": {
+      "description": "Items left provisional by the per-refresh or daily ranking limit.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "steps": {
+      "description": "Scan steps in order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ScanStep"
+      }
+    },
+    "percent": {
+      "description": "Scan progress, 0–100.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "started_at": {
+      "description": "Start time.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "scanned_at": {
+      "description": "When the scan finished and the snapshot was stored; null while scanning or when it failed.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "ranking": {
+      "description": "The LLM ranking of the snapshot; null before the scan finished.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RankingStatus"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "failure": {
+      "description": "Why the scan failed; null unless `failed`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RefreshFailure"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "log": {
+      "description": "Plain log lines of the scan (at most 200, oldest first); no tokens, no query strings.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "trigger",
+    "state",
+    "judged",
+    "reused",
+    "left_provisional",
+    "steps",
+    "percent",
+    "started_at",
+    "log"
+  ],
+  "$defs": {
+    "RefreshId": {
+      "description": "Identifier of a dashboard refresh (one scan and its ranking).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "RefreshTrigger": {
+      "description": "What started a refresh.",
+      "oneOf": [
+        {
+          "description": "The user's Refresh action.",
+          "type": "string",
+          "const": "manual"
+        },
+        {
+          "description": "The daily schedule.",
+          "type": "string",
+          "const": "scheduled"
+        }
+      ]
+    },
+    "RefreshState": {
+      "description": "State of a refresh; transitions in `docs/contracts/http-api.md` \"Refresh states\". At most one refresh per user\nis `scanning` or `ranking`; only `ranking` and `finished` refreshes hold a snapshot.",
+      "oneOf": [
+        {
+          "description": "Reading GitHub and MemCan; no snapshot yet.",
+          "type": "string",
+          "const": "scanning"
+        },
+        {
+          "description": "The snapshot is stored and current; the LLM judges new and changed items.",
+          "type": "string",
+          "const": "ranking"
+        },
+        {
+          "description": "The snapshot is current; the ranking ended with the outcome in `ranking.state`.",
+          "type": "string",
+          "const": "finished"
+        },
+        {
+          "description": "The scan failed before its snapshot was complete; the previous snapshot stays.",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "The scan was cancelled before its snapshot was complete; the previous snapshot stays.",
+          "type": "string",
+          "const": "cancelled"
+        }
+      ]
+    },
+    "ScanStep": {
+      "description": "A step of the scan, shown as a list with progress.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Which step.",
+          "$ref": "#/$defs/ScanStepKey"
+        },
+        "state": {
+          "description": "Its state.",
+          "$ref": "#/$defs/StepState"
+        },
+        "done": {
+          "description": "Units done (e.g. PR details read); null when the step has no count.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "total": {
+          "description": "Units in total; null when not known yet or not counted.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "detail": {
+          "description": "Plain detail, e.g. the item being read or why the step failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "state"
+      ]
+    },
+    "ScanStepKey": {
+      "description": "The scan steps, in order (plan §A.4).",
+      "oneOf": [
+        {
+          "description": "Pull request searches (authored, assigned, review requested).",
+          "type": "string",
+          "const": "search_prs"
+        },
+        {
+          "description": "Issue searches (watched repositories, assigned, mentions).",
+          "type": "string",
+          "const": "issues"
+        },
+        {
+          "description": "Pull request details (CI, reviews, threads, timeline).",
+          "type": "string",
+          "const": "pr_details"
+        },
+        {
+          "description": "Ownership policies, releases, milestones, reach.",
+          "type": "string",
+          "const": "context"
+        },
+        {
+          "description": "Pull request and review history for the charts.",
+          "type": "string",
+          "const": "history"
+        },
+        {
+          "description": "MemCan TODOs.",
+          "type": "string",
+          "const": "todos"
+        },
+        {
+          "description": "LLM ranking of new and changed items.",
+          "type": "string",
+          "const": "ranking"
+        }
+      ]
+    },
+    "StepState": {
+      "description": "State of a scan step.",
+      "oneOf": [
+        {
+          "description": "Not started.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "In progress.",
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "description": "Done.",
+          "type": "string",
+          "const": "done"
+        },
+        {
+          "description": "Failed; `detail` says why.",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "Not run (e.g. TODOs switched off).",
+          "type": "string",
+          "const": "skipped"
+        }
+      ]
+    },
+    "RankingStatus": {
+      "description": "The LLM ranking of a stored snapshot.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "State.",
+          "$ref": "#/$defs/RankingState"
+        },
+        "judged": {
+          "description": "Items judged so far.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "total": {
+          "description": "Items queued for judgement in this refresh.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "resumes_at": {
+          "description": "When a usage-limit pause ends; null unless `paused`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "message": {
+          "description": "Plain text of a failure; null unless `failed` or `interrupted`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "judged",
+        "total"
+      ]
+    },
+    "RankingState": {
+      "description": "State of the LLM ranking (plan §B.3); the last four end it and leave the refresh `finished`.",
+      "oneOf": [
+        {
+          "description": "Queued behind a review analysis that holds the LLM credential.",
+          "type": "string",
+          "const": "waiting_for_analysis"
+        },
+        {
+          "description": "Judging.",
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "description": "Paused by the provider's usage limit; continues by itself at `resumes_at`.",
+          "type": "string",
+          "const": "paused"
+        },
+        {
+          "description": "Failed; provisional scores stay approximate (Retry ranking).",
+          "type": "string",
+          "const": "failed"
+        },
+        {
+          "description": "Stopped by a server restart (Retry ranking).",
+          "type": "string",
+          "const": "interrupted"
+        },
+        {
+          "description": "Cancelled by the user (Retry ranking).",
+          "type": "string",
+          "const": "cancelled"
+        },
+        {
+          "description": "Done, or nothing needed judging.",
+          "type": "string",
+          "const": "finished"
+        }
+      ]
+    },
+    "RefreshFailure": {
+      "description": "Why a refresh failed.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "Cause.",
+          "$ref": "#/$defs/RefreshFailureCode"
+        },
+        "message": {
+          "description": "Plain message for the user.",
+          "type": "string"
+        },
+        "retry_at": {
+          "description": "Earliest time a new refresh can succeed (GitHub rate-limit reset); null when not limited.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ]
+    },
+    "RefreshFailureCode": {
+      "description": "Cause of a failed refresh.",
+      "oneOf": [
+        {
+          "description": "GitHub's rate limit; `retry_at` is its reset.",
+          "type": "string",
+          "const": "github_rate_limited"
+        },
+        {
+          "description": "GitHub failed or answered unexpectedly.",
+          "type": "string",
+          "const": "github_unavailable"
+        },
+        {
+          "description": "The user's GitHub sign-in is no longer usable; sign in again.",
+          "type": "string",
+          "const": "sign_in_required"
+        },
+        {
+          "description": "The refresh took longer than its limit (5 minutes).",
+          "type": "string",
+          "const": "timed_out"
+        },
+        {
+          "description": "A server restart interrupted the scan.",
+          "type": "string",
+          "const": "interrupted"
+        },
+        {
+          "description": "Anything else.",
+          "type": "string",
+          "const": "internal"
+        }
+      ]
+    }
+  }
+}

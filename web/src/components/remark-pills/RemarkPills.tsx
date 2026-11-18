@@ -25,29 +25,30 @@ interface RemarkPillProps {
 }
 
 /**
- * The LLM's rating of a step (or a flow's highest step rating) and the number of LLM remarks, as one LLM-styled
- * pill: two separate facts, never remark counts per severity. Nothing without either: never an all-clear.
+ * The LLM's rating of a step (or a flow's highest step rating) as one LLM-styled pill; the remark count is in its
+ * tooltip. Remarks without a shown rating get a small neutral marker. Nothing without either: never an all-clear.
  */
 export function RemarkPill({ summary, scope, subject, label, withRating = true, onSelect }: RemarkPillProps) {
   if (!summary || (!withRating && summary.remarks === 0)) return null;
   const { rating, rated, remarks, handled } = summary;
-  const look = REMARK_LOOK[withRating ? (rating ?? "none") : "none"];
+  const shown = withRating ? rating : null;
+  const look = REMARK_LOOK[shown ?? "none"];
   const done = remarks > 0 && handled === remarks;
   const ratingText =
-    withRating &&
-    rating &&
-    `${look.label?.split(" ")[0] ?? ""} ${WORD[rating]}${scope === "flow" ? ` ×${rated}` : ""}`;
-  const countText = remarks > 0 ? plural(remarks, "remark") : null;
-  const ratingName = rating
+    shown && `${look.label?.split(" ")[0] ?? ""} ${WORD[shown]}${scope === "flow" ? ` ×${rated}` : ""}`;
+  const where = `${scope === "flow" ? "in" : "on"} ${subject}`;
+  const count = remarks > 0 ? `${plural(remarks, "LLM remark")} ${where}` : null;
+  const name = shown
     ? scope === "flow"
-      ? `LLM rated ${plural(rated, "step")} in ${subject} ${WORD[rating]} (not checked), the highest rating there`
-      : `LLM rated ${subject} ${WORD[rating]} (not checked)`
-    : scope === "flow"
-      ? `LLM rated no step in ${subject}`
-      : `LLM did not rate ${subject}`;
-  const name = withRating
-    ? `${ratingName}${remarks > 0 ? ` · ${plural(remarks, "LLM remark")}` : ""}`
-    : `${plural(remarks, "LLM remark")} in ${subject}`;
+      ? `LLM rated ${plural(rated, "step")} in ${subject} ${WORD[shown]} (not checked), the highest rating there`
+      : `LLM rated ${subject} ${WORD[shown]} (not checked)`
+    : (count ?? "");
+  const unrated =
+    withRating && !rating
+      ? scope === "flow"
+        ? "; the LLM rated no step there"
+        : "; the LLM did not rate it"
+      : "";
   const breakdown =
     scope === "flow"
       ? `Steps by LLM rating: ${summary.ratings.map((r) => `${r.rating ? WORD[r.rating] : "not rated"} ${r.steps}`).join(", ")}${withRating ? "" : " (the flow's rating is its highest step rating)"}. `
@@ -61,7 +62,9 @@ export function RemarkPill({ summary, scope, subject, label, withRating = true, 
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
       {label && <span className="text-[12px] text-muted">{label}</span>}
-      <Tooltip tip={`${breakdown}${action}${done ? ` All ${remarks} have your feedback.` : ""}`}>
+      <Tooltip
+        tip={`${count ? `${count}${unrated}. ` : ""}${breakdown}${action}${done ? ` All ${remarks} have your feedback.` : ""}`}
+      >
         <button
           type="button"
           aria-label={name}
@@ -69,13 +72,11 @@ export function RemarkPill({ summary, scope, subject, label, withRating = true, 
             event.stopPropagation();
             onSelect();
           }}
-          className={`inline-flex min-h-6 cursor-pointer items-center gap-1 rounded border-0 border-l-[3px] bg-llm-bg px-1.5 font-mono text-[11px] font-semibold whitespace-nowrap ${look.bar} ${
-            done ? "text-muted" : look.text
-          }`}
+          className={`inline-flex min-h-6 cursor-pointer items-center gap-1 rounded border-0 bg-llm-bg font-mono text-[11px] font-semibold whitespace-nowrap ${
+            ratingText ? `border-l-[3px] px-1.5 ${look.bar}` : "min-w-6 justify-center"
+          } ${done ? "text-muted" : look.text}`}
         >
-          {ratingText}
-          {ratingText && countText && <span aria-hidden> · </span>}
-          {countText && <span className="font-normal">{countText}</span>}
+          {ratingText || <span aria-hidden className="size-1.5 rounded-full bg-current" />}
         </button>
       </Tooltip>
     </span>

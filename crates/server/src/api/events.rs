@@ -21,7 +21,7 @@ use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
-use crate::auth::{Session, liveness};
+use crate::auth::Session;
 use crate::state::AppState;
 
 /// Interval of the `heartbeat` event, which also keeps proxies from closing an idle stream.
@@ -128,16 +128,12 @@ async fn reader_events(
         .take_until(stopped))
 }
 
-/// Whether the stream's session still passes the checks of a new request; a failed read ends the stream too
-/// (the browser reconnects through the session check).
+/// Whether the stream's session or access token still passes the checks of a new request; a failed read ends the
+/// stream too (the client reconnects through the check).
 async fn session_live(state: &AppState, session: &Session) -> bool {
-    let sessions = state.db.sessions();
-    match sessions
-        .live(session.token_hash(), liveness(Utc::now()))
-        .await
-    {
-        Ok(Some(_)) => true,
-        Ok(None) => {
+    match session.is_live(state).await {
+        Ok(true) => true,
+        Ok(false) => {
             tracing::debug!(user = %session.user_id, "SSE stream closed: its session ended");
             false
         }
@@ -691,6 +687,54 @@ mod tests {
                 .await
                 .expect("sign out")
         );
+        let rest = until_end(events).await;
+        assert!(
+            rest.len() <= 1,
+            "at most the tick already under way: {rest:?}"
+        );
+    }
+
+    /// A stream opened with a personal access token ends at the next heartbeat once the token is revoked.
+    #[tokio::test]
+    async fn token_stream_ends_at_the_next_heartbeat_once_revoked() {
+        use axum::extract::FromRequestParts;
+        let state = test_state().await;
+        let analysis = seed_analysis(&state.db).await.expect("seed");
+        session_cookie(&state, DEFAULT_TENANT).await;
+        let (_, principal) = crate::auth::access_tokens::stored_token(
+            &state.db,
+            "u1",
+            vec![contracts::api::access_tokens::TokenScope::Read],
+            Utc::now() + chrono::TimeDelta::days(1),
+        )
+        .await;
+        let (mut parts, ()) = Request::get("/").body(()).expect("request").into_parts();
+        parts.extensions.insert(principal.clone());
+        let session =
+            <Session as FromRequestParts<AppState>>::from_request_parts(&mut parts, &state)
+                .await
+                .expect("token session");
+        let events = reader_events(state.clone(), session, analysis, Duration::from_millis(50))
+            .await
+            .expect("stream");
+        let mut events = Box::pin(events);
+        assert!(matches!(
+            events.next().await,
+            Some(AnalysisEvent::Analysis { .. })
+        ));
+        assert!(
+            matches!(
+                tokio::time::timeout(WAIT, events.next()).await,
+                Ok(Some(AnalysisEvent::Heartbeat { .. }))
+            ),
+            "a live token keeps its heartbeats"
+        );
+        state
+            .db
+            .access_tokens()
+            .revoke(DEFAULT_TENANT, "u1", &principal.token_id, Utc::now())
+            .await
+            .expect("revoke");
         let rest = until_end(events).await;
         assert!(
             rest.len() <= 1,

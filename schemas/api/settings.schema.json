@@ -1,0 +1,426 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "description": "Response of `GET /api/v1/settings`.",
+  "type": "object",
+  "properties": {
+    "llm_selection": {
+      "description": "Installation-wide model selection; absent on older servers.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LlmSelection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "llm_usage": {
+      "description": "Tenant usage in the server's local calendar; absent on older responses.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UsageWindows"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "llm_status": {
+      "description": "Outcome of the most recent LLM call; null before the first call. No on-demand check.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LlmCallOutcome"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "memcan_status": {
+      "description": "Observed MemCan connection state, without an on-demand probe.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MemcanStatus"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "language": {
+      "description": "Language of LLM texts.",
+      "$ref": "#/$defs/LlmLanguage"
+    },
+    "app_installations": {
+      "description": "GitHub App installations the user can access; null = not checked (GitHub could not be reached or the\nuser's GitHub sign-in is not usable), never a stand-in for \"none installed\".",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/AppInstallation"
+      }
+    },
+    "repos": {
+      "description": "The tenant's known repositories (any pull request opened); each one's settings can be opened.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RepoRef"
+      }
+    }
+  },
+  "required": [
+    "language",
+    "repos"
+  ],
+  "$defs": {
+    "LlmSelection": {
+      "description": "Allowed models and the installation-wide choice for newly submitted jobs.",
+      "type": "object",
+      "properties": {
+        "models": {
+          "description": "Fixed server-supported model ids and labels.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LlmModelOption"
+          }
+        },
+        "efforts": {
+          "description": "Allowed reasoning efforts.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReasoningEffort"
+          }
+        },
+        "current": {
+          "description": "Current choice, or the server default before the first save.",
+          "$ref": "#/$defs/ModelChoice"
+        },
+        "judge_effort": {
+          "description": "Reasoning effort of the dashboard ranking (`judge_work`; default low). Optional on the wire until WP11-JOB\nstores and fills it; absent on older servers.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ask_effort": {
+          "description": "Reasoning effort of Ask jobs (default medium); every other job uses `current`. Optional on the wire;\nabsent on older servers.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReasoningEffort"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "changed_by": {
+          "description": "Login of the last editor of the model, effort, ranking effort or Ask effort; null for the default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "changed_at": {
+          "description": "Time of the last save; null for the default.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "models",
+        "efforts",
+        "current"
+      ]
+    },
+    "LlmModelOption": {
+      "description": "One model available in this deployment.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Provider id.",
+          "type": "string"
+        },
+        "label": {
+          "description": "Plain display name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ]
+    },
+    "ReasoningEffort": {
+      "description": "Reasoning effort of the model.",
+      "oneOf": [
+        {
+          "description": "Low effort.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Medium effort.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "High effort (v1 default for every job kind).",
+          "type": "string",
+          "const": "high"
+        }
+      ]
+    },
+    "ModelChoice": {
+      "description": "Model and reasoning effort (plan §5.2, ADR-002).",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Provider model id, e.g. `gpt-6.1-sol`.",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "description": "Reasoning effort.",
+          "$ref": "#/$defs/ReasoningEffort"
+        }
+      },
+      "required": [
+        "model",
+        "reasoning_effort"
+      ]
+    },
+    "UsageWindows": {
+      "description": "Usage windows in the server's local calendar, scoped to the current tenant.",
+      "type": "object",
+      "properties": {
+        "today": {
+          "description": "From local midnight through now; null without reports.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageTotals"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last_7_days": {
+          "description": "Today and the previous six local calendar days; null without reports.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageTotals"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "UsageTotals": {
+      "description": "Token sums; cached input is included in input, not additional to it.",
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "description": "Input tokens, including cached input.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cached_input_tokens": {
+          "description": "Cached input tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "description": "Output tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reasoning_output_tokens": {
+          "description": "Unknown: the retained job-result contract does not store reasoning tokens separately.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "jobs": {
+          "description": "Finished jobs with a provider usage report, including Ask and all analysis rounds.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "jobs"
+      ]
+    },
+    "LlmCallOutcome": {
+      "description": "Outcome and time of an LLM call.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "When the call ended.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "description": "Whether it worked.",
+          "$ref": "#/$defs/LlmCallStatus"
+        }
+      },
+      "required": [
+        "at",
+        "status"
+      ]
+    },
+    "LlmCallStatus": {
+      "description": "Whether the LLM worked on its most recent call (brief §4.4).",
+      "oneOf": [
+        {
+          "description": "The call succeeded.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "working"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "The call failed.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "not_working"
+            },
+            "message": {
+              "description": "Plain error message.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "message"
+          ]
+        }
+      ]
+    },
+    "MemcanStatus": {
+      "description": "Most recent observed MemCan connectivity; never an on-demand health probe.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "Outcome observed by the server's client.",
+          "$ref": "#/$defs/MemcanState"
+        },
+        "last_success_at": {
+          "description": "Last successful tool call in this server process, retained after a later failure.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "MemcanState": {
+      "description": "What the server knows about MemCan connectivity.",
+      "oneOf": [
+        {
+          "description": "No connection configuration.",
+          "type": "string",
+          "const": "not_configured"
+        },
+        {
+          "description": "Configured, but no completed attempt since this server started.",
+          "type": "string",
+          "const": "not_checked"
+        },
+        {
+          "description": "The most recent attempt reached MemCan.",
+          "type": "string",
+          "const": "reachable"
+        },
+        {
+          "description": "The most recent attempt could not reach MemCan or timed out.",
+          "type": "string",
+          "const": "not_reachable"
+        }
+      ]
+    },
+    "LlmLanguage": {
+      "description": "Language of LLM-written texts.",
+      "oneOf": [
+        {
+          "description": "English (default).",
+          "type": "string",
+          "const": "en"
+        },
+        {
+          "description": "Polish.",
+          "type": "string",
+          "const": "pl"
+        }
+      ]
+    },
+    "AppInstallation": {
+      "description": "A GitHub App installation.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "description": "Account (user or organisation) login.",
+          "type": "string"
+        },
+        "all_repositories": {
+          "description": "Installed on all repositories of the account, or on selected ones.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "account",
+        "all_repositories"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    }
+  }
+}

@@ -138,9 +138,7 @@ test("two readers of a shared analysis keep questions and comment drafts private
     const question = "PRIVATE_READER_A_QUESTION";
     await a.getByRole("textbox", { name: /^Ask the LLM about / }).fill(question);
     await a.getByRole("button", { name: "Ask", exact: true }).click();
-    await expect(
-      a.getByRole("list", { name: "Questions asked about this step" }).getByText(question),
-    ).toBeVisible();
+    await expect(a.getByRole("list", { name: "Ask conversation" }).getByText(question)).toBeVisible();
     await a.getByRole("button", { name: "Comment on line 96" }).click();
     await a
       .getByRole("textbox", { name: /^Comment on src\/rpc\/client\.rs:96/ })

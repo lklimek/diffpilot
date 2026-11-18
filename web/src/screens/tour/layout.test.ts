@@ -43,6 +43,16 @@ describe("Tour layout (brief §4.3 columns)", () => {
     }
   });
 
+  it("remembers the Ask area's height with the layout; a damaged value falls back to the default", () => {
+    expect(DEFAULT_LAYOUT.askHeight).toBeNull();
+    saveLayout({ ...DEFAULT_LAYOUT, askHeight: 420 });
+    expect(loadLayout().askHeight).toBe(420);
+    for (const bad of [10, -5, "big", 1e9]) {
+      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify({ ...DEFAULT_LAYOUT, askHeight: bad }));
+      expect(loadLayout().askHeight).toBeNull();
+    }
+  });
+
   it("lets a column be hidden only while another one stays visible", () => {
     expect(canHide(DEFAULT_LAYOUT, "main")).toBe(true);
     const onlyMain = hideColumn(hideColumn(DEFAULT_LAYOUT, "nav"), "inspector");
