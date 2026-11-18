@@ -96,7 +96,7 @@ not unique.
 | F3 | `todos` | `false` | leave TODO items out (absent = `true`) |
 | F4 | `repo` | `owner/name` | one repository |
 | F5 | `state` | `final`, `provisional`, `unjudged` | one score state |
-| F6 | `updated_since` | RFC 3339 time | items changed at or after it (TODOs: when the dashboard first saw their current values) |
+| F6 | `updated_since` | strict RFC 3339 time (`http-api.md` "Timestamps") | items changed at or after it (TODOs: when the dashboard first saw their current values) |
 | F7 | `limit` | 1–500, default 100 | page size; larger values are clamped |
 | F8 | `cursor` | `next_cursor` of the previous page | next page |
 
