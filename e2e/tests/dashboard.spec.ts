@@ -59,8 +59,6 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   await expect(page).toHaveTitle("smart-review My work: busy", { timeout: 30_000 });
 
   // The scan is stored: every item is provisional ("Not judged yet") until the first judged batch lands.
-  // TODO(WP11-E2E): the banner may skip "0 of 18": a summary refetch started before the ranking began can land after
-  // the ranking's first stream event and overwrite it (web/src/screens/dashboard/queries.ts applyRefreshStatus).
   const banner = page.getByText(/^Ranking with the LLM: \d+ of 18 items judged\.$/);
   // The list opens on PRs: 10 pull requests and the 2 TODOs of the 18 items.
   await expect(workList(page).getByRole("heading", { name: /^Not judged yet.*·\s*12$/ })).toBeVisible({
@@ -161,11 +159,8 @@ test("MemCan down: the refresh finishes, TODO rows are kept and a note says they
   }
 });
 
-// TODO(WP11-E2E): product gap. Plan §G "Failures" marks TODO rows kept from an earlier scan "not refreshed
-// (MemCan unreachable at HH:MM)"; the dashboard says so only in the side panel's scan notes
-// (web/src/components/dashboard/scan-notes/ScanNotes.tsx:22), the rows themselves carry no mark
-// (web/src/components/dashboard/work-item/WorkItemRow.tsx).
-test.fixme("MemCan down: each kept TODO row says it was not refreshed", async ({ page, stack }) => {
+// Plan §G "Failures": TODO rows kept from an earlier scan say "not refreshed (MemCan unreachable at HH:MM)".
+test("MemCan down: each kept TODO row says it was not refreshed", async ({ page, stack }) => {
   await signIn(page);
   await memcan(page, stack).mode({ mode: "unavailable" });
   try {

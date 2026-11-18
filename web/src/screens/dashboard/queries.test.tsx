@@ -12,6 +12,7 @@ import { resetDashboardSettings } from "../../mocks/handlers/dashboard-settings"
 import itemsJson from "../../../../fixtures/dashboard/api/items.json";
 import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
 import {
+  applyRefreshStatus,
   REFRESH_RECONNECT_MS,
   REFRESH_SILENCE_MS,
   SUMMARY_KEY,
@@ -298,5 +299,103 @@ describe("useSaveBrowserTimeZone (R6b)", () => {
     await waitFor(() => expect(result.current.data?.schedule.time_zone).toBe("Europe/Warsaw"));
     expect(puts).toBe(0);
     server.events.removeAllListeners();
+  });
+});
+
+describe("refresh statuses are applied in order (never an older one over a newer)", () => {
+  const summaryWith = (latest: RefreshStatus | null): DashboardSummary =>
+    ({ revision: "r", latest_refresh: latest, snapshot: null }) as DashboardSummary;
+  const RANKING_0: RefreshStatus = {
+    ...SCANNING,
+    state: "ranking",
+    percent: 100,
+    scanned_at: "2026-11-18T09:24:00Z",
+    ranking: { state: "running", judged: 0, total: 18, resumes_at: null, message: null },
+  };
+  const FAILED_RANKING: RefreshStatus = {
+    ...RANKING_0,
+    state: "finished",
+    ranking: { ...RANKING_0.ranking!, state: "failed", judged: 7, message: "The LLM stopped answering" },
+  };
+  const latest = (client: QueryClient) => client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh;
+
+  /** R1 answers with `body` once `release` is called, counting the requests. */
+  function heldSummary() {
+    let answer: (() => void) | null = null;
+    let body: DashboardSummary = summaryWith(SCANNING);
+    const requests = { count: 0 };
+    server.use(
+      http.get("/api/v1/dashboard", async () => {
+        requests.count += 1;
+        const sent = body;
+        await new Promise<void>((resolve) => (answer = resolve));
+        return HttpResponse.json(sent);
+      }),
+    );
+    return {
+      requests,
+      answerWith: (next: DashboardSummary) => (body = next),
+      release: () => answer?.(),
+    };
+  }
+
+  it("a summary read before a stream event lands after it: the event's status stays", async () => {
+    const { client, wrapper: w } = wrapper();
+    client.setQueryData(SUMMARY_KEY, summaryWith({ ...SCANNING, percent: 40 }));
+    const held = heldSummary();
+    held.answerWith(summaryWith({ ...SCANNING, percent: 40 }));
+    renderHook(() => useDashboardSummary(true), { wrapper: w });
+    await act(() => client.invalidateQueries({ queryKey: SUMMARY_KEY, refetchType: "none" }));
+    const reading = client.refetchQueries({ queryKey: SUMMARY_KEY });
+    await waitFor(() => expect(held.requests.count).toBeGreaterThan(0));
+    act(() => applyRefreshStatus(client, { ...SCANNING, percent: 60 }));
+    held.release();
+    await act(() => reading);
+    expect(latest(client)?.percent).toBe(60);
+  });
+
+  it("the server still answering scanning after the first ranking event does not undo the ranking", async () => {
+    const { client, wrapper: w } = wrapper();
+    client.setQueryData(SUMMARY_KEY, summaryWith(SCANNING));
+    const held = heldSummary();
+    renderHook(() => useDashboardSummary(true), { wrapper: w });
+    await waitFor(() => expect(held.requests.count).toBe(1));
+    held.release();
+    await waitFor(() => expect(client.isFetching({ queryKey: SUMMARY_KEY })).toBe(0));
+    // The event moves to ranking and re-reads the summary; that answer still has the scan.
+    held.answerWith(summaryWith({ ...SCANNING, percent: 100 }));
+    act(() => applyRefreshStatus(client, RANKING_0));
+    expect(latest(client)?.ranking?.judged).toBe(0);
+    await waitFor(() => expect(held.requests.count).toBe(2));
+    held.release();
+    await waitFor(() => expect(client.isFetching({ queryKey: SUMMARY_KEY })).toBe(0));
+    expect(latest(client)?.state).toBe("ranking");
+    expect(latest(client)?.ranking?.judged).toBe(0);
+    // A later event and a later answer move on.
+    act(() => applyRefreshStatus(client, { ...RANKING_0, ranking: { ...RANKING_0.ranking!, judged: 3 } }));
+    expect(latest(client)?.ranking?.judged).toBe(3);
+  });
+
+  it("an older stream status after a newer one is ignored", () => {
+    const { client } = wrapper();
+    client.setQueryData(SUMMARY_KEY, summaryWith(RANKING_0));
+    applyRefreshStatus(client, { ...SCANNING, percent: 90 });
+    expect(latest(client)?.state).toBe("ranking");
+  });
+
+  it("Rank again restarts an ended ranking of the same refresh", () => {
+    const { client } = wrapper();
+    client.setQueryData(SUMMARY_KEY, summaryWith(FAILED_RANKING));
+    applyRefreshStatus(client, RANKING_0);
+    expect(latest(client)?.state).toBe("ranking");
+    expect(latest(client)?.ranking?.judged).toBe(0);
+  });
+
+  it("a ranking restarted elsewhere (another tab) is taken from the summary", async () => {
+    const { client, wrapper: w } = wrapper();
+    client.setQueryData(SUMMARY_KEY, summaryWith(FAILED_RANKING));
+    server.use(http.get("/api/v1/dashboard", () => HttpResponse.json(summaryWith(RANKING_0))));
+    renderHook(() => useDashboardSummary(true), { wrapper: w });
+    await waitFor(() => expect(latest(client)?.state).toBe("ranking"));
   });
 });

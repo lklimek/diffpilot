@@ -24,15 +24,49 @@ export const REFRESH_SILENCE_MS = 45_000;
 
 const isLive = (refresh: RefreshStatus) => refresh.state === "scanning" || refresh.state === "ranking";
 
-/** The user's dashboard summary; disabled while signed out. */
-export const useDashboardSummary = (enabled: boolean) =>
-  useQuery({ queryKey: SUMMARY_KEY, queryFn: api.getDashboard, enabled });
+/** Order of a refresh's progress: scan, ranking, end; then scan percent, items judged, log lines. */
+const progress = (status: RefreshStatus) => [
+  status.state === "scanning" ? 0 : status.state === "ranking" ? 1 : 2,
+  status.percent,
+  status.ranking?.judged ?? 0,
+  status.judged + status.reused,
+  status.log.length,
+];
+
+/**
+ * Whether `next` is older than `kept`, a status of the same live refresh: the wire carries no sequence, so the
+ * progress orders them (a read started before a stream event can land after it). After an ended refresh any status
+ * is newer, since Rank again (R4) restarts its ranking.
+ */
+export function isOlderStatus(next: RefreshStatus, kept: RefreshStatus | null | undefined): boolean {
+  if (!kept || next.id !== kept.id || !isLive(kept)) return false;
+  const [a, b] = [progress(next), progress(kept)];
+  const at = a.findIndex((value, i) => value !== b[i]);
+  return at >= 0 && a[at]! < b[at]!;
+}
+
+/** The user's dashboard summary; disabled while signed out. A latest refresh older than the shown one is kept. */
+export function useDashboardSummary(enabled: boolean) {
+  const client = useQueryClient();
+  return useQuery({
+    queryKey: SUMMARY_KEY,
+    queryFn: async () => {
+      const summary = await api.getDashboard();
+      const kept = client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh;
+      return summary.latest_refresh && isOlderStatus(summary.latest_refresh, kept)
+        ? { ...summary, latest_refresh: kept! }
+        : summary;
+    },
+    enabled,
+  });
+}
 
 /**
  * The refresh holding the snapshot when it is not the latest one and its ranking did not finish (a newer scan
  * failed, was cancelled or runs): its ranking state decides the banner and "Rank again".
  */
 export function useSnapshotRefresh(summary: DashboardSummary | undefined) {
+  const client = useQueryClient();
   const snapshot = summary?.snapshot;
   const id =
     snapshot && snapshot.ranked_at === null && summary.latest_refresh?.id !== snapshot.refresh_id
@@ -40,7 +74,11 @@ export function useSnapshotRefresh(summary: DashboardSummary | undefined) {
       : null;
   return useQuery({
     queryKey: refreshKey(id),
-    queryFn: () => api.getDashboardRefresh(id!),
+    queryFn: async () => {
+      const status = await api.getDashboardRefresh(id!);
+      const kept = client.getQueryData<RefreshStatus>(refreshKey(id));
+      return isOlderStatus(status, kept) ? kept! : status;
+    },
     enabled: id !== null,
   });
 }
@@ -99,18 +137,19 @@ const revisionMayChange = (before: RefreshStatus, after: RefreshStatus) =>
   before.ranking?.judged !== after.ranking?.judged;
 
 /**
- * Applies a refresh status from the stream or a mutation to the cached summary and refresh; the summary is read
- * again when the change can move its revision (progress alone does not).
+ * Applies a refresh status from the stream or a mutation to the cached summary and refresh unless it is older than
+ * the cached one; the summary is read again when the change can move its revision (progress alone does not).
  */
 export function applyRefreshStatus(client: QueryClient, status: RefreshStatus): void {
   let reread = false;
   client.setQueryData<DashboardSummary>(SUMMARY_KEY, (summary) => {
     if (!summary || summary.latest_refresh?.id !== status.id) return summary;
+    if (isOlderStatus(status, summary.latest_refresh)) return summary;
     reread = revisionMayChange(summary.latest_refresh, status);
     return { ...summary, latest_refresh: status };
   });
   const cached = client.getQueryData<RefreshStatus>(refreshKey(status.id));
-  if (cached) {
+  if (cached && !isOlderStatus(status, cached)) {
     reread ||= revisionMayChange(cached, status);
     client.setQueryData(refreshKey(status.id), status);
   }

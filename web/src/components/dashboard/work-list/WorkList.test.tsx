@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { WorkItem } from "../../../api/generated/types";
+import type { TodosState, WorkItem } from "../../../api/generated/types";
 import { ITEMS, NOW, PROVISIONAL_ITEMS } from "../test-fixtures";
 import { WorkList, type KindFilter } from "./WorkList";
 
@@ -13,6 +13,7 @@ function List(props: {
   initial?: KindFilter;
   onNavigate?: (href: string) => void;
   onHelp?: () => void;
+  todos?: TodosState;
 }) {
   const [kind, setKind] = useState<KindFilter>(props.initial ?? "pr");
   return (
@@ -25,6 +26,7 @@ function List(props: {
         reviewHref={reviewHref}
         onNavigate={props.onNavigate}
         onHelp={props.onHelp}
+        todos={props.todos}
         now={NOW}
       />
     </>
@@ -231,5 +233,37 @@ describe("WorkList", () => {
     const score = screen.getByRole("button", { name: /^Score 148/ });
     fireEvent.focus(score);
     expect(screen.getByRole("tooltip")).toHaveTextContent("Score 148 = sum of 12 parts");
+  });
+});
+
+describe("WorkList: TODO rows kept while MemCan was unreachable (plan §G Failures)", () => {
+  const row = (key: string) => document.querySelector<HTMLElement>(`li[data-item="${key}"]`)!;
+  const todoKeys = ITEMS.filter((item) => item.kind === "todo").map((item) => item.key);
+  const otherKey = ITEMS.find((item) => item.kind === "pr")!.key;
+
+  it("each kept TODO row says it was not refreshed, with the time MemCan was unreachable", () => {
+    expect(todoKeys.length).toBeGreaterThan(0);
+    render(
+      <List
+        todos={{
+          status: "not_refreshed",
+          read_at: "2026-11-18T08:12:00Z",
+          failed_at: "2026-11-18T09:24:00Z",
+        }}
+      />,
+    );
+    for (const key of todoKeys) {
+      const mark = within(row(key)).getByText(/not refreshed \(MemCan unreachable at \d\d:\d\d\)/);
+      expect(mark).toHaveAccessibleDescription(/MemCan could not be reached/);
+    }
+    expect(row(otherKey)).not.toHaveTextContent(/not refreshed/);
+  });
+
+  it("without the time it still says so; TODOs read in this scan carry no mark", () => {
+    const { unmount } = render(<List todos={{ status: "not_refreshed", read_at: null, failed_at: null }} />);
+    expect(row(todoKeys[0]!)).toHaveTextContent("not refreshed (MemCan unreachable)");
+    unmount();
+    render(<List todos={{ status: "read", read_at: "2026-11-18T09:24:00Z", failed_at: null }} />);
+    expect(row(todoKeys[0]!)).not.toHaveTextContent(/not refreshed/);
   });
 });

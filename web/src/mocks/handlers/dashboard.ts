@@ -123,6 +123,21 @@ const SCENARIOS = {
       items: ITEMS,
     };
   },
+  /** MemCan was unreachable in the latest scan: its TODO rows are kept from a scan 32 min earlier. */
+  "memcan-down": (): Base => {
+    const snapshot = SUMMARY.snapshot!;
+    const read_at = new Date(Date.parse(snapshot.scanned_at) - 32 * 60_000).toISOString();
+    return {
+      summary: {
+        ...SUMMARY,
+        snapshot: {
+          ...snapshot,
+          todos: { status: "not_refreshed", read_at, failed_at: snapshot.scanned_at },
+        },
+      },
+      items: ITEMS,
+    };
+  },
   /** No refresh yet: no snapshot, no items. */
   "first-run": (): Base => ({
     summary: { ...SUMMARY, revision: "r-none", latest_refresh: null, snapshot: null },

@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
-import type { Tier, WorkItem } from "../../../api/generated/types";
+import type { Tier, TodosState, WorkItem } from "../../../api/generated/types";
 import { AlarmRow } from "../alarm-row/AlarmRow";
 import { TIER_RULE, tierName } from "../common/format";
 import type { Navigate } from "../common/navigate";
@@ -26,6 +26,8 @@ interface WorkListProps {
   keysEnabled?: boolean;
   /** The list is an earlier snapshot: its clock time (`08:12`) and what happens next; tints and frames the rows. */
   stale?: { at: string; note: string } | null;
+  /** State of the MemCan TODOs in the snapshot (marks TODO rows MemCan could not refresh). */
+  todos?: TodosState;
   now: Date;
 }
 
@@ -63,6 +65,7 @@ export function WorkList({
   onHelp,
   keysEnabled = true,
   stale,
+  todos,
   now,
 }: WorkListProps) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -79,7 +82,7 @@ export function WorkList({
   const rows = [...alarms, ...tiers.flatMap((group) => group.items), ...notJudged];
   const listed = shown.length + alarms.filter((alarm) => !shows(kind, alarm)).length;
   const count = (k: KindFilter) => items.filter((item) => item.kind !== "todo" && shows(k, item)).length;
-  const todos = items.filter((item) => item.kind === "todo").length;
+  const todoCount = items.filter((item) => item.kind === "todo").length;
 
   const toggle = (key: string) =>
     setExpanded((open) => {
@@ -144,6 +147,7 @@ export function WorkList({
       reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
       onNavigate={onNavigate}
       expanderRef={register(item.key)}
+      todos={todos}
       now={now}
     />
   );
@@ -168,7 +172,7 @@ export function WorkList({
         </h2>
         <span className="text-xs text-muted">
           {listed} of {items.length} items, ranked
-          {todos > 0 ? `; your ${todos} MemCan TODOs are listed with every choice` : ""}
+          {todoCount > 0 ? `; your ${todoCount} MemCan TODOs are listed with every choice` : ""}
         </span>
         <span className="flex-1" />
         <Segmented
