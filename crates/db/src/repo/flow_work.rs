@@ -17,7 +17,8 @@ pub const AUTO_FLOW_RETRIES: u32 = 2;
 /// Last sentence of the stored message of a failed flow that a retry can help.
 pub const RETRY_BY_USER: &str = "Retry this flow.";
 
-/// Shown in place of [`RETRY_BY_USER`] while an automatic retry of the flow is left and background analysis on.
+/// Shown in place of [`RETRY_BY_USER`] while the analysis is live, an automatic retry of the flow is left and
+/// background analysis is on.
 const RETRY_AUTOMATICALLY: &str = "It will be tried again automatically.";
 
 /// What the driver does next for the flows of an analysis ([`FlowWork::next`]).
@@ -211,7 +212,8 @@ impl FlowWork<'_> {
             message: None,
         };
         if let Some(row) = sqlx::query(
-            "SELECT w.requested_at, w.error, a.background_analysis=1 AND w.auto_retries < ? AS retried
+            "SELECT w.requested_at, w.error,
+                    a.state IN ('planning','running','paused') AND a.background_analysis=1 AND w.auto_retries < ? AS retried
              FROM flow_work w JOIN analyses a ON a.id=w.analysis_id WHERE w.analysis_id=? AND w.flow_id=?",
         )
         .bind(AUTO_FLOW_RETRIES)
@@ -651,6 +653,37 @@ mod tests {
                 .is_none(),
             "the retried flow starts with a new first run"
         );
+    }
+
+    #[tokio::test]
+    async fn ended_analysis_promises_no_automatic_flow_retry() {
+        use contracts::api::analyses::AnalysisState;
+        let db = Db::in_memory().await.unwrap();
+        let id = planned(&db, 2).await;
+        let f1 = FlowId("f1".into());
+        let by_user = "The flow analysis failed. Retry this flow.";
+        db.flow_work().fail(id, &f1, by_user).await.unwrap();
+        let failed = AnalysisState::Failed {
+            reason: None,
+            flow: None,
+            message: "The analysis stopped because of a server error. Retry the analysis.".into(),
+        };
+        for ended in [failed, AnalysisState::Cancelled] {
+            db.analyses()
+                .set_state(id, &ended, Utc::now())
+                .await
+                .unwrap();
+            assert_eq!(
+                db.flow_work()
+                    .status(id, &f1)
+                    .await
+                    .unwrap()
+                    .message
+                    .as_deref(),
+                Some(by_user),
+                "nothing runs in an analysis that is {ended:?}"
+            );
+        }
     }
 
     #[tokio::test]

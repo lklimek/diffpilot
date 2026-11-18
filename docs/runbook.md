@@ -343,6 +343,11 @@ driver of an open review ends without admitted flow work (background analysis of
 the remaining flows failed for good) it emits an `analysis parked` info event with the same fields for the run
 so far, without `total_seconds`; an analysis can log it many times before its one `analysis statistics` event.
 
+The error line `could not store the ended analysis state` means a driver stopped on an error and the database
+refused the write of `failed` (full disk, read-only file system): the analysis still reads as planning/running
+but no task works on it, and no new driver is started by itself. After the storage problem is fixed, a flow
+request, switching background analysis on, Pause followed by Resume, or a server restart starts a driver again.
+
 The initial estimate is the first pre-start estimate actually returned to the initiating reader for
 that PR head. This small, bounded process-local observation is not persisted; after restart, eviction,
 or a start without resolve it is absent, never reconstructed as the original prediction. Counts learned
