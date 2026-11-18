@@ -78,6 +78,8 @@ pub struct ProviderCall {
     pub access: AgentAccess,
     /// claudius skills exposed read-only.
     pub skills: Vec<String>,
+    /// The job attempt's phase log, written by the provider too.
+    pub phases: crate::phases::PhaseLog,
 }
 
 /// A finished agent call. Failed archival after the output does not fail the call: the outcome then has

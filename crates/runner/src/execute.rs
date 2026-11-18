@@ -18,6 +18,7 @@ use contracts::job::spec::{JobLimits, JobSpec, LlmCredentialRef};
 use tokio::sync::mpsc;
 
 use crate::git;
+use crate::phases::PhaseLog;
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
 use crate::sessions::SessionStore;
@@ -158,9 +159,18 @@ impl Executor {
         let key = format!("{}-{}", spec.job_id, spec.attempt);
         let job_dir = RemoveOnDrop(self.dirs.work.join(&key));
         let codex_home = RemoveOnDrop(self.dirs.codex_homes.join(&key));
-        let result = self.attempt(&spec, &job_dir.0, &codex_home.0, &sink).await;
+        let phases = PhaseLog::default();
+        let started = tokio::time::Instant::now();
+        let result = self
+            .attempt(&spec, &job_dir.0, &codex_home.0, &sink, &phases)
+            .await;
+        let cleanup = tokio::time::Instant::now();
         drop(job_dir);
         drop(codex_home);
+        phases.since("cleanup", cleanup);
+        phases.since("total", started);
+        tracing::info!(job = %spec.job_id, attempt = spec.attempt, kind = ?spec.kind,
+            phases = %phases.summary(), "job phase timings");
         tracing::info!(job = %spec.job_id, attempt = spec.attempt, outcome = outcome_name(&result.outcome), "job attempt finished");
         result
     }
@@ -171,6 +181,7 @@ impl Executor {
         job_dir: &Path,
         codex_home: &Path,
         sink: &EventSink,
+        phases: &PhaseLog,
     ) -> JobResult {
         // The runtime limit counts from the start of the attempt: a hanging fetch must not hold the lease.
         let deadline = tokio::time::Instant::now()
@@ -182,7 +193,9 @@ impl Executor {
                 "the runner does not hold the LLM credential this job needs",
             );
         }
-        match tokio::time::timeout_at(deadline, self.prepare(spec, job_dir, codex_home)).await {
+        match tokio::time::timeout_at(deadline, self.prepare(spec, job_dir, codex_home, phases))
+            .await
+        {
             Ok(Ok(())) => {}
             Ok(Err((kind, message))) => return failed(spec, kind, message),
             Err(_) => {
@@ -247,6 +260,7 @@ impl Executor {
             },
             access: spec.access.clone(),
             skills: spec.skills.clone(),
+            phases: phases.clone(),
         };
         let (tx, rx) = mpsc::channel(EVENT_BUFFER);
         let run = async {
@@ -269,9 +283,11 @@ impl Executor {
         let ((outcome, session_outcome), ()) = tokio::join!(run, pump(rx, sink, &scrubber));
         let outcome = match outcome {
             Ok(mut done) if done.session_id.is_some() && !sink.secrets.is_empty() => {
-                if let Err(error) =
-                    crate::sessions::SessionStore::scrub_archive(&save_dir, &sink.secrets)
-                {
+                let scrub = tokio::time::Instant::now();
+                let scrubbed =
+                    crate::sessions::SessionStore::scrub_archive(&save_dir, &sink.secrets);
+                phases.since("archive_scrub", scrub);
+                if let Err(error) = scrubbed {
                     tracing::warn!(job = %spec.job_id, %error, "cannot scrub the stored agent session; it is discarded");
                     if let Err(error) = std::fs::remove_dir_all(&save_dir) {
                         tracing::warn!(job = %spec.job_id, %error, "cannot remove an unscrubbed agent session");
@@ -353,8 +369,12 @@ impl Executor {
         spec: &JobSpec,
         job_dir: &Path,
         codex_home: &Path,
+        phases: &PhaseLog,
     ) -> Result<(), (JobFailureKind, &'static str)> {
-        if let Err(error) = prepare_dirs(&[job_dir, codex_home]).await {
+        let dirs = tokio::time::Instant::now();
+        let prepared = prepare_dirs(&[job_dir, codex_home]).await;
+        phases.since("job_dirs", dirs);
+        if let Err(error) = prepared {
             tracing::error!(job = %spec.job_id, %error, "cannot create the job directories; check SR_RUNNER_STATE_DIR and SR_RUNNER_WORK_DIR");
             return Err((
                 JobFailureKind::Internal,
@@ -377,6 +397,7 @@ impl Executor {
             &spec.repo.clone_url,
             &commits,
             &job_dir.join("repo"),
+            phases,
         )
         .await
         {

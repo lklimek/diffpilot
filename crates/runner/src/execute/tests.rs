@@ -747,6 +747,22 @@ mod fake {
             ] {
                 assert!(line.contains(&expected), "{expected}: {line}");
             }
+            let phases = logged
+                .lines()
+                .find(|line| line.contains("job phase timings"))
+                .expect("phase timings");
+            for expected in [
+                "job_dirs=",
+                "mirror=",
+                "objects_copied=",
+                "checkout=",
+                "cleanup=",
+                "total=",
+            ] {
+                assert!(phases.contains(expected), "{expected}: {phases}");
+            }
+            let root_path = root.path().display().to_string();
+            assert!(!phases.contains(&root_path), "no paths: {phases}");
         }
     }
 

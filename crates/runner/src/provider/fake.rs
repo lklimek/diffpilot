@@ -450,6 +450,7 @@ mod tests {
             model: spec.model,
             limits: spec.limits,
             access: spec.access,
+            phases: Default::default(),
             skills: Vec::new(),
         }
     }
@@ -648,6 +649,7 @@ mod file_tests {
             model: crate::test_support::spec(JobKind::AnalyseFlow, root.path()).model,
             limits: Default::default(),
             access: Default::default(),
+            phases: Default::default(),
             skills: vec![],
         };
         let (send, mut receive) = mpsc::channel(32);

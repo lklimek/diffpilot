@@ -162,6 +162,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
                 allow_write: false,
             }),
         },
+        phases: Default::default(),
         skills: Vec::new(),
     };
     let provider = CodexProvider::new(CodexSettings {
@@ -1839,6 +1840,7 @@ async fn agent_plain_git_accepts_the_runner_owned_checkout() {
         &format!("file://{}", crate::test_support::shared_repo().display()),
         &[&commits.head, &commits.base],
         &repo,
+        &crate::phases::PhaseLog::default(),
     )
     .await
     .unwrap();
