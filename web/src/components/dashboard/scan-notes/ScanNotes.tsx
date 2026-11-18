@@ -1,5 +1,7 @@
 import type { ScanNote, TodosState } from "../../../api/generated/types";
 import { clockText } from "../../format/time";
+import { Tooltip } from "../../tooltip/Tooltip";
+import { navigateOnClick, type Navigate } from "../common/navigate";
 import { AsideSection } from "../side-panel/AsideSection";
 
 interface ScanNotesProps {
@@ -7,11 +9,14 @@ interface ScanNotesProps {
   /** Configured repositories and owners the user's GitHub token cannot see. */
   unreachable: string[];
   todos: TodosState;
+  /** In-app href of Settings, where most notes are fixed (refused accounts, unreachable repositories). */
+  settingsHref?: string;
+  onNavigate?: Navigate;
   now: Date;
 }
 
 /** What the scan missed or approximated (side panel; skill "What the scan missed"). */
-export function ScanNotes({ notes, unreachable, todos, now }: ScanNotesProps) {
+export function ScanNotes({ notes, unreachable, todos, settingsHref, onNavigate, now }: ScanNotesProps) {
   const lines = [
     ...unreachable.map(
       (name) =>
@@ -44,6 +49,17 @@ export function ScanNotes({ notes, unreachable, todos, now }: ScanNotesProps) {
             </li>
           ))}
         </ol>
+      )}
+      {lines.length > 0 && settingsHref && (
+        <Tooltip tip="Opens Settings → Dashboard, where accounts, repositories and the owners to list when GitHub search refuses an account are set.">
+          <a
+            href={settingsHref}
+            onClick={navigateOnClick(settingsHref, onNavigate)}
+            className="text-xs text-accent underline"
+          >
+            Open Settings
+          </a>
+        </Tooltip>
       )}
     </AsideSection>
   );

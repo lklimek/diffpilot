@@ -84,7 +84,8 @@ pub(super) async fn scan<T: TokenSource>(
     if !found.unsearchable.is_empty() {
         if settings.enumerate_owners.is_empty() {
             notes.push(note(format!(
-                "GitHub search refuses {}; add owners to enumerate in Settings to include their work",
+                "GitHub search refuses {}. Their work is missing from this list. In Settings → Dashboard, add the \
+                 organisations or users that hold it under \"When GitHub search refuses an account\".",
                 found.unsearchable.join(", ")
             )));
         } else {

@@ -8,3 +8,5 @@ export const REVIEW_START_PATH = "/review";
 
 /** Settings. */
 export const SETTINGS_PATH = "/settings";
+/** The settings guide. */
+export const SETTINGS_HELP_PATH = "/settings/help";

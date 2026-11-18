@@ -3,6 +3,7 @@ import { ShellRoute, StartRoute } from "../screens/shell/ShellRoute";
 import { HomeScreen } from "../screens/home/HomeScreen";
 import { NotFoundScreen } from "../screens/home/NotFoundScreen";
 import { ProgressScreen } from "../screens/progress/ProgressScreen";
+import { SettingsHelpScreen } from "../screens/settings/SettingsHelpScreen";
 import { SettingsScreen } from "../screens/settings/SettingsScreen";
 import { TourScreen } from "../screens/tour/TourScreen";
 
@@ -14,6 +15,7 @@ export const appRoutes: RouteObject[] = [
       { path: "/", element: <StartRoute /> },
       { path: "/review", element: <HomeScreen /> },
       { path: "/settings", element: <SettingsScreen /> },
+      { path: "/settings/help", element: <SettingsHelpScreen /> },
     ],
   },
   { path: "/analyses/:analysisId", element: <TourScreen /> },

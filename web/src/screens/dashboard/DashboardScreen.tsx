@@ -29,7 +29,7 @@ import {
   weeklySeries,
   yesterday,
 } from "./history";
-import { REVIEW_START_PATH } from "../shell/paths";
+import { REVIEW_START_PATH, SETTINGS_PATH } from "../shell/paths";
 import { ShellActions, useShellSlots } from "../shell/ShellRoute";
 import { reviewHref } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
@@ -217,6 +217,8 @@ export function DashboardScreen() {
               notes={snapshot.notes}
               unreachable={snapshot.unreachable}
               todos={snapshot.todos}
+              settingsHref={SETTINGS_PATH}
+              onNavigate={go}
               now={now}
             />
           </SidePanel>

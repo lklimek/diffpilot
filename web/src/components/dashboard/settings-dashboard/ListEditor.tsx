@@ -19,6 +19,10 @@ interface ListEditorProps {
   placeholder?: string;
   /** Extra mark after an entry, e.g. "not visible to your GitHub token". */
   mark?: (item: string) => ReactNode;
+  /** The `?` help next to the name. */
+  help?: ReactNode;
+  /** A short visible hint under the name, also describing the entry field. */
+  hint?: string;
 }
 
 /** A short list of names edited one at a time (logins, owners, bot authors, project names). */
@@ -32,6 +36,8 @@ export function ListEditor({
   error,
   placeholder,
   mark,
+  help,
+  hint,
 }: ListEditorProps) {
   const id = useId();
   const [text, setText] = useState("");
@@ -48,9 +54,17 @@ export function ListEditor({
   };
   return (
     <div className="grid content-start gap-1.5">
-      <span id={`${id}-label`} className="text-sm font-semibold">
-        {label}
+      <span className="flex items-center gap-2">
+        <span id={`${id}-label`} className="text-sm font-semibold">
+          {label}
+        </span>
+        {help}
       </span>
+      {hint && (
+        <p id={`${id}-hint`} className="m-0 text-xs text-muted">
+          {hint}
+        </p>
+      )}
       {items.length > 0 ? (
         <ul aria-labelledby={`${id}-label`} className="m-0 flex list-none flex-wrap gap-1.5 p-0">
           {items.map((item) => (
@@ -83,7 +97,9 @@ export function ListEditor({
           placeholder={placeholder}
           autoComplete="off"
           aria-invalid={message ? true : undefined}
-          aria-describedby={message ? `${id}-error` : undefined}
+          aria-describedby={
+            [hint && `${id}-hint`, message && `${id}-error`].filter(Boolean).join(" ") || undefined
+          }
           className={`${FIELD} w-56`}
           onChange={(e) => {
             setText(e.target.value);

@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Navigate, Outlet, useLocation, useOutletContext } from "react-router";
 import { useMe } from "../../api/queries";
 import type { AppSection } from "../../components/app-shell/AppNav";
-import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_PATH } from "./paths";
+import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_HELP_PATH, SETTINGS_PATH } from "./paths";
 import { ShellLayout } from "./ShellLayout";
 import { DashboardScreen } from "../dashboard/DashboardScreen";
 
@@ -20,6 +20,7 @@ const PAGES: Record<string, { section: AppSection; crumb: string }> = {
   [MY_WORK_PATH]: { section: "my-work", crumb: "My work" },
   [REVIEW_START_PATH]: { section: "review", crumb: "Review a PR" },
   [SETTINGS_PATH]: { section: "settings", crumb: "Settings" },
+  [SETTINGS_HELP_PATH]: { section: "settings", crumb: "Settings guide" },
 };
 
 /** Layout route of `/`, `/review` and `/settings` (plan §F.2): the shell stays while its pages change. */

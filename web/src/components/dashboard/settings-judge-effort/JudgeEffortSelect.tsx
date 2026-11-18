@@ -2,6 +2,7 @@ import { useId } from "react";
 import type { ReasoningEffort } from "../../../api/generated/types";
 import { busyTip } from "../../button/button";
 import { Tooltip } from "../../tooltip/Tooltip";
+import { HelpTip } from "../../settings/HelpTip";
 
 interface JudgeEffortSelectProps {
   /** Current ranking effort; absent = the default, low. */
@@ -20,7 +21,10 @@ export function JudgeEffortSelect({ effort, efforts, busy, saved, error, onChang
   const id = useId();
   return (
     <div className="mt-1 grid gap-2 border-t border-border pt-3">
-      <label htmlFor={id}>Dashboard ranking effort</label>
+      <span className="flex items-center gap-2">
+        <label htmlFor={id}>Dashboard ranking effort</label>
+        <HelpTip topic="judge_effort" />
+      </span>
       <Tooltip
         tip={busyTip(
           "How much reasoning the LLM does when it ranks My work items. Higher effort can take longer.",

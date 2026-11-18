@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { HelpTip } from "../../settings/HelpTip";
 import { ERROR, FIELD } from "./look";
 import type { FieldErrors } from "./validation";
 
@@ -34,20 +35,26 @@ export function ScheduleGroup({ enabled, time, timeZone, errors, onChange }: Sch
   const zones = timeZone === "" || ZONES.includes(timeZone) ? ZONES : [timeZone, ...ZONES];
   return (
     <div className="grid content-start gap-3">
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={enabled}
-          className="size-4"
-          onChange={(e) => onChange({ schedule_enabled: e.target.checked })}
-        />
-        Refresh my dashboard automatically every day
-      </label>
+      <span className="flex items-center gap-2">
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={enabled}
+            className="size-4"
+            onChange={(e) => onChange({ schedule_enabled: e.target.checked })}
+          />
+          Refresh my dashboard automatically every day
+        </label>
+        <HelpTip topic="schedule_enabled" />
+      </span>
       <div className="flex flex-wrap gap-4">
         <div className="grid gap-1">
-          <label htmlFor={`${id}-time`} className="text-sm font-semibold">
-            Time of day
-          </label>
+          <span className="flex items-center gap-2">
+            <label htmlFor={`${id}-time`} className="text-sm font-semibold">
+              Time of day
+            </label>
+            <HelpTip topic="schedule_time" />
+          </span>
           <select
             id={`${id}-time`}
             value={time}
@@ -64,9 +71,12 @@ export function ScheduleGroup({ enabled, time, timeZone, errors, onChange }: Sch
           </select>
         </div>
         <div className="grid gap-1">
-          <label htmlFor={`${id}-zone`} className="text-sm font-semibold">
-            Time zone
-          </label>
+          <span className="flex items-center gap-2">
+            <label htmlFor={`${id}-zone`} className="text-sm font-semibold">
+              Time zone
+            </label>
+            <HelpTip topic="time_zone" />
+          </span>
           <select
             id={`${id}-zone`}
             value={timeZone}

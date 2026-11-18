@@ -19,6 +19,8 @@ import {
   type ListField,
   type SettingsDraft,
 } from "./validation";
+import { HelpTip } from "../../settings/HelpTip";
+import { SEARCH_REFUSED_GROUP } from "../../settings/settingsHelp";
 
 function Group({ legend, children }: { legend: string; children: ReactNode }) {
   return (
@@ -84,6 +86,8 @@ export function DashboardSettingsCard({ view, onSave, onDirtyChange }: Dashboard
         </p>
         <ListEditor
           label="Linked logins"
+          help={<HelpTip topic="linked_logins" />}
+          hint="Other GitHub accounts of yours, such as a bot account that opens pull requests for you."
           addLabel="Add a linked login"
           items={draft.linked_logins}
           empty="None. Add another GitHub login of yours to scan it too."
@@ -102,9 +106,11 @@ export function DashboardSettingsCard({ view, onSave, onDirtyChange }: Dashboard
         />
       </Group>
       <div className="grid items-start gap-3 lg:grid-cols-2">
-        <Group legend="Search fallback">
+        <Group legend={SEARCH_REFUSED_GROUP}>
           <ListEditor
             label="Owners to list"
+            help={<HelpTip topic="enumerate_owners" />}
+            hint="Optional. Organisations or users whose open pull requests and issues are listed directly when GitHub search will not answer for one of your accounts. Example: dashpay"
             addLabel="Add an owner to list"
             items={draft.enumerate_owners}
             empty="None."

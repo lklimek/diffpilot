@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { HelpTip } from "../../settings/HelpTip";
 import { ListEditor } from "./ListEditor";
 import { ERROR, FIELD } from "./look";
 import type { FieldErrors } from "./validation";
@@ -26,9 +27,12 @@ export function RulesGroup({
   return (
     <div className="grid content-start gap-3">
       <div className="grid gap-1">
-        <label htmlFor={`${id}-days`} className="text-sm font-semibold">
-          Look-back days
-        </label>
+        <span className="flex items-center gap-2">
+          <label htmlFor={`${id}-days`} className="text-sm font-semibold">
+            Look-back days
+          </label>
+          <HelpTip topic="lookback_days" />
+        </span>
         <input
           id={`${id}-days`}
           type="number"
@@ -51,9 +55,12 @@ export function RulesGroup({
         )}
       </div>
       <div className="grid gap-1">
-        <label htmlFor={`${id}-label`} className="text-sm font-semibold">
-          &quot;Ready for a human&quot; label
-        </label>
+        <span className="flex items-center gap-2">
+          <label htmlFor={`${id}-label`} className="text-sm font-semibold">
+            &quot;Ready for a human&quot; label
+          </label>
+          <HelpTip topic="ready_label" />
+        </span>
         <input
           id={`${id}-label`}
           value={readyLabel}
@@ -72,8 +79,11 @@ export function RulesGroup({
           </p>
         )}
       </div>
+      {/* TODO(B3-BOTS): becomes Excluded authors plus a Known bots list when the contract lands. */}
       <ListEditor
         label="Bot authors to skip"
+        help={<HelpTip topic="skip_authors" />}
+        hint="Their pull requests and issues are left out of My work unless you or a linked login are a requested reviewer or an assignee; they count as bots there. Only My work uses this list."
         addLabel="Add a bot author to skip"
         items={skipAuthors}
         empty="None: items of every author are ranked."
