@@ -89,7 +89,7 @@ describe("Home (brief §4.1)", () => {
     renderRoute("/");
     await analyze();
     const message = await banner("Analysis found.", "status");
-    expect(message).toHaveTextContent("This PR head is already analysed. Open review.");
+    expect(message).toHaveTextContent("This PR head is already analysed. Resume review.");
     expect(message).not.toHaveTextContent("Your ticks, answers");
   });
 
@@ -98,8 +98,8 @@ describe("Home (brief §4.1)", () => {
     const router = renderRoute("/");
     await analyze();
     const found = await banner("Analysis found.", "status");
-    expect(found).toHaveTextContent("This PR head is already analysed. Open review.");
-    expect(within(found).getByRole("link", { name: "Open review" })).toHaveAttribute(
+    expect(found).toHaveTextContent("This PR head is already analysed. Resume review.");
+    expect(within(found).getByRole("link", { name: "Resume review" })).toHaveAttribute(
       "href",
       `/analyses/${analysis.id}`,
     );

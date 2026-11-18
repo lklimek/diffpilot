@@ -45,7 +45,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
     expect(bar()).not.toHaveAttribute("aria-valuenow");
     expect(bar()).toHaveAttribute("aria-valuetext", "Planning flows");
     expect(buttons()).toEqual(["Cancel analysis"]);
-    expect(screen.queryByRole("link", { name: "Open review" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Resume review" })).toBeNull();
   });
 
   it("running: k of n flows analysed, determinate bar, Cancel analysis", () => {
@@ -56,7 +56,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
     const [filled, empty] = Array.from(bar().children) as HTMLElement[];
     expect([filled!.style.flexGrow, empty!.style.flexGrow]).toEqual(["2", "3"]);
     expect(buttons()).toEqual(["Cancel analysis"]);
-    expect(screen.queryByRole("link", { name: "Open review" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Resume review" })).toBeNull();
   });
 
   it("paused: usage limit with the resume time", () => {
@@ -112,11 +112,11 @@ describe("AnalysisProgress (brief §4.2)", () => {
     expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
   });
 
-  it("finished: n of n flows analysed and Open review", () => {
+  it("finished: n of n flows analysed and Resume review", () => {
     show({ state: "finished", total: 5 });
     expect(screen.getByText("5 of 5 flows analysed")).toBeVisible();
     expect(bar()).toHaveAttribute("aria-valuenow", "5");
-    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
+    expect(screen.getByRole("link", { name: "Resume review" })).toHaveAttribute("href", "/analyses/a1");
     expect(buttons()).toEqual([]);
   });
 
@@ -460,6 +460,6 @@ it("opens the review as soon as context is ready while flows are still running",
   );
   expect(screen.getByText("1 of 5 flows analysed. The review is open.")).toBeVisible();
   expect(screen.queryByText("Between two jobs: the server starts the next one.")).not.toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
+  expect(screen.getByRole("link", { name: "Resume review" })).toHaveAttribute("href", "/analyses/a1");
   expect(screen.getByRole("button", { name: "Cancel analysis" })).toBeVisible();
 });

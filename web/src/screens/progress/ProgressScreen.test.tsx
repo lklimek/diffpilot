@@ -40,17 +40,17 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
     expect(FakeEventSource.latest().url).toBe(`/api/v1/analyses/${ID}/events`);
   });
 
-  it("planning → running k of n → finished with Open review; the PR is in the top bar", async () => {
+  it("planning → running k of n → finished with Resume review; the PR is in the top bar", async () => {
     await showAt({ state: "planning" });
     expect(screen.getByText("Planning flows…")).toBeVisible();
     expect(screen.getByRole("banner")).toHaveTextContent("#482");
-    expect(screen.queryByRole("link", { name: "Open review" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Resume review" })).toBeNull();
     emit({ state: "running", done: 3, total: 5 });
     expect(screen.getByText("3 of 5 flows analysed")).toBeVisible();
-    expect(screen.queryByRole("link", { name: "Open review" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Resume review" })).toBeNull();
     emit({ state: "finished", total: 5 });
     expect(screen.getByText("5 of 5 flows analysed")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", `/analyses/${ID}`);
+    expect(screen.getByRole("link", { name: "Resume review" })).toHaveAttribute("href", `/analyses/${ID}`);
     expect(screen.queryByRole("button", { name: "Cancel analysis" })).toBeNull();
     expectTrustWording(pageText());
   });

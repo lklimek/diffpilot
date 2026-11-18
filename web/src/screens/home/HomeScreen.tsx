@@ -151,14 +151,14 @@ export function HomeScreen() {
                     actions={
                       <Tooltip tip="Opens this analysis; any saved progress is restored.">
                         <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
-                          Open review
+                          Resume review
                         </Link>
                       </Tooltip>
                     }
                   >
                     {outcome.analysis.has_my_state === true
                       ? "This PR head is already analysed. Your ticks, answers and last viewed block are kept."
-                      : "This PR head is already analysed. Open review."}
+                      : "This PR head is already analysed. Resume review."}
                   </Banner>
                 )}
                 {outcome?.kind === "in_progress" && (
@@ -193,7 +193,7 @@ export function HomeScreen() {
                           }
                         >
                           <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
-                            {outcome.analysis.review_ready ? "Open review" : "Show progress"}
+                            {outcome.analysis.review_ready ? "Resume review" : "Show progress"}
                           </Link>
                         </Tooltip>
                       </>

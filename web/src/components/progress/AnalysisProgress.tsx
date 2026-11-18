@@ -34,7 +34,7 @@ interface AnalysisProgressProps {
   /** Whole-run facts; absent on older servers. */
   progress?: RunProgress;
   usage?: UsageTotals | null;
-  /** Where "Open review" leads once planning and PR context are accepted. */
+  /** Where "Resume review" leads once planning and PR context are accepted. */
   reviewHref: string;
   /** A cancel or retry request is running: the actions are disabled. */
   busy: boolean;
@@ -216,7 +216,7 @@ export function AnalysisProgress({
   const live = state.state !== "finished" && state.state !== "cancelled";
   const stage =
     reviewReady && state.state === "running" && !state.stage
-      ? "No flow job is running. Open the review to choose a flow or change background analysis."
+      ? "No flow job is running. Resume the review to choose a flow or change background analysis."
       : stageText(state);
   const started =
     (state.state === "planning" || state.state === "running") && state.stage ? state.stage.started_at : null;
@@ -299,7 +299,7 @@ export function AnalysisProgress({
           {(state.state === "finished" || reviewReady) && (
             <Tooltip tip="Opens the review of this analysis.">
               <a href={reviewHref} className={buttonClass("primary")}>
-                Open review
+                Resume review
               </a>
             </Tooltip>
           )}
