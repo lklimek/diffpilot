@@ -58,7 +58,8 @@ Flow transport is superseded by [ADR-014](ADR-014-flow-file-output.md); the cano
   `.cursor*`, `.github/copilot-instructions.md`; shown as a notice, threat model WP1-T) and
   `related_work_checked` (false when the GitHub App is not installed on the PR repository, ADR-005).
 - Whitespace-only changes stay in the hunks given to the agent, marked as a fact. Moves with deterministically
-  identical text are removed from the agent's hunks and shown as quiet rows. An identical move carries no flow
+  identical text into another file (or a pure rename) are removed from the agent's hunks and shown as quiet rows;
+  a reorder within one file stays in the agent's hunks (brief amendment 2026-11-18). An identical move carries no flow
   reference; its row reads "Body text identical" only and never implies unchanged behaviour.
   For the owner: [deviation] brief §4.3 "call site changed in flow N" is not in v1: there is no deterministic
   producer while the call hierarchy is n/a, and the LLM does not see identical moves.

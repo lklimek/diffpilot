@@ -445,7 +445,7 @@ including when a verified flow becomes available; no extra polling is needed.
 
 #### Deterministic context and replacement lines
 
-The lines response may include `context_only`, changed Rust comment/import line numbers on its returned side. These lines remain in the response and classic diff; the browser may hide them in the main view. A deleted block's optional `replacement` identifies the head range from the same diff hunk. Without it the block is a pure deletion. Example:
+The lines response may include `context_only`, changed Rust comment/import line numbers on its returned side that the deterministic rule covers (brief amendment 2026-11-18: plain comments and imports only). These lines remain in the response and classic diff; the browser may hide them in the main view. A deleted block's optional `replacement` identifies the head range from the same diff hunk. Without it the block is a pure deletion. Example:
 
 ```json
 {"context_only":[10,11],"deleted":[{"after_line":12,"base_start":13,"lines":["old();"],"total_lines":1,"replacement":{"start_line":13,"end_line":13}}]}

@@ -2068,6 +2068,34 @@
   "quiet": {
     "unexplained": [
       {
+        "file": "src/rpc/client.rs",
+        "side": "head",
+        "ranges": [
+          {
+            "start_line": 113,
+            "end_line": 144
+          },
+          {
+            "start_line": 146,
+            "end_line": 152
+          }
+        ]
+      },
+      {
+        "file": "src/rpc/client.rs",
+        "side": "base",
+        "ranges": [
+          {
+            "start_line": 174,
+            "end_line": 205
+          },
+          {
+            "start_line": 207,
+            "end_line": 214
+          }
+        ]
+      },
+      {
         "file": "src/rpc/metrics.rs",
         "side": "head",
         "ranges": [

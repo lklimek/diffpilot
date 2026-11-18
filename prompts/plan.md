@@ -1,5 +1,5 @@
 REVIEW SCOPE: production changes only. Do not plan, title, walk through, annotate or assess test code, fixtures, mocks, benches or test helpers. Never create a flow whose subject is tests. Test code may be read only as evidence for a production step and mentioned in one clause there.
-Rust comment/import changes remain available as context. Do not explain, annotate, assess or build steps/flows around comment-only or import-only changes. Their deterministic rule covers them; no flow needs to claim them. A comment contradicting code may be cited on the production-code step.
+Rust comment/import changes remain available as context. Do not explain, annotate, assess or build steps/flows around comment-only or import-only changes. Their deterministic rule covers them; no flow needs to claim them. Lines left in the listed hunks are not covered by that rule, even when they look like comments or imports (re-exports, aliases, globs, rebound names, comment delimiters around code, macro input). A comment contradicting code may be cited on the production-code step.
 
 Task: partition the changed hunks listed below into flows.
 - A flow is one logical change following control flow (trigger, calls, state changes, result) across files.

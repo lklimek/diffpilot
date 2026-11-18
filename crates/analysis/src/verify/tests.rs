@@ -170,12 +170,12 @@ fn fixture_pr_482_output_is_accepted_and_ordered() {
     assert!(tour.unanalysed.is_empty());
     assert_eq!(
         tour.coverage.unexplained,
-        [file_ranges(
-            "src/rpc/metrics.rs",
-            LineSide::Head,
-            &[(40, 46)]
-        )],
-        "the plan's unassigned hunk h22 is Unexplained"
+        [
+            file_ranges("src/rpc/client.rs", LineSide::Head, &[(112, 152)]),
+            file_ranges("src/rpc/client.rs", LineSide::Base, &[(173, 214)]),
+            file_ranges("src/rpc/metrics.rs", LineSide::Head, &[(40, 46)]),
+        ],
+        "the plan's unassigned hunks h19, h20 and h22 are Unexplained"
     );
     assert_eq!(tour.coverage.double_covered, []);
     let steps: usize = tour.flows.iter().map(|flow| flow.step_ids.len()).sum();
@@ -254,7 +254,7 @@ fn foreign_pr_output_is_rejected() {
     assert_eq!(verdict.repairs[0].output, OutputRef::Plan);
     let unassigned = verdict.repairs[0].issues.iter();
     let unassigned = unassigned.filter(|issue| issue.kind == VerifyIssueKind::LineUnassigned);
-    assert_eq!(unassigned.count(), 19, "{:#?}", verdict.repairs[0]);
+    assert_eq!(unassigned.count(), 17, "{:#?}", verdict.repairs[0]);
     assert_eq!(
         verdict.repairs[1].output,
         OutputRef::PrContext,
@@ -262,7 +262,9 @@ fn foreign_pr_output_is_rejected() {
     );
 
     // Worst case: exactly the plan's hunk ids. The plan fits, but no flow output does.
-    let verdict = run(&foreign(&[11, 12, 13, 14, 15, 16, 18, 21, 22, 23, 24]));
+    let verdict = run(&foreign(&[
+        11, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 23, 24,
+    ]));
     let tour = verdict
         .tour
         .expect("the plan's whole-hunk selections fit any hunk list");
@@ -296,7 +298,7 @@ fn foreign_pr_output_is_rejected() {
         .sum();
     assert_eq!(
         unexplained_lines,
-        11 * 3,
+        13 * 3,
         "every changed line is Unexplained"
     );
 }
@@ -365,6 +367,8 @@ fn failed_flows_become_unexplained_and_quiet_rows_never_above_a_rated_flow() {
         [
             file_ranges("src/config.rs", LineSide::Head, &[(23, 23)]),
             file_ranges("src/config.rs", LineSide::Base, &[(23, 23)]),
+            file_ranges("src/rpc/client.rs", LineSide::Head, &[(112, 152)]),
+            file_ranges("src/rpc/client.rs", LineSide::Base, &[(173, 214)]),
             file_ranges("src/rpc/metrics.rs", LineSide::Head, &[(40, 46)]),
         ],
         "the lines of the failed flow f2 and the unassigned hunk"

@@ -2013,7 +2013,12 @@
           {
             "file": "src/lib.rs",
             "side": "head",
-            "ranges": []
+            "ranges": [
+              {
+                "start_line": 13,
+                "end_line": 13
+              }
+            ]
           },
           {
             "file": "src/rpc/retry.rs",
@@ -2022,6 +2027,16 @@
               {
                 "start_line": 50,
                 "end_line": 50
+              }
+            ]
+          },
+          {
+            "file": "src/lib.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 18,
+                "end_line": 18
               }
             ]
           },
@@ -2255,6 +2270,34 @@
   "quiet": {
     "unexplained": [
       {
+        "file": "src/rpc/client.rs",
+        "side": "head",
+        "ranges": [
+          {
+            "start_line": 113,
+            "end_line": 144
+          },
+          {
+            "start_line": 146,
+            "end_line": 152
+          }
+        ]
+      },
+      {
+        "file": "src/rpc/client.rs",
+        "side": "base",
+        "ranges": [
+          {
+            "start_line": 174,
+            "end_line": 205
+          },
+          {
+            "start_line": 207,
+            "end_line": 214
+          }
+        ]
+      },
+      {
         "file": "src/rpc/metrics.rs",
         "side": "head",
         "ranges": [
@@ -2269,27 +2312,7 @@
         ]
       }
     ],
-    "moves": [
-      {
-        "from": {
-          "file": "src/rpc/client.rs",
-          "side": "base",
-          "range": {
-            "start_line": 173,
-            "end_line": 213
-          }
-        },
-        "to": {
-          "file": "src/rpc/client.rs",
-          "side": "head",
-          "range": {
-            "start_line": 112,
-            "end_line": 152
-          }
-        },
-        "badge": "text_identical"
-      }
-    ],
+    "moves": [],
     "not_analysed": [
       {
         "category": "tests",
@@ -2373,7 +2396,7 @@
       },
       {
         "category": "docs_comments",
-        "file_count": 6,
+        "file_count": 5,
         "items": [
           {
             "renderable": true,
@@ -2435,34 +2458,6 @@
           },
           {
             "renderable": true,
-            "rule_kind": "line_regex",
-            "file": "src/lib.rs",
-            "side": "base",
-            "ranges": [
-              {
-                "start_line": 18,
-                "end_line": 18
-              }
-            ],
-            "badge": "classified_by_line_rule",
-            "rule": "Rust use/mod/extern crate declarations (line regex)"
-          },
-          {
-            "renderable": true,
-            "rule_kind": "line_regex",
-            "file": "src/lib.rs",
-            "side": "head",
-            "ranges": [
-              {
-                "start_line": 13,
-                "end_line": 13
-              }
-            ],
-            "badge": "classified_by_line_rule",
-            "rule": "Rust use/mod/extern crate declarations (line regex)"
-          },
-          {
-            "renderable": true,
             "rule_kind": "lexer",
             "file": "src/rpc/client.rs",
             "side": "base",
@@ -2474,6 +2469,14 @@
               {
                 "start_line": 99,
                 "end_line": 99
+              },
+              {
+                "start_line": 173,
+                "end_line": 173
+              },
+              {
+                "start_line": 206,
+                "end_line": 206
               }
             ],
             "badge": "classified_by_line_rule",
@@ -2488,6 +2491,14 @@
               {
                 "start_line": 89,
                 "end_line": 89
+              },
+              {
+                "start_line": 112,
+                "end_line": 112
+              },
+              {
+                "start_line": 145,
+                "end_line": 145
               }
             ],
             "badge": "classified_by_line_rule",

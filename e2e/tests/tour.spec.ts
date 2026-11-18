@@ -35,7 +35,7 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
   );
   await expect(banner).toContainText("flows reviewed 0 / 5");
   await expect(page.getByRole("main")).toContainText("LLM analysis unless marked otherwise.");
-  await expect(inspector(page)).toContainText("Unexplained: 6 changed lines in 1 file — read these yourself");
+  await expect(inspector(page)).toContainText("Unexplained: 85 changed lines in 3 files — read these yourself");
   await checkScreen(page);
 });
 
@@ -58,7 +58,7 @@ test("flows by importance, then quiet rows with Unexplained first; flow introduc
     "Flow 5: Move of backoff helpers util/backoff.rs → rpc/retry.rs",
   ]);
   expect(entries[6]).toMatch(/^Unexplained/);
-  expect(entries.slice(7).join(" | ")).toMatch(/Moves with identical text.*Tests · 4 files.*Docs & comments/);
+  expect(entries.slice(7).join(" | ")).toMatch(/Tests · 4 files.*Docs & comments/);
 
   await page.keyboard.press("j");
   await expect(heading(page)).toHaveText("1 Send an RPC request with retry");
@@ -77,20 +77,19 @@ test("flows by importance, then quiet rows with Unexplained first; flow introduc
   await checkScreen(page);
 });
 
-test("quiet rows: Unexplained, moves and not analysed sections, deterministic only", async ({ page }) => {
+test("quiet rows: Unexplained and not analysed sections, deterministic only", async ({ page }) => {
   await finishedReview(page);
   const main = page.getByRole("main");
   await navTo(page, /^Unexplained/);
   await expect(main).toContainText("src/rpc/metrics.rs");
-  await checkScreen(page);
-
-  await navTo(page, /^Moves with identical text/);
+  // A function moved within one file is a reorder for the agent, not a quiet move; the fixture plan leaves it out.
   await expect(main).toContainText("src/rpc/client.rs");
+  await expect(nav(page)).not.toContainText("Moves with identical text");
   await checkScreen(page);
 
   for (const [row, content] of [
     [/^Tests · 4 files/, "tests/rpc_retry.rs whole file · rule tests/**"],
-    [/^Docs & comments · 6 files/, "README.md lines 15–20 · rule *.md"],
+    [/^Docs & comments · 5 files/, "README.md lines 15–20 · rule *.md"],
     [/^Mechanical & generated · 1 file/, "Cargo.lock"],
   ] as const) {
     await navTo(page, row);

@@ -140,7 +140,7 @@ forms the Not analysed sections. Test code that only the LLM recognises (for exa
 inside a production file) is shown as its own flow at the end, labelled "LLM-classified tests"; it is never
 hidden, because only deterministic checks may hide material. `refactor_pure` and `rename` are LLM claims: a
 flow so classified is an ordinary flow labelled "LLM-classified refactor".
-The only quiet rows for moves are those whose text is deterministically identical.
+The only quiet rows for moves are those whose text is deterministically identical and that leave their file (amendment 2026-11-18).
 
 **FlowGraph** — structured data, not diagram syntax; the UI renders it. Nodes: id, step number, kind
 `added` / `changed` / `unchanged` (unchanged = context), fragment reference, label. Edges: from, to, branch
@@ -604,3 +604,7 @@ Empty explanatory sections are hidden, without implying safety. Unavailable dete
 Test files, fixtures, mocks, benches and test helpers recognised by deterministic path rules are outside LLM planning, flow analysis and coverage. They appear in Tests once with file and added/removed-line counts and access to the diff. Test code may be read as evidence for a production step and mentioned in one clause; never create a test-subject flow. Inline Rust test modules/functions are not yet delimited by the generic plugin; a Rust syntax plugin is required before excluding these ranges deterministically.
 
 Rust comment-only lines (including block/doc comments) and complete single-line `use`, `mod` and `extern crate` declarations remain available to the agent as context, but require no explanation, annotation, assessment or flow. They are covered by a deterministic rule. Main code views hide them by default with a per-user browser preference and a hidden-line count; the classic diff always retains them. Other languages have no such rule. A contradiction between a comment and production code may be cited on the code's step. This supersedes the earlier test-flow and comment-omission rules above.
+
+### Owner-approved amendment — 2026-11-18: nothing behaviour-changing is hidden
+
+The rule above covers only plain material; when in doubt a line is not covered. Covered (hidden in the main view by default, sent to the LLM as context): `//`, `///`, `//!` lines; block comments whose every spanned line changed on that side; single-line private `use` without `as` or `*`, `mod name;`, `extern crate name;`. Never covered (shown, and in a flow or Unexplained): visibility-qualified declarations (`pub use`, `pub(crate) use`, `pub mod`); `as` aliases; globs; a `use` binding a name that another `use` of either side binds to a different path (`std::sync::Mutex` → `parking_lot::Mutex`); any line inside a macro token tree (`name! { … }`, `macro_rules!` bodies); block-comment delimiters around unchanged code (code switched off or on). Moves with identical text are quiet rows only into another file or as a pure rename; a reorder within one file (renamed or not) stays with the agent and keeps its move fact. Inline Rust `#[cfg(test)]` code in production files stays with the agent until a syntax plugin delimits it.

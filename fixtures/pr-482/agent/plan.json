@@ -106,6 +106,18 @@
   ],
   "unassigned": [
     {
+      "hunk_id": "h19",
+      "head_start": null,
+      "head_end": null,
+      "reason": "Moves RpcClient::build_request within src/rpc/client.rs; the moved text is identical."
+    },
+    {
+      "hunk_id": "h20",
+      "head_start": null,
+      "head_end": null,
+      "reason": "Moves RpcClient::build_request within src/rpc/client.rs; the moved text is identical."
+    },
+    {
       "hunk_id": "h22",
       "head_start": null,
       "head_end": null,

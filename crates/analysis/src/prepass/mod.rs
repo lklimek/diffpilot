@@ -50,7 +50,7 @@ pub struct Prepass {
 pub enum Disposition {
     /// Given to the agent (also when some of its lines are quiet).
     Agent,
-    /// All its lines lie in moves with identical text.
+    /// All its lines lie in quiet moves: identical text into another file or a pure rename.
     IdenticalMove,
     /// Recognised by a path or line rule.
     NotAnalysed(NotAnalysedCategory),
@@ -114,9 +114,11 @@ impl Prepass {
         }
     }
 
-    /// Quiet rows of moves with identical text.
-    pub fn identical_moves(&self) -> Vec<IdenticalMove> {
-        self.moves.identical()
+    /// Quiet rows of moves with identical text, except reorders within one file of `files` (the diff).
+    pub fn identical_moves(&self, files: &[FileDiff]) -> Vec<IdenticalMove> {
+        let mut moves = self.moves.identical();
+        moves.retain(|block| !within_one_file(files, &block.from.file, &block.to.file));
+        moves
     }
 
     /// `files` with only the hunks given to the agent; a hunk the pre-pass does not know stays (only a
@@ -325,10 +327,16 @@ pub fn prepass<'t>(
             if changed.is_empty() && !file.binary {
                 continue;
             }
+            let other_side = match side {
+                LineSide::Base => LineSide::Head,
+                LineSide::Head => LineSide::Base,
+            };
+            let readable = |side| (!file.binary).then(|| text(side, file.path_on(side)?))?;
             let source = FileSource {
                 path,
                 side,
-                text: if file.binary { None } else { text(side, path) },
+                text: readable(side),
+                other_text: readable(other_side),
                 changed_lines: &changed,
             };
             // The pull request's author controls a header it adds: it marks only files that were generated before.
@@ -468,7 +476,10 @@ impl Lines {
                 }
             }
         }
-        for block in moves.moved.iter().filter(|block| block.identical) {
+        let quiet_moves = moves.moved.iter().filter(|block| {
+            block.identical && !within_one_file(files, &block.from.file, &block.to.file)
+        });
+        for block in quiet_moves {
             for range in [&block.from, &block.to] {
                 let mut lines = range.range.start_line..=range.range.end_line;
                 mark(range.side, range.file.as_str(), &mut lines, Quiet::Move);
@@ -642,6 +653,16 @@ fn sections(files: &[FileDiff], classified: &[Classified]) -> Vec<NotAnalysedSec
             })
         })
         .collect()
+}
+
+/// Whether a move from base `from` to head `to` stays inside one changed file (renamed or not): a reorder can change
+/// behaviour, so it is not quiet. A pure rename has no hunks and stays a quiet move.
+fn within_one_file(files: &[FileDiff], from: &str, to: &str) -> bool {
+    files.iter().any(|file| {
+        !file.hunks.is_empty()
+            && file.path_on(LineSide::Base) == Some(from)
+            && file.path_on(LineSide::Head) == Some(to)
+    })
 }
 
 fn changed_lines(file: &FileDiff, side: LineSide) -> Vec<u32> {

@@ -359,7 +359,7 @@ pub fn project(input: &Projection<'_>) -> Tour {
         flows,
         quiet: QuietRows {
             unexplained,
-            moves: prepass.identical_moves(),
+            moves: prepass.identical_moves(input.files),
             not_analysed: prepass.not_analysed_with_binaries(),
         },
         threads,

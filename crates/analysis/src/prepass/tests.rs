@@ -130,9 +130,9 @@ fn prepass_reproduces_fixture_pr_482() {
             &json(&fixture().join("api/default/tour.json"))["quiet"]["not_analysed"]
         )
     );
-    assert_eq!(
-        result.identical_moves(),
-        from_value::<Vec<IdenticalMove>>(&tour["quiet"]["moves"])
+    assert!(
+        result.identical_moves(&files).is_empty(),
+        "the fixture's only identical move stays within src/rpc/client.rs"
     );
     assert_eq!(
         result.counters.counters,
@@ -278,8 +278,8 @@ fn generated_file_never_in_agent_input() {
             "src/gen.rs",
             &[header, "", "pub const A: u32 = 2;"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["pub mod a;"]),
-        text(LineSide::Head, "src/lib.rs", &["pub mod b;"]),
+        text(LineSide::Base, "src/lib.rs", &["mod a;"]),
+        text(LineSide::Head, "src/lib.rs", &["mod b;"]),
     ]
     .into_iter()
     .collect();
@@ -380,8 +380,8 @@ fn agent_files_quiet_lines_and_binaries_split_the_diff() {
             "api/service.pb.go",
             &["package api", "func A() {}"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["pub mod a;"]),
-        text(LineSide::Head, "src/lib.rs", &["pub mod b;"]),
+        text(LineSide::Base, "src/lib.rs", &["mod a;"]),
+        text(LineSide::Head, "src/lib.rs", &["mod b;"]),
     ]
     .into_iter()
     .collect();
@@ -798,7 +798,7 @@ proptest! {
                 None => hit(item.side, &item.file, &mut all.into_iter()),
             }
         }
-        for moved in result.identical_moves() {
+        for moved in result.identical_moves(&files) {
             for end in [&moved.from, &moved.to] {
                 hit(end.side, &end.file, &mut (end.range.start_line..=end.range.end_line));
             }
@@ -875,4 +875,87 @@ fn fixture_and_mock_directories_are_excluded_from_agent_input() {
         assert!(result.agent_files(&files).is_empty(), "{path}");
         assert_eq!(result.not_analysed[0].category, NotAnalysedCategory::Tests);
     }
+}
+
+#[test]
+fn reorder_within_a_file_stays_with_the_agent_cross_file_move_stays_quiet() {
+    let guard = [
+        "    self.ensure_authorised(amount)?;",
+        "    self.ensure_within_limit(amount)?;",
+        "    self.audit.record(\"withdraw\", amount);",
+    ];
+    let rest = [
+        "    self.ledger.debit(self.account, amount)?;",
+        "    self.ledger.flush()?;",
+        "    self.notify_owner(amount)?;",
+        "    self.metrics.inc(\"withdraw\");",
+        "    self.metrics.flush_all();",
+        "    self.log_completion();",
+    ];
+    let open = ["fn withdraw(&mut self, amount: u64) -> Result<(), Error> {"];
+    let close = ["    Ok(())", "}"];
+    let base: Vec<&str> = [&open[..], &guard, &rest, &close].concat();
+    let head: Vec<&str> = [&open[..], &rest, &guard, &close].concat();
+    let mut next_id = 0;
+    let files = vec![file(
+        "src/bank.rs",
+        None,
+        FileStatus::Modified,
+        hunks_between(&base, &head, &mut next_id),
+    )];
+    let texts = Texts::from([
+        text(LineSide::Base, "src/bank.rs", &base),
+        text(LineSide::Head, "src/bank.rs", &head),
+    ]);
+    let result = run(&files, &[], &texts);
+    assert!(
+        result.moves.moved.iter().any(|block| block.identical),
+        "the reorder is detected as an identical move"
+    );
+    assert!(
+        result
+            .hunks
+            .iter()
+            .all(|hunk| hunk.disposition == Disposition::Agent),
+        "{:?}",
+        result.hunks
+    );
+    assert!(result.quiet_lines(&files).is_empty());
+    assert!(result.identical_moves(&files).is_empty(), "no quiet row");
+    assert_eq!(result.agent_files(&files), files);
+
+    let mut next_id = 0;
+    let base_a: Vec<&str> = [&open[..], &guard, &close].concat();
+    let head_a: Vec<&str> = [&open[..], &close].concat();
+    let head_b: Vec<&str> = ["fn checks() {"]
+        .into_iter()
+        .chain(guard)
+        .chain(["}"])
+        .collect();
+    let files = vec![
+        file(
+            "src/a.rs",
+            None,
+            FileStatus::Modified,
+            hunks_between(&base_a, &head_a, &mut next_id),
+        ),
+        file(
+            "src/b.rs",
+            None,
+            FileStatus::Added,
+            hunks_between(&[], &head_b, &mut next_id),
+        ),
+    ];
+    let texts = Texts::from([
+        text(LineSide::Base, "src/a.rs", &base_a),
+        text(LineSide::Head, "src/a.rs", &head_a),
+        text(LineSide::Head, "src/b.rs", &head_b),
+    ]);
+    let result = run(&files, &[], &texts);
+    assert_eq!(
+        result.identical_moves(&files).len(),
+        1,
+        "cross-file: a quiet row"
+    );
+    assert_eq!(result.hunks[0].disposition, Disposition::IdenticalMove);
 }

@@ -84,9 +84,9 @@ pub async fn read(
     let (mirror, files) = pr_diff(state, summary).await?;
     let prepass =
         ensure_rendered(state, summary, (&mirror, &files), query.side, &query.path).await?;
-    let commit = match query.side {
-        LineSide::Head => &summary.pr.head_sha,
-        LineSide::Base => &summary.pr.base_sha,
+    let (commit, other_commit, other_side) = match query.side {
+        LineSide::Head => (&summary.pr.head_sha, &summary.pr.base_sha, LineSide::Base),
+        LineSide::Base => (&summary.pr.base_sha, &summary.pr.head_sha, LineSide::Head),
     };
     let text = read_blob(&mirror, commit, &query.path)
         .await?
@@ -97,27 +97,28 @@ pub async fn read(
         to,
         lines,
     } = line_window(&text, query.from, query.to);
-    let context_only = std::str::from_utf8(&text)
-        .map(|text| {
-            analysis::tech::context_lines(
-                &query.path,
-                text,
-                &changed_lines_within(&files, &query.path, query.side, from, to),
-            )
-        })
-        .unwrap_or_default();
-    drop(text);
-
     let file = files
         .iter()
         .find(|file| file.path_on(query.side) == Some(query.path.as_str()));
+    // The other side tells whether a changed import rebinds a name (`analysis::tech`).
+    let other = match file.and_then(|file| file.path_on(other_side)) {
+        Some(path) => read_blob(&mirror, other_commit, path).await?,
+        None => None,
+    };
     let changed = changed_lines_within(&files, &query.path, query.side, from, to);
+    let context_only = std::str::from_utf8(&text)
+        .map(|text| {
+            let other = other.as_deref().and_then(|o| std::str::from_utf8(o).ok());
+            analysis::tech::context_lines(&query.path, text, other, &changed)
+        })
+        .unwrap_or_default();
     let deleted = match (query.side, file) {
         (LineSide::Head, Some(file)) => {
-            removed_code(&mirror, &summary.pr.base_sha, file, from, to).await?
+            removed_code(&mirror, &summary.pr.base_sha, file, &text, from, to).await?
         }
         _ => Vec::new(),
     };
+    drop((text, other));
     let comments = match file {
         Some(file) => CommentScope::InDiff {
             line_thread_ranges: thread_ranges(file, query.side, total_lines, from, to),
@@ -145,11 +146,12 @@ pub async fn read(
 }
 
 /// Removed code at every deletion marker between head lines `from - 1` and `to`, read from the base file; at
-/// most `RangeQuery::MAX_LINES` removed lines in total.
+/// most `RangeQuery::MAX_LINES` removed lines in total. `head_text` is the head file.
 async fn removed_code(
     mirror: &Path,
     base: &CommitSha,
     file: &FileDiff,
+    head_text: &[u8],
     from: u32,
     to: u32,
 ) -> Result<Vec<DeletedBlock>, LinesError> {
@@ -167,7 +169,10 @@ async fn removed_code(
         .flat_map(|h| h.removed.iter().copied())
         .collect();
     let context = std::str::from_utf8(&base_text)
-        .map(|text| analysis::tech::context_lines(base_path, text, &changed))
+        .map(|text| {
+            let head = std::str::from_utf8(head_text).ok();
+            analysis::tech::context_lines(base_path, text, head, &changed)
+        })
         .unwrap_or_default();
     for block in &mut blocks {
         block.context_only = Some(

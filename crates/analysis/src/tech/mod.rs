@@ -29,6 +29,8 @@ pub struct FileSource<'a> {
     pub side: LineSide,
     /// Text on that side; `None` for binary files.
     pub text: Option<&'a str>,
+    /// Text of the same file on the other side; `None` when absent, binary or unread.
+    pub other_text: Option<&'a str>,
     /// Changed lines on that side: added head lines or removed base lines.
     pub changed_lines: &'a [u32],
 }
@@ -114,7 +116,7 @@ impl TechPlugin for Generic {
             )]);
         }
         let comments = comment_runs(file.path, text, file.changed_lines);
-        let imports = import_runs(file.path, text, file.changed_lines);
+        let imports = import_runs(file.path, text, file.other_text, file.changed_lines);
         Ok([(LINE_COMMENT_RULE, comments), (IMPORT_RULE, imports)]
             .into_iter()
             .filter(|(_, ranges)| !ranges.is_empty())
@@ -373,9 +375,9 @@ pub fn has_generated_header(text: &str) -> bool {
 
 /// Runs of consecutive changed lines whose non-blank lines are all comment-only (at least one); Rust files only.
 fn comment_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
-    let Some(comment) = path
+    let Some(RustLines { comment, .. }) = path
         .ends_with(".rs")
-        .then(|| rust_comment_lines(text))
+        .then(|| rust_lines(text, changed))
         .flatten()
     else {
         return Vec::new();
@@ -394,11 +396,11 @@ fn comment_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
     ranges(&selected)
 }
 
-/// Changed Rust comment/import lines; other languages have no rule.
-pub fn context_lines(path: &str, text: &str, changed: &[u32]) -> Vec<u32> {
+/// Changed Rust comment/import lines; other languages have no rule. `other` is the file's text on the other side.
+pub fn context_lines(path: &str, text: &str, other: Option<&str>, changed: &[u32]) -> Vec<u32> {
     let mut lines: Vec<u32> = comment_runs(path, text, changed)
         .into_iter()
-        .chain(import_runs(path, text, changed))
+        .chain(import_runs(path, text, other, changed))
         .flat_map(|r| r.start_line..=r.end_line)
         .collect();
     lines.sort_unstable();
@@ -414,54 +416,146 @@ pub fn is_test_path(path: &str) -> bool {
         .any(|(rule, category)| *category == NotAnalysedCategory::Tests && glob(rule, path))
 }
 
-fn import_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
+/// Changed plain private imports: a complete single-line `use` without `as` or `*`, `mod name;` or
+/// `extern crate name;`, outside literals, block comments and macro token trees, binding no name that a `use` on
+/// either side (`text`, `other`) binds to another path. Rust files only.
+fn import_runs(path: &str, text: &str, other: Option<&str>, changed: &[u32]) -> Vec<LineRange> {
     // TODO: delimit multiline use groups before treating their lines as import-only context.
     if !path.ends_with(".rs") {
         return Vec::new();
     }
-    let Ok(rule) = regex::Regex::new(
-        r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use\s+[^;]+|mod\s+[A-Za-z_][A-Za-z_0-9]*|extern\s+crate\s+[A-Za-z_][A-Za-z_0-9]*(?:\s+as\s+[A-Za-z_][A-Za-z_0-9]*)?)\s*;\s*$",
+    let (Some(RustLines { opaque, .. }), Ok(plain), Ok(alias), Ok(any_use)) = (
+        rust_lines(text, changed),
+        regex::Regex::new(
+            r"^\s*(?:use\s+([^;*]+)|mod\s+[A-Za-z_][A-Za-z_0-9]*|extern\s+crate\s+[A-Za-z_][A-Za-z_0-9]*)\s*;\s*$",
+        ),
+        regex::Regex::new(r"\bas\b"),
+        regex::Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([^;]+);"),
     ) else {
         return Vec::new();
     };
-    // A raw string containing an apparent import is not an import declaration.
-    let mut offset = 0usize;
-    let mut literals = Vec::new();
-    for token in ra_ap_rustc_lexer::tokenize(text, ra_ap_rustc_lexer::FrontmatterAllowed::Yes) {
-        let end = offset + token.len as usize;
-        if matches!(
-            token.kind,
-            ra_ap_rustc_lexer::TokenKind::Literal { .. }
-                | ra_ap_rustc_lexer::TokenKind::BlockComment { .. }
-        ) {
-            literals.push(offset..end);
+    // Every name any `use` of either side binds, with its paths (a glob binds no known name).
+    let mut bound: Vec<(String, String)> = Vec::new();
+    for found in [Some(text), other]
+        .into_iter()
+        .flatten()
+        .flat_map(|text| any_use.captures_iter(text))
+    {
+        if let Some(tree) = found.get(1) {
+            use_bindings("", &compact_use_tree(tree.as_str()), &mut bound);
         }
-        offset = end;
     }
-    offset = 0;
     let mut selected = Vec::new();
     for (number, line) in (1u32..).zip(text.split_inclusive('\n')) {
-        if changed.binary_search(&number).is_ok()
-            && rule.is_match(line)
-            && !literals
-                .iter()
-                .any(|r| r.start < offset + line.len() && r.end > offset)
-        {
+        let Some(found) = changed
+            .binary_search(&number)
+            .is_ok()
+            .then(|| plain.captures(line))
+            .flatten()
+        else {
+            continue;
+        };
+        let rebinds = found.get(1).is_some_and(|tree| {
+            let mut own = Vec::new();
+            alias.is_match(tree.as_str())
+                || use_bindings("", &compact_use_tree(tree.as_str()), &mut own).is_none()
+                || own.iter().any(|(name, path)| {
+                    bound
+                        .iter()
+                        .any(|(other, other_path)| other == name && other_path != path)
+                })
+        });
+        let opaque = usize::try_from(number - 1)
+            .ok()
+            .and_then(|index| opaque.get(index))
+            .copied()
+            .unwrap_or(true);
+        if !opaque && !rebinds {
             selected.push(number);
         }
-        offset += line.len();
     }
     ranges(&selected)
 }
 
-/// Per line (index = line - 1): every token on the line is a comment or whitespace, and one is a comment. Tokens
-/// come from `rustc_lexer` after the compiler's BOM and shebang stripping, frontmatter allowed. `None` when the
-/// file has an unterminated literal or comment, an unknown token or invalid frontmatter.
-fn rust_comment_lines(text: &str) -> Option<Vec<bool>> {
+/// A `use` tree without whitespace, ` as ` written `@`.
+fn compact_use_tree(tree: &str) -> String {
+    tree.split_whitespace()
+        .map(|word| if word == "as" { "@" } else { word })
+        .collect()
+}
+
+/// Adds the names a compact `use` tree binds, each with its full path; `None` for a glob or an unreadable tree.
+fn use_bindings(prefix: &str, tree: &str, out: &mut Vec<(String, String)>) -> Option<()> {
+    if let Some(inner) = tree.strip_suffix('}') {
+        let (head, list) = inner.split_once('{')?;
+        let prefix = format!("{prefix}{head}");
+        let mut depth = 0usize;
+        let mut item = String::new();
+        for c in list.chars().chain([',']) {
+            match c {
+                ',' if depth == 0 => {
+                    if !item.is_empty() {
+                        use_bindings(&prefix, &item, out)?;
+                    }
+                    item.clear();
+                    continue;
+                }
+                '{' => depth += 1,
+                '}' => depth = depth.checked_sub(1)?,
+                _ => {}
+            }
+            item.push(c);
+        }
+        return Some(());
+    }
+    let (path, alias) = match tree.split_once('@') {
+        Some((path, alias)) => (path, Some(alias)),
+        None => (tree, None),
+    };
+    if path.is_empty() || path.contains(['{', '}', '*', '@']) {
+        return None;
+    }
+    let full = format!("{prefix}{path}");
+    let full = full.strip_suffix("::self").unwrap_or(&full);
+    let name = alias.unwrap_or_else(|| full.rsplit("::").next().unwrap_or(full));
+    if name != "_" {
+        out.push((name.to_owned(), full.to_owned()));
+    }
+    Some(())
+}
+
+/// Per-line facts of a Rust file (index = line - 1).
+struct RustLines {
+    /// Every token is a comment or whitespace and one is a comment; no block comment on the line spans an unchanged
+    /// line (delimiters around unchanged code switch it off or on); not inside a macro token tree.
+    comment: Vec<bool>,
+    /// Touched by a literal, a block comment or a macro token tree: never an import declaration.
+    opaque: Vec<bool>,
+}
+
+/// Tokens come from `rustc_lexer` after the compiler's BOM and shebang stripping, frontmatter allowed. A macro token
+/// tree is the delimited group after `name!` or `macro_rules! name`. `changed` holds the changed lines. `None` when
+/// the file has an unterminated literal or comment, an unknown token or invalid frontmatter.
+fn rust_lines(text: &str, changed: &[u32]) -> Option<RustLines> {
     use ra_ap_rustc_lexer::{FrontmatterAllowed, LiteralKind, TokenKind, strip_shebang, tokenize};
+
+    /// Where the tokens stand towards a macro token tree.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Macro {
+        None,
+        /// An identifier; `true` for `macro_rules`.
+        Name(bool),
+        /// `name!`; `true` after `macro_rules!`.
+        Bang(bool),
+        /// `macro_rules! name`.
+        Rules,
+        /// Inside a tree opened at the line, at the depth.
+        Inside(usize, usize),
+    }
 
     let lines = text.lines().count();
     let (mut comment, mut other) = (vec![false; lines], vec![false; lines]);
+    let (mut opaque, mut in_macro) = (vec![false; lines], vec![false; lines]);
     let body = text.strip_prefix('\u{feff}').unwrap_or(text);
     let shebang = strip_shebang(body).unwrap_or(0);
     if shebang > 0 {
@@ -469,6 +563,12 @@ fn rust_comment_lines(text: &str) -> Option<Vec<bool>> {
     }
     let mut rest = body.get(shebang..)?;
     let mut line = 0usize;
+    let mut state = Macro::None;
+    let mark = |flags: &mut Vec<bool>, from: usize, to: usize| {
+        for flag in flags.iter_mut().take(to + 1).skip(from) {
+            *flag = true;
+        }
+    };
     for token in tokenize(rest, FrontmatterAllowed::Yes) {
         let len = usize::try_from(token.len).ok()?;
         let (lexeme, tail) = (rest.get(..len)?, rest.get(len..)?);
@@ -507,16 +607,61 @@ fn rust_comment_lines(text: &str) -> Option<Vec<bool>> {
         } else {
             line
         };
+        let open = matches!(
+            token.kind,
+            TokenKind::OpenParen | TokenKind::OpenBrace | TokenKind::OpenBracket
+        );
+        let close = matches!(
+            token.kind,
+            TokenKind::CloseParen | TokenKind::CloseBrace | TokenKind::CloseBracket
+        );
+        state = match (state, token.kind) {
+            (
+                _,
+                TokenKind::Whitespace
+                | TokenKind::LineComment { .. }
+                | TokenKind::BlockComment { .. },
+            ) => state,
+            (Macro::Inside(start, depth), _) if open => Macro::Inside(start, depth + 1),
+            (Macro::Inside(start, 1), _) if close => {
+                mark(&mut in_macro, start, touched);
+                Macro::None
+            }
+            (Macro::Inside(start, depth), _) if close => Macro::Inside(start, depth - 1),
+            (Macro::Inside(..), _) => state,
+            (Macro::Bang(true), TokenKind::Ident) => Macro::Rules,
+            (_, TokenKind::Ident) => Macro::Name(lexeme == "macro_rules"),
+            (Macro::Name(rules), TokenKind::Bang) => Macro::Bang(rules),
+            (Macro::Bang(false) | Macro::Rules, _) if open => Macro::Inside(first, 1),
+            _ => Macro::None,
+        };
         let marks = match token.kind {
             TokenKind::Whitespace => continue,
-            TokenKind::LineComment { .. } | TokenKind::BlockComment { .. } => &mut comment,
+            TokenKind::LineComment { .. } => &mut comment,
+            TokenKind::BlockComment { .. } => {
+                mark(&mut opaque, first, touched);
+                let whole = (first..=touched).all(|index| {
+                    u32::try_from(index + 1).is_ok_and(|n| changed.binary_search(&n).is_ok())
+                });
+                if whole { &mut comment } else { &mut other }
+            }
+            TokenKind::Literal { .. } => {
+                mark(&mut opaque, first, touched);
+                &mut other
+            }
             _ => &mut other,
         };
-        for flag in marks.iter_mut().take(touched + 1).skip(first) {
-            *flag = true;
-        }
+        mark(marks, first, touched);
     }
-    Some(comment.iter().zip(&other).map(|(c, o)| *c && !*o).collect())
+    if let Macro::Inside(start, _) = state {
+        mark(&mut in_macro, start, lines);
+    }
+    Some(RustLines {
+        comment: (0..lines)
+            .map(|i| comment[i] && !other[i] && !in_macro[i])
+            .collect(),
+        opaque: (0..lines).map(|i| opaque[i] || in_macro[i]).collect(),
+    })
 }
 
 fn basename(path: &str) -> &str {
@@ -568,6 +713,7 @@ mod tests {
             path,
             side,
             text,
+            other_text: None,
             changed_lines: changed,
         }
     }
@@ -788,9 +934,13 @@ mod tests {
         ];
         let text: String = block.iter().map(|l| format!("{l}\n")).collect();
         assert_eq!(
-            classify("src/a.rs", Some(&text), &[2])[0].0,
-            Some(line(2)),
+            classify("src/a.rs", Some(&text), &[1, 2, 3])[0].0,
+            Some(vec![range(1, 2)]),
             "inside a nested block comment"
+        );
+        assert!(
+            classify("src/a.rs", Some(&text), &[2]).is_empty(),
+            "the comment spans unchanged lines"
         );
         assert!(
             classify("src/a.rs", Some(&text), &[3]).is_empty(),
@@ -851,6 +1001,151 @@ mod tests {
             comment_rule("web/a.ts", &["// a note"]),
             None,
             "no lexer: not confirmed"
+        );
+    }
+
+    /// Line-rule ranges of `lines` (changed: `changed`) with `other` as the other side's text.
+    fn line_rule(lines: &[&str], other: Option<&str>, changed: &[u32]) -> Vec<LineRange> {
+        let text: String = lines.iter().map(|line| format!("{line}\n")).collect();
+        let mut found: Vec<u32> = Generic
+            .classify(&FileSource {
+                other_text: other,
+                ..source("src/a.rs", LineSide::Base, Some(&text), changed)
+            })
+            .expect("classify")
+            .into_iter()
+            .flat_map(|item| item.ranges.unwrap_or_default())
+            .flat_map(|r| r.start_line..=r.end_line)
+            .collect();
+        found.sort_unstable();
+        assert_eq!(
+            context_lines("src/a.rs", &text, other, changed),
+            found,
+            "main view and pre-pass agree"
+        );
+        ranges(&found)
+    }
+
+    #[test]
+    fn block_comment_delimiters_around_unchanged_code_stay_with_the_agent() {
+        let disabled = [
+            "fn transfer() {",
+            "    /*",
+            "    check_authorised()?;",
+            "    */",
+            "    debit()",
+            "}",
+        ];
+        assert_eq!(
+            line_rule(&disabled, None, &[2, 4]),
+            [],
+            "the delimiters switch unchanged code off (head) or on (base)"
+        );
+        let trailing = ["/*", "run();", "*/ // end of disabled code"];
+        assert_eq!(line_rule(&trailing, None, &[1, 3]), []);
+        let added = ["/*", " * A new note.", " */", "fn f() {}"];
+        assert_eq!(
+            line_rule(&added, None, &[1, 2, 3]),
+            [range(1, 3)],
+            "a whole added block comment is still hidden"
+        );
+        assert_eq!(
+            line_rule(&added, None, &[2]),
+            [],
+            "an edit inside a block comment spanning unchanged lines is shown"
+        );
+        assert_eq!(
+            line_rule(&["// a", "/* b */", "fn f() {}"], None, &[1, 2]),
+            [range(1, 2)]
+        );
+    }
+
+    #[test]
+    fn import_rule_hides_only_plain_private_imports() {
+        let plain = [
+            "use std::fmt;",
+            "use crate::a::{X, Y};",
+            "mod m;",
+            "extern crate foo;",
+            "use ::b::c;",
+        ];
+        assert_eq!(line_rule(&plain, None, &[1, 2, 3, 4, 5]), [range(1, 5)]);
+        for line in [
+            "pub use crate::a::X;",
+            "pub(crate) use crate::a::X;",
+            "pub mod m;",
+            "use crate::auth::verify_lenient as verify;",
+            "use crate::a::{X as Y};",
+            "use crate::prelude::*;",
+            "use crate::a::{b::*, c};",
+            "extern crate foo as bar;",
+        ] {
+            assert_eq!(line_rule(&[line], None, &[1]), [], "{line}");
+        }
+    }
+
+    #[test]
+    fn import_rule_shows_a_name_rebound_to_another_path() {
+        let base = "use std::sync::Mutex;\nfn f() {}\n";
+        assert_eq!(
+            line_rule(&["use parking_lot::Mutex;", "fn f() {}"], Some(base), &[1]),
+            [],
+            "the same name now means another item"
+        );
+        let shadowed = [
+            "use std::sync::Mutex;",
+            "mod inner {",
+            "    use parking_lot::Mutex;",
+            "}",
+        ];
+        assert_eq!(line_rule(&shadowed, None, &[3]), []);
+        assert_eq!(
+            line_rule(&["use std::sync::{Arc, Mutex};"], Some(base), &[1]),
+            [range(1, 1)],
+            "same paths: still hidden"
+        );
+        assert_eq!(
+            line_rule(
+                &["use std::fmt;", "use std::sync::Mutex;"],
+                Some(base),
+                &[1, 2]
+            ),
+            [range(1, 2)],
+            "a reordered import is still hidden"
+        );
+    }
+
+    #[test]
+    fn nothing_inside_a_macro_token_tree_is_hidden() {
+        let gate = [
+            "macro_rules! gate {",
+            "    (use deny;) => { false };",
+            "    (use allow;) => { true };",
+            "}",
+            "fn allowed() -> bool {",
+            "    gate! {",
+            "        use allow;",
+            "    }",
+            "}",
+            "use std::fmt;",
+        ];
+        assert_eq!(line_rule(&gate, None, &[7, 10]), [range(10, 10)]);
+        let body = [
+            "macro_rules! imports {",
+            "    () => {",
+            "        use crate::strict::verify;",
+            "        // pick the strict checker",
+            "    };",
+            "}",
+        ];
+        assert_eq!(line_rule(&body, None, &[3, 4]), []);
+        let call = ["let v = json!({", "    // a note", "    \"a\": 1,", "});"];
+        assert_eq!(line_rule(&call, None, &[2]), []);
+        let not_macro = ["while !done {", "    // a note", "}"];
+        assert_eq!(
+            line_rule(&not_macro, None, &[2]),
+            [range(2, 2)],
+            "a negation is no macro"
         );
     }
 
