@@ -64,7 +64,10 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
 
   it("failed before any flow: plain description; Retry asks the server to retry", async () => {
     setScenario("failed-early");
-    await showAt(liveAnalysis().state);
+    renderRoute(`/analyses/${ID}/progress`);
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    // The snapshot's stage data says planning had not finished.
+    act(() => FakeEventSource.latest().emit({ event: "analysis", summary: liveAnalysis() }));
     expect(screen.getByText("The analysis failed before any flow was planned")).toBeVisible();
     expect(screen.getByText("The repository could not be fetched. Retry the analysis.")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));

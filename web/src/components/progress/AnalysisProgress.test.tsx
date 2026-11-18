@@ -2,7 +2,11 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisState } from "../../api/generated/types";
+import type {
+  AnalysisProgress as RunProgress,
+  AnalysisState,
+  RunStageState,
+} from "../../api/generated/types";
 import { AnalysisProgress, SILENT_MS, type ProgressActivity } from "./AnalysisProgress";
 
 function show(state: AnalysisState, busy = false, activity?: ProgressActivity) {
@@ -36,6 +40,16 @@ const startedAgo = (ago: number) => new Date(NOW - ago).toISOString();
 const indicator = () => document.querySelector("[data-activity]");
 
 const bar = () => screen.getByRole("progressbar", { name: "Analysis progress" });
+/** Waiting facts of a run that failed with planning and PR context in these states. */
+const failedAt = (planning: RunStageState, prContext: RunStageState): RunProgress => ({
+  started_at: "2026-11-17T09:00:00Z",
+  planning: { done: planning === "done" ? 1 : 0, total: planning === "done" ? 1 : null, state: planning },
+  pr_context: { done: prContext === "done" ? 1 : 0, total: 1, state: prContext },
+  flows: { done: 0, total: planning === "done" ? 5 : null, state: "pending" },
+  finishing: { done: 0, total: 1, state: "pending" },
+  estimate: null,
+  percent: null,
+});
 const buttons = () => screen.queryAllByRole("button").map((b) => b.textContent);
 
 describe("AnalysisProgress (brief §4.2)", () => {
@@ -102,11 +116,20 @@ describe("AnalysisProgress (brief §4.2)", () => {
   });
 
   it("failed before any flow: plain description and Retry", () => {
-    show({
-      state: "failed",
-      flow: null,
-      message: "The repository could not be fetched. Retry the analysis.",
-    });
+    render(
+      <AnalysisProgress
+        state={{
+          state: "failed",
+          flow: null,
+          message: "The repository could not be fetched. Retry the analysis.",
+        }}
+        progress={failedAt("pending", "pending")}
+        reviewHref="/analyses/a1"
+        busy={false}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />,
+    );
     expect(screen.getByText("The analysis failed before any flow was planned")).toBeVisible();
     expect(screen.getByText("The repository could not be fetched. Retry the analysis.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
@@ -462,4 +485,23 @@ it("opens the review as soon as context is ready while flows are still running",
   expect(screen.queryByText("Between two jobs: the server starts the next one.")).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Resume review" })).toHaveAttribute("href", "/analyses/a1");
   expect(screen.getByRole("button", { name: "Cancel analysis" })).toBeVisible();
+});
+
+it("a failure without a flow after planning never claims it failed before planning", () => {
+  const state: AnalysisState = {
+    state: "failed",
+    flow: null,
+    message: "The repository mirror could not be updated.",
+  };
+  const props = { reviewHref: "/analyses/a1", busy: false, onCancel: () => {}, onRetry: () => {} };
+  const { rerender } = render(
+    <AnalysisProgress state={state} progress={failedAt("done", "done")} {...props} />,
+  );
+  expect(screen.getByText("The analysis failed after its flows were planned")).toBeVisible();
+  expect(document.body).not.toHaveTextContent("before any flow was planned");
+  rerender(<AnalysisProgress state={state} reviewReady {...props} />);
+  expect(screen.getByText("The analysis failed after its flows were planned")).toBeVisible();
+  // Without stage data the page does not guess when it failed.
+  rerender(<AnalysisProgress state={state} {...props} />);
+  expect(screen.getByText("The analysis failed")).toBeVisible();
 });

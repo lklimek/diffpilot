@@ -444,6 +444,8 @@ const SCENARIOS = {
       flow: null,
       message: "The repository could not be fetched. Retry the analysis.",
     },
+    // Planning had not finished: the page may say the analysis failed before any flow was planned.
+    progress: (state) => waitingProgress(null, state),
   },
   finished: { analysis: { state: "finished", total: 5 } },
   "llm-error": {
