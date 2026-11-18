@@ -1070,3 +1070,305 @@ async fn missing_pair_asks_to_sign_in_to_keep_the_refresh_running() {
     );
     assert_eq!(latest_refresh(&world, "u1").await, None);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// A scheduled refresh ranks like a manual one (judge jobs, daily cap): the fake GitHub dashboard world and the
+// production ranker.
+
+mod ranked {
+    use std::net::SocketAddr;
+    use std::path::{Path, PathBuf};
+
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use contracts::api::dashboard::{RankingState, RepositoryRule};
+    use contracts::common::RepoRef;
+    use contracts::job::spec::{CredentialKind, LlmCredentialRef};
+    use db::repo::dashboard::JudgeCounts;
+    use reqwest::header::{ACCEPT, LOCATION};
+    use serde_json::Value;
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+    use crate::dashboard::judge::{DAILY_CAP, JudgeRanker};
+
+    const VERIFIER: &str = "schedule-test-verifier-0123456789-0123456789-0123456789";
+    const CALLBACK: &str = "https://review.example.test/auth/github/callback";
+
+    fn repo_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    async fn spawn_github() -> String {
+        let config = fake_github::Config {
+            fixture_dir: repo_root().join("fixtures/pr-482/github"),
+            app_url: Url::parse("https://review.example.test").expect("url"),
+            user_login: None,
+            user_id: None,
+            app_id: None,
+            app_public_key_file: None,
+            dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
+        };
+        let router = fake_github::router(&config).expect("fake GitHub");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr: SocketAddr = listener.local_addr().expect("addr");
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        format!("http://{addr}")
+    }
+
+    /// The fake's OAuth web flow; returns a token pair the fake accepts.
+    async fn sign_in(base: &str) -> TokenGrant {
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("client");
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes()));
+        let mut authorize = Url::parse(&format!("{base}/login/oauth/authorize")).expect("url");
+        authorize.query_pairs_mut().extend_pairs([
+            ("client_id", "fixture-app-client-id"),
+            ("redirect_uri", CALLBACK),
+            ("state", "s"),
+            ("code_challenge", challenge.as_str()),
+            ("code_challenge_method", "S256"),
+        ]);
+        let response = http.get(authorize).send().await.expect("authorize");
+        let location =
+            Url::parse(response.headers()[LOCATION].to_str().expect("location")).expect("url");
+        let code = location
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .expect("code")
+            .1
+            .into_owned();
+        let body: Value = http
+            .post(format!("{base}/login/oauth/access_token"))
+            .header(ACCEPT, "application/json")
+            .form(&[
+                ("client_id", "fixture-app-client-id"),
+                ("client_secret", "fixture-client-secret"),
+                ("code", &code),
+                ("redirect_uri", CALLBACK),
+                ("code_verifier", VERIFIER),
+            ])
+            .send()
+            .await
+            .expect("token")
+            .json()
+            .await
+            .expect("json");
+        TokenGrant {
+            access_token: SecretString::from(
+                body["access_token"].as_str().expect("access").to_owned(),
+            ),
+            expires_in: body["expires_in"].as_i64().unwrap_or(28_800),
+            refresh_token: SecretString::from(
+                body["refresh_token"].as_str().expect("refresh").to_owned(),
+            ),
+            refresh_token_expires_in: body["refresh_token_expires_in"]
+                .as_i64()
+                .unwrap_or(15_811_200),
+        }
+    }
+
+    fn rule(name: &str, alias: &str) -> RepositoryRule {
+        RepositoryRule {
+            repo: RepoRef {
+                owner: "acme".to_owned(),
+                name: name.to_owned(),
+            },
+            alias: Some(alias.to_owned()),
+            watch_issues: false,
+            ownership_policy: None,
+            branch_patterns: Vec::new(),
+        }
+    }
+
+    /// Alice of the fake dashboard world, signed in once (no session left), schedule on in Warsaw.
+    async fn world() -> AppState {
+        let github = spawn_github().await;
+        let mut config = test_config();
+        config.github.api_url = Url::parse(&github).expect("url");
+        config.github.oauth_url = Url::parse(&github).expect("url");
+        let db = Db::in_memory().await.expect("db");
+        db.llm_credentials()
+            .register(
+                DEFAULT_TENANT,
+                &LlmCredentialRef {
+                    id: crate::pipeline::CREDENTIAL_ID.to_owned(),
+                    kind: CredentialKind::CodexChatgpt,
+                },
+                true,
+                Utc::now(),
+            )
+            .await
+            .expect("credential");
+        let mut state = AppState::with_queue(config, db);
+        state.dashboard = DashboardHub::testing(
+            Clock::starting_at(morning()),
+            Duration::from_secs(3600),
+            Arc::new(JudgeRanker),
+            Duration::ZERO,
+        );
+        db::repo::tenants::testing::allow_login(&state.db, DEFAULT_TENANT, "alice", 4_820_300)
+            .await
+            .expect("allow");
+        state
+            .db
+            .users()
+            .upsert_member(
+                DEFAULT_TENANT,
+                "u1",
+                &GithubProfile {
+                    github_id: 4_820_300,
+                    login: "alice".to_owned(),
+                    name: None,
+                    avatar_url: None,
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("user");
+        let grant = sign_in(&github).await;
+        let lock = lock_user("u1").await;
+        store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, Utc::now())
+            .await
+            .expect("pair");
+        drop(lock);
+        let settings = DashboardSettings {
+            linked_logins: vec!["alice-helper".to_owned()],
+            repositories: vec![
+                rule("platform", "PLAT"),
+                rule("wallet-ui", "WUI"),
+                rule("node-client", "NC"),
+            ],
+            enumerate_owners: vec!["acme".to_owned()],
+            include_todos: false,
+            time_zone: Some(WARSAW.to_owned()),
+            ..DashboardSettings::default()
+        };
+        state
+            .db
+            .dashboard()
+            .save_settings(DEFAULT_TENANT, "u1", &settings, Utc::now())
+            .await
+            .expect("settings");
+        state
+    }
+
+    /// Ticks once and waits until the scheduled refresh's ranking is past its queueing.
+    async fn scheduled_ranking(state: &AppState) -> RefreshRecord {
+        assert_eq!(tick(state.clone()).await.expect("tick"), Tick::Ran);
+        let ranked = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let latest = state
+                    .db
+                    .dashboard()
+                    .latest_refresh(DEFAULT_TENANT, "u1")
+                    .await
+                    .expect("refresh")
+                    .expect("started");
+                if latest
+                    .ranking_state
+                    .is_some_and(|s| s != RankingState::Running)
+                    || latest.counts.left_provisional > 0
+                    || !state
+                        .db
+                        .jobs()
+                        .list_for_refresh(latest.id, &[])
+                        .await
+                        .expect("jobs")
+                        .is_empty()
+                {
+                    return latest;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        ranked.expect("the ranking queued its work")
+    }
+
+    #[tokio::test]
+    async fn scheduled_refresh_queues_judge_jobs() {
+        let state = world().await;
+        let refresh = scheduled_ranking(&state).await;
+        assert_eq!(refresh.trigger, RefreshTrigger::Scheduled);
+        assert!(refresh.has_snapshot, "{refresh:?}");
+        let jobs = state
+            .db
+            .jobs()
+            .list_for_refresh(refresh.id, &[])
+            .await
+            .expect("jobs");
+        assert!(
+            !jobs.is_empty(),
+            "the scheduled refresh's items go to the judge"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_refresh_respects_the_daily_judgement_cap() {
+        let state = world().await;
+        // Earlier today, before the scheduled 06:00: a refresh that used the whole daily cap.
+        let dashboard = state.db.dashboard();
+        let StartOutcome::Started { refresh, .. } = dashboard
+            .start_refresh(
+                DEFAULT_TENANT,
+                "u1",
+                RefreshTrigger::Manual,
+                utc(2026, 11, 18, 4, 0),
+            )
+            .await
+            .expect("earlier")
+        else {
+            panic!("not started");
+        };
+        dashboard
+            .store_snapshot(
+                DEFAULT_TENANT,
+                "u1",
+                refresh.id,
+                &json!({}),
+                utc(2026, 11, 18, 4, 1),
+            )
+            .await
+            .expect("snapshot");
+        let _ = dashboard
+            .finish_ranking(
+                DEFAULT_TENANT,
+                "u1",
+                refresh.id,
+                0,
+                RankingState::Finished,
+                JudgeCounts {
+                    judged: DAILY_CAP,
+                    reused: 0,
+                    left_provisional: 0,
+                },
+                utc(2026, 11, 18, 4, 2),
+            )
+            .await
+            .expect("finish");
+        let scheduled = scheduled_ranking(&state).await;
+        assert_ne!(
+            scheduled.id, refresh.id,
+            "the 06:00 run is not skipped by a 05:01 refresh"
+        );
+        let jobs = state
+            .db
+            .jobs()
+            .list_for_refresh(scheduled.id, &[])
+            .await
+            .expect("jobs");
+        assert!(
+            jobs.is_empty(),
+            "no judgement beyond the daily cap: {jobs:?}"
+        );
+        assert!(
+            scheduled.counts.left_provisional > 0,
+            "the scanned items stay provisional: {scheduled:?}"
+        );
+    }
+}

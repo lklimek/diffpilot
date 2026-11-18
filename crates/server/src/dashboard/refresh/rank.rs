@@ -1,6 +1,6 @@
 //! The ranking seam (plan §B): after a snapshot is stored its refresh is `ranking` and [`Ranker::rank`] runs in
 //! the refresh's task (a cancel or a superseding refresh aborts it); reading items asks [`Ranker::judgements`].
-//! WP11-JUDGE replaces [`NoopRanker`]; until then every item stays unjudged with its named estimates.
+//! Production ranks with `dashboard::judge::JudgeRanker`; [`NoopRanker`] leaves every item unjudged (tests).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -34,6 +34,8 @@ pub struct ItemJudgement {
     pub judgement: Judgement,
     /// LLM text shown with the item.
     pub text: Option<ItemText>,
+    /// Judged with an older ranking prompt or judged-input version (`DashboardSummary.older_prompt_judgements`).
+    pub older_prompt: bool,
 }
 
 /// The LLM ranking of snapshots.
