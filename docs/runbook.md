@@ -25,7 +25,7 @@ ignore the option, and the runner's preflight then refuses to start with exit 78
 disk for images and build cache, plus the codex-homes image. Check: `docker version -f '{{.Server.Version}}'`.
 Memory: the runner's job checkout lives in the RAM-backed `/work` (`SR_RUNNER_WORK_SIZE`, charged to
 `SR_RUNNER_MEM_LIMIT`); a full-history checkout of a large repository (for example `dashpay/platform`) takes about
-1.5 GB of it, so keep the runner limit at least 3 GB above the largest checkout.
+1.5 GB of it; raise `SR_RUNNER_WORK_SIZE` and `SR_RUNNER_MEM_LIMIT` together.
 
 1. Checkout (any user with access to `/srv/smart-review`):
 
