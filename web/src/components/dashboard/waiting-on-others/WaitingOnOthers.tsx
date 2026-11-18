@@ -38,7 +38,7 @@ export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Da
                 <OpenExternal href={item.url} label={openLabel(item)} />
                 <span className="flex-1" />
                 {item.total_tenths === null ? (
-                  <Tooltip tip="Not ranked: left out of your ranking (e.g. no owned change)">
+                  <Tooltip tip="Not ranked: it waits on others, nothing is your move">
                     <span tabIndex={0} className="cursor-help text-xs text-muted">
                       —
                     </span>

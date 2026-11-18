@@ -105,7 +105,12 @@ pub fn build(
     );
     let mut scored = Vec::new();
     let mut sources: HashMap<ItemKey, Source<'_>> = HashMap::new();
-    for pr in &snapshot.pull_requests {
+    // A PR waiting only on others is listed under Waiting on others alone (B10).
+    for pr in snapshot
+        .pull_requests
+        .iter()
+        .filter(|pr| !score::waits_on_others(&rules, &pr.facts))
+    {
         let key = item_key(ItemTarget::PullRequest {
             repo: pr.facts.repo.clone(),
             number: pr.facts.number,
@@ -159,7 +164,7 @@ pub fn build(
             .and_then(|judged| judged.text.clone());
         items.push(work_item(&rules, &look_back, item, source, text, memcan_ui));
     }
-    let awaiting = awaiting(&rules, snapshot, &items);
+    let awaiting = awaiting(&rules, snapshot);
     for left_out in &ranking.excluded {
         tracing::debug!(item = %left_out.id, reason = %left_out.reason, "dashboard item left out");
     }
@@ -584,7 +589,7 @@ fn todo_facts(todo: &StoredTodo) -> Vec<Fact> {
 
 /// The user's ready PRs waiting on others, longest wait first. `waiting_since` is the oldest open request to them;
 /// when the timeline did not show it (older than its last 50 events, or a team request), the PR's creation time.
-fn awaiting(rules: &ScoreRules, snapshot: &Snapshot, items: &[ViewItem]) -> Vec<AwaitingItem> {
+fn awaiting(rules: &ScoreRules, snapshot: &Snapshot) -> Vec<AwaitingItem> {
     let facts: Vec<_> = snapshot
         .pull_requests
         .iter()
@@ -597,14 +602,6 @@ fn awaiting(rules: &ScoreRules, snapshot: &Snapshot, items: &[ViewItem]) -> Vec<
                 .pull_requests
                 .iter()
                 .find(|pr| pr.facts.repo == f.repo && pr.facts.number == f.number)?;
-            let key = item_key(ItemTarget::PullRequest {
-                repo: f.repo.clone(),
-                number: f.number,
-            });
-            let total_tenths = items
-                .iter()
-                .find(|item| Some(&item.item.key) == key.as_ref())
-                .map(|item| item.item.score.total_tenths);
             Some(AwaitingItem {
                 id: rules.display_id(&f.repo, f.number),
                 repo: f.repo.clone(),
@@ -614,7 +611,8 @@ fn awaiting(rules: &ScoreRules, snapshot: &Snapshot, items: &[ViewItem]) -> Vec<
                 waiting_on: f.review_requested_from_others.clone(),
                 waiting_since: waiting_since(f.others_review_requested_at, stored.created_at),
                 tags: ci_tag(stored).into_iter().collect(),
-                total_tenths,
+                // Never ranked (B10).
+                total_tenths: None,
             })
         })
         .collect()

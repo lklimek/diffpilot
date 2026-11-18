@@ -590,7 +590,9 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   switch (OD16). `limit` defaults to 100, at most 500
   (`ItemQuery::DEFAULT_LIMIT`, `MAX_LIMIT`; larger values are clamped); `cursor` is opaque, encodes the revision and
   position, and from an older revision answers 409 `cursor_expired` (the order changes when judgements land). No
-  snapshot yet: an empty page.
+  snapshot yet: an empty page. A pull request of the user that waits only on others (plan §C.2 K15) is not an
+  item: it is listed in `SnapshotMeta.awaiting` only (`AwaitingItem.total_tenths` is null), never ranked, counted
+  or excluded, so no tier filter hands it out as work.
 - **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
   with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
   recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per

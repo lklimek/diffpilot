@@ -510,21 +510,37 @@ pub fn ready_for_others(rules: &ScoreRules, pr: &PrFacts) -> bool {
             || pr.approved_by.iter().any(|l| rules.is_scanned(l)))
 }
 
-/// The user's ready, non-draft PRs (not by an excluded author) with a pending request to others (skill `digest.awaiting_others`), longest
-/// wait first by the oldest open request; an unknown request time sorts last and the caller chooses the
-/// `waiting_since` it shows.
+/// The user's PR waits only on others (B10; skill `digest.awaiting_others` narrowed): ready, not a draft, not by
+/// an excluded author, a pending request to others, and nothing is the user's move: no review pending for a
+/// scanned login, no change request, no comment awaiting the reply, no conflicts, and no merge the user can make
+/// (review decision approved; without a decision, an approval by a human outside the scanned logins). Such a PR is
+/// listed under Waiting on others only: not ranked, not excluded, not judged.
+pub fn waits_on_others(rules: &ScoreRules, pr: &PrFacts) -> bool {
+    let merge_is_ours = match pr.review_decision {
+        Some(decision) => decision == ReviewDecision::Approved,
+        None => pr
+            .approved_by
+            .iter()
+            .any(|l| !rules.is_scanned(l) && !rules.is_bot(l, false)),
+    };
+    pr.author
+        .as_deref()
+        .is_some_and(|a| rules.is_scanned(a) && !rules.is_skipped_author(a))
+        && !pr.is_draft
+        && !pr.review_requested_from_others.is_empty()
+        && ready_for_others(rules, pr)
+        && !pr.review_pending_for_us
+        && pr.changes_requested_by.is_empty()
+        && pr.review_decision != Some(ReviewDecision::ChangesRequested)
+        && !pr.awaiting_our_reply
+        && pr.mergeable != Mergeable::Conflicting
+        && !merge_is_ours
+}
+
+/// The PRs that wait only on others ([`waits_on_others`]), longest wait first by the oldest open request; an
+/// unknown request time sorts last and the caller chooses the `waiting_since` it shows.
 pub fn awaiting_others<'a>(rules: &ScoreRules, prs: &'a [PrFacts]) -> Vec<&'a PrFacts> {
-    let mut rows: Vec<&PrFacts> = prs
-        .iter()
-        .filter(|pr| {
-            pr.author
-                .as_deref()
-                .is_some_and(|a| rules.is_scanned(a) && !rules.is_skipped_author(a))
-                && !pr.is_draft
-                && !pr.review_requested_from_others.is_empty()
-                && ready_for_others(rules, pr)
-        })
-        .collect();
+    let mut rows: Vec<&PrFacts> = prs.iter().filter(|pr| waits_on_others(rules, pr)).collect();
     let id = |pr: &PrFacts| rules.display_id(&pr.repo, pr.number);
     rows.sort_by(|a, b| {
         let wait = |pr: &PrFacts| {
