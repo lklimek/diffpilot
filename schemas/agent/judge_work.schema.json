@@ -12,7 +12,7 @@
             "type": "string"
           },
           "defect": {
-            "description": "The pre-existing problem the item addresses: required when `defect_severity` is asked (0 and 0 when it\naddresses none), else null unless you replace a known value.",
+            "description": "The pre-existing problem the item addresses: required when `defect_severity` is asked (0 and 0 when it\naddresses none), else null.",
             "type": [
               "object",
               "null"
@@ -43,7 +43,7 @@
             "additionalProperties": false
           },
           "parts": {
-            "description": "Every other asked component, plus any known part you replace with stated evidence.",
+            "description": "Every other asked component and nothing else: `known` parts computed from facts are context only.",
             "type": "array",
             "items": {
               "anyOf": [
@@ -315,7 +315,7 @@
             }
           },
           "eligibility": {
-            "description": "Ranked or left out: required when `asks_eligibility` is true, else null unless you change the computed\neligibility.",
+            "description": "Ranked or left out: required when `asks_eligibility` is true, else null.",
             "type": [
               "object",
               "null"

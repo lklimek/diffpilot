@@ -58,7 +58,7 @@ use crate::state::AppState;
 
 /// Version of the judge prompt and output schema (`prompts/judge_work.md`, pinned by its golden); a bump
 /// re-judges every item within the caps.
-pub const JUDGE_PROMPT_VERSION: u32 = 3;
+pub const JUDGE_PROMPT_VERSION: u32 = 4;
 /// Items sent to the judge per refresh at most, across its attempts and retries (plan §B.4).
 pub const REFRESH_CAP: u32 = 48;
 /// Items sent to the judge per user and local day at most, retries included (plan §B.4).

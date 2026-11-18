@@ -326,12 +326,11 @@ pub struct ItemAnswer {
     /// The item's `key`, exactly as in the input.
     pub key: String,
     /// The pre-existing problem the item addresses: required when `defect_severity` is asked (0 and 0 when it
-    /// addresses none), else null unless you replace a known value.
+    /// addresses none), else null.
     pub defect: Option<DefectAnswer>,
-    /// Every other asked component, plus any known part you replace with stated evidence.
+    /// Every other asked component and nothing else: `known` parts computed from facts are context only.
     pub parts: Vec<PartAnswer>,
-    /// Ranked or left out: required when `asks_eligibility` is true, else null unless you change the computed
-    /// eligibility.
+    /// Ranked or left out: required when `asks_eligibility` is true, else null.
     pub eligibility: Option<EligibilityAnswer>,
     /// Keys from the item's `suggested_merges` that this item covers; usually empty.
     pub also_keys: Vec<String>,
