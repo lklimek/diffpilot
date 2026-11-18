@@ -1,9 +1,9 @@
 //! The stored judgement body (`dashboard_judgements.body`): a validated answer, and what the scorer and the item's
 //! LLM text read from it.
 
-use chrono::{DateTime, Utc};
 use contracts::agent::judge_work::{JudgeItem, ValidAnswer};
 use contracts::api::dashboard::{ItemKey, ItemText, PartStatus, ScoreComponent};
+use contracts::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::dashboard::score::{EligibilityJudgement, Freshness, JudgedPart, Judgement};
@@ -85,7 +85,7 @@ impl Body {
     }
 
     /// What the scorer merges into the item.
-    pub fn judgement(&self, judged_at: DateTime<Utc>, freshness: Freshness) -> Judgement {
+    pub fn judgement(&self, judged_at: Timestamp, freshness: Freshness) -> Judgement {
         Judgement {
             parts: self
                 .parts
@@ -108,7 +108,7 @@ impl Body {
     }
 
     /// The item's LLM text.
-    pub fn text(&self, judged_at: DateTime<Utc>, freshness: Freshness) -> ItemText {
+    pub fn text(&self, judged_at: Timestamp, freshness: Freshness) -> ItemText {
         ItemText {
             why: self.why.clone(),
             next: self.next.clone(),

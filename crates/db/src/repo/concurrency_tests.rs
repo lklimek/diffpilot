@@ -1,9 +1,6 @@
 //! Repository calls against a file-backed WAL database with a pool of several connections (as the server runs
 //! it): a transaction that reads and then writes must wait for a concurrent writer, never fail.
 
-use std::time::Duration;
-
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use contracts::agent::JobKind;
 use contracts::api::analyses::AnalysisState;
 use contracts::api::feedback::{FeedbackTarget, FeedbackValue};
@@ -12,7 +9,11 @@ use contracts::ids::{FeedbackId, FlowId, QuestionId, StepId};
 use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::JobPriority;
 use serde_json::json;
+use std::time::Duration;
 use tempfile::TempDir;
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 use super::Db;
 use super::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
@@ -23,11 +24,11 @@ use super::jobs::{ClaimParams, JobStage, NewJob};
 use super::questions::{NewQuestion, QuestionLimits};
 use super::testing::file_backed;
 
-fn at(second: i64) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0)
-        .single()
+fn at(second: i64) -> Timestamp {
+    "2026-11-17T12:00:00Z"
+        .parse::<Timestamp>()
         .unwrap_or_default()
-        + TimeDelta::seconds(second)
+        + SignedDuration::from_secs(second)
 }
 
 async fn file_db() -> (TempDir, Db) {
@@ -187,7 +188,7 @@ async fn questions_and_job_completion_run_concurrently() {
     let limits = QuestionLimits {
         per_analysis: 100,
         per_user: 100,
-        user_window_start: DateTime::UNIX_EPOCH,
+        user_window_start: Timestamp::UNIX_EPOCH,
     };
     for round in 0..20 {
         let result = claimed_job(&db, analysis, round).await;

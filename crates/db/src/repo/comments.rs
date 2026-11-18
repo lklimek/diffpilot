@@ -1,8 +1,8 @@
 //! Repository for `comment_requests`: idempotency of pending-review comment creation (ADR-006). The comments
 //! themselves live only on GitHub.
 
-use chrono::{DateTime, Utc};
 use contracts::ids::AnalysisId;
+use contracts::time::Timestamp;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::{Row, SqlitePool};
@@ -53,7 +53,7 @@ impl CommentRequests<'_> {
         key: CommentRequestKey<'_>,
         analysis: AnalysisId,
         request_hash: &[u8],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<CommentRequestStart<T>, DbError> {
         let analysis = analysis.to_string();
         let inserted = sqlx::query(
@@ -168,7 +168,7 @@ mod tests {
 
     async fn begin(db: &Db, analysis: AnalysisId, hash: &[u8]) -> CommentRequestStart<Value> {
         db.comment_requests()
-            .begin(KEY, analysis, hash, Utc::now())
+            .begin(KEY, analysis, hash, Timestamp::now())
             .await
             .expect("begin")
     }
@@ -261,7 +261,7 @@ mod tests {
         seed_analysis(&db).await.expect("seed user");
         let result = db
             .comment_requests()
-            .begin::<Value>(KEY, AnalysisId::new_random(), b"hash", Utc::now())
+            .begin::<Value>(KEY, AnalysisId::new_random(), b"hash", Timestamp::now())
             .await;
         assert!(matches!(result, Err(DbError::NotFound)), "{result:?}");
     }

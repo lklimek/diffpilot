@@ -1,6 +1,6 @@
 //! CI classification (skill `classify_ci`): build, test and lint checks apart from approval and policy gates.
 
-use chrono::{DateTime, Utc};
+use contracts::time::Timestamp;
 
 use super::facts::CiEffective;
 use super::text;
@@ -19,7 +19,7 @@ pub enum CheckContext {
         /// GraphQL `conclusion` (`SUCCESS`, `FAILURE`, …); null while running.
         conclusion: Option<String>,
         /// Start time; null for a queued re-run (counts as the newest).
-        started_at: Option<DateTime<Utc>>,
+        started_at: Option<Timestamp>,
     },
     /// A commit status.
     StatusContext {
@@ -28,7 +28,7 @@ pub enum CheckContext {
         /// GraphQL `state` (`SUCCESS`, `FAILURE`, `ERROR`, `PENDING`, `EXPECTED`).
         state: String,
         /// Creation time.
-        created_at: Option<DateTime<Utc>>,
+        created_at: Option<Timestamp>,
     },
 }
 
@@ -74,7 +74,7 @@ pub fn classify_ci(rollup: Option<&CheckRollup>) -> CiSummary {
         return out;
     };
     // Insertion-ordered (workflow, name) -> (recency, context); a queued re-run (no time) is the newest.
-    type Recency = (bool, Option<DateTime<Utc>>);
+    type Recency = (bool, Option<Timestamp>);
     let mut latest: Vec<((String, String), Recency, &CheckContext)> = Vec::new();
     for context in &rollup.contexts {
         let (key, when) = match context {

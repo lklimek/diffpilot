@@ -2,11 +2,11 @@
 //! snapshot the Tour shows) and the comments in the user's pending review ([`comments`]). GitHub calls live in
 //! `github::{threads, checks, review}`, SQL in `db`.
 
-use chrono::Utc;
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::tour::{CiStatus, GithubThread, ThreadsStatus};
 use contracts::common::PrRef;
 use contracts::ids::AnalysisId;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use serde::{Deserialize, Serialize};
@@ -118,7 +118,7 @@ pub async fn ingest_github_snapshot(
             DocumentKind::GithubSnapshot,
             "",
             &snapshot,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await?;
     Ok(snapshot)
@@ -200,9 +200,15 @@ pub(crate) mod tests {
                 refresh_token: SecretString::from("ghr_review_refresh_u1"),
                 refresh_token_expires_in: 180 * 86_400,
             };
-            store_sign_in_tokens(&state, &lock, db::repo::DEFAULT_TENANT, &grant, Utc::now())
-                .await
-                .expect("tokens");
+            store_sign_in_tokens(
+                &state,
+                &lock,
+                db::repo::DEFAULT_TENANT,
+                &grant,
+                Timestamp::now(),
+            )
+            .await
+            .expect("tokens");
         }
         (state, analysis)
     }
@@ -289,7 +295,10 @@ pub(crate) mod tests {
             .await
             .expect("lookup")
             .expect("pair");
-        assert!(stored.tokens.access_expires_at <= Utc::now(), "{stored:?}");
+        assert!(
+            stored.tokens.access_expires_at <= Timestamp::now(),
+            "{stored:?}"
+        );
     }
 
     #[tokio::test]

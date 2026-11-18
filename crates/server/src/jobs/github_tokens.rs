@@ -4,9 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use contracts::ids::JobId;
 use contracts::job::access::InstallationToken;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
 use secrecy::{ExposeSecret, SecretString};
@@ -105,7 +105,7 @@ pub struct Sweep {
 /// One pass: ends overdue leases (no runner, follower or claim may be left to do it), then revokes the tokens of
 /// attempts that are no longer claimed or running, soonest expiry first; an expired token is only confirmed.
 /// Stops at a rate limit. Each token is retried by later sweeps until confirmed or expired.
-pub async fn sweep(db: &Db, config: &Config, now: DateTime<Utc>) -> Result<Sweep, DbError> {
+pub async fn sweep(db: &Db, config: &Config, now: Timestamp) -> Result<Sweep, DbError> {
     expire_leases(db, now).await?;
     let pending = db.jobs().github_tokens_to_revoke().await?;
     let mut outcome = Sweep::default();
@@ -196,7 +196,7 @@ pub async fn run_worker(db: Db, config: Arc<Config>) {
         tokio::pin!(nudged);
         // Registered before the sweep, so a nudge sent during it is not lost.
         nudged.as_mut().enable();
-        let outcome = sweep(&db, &config, Utc::now()).await;
+        let outcome = sweep(&db, &config, Timestamp::now()).await;
         if let Err(error) = &outcome {
             tracing::warn!(%error, "installation token sweep could not read the queue; the worker retries");
         }

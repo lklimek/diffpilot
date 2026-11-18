@@ -1,18 +1,19 @@
 //! Repository for `access_tokens`: personal access tokens (ADR-019). Only the SHA-256 of a token is stored.
 
-use std::fmt;
-
-use chrono::{DateTime, TimeDelta, Utc};
 use contracts::api::access_tokens::{AccessTokenId, CreateAccessToken, TokenScope};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
+use std::fmt;
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 use super::Db;
 use super::sessions::{parse_timestamp, timestamp};
 use crate::error::DbError;
 
 /// [`AccessTokens::touch`] records a use only when the last recorded one is at least this old.
-pub const TOUCH_INTERVAL: TimeDelta = TimeDelta::minutes(1);
+pub const TOUCH_INTERVAL: SignedDuration = SignedDuration::from_mins(1);
 
 /// Access to personal access tokens.
 #[derive(Debug)]
@@ -39,7 +40,7 @@ pub struct NewAccessToken {
     /// Scopes.
     pub scopes: Vec<TokenScope>,
     /// Expiry.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 /// A stored token, without its hash.
@@ -56,13 +57,13 @@ pub struct AccessTokenRecord {
     /// Scopes.
     pub scopes: Vec<TokenScope>,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Expiry.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// Last accepted use.
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<Timestamp>,
     /// Revocation time.
-    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<Timestamp>,
 }
 
 /// A stored token with its hash, for the request check (constant-time comparison by the caller); `Debug` never
@@ -121,7 +122,7 @@ impl AccessTokens<'_> {
         tenant_id: &str,
         user_id: &str,
         token: &NewAccessToken,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<CreateOutcome, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let name_taken: bool = sqlx::query_scalar(
@@ -212,7 +213,7 @@ impl AccessTokens<'_> {
     }
 
     /// Records an accepted use; writes only when the stored `last_used_at` is a minute or more before `now`.
-    pub async fn touch(&self, id: &AccessTokenId, now: DateTime<Utc>) -> Result<(), DbError> {
+    pub async fn touch(&self, id: &AccessTokenId, now: Timestamp) -> Result<(), DbError> {
         sqlx::query(
             "UPDATE access_tokens SET last_used_at = ?
              WHERE id = ? AND revoked_at IS NULL AND (last_used_at IS NULL OR last_used_at <= ?)",
@@ -231,7 +232,7 @@ impl AccessTokens<'_> {
         tenant_id: &str,
         user_id: &str,
         id: &AccessTokenId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let revoked = sqlx::query(
             "UPDATE access_tokens SET revoked_at = ?
@@ -254,7 +255,7 @@ impl AccessTokens<'_> {
         &self,
         tenant_id: &str,
         user_id: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<u64, DbError> {
         let now = timestamp(now);
         let expiries: Vec<String> = sqlx::query_scalar(
@@ -298,16 +299,15 @@ fn record_from_row(row: &SqliteRow) -> Result<AccessTokenRecord, DbError> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
 
     use super::*;
     use crate::repo::DEFAULT_TENANT;
     use crate::repo::tenants::testing::{allow_login, remove_login};
     use crate::repo::users::GithubProfile;
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 18, 10, minute, 0)
-            .single()
+    fn at(minute: u32) -> Timestamp {
+        format!("2026-11-18T10:{minute:02}:00Z")
+            .parse::<Timestamp>()
             .expect("time")
     }
 
@@ -336,7 +336,7 @@ mod tests {
         db
     }
 
-    fn token(id: &str, name: &str, expires_at: DateTime<Utc>) -> NewAccessToken {
+    fn token(id: &str, name: &str, expires_at: Timestamp) -> NewAccessToken {
         let mut hash = [0u8; 32];
         hash[..id.len()].copy_from_slice(id.as_bytes());
         NewAccessToken {
@@ -348,12 +348,7 @@ mod tests {
         }
     }
 
-    async fn create(
-        db: &Db,
-        user: &str,
-        new: &NewAccessToken,
-        now: DateTime<Utc>,
-    ) -> CreateOutcome {
+    async fn create(db: &Db, user: &str, new: &NewAccessToken, now: Timestamp) -> CreateOutcome {
         db.access_tokens()
             .create(DEFAULT_TENANT, user, new, now)
             .await
@@ -363,7 +358,11 @@ mod tests {
     #[tokio::test]
     async fn created_token_is_listed_and_found_with_its_hash() {
         let db = db().await;
-        let new = token("Ab3dE5gH", "agent", at(0) + TimeDelta::days(90));
+        let new = token(
+            "Ab3dE5gH",
+            "agent",
+            at(0) + SignedDuration::from_hours(24 * 90),
+        );
         let CreateOutcome::Created(record) = create(&db, "u1", &new, at(0)).await else {
             panic!("created");
         };
@@ -418,7 +417,7 @@ mod tests {
     #[tokio::test]
     async fn list_is_newest_first_and_skips_revoked_tokens() {
         let db = db().await;
-        let far = at(0) + TimeDelta::days(30);
+        let far = at(0) + SignedDuration::from_hours(24 * 30);
         for (minute, id) in [(1, "AAAAAAA1"), (2, "AAAAAAA2"), (3, "AAAAAAA3")] {
             create(&db, "u1", &token(id, id, far), at(minute)).await;
         }
@@ -452,7 +451,7 @@ mod tests {
     #[tokio::test]
     async fn names_are_unique_per_user_until_revoked() {
         let db = db().await;
-        let far = at(0) + TimeDelta::days(30);
+        let far = at(0) + SignedDuration::from_hours(24 * 30);
         create(&db, "u1", &token("AAAAAAA1", "agent", far), at(0)).await;
         assert_eq!(
             create(&db, "u1", &token("AAAAAAA2", "agent", far), at(1)).await,
@@ -481,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn live_tokens_are_limited_per_user() {
         let db = db().await;
-        let far = at(0) + TimeDelta::days(30);
+        let far = at(0) + SignedDuration::from_hours(24 * 30);
         for n in 0..10 {
             let id = format!("AAAAAA{n:02}");
             let expires = if n == 0 { at(5) } else { far };
@@ -534,7 +533,7 @@ mod tests {
         create(
             &db,
             "u1",
-            &token(&id.0, "agent", at(0) + TimeDelta::days(30)),
+            &token(&id.0, "agent", at(0) + SignedDuration::from_hours(24 * 30)),
             at(0),
         )
         .await;
@@ -573,7 +572,7 @@ mod tests {
     #[tokio::test]
     async fn revoke_all_revokes_every_token_of_the_user_only() {
         let db = db().await;
-        let far = at(0) + TimeDelta::days(30);
+        let far = at(0) + SignedDuration::from_hours(24 * 30);
         create(&db, "u1", &token("AAAAAAA1", "a", far), at(0)).await;
         create(&db, "u1", &token("AAAAAAA2", "b", at(5)), at(0)).await;
         create(&db, "u2", &token("AAAAAAA3", "c", far), at(0)).await;
@@ -613,7 +612,7 @@ mod tests {
         create(
             &db,
             "u1",
-            &token(&id.0, "agent", at(0) + TimeDelta::days(30)),
+            &token(&id.0, "agent", at(0) + SignedDuration::from_hours(24 * 30)),
             at(0),
         )
         .await;
@@ -630,7 +629,7 @@ mod tests {
         tokens.touch(&id, at(1)).await.expect("touch");
         assert_eq!(last_used().await, Some(at(1)));
         tokens
-            .touch(&id, at(1) + TimeDelta::seconds(59))
+            .touch(&id, at(1) + SignedDuration::from_secs(59))
             .await
             .expect("touch");
         assert_eq!(last_used().await, Some(at(1)), "throttled");
@@ -652,7 +651,7 @@ mod tests {
         create(
             &db,
             "u1",
-            &token(&id.0, "agent", at(0) + TimeDelta::days(30)),
+            &token(&id.0, "agent", at(0) + SignedDuration::from_hours(24 * 30)),
             at(0),
         )
         .await;
@@ -677,7 +676,7 @@ mod tests {
             name: "agent".to_owned(),
             token_hash: hash,
             scopes: vec![TokenScope::Read],
-            expires_at: DateTime::<Utc>::UNIX_EPOCH,
+            expires_at: Timestamp::UNIX_EPOCH,
         };
         let credential = TokenCredential {
             record: AccessTokenRecord {
@@ -686,7 +685,7 @@ mod tests {
                 user_id: "u1".to_owned(),
                 name: new.name.clone(),
                 scopes: new.scopes.clone(),
-                created_at: DateTime::<Utc>::UNIX_EPOCH,
+                created_at: Timestamp::UNIX_EPOCH,
                 expires_at: new.expires_at,
                 last_used_at: None,
                 revoked_at: None,

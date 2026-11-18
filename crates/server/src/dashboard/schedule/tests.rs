@@ -6,12 +6,13 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use chrono::{TimeZone, Utc};
 use contracts::api::dashboard::{DashboardSummary, RefreshFailureCode};
+use contracts::time::Timestamp;
 use db::repo::dashboard::{StartOutcome, StoredDashboardSettings};
 use db::repo::users::GithubProfile;
 use db::repo::{DEFAULT_TENANT, Db};
 use http_body_util::BodyExt;
+use jiff::SignedDuration;
 use secrecy::SecretString;
 use serde_json::json;
 use tower::ServiceExt;
@@ -33,14 +34,14 @@ const NEW_YORK: &str = "America/New_York";
 const ACCESS_CANARY: &str = "ghu_scheduled_access_canary";
 const REFRESH_CANARY: &str = "ghr_scheduled_refresh_canary";
 
-fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(y, mo, d, h, mi, 0)
-        .single()
+fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> Timestamp {
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:00Z")
+        .parse::<Timestamp>()
         .expect("time")
 }
 
-fn date(y: i32, mo: u32, d: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(y, mo, d).expect("date")
+fn date(y: i16, mo: i8, d: i8) -> Date {
+    Date::new(y, mo, d).expect("date")
 }
 
 fn schedule(zone: &str, time: &str) -> Schedule {
@@ -259,13 +260,13 @@ fn next_run_at_follows_the_due_rule_and_a_later_success() {
 
 #[test]
 fn offsets_are_stable_whole_minutes_below_ten() {
-    let offsets: Vec<TimeDelta> = (0..200).map(|n| offset(&format!("user-{n}"))).collect();
+    let offsets: Vec<SignedDuration> = (0..200).map(|n| offset(&format!("user-{n}"))).collect();
     for (n, delta) in offsets.iter().enumerate() {
         assert!(
-            (TimeDelta::zero()..TimeDelta::minutes(10)).contains(delta),
+            (SignedDuration::ZERO..SignedDuration::from_mins(10)).contains(delta),
             "{delta}"
         );
-        assert_eq!(delta.num_seconds() % 60, 0);
+        assert_eq!(delta.as_secs() % 60, 0);
         assert_eq!(*delta, offset(&format!("user-{n}")), "stable");
     }
     let distinct: std::collections::HashSet<_> = offsets.iter().collect();
@@ -277,14 +278,17 @@ fn sleep_is_bounded_between_one_second_and_a_minute() {
     let now = utc(2026, 11, 18, 5, 0);
     assert_eq!(sleep_until(now, None), TICK);
     assert_eq!(
-        sleep_until(now, Some(now - TimeDelta::minutes(5))),
+        sleep_until(now, Some(now - SignedDuration::from_mins(5))),
         MIN_SLEEP
     );
     assert_eq!(
-        sleep_until(now, Some(now + TimeDelta::seconds(30))),
+        sleep_until(now, Some(now + SignedDuration::from_secs(30))),
         Duration::from_secs(30)
     );
-    assert_eq!(sleep_until(now, Some(now + TimeDelta::hours(20))), TICK);
+    assert_eq!(
+        sleep_until(now, Some(now + SignedDuration::from_hours(20))),
+        TICK
+    );
 }
 
 #[tokio::test]
@@ -315,11 +319,11 @@ struct World {
 }
 
 /// 2026-11-18 09:00 UTC (10:00 in Warsaw): the default 06:00 run of the day is overdue.
-fn morning() -> DateTime<Utc> {
+fn morning() -> Timestamp {
     utc(2026, 11, 18, 9, 0)
 }
 
-async fn world_at(now: DateTime<Utc>, scan_limit: Duration) -> World {
+async fn world_at(now: Timestamp, scan_limit: Duration) -> World {
     let github = MockServer::start().await;
     let mut config = test_config();
     config.github.oauth_url = Url::parse(&github.uri()).expect("oauth url");
@@ -381,7 +385,7 @@ async fn add_user(world: &World, user_id: &str, github_id: i64, access_expires_i
                 name: None,
                 avatar_url: None,
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("user");
@@ -394,7 +398,7 @@ async fn add_user(world: &World, user_id: &str, github_id: i64, access_expires_i
             refresh_token_expires_in: 15_638_400,
         };
         let lock = lock_user(user_id).await;
-        store_sign_in_tokens(state, &lock, DEFAULT_TENANT, &grant, Utc::now())
+        store_sign_in_tokens(state, &lock, DEFAULT_TENANT, &grant, Timestamp::now())
             .await
             .expect("pair");
     }
@@ -411,7 +415,7 @@ async fn set_settings(world: &World, user_id: &str, change: impl FnOnce(&mut Das
         .state
         .db
         .dashboard()
-        .save_settings(DEFAULT_TENANT, user_id, &settings, Utc::now())
+        .save_settings(DEFAULT_TENANT, user_id, &settings, Timestamp::now())
         .await
         .expect("settings");
 }
@@ -781,7 +785,7 @@ async fn summary_reports_next_and_last_run_across_a_dst_gap() {
         .await
         .expect("record");
     let token = "schedule-summary-session";
-    let now = Utc::now();
+    let now = Timestamp::now();
     world
         .state
         .db
@@ -792,7 +796,7 @@ async fn summary_reports_next_and_last_run_across_a_dst_gap() {
                 tenant_id: DEFAULT_TENANT,
                 user_id: "u1",
                 csrf_token: "csrf",
-                expires_at: now + TimeDelta::hours(1),
+                expires_at: now + SignedDuration::from_hours(1),
             },
             now,
         )
@@ -1200,7 +1204,7 @@ mod ranked {
                     kind: CredentialKind::CodexChatgpt,
                 },
                 true,
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("credential");
@@ -1226,13 +1230,13 @@ mod ranked {
                     name: None,
                     avatar_url: None,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("user");
         let grant = sign_in(&github).await;
         let lock = lock_user("u1").await;
-        store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, Utc::now())
+        store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, Timestamp::now())
             .await
             .expect("pair");
         drop(lock);
@@ -1251,7 +1255,7 @@ mod ranked {
         state
             .db
             .dashboard()
-            .save_settings(DEFAULT_TENANT, "u1", &settings, Utc::now())
+            .save_settings(DEFAULT_TENANT, "u1", &settings, Timestamp::now())
             .await
             .expect("settings");
         state

@@ -1,6 +1,6 @@
 //! Feedback on the LLM analysis (stored locally and written to MemCan).
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -113,7 +113,7 @@ pub struct Feedback {
     /// Optional note.
     pub note: Option<String>,
     /// When it was recorded.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// The copy of this entry's current revision in MemCan (calibration memory for `overrated` /
     /// `underrated`); only `written` means MemCan confirmed it.
     pub memory: FeedbackMemory,

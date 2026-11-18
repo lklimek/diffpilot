@@ -1,11 +1,11 @@
 //! Repository for `settings`: what the Settings screen reads and writes besides the LLM call outcome
 //! (`llm_credentials`): the user's language, the tenant's analysed repositories and credential usability.
 
-use chrono::{DateTime, Utc};
 use contracts::common::{LlmLanguage, RepoRef};
 use contracts::ids::AnalysisId;
 use contracts::job::result::{JobFailureKind, JobOutcome, LlmCallOutcome};
 use contracts::job::spec::{ModelChoice, ReasoningEffort};
+use contracts::time::Timestamp;
 use sqlx::{Row, SqlitePool};
 
 use super::Db;
@@ -103,7 +103,7 @@ pub struct StoredLlmSelection {
     /// Editor's login of the model, effort, ranking effort or Ask effort.
     pub changed_by: String,
     /// Save time of any of them.
-    pub changed_at: DateTime<Utc>,
+    pub changed_at: Timestamp,
 }
 
 const SELECTION_SQL: &str = "SELECT * FROM llm_selection WHERE singleton = 1";
@@ -150,7 +150,7 @@ impl SettingsRepo<'_> {
         &self,
         choice: &ModelChoice,
         login: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(Option<StoredLlmSelection>, StoredLlmSelection), DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let old = read_selection(&mut tx).await?;
@@ -177,7 +177,7 @@ impl SettingsRepo<'_> {
         effort: ReasoningEffort,
         default_choice: &ModelChoice,
         login: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(Option<StoredLlmSelection>, StoredLlmSelection), DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let old = read_selection(&mut tx).await?;
@@ -215,7 +215,7 @@ impl SettingsRepo<'_> {
         effort: ReasoningEffort,
         default_choice: &ModelChoice,
         login: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(Option<StoredLlmSelection>, StoredLlmSelection), DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let old = read_selection(&mut tx).await?;
@@ -277,7 +277,7 @@ impl SettingsRepo<'_> {
         &self,
         user_id: &str,
         language: LlmLanguage,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let updated = sqlx::query("UPDATE users SET language = ?, updated_at = ? WHERE id = ?")
             .bind(wire_name(language)?)
@@ -350,7 +350,7 @@ impl SettingsRepo<'_> {
     pub async fn credential_unusable_since(
         &self,
         tenant_id: &str,
-    ) -> Result<Option<DateTime<Utc>>, DbError> {
+    ) -> Result<Option<Timestamp>, DbError> {
         let since: Option<String> = sqlx::query_scalar(
             "SELECT MAX(unusable_since) FROM llm_credentials WHERE tenant_id = ?",
         )
@@ -366,6 +366,7 @@ impl SettingsRepo<'_> {
 #[cfg(test)]
 mod tests {
     use contracts::job::spec::{CredentialKind, LlmCredentialRef};
+    use jiff::SignedDuration;
 
     use super::*;
     use crate::repo::DEFAULT_TENANT;
@@ -384,14 +385,14 @@ mod tests {
         let db = Db::in_memory().await.expect("db");
         seed_analysis(&db).await.expect("seed");
         db.settings()
-            .set_language("u1", LlmLanguage::Pl, Utc::now())
+            .set_language("u1", LlmLanguage::Pl, Timestamp::now())
             .await
             .expect("set");
         let user = db.users().get("u1").await.expect("user");
         assert_eq!(user.language, LlmLanguage::Pl);
         let unknown = db
             .settings()
-            .set_language("nobody", LlmLanguage::En, Utc::now())
+            .set_language("nobody", LlmLanguage::En, Timestamp::now())
             .await;
         assert!(matches!(unknown, Err(DbError::NotFound)), "{unknown:?}");
     }
@@ -459,7 +460,7 @@ mod tests {
                 DocumentKind::Prepass,
                 "",
                 &serde_json::json!({}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("prepass");
@@ -519,9 +520,7 @@ mod tests {
             kind: CredentialKind::CodexChatgpt,
         };
         let credentials = db.llm_credentials();
-        let at = DateTime::parse_from_rfc3339("2026-11-17T08:00:00Z")
-            .expect("time")
-            .with_timezone(&Utc);
+        let at = "2026-11-17T08:00:00Z".parse::<Timestamp>().expect("time");
         credentials
             .register(DEFAULT_TENANT, &credential, true, at)
             .await
@@ -563,7 +562,7 @@ mod tests {
         };
         let (old, saved) = db
             .settings()
-            .set_llm_selection(&first, "alice", Utc::now())
+            .set_llm_selection(&first, "alice", Timestamp::now())
             .await
             .unwrap();
         assert!(old.is_none());
@@ -578,7 +577,7 @@ mod tests {
         };
         let (old, saved) = db
             .settings()
-            .set_llm_selection(&next, "bob", Utc::now())
+            .set_llm_selection(&next, "bob", Timestamp::now())
             .await
             .unwrap();
         assert_eq!(old.unwrap().changed_by, "alice");
@@ -591,10 +590,8 @@ mod tests {
         let db = Db::in_memory().await.expect("db");
         let settings = db.settings();
         let at = |minute: i64| {
-            DateTime::parse_from_rfc3339("2026-11-18T06:00:00Z")
-                .expect("time")
-                .with_timezone(&Utc)
-                + chrono::TimeDelta::minutes(minute)
+            "2026-11-18T06:00:00Z".parse::<Timestamp>().expect("time")
+                + SignedDuration::from_mins(minute)
         };
         assert_eq!(
             settings.judge_effort().await.expect("default"),
@@ -661,10 +658,8 @@ mod tests {
         let db = Db::in_memory().await.expect("db");
         let settings = db.settings();
         let at = |minute: i64| {
-            DateTime::parse_from_rfc3339("2026-11-18T06:00:00Z")
-                .expect("time")
-                .with_timezone(&Utc)
-                + chrono::TimeDelta::minutes(minute)
+            "2026-11-18T06:00:00Z".parse::<Timestamp>().expect("time")
+                + SignedDuration::from_mins(minute)
         };
         assert_eq!(
             settings.ask_effort().await.expect("default"),

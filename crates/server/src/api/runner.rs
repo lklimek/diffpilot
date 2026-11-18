@@ -8,7 +8,6 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::routing::post;
 use axum::{Json, Router};
-use chrono::{TimeDelta, Utc};
 use contracts::api::error::ApiErrorCode;
 use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
@@ -18,8 +17,10 @@ use contracts::job::protocol::{
 use contracts::job::result::{JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus};
 use contracts::job::state::JobState;
 use contracts::routes::{RUNNER_CLAIM, RUNNER_EVENTS, RUNNER_OUTPUT, RUNNER_RESULT};
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::jobs::{Completion, OutputRecorded};
+use jiff::SignedDuration;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 
@@ -39,7 +40,7 @@ const SUMMARY_MAX_CHARS: usize = 200;
 
 /// Longest usage-limit pause accepted from a result (the longest ChatGPT window is a week). The reset time is
 /// read from files the agent can write, so a later one must not stop the installation's only credential.
-const MAX_USAGE_LIMIT_PAUSE: TimeDelta = TimeDelta::days(7);
+const MAX_USAGE_LIMIT_PAUSE: SignedDuration = SignedDuration::from_hours(24 * 7);
 
 /// Replacement for a known secret value found in runner data.
 const REDACTED: &str = "[redacted]";
@@ -226,7 +227,7 @@ async fn authorize_job(
     }
     let lease_over = claim
         .lease_expires_at
-        .is_some_and(|lease| lease < Utc::now());
+        .is_some_and(|lease| lease < Timestamp::now());
     if lease_over && matches!(claim.state, JobState::Claimed | JobState::Running) {
         return Err(RunnerError::Unauthenticated);
     }
@@ -344,7 +345,7 @@ async fn claim_job(
     let packs = StoredPacks {
         db: state.db.clone(),
     };
-    let response = claim::claim(&state.db, &state.config, &packs, &request, Utc::now())
+    let response = claim::claim(&state.db, &state.config, &packs, &request, Timestamp::now())
         .await
         .map_err(RunnerError::from)?;
     if let Some(analysis) = response
@@ -385,7 +386,7 @@ async fn apply_events(
         .into_iter()
         .map(|event| scrub_event(event, &secrets))
         .collect();
-    let lease_expires_at = lease_until(Utc::now());
+    let lease_expires_at = lease_until(Timestamp::now());
     let recorded = state
         .db
         .jobs()
@@ -420,7 +421,7 @@ async fn apply_output(
         &mut ready.output,
         &known_secrets(state, &auth.token, installation.as_ref()),
     );
-    let lease_expires_at = lease_until(Utc::now());
+    let lease_expires_at = lease_until(Timestamp::now());
     let recorded = state
         .db
         .jobs()
@@ -463,14 +464,15 @@ async fn apply_result(
         &mut result,
         &known_secrets(state, &auth.token, installation.as_ref()),
     );
-    let now = Utc::now();
+    let now = Timestamp::now();
     if let JobOutcome::UsageLimited { resets_at } = &mut result.outcome
         && let Some(reported) = *resets_at
     {
         // A pause does not count as an attempt, so a time that has passed must not re-queue the job at once:
         // it tells nothing and is stored as unknown (the default pause applies). A coming time is accepted
         // from the protocol's first retry pause on.
-        let first_retry = TimeDelta::seconds(i64::from(LeaseTiming::V1.output_retry_secs[0]));
+        let first_retry =
+            SignedDuration::from_secs(i64::from(LeaseTiming::V1.output_retry_secs[0]));
         let accepted = (reported > now)
             .then(|| reported.clamp(now + first_retry, now + MAX_USAGE_LIMIT_PAUSE));
         if accepted != Some(reported) {
@@ -512,7 +514,6 @@ async fn apply_result(
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
-    use chrono::{DateTime, TimeDelta};
     use contracts::agent::JobKind;
     use contracts::api::analyses::{AnalysisState, StageFlow, StageKind};
     use contracts::api::events::AnalysisEvent;
@@ -547,7 +548,7 @@ mod tests {
     struct Claimed {
         job: JobId,
         token: String,
-        lease_expires_at: DateTime<Utc>,
+        lease_expires_at: Timestamp,
         spec_access: AgentAccess,
     }
 
@@ -579,7 +580,7 @@ mod tests {
                         stage: JobStage::Flow(FlowId("f1".to_owned())),
                         generation: 0,
                     },
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .expect("enqueue");
@@ -668,7 +669,7 @@ mod tests {
             attempt,
             events: vec![JobEvent {
                 seq: 1,
-                at: Utc::now(),
+                at: Timestamp::now(),
                 activity: ActivityKind::Command,
                 summary: summary.to_owned(),
             }],
@@ -762,7 +763,7 @@ mod tests {
             serde_json::from_str(include_str!("../../../../fixtures/pr-482/agent/plan.json"))
                 .expect("fixture plan");
         db.documents()
-            .put(analysis, DocumentKind::Plan, "", &plan, Utc::now())
+            .put(analysis, DocumentKind::Plan, "", &plan, Timestamp::now())
             .await
             .expect("plan");
         db.analyses()
@@ -774,14 +775,14 @@ mod tests {
                     idle: false,
                     stage: None,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("running");
         let mut live = harness.state.progress.subscribe(analysis);
-        let before = Utc::now();
+        let before = Timestamp::now();
         harness.claim(CREDENTIAL).await;
-        let after = Utc::now();
+        let after = Timestamp::now();
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), live.recv())
             .await
             .expect("an event on claim")
@@ -884,7 +885,7 @@ mod tests {
             serde_json::from_str(include_str!("../../../../fixtures/pr-482/agent/plan.json"))
                 .expect("fixture plan");
         db.documents()
-            .put(analysis, DocumentKind::Plan, "", &plan, Utc::now())
+            .put(analysis, DocumentKind::Plan, "", &plan, Timestamp::now())
             .await
             .expect("plan");
         db.analyses()
@@ -896,7 +897,7 @@ mod tests {
                     idle: false,
                     stage: None,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("running");
@@ -916,12 +917,12 @@ mod tests {
             "started_at": null});
         stage_event(&mut live, waiting.clone()).await;
         // A claim whose lease ends at once: the follower requeues the job, no new claim follows.
-        let now = Utc::now();
+        let now = Timestamp::now();
         db.jobs()
             .claim(db::repo::jobs::ClaimParams {
                 credential_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
-                lease_until: now + TimeDelta::milliseconds(600),
+                lease_until: now + SignedDuration::from_millis(600),
                 now,
             })
             .await
@@ -949,7 +950,12 @@ mod tests {
             .state
             .db
             .jobs()
-            .record_events(claimed.job, 1, &[], Utc::now() - TimeDelta::seconds(1))
+            .record_events(
+                claimed.job,
+                1,
+                &[],
+                Timestamp::now() - SignedDuration::from_secs(1),
+            )
             .await
             .expect("lease in the past");
         let target = path(RUNNER_EVENTS.path, claimed.job);
@@ -1093,11 +1099,11 @@ mod tests {
     async fn claim_uses_lease_timing_v1_and_sends_memcan_without_github_when_not_installed() {
         let harness = Harness::new().await;
         let (_, job) = harness.enqueue(CREDENTIAL).await;
-        let before = Utc::now();
+        let before = Timestamp::now();
         let claimed = harness.claim(CREDENTIAL).await;
-        let after = Utc::now();
-        let lease = TimeDelta::seconds(i64::from(LeaseTiming::V1.lease_secs));
-        assert!(claimed.lease_expires_at >= before + lease - TimeDelta::milliseconds(1));
+        let after = Timestamp::now();
+        let lease = SignedDuration::from_secs(i64::from(LeaseTiming::V1.lease_secs));
+        assert!(claimed.lease_expires_at >= before + lease - SignedDuration::from_millis(1));
         assert!(claimed.lease_expires_at <= after + lease);
         assert_eq!(claimed.job, job);
         assert!(claimed.spec_access.github.is_none(), "no App installation");
@@ -1165,12 +1171,12 @@ mod tests {
         harness.enqueue(CREDENTIAL).await;
         let claimed = harness.claim(CREDENTIAL).await;
         let call = LlmCallOutcome {
-            at: Utc::now(),
+            at: Timestamp::now(),
             status: LlmCallStatus::NotWorking {
                 message: "You have hit your usage limit.".to_owned(),
             },
         };
-        let resets_at = Utc::now() + TimeDelta::hours(2);
+        let resets_at = Timestamp::now() + SignedDuration::from_hours(2);
         let mut result = succeeded(claimed.job, 1);
         result.outcome = JobOutcome::UsageLimited {
             resets_at: Some(resets_at),
@@ -1191,7 +1197,7 @@ mod tests {
         assert!(
             credential
                 .paused_until
-                .is_some_and(|until| until > Utc::now())
+                .is_some_and(|until| until > Timestamp::now())
         );
         let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
         assert_eq!(job.state, JobState::Paused);
@@ -1205,7 +1211,7 @@ mod tests {
         let claimed = harness.claim(CREDENTIAL).await;
         let mut result = succeeded(claimed.job, 1);
         result.outcome = JobOutcome::UsageLimited {
-            resets_at: Some(Utc::now() + TimeDelta::days(36_500)),
+            resets_at: Some(Timestamp::now() + SignedDuration::from_hours(24 * 36_500)),
         };
         let (status, _) = harness
             .send(
@@ -1215,8 +1221,8 @@ mod tests {
             )
             .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
-        let latest = Utc::now() + TimeDelta::days(7);
-        let earliest = latest - TimeDelta::minutes(1);
+        let latest = Timestamp::now() + SignedDuration::from_hours(24 * 7);
+        let earliest = latest - SignedDuration::from_mins(1);
         let credential = harness
             .state
             .db
@@ -1241,15 +1247,15 @@ mod tests {
     /// job at once (nor a second later): it tells nothing and is treated as unknown.
     #[tokio::test]
     async fn usage_limit_reset_time_in_the_past_waits_the_pause_of_an_unknown_reset() {
-        for passed in [TimeDelta::days(1), TimeDelta::zero()] {
+        for passed in [SignedDuration::from_hours(24), SignedDuration::ZERO] {
             let harness = Harness::new().await;
             harness.enqueue(CREDENTIAL).await;
             let claimed = harness.claim(CREDENTIAL).await;
             let mut result = succeeded(claimed.job, 1);
             result.outcome = JobOutcome::UsageLimited {
-                resets_at: Some(Utc::now() - passed),
+                resets_at: Some(Timestamp::now() - passed),
             };
-            let earliest = Utc::now() + PAUSE_WITHOUT_RESET;
+            let earliest = Timestamp::now() + PAUSE_WITHOUT_RESET;
             let (status, _) = harness
                 .send(
                     &path(RUNNER_RESULT.path, claimed.job),
@@ -1258,7 +1264,7 @@ mod tests {
                 )
                 .await;
             assert_eq!(status, StatusCode::NO_CONTENT);
-            let latest = Utc::now() + PAUSE_WITHOUT_RESET;
+            let latest = Timestamp::now() + PAUSE_WITHOUT_RESET;
             let credential = harness
                 .state
                 .db
@@ -1346,7 +1352,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let github = wiremock::MockServer::start().await;
         mount_installation(&github).await;
-        mount_mint(&github, minted(Utc::now()), 1).await;
+        mount_mint(&github, minted(Timestamp::now()), 1).await;
         let mut state = test_state().await;
         let mut config = crate::config::tests::test_config();
         config.github = github_config(&github, write_key(dir.path()));
@@ -1437,7 +1443,7 @@ mod tests {
         });
         result.skills_commit = Some(memcan.clone());
         result.llm_call = Some(LlmCallOutcome {
-            at: Utc::now(),
+            at: Timestamp::now(),
             status: LlmCallStatus::NotWorking {
                 message: format!("refresh failed for {token}"),
             },
@@ -1540,7 +1546,7 @@ mod tests {
             .state
             .db
             .jobs()
-            .request_cancel(claimed.job, Utc::now())
+            .request_cancel(claimed.job, Timestamp::now())
             .await
             .expect("cancel");
         let mut result = succeeded(claimed.job, 1);
@@ -1632,7 +1638,7 @@ mod tests {
             .state
             .db
             .jobs()
-            .expire_leases(Utc::now() + TimeDelta::seconds(61))
+            .expire_leases(Timestamp::now() + SignedDuration::from_secs(61))
             .await
             .expect("expire");
         let second = harness.claim(CREDENTIAL).await;

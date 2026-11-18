@@ -1,11 +1,11 @@
 //! The MemCan memory of a feedback entry (text and metadata) and the lookup of the step or annotation a feedback
 //! target names (server ids `f1.2` and `f1.2.a1`, see `pipeline::tour`).
 
-use chrono::{DateTime, Utc};
 use contracts::agent::analyse_flow::{AgentAnnotation, AgentStep, FlowAnalysisOutput};
 use contracts::api::feedback::{FeedbackTarget, FeedbackValue};
 use contracts::api::pr::PrSummary;
 use contracts::common::{AnnotationType, LineSide, RiskBand};
+use contracts::time::Timestamp;
 use db::repo::feedback::PendingFeedback;
 use serde_json::{Value, json};
 
@@ -70,7 +70,7 @@ pub(crate) fn import_record(
     entry: &PendingFeedback,
     pr: &PrSummary,
     flows: &[FlowAnalysisOutput],
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Value {
     let feedback = &entry.feedback;
     let project = &pr.repo.name;
@@ -85,8 +85,8 @@ pub(crate) fn import_record(
         "user_id": format!("project:{project}"),
         "project": project,
         "collection": "memories",
-        "created_at": feedback.created_at.to_rfc3339(),
-        "updated_at": now.to_rfc3339(),
+        "created_at": feedback.created_at.to_rfc3339_offset(),
+        "updated_at": now.to_rfc3339_offset(),
         "type": kind,
         "source": SOURCE,
         "value": value_name(feedback.value),
@@ -227,13 +227,11 @@ fn annotation_name(kind: AnnotationType) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-    use std::path::Path;
-
-    use chrono::TimeZone;
     use contracts::api::feedback::{Feedback, FeedbackMemory};
     use contracts::common::RepoRef;
     use contracts::ids::{AnalysisId, AnnotationId, CommitSha, FeedbackId, StepId};
+    use std::collections::BTreeSet;
+    use std::path::Path;
 
     use super::*;
 
@@ -270,9 +268,8 @@ mod tests {
                 target,
                 value,
                 note: note.map(str::to_owned),
-                created_at: Utc
-                    .with_ymd_and_hms(2026, 11, 17, 12, 0, 0)
-                    .single()
+                created_at: "2026-11-17T12:00:00Z"
+                    .parse::<Timestamp>()
                     .unwrap_or_default(),
                 memory: FeedbackMemory::Pending,
             },
@@ -304,7 +301,7 @@ mod tests {
             ),
             &pr(),
             &flows(),
-            Utc::now(),
+            Timestamp::now(),
         );
         assert!(!record.to_string().contains("PRIVATE_INSTRUCTION_MARKER"));
     }
@@ -345,7 +342,7 @@ mod tests {
             &entry(step_target("f3.1"), FeedbackValue::Underrated, Some("n")),
             &pr(),
             &flows(),
-            Utc::now(),
+            Timestamp::now(),
         );
         let keys: BTreeSet<&str> = record
             .as_object()
@@ -391,7 +388,7 @@ mod tests {
             ),
             &pr(),
             &flows(),
-            Utc::now(),
+            Timestamp::now(),
         );
         let text = record["data"].as_str().expect("text");
         assert!(!text.chars().any(char::is_control), "{text}");
@@ -412,7 +409,7 @@ mod tests {
             ),
             &pr(),
             &[],
-            Utc::now(),
+            Timestamp::now(),
         );
         let text = missed["data"].as_str().expect("text");
         assert!(text.contains("missed by the LLM"), "{text}");

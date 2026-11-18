@@ -8,7 +8,7 @@ use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
 use aws_lc_rs::rsa::{KeyPair, KeySize};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-use chrono::Utc;
+use contracts::time::Timestamp;
 use fake_github::Config;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::StatusCode;
@@ -87,7 +87,7 @@ fn jwt(key: &str, claims: &Value) -> String {
 
 /// The JWT the server sends: issued 60 s back, valid 9 minutes from then.
 fn good_jwt() -> String {
-    let iat = Utc::now().timestamp() - 60;
+    let iat = Timestamp::now().as_second() - 60;
     jwt(
         &KEYS.0,
         &json!({"iss": APP_ID.to_string(), "iat": iat, "exp": iat + 540}),
@@ -182,9 +182,8 @@ async fn a_verified_jwt_reads_the_installation_and_mints_unique_read_only_tokens
     assert_eq!(first["permissions"], read_only()["permissions"]);
     assert_eq!(first["repositories"], recorded["repositories"]);
     assert_eq!(first["repository_selection"], "selected");
-    let expires =
-        chrono::DateTime::parse_from_rfc3339(first["expires_at"].as_str().unwrap()).unwrap();
-    let lifetime = (expires.with_timezone(&Utc) - Utc::now()).num_seconds();
+    let expires: Timestamp = first["expires_at"].as_str().unwrap().parse().unwrap();
+    let lifetime = (expires - Timestamp::now()).as_secs();
     assert!(
         (3500..=3600).contains(&lifetime),
         "valid one hour from now: {lifetime} s"
@@ -242,7 +241,7 @@ async fn a_verified_jwt_reads_the_installation_and_mints_unique_read_only_tokens
 #[tokio::test]
 async fn jwts_github_would_refuse_are_refused() {
     let base = spawn(config(true)).await;
-    let now = Utc::now().timestamp();
+    let now = Timestamp::now().as_second();
     let claims = |iss: Value, iat: i64, exp: i64| json!({"iss": iss, "iat": iat, "exp": exp});
     let unsigned = format!(
         "{}.{}.c2lnbmF0dXJl",

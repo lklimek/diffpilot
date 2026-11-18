@@ -1,11 +1,12 @@
 //! Durable demand ordering for lazy flow analysis; no runner scheduling policy changes.
+use contracts::time::Timestamp;
+
 use super::{
     Db,
     documents::DocumentKind,
     jobs::{parse_ts, parse_wire, ts},
 };
 use crate::error::DbError;
-use chrono::{DateTime, Utc};
 use contracts::agent::plan::PlanOutput;
 use contracts::api::error::ApiErrorCode;
 use contracts::api::tour::{FlowAnalysisState, FlowAnalysisStatus};
@@ -91,7 +92,7 @@ impl FlowWork<'_> {
         &self,
         id: AnalysisId,
         enabled: bool,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let mut tx = super::write_tx(&self.db.pool).await?;
         sqlx::query("UPDATE analyses SET background_analysis=? WHERE id=?")
@@ -112,7 +113,7 @@ impl FlowWork<'_> {
         &self,
         id: AnalysisId,
         flow: &FlowId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let plan: PlanOutput = self
             .db
@@ -149,7 +150,7 @@ impl FlowWork<'_> {
         id: AnalysisId,
         flow: &FlowId,
         verified: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, DbError> {
         let mut tx = super::write_tx(&self.db.pool).await?;
         let discarded = rerun(&mut tx, id, flow, verified, now).await?;
@@ -163,7 +164,7 @@ impl FlowWork<'_> {
         &self,
         id: AnalysisId,
         rejected: &[(FlowId, String)],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let mut tx = super::write_tx(&self.db.pool).await?;
         sqlx::query("UPDATE analyses SET background_analysis=1 WHERE id=?")
@@ -394,7 +395,7 @@ async fn rerun(
     id: AnalysisId,
     flow: &FlowId,
     verified: &str,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<bool, DbError> {
     let deleted = sqlx::query(
         "DELETE FROM documents WHERE analysis_id=? AND kind='flow' AND key=? AND body=?",
@@ -449,7 +450,7 @@ async fn demanded(
     tx: &mut sqlx::SqliteConnection,
     id: AnalysisId,
     flow: &FlowId,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(), DbError> {
     let rows = sqlx::query("SELECT id,attempt FROM jobs WHERE analysis_id=? AND kind='analyse_flow' AND state='queued' AND flow_id<>?")
         .bind(id.to_string()).bind(&flow.0).fetch_all(&mut *tx).await?;
@@ -465,7 +466,7 @@ async fn demanded(
 async fn withdraw(
     tx: &mut sqlx::SqliteConnection,
     rows: Vec<sqlx::sqlite::SqliteRow>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(), DbError> {
     for row in rows {
         let id: String = row.try_get("id")?;
@@ -501,6 +502,8 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+    use jiff::SignedDuration;
+
     use super::*;
     use crate::repo::analyses::testing::seed_analysis;
     use contracts::agent::plan::PlannedFlow;
@@ -513,7 +516,7 @@ mod tests {
         let db = Db::open(&path).await.unwrap();
         let id = seed_analysis(&db).await.unwrap();
         db.flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .unwrap();
         let plan = PlanOutput {
@@ -532,7 +535,7 @@ mod tests {
             unassigned: vec![],
         };
         db.documents()
-            .put(id, DocumentKind::Plan, "", &plan, Utc::now())
+            .put(id, DocumentKind::Plan, "", &plan, Timestamp::now())
             .await
             .unwrap();
         assert_eq!(
@@ -540,22 +543,18 @@ mod tests {
             NextFlow::Run(FlowId("f1".into()))
         );
         db.flow_work()
-            .set_background(id, false, Utc::now())
+            .set_background(id, false, Timestamp::now())
             .await
             .unwrap();
         assert_eq!(db.flow_work().next(id).await.unwrap(), NextFlow::Idle);
         assert!(!db.flow_work().has_work(id).await.unwrap());
-        let now = Utc::now();
+        let now = Timestamp::now();
         db.flow_work()
             .request(id, &FlowId("f3".into()), now)
             .await
             .unwrap();
         db.flow_work()
-            .request(
-                id,
-                &FlowId("f2".into()),
-                now + chrono::TimeDelta::seconds(1),
-            )
+            .request(id, &FlowId("f2".into()), now + SignedDuration::from_secs(1))
             .await
             .unwrap();
         // Close and reopen the file-backed database: demand and the switch survive restart.
@@ -650,7 +649,7 @@ mod tests {
             unassigned: vec![],
         };
         db.documents()
-            .put(id, DocumentKind::Plan, "", &plan, Utc::now())
+            .put(id, DocumentKind::Plan, "", &plan, Timestamp::now())
             .await
             .unwrap();
         db.documents()
@@ -659,7 +658,7 @@ mod tests {
                 DocumentKind::PrContext,
                 "",
                 &serde_json::json!({}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -671,7 +670,7 @@ mod tests {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
         db.flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .unwrap();
         let (f1, f2) = (FlowId("f1".into()), FlowId("f2".into()));
@@ -687,7 +686,7 @@ mod tests {
                 DocumentKind::Flow,
                 "f2",
                 &serde_json::json!({}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -708,7 +707,10 @@ mod tests {
             .unwrap();
         assert_eq!(round, AUTO_FLOW_RETRIES, "each retry is a new job round");
         // The user's Retry still runs it, without using the automatic budget.
-        db.flow_work().request(id, &f1, Utc::now()).await.unwrap();
+        db.flow_work()
+            .request(id, &f1, Timestamp::now())
+            .await
+            .unwrap();
         assert!(!db.flow_work().parked(id).await.unwrap());
         assert_eq!(
             db.flow_work().next(id).await.unwrap(),
@@ -726,7 +728,7 @@ mod tests {
     {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let job = db
             .jobs()
             .enqueue(
@@ -788,7 +790,7 @@ mod tests {
                     stage: super::super::jobs::JobStage::Flow(flow.clone()),
                     generation: 0,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -805,11 +807,11 @@ mod tests {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
         db.flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .unwrap();
         let (f1, f2) = (FlowId("f1".into()), FlowId("f2".into()));
-        let now = Utc::now();
+        let now = Timestamp::now();
         db.documents()
             .put(id, DocumentKind::Unsent, "f2", &serde_json::json!({}), now)
             .await
@@ -855,7 +857,10 @@ mod tests {
         let kept = succeeded_job(&db, id, &f1).await;
         succeeded_job(&db, id, &f2).await;
         db.flow_work().fail(id, &f2, "Failed").await.unwrap();
-        db.flow_work().request(id, &f2, Utc::now()).await.unwrap();
+        db.flow_work()
+            .request(id, &f2, Timestamp::now())
+            .await
+            .unwrap();
         assert_eq!(
             db.flow_work().next(id).await.unwrap(),
             NextFlow::Run(f2.clone())
@@ -889,7 +894,7 @@ mod tests {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
         let f1 = FlowId("f1".into());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let failure = "The flow analysis failed. The LLM call took too long and was stopped.";
         let by_user = format!("{failure} Retry this flow.");
         let work = db.flow_work();
@@ -948,7 +953,7 @@ mod tests {
         // the flow would be retried automatically in a live analysis.
         for background in [true, false] {
             db.flow_work()
-                .set_background(id, background, Utc::now())
+                .set_background(id, background, Timestamp::now())
                 .await
                 .unwrap();
             for (ended, action) in [
@@ -972,7 +977,7 @@ mod tests {
                 ),
             ] {
                 db.analyses()
-                    .set_state(id, &ended, Utc::now())
+                    .set_state(id, &ended, Timestamp::now())
                     .await
                     .unwrap();
                 assert_eq!(
@@ -989,7 +994,7 @@ mod tests {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
         db.flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .unwrap();
         let f1 = FlowId("f1".into());
@@ -1005,7 +1010,7 @@ mod tests {
             format!("{failure} It will be tried again automatically.")
         );
         db.flow_work()
-            .set_background(id, false, Utc::now())
+            .set_background(id, false, Timestamp::now())
             .await
             .unwrap();
         assert_eq!(
@@ -1014,7 +1019,7 @@ mod tests {
             "nothing is retried while background analysis is off"
         );
         db.flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .unwrap();
         sqlx::query("UPDATE flow_work SET auto_retries=?")
@@ -1040,19 +1045,19 @@ mod tests {
                     DocumentKind::Flow,
                     flow,
                     &serde_json::json!({}),
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .unwrap();
         }
         db.analyses()
-            .set_state(id, &AnalysisState::Finished { total: 2 }, Utc::now())
+            .set_state(id, &AnalysisState::Finished { total: 2 }, Timestamp::now())
             .await
             .unwrap();
         let f1 = FlowId("f1".into());
         assert!(
             db.flow_work()
-                .request_again(id, &f1, "{}", Utc::now())
+                .request_again(id, &f1, "{}", Timestamp::now())
                 .await
                 .unwrap()
         );
@@ -1085,7 +1090,7 @@ mod tests {
         );
         assert!(
             !db.flow_work()
-                .request_again(id, &f1, "{}", Utc::now())
+                .request_again(id, &f1, "{}", Timestamp::now())
                 .await
                 .unwrap(),
             "nothing stored any more"
@@ -1103,7 +1108,7 @@ mod tests {
                     DocumentKind::Flow,
                     flow,
                     &serde_json::json!({}),
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .unwrap();
@@ -1112,12 +1117,12 @@ mod tests {
         // Discarded while the driver, which had read every flow, finished the analysis.
         assert!(
             db.flow_work()
-                .request_again(id, &f1, "{}", Utc::now())
+                .request_again(id, &f1, "{}", Timestamp::now())
                 .await
                 .unwrap()
         );
         db.analyses()
-            .set_state(id, &AnalysisState::Finished { total: 2 }, Utc::now())
+            .set_state(id, &AnalysisState::Finished { total: 2 }, Timestamp::now())
             .await
             .unwrap();
         assert!(db.flow_work().reopen(id).await.unwrap());
@@ -1131,12 +1136,12 @@ mod tests {
                 DocumentKind::Flow,
                 "f1",
                 &serde_json::json!({}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
         db.analyses()
-            .set_state(id, &AnalysisState::Finished { total: 2 }, Utc::now())
+            .set_state(id, &AnalysisState::Finished { total: 2 }, Timestamp::now())
             .await
             .unwrap();
         assert!(
@@ -1156,14 +1161,14 @@ mod tests {
                     DocumentKind::Flow,
                     flow,
                     &serde_json::json!({}),
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .unwrap();
         }
         let f2 = FlowId("f2".into());
         db.flow_work()
-            .analyse_remaining(id, &[(f2.clone(), "{}".to_owned())], Utc::now())
+            .analyse_remaining(id, &[(f2.clone(), "{}".to_owned())], Timestamp::now())
             .await
             .unwrap();
         assert!(db.flow_work().background(id).await.unwrap());
@@ -1209,7 +1214,7 @@ mod tests {
                 DocumentKind::Flow,
                 "f1",
                 &serde_json::json!({"run": 1}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -1225,13 +1230,13 @@ mod tests {
                 DocumentKind::Flow,
                 "f1",
                 &serde_json::json!({"run": 2}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
         assert!(
             !db.flow_work()
-                .request_again(id, &f1, &verified, Utc::now())
+                .request_again(id, &f1, &verified, Timestamp::now())
                 .await
                 .unwrap()
         );
@@ -1271,7 +1276,7 @@ mod tests {
                 DocumentKind::Flow,
                 "f1",
                 &serde_json::json!({}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -1285,7 +1290,7 @@ mod tests {
                     user,
                     id,
                     &ticks(&["f1.1", "f2.1", "f10.1", "f1.3"]),
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .unwrap();
@@ -1293,7 +1298,7 @@ mod tests {
         let limits = QuestionLimits {
             per_analysis: 10,
             per_user: 10,
-            user_window_start: Utc::now() - chrono::TimeDelta::days(1),
+            user_window_start: Timestamp::now() - SignedDuration::from_hours(24),
         };
         let (asked, kept) = (QuestionId::new_random(), QuestionId::new_random());
         for (question, step) in [(asked, "f1.2"), (kept, "f2.1")] {
@@ -1307,7 +1312,7 @@ mod tests {
                         text: "why?".into(),
                     },
                     limits,
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .unwrap();
@@ -1332,14 +1337,14 @@ mod tests {
             },
         ] {
             db.feedback()
-                .upsert(feedback(target), Utc::now())
+                .upsert(feedback(target), Timestamp::now())
                 .await
                 .unwrap();
         }
         let f1 = FlowId("f1".into());
         assert!(
             db.flow_work()
-                .request_again(id, &f1, "{}", Utc::now())
+                .request_again(id, &f1, "{}", Timestamp::now())
                 .await
                 .unwrap()
         );
@@ -1351,10 +1356,10 @@ mod tests {
             );
         }
         assert!(matches!(
-            db.questions().get(asked, Utc::now()).await,
+            db.questions().get(asked, Timestamp::now()).await,
             Err(DbError::NotFound)
         ));
-        assert!(db.questions().get(kept, Utc::now()).await.is_ok());
+        assert!(db.questions().get(kept, Timestamp::now()).await.is_ok());
         let left: Vec<FeedbackTarget> = db
             .feedback()
             .list(id, "u2")
@@ -1392,7 +1397,7 @@ mod tests {
                     DocumentKind::Flow,
                     flow,
                     &serde_json::json!({}),
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .unwrap();
@@ -1401,7 +1406,7 @@ mod tests {
             !db.flow_work().cancel_rerun(id).await.unwrap(),
             "never finished"
         );
-        let finished_at = Utc::now() - chrono::TimeDelta::hours(1);
+        let finished_at = Timestamp::now() - SignedDuration::from_hours(1);
         db.analyses()
             .set_state(id, &AnalysisState::Finished { total: 2 }, finished_at)
             .await
@@ -1410,7 +1415,7 @@ mod tests {
         let f1 = FlowId("f1".into());
         assert!(
             db.flow_work()
-                .request_again(id, &f1, "{}", Utc::now())
+                .request_again(id, &f1, "{}", Timestamp::now())
                 .await
                 .unwrap()
         );
@@ -1421,7 +1426,7 @@ mod tests {
             idle: false,
         };
         db.analyses()
-            .set_state(id, &running, Utc::now())
+            .set_state(id, &running, Timestamp::now())
             .await
             .unwrap();
         assert_eq!(db.analyses().summary(id).await.unwrap().finished_at, None);

@@ -1,6 +1,6 @@
 //! Analyses and their progress.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -53,9 +53,9 @@ pub struct AnalysisSummary {
     /// State and progress.
     pub state: AnalysisState,
     /// When the analysis was requested.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// When it finished, failed or was cancelled.
-    pub finished_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<Timestamp>,
 }
 
 /// State of an analysis (brief §4.2).
@@ -98,9 +98,9 @@ pub enum AnalysisState {
         /// When the user requested the pause.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        paused_at: Option<DateTime<Utc>>,
+        paused_at: Option<Timestamp>,
         /// When it resumes, if known.
-        resumes_at: Option<DateTime<Utc>>,
+        resumes_at: Option<Timestamp>,
         /// Flows analysed before the pause.
         done: u32,
         /// Flows in total; null while planning (the number of flows is not known yet).
@@ -146,7 +146,7 @@ pub struct AnalysisStage {
     pub flow: Option<StageFlow>,
     /// When the server handed the job to the runner; null while the job waits for the runner.
     // TODO: expose preparation separately when the runner protocol has a precise agent-start event.
-    pub started_at: Option<DateTime<Utc>>,
+    pub started_at: Option<Timestamp>,
 }
 
 /// Kind of an analysis stage.
@@ -192,7 +192,7 @@ pub struct PlanPart {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AnalysisProgress {
     /// Start of this run, preserved across parts and server restarts.
-    pub started_at: DateTime<Utc>,
+    pub started_at: Timestamp,
     /// Plan parts accepted.
     pub planning: RunStage,
     /// PR context accepted.

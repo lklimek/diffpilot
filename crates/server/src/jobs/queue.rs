@@ -4,10 +4,10 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use contracts::ids::{AnalysisId, JobId, RefreshId};
 use contracts::job::spec::JobTarget;
 use contracts::job::state::JobState;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::analyses::SessionState;
@@ -68,7 +68,7 @@ impl QueueExecutor {
             &crate::model::ModelContext::default(),
             saved.as_ref(),
         );
-        match self.db.jobs().enqueue(job, Utc::now()).await {
+        match self.db.jobs().enqueue(job, Timestamp::now()).await {
             Ok(job) => Ok(JobHandle { job_id: job.id }),
             Err(DbError::Conflict) => current().await?.ok_or(ExecutorError::Db(DbError::Conflict)),
             Err(error) => Err(error.into()),
@@ -77,7 +77,7 @@ impl QueueExecutor {
 }
 
 /// Ends expired leases (requeue, fail or cancel); run before claims and by followers of a job past its lease.
-pub async fn expire_leases(db: &Db, now: DateTime<Utc>) -> Result<Vec<ExpiredLease>, DbError> {
+pub async fn expire_leases(db: &Db, now: Timestamp) -> Result<Vec<ExpiredLease>, DbError> {
     let expired = db.jobs().expire_leases(now).await?;
     for lease in &expired {
         tracing::warn!(
@@ -153,7 +153,7 @@ impl JobExecutor for QueueExecutor {
                             &crate::model::ModelContext::default(),
                             saved.as_ref(),
                         );
-                        match self.db.jobs().enqueue(job, Utc::now()).await {
+                        match self.db.jobs().enqueue(job, Timestamp::now()).await {
                             Ok(job) => Ok(Some(JobHandle { job_id: job.id })),
                             Err(DbError::Conflict) => self
                                 .db
@@ -185,7 +185,7 @@ impl JobExecutor for QueueExecutor {
     fn cancel(&self, handle: &JobHandle) -> BoxFuture<'_, Result<(), ExecutorError>> {
         let job = handle.job_id;
         Box::pin(async move {
-            match self.db.jobs().request_cancel(job, Utc::now()).await {
+            match self.db.jobs().request_cancel(job, Timestamp::now()).await {
                 Ok(state) => {
                     tracing::info!(%job, state = state.as_str(), "job cancellation requested");
                     Ok(())
@@ -225,7 +225,11 @@ impl JobExecutor for QueueExecutor {
                 if job.kind == contracts::agent::JobKind::Ask && !questions_too {
                     continue;
                 }
-                let state = self.db.jobs().request_cancel(job.id, Utc::now()).await?;
+                let state = self
+                    .db
+                    .jobs()
+                    .request_cancel(job.id, Timestamp::now())
+                    .await?;
                 tracing::info!(%analysis, job = %job.id, state = state.as_str(), "job of the ended analysis cancelled");
             }
             Ok(())
@@ -243,7 +247,7 @@ struct Follower {
     last_state: Option<JobState>,
     output_sent: bool,
     /// The credential pause end last reported for the queued job.
-    reported_pause: Option<DateTime<Utc>>,
+    reported_pause: Option<Timestamp>,
     pending: VecDeque<JobUpdate>,
     done: bool,
     /// Runs after the follower's read and before it acts on it, to force interleavings in tests.
@@ -292,7 +296,7 @@ impl Follower {
     }
 
     async fn poll(&mut self) -> Result<(), ExecutorError> {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut snapshot = self.snapshot().await?;
         if self.last_state.is_none() {
             self.attempt = snapshot.job.attempt;
@@ -425,7 +429,6 @@ impl Follower {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeDelta;
     use contracts::agent::JobKind;
     use contracts::common::RepoRef;
     use contracts::ids::FlowId;
@@ -434,6 +437,7 @@ mod tests {
     use contracts::job::spec::JobPriority;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
     use db::repo::jobs::{ClaimParams, JobStage};
+    use jiff::SignedDuration;
     use serde_json::json;
 
     use super::*;
@@ -480,12 +484,12 @@ mod tests {
     }
 
     async fn claim(db: &Db, lease_secs: i64) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         db.jobs()
             .claim(ClaimParams {
                 credential_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
-                lease_until: now + TimeDelta::seconds(lease_secs),
+                lease_until: now + SignedDuration::from_secs(lease_secs),
                 now,
             })
             .await
@@ -496,7 +500,7 @@ mod tests {
     fn event(seq: u32) -> JobEvent {
         JobEvent {
             seq,
-            at: Utc::now(),
+            at: Timestamp::now(),
             activity: ActivityKind::AgentMessage,
             summary: format!("event {seq}"),
         }
@@ -564,7 +568,7 @@ mod tests {
             message: "x".to_owned(),
         };
         db.analyses()
-            .set_state(analysis, &failed, Utc::now())
+            .set_state(analysis, &failed, Timestamp::now())
             .await
             .expect("failed");
     }
@@ -578,7 +582,7 @@ mod tests {
             .expect("submit");
         claim(&db, 60).await;
         db.jobs()
-            .complete(&succeeded(first.job_id, 1), Utc::now())
+            .complete(&succeeded(first.job_id, 1), Timestamp::now())
             .await
             .expect("complete");
         let replay = executor
@@ -592,7 +596,7 @@ mod tests {
         fail_analysis(&db, analysis).await;
         assert!(
             db.analyses()
-                .retry(analysis, Utc::now())
+                .retry(analysis, Timestamp::now())
                 .await
                 .expect("retry")
         );
@@ -608,7 +612,7 @@ mod tests {
         assert_eq!(again, fresh, "idempotent within the new round");
         assert!(
             !db.analyses()
-                .retry(analysis, Utc::now())
+                .retry(analysis, Timestamp::now())
                 .await
                 .expect("retry"),
             "only a failed analysis starts a new round"
@@ -630,7 +634,7 @@ mod tests {
         fail_analysis(&db, analysis).await;
         assert!(
             db.analyses()
-                .retry(analysis, Utc::now())
+                .retry(analysis, Timestamp::now())
                 .await
                 .expect("retry")
         );
@@ -661,10 +665,15 @@ mod tests {
             kind: contracts::job::spec::CredentialKind::CodexChatgpt,
         };
         db.llm_credentials()
-            .register(db::repo::DEFAULT_TENANT, &credential, true, Utc::now())
+            .register(
+                db::repo::DEFAULT_TENANT,
+                &credential,
+                true,
+                Timestamp::now(),
+            )
             .await
             .expect("register");
-        let until = DateTime::from_timestamp(Utc::now().timestamp() + 600, 0).expect("reset time");
+        let until = Timestamp::from_second(Timestamp::now().as_second() + 600).expect("reset time");
         db.llm_credentials()
             .pause(CREDENTIAL, until)
             .await
@@ -698,7 +707,7 @@ mod tests {
             .await
             .expect("access");
         db.jobs()
-            .complete(&succeeded(job, 1), Utc::now())
+            .complete(&succeeded(job, 1), Timestamp::now())
             .await
             .expect("complete");
         assert_eq!(
@@ -725,7 +734,7 @@ mod tests {
                 job,
                 1,
                 &[event(1), event(2)],
-                Utc::now() + TimeDelta::seconds(60),
+                Timestamp::now() + SignedDuration::from_secs(60),
             )
             .await
             .expect("events");
@@ -736,7 +745,7 @@ mod tests {
                 job,
                 1,
                 &json!({"ok": true}),
-                Utc::now() + TimeDelta::seconds(60),
+                Timestamp::now() + SignedDuration::from_secs(60),
             )
             .await
             .expect("output");
@@ -745,7 +754,7 @@ mod tests {
             JobUpdate::OutputReady(json!({"ok": true}))
         );
         db.jobs()
-            .complete(&succeeded(job, 1), Utc::now())
+            .complete(&succeeded(job, 1), Timestamp::now())
             .await
             .expect("complete");
         assert_eq!(
@@ -810,10 +819,15 @@ mod tests {
             .expect("submit");
         let job = handle.job_id;
         let mut updates = executor.events(&handle);
-        let after_lease = || Utc::now() + TimeDelta::seconds(61);
+        let after_lease = || Timestamp::now() + SignedDuration::from_secs(61);
         claim(&db, 60).await;
         db.jobs()
-            .record_events(job, 1, &[event(1)], Utc::now() + TimeDelta::seconds(60))
+            .record_events(
+                job,
+                1,
+                &[event(1)],
+                Timestamp::now() + SignedDuration::from_secs(60),
+            )
             .await
             .expect("events");
         assert!(matches!(next(&mut updates).await, JobUpdate::Event(_)));
@@ -850,7 +864,7 @@ mod tests {
                 handle.job_id,
                 1,
                 &[event(1)],
-                Utc::now() - TimeDelta::seconds(1),
+                Timestamp::now() - SignedDuration::from_secs(1),
             )
             .await
             .expect("events with a lease already over");
@@ -905,7 +919,7 @@ mod tests {
             .await
             .expect("submit");
         let job = handle.job_id;
-        let lease = || Utc::now() + TimeDelta::seconds(60);
+        let lease = || Timestamp::now() + SignedDuration::from_secs(60);
         claim(&db, 60).await;
         db.jobs()
             .record_events(job, 1, &[event(1), event(2)], lease())
@@ -929,7 +943,7 @@ mod tests {
                         }
                         Last::Result => {
                             db.jobs()
-                                .complete(&succeeded(job, 1), Utc::now())
+                                .complete(&succeeded(job, 1), Timestamp::now())
                                 .await
                                 .expect("result");
                         }
@@ -984,7 +998,7 @@ mod tests {
             .await
             .expect("submit");
         let job = handle.job_id;
-        let lease = || Utc::now() + TimeDelta::seconds(60);
+        let lease = || Timestamp::now() + SignedDuration::from_secs(60);
         claim(&db, 60).await;
         db.jobs()
             .record_events(job, 1, &[event(1)], lease())
@@ -1002,7 +1016,7 @@ mod tests {
                         .await
                         .expect("output of attempt 1");
                     db.jobs()
-                        .expire_leases(Utc::now() + TimeDelta::seconds(61))
+                        .expire_leases(Timestamp::now() + SignedDuration::from_secs(61))
                         .await
                         .expect("expire");
                     claim(&db, 60).await;
@@ -1027,7 +1041,7 @@ mod tests {
             }
         }
         db.jobs()
-            .complete(&succeeded(job, 2), Utc::now())
+            .complete(&succeeded(job, 2), Timestamp::now())
             .await
             .expect("complete");
         seen.push(next(&mut updates).await);

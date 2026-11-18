@@ -12,6 +12,7 @@ use contracts::job::access::{InstallationToken, Secret};
 use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::result::Usage;
 use contracts::job::spec::SessionRef;
+use contracts::time::Timestamp;
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -116,7 +117,7 @@ impl LlmProvider for Stub {
             let activity = |summary: String| {
                 ProviderEvent::Activity(JobEvent {
                     seq: 0,
-                    at: Utc::now(),
+                    at: Timestamp::now(),
                     activity: ActivityKind::Command,
                     summary,
                 })
@@ -376,7 +377,7 @@ async fn events_are_numbered_scrubbed_and_clipped() {
     let mut spec = spec(JobKind::Plan, shared_repo());
     spec.access.github = Some(InstallationToken {
         token: Secret::new(TOKEN_CANARY),
-        expires_at: Utc::now(),
+        expires_at: Timestamp::now(),
         repository: RepoRef {
             owner: "acme".to_owned(),
             name: "node-client".to_owned(),
@@ -809,7 +810,7 @@ async fn secrets_straddling_the_clip_limits_are_scrubbed_whole() {
     let mut spec = spec(JobKind::Plan, shared_repo());
     spec.access.github = Some(InstallationToken {
         token: Secret::new(TOKEN_CANARY),
-        expires_at: Utc::now(),
+        expires_at: Timestamp::now(),
         repository: RepoRef {
             owner: "acme".to_owned(),
             name: "node-client".to_owned(),

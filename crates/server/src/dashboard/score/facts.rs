@@ -1,9 +1,9 @@
 //! Scan facts the scorer reads, in the meaning of the daily-priorities `dp-scan.json` fields (plan §A.2); ages are
 //! timestamps, measured against the `now` the caller passes in.
 
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::{ItemKey, ScoreComponent};
 use contracts::common::RepoRef;
+use contracts::time::Timestamp;
 use uuid::Uuid;
 
 /// How an item reached the scan (skill `relations`).
@@ -121,7 +121,7 @@ pub struct PrFacts {
     /// Label names.
     pub labels: Vec<String>,
     /// GitHub `updatedAt`.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Added lines of the full diff; null when unknown.
     pub additions: Option<u32>,
     /// Removed lines of the full diff; null when unknown.
@@ -149,7 +149,7 @@ pub struct PrFacts {
     /// A review is requested directly from a scanned login.
     pub review_pending_for_us: bool,
     /// When that request was made; null when the timeline page lacked it.
-    pub review_requested_at: Option<DateTime<Utc>>,
+    pub review_requested_at: Option<Timestamp>,
     /// `review_requested_at` fell back to `updatedAt`.
     pub review_request_age_is_approx: bool,
     /// Logins whose latest review requests changes.
@@ -157,7 +157,7 @@ pub struct PrFacts {
     /// One of them is a human outside the scanned logins.
     pub changes_requested_by_human: bool,
     /// Newest such human change request not re-requested since; null when none or re-requested.
-    pub changes_requested_human_at: Option<DateTime<Utc>>,
+    pub changes_requested_human_at: Option<Timestamp>,
     /// More reviews exist than were fetched.
     pub reviews_truncated: bool,
     /// The last comment is a human's outside the scanned logins.
@@ -165,7 +165,7 @@ pub struct PrFacts {
     /// Author of the last comment.
     pub last_comment_author: Option<String>,
     /// Time of the last comment.
-    pub last_comment_at: Option<DateTime<Utc>>,
+    pub last_comment_at: Option<Timestamp>,
     /// Ownership-policy verdict.
     pub owned_change: OwnedChange,
     /// Logins whose latest review approves.
@@ -173,7 +173,7 @@ pub struct PrFacts {
     /// Pending review requests to people and teams (`team:<slug>`) outside the scanned logins and bots.
     pub review_requested_from_others: Vec<String>,
     /// The oldest of those requests still open (`AwaitingItem.waiting_since`); null when the timeline page lacked it.
-    pub others_review_requested_at: Option<DateTime<Utc>>,
+    pub others_review_requested_at: Option<Timestamp>,
 }
 
 /// Facts of one open issue.
@@ -194,7 +194,7 @@ pub struct IssueFacts {
     /// Label names.
     pub labels: Vec<String>,
     /// GitHub `updatedAt`.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Milestone assignment.
     pub milestone: Milestone,
     /// Release catalogue of the repository.
@@ -227,7 +227,7 @@ pub struct TodoFacts {
     /// MemCan priority (`high`, `medium`, `low`), as stored.
     pub priority: Option<String>,
     /// Change time (plan §G: first sight of the current values).
-    pub changed_at: DateTime<Utc>,
+    pub changed_at: Timestamp,
 }
 
 /// A part value judged by the LLM; the judge's output after its own validation (plan §B.2).
@@ -275,7 +275,7 @@ pub struct Judgement {
     /// Items merged into this one.
     pub also: Vec<ItemKey>,
     /// When it was judged.
-    pub judged_at: DateTime<Utc>,
+    pub judged_at: Timestamp,
     /// Current or inherited.
     pub freshness: Freshness,
 }

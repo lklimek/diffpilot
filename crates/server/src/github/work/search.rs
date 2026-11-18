@@ -3,8 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use chrono::{DateTime, NaiveDate, Utc};
 use contracts::api::dashboard::ScanNote;
+use contracts::time::Timestamp;
+use jiff::civil::Date;
 use serde::Deserialize;
 
 use super::client::{Page, SEARCH_CAP, TokenSource, WorkClient, WorkError};
@@ -77,9 +78,9 @@ pub struct IssueCandidate {
     /// Description (untrusted).
     pub body: String,
     /// Opened.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last update.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Comment count.
     pub comments: u32,
     /// Why it is a candidate.
@@ -199,8 +200,8 @@ struct SearchItem {
     milestone: Option<Milestone>,
     #[serde(default)]
     body: Option<String>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    created_at: Timestamp,
+    updated_at: Timestamp,
     #[serde(default)]
     comments: u32,
 }
@@ -391,7 +392,7 @@ impl<T: TokenSource> WorkClient<T> {
     pub async fn search_history(
         &self,
         login: &str,
-        since: NaiveDate,
+        since: Date,
     ) -> Result<HistorySearch, WorkError> {
         let mut history = HistorySearch::default();
         if !valid_login(login) {

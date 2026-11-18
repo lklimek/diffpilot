@@ -1,8 +1,8 @@
 //! REST reads: ownership policy contents (Q3), pull request files (Q4), latest release (Q7), releases and
 //! milestones (Q8) and a login's public events (Q14).
 
-use chrono::{DateTime, Utc};
 use contracts::common::RepoRef;
+use contracts::time::Timestamp;
 use serde::Deserialize;
 
 use super::client::{TokenSource, WorkClient, WorkError};
@@ -45,7 +45,7 @@ pub struct Release {
     pub prerelease: bool,
     /// Publication time.
     #[serde(default)]
-    pub published_at: Option<DateTime<Utc>>,
+    pub published_at: Option<Timestamp>,
 }
 
 /// A milestone as REST lists it.
@@ -59,7 +59,7 @@ pub struct RestMilestone {
     pub state: String,
     /// Due date.
     #[serde(default)]
-    pub due_on: Option<DateTime<Utc>>,
+    pub due_on: Option<Timestamp>,
 }
 
 /// A pull request event of a login.
@@ -76,7 +76,7 @@ pub struct UserEvent {
     /// Author of the pull request (the event's actor may be someone else).
     pub author: Option<String>,
     /// When.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 #[derive(Deserialize)]
@@ -86,7 +86,7 @@ struct RawEvent {
     repo: RawRepo,
     #[serde(default)]
     payload: serde_json::Value,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
 }
 
 #[derive(Deserialize)]

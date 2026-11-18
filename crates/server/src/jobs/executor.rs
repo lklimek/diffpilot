@@ -3,12 +3,12 @@
 
 use std::fmt::Debug;
 
-use chrono::{DateTime, Utc};
 use contracts::common::RepoRef;
 use contracts::ids::{AnalysisId, JobId};
 use contracts::job::event::JobEvent;
 use contracts::job::result::JobResult;
 use contracts::job::spec::{JobPriority, JobSpec};
+use contracts::time::Timestamp;
 use db::repo::jobs::JobStage;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
@@ -69,7 +69,7 @@ pub enum JobUpdate {
     /// Usage limit reached; the job waits and is queued again later.
     Paused {
         /// When it is queued again, if known.
-        resumes_at: Option<DateTime<Utc>>,
+        resumes_at: Option<Timestamp>,
     },
     /// A lease expired; the job is queued again as `attempt`.
     Requeued {

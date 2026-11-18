@@ -7,7 +7,6 @@ use analysis::diff::FileDiff;
 use analysis::lines::changed_line_count;
 use analysis::prepass::batches::{merge_plans, plan_batches};
 use analysis::verify::{VerifiedPlan, VerifyIssue, VerifyIssueKind};
-use chrono::{DateTime, Utc};
 use contracts::agent::plan::{PlanOutput, PlannedFlow, UnassignedHunk};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::{self as agent, JobKind};
@@ -21,6 +20,7 @@ use contracts::job::spec::{
     CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
     PullRequestTarget, RepoCheckout,
 };
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
 use db::repo::flow_work::{NextFlow, RETRY_BY_USER};
@@ -61,7 +61,7 @@ enum Item {
     /// An update of the stage's job, or `None` at the end of its stream.
     Job(Option<Result<JobUpdate, ExecutorError>>),
     /// The time a pause of the stage's job was reported to end has come.
-    PauseOver(DateTime<Utc>),
+    PauseOver(Timestamp),
 }
 
 /// The merged job streams and pause timers.
@@ -117,7 +117,7 @@ struct Driver<'a> {
     /// MemCan failed once in this run (the profile lookup or a calibration read): later reads do not wait for it.
     memcan_down: bool,
     /// Stages whose job waits for the usage limit to reset, with when it is queued again if known.
-    paused: BTreeMap<String, Option<DateTime<Utc>>>,
+    paused: BTreeMap<String, Option<Timestamp>>,
 }
 
 /// Runs the analysis until it is finished (or was not live) or no flow work is admitted.
@@ -663,7 +663,7 @@ impl Driver<'_> {
                                     "",
                                     &context,
                                     github_access,
-                                    Utc::now(),
+                                    Timestamp::now(),
                                 )
                                 .await?;
                             self.results.pr_context = Some(context);
@@ -1181,7 +1181,7 @@ impl Driver<'_> {
         self.state
             .db
             .documents()
-            .put(self.analysis, kind, key, body, Utc::now())
+            .put(self.analysis, kind, key, body, Timestamp::now())
             .await
     }
 
@@ -1234,10 +1234,10 @@ impl Driver<'_> {
 fn pause_timer(
     stage: JobStage,
     generation: u32,
-    at: DateTime<Utc>,
+    at: Timestamp,
 ) -> BoxStream<'static, (JobStage, u32, Item)> {
     stream::once(async move {
-        let wait = (at - Utc::now()).to_std().unwrap_or_default();
+        let wait = std::time::Duration::try_from(at - Timestamp::now()).unwrap_or_default();
         tokio::time::sleep(wait).await;
         (stage, generation, Item::PauseOver(at))
     })

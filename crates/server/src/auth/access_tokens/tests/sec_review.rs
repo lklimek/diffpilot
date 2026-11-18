@@ -6,6 +6,7 @@ use std::path::Path;
 use contracts::ids::JobId;
 use contracts::job::protocol::{ClaimRequest, ClaimResponse, CredentialStatus};
 use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+use contracts::time::Timestamp;
 use db::repo::analyses::testing::{CREDENTIAL, judge_spec, seed_ranking_refresh};
 use db::repo::jobs::JobStage;
 
@@ -345,7 +346,7 @@ async fn token_reads_leave_the_database_unchanged() {
             refresh_token: secrecy::SecretString::from("ghr_fake_sec_review"),
             refresh_token_expires_in: 15_638_400,
         },
-        Utc::now(),
+        Timestamp::now(),
     )
     .await
     .expect("pair");

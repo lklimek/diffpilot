@@ -22,10 +22,10 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use chrono::{DateTime, Utc};
 use contracts::api::access_tokens::{AccessTokenId, AccessTokenSecret, TokenScope};
 use contracts::api::error::ApiErrorCode;
 use contracts::routes::{GET_ME, HttpMethod, Listener, ROUTES, RouteAuth};
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::access_tokens::{TOUCH_INTERVAL, TokenCredential};
@@ -134,7 +134,7 @@ impl fmt::Debug for TokenPrincipal {
 pub(crate) async fn token_live(
     db: &Db,
     id: &AccessTokenId,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<bool, DbError> {
     Ok(db
         .access_tokens()
@@ -143,7 +143,7 @@ pub(crate) async fn token_live(
         .is_some_and(|credential| usable(&credential, now)))
 }
 
-fn usable(credential: &TokenCredential, now: DateTime<Utc>) -> bool {
+fn usable(credential: &TokenCredential, now: Timestamp) -> bool {
     credential.record.revoked_at.is_none() && credential.record.expires_at > now
 }
 
@@ -437,7 +437,7 @@ impl TokenGate {
             return Ok(None);
         };
         let matches: bool = credential.token_hash.ct_eq(&hash).into();
-        if !matches || !usable(&credential, Utc::now()) {
+        if !matches || !usable(&credential, Timestamp::now()) {
             return Ok(None);
         }
         audit.user_id = Some(credential.record.user_id.clone());
@@ -452,7 +452,7 @@ impl TokenGate {
 
     /// Records the use at most once a minute per token, so a burst of requests writes nothing; best-effort.
     async fn record_use(&self, credential: &TokenCredential) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let due = credential
             .record
             .last_used_at
@@ -645,7 +645,7 @@ pub(crate) async fn stored_token(
     db: &Db,
     user_id: &str,
     scopes: Vec<TokenScope>,
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
 ) -> (String, TokenPrincipal) {
     use db::repo::DEFAULT_TENANT;
     use db::repo::access_tokens::{CreateOutcome, NewAccessToken};
@@ -659,7 +659,7 @@ pub(crate) async fn stored_token(
     };
     let created = db
         .access_tokens()
-        .create(DEFAULT_TENANT, user_id, &new, Utc::now())
+        .create(DEFAULT_TENANT, user_id, &new, Timestamp::now())
         .await
         .expect("store token");
     assert!(matches!(created, CreateOutcome::Created(_)), "{created:?}");

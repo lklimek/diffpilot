@@ -3,12 +3,12 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::{
     AwaitingItem, Fact, FactTag, ItemCounts, ItemKey, ItemKind, ItemTarget, ItemText, RankingState,
     ScoreState, SnapshotMeta, Tier, WorkItem,
 };
 use contracts::common::RepoRef;
+use contracts::time::Timestamp;
 use db::repo::dashboard::RefreshRecord;
 
 use super::{Snapshot, StoredIssue, StoredPr, StoredTodo};
@@ -498,6 +498,6 @@ fn awaiting(rules: &ScoreRules, snapshot: &Snapshot, items: &[ViewItem]) -> Vec<
 /// `AwaitingItem.waiting_since`: the oldest open request to another reviewer (each login's newest request
 /// event). Unknown (only team requests, or the timeline missed the event): the PR's creation time, a documented
 /// over-estimate of the wait.
-fn waiting_since(requested: Option<DateTime<Utc>>, created: DateTime<Utc>) -> DateTime<Utc> {
+fn waiting_since(requested: Option<Timestamp>, created: Timestamp) -> Timestamp {
     requested.unwrap_or(created)
 }

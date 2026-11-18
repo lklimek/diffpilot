@@ -8,9 +8,11 @@ use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use contracts::api::dashboard::RefreshStatus;
 use contracts::ids::RefreshId;
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
+use jiff::civil::Date;
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 
@@ -33,7 +35,7 @@ pub enum Clock {
     /// `at` when created, advancing with tokio's clock (tests with paused time).
     Fixed {
         /// Time at `since`.
-        at: DateTime<Utc>,
+        at: Timestamp,
         /// Tokio instant of `at`.
         since: tokio::time::Instant,
     },
@@ -41,7 +43,7 @@ pub enum Clock {
 
 impl Clock {
     /// A clock reading `at` now and advancing with tokio's (possibly paused) clock.
-    pub fn starting_at(at: DateTime<Utc>) -> Self {
+    pub fn starting_at(at: Timestamp) -> Self {
         Self::Fixed {
             at,
             since: tokio::time::Instant::now(),
@@ -49,11 +51,11 @@ impl Clock {
     }
 
     /// The current time.
-    pub fn now(&self) -> DateTime<Utc> {
+    pub fn now(&self) -> Timestamp {
         match self {
-            Self::System => Utc::now(),
+            Self::System => Timestamp::now(),
             Self::Fixed { at, since } => {
-                *at + TimeDelta::from_std(since.elapsed()).unwrap_or(TimeDelta::MAX)
+                *at + SignedDuration::try_from(since.elapsed()).unwrap_or(SignedDuration::MAX)
             }
         }
     }
@@ -74,7 +76,7 @@ struct Inner {
     events: broadcast::Sender<RefreshStatus>,
     stopped: broadcast::Sender<RefreshId>,
     /// Scheduled runs given up for a user's local date after a failure the run record could not hold.
-    given_up: Mutex<HashSet<(String, NaiveDate)>>,
+    given_up: Mutex<HashSet<(String, Date)>>,
 }
 
 /// Announces the end of a refresh's task, also when it is aborted (dropped at an await).
@@ -150,7 +152,7 @@ impl DashboardHub {
     }
 
     /// The current time.
-    pub fn now(&self) -> DateTime<Utc> {
+    pub fn now(&self) -> Timestamp {
         self.inner.clock.now()
     }
 
@@ -228,7 +230,7 @@ impl DashboardHub {
         self.inner.stopped.subscribe()
     }
 
-    fn given_up_runs(&self) -> MutexGuard<'_, HashSet<(String, NaiveDate)>> {
+    fn given_up_runs(&self) -> MutexGuard<'_, HashSet<(String, Date)>> {
         self.inner
             .given_up
             .lock()
@@ -236,14 +238,14 @@ impl DashboardHub {
     }
 
     /// Gives up the user's scheduled run of local date `on` (the scheduler skips it); forgets older dates.
-    pub(crate) fn give_up_scheduled_run(&self, user_id: &str, on: NaiveDate) {
+    pub(crate) fn give_up_scheduled_run(&self, user_id: &str, on: Date) {
         let mut given_up = self.given_up_runs();
-        given_up.retain(|(_, date)| *date >= on.pred_opt().unwrap_or(on));
+        given_up.retain(|(_, date)| *date >= on.yesterday().unwrap_or(on));
         given_up.insert((user_id.to_owned(), on));
     }
 
     /// Whether the user's scheduled run of local date `on` was given up.
-    pub(crate) fn scheduled_run_given_up(&self, user_id: &str, on: NaiveDate) -> bool {
+    pub(crate) fn scheduled_run_given_up(&self, user_id: &str, on: Date) -> bool {
         self.given_up_runs().contains(&(user_id.to_owned(), on))
     }
 

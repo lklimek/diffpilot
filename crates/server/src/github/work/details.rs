@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::ScanNote;
 use contracts::common::RepoRef;
+use contracts::time::Timestamp;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -137,7 +137,7 @@ pub struct ReviewNode {
     /// `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, …
     pub state: String,
     /// Submission time (null for a pending review).
-    pub submitted_at: Option<DateTime<Utc>>,
+    pub submitted_at: Option<Timestamp>,
 }
 
 /// A comment (conversation or thread).
@@ -150,7 +150,7 @@ pub struct Comment {
     #[serde(default)]
     pub body: String,
     /// When.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
 }
 
 /// A review thread with its first comments.
@@ -171,7 +171,7 @@ pub struct ReviewThread {
 pub struct TimelineRequest {
     /// When.
     #[serde(default)]
-    pub created_at: Option<DateTime<Utc>>,
+    pub created_at: Option<Timestamp>,
     /// Who was asked.
     #[serde(default)]
     pub requested_reviewer: Option<Reviewer>,
@@ -237,7 +237,7 @@ pub struct CheckContext {
     pub conclusion: Option<String>,
     /// Check run start.
     #[serde(default)]
-    pub started_at: Option<DateTime<Utc>>,
+    pub started_at: Option<Timestamp>,
     /// Workflow of a check run (`checkSuite.workflowRun.workflow.name`).
     #[serde(default, deserialize_with = "workflow_name", rename = "checkSuite")]
     pub workflow: Option<String>,
@@ -249,7 +249,7 @@ pub struct CheckContext {
     pub state: Option<String>,
     /// Status time.
     #[serde(default)]
-    pub created_at: Option<DateTime<Utc>>,
+    pub created_at: Option<Timestamp>,
 }
 
 fn workflow_name<'de, De: serde::Deserializer<'de>>(
@@ -285,9 +285,9 @@ pub struct PullDetail {
     /// Deleted lines.
     pub deletions: u64,
     /// Opened.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Last update.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// `MERGEABLE`, `CONFLICTING`, `UNKNOWN`.
     pub mergeable: String,
     /// `CLEAN`, `BLOCKED`, `BEHIND`, …
@@ -332,15 +332,15 @@ pub struct PullDetail {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HistoryPr {
     /// Opened.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Closed (merged or not).
-    pub closed_at: Option<DateTime<Utc>>,
+    pub closed_at: Option<Timestamp>,
     /// Merged.
-    pub merged_at: Option<DateTime<Utc>>,
+    pub merged_at: Option<Timestamp>,
     /// Author login.
     pub author: Option<String>,
     /// Submission times of the last 20 reviews per scanned login that reviewed it.
-    pub reviews: BTreeMap<String, Vec<DateTime<Utc>>>,
+    pub reviews: BTreeMap<String, Vec<Timestamp>>,
 }
 
 /// What the reach diagnostic (Q15) found.
@@ -485,7 +485,7 @@ impl<T: TokenSource> WorkClient<T> {
                 .iter()
                 .enumerate()
                 .map(|(index, login)| {
-                    let times: Vec<DateTime<Utc>> = found[format!("r{index}")]["nodes"]
+                    let times: Vec<Timestamp> = found[format!("r{index}")]["nodes"]
                         .as_array()
                         .into_iter()
                         .flatten()

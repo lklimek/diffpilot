@@ -142,7 +142,7 @@ async fn log(
     let jobs = state.db.jobs().statistics(summary.id).await?;
     let seconds = summary
         .finished_at
-        .map(|at| (at - summary.created_at).num_seconds().max(0));
+        .map(|at| (at - summary.created_at).as_secs().max(0));
     let usage = summary.usage;
     // One field list, two messages: a log message is a literal.
     macro_rules! line {

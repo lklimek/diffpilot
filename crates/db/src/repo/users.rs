@@ -1,7 +1,7 @@
 //! Repository for `users` and their tenant `memberships`.
 
-use chrono::{DateTime, Utc};
 use contracts::common::LlmLanguage;
+use contracts::time::Timestamp;
 use serde_json::Value;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
@@ -55,7 +55,7 @@ impl Users<'_> {
         tenant_id: &str,
         new_id: &str,
         profile: &GithubProfile,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<UserRecord, DbError> {
         let now = timestamp(now);
         let mut tx = super::write_tx(self.pool).await?;
@@ -149,7 +149,12 @@ mod tests {
         let db = Db::in_memory().await.expect("db");
         let users = db.users();
         let first = users
-            .upsert_member(DEFAULT_TENANT, "u-1", &profile("lklimek", None), Utc::now())
+            .upsert_member(
+                DEFAULT_TENANT,
+                "u-1",
+                &profile("lklimek", None),
+                Timestamp::now(),
+            )
             .await
             .expect("insert");
         assert_eq!(first.id, "u-1");
@@ -159,7 +164,7 @@ mod tests {
                 DEFAULT_TENANT,
                 "u-2",
                 &profile("lklimek", Some("Lukasz")),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("update");

@@ -224,7 +224,7 @@ fn usage_limit_resets_at_comes_from_the_exhausted_window() {
     );
     assert_eq!(
         usage_limit_resets_at(&d.home, THREAD),
-        DateTime::from_timestamp(1_794_990_905, 0)
+        Timestamp::from_second(1_794_990_905)
     );
     write(
         &home_rollout(&d, THREAD),

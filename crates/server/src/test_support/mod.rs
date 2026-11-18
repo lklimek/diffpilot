@@ -2,8 +2,9 @@
 
 pub(crate) mod logs;
 
-use chrono::{TimeDelta, Utc};
+use contracts::time::Timestamp;
 use db::repo::sessions::NewSession;
+use jiff::SignedDuration;
 
 use crate::secrets::sha256;
 use crate::state::AppState;
@@ -12,7 +13,7 @@ use crate::state::AppState;
 /// header value.
 pub(crate) async fn session_cookie(state: &AppState, tenant: &str) -> String {
     let token = format!("session-token-{tenant}");
-    let now = Utc::now();
+    let now = Timestamp::now();
     db::repo::tenants::testing::allow_login(&state.db, tenant, "lklimek", 1)
         .await
         .expect("allowlist");
@@ -25,7 +26,7 @@ pub(crate) async fn session_cookie(state: &AppState, tenant: &str) -> String {
                 tenant_id: tenant,
                 user_id: "u1",
                 csrf_token: "csrf",
-                expires_at: now + TimeDelta::hours(1),
+                expires_at: now + SignedDuration::from_hours(1),
             },
             now,
         )
@@ -38,7 +39,7 @@ pub(crate) async fn session_cookie(state: &AppState, tenant: &str) -> String {
 /// A second authenticated reader in the same tenant, for privacy regression tests.
 pub(crate) async fn other_user_cookie(state: &AppState) -> String {
     use db::repo::{DEFAULT_TENANT, users::GithubProfile};
-    let now = Utc::now();
+    let now = Timestamp::now();
     db::repo::tenants::testing::allow_login(&state.db, DEFAULT_TENANT, "colleague", 2)
         .await
         .expect("allow");
@@ -67,7 +68,7 @@ pub(crate) async fn other_user_cookie(state: &AppState) -> String {
                 tenant_id: DEFAULT_TENANT,
                 user_id: "u2",
                 csrf_token: "csrf",
-                expires_at: now + TimeDelta::hours(1),
+                expires_at: now + SignedDuration::from_hours(1),
             },
             now,
         )

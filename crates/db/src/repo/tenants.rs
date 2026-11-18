@@ -1,6 +1,6 @@
 //! Repository for `tenants` and the sign-in allowlist `tenant_allowed_logins` (ADR-007).
 
-use chrono::{DateTime, Utc};
+use contracts::time::Timestamp;
 use sqlx::SqlitePool;
 
 use super::Db;
@@ -39,7 +39,7 @@ impl Tenants<'_> {
         tenant_id: &str,
         login: &str,
         github_id: i64,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<LoginAdmission, DbError> {
         let bound = sqlx::query(
             "UPDATE tenant_allowed_logins SET github_id = ?, bound_at = ?
@@ -93,7 +93,7 @@ pub mod testing {
         .bind(tenant_id)
         .bind(login)
         .bind(github_id)
-        .bind(timestamp(Utc::now()))
+        .bind(timestamp(Timestamp::now()))
         .execute(&db.pool)
         .await?;
         Ok(())
@@ -139,7 +139,7 @@ mod tests {
     #[tokio::test]
     async fn first_admission_binds_the_id_and_later_ones_must_match() {
         let db = Db::in_memory().await.expect("db");
-        let now = Utc::now();
+        let now = Timestamp::now();
         let tenants = db.tenants();
         let admit =
             |login: &'static str, id: i64| tenants.admit_login(DEFAULT_TENANT, login, id, now);

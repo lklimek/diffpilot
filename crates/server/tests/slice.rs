@@ -12,7 +12,6 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
-use chrono::{TimeDelta, Utc};
 use contracts::agent::JobKind;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::events::AnalysisEvent;
@@ -23,6 +22,7 @@ use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::JobState;
 use contracts::routes::{RUNNER_CLAIM, RUNNER_RESULT};
+use contracts::time::Timestamp;
 use db::repo::analyses::{NewAnalysis, SessionState};
 use db::repo::documents::DocumentKind;
 use db::repo::jobs::JobStage;
@@ -32,6 +32,7 @@ use db::repo::{DEFAULT_TENANT, Db};
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use http_body_util::BodyExt;
+use jiff::SignedDuration;
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use server::api;
@@ -476,7 +477,7 @@ async fn harness_with_app(app: bool) -> Harness {
         db,
         executor.clone(),
     );
-    let now = Utc::now();
+    let now = Timestamp::now();
     // The fixture user `alice` is not in the seeded allowlist: allow her and sign her in directly.
     db::repo::tenants::testing::allow_login(&state.db, DEFAULT_TENANT, "alice", 3001)
         .await
@@ -517,7 +518,7 @@ async fn harness_with_app(app: bool) -> Harness {
                 tenant_id: DEFAULT_TENANT,
                 user_id: &user.id,
                 csrf_token: CSRF,
-                expires_at: now + TimeDelta::days(1),
+                expires_at: now + SignedDuration::from_hours(24),
             },
             now,
         )
@@ -747,7 +748,7 @@ impl Harness {
         self.state
             .db
             .flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .expect("background on");
     }
@@ -774,7 +775,7 @@ impl Harness {
             .state
             .db
             .pull_requests()
-            .upsert(DEFAULT_TENANT, repo.id, &pr, Utc::now())
+            .upsert(DEFAULT_TENANT, repo.id, &pr, Timestamp::now())
             .await
             .expect("pr");
         self.state
@@ -790,7 +791,7 @@ impl Harness {
                     language: Default::default(),
                     created_by: self.user_id.clone(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("analysis")
@@ -890,7 +891,7 @@ impl Harness {
             .state
             .db
             .pull_requests()
-            .upsert(DEFAULT_TENANT, repo.id, &pr, Utc::now())
+            .upsert(DEFAULT_TENANT, repo.id, &pr, Timestamp::now())
             .await
             .expect("pr");
         self.state
@@ -906,7 +907,7 @@ impl Harness {
                     language: Default::default(),
                     created_by: self.user_id.clone(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("analysis")
@@ -1025,7 +1026,7 @@ async fn pipeline_resumes_unfinished_analysis_from_stored_documents() {
     let id = h.seed_analysis().await;
     h.background_on(id).await;
     let documents = h.state.db.documents();
-    let now = Utc::now();
+    let now = Timestamp::now();
     documents
         .put(id, DocumentKind::Plan, "", &agent_output("plan:1"), now)
         .await
@@ -1066,7 +1067,7 @@ async fn pipeline_resumes_unfinished_analysis_from_stored_documents() {
 async fn restart_keeps_demand_and_background_off_with_partial_results() {
     let h = harness().await;
     let id = h.seed_analysis().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     for (kind, key, output) in [
         (DocumentKind::Plan, "", "plan:1"),
         (DocumentKind::PrContext, "", "pr_context"),
@@ -1156,7 +1157,7 @@ async fn memcan_profile_lookup_reaches_every_prompt_and_the_tour() {
             DocumentKind::MemcanProfile,
             "",
             &json!({"memcan": "checked", "text": profile}),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("lookup");
@@ -1301,7 +1302,7 @@ async fn a_pre_pass_stored_in_an_older_shape_is_computed_again() {
     object.remove("whitespace");
     old["hunks"][0]["disposition"] = json!({"kind": "identical_move"});
     documents
-        .put(id, DocumentKind::Prepass, "", &old, chrono::Utc::now())
+        .put(id, DocumentKind::Prepass, "", &old, Timestamp::now())
         .await
         .expect("store the old shape");
     let (status, again) = h.get(&uri).await;
@@ -1359,7 +1360,7 @@ async fn stored_plan_and_flow_missing_newly_mandatory_lines_leave_them_unexplain
             DocumentKind::Plan,
             "",
             &plan_of_an_earlier_build(),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("store the old plan");
@@ -1374,7 +1375,7 @@ async fn stored_plan_and_flow_missing_newly_mandatory_lines_leave_them_unexplain
         .expect("edges")
         .retain(|edge| edge["from_step_id"] != "s9" && edge["to_step_id"] != "s9");
     documents
-        .put(id, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .put(id, DocumentKind::Flow, "f1", &flow, Timestamp::now())
         .await
         .expect("store the narrower flow");
     let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
@@ -1424,7 +1425,7 @@ async fn resume_reads_a_stored_plan_as_stored() {
             DocumentKind::Plan,
             "",
             &plan_of_an_earlier_build(),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("old plan");
@@ -1434,7 +1435,7 @@ async fn resume_reads_a_stored_plan_as_stored() {
             DocumentKind::PrContext,
             "",
             &agent_output("pr_context"),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("pr context");
@@ -1472,7 +1473,7 @@ async fn retry_reads_a_stored_plan_as_stored() {
             DocumentKind::Plan,
             "",
             &plan_of_an_earlier_build(),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("old plan");
@@ -1500,7 +1501,7 @@ async fn a_stored_flow_failing_another_check_is_failed_and_can_be_analysed_again
     h.state
         .db
         .documents()
-        .put(id, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .put(id, DocumentKind::Flow, "f1", &flow, Timestamp::now())
         .await
         .expect("store a flow that fails a check");
     let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
@@ -1586,7 +1587,7 @@ async fn cancelling_the_rerun_of_a_finished_analysis_keeps_its_results() {
     h.state
         .db
         .documents()
-        .put(id, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .put(id, DocumentKind::Flow, "f1", &flow, Timestamp::now())
         .await
         .expect("store a flow that fails a check");
     h.executor.script("flow:f1", Script::Pending);
@@ -1664,7 +1665,7 @@ async fn analysing_all_remaining_flows_reruns_a_rejected_stored_flow() {
     h.state
         .db
         .documents()
-        .put(analysis, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .put(analysis, DocumentKind::Flow, "f1", &flow, Timestamp::now())
         .await
         .expect("store a flow that fails a check");
     h.set_background(&id, true).await;
@@ -1914,7 +1915,7 @@ async fn other_tenants_analysis_is_not_found() {
     db::repo::tenants::testing::allow_login(&h.state.db, "other", "alice", 3001)
         .await
         .expect("allowlist");
-    let now = Utc::now();
+    let now = Timestamp::now();
     h.state
         .db
         .sessions()
@@ -1924,7 +1925,7 @@ async fn other_tenants_analysis_is_not_found() {
                 tenant_id: "other",
                 user_id: &h.user_id,
                 csrf_token: CSRF,
-                expires_at: now + TimeDelta::days(1),
+                expires_at: now + SignedDuration::from_hours(24),
             },
             now,
         )
@@ -2569,7 +2570,7 @@ async fn failure_before_any_flow_offers_retry() {
             DocumentKind::MemcanProfile,
             "",
             &stale,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("lookup");
@@ -3041,7 +3042,13 @@ async fn retry_reads_stored_batch_plans_as_stored() {
     h.state
         .db
         .documents()
-        .put(analysis, DocumentKind::Plan, "2", &earlier, Utc::now())
+        .put(
+            analysis,
+            DocumentKind::Plan,
+            "2",
+            &earlier,
+            Timestamp::now(),
+        )
         .await
         .expect("stored batch plan");
     h.executor.unscript("plan:2");
@@ -3315,7 +3322,7 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
                 flow: None,
                 message: "x".to_owned(),
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("failed");
@@ -3338,7 +3345,7 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(queued, "the new round's plan job was not queued within 5 s");
-    let resets_at = chrono::DateTime::from_timestamp(Utc::now().timestamp() + 3, 0).expect("time");
+    let resets_at = Timestamp::from_second(Timestamp::now().as_second() + 3).expect("time");
     let late = JobResult {
         job_id: old.job_id,
         attempt: claim.spec.attempt,
@@ -3502,7 +3509,7 @@ async fn user_pause_keeps_the_running_result_and_next_job_uses_the_new_model() {
                 reasoning_effort: contracts::job::spec::ReasoningEffort::Low,
             },
             "alice",
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -3568,7 +3575,11 @@ async fn restart_leaves_user_paused_analysis_untouched_even_without_a_remote() {
     h.state
         .db
         .analyses()
-        .pause_by_user(id, "alice", Utc::now() - TimeDelta::days(3))
+        .pause_by_user(
+            id,
+            "alice",
+            Timestamp::now() - SignedDuration::from_hours(24 * 3),
+        )
         .await
         .unwrap();
     server::pipeline::resume_unfinished(&h.state).await.unwrap();
@@ -4283,7 +4294,7 @@ async fn restart_starts_a_driver_for_a_stored_flow_request() {
         .request(
             analysis_id(&id),
             &contracts::ids::FlowId("f4".to_owned()),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("request");
@@ -4478,7 +4489,7 @@ async fn restart_recovers_a_succeeded_flow_job_with_background_off() {
         .expect("the withdrawn flow job");
     // The state a crash leaves: the flow started by background work, the switch turned off after the claim,
     // the job succeeded, its document not stored.
-    let now = Utc::now();
+    let now = Timestamp::now();
     h.state
         .db
         .flow_work()

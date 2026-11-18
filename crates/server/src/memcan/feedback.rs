@@ -3,11 +3,11 @@
 
 use analysis::diff::FileDiff;
 use analysis::lines::changed_lines_within;
-use chrono::{DateTime, Utc};
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::feedback::{Feedback, FeedbackRequest, FeedbackTarget};
 use contracts::common::LineSide;
 use contracts::ids::{AnalysisId, FeedbackId};
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::feedback::NewFeedback;
@@ -43,7 +43,7 @@ pub async fn record(
     user_id: &str,
     summary: &AnalysisSummary,
     request: FeedbackRequest,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Feedback, FeedbackError> {
     let note = request
         .note
@@ -83,7 +83,7 @@ pub async fn remove(
     user_id: &str,
     analysis: AnalysisId,
     id: FeedbackId,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(), DbError> {
     db.feedback().remove(analysis, user_id, id, now).await?;
     writer::nudge();

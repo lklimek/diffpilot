@@ -11,6 +11,8 @@ use contracts::common::LlmLanguage;
 use contracts::job::result::JobFailureKind;
 use contracts::job::spec::{CredentialKind, ReasoningEffort};
 use contracts::job::state::JobState;
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 use serde::Serialize;
 
 use crate::repo::settings::CallFailure;
@@ -681,7 +683,6 @@ async fn repair_runs_are_new_generations_of_a_stage() {
 /// crash between reading and revoking leaves them listed for recovery.
 #[tokio::test]
 async fn installation_tokens_survive_until_revocation_is_confirmed() {
-    use chrono::{Duration, TimeZone, Utc};
     use contracts::ids::JobId;
 
     let db = db().await;
@@ -696,12 +697,9 @@ async fn installation_tokens_survive_until_revocation_is_confirmed() {
         .execute(&db.pool)
         .await
         .expect("attempt");
-    let now = Utc
-        .with_ymd_and_hms(2026, 11, 16, 18, 0, 0)
-        .single()
-        .expect("time");
+    let now = "2026-11-16T18:00:00Z".parse::<Timestamp>().expect("time");
     let jobs = db.jobs();
-    jobs.record_github_token(job, 1, b"ciphertext-1", now + Duration::hours(1))
+    jobs.record_github_token(job, 1, b"ciphertext-1", now + SignedDuration::from_hours(1))
         .await
         .expect("record");
     assert_eq!(
@@ -727,14 +725,14 @@ async fn installation_tokens_survive_until_revocation_is_confirmed() {
         .execute(&db.pool)
         .await
         .expect("re-claim");
-    jobs.record_github_token(job, 2, b"ciphertext-2", now + Duration::hours(2))
+    jobs.record_github_token(job, 2, b"ciphertext-2", now + SignedDuration::from_hours(2))
         .await
         .expect("record second");
     let due = jobs.github_tokens_to_revoke().await.expect("list");
     assert_eq!(due.len(), 1, "{due:?}");
     assert_eq!((due[0].job, due[0].attempt), (job, 1));
     assert_eq!(due[0].ciphertext, b"ciphertext-1".to_vec());
-    assert_eq!(due[0].expires_at, now + Duration::hours(1));
+    assert_eq!(due[0].expires_at, now + SignedDuration::from_hours(1));
     assert!(
         jobs.confirm_github_token_revoked(job, 1)
             .await

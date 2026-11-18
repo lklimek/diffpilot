@@ -2,11 +2,11 @@
 //! and the creation of an analysis. The analysis is stored at once with the pull request's base tip; the driver
 //! prepares it (fetch, merge base) before any job.
 
-use chrono::Utc;
 use contracts::api::analyses::{AnalysisSummary, CreateAnalysisRequest};
 use contracts::api::pr::{PrSize, ResolvePrResponse, SizeWarning};
 use contracts::common::PrRef;
 use contracts::ids::AnalysisId;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::analyses::NewAnalysis;
 
@@ -76,7 +76,7 @@ async fn fetch_pull(
     let pr_id = state
         .db
         .pull_requests()
-        .upsert(&session.tenant_id, repo.id, &pull.summary, Utc::now())
+        .upsert(&session.tenant_id, repo.id, &pull.summary, Timestamp::now())
         .await?;
     Ok((pull, pr_id))
 }
@@ -178,7 +178,7 @@ pub async fn create(
                 language: user.language,
                 created_by: session.user_id.clone(),
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await;
     let record = match created {

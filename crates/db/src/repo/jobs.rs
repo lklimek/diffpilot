@@ -1,7 +1,6 @@
 //! Repository for `jobs` and `job_events`: the queue behind `QueueExecutor` and the runner protocol.
 //! Frozen signatures (cross-WP).
 
-use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use contracts::agent::JobKind;
 use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId, RefreshId};
 use contracts::job::access::AgentAccess;
@@ -9,6 +8,8 @@ use contracts::job::event::JobEvent;
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult, LlmCallStatus};
 use contracts::job::spec::{JobPriority, JobSpec, JobTarget};
 use contracts::job::state::{JobState, JobTransition};
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -37,7 +38,7 @@ pub struct TokenToRevoke {
     /// AES-GCM ciphertext of the token.
     pub ciphertext: Vec<u8>,
     /// Token expiry; an expired token needs no GitHub call, only the confirmation.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 /// The stage a job serves: the durable link from analysis progress (or a dashboard ranking) to its job (restart
@@ -150,9 +151,9 @@ pub struct JobRecord {
     /// Cancellation was requested.
     pub cancel_requested: bool,
     /// End of the current lease.
-    pub lease_expires_at: Option<DateTime<Utc>>,
+    pub lease_expires_at: Option<Timestamp>,
     /// When a paused job is queued again.
-    pub resumes_at: Option<DateTime<Utc>>,
+    pub resumes_at: Option<Timestamp>,
     /// The output posted before archival for the current attempt (provisional; the result is authoritative).
     pub ready_output: Option<Value>,
     /// The final result.
@@ -167,9 +168,9 @@ pub struct JobRecord {
     /// The last claim gave the job a GitHub installation token (its agent had the GitHub tool).
     pub github_access_granted: bool,
     /// When it was enqueued.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// When it reached a terminal state.
-    pub finished_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<Timestamp>,
 }
 
 /// What a runner claim needs from the queue.
@@ -180,9 +181,9 @@ pub struct ClaimParams<'p> {
     /// Hash of the new job token.
     pub job_token_hash: &'p [u8],
     /// End of the lease.
-    pub lease_until: DateTime<Utc>,
+    pub lease_until: Timestamp,
     /// Now.
-    pub now: DateTime<Utc>,
+    pub now: Timestamp,
 }
 
 /// Reply to an accepted event batch.
@@ -235,7 +236,7 @@ pub struct JobAuthorization {
     /// State.
     pub state: JobState,
     /// End of the current lease.
-    pub lease_expires_at: Option<DateTime<Utc>>,
+    pub lease_expires_at: Option<Timestamp>,
     /// Cancellation was requested.
     pub cancel_requested: bool,
 }
@@ -248,14 +249,14 @@ pub struct JobSnapshot {
     /// Events of `job.attempt`, in order.
     pub events: Vec<JobEvent>,
     /// Until when the job's LLM credential is paused by a usage limit (any job's), if it is or was.
-    pub credential_paused_until: Option<DateTime<Utc>>,
+    pub credential_paused_until: Option<Timestamp>,
 }
 
 /// Events kept per job: `job_events` is a bounded activity log.
 const EVENTS_KEPT: i64 = 500;
 
 /// How long a usage-limited job waits when the provider gave no reset time (ADR-003).
-pub const PAUSE_WITHOUT_RESET: TimeDelta = TimeDelta::minutes(30);
+pub const PAUSE_WITHOUT_RESET: SignedDuration = SignedDuration::from_mins(30);
 
 /// Result text of a job that failed because no claim could prepare its context.
 const CONTEXT_UNPREPARED_MESSAGE: &str =
@@ -266,14 +267,14 @@ const RUNNER_LOST_MESSAGE: &str =
     "The runner stopped reporting progress on every attempt, so the job was given up.";
 
 /// Fixed-width RFC 3339 UTC text, so stored timestamps compare correctly as text.
-pub(crate) fn ts(at: DateTime<Utc>) -> String {
-    at.to_rfc3339_opts(SecondsFormat::Micros, true)
+pub(crate) fn ts(at: Timestamp) -> String {
+    format!("{:.6}", at.get())
 }
 
 /// Parses a stored timestamp.
-pub(crate) fn parse_ts(value: &str, column: &'static str) -> Result<DateTime<Utc>, DbError> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|at| at.with_timezone(&Utc))
+pub(crate) fn parse_ts(value: &str, column: &'static str) -> Result<Timestamp, DbError> {
+    value
+        .parse::<Timestamp>()
         .map_err(|_| DbError::Corrupt { column })
 }
 
@@ -322,7 +323,7 @@ macro_rules! job_columns {
     };
 }
 
-fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<DateTime<Utc>>, DbError> {
+fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<Timestamp>, DbError> {
     row.try_get::<Option<String>, _>(column)?
         .map(|at| parse_ts(&at, column))
         .transpose()
@@ -391,7 +392,7 @@ async fn apply_credential_effects(
     tx: &mut SqliteConnection,
     credential: &str,
     result: &JobResult,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(), DbError> {
     if let Some(call) = &result.llm_call {
         let message = match &call.status {
@@ -494,7 +495,7 @@ impl Jobs<'_> {
     /// with [`Jobs::current_for_stage`] or [`Jobs::current_for_judge_stage`] and reuse it). `NotFound` when the
     /// target's analysis does not exist, or its refresh does not exist or no longer ranks (a job that could never
     /// be claimed).
-    pub async fn enqueue(&self, job: NewJob, now: DateTime<Utc>) -> Result<JobRecord, DbError> {
+    pub async fn enqueue(&self, job: NewJob, now: Timestamp) -> Result<JobRecord, DbError> {
         let mut spec = job.spec;
         // The stored spec never holds a credential (threat model T3b); access is filled at claim.
         spec.access = AgentAccess::default();
@@ -590,7 +591,7 @@ impl Jobs<'_> {
         job: JobId,
         attempt: u32,
         events: &[JobEvent],
-        lease_until: DateTime<Utc>,
+        lease_until: Timestamp,
     ) -> Result<EventsRecorded, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let (current, _) = current(&mut tx, job).await?;
@@ -643,7 +644,7 @@ impl Jobs<'_> {
         job: JobId,
         attempt: u32,
         output: &Value,
-        lease_until: DateTime<Utc>,
+        lease_until: Timestamp,
     ) -> Result<OutputRecorded, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let (current, row) = current(&mut tx, job).await?;
@@ -681,7 +682,7 @@ impl Jobs<'_> {
     pub async fn complete(
         &self,
         result: &JobResult,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Completion, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let (current, row) = current(&mut tx, result.job_id).await?;
@@ -784,11 +785,7 @@ impl Jobs<'_> {
     }
 
     /// Cancels a queued or paused job at once, or flags a claimed or running one; returns the state after.
-    pub async fn request_cancel(
-        &self,
-        job: JobId,
-        now: DateTime<Utc>,
-    ) -> Result<JobState, DbError> {
+    pub async fn request_cancel(&self, job: JobId, now: Timestamp) -> Result<JobState, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let (current, _) = current(&mut tx, job).await?;
         match current.state {
@@ -823,7 +820,7 @@ impl Jobs<'_> {
     /// re-claimed), else `queued`, or `failed` without attempts left. Clears `ready_output` and the job token
     /// hash; the caller revokes the attempt's installation token (see [`Jobs::github_tokens_to_revoke`]) and ends
     /// the executor stream.
-    pub async fn expire_leases(&self, now: DateTime<Utc>) -> Result<Vec<ExpiredLease>, DbError> {
+    pub async fn expire_leases(&self, now: Timestamp) -> Result<Vec<ExpiredLease>, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let rows = sqlx::query(
             "SELECT id, state, attempt, max_attempts, cancel_requested FROM jobs
@@ -877,7 +874,7 @@ impl Jobs<'_> {
     }
 
     /// Re-queues paused jobs whose `resumes_at` has passed.
-    pub async fn resume_paused(&self, now: DateTime<Utc>) -> Result<Vec<JobId>, DbError> {
+    pub async fn resume_paused(&self, now: Timestamp) -> Result<Vec<JobId>, DbError> {
         let ids: Vec<String> = sqlx::query_scalar(
             "UPDATE jobs SET state = 'queued', resumes_at = NULL
              WHERE state = 'paused' AND resumes_at <= ? RETURNING id",
@@ -913,7 +910,7 @@ impl Jobs<'_> {
         &self,
         job: JobId,
         attempt: u32,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<JobState>, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let (current, row) = current(&mut tx, job).await?;
@@ -1179,7 +1176,7 @@ impl Jobs<'_> {
         job: JobId,
         attempt: u32,
         ciphertext: &[u8],
-        expires_at: DateTime<Utc>,
+        expires_at: Timestamp,
     ) -> Result<(), DbError> {
         let inserted = sqlx::query(
             "INSERT INTO installation_tokens (job_id, tenant_id, attempt, ciphertext, expires_at)
@@ -1187,7 +1184,7 @@ impl Jobs<'_> {
         )
         .bind(attempt)
         .bind(ciphertext)
-        .bind(expires_at.to_rfc3339())
+        .bind(expires_at.to_rfc3339_offset())
         .bind(job.to_string())
         .execute(self.pool)
         .await?;
@@ -1231,11 +1228,9 @@ impl Jobs<'_> {
                     })?,
                     attempt: row.try_get("attempt")?,
                     ciphertext: row.try_get("ciphertext")?,
-                    expires_at: DateTime::parse_from_rfc3339(&expires_at)
-                        .map_err(|_| DbError::Corrupt {
-                            column: "installation_tokens.expires_at",
-                        })?
-                        .with_timezone(&Utc),
+                    expires_at: expires_at.parse().map_err(|_| DbError::Corrupt {
+                        column: "installation_tokens.expires_at",
+                    })?,
                 })
             })
             .collect()
@@ -1260,7 +1255,6 @@ impl Jobs<'_> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
     use contracts::job::access::{McpHttpEndpoint, Secret};
     use contracts::job::event::ActivityKind;
     use contracts::job::result::LlmCallOutcome;
@@ -1273,11 +1267,11 @@ mod tests {
         CREDENTIAL, job_spec, judge_spec, seed_analysis, seed_ranking_refresh,
     };
 
-    fn at(second: i64) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 16, 12, 0, 0)
-            .single()
+    fn at(second: i64) -> Timestamp {
+        "2026-11-16T12:00:00Z"
+            .parse::<Timestamp>()
             .unwrap_or_default()
-            + TimeDelta::seconds(second)
+            + SignedDuration::from_secs(second)
     }
 
     async fn db() -> Db {
@@ -1362,7 +1356,7 @@ mod tests {
         }
         let listed = db.jobs().github_tokens_to_revoke().await.expect("list");
         let expiries: Vec<_> = listed.iter().map(|t| t.expires_at).collect();
-        let expected: Vec<DateTime<Utc>> = cases
+        let expected: Vec<Timestamp> = cases
             .iter()
             .map(|(_, at, _)| at.parse().expect("time"))
             .collect();

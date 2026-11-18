@@ -2,7 +2,6 @@
 
 use analysis::lines::changed_line_count;
 use analysis::verify::{self, LineFacts, VerifyError, VerifyIssue, wording};
-use chrono::Utc;
 use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
 use contracts::agent::ask::AskOutput;
 use contracts::agent::{self as agent, JobKind, StrictSchemaError};
@@ -15,6 +14,7 @@ use contracts::job::spec::{
     CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
     PullRequestTarget, RepoCheckout,
 };
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::documents::DocumentKind;
@@ -145,7 +145,7 @@ pub(super) async fn run(state: &AppState, question: QuestionId) {
         // Removed with its flow's steps (the flow is analysed again): nothing is left to answer.
         Err((_, FollowError::Db(DbError::NotFound)))
             if matches!(
-                state.db.questions().get(question, Utc::now()).await,
+                state.db.questions().get(question, Timestamp::now()).await,
                 Err(DbError::NotFound)
             ) =>
         {
@@ -178,7 +178,7 @@ async fn follow(state: &AppState, question: QuestionId) -> Followed {
     let record = state
         .db
         .questions()
-        .get(question, Utc::now())
+        .get(question, Timestamp::now())
         .await
         .map_err(|error| (None, error.into()))?;
     let analysis = record.analysis_id;
@@ -454,7 +454,7 @@ pub async fn context_pack(
     analysis: AnalysisId,
     question: QuestionId,
 ) -> Result<Option<String>, ContextPackError> {
-    let record = db.questions().get(question, Utc::now()).await?;
+    let record = db.questions().get(question, Timestamp::now()).await?;
     let summary = db.analyses().summary(analysis).await?;
     let results = StoredResults::load(db, analysis).await?;
     let step_id = &record.question.step_id;

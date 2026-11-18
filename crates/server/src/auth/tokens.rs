@@ -19,15 +19,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
-use tokio::sync::OwnedMutexGuard;
-use tracing::Instrument;
-
-use chrono::{DateTime, TimeDelta, Utc};
 use contracts::api::error::ApiErrorCode;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::sessions::NewSession;
 use db::repo::tokens::{EncryptedTokens, PairCondition, StoredTokens};
+use jiff::SignedDuration;
 use secrecy::{ExposeSecret, SecretString};
+use tokio::sync::OwnedMutexGuard;
+use tracing::Instrument;
 
 use super::{Session, liveness};
 use crate::api::error::ApiErrorSource;
@@ -36,7 +36,7 @@ use crate::secrets::{Aad, SecretError, TokenCipher, secrets_equal};
 use crate::state::AppState;
 
 /// An access token expiring within this margin is refreshed before use.
-const REFRESH_MARGIN: TimeDelta = TimeDelta::minutes(5);
+const REFRESH_MARGIN: SignedDuration = SignedDuration::from_mins(5);
 const TABLE: &str = "user_tokens";
 /// OAuth error code for a refresh token that is unknown, used or expired.
 const BAD_REFRESH_TOKEN: &str = "bad_refresh_token";
@@ -174,13 +174,13 @@ fn encrypt(
     cipher: &TokenCipher,
     user_id: &str,
     grant: &TokenGrant,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<EncryptedTokens, UserTokenError> {
     Ok(EncryptedTokens {
         access_ct: cipher.encrypt(access_aad(user_id), grant.access_token.expose_secret())?,
-        access_expires_at: now + TimeDelta::seconds(grant.expires_in),
+        access_expires_at: now + SignedDuration::from_secs(grant.expires_in),
         refresh_ct: cipher.encrypt(refresh_aad(user_id), grant.refresh_token.expose_secret())?,
-        refresh_expires_at: now + TimeDelta::seconds(grant.refresh_token_expires_in),
+        refresh_expires_at: now + SignedDuration::from_secs(grant.refresh_token_expires_in),
     })
 }
 
@@ -190,7 +190,7 @@ pub async fn store_sign_in_tokens(
     lock: &UserLock,
     tenant_id: &str,
     grant: &TokenGrant,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(), UserTokenError> {
     let cipher = TokenCipher::new(&state.config.secret_key);
     let tokens = encrypt(&cipher, &lock.user_id, grant, now)?;
@@ -209,7 +209,7 @@ pub(crate) async fn store_sign_in(
     lock: &UserLock,
     session: &NewSession<'_>,
     grant: &TokenGrant,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(), UserTokenError> {
     let cipher = TokenCipher::new(&state.config.secret_key);
     let tokens = encrypt(&cipher, &lock.user_id, grant, now)?;
@@ -239,7 +239,11 @@ pub(crate) async fn end_session(state: &AppState, session: &Session) -> Result<(
     state
         .db
         .user_tokens()
-        .end_session(&session.user_id, session.token_hash(), liveness(Utc::now()))
+        .end_session(
+            &session.user_id,
+            session.token_hash(),
+            liveness(Timestamp::now()),
+        )
         .await?;
     Ok(())
 }
@@ -254,7 +258,7 @@ pub async fn user_token_rejected(state: &AppState, user_id: &str, rejected: &Sec
     let marked = match tokens.get(user_id).await {
         Ok(Some(stored)) => match cipher.decrypt(access_aad(user_id), &stored.tokens.access_ct) {
             Ok(held) if secrets_equal(held.expose_secret(), rejected.expose_secret()) => tokens
-                .expire_access(user_id, stored.version, Utc::now())
+                .expire_access(user_id, stored.version, Timestamp::now())
                 .await
                 .map_err(UserTokenError::from),
             // Already rotated, or unreadable (handled on the next use).
@@ -281,7 +285,7 @@ fn fresh_access(
     cipher: &TokenCipher,
     user_id: &str,
     stored: &StoredTokens,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Option<SecretString>, SecretError> {
     if stored.tokens.access_expires_at - now > REFRESH_MARGIN {
         cipher
@@ -300,7 +304,7 @@ pub async fn user_access_token(
 ) -> Result<SecretString, UserTokenError> {
     let cipher = TokenCipher::new(&state.config.secret_key);
     if let Some(stored) = state.db.user_tokens().get(user_id).await?
-        && let Ok(Some(access)) = fresh_access(&cipher, user_id, &stored, Utc::now())
+        && let Ok(Some(access)) = fresh_access(&cipher, user_id, &stored, Timestamp::now())
     {
         return Ok(access);
     }
@@ -317,7 +321,7 @@ async fn refresh_if_due(state: &AppState, user_id: &str) -> Result<SecretString,
     if let Some(pending) = state.pending_pairs.get(user_id) {
         match store_pending(state, user_id, &pending).await {
             Ok(stored) => log_pending_outcome(user_id, stored),
-            Err(_) if pending.tokens.access_expires_at - Utc::now() > REFRESH_MARGIN => {
+            Err(_) if pending.tokens.access_expires_at - Timestamp::now() > REFRESH_MARGIN => {
                 return Ok(pending.access.clone());
             }
             Err(error) => return Err(error.into()),
@@ -330,7 +334,7 @@ async fn refresh_if_due(state: &AppState, user_id: &str) -> Result<SecretString,
         return Err(UserTokenError::SignInRequired);
     };
     let this_pair = PairCondition::Version(stored.version);
-    let now = Utc::now();
+    let now = Timestamp::now();
     let decrypted = match fresh_access(&cipher, user_id, &stored, now) {
         Ok(Some(access)) => return Ok(access),
         Ok(None) => cipher.decrypt(refresh_aad(user_id), &stored.tokens.refresh_ct),
@@ -368,7 +372,7 @@ async fn refresh_if_due(state: &AppState, user_id: &str) -> Result<SecretString,
         }
         Err(error) => return Err(error.into()),
     };
-    let now = Utc::now();
+    let now = Timestamp::now();
     let rotated = encrypt(&cipher, user_id, &grant, now)?;
     // GitHub has already invalidated the old pair: store the new one before using it, or keep it while busy.
     match tokens.replace(user_id, stored.version, &rotated, now).await {
@@ -413,7 +417,7 @@ async fn store_pending(
     let stored = state
         .db
         .user_tokens()
-        .replace(user_id, pending.replaces, &pending.tokens, Utc::now())
+        .replace(user_id, pending.replaces, &pending.tokens, Timestamp::now())
         .await?;
     state.pending_pairs.map().remove(user_id);
     Ok(stored)

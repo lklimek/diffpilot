@@ -417,6 +417,7 @@ async fn diff_files(
 mod tests {
     use std::time::Duration;
 
+    use contracts::time::Timestamp;
     use db::repo::analyses::testing::seed_analysis;
     use db::repo::documents::DocumentKind;
     use serde_json::json;
@@ -439,7 +440,7 @@ mod tests {
         state
             .db
             .flow_work()
-            .set_background(id, true, chrono::Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .expect("background on");
         let flow = |rank: u32| {
@@ -456,7 +457,7 @@ mod tests {
             state
                 .db
                 .documents()
-                .put(id, kind, "", &body, chrono::Utc::now())
+                .put(id, kind, "", &body, Timestamp::now())
                 .await
                 .expect("document");
         }
@@ -469,7 +470,7 @@ mod tests {
     #[tokio::test]
     async fn parked_driver_is_followed_by_a_new_one_only_for_admitted_work() {
         let (_dir, state, id) = with_flow_work().await;
-        let now = chrono::Utc::now();
+        let now = Timestamp::now();
         let flows = state.db.flow_work();
         flows.set_background(id, false, now).await.expect("off");
         state.statistics.planned(id, 3100, 31, 20, 3);

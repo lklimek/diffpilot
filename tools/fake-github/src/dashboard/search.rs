@@ -4,7 +4,10 @@
 //! OR-ed), and `created:`/`updated:`/`closed:`/`merged:` with `>=D`, `>D`, `<=D`, `<D`, `D`, `A..B`, `*` (dates or
 //! RFC 3339 times, UTC). Anything else is refused with 422, so a client never relies on an unsupported term.
 
-use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
 use serde_json::{Value, json};
 
 use super::world::{World, name_with_owner, number};
@@ -39,8 +42,8 @@ enum Relation {
 /// A half-open time range `[from, until)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Range {
-    from: Option<DateTime<Utc>>,
-    until: Option<DateTime<Utc>>,
+    from: Option<Timestamp>,
+    until: Option<Timestamp>,
 }
 
 /// A parsed search query.
@@ -57,17 +60,17 @@ pub(crate) struct Search {
 }
 
 /// The first and the last instant (exclusive) a date or time names.
-fn instant(text: &str) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
-    if let Ok(date) = NaiveDate::parse_from_str(text, "%Y-%m-%d") {
-        let start = date.and_hms_opt(0, 0, 0)?.and_utc();
-        return Some((start, start + TimeDelta::days(1)));
+fn instant(text: &str) -> Option<(Timestamp, Timestamp)> {
+    if let Ok(date) = Date::strptime("%Y-%m-%d", text) {
+        let start = Timestamp::from(date.to_zoned(TimeZone::UTC).ok()?.timestamp());
+        return Some((start, start + SignedDuration::from_hours(24)));
     }
-    let time = DateTime::parse_from_rfc3339(text).ok()?.with_timezone(&Utc);
-    Some((time, time + TimeDelta::seconds(1)))
+    let time: Timestamp = text.parse().ok()?;
+    Some((time, time + SignedDuration::from_secs(1)))
 }
 
 fn range(value: &str) -> Option<Range> {
-    let bound = |text: &str| -> Option<Option<(DateTime<Utc>, DateTime<Utc>)>> {
+    let bound = |text: &str| -> Option<Option<(Timestamp, Timestamp)>> {
         if text == "*" {
             Some(None)
         } else {
@@ -251,8 +254,7 @@ impl Search {
         let in_range = |(field, range): &(&str, Range)| {
             node[*field]
                 .as_str()
-                .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
-                .map(|time| time.with_timezone(&Utc))
+                .and_then(|text| text.parse::<Timestamp>().ok())
                 .is_some_and(|time| {
                     range.from.is_none_or(|from| time >= from)
                         && range.until.is_none_or(|until| time < until)
@@ -347,10 +349,8 @@ pub(crate) fn item(node: &Value, world: &World) -> Value {
 mod tests {
     use super::*;
 
-    fn at(text: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(text)
-            .unwrap()
-            .with_timezone(&Utc)
+    fn at(text: &str) -> Timestamp {
+        text.parse().unwrap()
     }
 
     #[test]

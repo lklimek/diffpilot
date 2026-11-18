@@ -2,10 +2,10 @@
 //! PR sessions retained) and retry. Every write goes through `ProgressHub::update`, so a guard and its write
 //! are one step for every writer of the analysis.
 
-use chrono::Utc;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::events::AnalysisEvent;
 use contracts::ids::AnalysisId;
+use contracts::time::Timestamp;
 use db::error::DbError;
 
 use crate::jobs::executor::ExecutorError;
@@ -67,7 +67,9 @@ pub async fn set_state_if(
             }
             // Set while a finished analysis runs again for flows analysed again.
             let refinish = db.analyses().get(analysis).await?.finished_at.is_some();
-            db.analyses().set_state(analysis, next, Utc::now()).await?;
+            db.analyses()
+                .set_state(analysis, next, Timestamp::now())
+                .await?;
             let summary = db.analyses().summary(analysis).await?;
             if is_live(&current.state)
                 && !is_live(&summary.state)
@@ -149,14 +151,14 @@ async fn user_pause(
                     state
                         .db
                         .analyses()
-                        .pause_by_user(analysis, login, Utc::now())
+                        .pause_by_user(analysis, login, Timestamp::now())
                         .await?
                 }
                 None => {
                     state
                         .db
                         .analyses()
-                        .resume_by_user(analysis, Utc::now())
+                        .resume_by_user(analysis, Timestamp::now())
                         .await?
                 }
             };
@@ -234,7 +236,7 @@ pub async fn retry(
     let written = state
         .progress
         .update(analysis, || async {
-            if !db.analyses().retry(analysis, Utc::now()).await? {
+            if !db.analyses().retry(analysis, Timestamp::now()).await? {
                 return Err(Guarded::Refused);
             }
             let summary = db.analyses().summary(analysis).await?;
@@ -265,8 +267,8 @@ pub async fn recover_cancellations(state: &AppState) -> Result<usize, ControlErr
 
 #[cfg(test)]
 mod tests {
+    use jiff::SignedDuration;
 
-    use chrono::TimeDelta;
     use contracts::agent::JobKind;
     use contracts::ids::FlowId;
     use contracts::job::spec::JobPriority;
@@ -289,7 +291,7 @@ mod tests {
                     stage: JobStage::Flow(FlowId(flow.to_owned())),
                     generation: 0,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("enqueue")
@@ -300,12 +302,12 @@ mod tests {
     async fn live(db: &Db) -> (AnalysisId, [contracts::ids::JobId; 2]) {
         let analysis = seed_analysis(db).await.expect("seed");
         let claimed = enqueue(db, analysis, "f1").await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         db.jobs()
             .claim(ClaimParams {
                 credential_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
-                lease_until: now + TimeDelta::seconds(60),
+                lease_until: now + SignedDuration::from_secs(60),
                 now,
             })
             .await
@@ -353,7 +355,7 @@ mod tests {
             let state = AppState::with_queue(test_config(), db.clone());
             let (analysis, jobs) = live(&db).await;
             db.analyses()
-                .set_state(analysis, &AnalysisState::Cancelled, Utc::now())
+                .set_state(analysis, &AnalysisState::Cancelled, Timestamp::now())
                 .await
                 .expect("cancelled");
             if done >= 2 {
@@ -399,9 +401,9 @@ mod tests {
                 db::repo::questions::QuestionLimits {
                     per_analysis: 10,
                     per_user: 10,
-                    user_window_start: Utc::now() - TimeDelta::days(1),
+                    user_window_start: Timestamp::now() - SignedDuration::from_hours(24),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -415,7 +417,7 @@ mod tests {
                     generation: 0,
                     priority: JobPriority::Interactive,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -433,7 +435,7 @@ mod tests {
                     skills_commit: None,
                     llm_call: None,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -441,8 +443,8 @@ mod tests {
             .claim(ClaimParams {
                 credential_ids: &[CREDENTIAL.into()],
                 job_token_hash: b"ask",
-                lease_until: Utc::now() + TimeDelta::seconds(60),
-                now: Utc::now(),
+                lease_until: Timestamp::now() + SignedDuration::from_secs(60),
+                now: Timestamp::now(),
             })
             .await
             .unwrap()
@@ -461,7 +463,7 @@ mod tests {
                     skills_commit: None,
                     llm_call: None,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -529,7 +531,7 @@ mod tests {
                     language: record.language,
                     created_by: record.created_by,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();

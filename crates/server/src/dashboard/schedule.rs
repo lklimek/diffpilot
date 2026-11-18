@@ -11,20 +11,23 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use chrono::{DateTime, NaiveDate, NaiveTime, TimeDelta, Utc};
-use chrono_tz::Tz;
 use contracts::api::dashboard::{
     DashboardSettings, RefreshFailureCode, RefreshState, RefreshStatus, RefreshTrigger,
     ScheduledOutcome,
 };
 use contracts::ids::RefreshId;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::dashboard::{RefreshRecord, ScheduleCandidate, ScheduledRunRecord};
 use db::repo::tokens::PairCondition;
+use jiff::SignedDuration;
+use jiff::civil::{Date, Time};
+use jiff::tz::{Offset, TimeZone};
 use serde::de::IgnoredAny;
 use tokio::sync::broadcast::{self, error::RecvError};
 
 use super::refresh::{self, Scope, StartError};
+use super::zone;
 use crate::auth::{liveness, lock_user};
 use crate::secrets::sha256;
 use crate::state::AppState;
@@ -55,10 +58,10 @@ pub(crate) const INTERRUPTED: &str = "The automatic refresh was interrupted by a
 static SPAWNED: AtomicBool = AtomicBool::new(false);
 
 /// A user's daily refresh time in their time zone.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Schedule {
-    zone: Tz,
-    time: NaiveTime,
+    zone: TimeZone,
+    time: Time,
 }
 
 /// What the schedule asks for at a given time.
@@ -67,14 +70,14 @@ pub enum Due {
     /// Nothing before `instant`, the scheduled instant of the next local date to run.
     Later {
         /// The next scheduled instant.
-        instant: DateTime<Utc>,
+        instant: Timestamp,
     },
     /// The run of the user's local date `on`, scheduled at `instant`, is due (or overdue: caught up once).
     Now {
         /// The local date.
-        on: NaiveDate,
+        on: Date,
         /// Its scheduled instant.
-        instant: DateTime<Utc>,
+        instant: Timestamp,
     },
 }
 
@@ -82,8 +85,8 @@ impl Schedule {
     /// The daily time `time` (`HH:MM`) in the IANA zone `time_zone`; `None` when either does not parse.
     pub fn parse(time_zone: &str, time: &str) -> Option<Self> {
         Some(Self {
-            zone: time_zone.parse().ok()?,
-            time: NaiveTime::parse_from_str(time, "%H:%M").ok()?,
+            zone: zone::parse(time_zone)?,
+            time: Time::strptime("%H:%M", time).ok()?,
         })
     }
 
@@ -96,31 +99,32 @@ impl Schedule {
     }
 
     /// The time zone.
-    pub fn zone(&self) -> Tz {
-        self.zone
+    pub fn zone(&self) -> &TimeZone {
+        &self.zone
     }
 
     /// The scheduled instant of local date `on`: in a DST gap the first valid instant after it, in an overlap the
     /// first occurrence.
-    pub fn instant(&self, on: NaiveDate) -> DateTime<Utc> {
-        let local = on.and_time(self.time);
+    pub fn instant(&self, on: Date) -> Timestamp {
+        let local = on.to_datetime(self.time);
         (0..=GAP_SEARCH_MINUTES)
             .find_map(|minutes| {
-                local
-                    .checked_add_signed(TimeDelta::minutes(minutes))?
-                    .and_local_timezone(self.zone)
-                    .earliest()
+                zone::earliest(
+                    local.checked_add(SignedDuration::from_mins(minutes)).ok()?,
+                    &self.zone,
+                )
             })
-            .map_or_else(|| local.and_utc(), |at| at.with_timezone(&Utc))
+            .or_else(|| Offset::UTC.to_timestamp(local).ok().map(Timestamp::from))
+            .unwrap_or_else(|| jiff::Timestamp::MAX.into())
     }
 
     /// Whether the run of the user's current local date is due at `now`, given the local date of the last
     /// recorded run. One run per local date: a recorded date on or after today (also after a zone change) waits
     /// for the next date; a past date is never caught up.
-    pub fn due(&self, now: DateTime<Utc>, last_on: Option<NaiveDate>) -> Due {
-        let today = now.with_timezone(&self.zone).date_naive();
+    pub fn due(&self, now: Timestamp, last_on: Option<Date>) -> Due {
+        let today = now.to_zoned(self.zone.clone()).date();
         let next = match last_on {
-            Some(last) if last >= today => last.succ_opt().unwrap_or(last),
+            Some(last) if last >= today => last.tomorrow().unwrap_or(last),
             _ => today,
         };
         let instant = self.instant(next);
@@ -135,14 +139,14 @@ impl Schedule {
     /// be caught up), else the next date's; a refresh that succeeded after today's instant makes it tomorrow's.
     pub fn next_run_at(
         &self,
-        now: DateTime<Utc>,
-        last_on: Option<NaiveDate>,
-        last_success: Option<DateTime<Utc>>,
-    ) -> DateTime<Utc> {
+        now: Timestamp,
+        last_on: Option<Date>,
+        last_success: Option<Timestamp>,
+    ) -> Timestamp {
         match self.due(now, last_on) {
             Due::Later { instant } => instant,
             Due::Now { on, instant } if last_success.is_some_and(|at| at >= instant) => {
-                self.instant(on.succ_opt().unwrap_or(on))
+                self.instant(on.tomorrow().unwrap_or(on))
             }
             Due::Now { instant, .. } => instant,
         }
@@ -150,7 +154,7 @@ impl Schedule {
 }
 
 /// The local date of the last recorded run that counts for the due rule: a run a restart interrupted does not.
-pub fn counted_run_date(last: Option<&ScheduledRunRecord>) -> Option<NaiveDate> {
+pub fn counted_run_date(last: Option<&ScheduledRunRecord>) -> Option<Date> {
     last.filter(|run| {
         !(run.outcome == ScheduledOutcome::Failed && run.reason.as_deref() == Some(INTERRUPTED))
     })
@@ -158,9 +162,9 @@ pub fn counted_run_date(last: Option<&ScheduledRunRecord>) -> Option<NaiveDate> 
 }
 
 /// The user's fixed stagger after the scheduled instant: 0–9 whole minutes from a hash of the user id.
-pub fn offset(user_id: &str) -> TimeDelta {
+pub fn offset(user_id: &str) -> SignedDuration {
     let [first, ..] = sha256(user_id.as_bytes());
-    TimeDelta::minutes(i64::from(first % STAGGER_MINUTES))
+    SignedDuration::from_mins(i64::from(first % STAGGER_MINUTES))
 }
 
 /// Starts the process's scheduler; `false` (and nothing started) when one already runs.
@@ -183,7 +187,7 @@ pub(crate) enum Tick {
     /// Nobody was due; the earliest waiting user becomes due at `next`.
     Idle {
         /// Earliest start of a user waiting for their instant plus offset.
-        next: Option<DateTime<Utc>>,
+        next: Option<Timestamp>,
     },
 }
 
@@ -233,17 +237,19 @@ async fn guarded<T: Send + 'static>(
 }
 
 /// Sleep before the next evaluation: until `next`, between [`MIN_SLEEP`] and [`TICK`].
-fn sleep_until(now: DateTime<Utc>, next: Option<DateTime<Utc>>) -> Duration {
-    next.map_or(TICK, |at| (at - now).to_std().unwrap_or(Duration::ZERO))
-        .clamp(MIN_SLEEP, TICK)
+fn sleep_until(now: Timestamp, next: Option<Timestamp>) -> Duration {
+    next.map_or(TICK, |at| {
+        Duration::try_from(at - now).unwrap_or(Duration::ZERO)
+    })
+    .clamp(MIN_SLEEP, TICK)
 }
 
 /// A user due now.
 #[derive(Clone)]
 struct DueRun {
-    start_at: DateTime<Utc>,
-    on: NaiveDate,
-    instant: DateTime<Utc>,
+    start_at: Timestamp,
+    on: Date,
+    instant: Timestamp,
     schedule: Schedule,
     scope: Scope,
 }
@@ -254,13 +260,13 @@ pub(crate) async fn tick(state: AppState) -> Result<Tick, DbError> {
     if let Err(error) = state
         .db
         .sessions()
-        .delete_expired(liveness(Utc::now()))
+        .delete_expired(liveness(Timestamp::now()))
         .await
     {
         tracing::warn!(%error, "expired sessions and token pairs could not be swept; the next evaluation tries again");
     }
     let now = state.dashboard.now();
-    let mut next: Option<DateTime<Utc>> = None;
+    let mut next: Option<Timestamp> = None;
     let mut due = Vec::new();
     for candidate in state.db.dashboard().schedule_candidates().await? {
         let ScheduleCandidate {
@@ -459,7 +465,9 @@ async fn run_due(state: &AppState, run: &DueRun) -> Result<(), DbError> {
             ScheduledOutcome::Failed,
             format!(
                 "GitHub's rate limit is used up until {}.",
-                retry_at.with_timezone(&run.schedule.zone()).format("%H:%M")
+                retry_at
+                    .to_zoned(run.schedule.zone().clone())
+                    .strftime("%H:%M")
             ),
         ),
         Err(StartError::Db(error)) => {

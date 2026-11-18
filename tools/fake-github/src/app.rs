@@ -21,7 +21,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::{SecondsFormat, TimeDelta, Utc};
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -141,7 +142,7 @@ impl App {
         let claims = jsonwebtoken::decode::<Claims>(jwt, key, &validation)
             .map_err(|_| UNDECODABLE)?
             .claims;
-        let now = Utc::now().timestamp();
+        let now = Timestamp::now().as_second();
         let issuer = match &claims.iss {
             Value::String(iss) => iss.parse::<u64>().ok(),
             Value::Number(iss) => iss.as_u64(),
@@ -306,9 +307,10 @@ async fn access_token(
     };
     token["token"] = Value::String(value);
     token["permissions"] = serde_json::to_value(permissions).unwrap_or_default();
-    token["expires_at"] = Value::String(
-        (Utc::now() + TimeDelta::hours(1)).to_rfc3339_opts(SecondsFormat::Secs, true),
-    );
+    token["expires_at"] = Value::String(format!(
+        "{:.0}",
+        (Timestamp::now() + SignedDuration::from_hours(1)).get()
+    ));
     tracing::info!(
         installation = id,
         "fake-github minted an installation token"

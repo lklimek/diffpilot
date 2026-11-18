@@ -20,7 +20,7 @@ fake-provider = []
 [dependencies]
 base64.workspace = true
 contracts.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 futures.workspace = true
 reqwest.workspace = true
 rustix = { workspace = true, features = ["net"] }

@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
 use contracts::agent::JobKind;
 use contracts::ids::JobId;
 use contracts::job::access::AgentAccess;
@@ -18,6 +17,7 @@ use contracts::job::result::{
     SessionReport,
 };
 use contracts::job::spec::{JobLimits, JobSpec, JobTarget, LlmCredentialRef};
+use contracts::time::Timestamp;
 use tokio::sync::mpsc;
 
 use crate::git;
@@ -374,7 +374,7 @@ impl Executor {
                     let _ = events
                         .send(ProviderEvent::Activity(JobEvent {
                             seq: 0,
-                            at: Utc::now(),
+                            at: Timestamp::now(),
                             activity: ActivityKind::Reasoning,
                             summary: PREPARING_FORK.to_owned(),
                         }))
@@ -516,7 +516,7 @@ fn to_result(
     session_outcome: SessionOutcome,
     scrubber: &Scrubber,
 ) -> JobResult {
-    let at = Utc::now();
+    let at = Timestamp::now();
     match outcome {
         Ok(outcome) => JobResult {
             job_id: spec.job_id,

@@ -14,12 +14,12 @@ use axum::http::header::RETRY_AFTER;
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use chrono::Utc;
 use contracts::api::error::ApiErrorCode;
 use contracts::api::events::AnalysisEvent;
 use contracts::api::questions::AskQuestion;
 use contracts::ids::AnalysisId;
 use contracts::routes::ANALYSIS_EVENTS;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use futures::stream::{self, Stream, StreamExt};
 use tokio::sync::broadcast;
@@ -243,7 +243,11 @@ async fn personalize_event(
             summary.has_my_state = Some(state.db.review_states().exists(user, summary.id).await?);
         }
         AnalysisEvent::Question { question } => {
-            let record = state.db.questions().get(question.id, Utc::now()).await?;
+            let record = state
+                .db
+                .questions()
+                .get(question.id, Timestamp::now())
+                .await?;
             if record.user_id != user {
                 return Ok(false);
             }
@@ -264,7 +268,7 @@ async fn question_snapshot(
     state
         .db
         .questions()
-        .list_for_user(analysis, user, Utc::now())
+        .list_for_user(analysis, user, Timestamp::now())
         .await
 }
 
@@ -279,7 +283,12 @@ fn analysis_stream(
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let heartbeats = stream::unfold(ticks, |mut ticks| async move {
         ticks.tick().await;
-        Some((Some(AnalysisEvent::Heartbeat { at: Utc::now() }), ticks))
+        Some((
+            Some(AnalysisEvent::Heartbeat {
+                at: Timestamp::now(),
+            }),
+            ticks,
+        ))
     });
     // `None` marks the end of the live events, which ends the stream (heartbeats never end).
     let live = live_events(live)
@@ -325,7 +334,6 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use chrono::{TimeZone, Utc};
     use contracts::agent::JobKind;
     use contracts::api::analyses::AnalysisState;
     use contracts::job::spec::JobPriority;
@@ -333,6 +341,7 @@ mod tests {
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis, seed_tenant};
     use db::repo::jobs::{ClaimParams, JobStage, NewJob};
     use http_body_util::BodyExt;
+    use jiff::SignedDuration;
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
@@ -407,16 +416,16 @@ mod tests {
                     QuestionLimits {
                         per_analysis: 10,
                         per_user: 10,
-                        user_window_start: Utc::now(),
+                        user_window_start: Timestamp::now(),
                     },
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .expect("question");
             let mut question = state
                 .db
                 .questions()
-                .get(id, Utc::now())
+                .get(id, Timestamp::now())
                 .await
                 .expect("question")
                 .question;
@@ -469,16 +478,16 @@ mod tests {
                 QuestionLimits {
                     per_analysis: 10,
                     per_user: 10,
-                    user_window_start: Utc::now(),
+                    user_window_start: Timestamp::now(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("question");
         let mut question = state
             .db
             .questions()
-            .get(id, Utc::now())
+            .get(id, Timestamp::now())
             .await
             .expect("question")
             .question;
@@ -513,7 +522,7 @@ mod tests {
                 "u1",
                 analysis,
                 &contracts::api::review::ReviewState::default(),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("state");
@@ -574,7 +583,7 @@ mod tests {
                 for step in script {
                     state
                         .progress
-                        .set_analysis_state(&state.db, analysis, &step, Utc::now())
+                        .set_analysis_state(&state.db, analysis, &step, Timestamp::now())
                         .await
                         .expect("update");
                 }
@@ -604,10 +613,7 @@ mod tests {
     async fn snapshot_carries_the_stage_started_at_the_claim() {
         let state = test_state().await;
         let analysis = seed_analysis(&state.db).await.expect("seed");
-        let claimed_at = Utc
-            .with_ymd_and_hms(2026, 11, 17, 9, 30, 0)
-            .single()
-            .expect("time");
+        let claimed_at = "2026-11-17T09:30:00Z".parse::<Timestamp>().expect("time");
         state
             .db
             .jobs()
@@ -642,7 +648,7 @@ mod tests {
             .claim(ClaimParams {
                 credential_ids: &[CREDENTIAL.to_owned()],
                 job_token_hash: b"hash",
-                lease_until: claimed_at + chrono::TimeDelta::hours(1),
+                lease_until: claimed_at + SignedDuration::from_hours(1),
                 now: claimed_at,
             })
             .await
@@ -683,7 +689,7 @@ mod tests {
             assert!(data["at"].is_string(), "{data}");
         }
         let live = AnalysisEvent::Heartbeat {
-            at: chrono::DateTime::UNIX_EPOCH,
+            at: Timestamp::UNIX_EPOCH,
         };
         sender.send(live.clone()).expect("send");
         assert_eq!(events.next().await, Some(live), "live events pass at once");
@@ -794,7 +800,7 @@ mod tests {
             &state.db,
             "u1",
             vec![contracts::api::access_tokens::TokenScope::Read],
-            Utc::now() + chrono::TimeDelta::days(1),
+            Timestamp::now() + SignedDuration::from_hours(24),
         )
         .await;
         let (mut parts, ()) = Request::get("/").body(()).expect("request").into_parts();
@@ -821,7 +827,7 @@ mod tests {
         state
             .db
             .access_tokens()
-            .revoke(DEFAULT_TENANT, "u1", &principal.token_id, Utc::now())
+            .revoke(DEFAULT_TENANT, "u1", &principal.token_id, Timestamp::now())
             .await
             .expect("revoke");
         let rest = until_end(events).await;
@@ -856,7 +862,7 @@ mod tests {
         state
             .db
             .users()
-            .upsert_member(DEFAULT_TENANT, "u-streams", &profile, Utc::now())
+            .upsert_member(DEFAULT_TENANT, "u-streams", &profile, Timestamp::now())
             .await
             .expect("user");
         state
@@ -868,9 +874,9 @@ mod tests {
                     tenant_id: DEFAULT_TENANT,
                     user_id: "u-streams",
                     csrf_token: "csrf",
-                    expires_at: Utc::now() + chrono::TimeDelta::hours(1),
+                    expires_at: Timestamp::now() + SignedDuration::from_hours(1),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("session");
@@ -879,7 +885,7 @@ mod tests {
             &state.db,
             "u-streams",
             vec![contracts::api::access_tokens::TokenScope::Read],
-            Utc::now() + chrono::TimeDelta::days(1),
+            Timestamp::now() + SignedDuration::from_hours(24),
         )
         .await;
         let StartOutcome::Started { refresh, .. } = state
@@ -889,7 +895,7 @@ mod tests {
                 DEFAULT_TENANT,
                 "u-streams",
                 RefreshTrigger::Manual,
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("refresh")

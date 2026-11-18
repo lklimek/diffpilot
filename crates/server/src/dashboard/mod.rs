@@ -8,5 +8,6 @@ pub mod schedule;
 pub mod score;
 pub mod settings;
 pub mod snapshot;
+pub mod zone;
 
 pub use hub::DashboardHub;

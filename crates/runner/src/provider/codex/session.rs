@@ -9,8 +9,8 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
 use contracts::job::result::Usage;
+use contracts::time::Timestamp;
 use rustix::fs::OFlags;
 use serde::Deserialize;
 
@@ -127,7 +127,7 @@ pub(crate) fn forget(store: &Path) {
 
 /// When the reached usage limit resets, from the latest rate-limit telemetry in the rollout of `thread` in
 /// `codex_home` (ADR-003: never from the message text). `None` when no window is exhausted.
-pub(crate) fn usage_limit_resets_at(codex_home: &Path, thread: &str) -> Option<DateTime<Utc>> {
+pub(crate) fn usage_limit_resets_at(codex_home: &Path, thread: &str) -> Option<Timestamp> {
     if !valid_thread_id(thread) {
         return None;
     }
@@ -147,7 +147,7 @@ struct Facts {
     /// The latest cumulative usage of the thread.
     cumulative: Option<Usage>,
     /// Reset time of the latest exhausted rate-limit window.
-    resets_at: Option<DateTime<Utc>>,
+    resets_at: Option<Timestamp>,
 }
 
 #[derive(Deserialize)]
@@ -226,7 +226,7 @@ fn scan(reader: impl BufRead, mut sink: impl FnMut(&str) -> io::Result<()>) -> i
                 .flatten()
                 .filter(|window| window.used_percent.is_some_and(|used| used >= 100.0))
                 .filter_map(|window| window.resets_at)
-                .filter_map(|secs| DateTime::from_timestamp(secs, 0))
+                .filter_map(Timestamp::from_second)
                 .max();
         }
     }

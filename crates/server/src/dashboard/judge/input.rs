@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
 use contracts::agent::judge_work::{
     Eligibility, JudgeFacts, JudgeItem, KnownPart, LinkedIssue, PreviousJudgement, TodoJudgeFacts,
 };
@@ -12,6 +11,7 @@ use contracts::api::dashboard::{
     ItemKey, ItemKind, PartSource, PartStatus, ScoreComponent, ScorePart,
 };
 use contracts::common::RepoRef;
+use contracts::time::Timestamp;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -70,7 +70,7 @@ impl Candidate<'_> {
         &self,
         rules: &ScoreRules,
         judgement: Option<&Judgement>,
-        at: DateTime<Utc>,
+        at: Timestamp,
     ) -> Result<Scored, ScoreError> {
         match self.source {
             Source::Pr(pr) => score::score_pr(rules, &pr.facts, judgement, at),

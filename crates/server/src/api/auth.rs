@@ -9,10 +9,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::Utc;
 use contracts::api::auth::{LogoutRequest, Me, MeResponse};
 use contracts::api::error::LoginError;
 use contracts::routes::{AUTH_CALLBACK, AUTH_LOGIN, AUTH_LOGOUT, GET_ME};
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::DEFAULT_TENANT;
 use db::repo::sessions::NewSession;
@@ -153,7 +153,7 @@ async fn login(State(state): State<AppState>, transport: BrowserTransport) -> Re
 }
 
 async fn start_login(state: &AppState) -> Result<(String, Url), SignInError> {
-    let now = Utc::now();
+    let now = Timestamp::now();
     let sessions = state.db.sessions();
     sessions.delete_expired(liveness(now)).await?;
     let oauth_state = random_token()?;
@@ -227,7 +227,7 @@ async fn complete_login(
     let pending = state
         .db
         .sessions()
-        .take_oauth_login(&oauth_state, Utc::now())
+        .take_oauth_login(&oauth_state, Timestamp::now())
         .await?
         .ok_or(SignInError::StateMismatch)?;
     if query.error.is_some() {
@@ -242,7 +242,7 @@ async fn complete_login(
         oauth::exchange_code(github, &code, &callback_url(&state.config), &verifier).await?;
     let github_user = oauth::fetch_user(github, &grant.access_token).await?;
 
-    let now = Utc::now();
+    let now = Timestamp::now();
     let tenant_id = pending.tenant_id;
     let admission = state
         .db
@@ -316,7 +316,7 @@ async fn revoke_access_tokens(state: &AppState, session: &Session) -> Result<(),
     let revoked = state
         .db
         .access_tokens()
-        .revoke_all(&session.tenant_id, &session.user_id, Utc::now())
+        .revoke_all(&session.tenant_id, &session.user_id, Timestamp::now())
         .await?;
     tracing::info!(target: "audit", user_id = %session.user_id, revoked, "access tokens revoked by sign-out everywhere");
     Ok(())

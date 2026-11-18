@@ -9,18 +9,19 @@ use axum::extract::ConnectInfo;
 use axum::http::header::{AUTHORIZATION, COOKIE, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{Method, Request, StatusCode};
 use axum::response::Response;
-use chrono::{TimeDelta, Utc};
 use contracts::api::access_tokens::TokenScope;
 use contracts::ids::{AnalysisId, QuestionId, StepId};
 use contracts::routes::{
     CREATE_ACCESS_TOKEN, GET_ME, GET_REVIEW_STATE, HttpMethod, LIST_ACCESS_TOKENS, LIST_QUESTIONS,
     Listener, REVOKE_ACCESS_TOKEN, ROUTES, RUNNER_CLAIM, Route, RouteAuth,
 };
+use contracts::time::Timestamp;
 use db::repo::DEFAULT_TENANT;
 use db::repo::analyses::testing::seed_analysis;
 use db::repo::questions::{NewQuestion, QuestionLimits};
 use db::repo::tenants::testing::remove_login;
 use http_body_util::BodyExt;
+use jiff::SignedDuration;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -67,7 +68,7 @@ async fn read_token(state: &AppState, user: &str) -> (String, TokenPrincipal) {
         &state.db,
         user,
         vec![TokenScope::Read],
-        Utc::now() + TimeDelta::days(90),
+        Timestamp::now() + SignedDuration::from_hours(24 * 90),
     )
     .await
 }
@@ -401,12 +402,17 @@ async fn token_shown_once_and_stored_as_hash() {
     assert_eq!(listed["prefix"], format!("srp_{id}"));
     assert_eq!(listed["scopes"], json!(["read"]));
     assert_eq!(listed["last_used_at"], Value::Null);
-    let expires = chrono::DateTime::parse_from_rfc3339(listed["expires_at"].as_str().expect("at"))
+    let expires: Timestamp = listed["expires_at"]
+        .as_str()
+        .expect("at")
+        .parse()
         .expect("time");
-    let created_at =
-        chrono::DateTime::parse_from_rfc3339(listed["created_at"].as_str().expect("at"))
-            .expect("time");
-    assert_eq!(expires - created_at, TimeDelta::days(90));
+    let created_at: Timestamp = listed["created_at"]
+        .as_str()
+        .expect("at")
+        .parse()
+        .expect("time");
+    assert_eq!(expires - created_at, SignedDuration::from_hours(24 * 90));
 
     let credential = s
         .state
@@ -527,7 +533,7 @@ async fn insufficient_scope_is_403() {
         &s.state.db,
         "u1",
         Vec::new(),
-        Utc::now() + TimeDelta::days(1),
+        Timestamp::now() + SignedDuration::from_hours(24),
     )
     .await;
     let uri = uri(&GET_REVIEW_STATE, s.analysis);
@@ -559,9 +565,9 @@ async fn token_reads_as_its_user_only() {
                 QuestionLimits {
                     per_analysis: 10,
                     per_user: 10,
-                    user_window_start: Utc::now(),
+                    user_window_start: Timestamp::now(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("question");
@@ -576,7 +582,7 @@ async fn token_reads_as_its_user_only() {
                 ticked_steps: vec![StepId("f1.1".to_owned())],
                 ..Default::default()
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("state");
@@ -614,7 +620,7 @@ async fn revoked_expired_or_unlisted_user_token_is_rejected() {
         &s.state.db,
         "u1",
         vec![TokenScope::Read],
-        Utc::now() - TimeDelta::seconds(1),
+        Timestamp::now() - SignedDuration::from_secs(1),
     )
     .await;
     let (revoked, revoked_principal) = read_token(&s.state, "u1").await;
@@ -625,7 +631,7 @@ async fn revoked_expired_or_unlisted_user_token_is_rejected() {
             DEFAULT_TENANT,
             "u1",
             &revoked_principal.token_id,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("revoke");
@@ -955,7 +961,7 @@ async fn token_reads_backed_by_github_are_cached_per_user() {
             refresh_token: secrecy::SecretString::from("ghr_cache_test"),
             refresh_token_expires_in: 15_638_400,
         },
-        Utc::now(),
+        Timestamp::now(),
     )
     .await
     .expect("pair");
@@ -1157,7 +1163,7 @@ async fn token_session_liveness_follows_revocation() {
     s.state
         .db
         .access_tokens()
-        .revoke(DEFAULT_TENANT, "u1", &principal.token_id, Utc::now())
+        .revoke(DEFAULT_TENANT, "u1", &principal.token_id, Timestamp::now())
         .await
         .expect("revoke");
     assert!(!session.is_live(&s.state).await.expect("check"));
@@ -1165,7 +1171,7 @@ async fn token_session_liveness_follows_revocation() {
         &s.state.db,
         "u1",
         vec![TokenScope::Read],
-        Utc::now() - TimeDelta::seconds(1),
+        Timestamp::now() - SignedDuration::from_secs(1),
     )
     .await;
     let session = Session::of_token(&expired, crate::auth::BrowserTransport { https: true });

@@ -5,16 +5,17 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::{DateTime, TimeDelta, Utc};
 use contracts::ids::AnalysisId;
 use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::protocol::{Claim, ClaimRequest, ClaimResponse, LeaseTiming};
 use contracts::job::spec::{JobTarget, SessionRef, WorkingSession};
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::analyses::SessionState;
 use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
 use db::repo::{DEFAULT_TENANT, Db};
 use futures::future::BoxFuture;
+use jiff::SignedDuration;
 use secrecy::ExposeSecret;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -94,8 +95,8 @@ fn mint_token() -> Result<(Secret, Vec<u8>), ClaimError> {
 }
 
 /// The server-side lease end for a request received at `now` ([`LeaseTiming::V1`]).
-pub fn lease_until(now: DateTime<Utc>) -> DateTime<Utc> {
-    now + TimeDelta::seconds(i64::from(LeaseTiming::V1.lease_secs))
+pub fn lease_until(now: Timestamp) -> Timestamp {
+    now + SignedDuration::from_secs(i64::from(LeaseTiming::V1.lease_secs))
 }
 
 /// A context pack could not be built.
@@ -128,7 +129,7 @@ pub async fn claim(
     config: &Arc<Config>,
     packs: &dyn ContextPacks,
     request: &ClaimRequest,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<ClaimResponse, ClaimError> {
     if !expire_leases(db, now).await?.is_empty() {
         github_tokens::nudge();
@@ -285,7 +286,7 @@ async fn prepare_spec(
     }
     spec.session = analysis_session(db, analysis).await?;
     spec.working_session = if let JobStage::Ask(question) = job.stage {
-        let record = db.questions().get(question, Utc::now()).await?;
+        let record = db.questions().get(question, Timestamp::now()).await?;
         if record.analysis_id != analysis {
             return Err(DbError::NotFound.into());
         }
@@ -331,12 +332,12 @@ async fn github_access(
     db: Db,
     config: Arc<Config>,
     job: JobRecord,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Option<InstallationToken>, ClaimError> {
     let (db, config, job) = (&db, config.as_ref(), &job);
     let analysis = job.analysis_id.ok_or(DbError::NotFound)?;
     let repo = db.analyses().summary(analysis).await?.pr.repo;
-    let runtime = TimeDelta::seconds(i64::from(job.spec.limits.max_runtime_secs));
+    let runtime = SignedDuration::from_secs(i64::from(job.spec.limits.max_runtime_secs));
     let token = match app_token::mint_for_job(&config.github, &repo, now, runtime).await {
         Ok(Minted::Accepted(token)) => token,
         Ok(Minted::NotInstalled) => {
@@ -481,7 +482,7 @@ mod tests {
                     stage: JobStage::Flow(FlowId("f1".to_owned())),
                     generation: 0,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("enqueue")
@@ -528,7 +529,7 @@ mod tests {
     async fn failed_context_pack_fails_the_claim_and_spends_the_attempt() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         installed(&s, now).await;
         let result = claim(&s.db, &s.config, &FailingPacks, &request(), now).await;
         assert!(
@@ -567,12 +568,12 @@ mod tests {
                         stage: JobStage::Flow(FlowId("f1".to_owned())),
                         generation: 0,
                     },
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .expect("enqueue")
                 .id;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let result = claim(&s.db, &s.config, &no_packs(), &request(), now).await;
         assert!(
             matches!(
@@ -594,7 +595,7 @@ mod tests {
         use contracts::job::state::JobState;
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let attempts = s.db.jobs().get(job).await.expect("job").max_attempts;
         for attempt in 1..=attempts {
             let result = claim(&s.db, &s.config, &FailingPacks, &request(), now).await;
@@ -660,7 +661,7 @@ mod tests {
         }
     }
 
-    async fn claim_one(s: &Setup, now: DateTime<Utc>) -> Claim {
+    async fn claim_one(s: &Setup, now: Timestamp) -> Claim {
         claim(&s.db, &s.config, &packs(s), &request(), now)
             .await
             .expect("claim")
@@ -669,7 +670,7 @@ mod tests {
     }
 
     /// Mounts lookup and mint of [`MINTED_TOKEN`] for `acme/node-client`.
-    async fn installed(s: &Setup, now: DateTime<Utc>) {
+    async fn installed(s: &Setup, now: Timestamp) {
         mount_installation(&s.github).await;
         mount_mint(&s.github, minted(now), 1).await;
     }
@@ -700,7 +701,7 @@ mod tests {
             .await
             .expect("submit")
             .job_id;
-        let claimed = claim_one(&s, Utc::now()).await;
+        let claimed = claim_one(&s, Timestamp::now()).await;
         assert_eq!(claimed.spec.job_id, job);
         assert_eq!(
             claimed.spec.target,
@@ -749,7 +750,7 @@ mod tests {
             .set_state(
                 analysis,
                 &contracts::api::analyses::AnalysisState::Cancelled,
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("cancel");
@@ -765,12 +766,12 @@ mod tests {
         let capture = LogCapture::start();
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         installed(&s, now).await;
         let claimed = claim_one(&s, now).await;
         let github = claimed.spec.access.github.expect("installation token");
         assert_eq!(github.token.expose(), MINTED_TOKEN);
-        assert_eq!(github.expires_at - now, TimeDelta::hours(1));
+        assert_eq!(github.expires_at - now, SignedDuration::from_hours(1));
         assert_eq!(
             github.repository,
             RepoRef {
@@ -801,7 +802,7 @@ mod tests {
                 .expect("job")
                 .analysis_id
                 .expect("analysis job");
-        let now = Utc::now();
+        let now = Timestamp::now();
         let documents = s.db.documents();
         documents
             .put(
@@ -845,7 +846,7 @@ mod tests {
     async fn claim_records_whether_the_job_got_github_access() {
         let s = setup().await;
         let with = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         installed(&s, now).await;
         claim_one(&s, now).await;
         assert!(
@@ -890,11 +891,11 @@ mod tests {
             .set_state(
                 analysis,
                 &contracts::api::analyses::AnalysisState::Cancelled,
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("cancelled");
-        let response = claim(&s.db, &s.config, &packs(&s), &request(), Utc::now())
+        let response = claim(&s.db, &s.config, &packs(&s), &request(), Timestamp::now())
             .await
             .expect("claim");
         assert!(
@@ -908,7 +909,7 @@ mod tests {
         let capture = LogCapture::start();
         let s = setup().await;
         enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         installed(&s, now).await;
         let claimed = claim_one(&s, now).await;
         let github = claimed.spec.access.github.expect("installation token");
@@ -934,7 +935,7 @@ mod tests {
                 .expect("job")
                 .analysis_id
                 .expect("analysis job");
-        let now = Utc::now();
+        let now = Timestamp::now();
         installed(&s, now).await;
         s.db.analyses()
             .set_session(analysis, "thread-7", None)
@@ -971,7 +972,7 @@ mod tests {
             .await
             .expect("session");
         s.db.analyses().request_session_drop(1).await.expect("drop");
-        let waiting = claim(&s.db, &s.config, &packs(&s), &request(), Utc::now())
+        let waiting = claim(&s.db, &s.config, &packs(&s), &request(), Timestamp::now())
             .await
             .unwrap();
         assert!(
@@ -981,9 +982,15 @@ mod tests {
         assert_eq!(waiting.drop_sessions, [1]);
         let mut acknowledged = request();
         acknowledged.dropped_sessions = vec![1];
-        let response = claim(&s.db, &s.config, &packs(&s), &acknowledged, Utc::now())
-            .await
-            .unwrap();
+        let response = claim(
+            &s.db,
+            &s.config,
+            &packs(&s),
+            &acknowledged,
+            Timestamp::now(),
+        )
+        .await
+        .unwrap();
         assert!(response.drop_sessions.is_empty());
         let claimed = response.claim.unwrap();
         assert_eq!(claimed.spec.session, None);
@@ -998,8 +1005,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&s.github)
             .await;
-        mount_mint(&s.github, minted(Utc::now()), 0).await;
-        let claimed = claim_one(&s, Utc::now()).await;
+        mount_mint(&s.github, minted(Timestamp::now()), 0).await;
+        let claimed = claim_one(&s, Timestamp::now()).await;
         assert_eq!(claimed.spec.access.github, None);
         assert_eq!(s.db.jobs().github_token(job, 1).await.expect("read"), None);
     }
@@ -1013,7 +1020,7 @@ mod tests {
             .github
             .private_key_file = s._dir.path().join("missing.pem");
         enqueue(&s.db).await;
-        let claimed = claim_one(&s, Utc::now()).await;
+        let claimed = claim_one(&s, Timestamp::now()).await;
         assert_eq!(claimed.spec.access.github, None);
         assert!(
             s.github
@@ -1038,7 +1045,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(502))
             .mount(&s.github)
             .await;
-        let result = claim(&s.db, &s.config, &packs(&s), &request(), Utc::now()).await;
+        let result = claim(&s.db, &s.config, &packs(&s), &request(), Timestamp::now()).await;
         assert!(
             matches!(result, Err(ClaimError::GithubAccess(_))),
             "{result:?}"
@@ -1050,7 +1057,7 @@ mod tests {
     async fn installation_token_stored_only_encrypted_until_revoke_confirmed() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         installed(&s, now).await;
         claim_one(&s, now).await;
         let ciphertext =
@@ -1146,7 +1153,7 @@ mod tests {
             let capture = LogCapture::start();
             let s = setup().await;
             let job = enqueue(&s.db).await;
-            let now = Utc::now();
+            let now = Timestamp::now();
             installed(&s, now).await;
             mount_revoke(&s.github, 204, 1).await;
             let claimed = claim_one(&s, now).await;
@@ -1197,7 +1204,7 @@ mod tests {
                         credentials: Vec::new(),
                         ..request()
                     };
-                    let after_lease = claimed.lease_expires_at + TimeDelta::seconds(1);
+                    let after_lease = claimed.lease_expires_at + SignedDuration::from_secs(1);
                     claim(&state.db, &state.config, &no_packs(), &idle, after_lease)
                         .await
                         .expect("claim after the lease");
@@ -1219,7 +1226,7 @@ mod tests {
     async fn cancel_at_lease_expiry_revokes_and_discards_output() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         installed(&s, now).await;
         mount_revoke(&s.github, 204, 1).await;
         let claimed = claim_one(&s, now).await;
@@ -1237,11 +1244,11 @@ mod tests {
             &s.config,
             &packs(&s),
             &idle,
-            claimed.lease_expires_at + TimeDelta::seconds(1),
+            claimed.lease_expires_at + SignedDuration::from_secs(1),
         )
         .await
         .expect("claim after the lease");
-        github_tokens::sweep(&s.db, &s.config, Utc::now())
+        github_tokens::sweep(&s.db, &s.config, Timestamp::now())
             .await
             .expect("sweep");
         let ended = s.db.jobs().get(job).await.expect("job");
@@ -1254,7 +1261,7 @@ mod tests {
     async fn pending_revocations_recovered_after_restart() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         installed(&s, now).await;
         claim_one(&s, now).await;
         // The server stopped after the result was stored, before any sweep.
@@ -1268,7 +1275,7 @@ mod tests {
             &s.config,
             expired,
             1,
-            &backlog_token("ghs_expired", now - TimeDelta::minutes(1)),
+            &backlog_token("ghs_expired", now - SignedDuration::from_mins(1)),
         )
         .await
         .expect("record");
@@ -1302,7 +1309,7 @@ mod tests {
         assert_eq!(deletes, 1);
     }
 
-    fn backlog_token(token: &str, expires_at: DateTime<Utc>) -> InstallationToken {
+    fn backlog_token(token: &str, expires_at: Timestamp) -> InstallationToken {
         InstallationToken {
             token: Secret::new(token),
             expires_at,
@@ -1336,7 +1343,7 @@ mod tests {
     async fn token_revoked_after_restart_and_cancel_without_runner() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         installed(&s, now).await;
         mount_revoke(&s.github, 204, 1).await;
         let claimed = claim_one(&s, now).await;
@@ -1354,7 +1361,7 @@ mod tests {
         github_tokens::sweep(
             &s.db,
             &s.config,
-            claimed.lease_expires_at + TimeDelta::seconds(1),
+            claimed.lease_expires_at + SignedDuration::from_secs(1),
         )
         .await
         .expect("sweep");
@@ -1375,7 +1382,7 @@ mod tests {
         assert!(CLAIM_GITHUB_BUDGET < Duration::from_secs(10));
         let s = setup().await;
         enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let slow = Duration::from_millis(3_500);
         Mock::given(method("GET"))
             .and(path("/api/repos/acme/node-client/installation"))
@@ -1412,7 +1419,7 @@ mod tests {
     async fn claim_and_result_do_not_wait_for_revocation_backlog() {
         let s = setup().await;
         let first = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         mount_installation(&s.github).await;
         mount_mint(&s.github, minted(now), 2).await;
         Mock::given(method("DELETE"))
@@ -1427,7 +1434,10 @@ mod tests {
                 &s.config,
                 backlog,
                 attempt,
-                &backlog_token(&format!("ghs_backlog_{attempt}"), now + TimeDelta::hours(1)),
+                &backlog_token(
+                    &format!("ghs_backlog_{attempt}"),
+                    now + SignedDuration::from_hours(1),
+                ),
             )
             .await
             .expect("backlog");
@@ -1468,7 +1478,7 @@ mod tests {
             &state.config,
             &no_packs(),
             &idle,
-            second.lease_expires_at + TimeDelta::seconds(1),
+            second.lease_expires_at + SignedDuration::from_secs(1),
         )
         .await
         .expect("claim after an expired lease");
@@ -1479,14 +1489,17 @@ mod tests {
     async fn sweep_stops_at_rate_limit() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         for attempt in 1..=2 {
             github_tokens::store(
                 &s.db,
                 &s.config,
                 job,
                 attempt,
-                &backlog_token(&format!("ghs_backlog_{attempt}"), now + TimeDelta::hours(1)),
+                &backlog_token(
+                    &format!("ghs_backlog_{attempt}"),
+                    now + SignedDuration::from_hours(1),
+                ),
             )
             .await
             .expect("backlog");
@@ -1519,7 +1532,7 @@ mod tests {
         let capture = LogCapture::start();
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut write = minted(now);
         write["permissions"]["issues"] = json!("write");
         mount_installation(&s.github).await;
@@ -1554,7 +1567,7 @@ mod tests {
             "kept for revocation"
         );
         mount_revoke(&s.github, 204, 1).await;
-        github_tokens::sweep(&s.db, &s.config, lease + TimeDelta::seconds(1))
+        github_tokens::sweep(&s.db, &s.config, lease + SignedDuration::from_secs(1))
             .await
             .expect("sweep after a restart");
         assert_eq!(s.db.jobs().github_token(job, 1).await.expect("read"), None);
@@ -1565,9 +1578,9 @@ mod tests {
     async fn excessive_expiry_rejected_and_revoked() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut long = minted(now);
-        long["expires_at"] = json!((now + TimeDelta::days(1)).to_rfc3339());
+        long["expires_at"] = json!((now + SignedDuration::from_hours(24)).to_rfc3339_offset());
         mount_installation(&s.github).await;
         mount_mint(&s.github, long, 1).await;
         mount_revoke(&s.github, 204, 1).await;
@@ -1591,7 +1604,7 @@ mod tests {
         for rejected in [false, true] {
             let s = setup().await;
             let job = enqueue(&s.db).await;
-            let now = Utc::now();
+            let now = Timestamp::now();
             let mut answer = minted(now);
             if rejected {
                 answer["permissions"]["issues"] = json!("write");
@@ -1677,7 +1690,7 @@ mod tests {
                         .expect("job")
                         .lease_expires_at
                         .expect("claimed");
-                github_tokens::sweep(&s.db, &s.config, lease + TimeDelta::seconds(1))
+                github_tokens::sweep(&s.db, &s.config, lease + SignedDuration::from_secs(1))
                     .await
                     .expect("sweep after the unanswered claim's lease");
                 assert_eq!(s.db.jobs().github_token(job, 1).await.expect("read"), None);
@@ -1704,10 +1717,10 @@ mod tests {
 
     #[test]
     fn lease_uses_the_v1_timing() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         assert_eq!(
             lease_until(now) - now,
-            TimeDelta::seconds(i64::from(LeaseTiming::V1.lease_secs))
+            SignedDuration::from_secs(i64::from(LeaseTiming::V1.lease_secs))
         );
     }
 }

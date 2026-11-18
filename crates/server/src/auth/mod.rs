@@ -24,11 +24,12 @@ use axum::extract::{ConnectInfo, FromRequestParts, OptionalFromRequestParts};
 use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue};
-use chrono::{DateTime, TimeDelta, Utc};
 use contracts::api::access_tokens::AccessTokenId;
 use contracts::api::error::ApiErrorCode;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::sessions::Liveness;
+use jiff::SignedDuration;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::config::Config;
@@ -49,20 +50,20 @@ pub use tokens::{
 pub(crate) use tokens::{end_session, store_sign_in};
 
 /// Lifetime of a session (absolute; the user signs in again afterwards).
-pub const SESSION_TTL: TimeDelta = TimeDelta::days(7);
+pub const SESSION_TTL: SignedDuration = SignedDuration::from_hours(24 * 7);
 /// A session unused for this long ends (idle timeout).
-pub const SESSION_IDLE_TIMEOUT: TimeDelta = TimeDelta::hours(24);
+pub const SESSION_IDLE_TIMEOUT: SignedDuration = SignedDuration::from_hours(24);
 /// A use is recorded only when the last recorded one is older, so the idle timeout may end a session up to this
 /// much early, never late.
-pub const SESSION_TOUCH_INTERVAL: TimeDelta = TimeDelta::seconds(60);
+pub const SESSION_TOUCH_INTERVAL: SignedDuration = SignedDuration::from_secs(60);
 /// Lifetime of an OAuth login between redirect to GitHub and callback.
-pub const OAUTH_LOGIN_TTL: TimeDelta = TimeDelta::minutes(10);
+pub const OAUTH_LOGIN_TTL: SignedDuration = SignedDuration::from_mins(10);
 /// Header carrying the CSRF token on mutating requests.
 pub const CSRF_HEADER: &str = "x-csrf-token";
 
 /// Which sessions are live at `now`: unexpired, used within [`SESSION_IDLE_TIMEOUT`], and of a user the
 /// session's tenant still allows (a login removed from the allowlist loses access on its next request).
-pub(crate) fn liveness(now: DateTime<Utc>) -> Liveness {
+pub(crate) fn liveness(now: Timestamp) -> Liveness {
     Liveness {
         now,
         seen_after: now - SESSION_IDLE_TIMEOUT,
@@ -124,19 +125,24 @@ impl Cookie {
 
     /// `Set-Cookie` value: HttpOnly, SameSite=Lax, Path=/, Secure over HTTPS. `value` must be a cookie-safe
     /// token (base64url).
-    pub(crate) fn set(self, value: &str, max_age: TimeDelta, https: bool) -> Option<HeaderValue> {
+    pub(crate) fn set(
+        self,
+        value: &str,
+        max_age: SignedDuration,
+        https: bool,
+    ) -> Option<HeaderValue> {
         let secure = if https { "; Secure" } else { "" };
         HeaderValue::from_str(&format!(
             "{}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{secure}",
             self.name(https),
-            max_age.num_seconds()
+            max_age.as_secs()
         ))
         .ok()
     }
 
     /// `Set-Cookie` value removing the cookie.
     pub(crate) fn clear(self, https: bool) -> Option<HeaderValue> {
-        self.set("", TimeDelta::zero(), https)
+        self.set("", SignedDuration::ZERO, https)
     }
 }
 
@@ -230,7 +236,7 @@ impl Session {
     /// Whether the session or token still passes the checks of a new request (SSE heartbeat): the session is
     /// live, or the token is neither revoked nor expired; either way the user is still on the allow-list.
     pub(crate) async fn is_live(&self, state: &AppState) -> Result<bool, DbError> {
-        let now = Utc::now();
+        let now = Timestamp::now();
         match &self.credential {
             Credential::Cookie { .. } => Ok(state
                 .db
@@ -277,7 +283,7 @@ impl Session {
             return Ok(None);
         };
         let token_hash = sha256(token.as_bytes());
-        let now = Utc::now();
+        let now = Timestamp::now();
         let sessions = state.db.sessions();
         // Validity is decided by this read alone; the use record below is best-effort.
         let record = sessions.live(&token_hash, liveness(now)).await?;

@@ -5,10 +5,10 @@
 mod page;
 mod view;
 
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::{
     DashboardSettings, HistoryEvent, KindCounts, ScanNote, TodosState, TodosStatus,
 };
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::dashboard::RefreshRecord;
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,7 @@ pub struct Snapshot {
     /// The settings the scan used (display ids and rules stay those of the scan).
     pub settings: DashboardSettings,
     /// When the scan finished; scores are computed at this time.
-    pub scanned_at: DateTime<Utc>,
+    pub scanned_at: Timestamp,
     /// Open pull requests.
     pub pull_requests: Vec<StoredPr>,
     /// Open issues.
@@ -66,7 +66,7 @@ pub struct StoredPr {
     /// Head commit at scan time (review links compare it with the analysed head).
     pub head_sha: String,
     /// Opened (the awaiting fallback when the request time is unknown).
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// Failing build, test and lint checks.
     pub ci_red: Vec<String>,
     /// Running build, test and lint checks.

@@ -2,8 +2,8 @@
 
 use std::sync::{Mutex, PoisonError};
 
-use chrono::Utc;
 use contracts::api::settings::{MemcanState, MemcanStatus};
+use contracts::time::Timestamp;
 use secrecy::ExposeSecret;
 
 use super::MemcanError;
@@ -49,7 +49,7 @@ impl MemcanConfig {
             _ => MemcanState::Reachable,
         };
         if result.is_ok() {
-            status.last_success_at = Some(Utc::now());
+            status.last_success_at = Some(Timestamp::now());
         }
     }
 }

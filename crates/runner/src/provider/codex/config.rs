@@ -213,9 +213,9 @@ fn toml_array(values: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
     use contracts::common::RepoRef;
     use contracts::job::access::Secret;
+    use contracts::time::Timestamp;
 
     use super::*;
 
@@ -238,7 +238,7 @@ mod tests {
         AgentAccess {
             github: Some(InstallationToken {
                 token: Secret::new(GITHUB_CANARY),
-                expires_at: Utc::now(),
+                expires_at: Timestamp::now(),
                 repository: RepoRef {
                     owner: "acme".to_owned(),
                     name: "node-client".to_owned(),

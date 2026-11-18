@@ -132,9 +132,9 @@ pub fn check_time_zone(zone: &str) -> Result<(), InvalidSettings> {
     }
 }
 
-/// Whether `zone` names an IANA time zone `chrono-tz` knows (the schedule resolves it with the same crate).
+/// Whether `zone` names an IANA time zone of the bundled database (the schedule resolves it the same way).
 fn known_time_zone(zone: &str) -> bool {
-    zone.parse::<chrono_tz::Tz>().is_ok()
+    super::zone::parse(zone).is_some()
 }
 
 fn invalid<T>(message: impl Into<String>) -> Result<T, InvalidSettings> {

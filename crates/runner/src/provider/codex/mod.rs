@@ -21,10 +21,10 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use chrono::Utc;
 use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
 use contracts::job::result::Usage;
+use contracts::time::Timestamp;
 use futures::future::BoxFuture;
 use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -814,7 +814,7 @@ async fn forward(
         }
         let event = JobEvent {
             seq: 0,
-            at: Utc::now(),
+            at: Timestamp::now(),
             activity,
             summary: credential.scrubber().text_and_token_shapes(&summary),
         };

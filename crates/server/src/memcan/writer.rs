@@ -12,17 +12,18 @@
 //! blocks others. When MemCan is unreachable the sweep stops and the worker backs off; feedback stays stored
 //! locally either way.
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use chrono::{DateTime, TimeDelta, Utc};
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::feedback::{MemcanOutcome, PendingFeedback};
 use rmcp::model::ErrorCode;
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Notify;
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 use super::client::{CALL_TIMEOUT, MemcanClient, MemcanError};
 use super::memory::import_record;
@@ -38,11 +39,12 @@ pub(crate) const FIRST_BACKOFF: Duration = Duration::from_secs(30);
 /// Longest worker wait.
 pub(crate) const MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
 /// First retry of a failed entry; doubled per failed attempt up to [`MAX_RETRY`].
-pub(crate) const FIRST_RETRY: TimeDelta = TimeDelta::seconds(30);
+pub(crate) const FIRST_RETRY: SignedDuration = SignedDuration::from_secs(30);
 /// Longest wait between attempts of one entry.
-pub(crate) const MAX_RETRY: TimeDelta = TimeDelta::minutes(30);
+pub(crate) const MAX_RETRY: SignedDuration = SignedDuration::from_mins(30);
 /// How long a MemCan operation without a usable answer may still take effect: ten call timeouts (200 s).
-pub(crate) const SETTLE_PERIOD: TimeDelta = TimeDelta::seconds(10 * CALL_TIMEOUT.as_secs() as i64);
+pub(crate) const SETTLE_PERIOD: SignedDuration =
+    SignedDuration::from_secs(10 * CALL_TIMEOUT.as_secs() as i64);
 
 /// Wakes the writer; a nudge never waits for a sweep.
 static NUDGE: Notify = Notify::const_new();
@@ -67,7 +69,7 @@ pub(crate) struct Sweep {
 pub(crate) async fn sweep(
     db: &Db,
     config: &MemcanConfig,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Sweep, DbError> {
     let pending = db.feedback().pending_memcan(now, BATCH).await?;
     if pending.is_empty() {
@@ -137,7 +139,7 @@ pub(crate) async fn sweep(
 }
 
 /// Delay before retrying an entry that had failed `attempts` times before this failure.
-pub(crate) fn retry_delay(attempts: u32) -> TimeDelta {
+pub(crate) fn retry_delay(attempts: u32) -> SignedDuration {
     FIRST_RETRY
         .checked_mul(1 << attempts.min(16))
         .map_or(MAX_RETRY, |delay| delay.min(MAX_RETRY))
@@ -163,7 +165,7 @@ async fn write(
     db: &Db,
     client: &MemcanClient<'_>,
     entry: &PendingFeedback,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Result<(), MemcanError>, DbError> {
     let id = entry.feedback.id.to_string();
     if entry.removed {
@@ -229,7 +231,7 @@ pub async fn run_writer(db: Db, config: Arc<Config>) {
         tokio::pin!(nudged);
         // Registered before the sweep, so a nudge sent during it is not lost.
         nudged.as_mut().enable();
-        let outcome = sweep(&db, &config.memcan, Utc::now()).await;
+        let outcome = sweep(&db, &config.memcan, Timestamp::now()).await;
         if let Err(error) = &outcome {
             tracing::warn!(%error, sqlite_code = ?error.sqlite_code(),
                 "MemCan writer could not read or update the feedback queue; it retries after a back-off");

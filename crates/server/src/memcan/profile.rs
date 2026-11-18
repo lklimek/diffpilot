@@ -5,6 +5,7 @@
 
 use contracts::api::analyses::AnalysisSummary;
 use contracts::ids::AnalysisId;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::documents::DocumentKind;
@@ -129,7 +130,7 @@ pub async fn ensure(
             DocumentKind::MemcanProfile,
             "",
             &lookup,
-            chrono::Utc::now(),
+            Timestamp::now(),
         )
         .await?;
     Ok(Ensured {

@@ -87,7 +87,7 @@ pub fn selection(saved: Option<StoredLlmSelection>) -> contracts::api::settings:
 
 #[cfg(test)]
 mod tests {
-    use chrono::Utc;
+    use contracts::time::Timestamp;
 
     use super::*;
 
@@ -100,7 +100,7 @@ mod tests {
             judge_effort: ReasoningEffort::Medium,
             ask_effort: ask,
             changed_by: "alice".into(),
-            changed_at: Utc::now(),
+            changed_at: Timestamp::now(),
         }
     }
 

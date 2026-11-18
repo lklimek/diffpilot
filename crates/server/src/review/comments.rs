@@ -11,7 +11,6 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use analysis::diff::FileDiff;
 use analysis::lines::{CommentPosition, comment_position, line_window, missed_line};
-use chrono::Utc;
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::comments::{
@@ -20,6 +19,7 @@ use contracts::api::comments::{
 use contracts::api::feedback::{FeedbackTarget, FeedbackValue};
 use contracts::common::{LineSide, PrRef, RepoRef};
 use contracts::ids::FeedbackId;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::comments::{CommentRequestKey, CommentRequestStart};
 use db::repo::documents::DocumentKind;
@@ -135,7 +135,7 @@ pub(crate) async fn commenting_available(
     state: &AppState,
     repo: &RepoRef,
 ) -> Result<bool, CommentError> {
-    match app_token::installation(&state.config.github, repo, Utc::now()).await {
+    match app_token::installation(&state.config.github, repo, Timestamp::now()).await {
         Ok(Installation::Installed { .. }) => Ok(true),
         Ok(Installation::NotInstalled) => Ok(false),
         Err(error) if error.is_configuration() => {
@@ -293,7 +293,7 @@ async fn record_missed(
         value: FeedbackValue::MissedByLlm,
         note: None,
     };
-    match state.db.feedback().upsert(feedback, Utc::now()).await {
+    match state.db.feedback().upsert(feedback, Timestamp::now()).await {
         Ok(_) => {
             crate::memcan::writer::nudge();
             true
@@ -353,7 +353,7 @@ pub async fn create(
     let _write = lock_writes(user_id, &pr_of(summary)).await;
     let requests = state.db.comment_requests();
     match requests
-        .begin(key, summary.id, &request_hash, Utc::now())
+        .begin(key, summary.id, &request_hash, Timestamp::now())
         .await?
     {
         CommentRequestStart::Started => {}
@@ -739,7 +739,7 @@ mod github_tests {
         let pr_id = state
             .db
             .pull_requests()
-            .upsert(DEFAULT_TENANT, repo.id, &pr, Utc::now())
+            .upsert(DEFAULT_TENANT, repo.id, &pr, Timestamp::now())
             .await
             .expect("pr");
         let id = state
@@ -755,7 +755,7 @@ mod github_tests {
                     language: Default::default(),
                     created_by: "u1".to_owned(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("analysis")
@@ -767,14 +767,20 @@ mod github_tests {
             state
                 .db
                 .documents()
-                .put(id, DocumentKind::Flow, &format!("f{n}"), &flow, Utc::now())
+                .put(
+                    id,
+                    DocumentKind::Flow,
+                    &format!("f{n}"),
+                    &flow,
+                    Timestamp::now(),
+                )
                 .await
                 .expect("flow document");
         }
         state
             .db
             .analyses()
-            .set_state(id, &AnalysisState::Finished { total: 5 }, Utc::now())
+            .set_state(id, &AnalysisState::Finished { total: 5 }, Timestamp::now())
             .await
             .expect("finished");
         let summary = state.db.analyses().summary(id).await.expect("summary");
@@ -1291,7 +1297,7 @@ mod github_tests {
                 .await
                 .expect("lookup")
                 .expect("pair");
-            let expired = stored.tokens.access_expires_at <= Utc::now();
+            let expired = stored.tokens.access_expires_at <= Timestamp::now();
             let lock = crate::auth::lock_user("u1").await;
             let grant = crate::github::oauth::TokenGrant {
                 access_token: SecretString::from(crate::review::tests::USER_TOKEN),
@@ -1299,9 +1305,15 @@ mod github_tests {
                 refresh_token: SecretString::from("ghr_review_refresh_u1"),
                 refresh_token_expires_in: 180 * 86_400,
             };
-            crate::auth::store_sign_in_tokens(&f.state, &lock, DEFAULT_TENANT, &grant, Utc::now())
-                .await
-                .expect("fresh pair again");
+            crate::auth::store_sign_in_tokens(
+                &f.state,
+                &lock,
+                DEFAULT_TENANT,
+                &grant,
+                Timestamp::now(),
+            )
+            .await
+            .expect("fresh pair again");
             expired
         };
         f.head_is(HEAD, 1).await;
@@ -1548,7 +1560,7 @@ mod github_tests {
         f.state
             .db
             .analyses()
-            .set_state(f.summary.id, &running, Utc::now())
+            .set_state(f.summary.id, &running, Timestamp::now())
             .await
             .expect("running");
         f.summary = f

@@ -8,11 +8,11 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::Utc;
 use contracts::api::error::ApiErrorCode;
 use contracts::api::questions::{AskQuestion, AskRequest};
 use contracts::ids::{AnalysisId, StepId};
 use contracts::routes::{ASK_QUESTION, LIST_QUESTIONS};
+use contracts::time::Timestamp;
 
 use crate::api::analyses::{AnalysisApiError, visible_analysis};
 use crate::api::error::{ApiErrorSource, ApiFailure};
@@ -109,7 +109,7 @@ async fn list(
     let questions = state
         .db
         .questions()
-        .list_for_user(analysis.id, &session.user_id, Utc::now())
+        .list_for_user(analysis.id, &session.user_id, Timestamp::now())
         .await
         .map_err(|error| failure(AnalysisApiError::Db(error)))?;
     Ok(Json(questions))

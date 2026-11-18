@@ -1,6 +1,6 @@
 //! Server-sent events of `GET /api/v1/analyses/{id}/events` (`docs/contracts/sse-events.md`).
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -29,7 +29,7 @@ pub enum AnalysisEvent {
     /// Sent every 15 s while the stream is open, so a silent but open stream is told from a dead one.
     Heartbeat {
         /// Server time of sending.
-        at: DateTime<Utc>,
+        at: Timestamp,
     },
 }
 

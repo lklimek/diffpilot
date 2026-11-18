@@ -1,6 +1,6 @@
 //! `JobResult`: what the runner reports when a job attempt ends.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -48,7 +48,7 @@ pub enum JobOutcome {
     /// The provider's usage limit was reached; never paid around (ADR-003).
     UsageLimited {
         /// When the limit resets, if known.
-        resets_at: Option<DateTime<Utc>>,
+        resets_at: Option<Timestamp>,
     },
 }
 
@@ -108,7 +108,7 @@ pub struct Usage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct LlmCallOutcome {
     /// When the call ended.
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     /// Whether it worked.
     pub status: LlmCallStatus,
 }

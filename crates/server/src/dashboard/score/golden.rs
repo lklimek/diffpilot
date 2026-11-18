@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::{DashboardSettings, ItemKey, ScoreComponent, Tier};
+use contracts::time::Timestamp;
 use serde::Deserialize;
 
 use super::*;
@@ -30,7 +30,7 @@ struct Expected {
 
 #[derive(Deserialize)]
 struct Fixture {
-    now: DateTime<Utc>,
+    now: Timestamp,
     own_login: String,
     settings: DashboardSettings,
     prs: Vec<PrFacts>,
@@ -42,7 +42,7 @@ struct Fixture {
 }
 
 impl FixtureJudgement {
-    fn judgement(&self, now: DateTime<Utc>) -> Judgement {
+    fn judgement(&self, now: Timestamp) -> Judgement {
         Judgement {
             parts: ScoreComponent::ALL
                 .iter()

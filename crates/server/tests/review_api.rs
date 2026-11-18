@@ -11,13 +11,13 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
-use chrono::{TimeDelta, Utc};
 use contracts::api::analyses::AnalysisState;
 use contracts::api::pr::PrSummary;
 use contracts::api::review::{BlockRef, QuietRowRef, ReviewState};
 use contracts::api::tour::Tour;
 use contracts::common::{LlmLanguage, NotAnalysedCategory};
 use contracts::ids::{AnalysisId, CommitSha, FlowId, StepId};
+use contracts::time::Timestamp;
 use db::repo::analyses::NewAnalysis;
 use db::repo::documents::DocumentKind;
 use db::repo::sessions::NewSession;
@@ -25,6 +25,7 @@ use db::repo::testing::{file_backed_with_busy_timeout, hold_write_lock};
 use db::repo::users::GithubProfile;
 use db::repo::{DEFAULT_TENANT, Db};
 use http_body_util::BodyExt;
+use jiff::SignedDuration;
 use serde_json::{Value, json};
 use server::api;
 use server::config::Config;
@@ -117,7 +118,7 @@ impl Harness {
     }
 
     async fn sign_in(&self, tenant: &str, user: &str, github_id: i64) {
-        let now = Utc::now();
+        let now = Timestamp::now();
         db::repo::tenants::testing::allow_login(&self.state.db, tenant, user, github_id)
             .await
             .expect("allowlist");
@@ -146,7 +147,7 @@ impl Harness {
                     tenant_id: tenant,
                     user_id: user,
                     csrf_token: CSRF,
-                    expires_at: now + TimeDelta::days(1),
+                    expires_at: now + SignedDuration::from_hours(24),
                 },
                 now,
             )
@@ -164,7 +165,7 @@ impl Harness {
             .expect("repo");
         let pr_id = db
             .pull_requests()
-            .upsert(DEFAULT_TENANT, repo.id, pr, Utc::now())
+            .upsert(DEFAULT_TENANT, repo.id, pr, Timestamp::now())
             .await
             .expect("pr");
         let id = AnalysisId::new_random();
@@ -179,7 +180,7 @@ impl Harness {
                     language,
                     created_by: "u-alice".to_owned(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("analysis");
@@ -199,7 +200,7 @@ impl Harness {
         if !finished {
             return id;
         }
-        let now = Utc::now();
+        let now = Timestamp::now();
         let documents = db.documents();
         let agent = |file: &str| read_json(&fixtures().join("agent").join(file));
         documents

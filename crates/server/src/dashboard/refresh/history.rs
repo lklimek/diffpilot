@@ -4,45 +4,50 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use chrono::{DateTime, Days, NaiveDate, TimeDelta, Utc};
-use chrono_tz::Tz;
 use contracts::api::dashboard::{HistoryEvent, HistoryKind, ScanNote};
+use contracts::time::Timestamp;
+use jiff::civil::{Date, Time};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Span};
 
 use crate::dashboard::score::ScoreRules;
+use crate::dashboard::zone;
 use crate::github::work::{
     Fetched, HistoryPr, ItemRef, TokenSource, UserEvent, WorkClient, WorkError,
 };
 
 /// The chart window.
-const WINDOW_DAYS: u64 = 12 * 7;
+const WINDOW_DAYS: i64 = 12 * 7;
 
 /// First local date of the window and its first instant.
-pub(super) fn window_start(now: DateTime<Utc>, zone: Tz) -> (NaiveDate, DateTime<Utc>) {
-    let today = now.with_timezone(&zone).date_naive();
+pub(super) fn window_start(now: Timestamp, zone: &TimeZone) -> (Date, Timestamp) {
+    let today = now.to_zoned(zone.clone()).date();
     let first = today
-        .checked_sub_days(Days::new(WINDOW_DAYS))
+        .checked_sub(Span::new().days(WINDOW_DAYS))
         .unwrap_or(today);
     (first, first_instant(first, zone).unwrap_or(now))
 }
 
 /// The first instant of local date `day`: midnight, or the end of a DST gap that starts at midnight.
-fn first_instant(day: NaiveDate, zone: Tz) -> Option<DateTime<Utc>> {
-    let midnight = day.and_hms_opt(0, 0, 0)?;
+fn first_instant(day: Date, zone: &TimeZone) -> Option<Timestamp> {
+    let midnight = day.to_datetime(Time::midnight());
     // Gaps last at most a few hours; minute steps find the first local time that exists.
     (0..=6 * 60).find_map(|minutes| {
-        (midnight + TimeDelta::minutes(minutes))
-            .and_local_timezone(zone)
-            .earliest()
-            .map(|at| at.with_timezone(&Utc))
+        zone::earliest(
+            midnight
+                .checked_add(SignedDuration::from_mins(minutes))
+                .ok()?,
+            zone,
+        )
     })
 }
 
 /// Dated events, one per pull request and kind; for reviews the newest in the window.
 #[derive(Default)]
-struct Events(HashMap<(String, HistoryKind), DateTime<Utc>>);
+struct Events(HashMap<(String, HistoryKind), Timestamp>);
 
 impl Events {
-    fn add(&mut self, kind: HistoryKind, item: &ItemRef, at: DateTime<Utc>, start: DateTime<Utc>) {
+    fn add(&mut self, kind: HistoryKind, item: &ItemRef, at: Timestamp, start: Timestamp) {
         if at < start {
             return;
         }
@@ -72,7 +77,7 @@ impl Events {
 fn from_details(
     rules: &ScoreRules,
     details: &BTreeMap<ItemRef, HistoryPr>,
-    start: DateTime<Utc>,
+    start: Timestamp,
     events: &mut Events,
 ) {
     for (item, pr) in details {
@@ -98,12 +103,7 @@ fn from_details(
 
 /// Events of a login's public event feed (Q14, the fallback for a login search refuses). The actor of an
 /// `opened` event is the author; a closing event counts only for a pull request a scanned login authored.
-fn from_user_events(
-    rules: &ScoreRules,
-    feed: &[UserEvent],
-    start: DateTime<Utc>,
-    events: &mut Events,
-) {
+fn from_user_events(rules: &ScoreRules, feed: &[UserEvent], start: Timestamp, events: &mut Events) {
     for event in feed {
         let own = event
             .author
@@ -133,8 +133,8 @@ pub(super) async fn collect<T: TokenSource>(
     client: &WorkClient<T>,
     rules: &ScoreRules,
     logins: &[String],
-    first: NaiveDate,
-    start: DateTime<Utc>,
+    first: Date,
+    start: Timestamp,
 ) -> Result<(Vec<HistoryEvent>, Vec<ScanNote>), WorkError> {
     let mut events = Events::default();
     let mut notes = Vec::new();
@@ -177,15 +177,12 @@ pub(super) async fn collect<T: TokenSource>(
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
     use contracts::api::dashboard::DashboardSettings;
 
     use super::*;
 
-    fn at(text: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(text)
-            .expect("time")
-            .with_timezone(&Utc)
+    fn at(text: &str) -> Timestamp {
+        text.parse::<Timestamp>().expect("time")
     }
 
     fn item(number: u32) -> ItemRef {
@@ -194,21 +191,16 @@ mod tests {
 
     #[test]
     fn window_starts_at_local_midnight_twelve_weeks_back() {
-        let now = Utc
-            .with_ymd_and_hms(2026, 11, 18, 9, 0, 0)
-            .single()
-            .expect("now");
-        let (first, start) = window_start(now, chrono_tz::Europe::Warsaw);
-        assert_eq!(first, NaiveDate::from_ymd_opt(2026, 8, 26).expect("date"));
+        let now = "2026-11-18T09:00:00Z".parse::<Timestamp>().expect("now");
+        let warsaw = zone::parse("Europe/Warsaw").expect("zone");
+        let (first, start) = window_start(now, &warsaw);
+        assert_eq!(first, Date::new(2026, 8, 26).expect("date"));
         // Warsaw is UTC+2 on 26 August (summer time).
         assert_eq!(start, at("2026-08-25T22:00:00Z"));
-        let late = Utc
-            .with_ymd_and_hms(2026, 11, 18, 23, 30, 0)
-            .single()
-            .expect("now");
+        let late = "2026-11-18T23:30:00Z".parse::<Timestamp>().expect("now");
         assert_eq!(
-            window_start(late, chrono_tz::Europe::Warsaw).0,
-            NaiveDate::from_ymd_opt(2026, 8, 27).expect("date"),
+            window_start(late, &warsaw).0,
+            Date::new(2026, 8, 27).expect("date"),
             "23:30 UTC is already the 19th in Warsaw"
         );
     }
@@ -218,8 +210,9 @@ mod tests {
     #[test]
     fn window_start_survives_a_midnight_dst_gap() {
         let now = at("2026-11-29T15:00:00Z");
-        let (first, start) = window_start(now, chrono_tz::America::Santiago);
-        assert_eq!(first, NaiveDate::from_ymd_opt(2026, 9, 6).expect("date"));
+        let santiago = zone::parse("America/Santiago").expect("zone");
+        let (first, start) = window_start(now, &santiago);
+        assert_eq!(first, Date::new(2026, 9, 6).expect("date"));
         assert!(start < now, "window start fell back to now: {start}");
         assert_eq!(
             start,
@@ -297,7 +290,7 @@ mod tests {
             event(1301, "closed", Some(false), None, "2026-11-05T10:00:00Z"),
         ];
         from_user_events(&rules, &feed, start, &mut events);
-        let events: Vec<(HistoryKind, String, DateTime<Utc>)> = events
+        let events: Vec<(HistoryKind, String, Timestamp)> = events
             .into_events()
             .into_iter()
             .map(|e| (e.kind, e.item_id, e.at))
