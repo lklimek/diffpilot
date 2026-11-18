@@ -110,6 +110,17 @@ pub struct ScheduleCandidate {
     pub settings: StoredDashboardSettings,
 }
 
+/// A settings row of the scheduler's input that could not be decoded; the other rows are still returned.
+#[derive(Debug)]
+pub struct UnreadableCandidate {
+    /// Tenant.
+    pub tenant_id: String,
+    /// User.
+    pub user_id: String,
+    /// Why the row could not be decoded.
+    pub error: DbError,
+}
+
 /// Scan progress as stored in `dashboard_refreshes.progress`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshProgress {
@@ -372,8 +383,11 @@ impl Dashboard<'_> {
         found(saved.rows_affected())
     }
 
-    /// Server-internal (scheduler): every user, in every tenant, whose schedule is on and time zone known.
-    pub async fn schedule_candidates(&self) -> Result<Vec<ScheduleCandidate>, DbError> {
+    /// Server-internal (scheduler): every user, in every tenant, whose schedule is on and time zone known; a row
+    /// that cannot be decoded is reported on its own, so it never hides the others.
+    pub async fn schedule_candidates(
+        &self,
+    ) -> Result<Vec<Result<ScheduleCandidate, UnreadableCandidate>>, DbError> {
         let rows = sqlx::query(
             "SELECT * FROM dashboard_settings WHERE schedule_enabled = 1 AND time_zone IS NOT NULL
              ORDER BY tenant_id, user_id",
@@ -382,10 +396,19 @@ impl Dashboard<'_> {
         .await?;
         rows.iter()
             .map(|row| {
-                Ok(ScheduleCandidate {
-                    tenant_id: row.try_get("tenant_id")?,
-                    user_id: row.try_get("user_id")?,
-                    settings: settings_of(row)?,
+                let tenant_id: String = row.try_get("tenant_id")?;
+                let user_id: String = row.try_get("user_id")?;
+                Ok(match settings_of(row) {
+                    Ok(settings) => Ok(ScheduleCandidate {
+                        tenant_id,
+                        user_id,
+                        settings,
+                    }),
+                    Err(error) => Err(UnreadableCandidate {
+                        tenant_id,
+                        user_id,
+                        error,
+                    }),
                 })
             })
             .collect()
@@ -1582,9 +1605,24 @@ mod tests {
         dash.save_settings(T, "u4", &DashboardSettings::default(), at(0))
             .await
             .expect("no zone");
+        sqlx::query("UPDATE dashboard_settings SET repositories = '[1]' WHERE user_id = 'u3'")
+            .execute(&db.pool)
+            .await
+            .expect("an undecodable row");
         let candidates = dash.schedule_candidates().await.expect("candidates");
+        let unreadable: Vec<(&str, &str)> = candidates
+            .iter()
+            .filter_map(|c| c.as_ref().err())
+            .map(|u| (u.tenant_id.as_str(), u.user_id.as_str()))
+            .collect();
+        assert_eq!(
+            unreadable,
+            [("other", "u3")],
+            "reported, not failing the list"
+        );
         let found: Vec<(&str, &str, Option<&str>)> = candidates
             .iter()
+            .filter_map(|c| c.as_ref().ok())
             .map(|c| {
                 (
                     c.tenant_id.as_str(),
@@ -1593,13 +1631,7 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(
-            found,
-            [
-                (T, "u1", Some("Europe/Warsaw")),
-                ("other", "u3", Some("America/New_York"))
-            ]
-        );
+        assert_eq!(found, [(T, "u1", Some("Europe/Warsaw"))]);
     }
 
     #[tokio::test]
@@ -3135,7 +3167,12 @@ mod tests {
                 .expect("snapshot"),
             None
         );
-        assert_eq!(dash.schedule_candidates().await.expect("candidates"), []);
+        assert!(
+            dash.schedule_candidates()
+                .await
+                .expect("candidates")
+                .is_empty()
+        );
         assert_eq!(dash.interrupt_live(at(0)).await.expect("interrupt"), []);
         assert_eq!(dash.judgements(T, "u1", &[key(1)]).await.expect("none"), []);
         assert_eq!(dash.judged_since(T, "u1", at(0)).await.expect("count"), 0);

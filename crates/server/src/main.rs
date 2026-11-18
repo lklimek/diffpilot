@@ -122,6 +122,8 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     server::dashboard::refresh::recover(&state)
         .await
         .map_err(StartError::RecoverDashboard)?;
+    // After the recovery, so a scheduled start never meets a refresh the restart left live.
+    server::dashboard::schedule::spawn(state.clone());
 
     let (stop, stopped) = (state.stopping.clone(), state.stopping.subscribe());
     tokio::spawn(async move {

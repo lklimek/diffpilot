@@ -285,7 +285,8 @@ async fn complete_login(
 }
 
 /// `POST /auth/logout`: ends this session, or with `everywhere` every session and personal access token of the
-/// user; the stored GitHub tokens end with the user's last live session.
+/// user; the stored GitHub tokens end with the user's last live session (unless the dashboard schedule keeps them,
+/// ADR-020) and always with sign-out everywhere.
 async fn logout(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,

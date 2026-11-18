@@ -2,13 +2,13 @@
 //! cancel stops GitHub calls at the next await), the `refresh` event channel, the clock and the ranker seam.
 //! WP11-SCHED and WP11-JUDGE extend it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use chrono::{DateTime, TimeDelta, Utc};
+use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use contracts::api::dashboard::RefreshStatus;
 use contracts::ids::RefreshId;
 use tokio::sync::broadcast;
@@ -73,6 +73,8 @@ struct Inner {
     tasks: Mutex<Tasks>,
     events: broadcast::Sender<RefreshStatus>,
     stopped: broadcast::Sender<RefreshId>,
+    /// Scheduled runs given up for a user's local date after a failure the run record could not hold.
+    given_up: Mutex<HashSet<(String, NaiveDate)>>,
 }
 
 /// Announces the end of a refresh's task, also when it is aborted (dropped at an await).
@@ -142,6 +144,7 @@ impl DashboardHub {
                 tasks: Mutex::new(Tasks::default()),
                 events: broadcast::channel(EVENTS_CAPACITY).0,
                 stopped: broadcast::channel(EVENTS_CAPACITY).0,
+                given_up: Mutex::default(),
             }),
         }
     }
@@ -223,6 +226,25 @@ impl DashboardHub {
     /// Ids of refresh tasks as they end, completed or aborted.
     pub fn stopped(&self) -> broadcast::Receiver<RefreshId> {
         self.inner.stopped.subscribe()
+    }
+
+    fn given_up_runs(&self) -> MutexGuard<'_, HashSet<(String, NaiveDate)>> {
+        self.inner
+            .given_up
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Gives up the user's scheduled run of local date `on` (the scheduler skips it); forgets older dates.
+    pub(crate) fn give_up_scheduled_run(&self, user_id: &str, on: NaiveDate) {
+        let mut given_up = self.given_up_runs();
+        given_up.retain(|(_, date)| *date >= on.pred_opt().unwrap_or(on));
+        given_up.insert((user_id.to_owned(), on));
+    }
+
+    /// Whether the user's scheduled run of local date `on` was given up.
+    pub(crate) fn scheduled_run_given_up(&self, user_id: &str, on: NaiveDate) -> bool {
+        self.given_up_runs().contains(&(user_id.to_owned(), on))
     }
 
     /// Whether a task of refresh `id` runs.
