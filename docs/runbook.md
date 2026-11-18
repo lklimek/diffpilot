@@ -122,6 +122,33 @@ disk for images and build cache, plus the codex-homes image. Check: `docker vers
    sr start server
    ```
 
+## Secrets as files (optional)
+
+`deploy/compose.secrets.yaml` mounts `SR_SECRET_KEY`, `SR_RUNNER_SECRET`, `SR_GITHUB_CLIENT_SECRET` and
+`SR_MEMCAN_TOKEN` read-only from files in `SR_SECRETS_DIR` (default `/srv/smart-review/secrets`) and passes
+`VAR_FILE` instead of `VAR`, so they do not show in `docker inspect` or Portainer (threat model AR-7). Instead of the
+secret lines of First deploy step 4 (root; the runner secret is read by the server's uid 10010 and the runner's
+10001, never by the agent's 10002, else the runner exits 78):
+
+```sh
+cd /srv/smart-review/secrets
+sudo sh -c 'umask 077; openssl rand -base64 32 > sr-secret-key; openssl rand -hex 32 > sr-runner-secret'
+sudo sh -c 'umask 077; cat > sr-github-client-secret'   # paste the value, Enter, Ctrl-D
+sudo sh -c 'umask 077; cat > sr-memcan-token'           # paste the value, Enter, Ctrl-D
+sudo chown 10010:10010 sr-secret-key sr-github-client-secret sr-memcan-token
+sudo chmod 0400 sr-secret-key sr-github-client-secret sr-memcan-token
+sudo chown 10001:10010 sr-runner-secret && sudo chmod 0440 sr-runner-secret
+sudo sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN)=.*/\1=/' /srv/smart-review/.env
+```
+
+Then add the override to the helper and check with `--secret-files`:
+
+```sh
+sr() { docker compose --env-file /srv/smart-review/.env -f /srv/smart-review/app/deploy/compose.yaml \
+  -f /srv/smart-review/app/deploy/compose.secrets.yaml "$@"; }
+sudo /srv/smart-review/app/deploy/check-production-config.sh --env-file /srv/smart-review/.env --secret-files
+```
+
 ## LLM credential (Codex sign-in, "unusable" recovery)
 
 The runner keeps one Codex credential at `/var/lib/smart-review-runner/credentials/default/auth.json` in the
@@ -269,6 +296,8 @@ sr up -d server runner
 
 Both services are recreated with the new value; a running job is interrupted and retried. A runner with the old
 value is refused ("the server rejected the runner secret").
+With secrets as files, replace the file instead (`sudo sh -c 'openssl rand -hex 32 > /srv/smart-review/secrets/sr-runner-secret'`
+keeps its owner and mode) and run `sr restart server runner`.
 
 ## Logs
 

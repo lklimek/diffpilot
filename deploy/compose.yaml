@@ -35,17 +35,19 @@ services:
       SR_RUNNER_LISTEN_ADDR: ${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
       SR_TRUSTED_PROXIES: ${SR_TRUSTED_PROXIES:-}
       SR_DATA_DIR: /var/lib/smart-review
-      SR_SECRET_KEY: ${SR_SECRET_KEY:?set SR_SECRET_KEY}
-      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:?set SR_RUNNER_SECRET}
+      # Secrets from .env, or empty there and read from files (compose.secrets.yaml); a missing one stops the
+      # service at start, and check-production-config.sh --env-file reports it before.
+      SR_SECRET_KEY: ${SR_SECRET_KEY:-}
+      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:-}
       SR_GITHUB_APP_ID: ${SR_GITHUB_APP_ID:?set SR_GITHUB_APP_ID}
       SR_GITHUB_CLIENT_ID: ${SR_GITHUB_CLIENT_ID:?set SR_GITHUB_CLIENT_ID}
-      SR_GITHUB_CLIENT_SECRET: ${SR_GITHUB_CLIENT_SECRET:?set SR_GITHUB_CLIENT_SECRET}
+      SR_GITHUB_CLIENT_SECRET: ${SR_GITHUB_CLIENT_SECRET:-}
       SR_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
       SR_GITHUB_API_URL: ${SR_GITHUB_API_URL:-https://api.github.com}
       SR_GITHUB_OAUTH_URL: ${SR_GITHUB_OAUTH_URL:-https://github.com}
       SR_GITHUB_CLONE_URL: ${SR_GITHUB_CLONE_URL:-https://github.com}
       SR_MEMCAN_URL: ${SR_MEMCAN_URL:?set SR_MEMCAN_URL}
-      SR_MEMCAN_TOKEN: ${SR_MEMCAN_TOKEN:?set SR_MEMCAN_TOKEN}
+      SR_MEMCAN_TOKEN: ${SR_MEMCAN_TOKEN:-}
       RUST_LOG: ${RUST_LOG:-info}
       NO_COLOR: "1"
     volumes:
@@ -84,7 +86,7 @@ services:
     stop_grace_period: 60s
     environment:
       SR_RUNNER_SERVER_URL: http://${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
-      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:?set SR_RUNNER_SECRET}
+      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:-}
       SR_RUNNER_ID: ${SR_RUNNER_ID:-runner}
       SR_RUNNER_EGRESS_PROXY: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
       SR_RUNNER_CLAUDIUS_URL: ${SR_RUNNER_CLAUDIUS_URL:-https://github.com/lklimek/claudius.git}
