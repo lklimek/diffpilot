@@ -360,4 +360,38 @@ mod tests {
             ]
         );
     }
+
+    /// A review counts only on someone else's pull request (reference `stats.py` `classify_pr`: "reviews of other
+    /// people's PRs"). GitHub lists an author's thread replies as `COMMENTED` reviews by the author
+    /// (dashpay/platform#5683: four by its author Claudius-Maginificent), and a scanned login reviewing a linked
+    /// login's pull request is the user reviewing their own work.
+    #[test]
+    fn reviews_of_pull_requests_a_scanned_login_authored_are_not_reviews_given() {
+        let settings = DashboardSettings {
+            linked_logins: vec!["alice-helper".to_owned()],
+            ..DashboardSettings::default()
+        };
+        let rules = ScoreRules::new("alice", &settings);
+        let start = at("2026-08-25T22:00:00Z");
+        let own = |author: &str, reviewer: &str| HistoryPr {
+            created_at: at("2026-11-02T10:00:00Z"),
+            closed_at: None,
+            merged_at: None,
+            author: Some(author.to_owned()),
+            reviews: BTreeMap::from([(reviewer.to_owned(), vec![at("2026-11-03T10:00:00Z")])]),
+        };
+        let details = BTreeMap::from([
+            (item(5683), own("alice-helper", "alice-helper")),
+            (item(5684), own("alice-helper", "alice")),
+        ]);
+        let mut events = Events::default();
+        from_details(&rules, &details, start, &mut events);
+        let reviews: Vec<String> = events
+            .into_events()
+            .into_iter()
+            .filter(|e| e.kind == HistoryKind::ReviewGiven)
+            .map(|e| e.item_id)
+            .collect();
+        assert!(reviews.is_empty(), "self-reviews counted: {reviews:?}");
+    }
 }
