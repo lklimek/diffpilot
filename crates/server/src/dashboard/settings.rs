@@ -132,17 +132,9 @@ pub fn check_time_zone(zone: &str) -> Result<(), InvalidSettings> {
     }
 }
 
-/// Whether `zone` names an IANA time zone.
-// TODO(CCR chrono-tz 0.10.4, plan §A.5 and G16): this checks only the shape of an IANA name; with the dependency
-// approved it becomes `zone.parse::<chrono_tz::Tz>().is_ok()` (and `unknown_iana_zone_is_refused` runs).
+/// Whether `zone` names an IANA time zone `chrono-tz` knows (the schedule resolves it with the same crate).
 fn known_time_zone(zone: &str) -> bool {
-    zone.len() <= 64
-        && zone.split('/').all(|part| {
-            part.chars().next().is_some_and(|c| c.is_ascii_uppercase())
-                && part
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '+'))
-        })
+    zone.parse::<chrono_tz::Tz>().is_ok()
 }
 
 fn invalid<T>(message: impl Into<String>) -> Result<T, InvalidSettings> {
@@ -851,7 +843,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs chrono-tz (change request): the shape check accepts well-formed unknown names"]
     fn unknown_iana_zone_is_refused() {
         assert!(check_time_zone("Etc/Unknown").is_err());
         assert!(check_time_zone("Mars/Olympus").is_err());
