@@ -8,6 +8,8 @@ WORKDIR /src/web
 COPY web/package.json web/package-lock.json ./
 RUN --mount=type=cache,id=smart-review-npm,target=/root/.npm npm ci --no-audit --no-fund
 COPY web/ ./
+# The type check of the build reads the dashboard fixtures the browser mocks import.
+COPY fixtures/dashboard/api /src/fixtures/dashboard/api
 RUN npm run build
 
 FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db AS build
