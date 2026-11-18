@@ -7,7 +7,8 @@ const heading = (page: import("@playwright/test").Page) =>
 test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("GitHub pull request URL").fill("https://github.com/acme/node-client/pull/482");
-  await page.getByRole("button", { name: "Analyze" }).click();
+  await page.getByRole("button", { name: "Check" }).click();
+  await page.getByRole("button", { name: "Start analysis", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress$`));
   await page.getByRole("link", { name: "Open review" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));

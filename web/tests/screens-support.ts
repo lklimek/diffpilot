@@ -7,7 +7,15 @@ export const PR_URL = "https://github.com/acme/node-client/pull/482";
 /** Fills the PR URL and presses Analyze. */
 export async function analyze(page: Page, url = PR_URL): Promise<void> {
   await page.getByLabel("GitHub pull request URL").fill(url);
-  await page.getByRole("button", { name: "Analyze" }).click();
+  await page.getByRole("button", { name: "Check" }).click();
+}
+
+/** Starts the analysis from the check card (`name`: "Start analysis" or "Start analysis anyway"). */
+export async function startAnalysis(page: Page, name = "Start analysis"): Promise<void> {
+  await page
+    .getByRole("region", { name: "Pull request check" })
+    .getByRole("button", { name, exact: true })
+    .click();
 }
 
 /** Every button and button-like link in main has a tooltip (brief §4 rule 3). */

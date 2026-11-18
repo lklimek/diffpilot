@@ -24,10 +24,6 @@ export function homeOutcome(resolved: ResolvePrResponse): HomeOutcome {
   }
 }
 
-/** Analyze without asking: nothing to resume and nothing to warn about (the App is installed). */
-export const startsAtOnce = (resolved: ResolvePrResponse) =>
-  homeOutcome(resolved).kind === "analyze" && resolved.commenting_available && !resolved.size_warning;
-
 /** The review of a finished analysis, else its progress screen. */
 export const analysisHref = (analysis: AnalysisSummary) =>
   analysis.review_ready || analysis.state.state === "finished"

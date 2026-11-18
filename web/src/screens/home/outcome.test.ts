@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import type { AnalysisState, AnalysisSummary, ResolvePrResponse } from "../../api/generated/types";
 import { seedFor } from "../../mocks/fixtures";
-import { analysisHref, homeOutcome, startsAtOnce } from "./outcome";
+import { analysisHref, homeOutcome } from "./outcome";
 
 const seed = seedFor("default", "pr-resolve") as ResolvePrResponse;
 const analysis = seedFor("default", "analysis") as AnalysisSummary;
@@ -45,12 +45,6 @@ describe("homeOutcome (brief §4.1)", () => {
     });
   });
 
-  it("starts at once only when there is nothing to resume and commenting works", () => {
-    expect(startsAtOnce(resolved(null))).toBe(true);
-    expect(startsAtOnce(resolved(null, { commenting_available: false }))).toBe(false);
-    expect(startsAtOnce(resolved({ state: "finished", total: 5 }))).toBe(false);
-  });
-
   it("analysisHref: the review when finished, else the progress screen", () => {
     expect(analysisHref({ ...analysis, state: { state: "finished", total: 5 } })).toBe(
       `/analyses/${analysis.id}`,
@@ -67,16 +61,4 @@ describe("homeOutcome (brief §4.1)", () => {
       `/analyses/${analysis.id}/progress`,
     );
   });
-});
-
-it("shows the large-PR note before starting, without an extra dialog", () => {
-  expect(
-    startsAtOnce({
-      pr: {} as ResolvePrResponse["pr"],
-      analysis: null,
-      commenting_available: true,
-      head_moved: false,
-      size_warning: { changed_lines: 27081, changed_files: 371, estimate: null },
-    }),
-  ).toBe(false);
 });
