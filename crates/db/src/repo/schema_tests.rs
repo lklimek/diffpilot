@@ -409,6 +409,7 @@ async fn check_lists_match_contract_enums() {
                     RankingState::Paused,
                     RankingState::Failed,
                     RankingState::Interrupted,
+                    RankingState::Cancelled,
                     RankingState::Finished,
                 ]
                 .map(wire_name),
@@ -850,20 +851,30 @@ async fn one_live_dashboard_refresh_per_user() {
         )
     );
     let start = |id: &'static str, user: &'static str, state: &'static str| {
+        let ranked = matches!(state, "ranking" | "finished");
         sqlx::query(
-            "INSERT INTO dashboard_refreshes (id, tenant_id, user_id, trigger, state, started_at)
-             VALUES (?, 'default', ?, 'manual', ?, 't')",
+            "INSERT INTO dashboard_refreshes (id, tenant_id, user_id, trigger, state, started_at, snapshot, ranking_state)
+             VALUES (?, 'default', ?, 'manual', ?, 't', ?, ?)",
         )
         .bind(id)
         .bind(user)
         .bind(state)
+        .bind(ranked.then_some("{}"))
+        .bind(match state {
+            "ranking" => Some("running"),
+            "finished" => Some("finished"),
+            _ => None,
+        })
         .execute(&db.pool)
     };
     start("r1", "u1", "scanning").await.expect("first");
     let second = start("r2", "u1", "ranking").await.map_err(DbError::from);
     assert!(matches!(second, Err(DbError::Conflict)), "{second:?}");
-    start("r3", "u2", "scanning").await.expect("another user");
+    start("r3", "u2", "ranking").await.expect("another user");
     start("r4", "u1", "cancelled")
+        .await
+        .expect("ended ones are not live");
+    start("r6", "u1", "finished")
         .await
         .expect("ended ones are not live");
     let failed_without_code = start("r5", "u1", "failed").await;
@@ -873,6 +884,67 @@ async fn one_live_dashboard_refresh_per_user() {
     );
 }
 
+/// Refresh states of http-api.md "Refresh states": only `ranking` and `finished` hold a snapshot and a ranking
+/// state; `ranking` has a live ranking state, `finished` an ending one (including `cancelled`).
+#[tokio::test]
+async fn refresh_rows_follow_the_state_table() {
+    let db = db().await;
+    sqlx::query(
+        "INSERT INTO users (id, github_id, login, created_at, updated_at) VALUES ('u1', 1, 'alice', 't', 't')",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("user");
+    let insert = |id: &'static str,
+                  state: &'static str,
+                  snapshot: Option<&'static str>,
+                  ranking: Option<&'static str>| {
+        sqlx::query(
+            "INSERT INTO dashboard_refreshes (id, tenant_id, user_id, trigger, state, started_at, snapshot, ranking_state,
+                 failure_code, failure_message)
+             VALUES (?, 'default', 'u1', 'scheduled', ?, 't', ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(state)
+        .bind(snapshot)
+        .bind(ranking)
+        .bind((state == "failed").then_some("interrupted"))
+        .bind((state == "failed").then_some("A server restart interrupted the scan."))
+        .execute(&db.pool)
+    };
+    let allowed = [
+        ("a1", "finished", Some("{}"), Some("finished")),
+        ("a2", "finished", Some("{}"), Some("cancelled")),
+        ("a3", "finished", Some("{}"), Some("interrupted")),
+        ("a4", "failed", None, None),
+        ("a5", "cancelled", None, None),
+    ];
+    for (id, state, snapshot, ranking) in allowed {
+        insert(id, state, snapshot, ranking)
+            .await
+            .unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
+    let rejected = [
+        ("b1", "cancelled", Some("{}"), None),
+        ("b2", "failed", Some("{}"), None),
+        ("b3", "finished", None, Some("finished")),
+        ("b4", "finished", Some("{}"), None),
+        ("b5", "finished", Some("{}"), Some("running")),
+        ("b6", "scanning", None, Some("running")),
+        ("b7", "scanning", Some("{}"), None),
+        ("b8", "ranking", Some("{}"), Some("cancelled")),
+    ];
+    for (id, state, snapshot, ranking) in rejected {
+        assert!(
+            insert(id, state, snapshot, ranking).await.is_err(),
+            "{id} {state} accepted"
+        );
+    }
+    // Checked last: a live row would also reject the scanning cases through the one-live index.
+    insert("a6", "ranking", Some("{}"), Some("waiting_for_analysis"))
+        .await
+        .expect("a ranking refresh");
+}
 /// Tokens store a 32-byte hash, unique names among a user's tokens that are not revoked, and go with their user.
 #[tokio::test]
 async fn access_tokens_keep_hashes_and_live_names_unique() {

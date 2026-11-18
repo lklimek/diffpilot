@@ -1,6 +1,8 @@
 //! Repository for `access_tokens`: personal access tokens (ADR-019). Only the SHA-256 of a token is stored.
 //! Signatures frozen by WP11-A; bodies are filled in by WP11-TOKENS.
 
+use std::fmt;
+
 use chrono::{DateTime, Utc};
 use contracts::api::access_tokens::{AccessTokenId, TokenScope};
 use sqlx::SqlitePool;
@@ -22,8 +24,8 @@ impl Db {
     }
 }
 
-/// A token to store.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A token to store; `Debug` never shows the hash.
+#[derive(Clone, PartialEq, Eq)]
 pub struct NewAccessToken {
     /// Public id (8 base62 characters).
     pub id: AccessTokenId,
@@ -60,13 +62,35 @@ pub struct AccessTokenRecord {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
-/// A stored token with its hash, for the request check (constant-time comparison by the caller).
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A stored token with its hash, for the request check (constant-time comparison by the caller); `Debug` never
+/// shows the hash.
+#[derive(Clone, PartialEq, Eq)]
 pub struct TokenCredential {
     /// The token.
     pub record: AccessTokenRecord,
     /// SHA-256 of the whole token.
     pub token_hash: [u8; 32],
+}
+
+impl fmt::Debug for NewAccessToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewAccessToken")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("token_hash", &"[redacted]")
+            .field("scopes", &self.scopes)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+impl fmt::Debug for TokenCredential {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TokenCredential")
+            .field("record", &self.record)
+            .field("token_hash", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Result of [`AccessTokens::create`].
@@ -146,5 +170,48 @@ impl AccessTokens<'_> {
         Err(DbError::NotImplemented {
             operation: "access_tokens::revoke_all",
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Threat model T20: no token hash in a `{:?}` log line.
+    #[test]
+    fn debug_never_shows_the_token_hash() {
+        let hash = [0xab; 32];
+        let new = NewAccessToken {
+            id: AccessTokenId("Ab3dE5gH".to_owned()),
+            name: "agent".to_owned(),
+            token_hash: hash,
+            scopes: vec![TokenScope::Read],
+            expires_at: DateTime::<Utc>::UNIX_EPOCH,
+        };
+        let credential = TokenCredential {
+            record: AccessTokenRecord {
+                id: new.id.clone(),
+                tenant_id: "default".to_owned(),
+                user_id: "u1".to_owned(),
+                name: new.name.clone(),
+                scopes: new.scopes.clone(),
+                created_at: DateTime::<Utc>::UNIX_EPOCH,
+                expires_at: new.expires_at,
+                last_used_at: None,
+                revoked_at: None,
+            },
+            token_hash: hash,
+        };
+        for text in [
+            format!("{new:?}"),
+            format!("{credential:?}"),
+            format!("{credential:#?}"),
+        ] {
+            assert!(
+                text.contains("[redacted]") && text.contains("Ab3dE5gH"),
+                "{text}"
+            );
+            assert!(!text.contains("171, 171"), "hash shown: {text}");
+        }
     }
 }

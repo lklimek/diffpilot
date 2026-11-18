@@ -26,7 +26,8 @@ CREATE TABLE dashboard_settings (
     CHECK ((last_scheduled_on IS NULL) = (last_scheduled_outcome IS NULL))
 ) STRICT;
 
--- One scan and its ranking per row; the snapshot is one validated JSON document (NULL until scanned).
+-- One scan and its ranking per row; states and transitions: docs/contracts/http-api.md "Refresh states". The
+-- snapshot is one validated JSON document, held exactly by `ranking` and `finished` rows.
 CREATE TABLE dashboard_refreshes (
     id               TEXT NOT NULL PRIMARY KEY,
     tenant_id        TEXT NOT NULL REFERENCES tenants (id),
@@ -40,7 +41,7 @@ CREATE TABLE dashboard_refreshes (
     failure_code     TEXT CHECK (failure_code IN ('github_rate_limited', 'github_unavailable', 'sign_in_required', 'timed_out', 'interrupted', 'internal')),
     failure_message  TEXT,
     retry_at         TEXT,
-    ranking_state    TEXT CHECK (ranking_state IN ('waiting_for_analysis', 'running', 'paused', 'failed', 'interrupted', 'finished')),
+    ranking_state    TEXT CHECK (ranking_state IN ('waiting_for_analysis', 'running', 'paused', 'failed', 'interrupted', 'cancelled', 'finished')),
     judged           INTEGER NOT NULL DEFAULT 0 CHECK (judged >= 0),
     reused           INTEGER NOT NULL DEFAULT 0 CHECK (reused >= 0),
     left_provisional INTEGER NOT NULL DEFAULT 0 CHECK (left_provisional >= 0),
@@ -49,7 +50,11 @@ CREATE TABLE dashboard_refreshes (
     scanned_at       TEXT,
     finished_at      TEXT,
     CHECK ((failure_code IS NULL) = (failure_message IS NULL)),
-    CHECK ((state = 'failed') = (failure_code IS NOT NULL))
+    CHECK ((state = 'failed') = (failure_code IS NOT NULL)),
+    CHECK ((state IN ('ranking', 'finished')) = (snapshot IS NOT NULL)),
+    CHECK ((state IN ('ranking', 'finished')) = (ranking_state IS NOT NULL)),
+    CHECK (state != 'ranking' OR ranking_state IN ('waiting_for_analysis', 'running', 'paused')),
+    CHECK (state != 'finished' OR ranking_state IN ('failed', 'interrupted', 'cancelled', 'finished'))
 ) STRICT;
 
 CREATE UNIQUE INDEX dashboard_refreshes_one_live_per_user ON dashboard_refreshes (user_id)

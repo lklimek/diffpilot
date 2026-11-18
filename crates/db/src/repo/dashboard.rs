@@ -1,14 +1,14 @@
 //! Repository for the dashboard (`dashboard_settings`, `dashboard_refreshes`, `dashboard_judgements`; plan
 //! `docs/v1.1-dashboard-plan.md` §D). Signatures frozen by WP11-A; bodies are filled in by WP11-DB. Every
 //! function is scoped by `(tenant_id, user_id)`, except the server-internal ones that say so; there is no
-//! list-all API for serving.
+//! list-all API for serving. Refresh transitions follow `docs/contracts/http-api.md` "Refresh states".
 
 use chrono::{DateTime, NaiveDate, Utc};
 use contracts::api::dashboard::{
-    DashboardSettings, RankingState, RefreshFailure, RefreshId, RefreshState, RefreshTrigger,
+    DashboardSettings, ItemKey, RankingState, RefreshFailure, RefreshState, RefreshTrigger,
     ScanStep, ScheduledOutcome,
 };
-use contracts::ids::JobId;
+use contracts::ids::{JobId, RefreshId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -122,17 +122,14 @@ pub struct RefreshRecord {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-/// How a refresh ends.
+/// How a scan ends before its snapshot is complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RefreshEnd {
-    /// The snapshot is current.
-    Finished,
-    /// Failed; the previous snapshot stays.
+pub enum ScanEnd {
+    /// The scan failed: state `failed`; the previous snapshot stays.
     Failed(RefreshFailure),
-    /// Cancelled by the user; the previous snapshot stays.
+    /// The user cancelled it: state `cancelled`; the previous snapshot stays.
     Cancelled,
 }
-
 /// A refresh that was live when the server stopped (startup recovery).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterruptedRefresh {
@@ -142,15 +139,16 @@ pub struct InterruptedRefresh {
     pub user_id: String,
     /// The refresh.
     pub id: RefreshId,
-    /// Its state before recovery: `scanning` (now `failed`, `interrupted`) or `ranking` (ranking `interrupted`).
+    /// Its state before recovery: `scanning` (now `failed`, code `interrupted`) or `ranking` (now `finished`,
+    /// ranking `interrupted`).
     pub was: RefreshState,
 }
 
 /// A stored LLM judgement of one item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredJudgement {
-    /// The item's `WorkItem.key`.
-    pub item_key: String,
+    /// The item.
+    pub item_key: ItemKey,
     /// SHA-256 hex of the judge-input version and the canonical judged inputs.
     pub input_fingerprint: String,
     /// `JUDGE_INPUT_VERSION` of the fingerprint.
@@ -284,7 +282,8 @@ impl Dashboard<'_> {
         })
     }
 
-    /// Stores the snapshot of a `scanning` refresh and moves it to `ranking`; `Conflict` unless it is scanning.
+    /// Stores the snapshot of a `scanning` refresh and moves it to `ranking` (ranking state `running` until
+    /// [`Dashboard::set_ranking`]); from now on it is the current snapshot. `Conflict` unless it is scanning.
     pub async fn store_snapshot<T: Serialize + Sync>(
         &self,
         tenant_id: &str,
@@ -298,7 +297,8 @@ impl Dashboard<'_> {
         })
     }
 
-    /// The newest refresh with a stored snapshot (whatever its state since) and that snapshot.
+    /// The current snapshot: that of the user's newest refresh in `ranking` or `finished` (a `failed` or
+    /// `cancelled` refresh never holds one), with that refresh.
     pub async fn latest_snapshot<T: DeserializeOwned>(
         &self,
         tenant_id: &str,
@@ -309,7 +309,9 @@ impl Dashboard<'_> {
         })
     }
 
-    /// Records the ranking state and judgement counts of a refresh with a snapshot.
+    /// Records the live ranking state (`waiting_for_analysis`, `running`, `paused`) and the judgement counts of a
+    /// `ranking` refresh; `Conflict` for any other refresh or an ending ranking state (use
+    /// [`Dashboard::finish_ranking`]).
     pub async fn set_ranking(
         &self,
         tenant_id: &str,
@@ -323,22 +325,53 @@ impl Dashboard<'_> {
         })
     }
 
-    /// Ends a live refresh; `Conflict` once it ended.
-    pub async fn end_refresh(
+    /// Ends a `scanning` refresh before its snapshot is complete; `Conflict` for any other state.
+    pub async fn end_scan(
         &self,
         tenant_id: &str,
         user_id: &str,
         id: RefreshId,
-        end: &RefreshEnd,
+        end: &ScanEnd,
         now: DateTime<Utc>,
     ) -> Result<(), DbError> {
         Err(DbError::NotImplemented {
-            operation: "dashboard::end_refresh",
+            operation: "dashboard::end_scan",
         })
     }
 
-    /// Server-internal (startup): `scanning` refreshes of every tenant become `failed` (`interrupted`);
-    /// `ranking` ones get ranking state `interrupted`.
+    /// Ends the ranking of a `ranking` refresh with `outcome` (`finished`, `failed`, `cancelled` or
+    /// `interrupted`) and the final counts; the refresh becomes `finished` and its snapshot stays current.
+    /// `Conflict` for any other refresh or a live ranking state.
+    pub async fn finish_ranking(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+        outcome: RankingState,
+        counts: JudgeCounts,
+        now: DateTime<Utc>,
+    ) -> Result<(), DbError> {
+        Err(DbError::NotImplemented {
+            operation: "dashboard::finish_ranking",
+        })
+    }
+
+    /// Retry ranking (R4): a `finished` refresh holding the current snapshot whose ranking ended `failed`,
+    /// `interrupted` or `cancelled` goes back to `ranking` (ranking state `running`, counts kept). `Conflict` while
+    /// another refresh of the user is live, for any other ranking outcome, or for an older snapshot.
+    pub async fn restart_ranking(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+    ) -> Result<RefreshRecord, DbError> {
+        Err(DbError::NotImplemented {
+            operation: "dashboard::restart_ranking",
+        })
+    }
+
+    /// Server-internal (startup), every tenant: `scanning` refreshes become `failed` (code `interrupted`, no
+    /// snapshot); `ranking` ones become `finished` with ranking `interrupted`. Afterwards no refresh is live.
     pub async fn interrupt_live(
         &self,
         now: DateTime<Utc>,
@@ -353,7 +386,7 @@ impl Dashboard<'_> {
         &self,
         tenant_id: &str,
         user_id: &str,
-        item_keys: &[String],
+        item_keys: &[ItemKey],
     ) -> Result<Vec<StoredJudgement>, DbError> {
         Err(DbError::NotImplemented {
             operation: "dashboard::judgements",
@@ -377,7 +410,7 @@ impl Dashboard<'_> {
         &self,
         tenant_id: &str,
         user_id: &str,
-        item_keys: &[String],
+        item_keys: &[ItemKey],
         now: DateTime<Utc>,
     ) -> Result<(), DbError> {
         Err(DbError::NotImplemented {
