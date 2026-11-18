@@ -9,6 +9,7 @@ use contracts::ids::{AnalysisId, JobId};
 use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::Db;
+use db::repo::analyses::SessionState;
 use db::repo::jobs::{ExpiredLease, JobSnapshot, NewJob};
 use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
@@ -163,7 +164,20 @@ impl JobExecutor for QueueExecutor {
                     ],
                 )
                 .await?;
+            // Questions do not depend on failed pipeline work: their jobs end only with the analysis's results
+            // (Cancel) or with the PR session (explicit removal).
+            let record = self.db.analyses().get(analysis).await?;
+            let questions_too = matches!(
+                record.state,
+                contracts::api::analyses::AnalysisState::Cancelled
+            ) || matches!(
+                record.session_state,
+                SessionState::DropRequested | SessionState::Dropped
+            );
             for job in &unfinished {
+                if job.kind == contracts::agent::JobKind::Ask && !questions_too {
+                    continue;
+                }
                 let state = self.db.jobs().request_cancel(job.id, Utc::now()).await?;
                 tracing::info!(%analysis, job = %job.id, state = state.as_str(), "job of the ended analysis cancelled");
             }

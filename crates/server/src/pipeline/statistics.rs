@@ -98,9 +98,9 @@ impl Statistics {
     }
 }
 
-/// Called only by the guarded live-to-terminal transition, before cancellation deletes documents.
+/// The final statistics line of an analysis: called by the guarded live-to-terminal transition, before
+/// cancellation deletes documents. The run facts are released with it.
 pub async fn log_end(state: &AppState, summary: &AnalysisSummary) -> Result<(), DbError> {
-    let jobs = state.db.jobs().statistics(summary.id).await?;
     let facts = state
         .statistics
         .0
@@ -109,21 +109,56 @@ pub async fn log_end(state: &AppState, summary: &AnalysisSummary) -> Result<(), 
         .runs
         .remove(&summary.id)
         .unwrap_or_default();
+    log(state, summary, facts, false).await
+}
+
+/// The run so far, when the driver ends for lack of admitted flow work (once per such end); the run facts are
+/// released afterwards, so the final line carries only those a later driver records again.
+pub async fn log_parked(state: &AppState, summary: &AnalysisSummary) -> Result<(), DbError> {
+    let facts = state
+        .statistics
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .runs
+        .get(&summary.id)
+        .copied()
+        .unwrap_or_default();
+    log(state, summary, facts, true).await
+}
+
+async fn log(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    facts: RunFacts,
+    parked: bool,
+) -> Result<(), DbError> {
+    let jobs = state.db.jobs().statistics(summary.id).await?;
     let seconds = summary
         .finished_at
         .map(|at| (at - summary.created_at).num_seconds().max(0));
     let usage = summary.usage;
-    tracing::info!(analysis = %summary.id,
-        changed_lines = facts.changed_lines, changed_files = facts.changed_files,
-        agent_files = facts.agent_files, plan_batches = facts.plan_batches,
-        flows = summary.progress.as_ref().and_then(|p| p.flows.total),
-        repair_runs = jobs.repair_runs, jobs = jobs.jobs,
-        plan_seconds = jobs.plan_seconds, pr_context_seconds = jobs.pr_context_seconds,
-        flow_seconds = jobs.flow_seconds, ask_seconds = jobs.ask_seconds, total_seconds = seconds,
-        input_tokens = usage.map(|u| u.input_tokens), cached_input_tokens = usage.map(|u| u.cached_input_tokens),
-        output_tokens = usage.map(|u| u.output_tokens), reasoning_output_tokens = tracing::field::Empty,
-        usage_jobs = usage.map(|u| u.jobs), initial_estimate_seconds = facts.initial_estimate_seconds,
-        "analysis statistics");
+    // One field list, two messages: a log message is a literal.
+    macro_rules! line {
+        ($message:literal) => {
+            tracing::info!(analysis = %summary.id,
+                changed_lines = facts.changed_lines, changed_files = facts.changed_files,
+                agent_files = facts.agent_files, plan_batches = facts.plan_batches,
+                flows = summary.progress.as_ref().and_then(|p| p.flows.total),
+                repair_runs = jobs.repair_runs, jobs = jobs.jobs,
+                plan_seconds = jobs.plan_seconds, pr_context_seconds = jobs.pr_context_seconds,
+                flow_seconds = jobs.flow_seconds, ask_seconds = jobs.ask_seconds, total_seconds = seconds,
+                input_tokens = usage.map(|u| u.input_tokens), cached_input_tokens = usage.map(|u| u.cached_input_tokens),
+                output_tokens = usage.map(|u| u.output_tokens), reasoning_output_tokens = tracing::field::Empty,
+                usage_jobs = usage.map(|u| u.jobs), initial_estimate_seconds = facts.initial_estimate_seconds,
+                $message)
+        };
+    }
+    if parked {
+        line!("analysis parked");
+    } else {
+        line!("analysis statistics");
+    }
     Ok(())
 }
 
@@ -132,6 +167,49 @@ mod tests {
     use super::*;
     use axum::extract::FromRequestParts;
     use contracts::api::analyses::EstimateBasis;
+
+    #[tokio::test]
+    async fn parked_line_is_its_own_and_leaves_the_run_facts_to_the_final_line() {
+        let state = crate::state::tests::test_state().await;
+        let id = db::repo::analyses::testing::seed_analysis(&state.db)
+            .await
+            .unwrap();
+        state.statistics.0.lock().unwrap().runs.insert(
+            id,
+            RunFacts {
+                plan_batches: Some(3),
+                initial_estimate_seconds: Some(1200),
+                ..RunFacts::default()
+            },
+        );
+        let summary = state.db.analyses().summary(id).await.unwrap();
+        let logs = crate::test_support::logs::LogCapture::start();
+        // Every flow request with background analysis off ends in a park.
+        log_parked(&state, &summary).await.unwrap();
+        log_parked(&state, &summary).await.unwrap();
+        log_end(&state, &summary).await.unwrap();
+        let text = logs.text();
+        let lines = |message: &str| {
+            text.lines()
+                .filter(|line| line.contains(message))
+                .collect::<Vec<_>>()
+        };
+        let parked = lines("analysis parked");
+        assert_eq!(parked.len(), 2, "{text}");
+        assert!(
+            parked
+                .iter()
+                .all(|line| line.contains("INFO") && line.contains("plan_batches=3")),
+            "{text}"
+        );
+        let last = lines("analysis statistics");
+        assert_eq!(last.len(), 1, "{text}");
+        assert!(
+            last[0].contains("initial_estimate_seconds=1200"),
+            "{}",
+            last[0]
+        );
+    }
 
     #[tokio::test]
     async fn initial_estimate_is_the_first_shown_and_belongs_to_its_reader_and_head() {

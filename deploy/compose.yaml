@@ -10,7 +10,18 @@
 #           server's public listener is bound to its public address only, so the runner reaches nothing but
 #           the runner listener and the proxy.
 #   egress  proxy only: its way out; the proxy's address is MemCan's allowlist entry.
+#
+# Limits, sized for one 15 GB, 16-CPU host shared with other work: memory runner 6g (Codex and git) + server 2g +
+# proxy 256m, about 8.3 GB, leaves about 6.5 GB for the host and one build; CPUs runner 2 + server 2 + proxy 0.5.
+#
+# Storage (owner decision: nothing in RAM, no size limit for now): durable volumes server-data and runner-state,
+# and disposable scratch volumes named tmp-* with the label smart-review.volume=temporary (the job work area, the
+# per-job Codex homes, both /tmp). Their content is safe to delete whenever the stack is stopped and is never
+# backed up; the runner and the server empty them at start (docs/runbook.md, "Temporary volumes").
 name: smart-review
+
+x-temporary-volume: &temporary-volume
+  labels: { smart-review.volume: temporary }
 
 x-hardening: &hardening
   cap_drop: [ALL]
@@ -35,17 +46,19 @@ services:
       SR_RUNNER_LISTEN_ADDR: ${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
       SR_TRUSTED_PROXIES: ${SR_TRUSTED_PROXIES:-}
       SR_DATA_DIR: /var/lib/smart-review
-      SR_SECRET_KEY: ${SR_SECRET_KEY:?set SR_SECRET_KEY}
-      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:?set SR_RUNNER_SECRET}
+      # Secrets from .env, or empty there and read from files (compose.secrets.yaml); a missing one stops the
+      # service at start, and check-production-config.sh --env-file reports it before.
+      SR_SECRET_KEY: ${SR_SECRET_KEY:-}
+      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:-}
       SR_GITHUB_APP_ID: ${SR_GITHUB_APP_ID:?set SR_GITHUB_APP_ID}
       SR_GITHUB_CLIENT_ID: ${SR_GITHUB_CLIENT_ID:?set SR_GITHUB_CLIENT_ID}
-      SR_GITHUB_CLIENT_SECRET: ${SR_GITHUB_CLIENT_SECRET:?set SR_GITHUB_CLIENT_SECRET}
+      SR_GITHUB_CLIENT_SECRET: ${SR_GITHUB_CLIENT_SECRET:-}
       SR_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app.pem
       SR_GITHUB_API_URL: ${SR_GITHUB_API_URL:-https://api.github.com}
       SR_GITHUB_OAUTH_URL: ${SR_GITHUB_OAUTH_URL:-https://github.com}
       SR_GITHUB_CLONE_URL: ${SR_GITHUB_CLONE_URL:-https://github.com}
       SR_MEMCAN_URL: ${SR_MEMCAN_URL:?set SR_MEMCAN_URL}
-      SR_MEMCAN_TOKEN: ${SR_MEMCAN_TOKEN:?set SR_MEMCAN_TOKEN}
+      SR_MEMCAN_TOKEN: ${SR_MEMCAN_TOKEN:-}
       RUST_LOG: ${RUST_LOG:-info}
       NO_COLOR: "1"
     volumes:
@@ -56,9 +69,15 @@ services:
         target: /run/secrets/github-app.pem
         read_only: true
         bind: { create_host_path: false }
-    tmpfs: ["/tmp:size=256m,mode=1777"]
+      - tmp-server:/tmp
     mem_limit: ${SR_SERVER_MEM_LIMIT:-2g}
+    cpus: ${SR_SERVER_CPUS:-2}
     pids_limit: 512
+    logging:
+      # Up to 500 MB of server history (rotated files compressed), "analysis statistics" lines included; lost when
+      # the container is re-created, so export them first (runbook, "Logs").
+      driver: local
+      options: { max-size: "50m", max-file: "10" }
     ports:
       # Only to the reverse proxy: loopback by default (owner's proxy on this host), or SR_PUBLISH_ADDR.
       - "${SR_PUBLISH_ADDR:-127.0.0.1}:${SR_HTTP_PORT:-3000}:3000"
@@ -84,7 +103,7 @@ services:
     stop_grace_period: 60s
     environment:
       SR_RUNNER_SERVER_URL: http://${SR_SERVER_RUNNER_ADDR:-172.29.71.2}:3001
-      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:?set SR_RUNNER_SECRET}
+      SR_RUNNER_SECRET: ${SR_RUNNER_SECRET:-}
       SR_RUNNER_ID: ${SR_RUNNER_ID:-runner}
       SR_RUNNER_EGRESS_PROXY: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
       SR_RUNNER_CLAUDIUS_URL: ${SR_RUNNER_CLAUDIUS_URL:-https://github.com/lklimek/claudius.git}
@@ -92,9 +111,8 @@ services:
       SR_RUNNER_CLAUDIUS_REFRESH_SECS: ${SR_RUNNER_CLAUDIUS_REFRESH_SECS:-21600}
       SR_RUNNER_SKILLS: ${SR_RUNNER_SKILLS:-severity}
       SR_RUNNER_SESSION_RETENTION_DAYS: ${SR_RUNNER_SESSION_RETENTION_DAYS:-14}
+      SR_RUNNER_DISK_RESERVE_MIB: ${SR_RUNNER_DISK_RESERVE_MIB:-2048}
       SR_SUPERVISOR_SWEEP_DEADLINE_MS: ${SR_SUPERVISOR_SWEEP_DEADLINE_MS:-5000}
-      SR_CODEX_HOMES_MAX_BYTES: ${SR_CODEX_HOMES_MAX_BYTES:-17179869184}
-      SR_CODEX_HOMES_MAX_INODES: ${SR_CODEX_HOMES_MAX_INODES:-1048576}
       # The runner's own git (claudius checkout, repository mirrors) goes through the proxy too.
       HTTPS_PROXY: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
       https_proxy: http://${SR_PROXY_RUNNER_ADDR:-172.29.71.3}:3128
@@ -102,25 +120,23 @@ services:
       no_proxy: localhost,127.0.0.1,${SR_SERVER_RUNNER_ADDR:-172.29.71.2}
       RUST_LOG: ${RUST_LOG:-info}
       NO_COLOR: "1"
-    tmpfs:
-      - "/work:size=${SR_RUNNER_WORK_SIZE:-4g},uid=10001,gid=10001,mode=0711,nosuid,nodev"
-      - "/tmp:size=256m,uid=10001,gid=10001,mode=0700,nosuid,nodev"
     volumes:
       - runner-state:/var/lib/smart-review-runner
-      # Bounded ext4 loop filesystem prepared on the host (deploy/host/prepare-codex-homes.sh); the runner's
-      # preflight refuses anything else.
-      - type: bind
-        source: ${SR_CODEX_HOMES_DIR:-/srv/smart-review/codex-homes}
-        target: /var/lib/smart-review-runner/codex-homes
-        bind: { create_host_path: false }
+      # Disposable (ADR-013): the supervisor gives the roots to the runner, the runner sets their modes and empties
+      # them (after credential recovery from codex-homes) before the first claim.
+      - tmp-runner-codex-homes:/var/lib/smart-review-runner/codex-homes
+      - tmp-runner-work:/work
+      - tmp-runner:/tmp
     healthcheck:
       # The supervisor exits (and the container with it) when the runner stops; healthy = a process whose
-      # argv[0] is the runner binary exists, so the preflight has passed (/proc/<pid>/exe is not readable here).
+      # argv[0] is the runner binary exists, so the preflight has passed (/proc/<pid>/exe is not readable here),
+      # and the runner's disk-below-reserve marker is absent (SR_RUNNER_DISK_RESERVE_MIB).
       test:
         - CMD
         - /bin/sh
         - -c
         - >-
+          [ ! -e /var/lib/smart-review-runner/disk-below-reserve ] || exit 1;
           for p in /proc/[0-9]*; do
           [ "$$(tr '\0' '\n' < $$p/cmdline 2> /dev/null | head -n 1)" = /usr/local/bin/smart-review-runner ] && exit 0;
           done; exit 1
@@ -137,8 +153,11 @@ services:
     <<: *hardening
     image: ${SR_PROXY_IMAGE:-smart-review-egress-proxy:local}
     build: { context: egress-proxy }
+    # Kept in RAM on purpose: under 1 KB of configuration the entrypoint writes at every start (hosts file, MemCan
+    # rule); nothing else is stored.
     tmpfs: ["/run/squid:uid=13,gid=13,mode=0750,size=1m"]
     mem_limit: 256m
+    cpus: 0.5
     pids_limit: 128
     environment:
       # MemCan exception of the SSRF guard: this host:port only (T4, S6 finding 4).
@@ -154,6 +173,11 @@ services:
 volumes:
   server-data: {}
   runner-state: {}
+  # Disposable scratch, never backed up (docs/runbook.md, "Temporary volumes").
+  tmp-server: *temporary-volume
+  tmp-runner: *temporary-volume
+  tmp-runner-work: *temporary-volume
+  tmp-runner-codex-homes: *temporary-volume
 
 networks:
   public:

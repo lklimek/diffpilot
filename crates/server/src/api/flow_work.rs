@@ -2,7 +2,7 @@
 use crate::{
     api::analyses::{AnalysisApiError, ApiResult, failure, visible_analysis},
     auth::SessionCsrf,
-    pipeline::{control, ingest},
+    pipeline::{self, control, ingest},
     state::AppState,
 };
 use axum::extract::rejection::{JsonRejection, PathRejection};
@@ -56,6 +56,8 @@ async fn request(
         })
         .await
         .map_err(failure)?;
+    // The driver ends while no flow is admitted: the request starts one again.
+    pipeline::start(&state, id);
     Ok(Json(visible_analysis(&state, &session, id).await?))
 }
 async fn background(
@@ -91,5 +93,8 @@ async fn background(
         })
         .await
         .map_err(failure)?;
+    if body.enabled {
+        pipeline::start(&state, id);
+    }
     Ok(Json(visible_analysis(&state, &session, id).await?))
 }

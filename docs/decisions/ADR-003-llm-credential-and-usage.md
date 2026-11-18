@@ -9,8 +9,8 @@
   credits are ever bought or spent.
 - **Master credential** (`auth.json`) lives only in the runner's store (uid `runner`). Each job gets a copy in
   its per-job `CODEX_HOME`. After the job the runner writes the copy back if its refresh token changed, with a
-  compare-and-swap against the master read at job start. The per-job `CODEX_HOME` lives on the runner's
-  persistent private volume (0700 per job, never tmpfs); on start the runner recovers leftover copies with the
+  compare-and-swap against the master read at job start. The per-job `CODEX_HOME` lives on a disk-backed
+  Docker volume that survives restarts (0700 per job, never in RAM; ADR-013 "Scratch volumes"); on start the runner recovers leftover copies with the
   same CAS, so a crash between rotation and copy-back does not lose the credential
   (`docs/contracts/runner-protocol.md`).
 - **Jobs are serialised per credential.** Refresh tokens are single-use; two copies refreshing concurrently

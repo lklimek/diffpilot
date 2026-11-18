@@ -42,6 +42,7 @@ RUN apt-get update \
     && install -d -o 10010 -g 10010 -m 0700 /var/lib/smart-review
 COPY --from=build /out/smart-review-server /usr/local/bin/smart-review-server
 COPY --chmod=0755 deploy/server/healthcheck.sh /usr/local/bin/smart-review-healthcheck
+COPY --chmod=0755 deploy/server/entrypoint.sh /usr/local/bin/smart-review-server-entrypoint
 ENV SR_DATA_DIR=/var/lib/smart-review \
     SR_LISTEN_ADDR=0.0.0.0:3000 \
     SR_RUNNER_LISTEN_ADDR=0.0.0.0:3001 \
@@ -49,4 +50,4 @@ ENV SR_DATA_DIR=/var/lib/smart-review \
 USER 10010:10010
 EXPOSE 3000 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --start-interval=1s CMD ["/usr/local/bin/smart-review-healthcheck"]
-ENTRYPOINT ["/usr/local/bin/smart-review-server"]
+ENTRYPOINT ["/usr/local/bin/smart-review-server-entrypoint"]

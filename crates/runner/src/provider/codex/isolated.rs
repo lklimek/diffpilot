@@ -31,7 +31,7 @@ use crate::supervisor::client::{Supervisor, SupervisorError};
 pub struct Isolation {
     /// The supervisor connection.
     pub supervisor: Arc<Supervisor>,
-    /// `<state>/codex-homes`: the bounded filesystem holding the per-job agent `CODEX_HOME`s.
+    /// `<state>/codex-homes`: the disposable volume holding the per-job agent `CODEX_HOME`s.
     pub codex_homes: PathBuf,
     /// Set when an agent directory could be neither removed nor quarantined: no further job may run.
     poisoned: Arc<AtomicBool>,
@@ -95,9 +95,6 @@ impl Isolation {
         let mut removed = 0;
         for entry in std::fs::read_dir(&self.codex_homes)? {
             let home = entry?.path();
-            if crate::codex_homes::is_lost_found(&home) {
-                continue;
-            }
             let key = home.file_name().unwrap_or_default().to_owned();
             if staging
                 .join(format!("{}.cas", key.to_string_lossy()))

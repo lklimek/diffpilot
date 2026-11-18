@@ -764,6 +764,7 @@ mod tests {
                 &AnalysisState::Running {
                     done: 0,
                     total: 5,
+                    idle: false,
                     stage: None,
                 },
                 Utc::now(),
@@ -885,6 +886,7 @@ mod tests {
                 &AnalysisState::Running {
                     done: 0,
                     total: 5,
+                    idle: false,
                     stage: None,
                 },
                 Utc::now(),

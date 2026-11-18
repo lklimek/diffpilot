@@ -72,11 +72,12 @@ RUN groupadd --gid 10001 runner \
     && useradd --uid 10002 --gid 10002 --no-create-home --home-dir /nonexistent --shell /bin/bash agent \
     && find / -xdev -type f -perm /6000 -exec chmod ug-s {} + \
     && install -d -o 10001 -g 10001 -m 0711 /var/lib/smart-review-runner /var/lib/smart-review-runner/codex-homes \
-    && install -d -o 10001 -g 10001 -m 0711 /work
+    && install -d -o 10001 -g 10001 -m 0711 /work \
+    && chown 10001:10001 /tmp && chmod 0700 /tmp
 
-# Mount points (ADR-013): state volume at /var/lib/smart-review-runner, a bounded persistent filesystem at its
-# codex-homes/ (per-job CODEX_HOMEs, separate from the session store, T8b; checked by the preflight), size-capped
-# tmpfs at /work (checkouts) and at /tmp (runner only, mode 0700).
+# Mount points (ADR-013), all Docker volumes on disk: the durable state at /var/lib/smart-review-runner, and the
+# disposable ones at its codex-homes/ (per-job CODEX_HOMEs), /work (checkouts) and /tmp (runner only). A fresh
+# volume takes these owners and modes; the supervisor and the runner set them again at every start.
 ENV SR_RUNNER_STATE_DIR=/var/lib/smart-review-runner \
     SR_RUNNER_WORK_DIR=/work \
     SR_RUNNER_CODEX_BIN=/usr/local/bin/codex \

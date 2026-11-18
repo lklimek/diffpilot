@@ -75,6 +75,11 @@ pub enum AnalysisState {
         done: u32,
         /// Flows in total.
         total: u32,
+        /// True when flows remain but none is admitted (none requested, background analysis off or the rest
+        /// failed for good): nothing is analysed until a flow is requested or background analysis is switched on.
+        #[serde(default)]
+        #[ts(as = "Option<bool>", optional)]
+        idle: bool,
         /// The current stage; absent when no job of the analysis is queued, running or paused.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -196,9 +201,11 @@ pub struct AnalysisProgress {
     pub flows: RunStage,
     /// Final verification and projection.
     pub finishing: RunStage,
-    /// Estimated remaining time; null without sufficient observations, or while paused/terminal.
+    /// Estimated remaining time; null without sufficient observations, or while paused/terminal. With background
+    /// analysis off it covers plan and PR context only and is null once the review is ready.
     pub estimate: Option<AnalysisEstimate>,
-    /// Overall waiting progress, 0..=100; null until a denominator can be estimated or counted.
+    /// Overall waiting progress, 0..=100; null until a denominator can be estimated or counted. With background
+    /// analysis off it covers plan and PR context only and is null once the review is ready (until finished).
     pub percent: Option<u8>,
 }
 

@@ -51,8 +51,8 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - Prompt goldens: `UPDATE_GOLDEN=1 $W nextest run -p server -E 'test(golden_prompts_of_fixture_pr_482)'`.
 - Web, in `web/`: `npm ci`, `npm run lint`, `npm test`, `npm run build`; Playwright (msw): once
   `npx playwright install --with-deps chromium`, then `npm run test:e2e`.
-- Checks: `scripts/check-architecture.sh`, `scripts/check-wording.sh` (after `npm ci` in `web/`; both take
-  `--self-test`), `shellcheck` on `scripts/*.sh tools/**/*.sh deploy/**/*.sh` (globstar), `python3 -m pytest -q scripts/tests`.
+- Checks: `scripts/check-architecture.sh`, `scripts/check-migrations.sh`, `scripts/check-wording.sh` (after
+  `npm ci` in `web/`; all take `--self-test`), `shellcheck` on `scripts/*.sh tools/**/*.sh deploy/**/*.sh` (globstar), `python3 -m pytest -q scripts/tests`.
 - Containers (one heavy job at a time, Docker): `R1_SUPERVISOR=rust R1_SKIP_CODEX=1 deploy/runner/r1-test/run.sh`;
   `deploy/egress-proxy/test.sh`; `deploy/test-stack.sh`; `deploy/check-production-config.sh --self-test`.
 - db: transactions only through `db::repo::{write_tx, read_tx}` (write = `BEGIN IMMEDIATE`; never a deferred read-then-write).
@@ -70,8 +70,10 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   Dockerfiles set `CARGO_BUILD_JOBS=2`; vitest and Playwright at most 2 workers, one Playwright run at a time.
 - Git: one feature branch `feat/v1`, no pull requests until v1 is deployed; conventional commits; agents
   commit and never push; the coordinator integrates and pushes `feat/v1` (`ghsudo git push`); never push to
-  `main` (the owner pushes it); no force-push, no amend. Before deployment: one rewritable `0001_init.sql`,
-  no compatibility, no versioning or changelog. Code-mutating agents work in pre-created worktrees
+  `main` (the owner pushes it); no force-push, no amend. Migrations are append-only: a schema change is a new
+  numbered file in `crates/db/migrations` that upgrades in place; never edit an applied migration (its checksum is
+  verified at start; `scripts/check-migrations.sh`, `--add-new` records a new file). No versioning or changelog.
+  Code-mutating agents work in pre-created worktrees
   `/data/git-worktrees/home-ubuntu-git-smart-review-<stream>`. Changes of 50+ code
   lines get an independent review (`claudius:review-changes`).
 - Storage: heavy scratch in `/data/tmp`; durable artefacts in `/data/artifacts/smart-review/YYYY-MM-DD/`;

@@ -8,12 +8,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use runner::client::{ClientError, ServerClient};
-use runner::codex_homes::{self, CodexHomesError};
 use runner::config::{Config, ConfigError, ProviderKind};
 use runner::execute::Executor;
 use runner::provider::LlmProvider;
 use runner::provider::ProviderError;
 use runner::provider::codex::{CodexCredential, CodexProvider, CodexSettings, Isolation};
+use runner::scratch;
 use runner::skills::Skills;
 use runner::supervisor::client::{Supervisor, SupervisorError};
 use runner::worker::{CredentialCheck, Timing, Worker};
@@ -22,6 +22,8 @@ use tracing_subscriber::EnvFilter;
 
 /// Per-request timeout towards the server; below the heartbeat interval.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+/// Exit code of a start refused for its configuration (`EX_CONFIG`, as the image's preflight).
+const EX_CONFIG: u8 = 78;
 
 #[derive(Debug, thiserror::Error)]
 enum StartError {
@@ -45,8 +47,12 @@ enum StartError {
     Supervisor(#[from] SupervisorError),
     #[error("cannot recover the agent directories of a previous run")]
     Recover(#[source] ProviderError),
-    #[error("the per-job CODEX_HOME root is not a bounded filesystem of its own")]
-    CodexHomes(#[from] CodexHomesError),
+    #[error("could not empty {} left by a previous run; stop the runner and remove its temporary volumes (docs/runbook.md, \"Temporary volumes\")", path.display())]
+    Scratch {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("the runner secret file is not hidden from the agent")]
     SecretFile(#[source] ConfigError),
 }
@@ -63,9 +69,7 @@ fn main() -> ExitCode {
         Err(error) => {
             tracing::error!("runner stopped: {}", error_chain(&error));
             match error {
-                StartError::CodexHomes(_) | StartError::SecretFile(_) => {
-                    ExitCode::from(codex_homes::EXIT_CODE)
-                }
+                StartError::SecretFile(_) => ExitCode::from(EX_CONFIG),
                 _ => ExitCode::FAILURE,
             }
         }
@@ -94,18 +98,14 @@ async fn run() -> Result<(), StartError> {
         Some(isolation) => {
             runner::config::check_secret_file_hidden_from_agent(|key| std::env::var(key).ok())
                 .map_err(StartError::SecretFile)?;
-            let limits = codex_homes::Limits::from_env()?;
-            let facts = codex_homes::verify(&isolation.codex_homes, &config.state_dir, &limits)?;
-            tracing::info!(
-                bytes = facts.bytes,
-                inodes = facts.inodes,
-                "the per-job CODEX_HOME root is a bounded filesystem of its own"
-            );
             // ADR-013 layout: the agent may traverse these roots, not list them; the runner works on a
-            // private staging copy of each per-job CODEX_HOME.
+            // private staging copy of each per-job CODEX_HOME. The supervisor gave the roots to the runner.
             for dir in [&config.state_dir, &isolation.codex_homes, &dirs.work] {
                 set_mode(dir, 0o711)?;
             }
+            // Order kept in step with `startup_order_keeps_the_rotated_credential_and_empties_scratch`: the
+            // agent homes are copied out before the work volume is emptied and the master is recovered.
+            empty_private_tmp(&std::env::temp_dir())?;
             dirs.codex_homes = config.state_dir.join(CODEX_STAGING);
             private_dir(&dirs.codex_homes).await?;
             let removed = isolation
@@ -121,7 +121,7 @@ async fn run() -> Result<(), StartError> {
             "process isolation off (development): agents run as the runner's uid; production runs under smart-review-supervisor (ADR-013)"
         ),
     }
-    remove_leftover_work_dirs(&dirs.work).await?;
+    remove_leftover_work_dirs(&dirs.work)?;
     let skills = Arc::new(Skills::new(
         config.claudius_url.clone(),
         config.claudius_ref.clone(),
@@ -184,6 +184,10 @@ async fn run() -> Result<(), StartError> {
     )
     .with_session_retention(config.session_retention)
     .with_skills(skills)
+    .with_disk_reserve(
+        scratch::Reserve::new(config.work_dir.clone(), config.disk_reserve)
+            .with_marker(config.state_dir.join(DISK_RESERVE_MARKER)),
+    )
     .run(shutdown_signal())
     .await;
     tracing::info!("runner stopped");
@@ -193,6 +197,9 @@ async fn run() -> Result<(), StartError> {
 /// Runs agents as the runner's own uid when no supervisor is present (development only; never set in the
 /// image).
 const DEV_NO_ISOLATION: &str = "SR_RUNNER_DEV_NO_ISOLATION";
+
+/// Present in the state directory while the scratch disk is below its reserve; the container healthcheck reads it.
+const DISK_RESERVE_MARKER: &str = "disk-below-reserve";
 
 /// The runner-private staging `CODEX_HOME`s under the supervisor, below the state directory.
 const CODEX_STAGING: &str = "codex-staging";
@@ -237,18 +244,38 @@ fn recover_credential(credential: &CodexCredential, codex_homes: &Path) -> Resul
     Ok(())
 }
 
-/// Work dirs of a previous run hold only checkouts.
-async fn remove_leftover_work_dirs(work: &Path) -> Result<(), StartError> {
-    let dir_error = |source| StartError::Dir {
+/// Work dirs of a previous run hold only checkouts once recovery took the agent's directories away; one that
+/// recovery quarantined stays (agent-inaccessible) and is reported.
+fn remove_leftover_work_dirs(work: &Path) -> Result<(), StartError> {
+    let cleared = scratch::clear(work).map_err(|source| StartError::Dir {
         path: work.to_path_buf(),
         source,
-    };
-    let mut entries = tokio::fs::read_dir(work).await.map_err(dir_error)?;
-    while let Some(entry) = entries.next_entry().await.map_err(dir_error)? {
-        let path = entry.path();
-        if let Err(error) = tokio::fs::remove_dir_all(&path).await {
-            tracing::warn!(dir = %path.display(), %error, "cannot remove a leftover job directory");
-        }
+    })?;
+    for (dir, error) in &cleared.failed {
+        tracing::warn!(dir = %dir.display(), %error, "cannot remove a leftover job directory");
+    }
+    if cleared.removed > 0 {
+        tracing::info!(
+            removed = cleared.removed,
+            "removed the job directories of a previous run"
+        );
+    }
+    Ok(())
+}
+
+/// The runner's own `/tmp` (a disposable volume under the supervisor): runner only, and empty before the first
+/// claim, so nothing of a previous run survives a restart.
+fn empty_private_tmp(tmp: &Path) -> Result<(), StartError> {
+    set_mode(tmp, 0o700)?;
+    let cleared = scratch::clear(tmp).map_err(|source| StartError::Dir {
+        path: tmp.to_path_buf(),
+        source,
+    })?;
+    if let Some((path, source)) = cleared.failed.into_iter().next() {
+        return Err(StartError::Scratch { path, source });
+    }
+    if cleared.removed > 0 {
+        tracing::info!(removed = cleared.removed, dir = %tmp.display(), "emptied the runner's temporary directory");
     }
     Ok(())
 }

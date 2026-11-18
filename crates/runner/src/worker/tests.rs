@@ -662,6 +662,87 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
 }
 
 #[tokio::test]
+async fn below_the_reserve_the_runner_takes_no_job_but_still_drops_sessions() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().unwrap();
+    let analysis = 1;
+    Mock::given(method("POST"))
+        .and(path("/runner/v1/claim"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            claim: None,
+            drop_sessions: vec![analysis],
+        }))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/runner/v1/claim"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            claim: None,
+            drop_sessions: Vec::new(),
+        }))
+        .mount(&server)
+        .await;
+    let executor = Arc::new(Executor::new(
+        Arc::new(Scripted::new(0, UNIT)),
+        dirs(root.path()),
+        credential(),
+    ));
+    let stored = executor.sessions().dir(analysis);
+    std::fs::create_dir_all(&stored).unwrap();
+    let worker = |executor: Arc<Executor>, reserve: u64| {
+        let client = ServerClient::new(
+            &server.uri(),
+            Secret::new(RUNNER_SECRET),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        Worker::new(
+            client,
+            executor,
+            "r".to_owned(),
+            Secret::new(RUNNER_SECRET),
+            timing(),
+            Arc::new(|| true),
+        )
+        .with_disk_reserve(crate::scratch::Reserve::new(
+            root.path().to_owned(),
+            reserve,
+        ))
+    };
+
+    let mut full = worker(Arc::clone(&executor), u64::MAX);
+    assert_eq!(full.poll_once().await.unwrap(), None);
+    assert!(!stored.exists(), "a session drop is still carried out");
+    assert_eq!(full.poll_once().await.unwrap(), None);
+    let mut roomy = worker(executor, 1);
+    assert_eq!(roomy.poll_once().await.unwrap(), None);
+
+    let claims: Vec<ClaimRequest> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(body)
+        .collect();
+    assert_eq!(claims.len(), 3, "polling goes on below the reserve");
+    assert!(
+        claims[0].credentials.is_empty() && claims[1].credentials.is_empty(),
+        "no credential offered, so the server hands out no job"
+    );
+    assert_eq!(
+        claims[1].dropped_sessions,
+        [analysis],
+        "the drop is acknowledged"
+    );
+    assert_eq!(
+        claims[2].credentials.len(),
+        1,
+        "jobs again once enough is free"
+    );
+}
+
+#[tokio::test]
 async fn wrong_runner_secret_is_a_rejected_claim() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

@@ -4,8 +4,12 @@
 #
 # Usage:
 #   scripts/check-architecture.sh                    check the workspace
-#   scripts/check-architecture.sh --metadata FILE    check a saved `cargo metadata --no-deps` JSON
+#   scripts/check-architecture.sh --metadata FILE    check a saved `cargo metadata --no-deps` JSON (crate rules only)
 #   scripts/check-architecture.sh --self-test        prove the check fails on injected violations
+#
+# Also from the sources (A11): non-test Rust code in crates/ and tools/ declares no `Result<_, String>`, no
+# `Box<dyn ...Error>` and uses no `anyhow::`/`eyre::` paths. Non-test: outside tests/ and benches/, files not named
+# *tests.rs, and lines before a file's inline `#[cfg(test)] mod NAME {` (an out-of-line `mod NAME;` is skipped).
 #
 # Not caught here (left to review, plan §4.2): hand-written GitHub HTTP calls through a generic client
 # (reqwest) outside server::github; sqlx types leaking through db's public API (A2); database or GitHub
@@ -54,6 +58,55 @@ RULES='
         (select(forbidden | index($d))
           | "A11: \($p.name) depends on \($d) (\($kind)); use thiserror typed errors"))
 '
+
+# A11 in the sources (ERE, awk).
+ERROR_PATTERN='Result<.*,[[:space:]]*String[[:space:]]*>|Box<dyn [A-Za-z_:]*Error|(^|[^A-Za-z0-9_])(anyhow|eyre)::'
+# TODO: temporary allow-list of existing String errors, to be replaced by thiserror enums; remove each entry with
+# its fix. Entries: "path|trimmed line".
+ERROR_ALLOW=(
+  'crates/runner/src/supervisor_main.rs|fn config() -> Result<ServeConfig, String> {'
+  'crates/runner/src/supervisor_main.rs|let id = |key: &str, default: u32| -> Result<Ids, String> {'
+  'crates/runner/src/supervisor/serve.rs|fn signal_child(pid: i32, signal: i32) -> Result<u32, String> {'
+  'crates/runner/src/supervisor/serve.rs|fn sweep(&mut self) -> Result<Reply, String> {'
+  'crates/runner/src/supervisor/serve.rs|) -> Result<i32, String> {'
+  'crates/runner/src/supervisor/serve.rs|fn quarantine(&mut self, path: &Path) -> Result<(), String> {'
+  'crates/runner/src/supervisor/serve.rs|fn per_job_dir(&self, path: &Path) -> Result<(), String> {'
+  'crates/runner/src/supervisor/serve.rs|fn handover(&self, path: &Path) -> Result<(), String> {'
+  'tools/fake-github/src/app.rs|fn scope(&self, body: &[u8]) -> Result<BTreeMap<String, String>, String> {'
+)
+
+# source_violations ROOT: one line per non-allow-listed match in non-test Rust code below ROOT.
+source_violations() {
+  local root="$1" file rel hit text entry allowed
+  while IFS= read -r -d '' file; do
+    rel="${file#"$root/"}"
+    while IFS= read -r hit; do
+      text="${hit#*|}"
+      allowed=0
+      for entry in "${ERROR_ALLOW[@]}"; do [[ "$entry" == "$rel|$text" ]] && allowed=1; done
+      ((allowed)) || echo "A11: $rel:${hit%%|*}: $text; use a thiserror enum"
+    done < <(awk -v pat="$ERROR_PATTERN" '
+      pending && /^[[:space:]]*$/ { next }
+      pending && /^[[:space:]]*(pub(\([a-z]+\))?[[:space:]]+)?mod[[:space:]]+[A-Za-z0-9_]+[[:space:]]*;/ { pending = 0; next }
+      pending && /^[[:space:]]*(pub(\([a-z]+\))?[[:space:]]+)?mod[[:space:]]/ { exit }
+      { pending = 0 }
+      /^[[:space:]]*#\[cfg\(test\)\]/ { pending = 1; next }
+      /^[[:space:]]*\/\// { next }
+      $0 ~ pat { line = $0; sub(/^[[:space:]]+/, "", line); print FNR "|" line }' "$file")
+  done < <(find "$root/crates" "$root/tools" -name '*.rs' -not -path '*/tests/*' -not -path '*/benches/*' \
+    -not -name '*tests.rs' -print0 2> /dev/null | sort -z)
+}
+
+# source_check ROOT: exit 0 when the sources are clean; otherwise prints the violations to stderr and returns 1.
+source_check() {
+  local found
+  found="$(source_violations "$1")"
+  if [[ -n "$found" ]]; then
+    printf 'architecture source check failed:\n%s\n' "$found" >&2
+    return 1
+  fi
+  echo "architecture source check passed"
+}
 
 # Prints one line per violation of the rules; prints nothing when the metadata is clean.
 violations() {
@@ -139,6 +192,40 @@ self_test() {
   jq 'del(.packages[] | select(.name == "db"))' "$real" > "$tmp/15.json"
   expect_fail "missing crate" "$tmp/15.json" "expected workspace crate db is missing"
 
+  # Source check (A11): a tree with one violation per form, test code and comments that must pass.
+  src="$tmp/src"
+  mkdir -p "$src/crates/x/src" "$src/crates/x/tests" "$src/tools/t/src"
+  expect_source() { # expect_source NAME pass|fail FILE CONTENT
+    rm -rf "${src:?}/crates/x/src"/* "$src/crates/x/tests"/* "$src/tools/t/src"/*
+    printf '%s\n' "$4" > "$src/$3"
+    local got=pass
+    [[ -z "$(source_violations "$src")" ]] || got=fail
+    if [[ "$got" == "$2" ]]; then echo "ok   $1"; else echo "FAIL $1: expected $2, got $got"; failures=$((failures + 1)); fi
+  }
+  expect_source "clean source" pass crates/x/src/lib.rs 'fn a() -> Result<(), Error> { Ok(()) }'
+  expect_source "Result<_, String>" fail crates/x/src/lib.rs 'fn a() -> Result<(), String> { Ok(()) }'
+  expect_source "nested Result<_, String>" fail tools/t/src/main.rs 'fn a() -> Result<Vec<Option<u8>>, String> { todo!() }'
+  expect_source "Box<dyn Error>" fail crates/x/src/lib.rs 'fn a() -> Result<(), Box<dyn std::error::Error>> { Ok(()) }'
+  expect_source "anyhow path" fail crates/x/src/lib.rs 'fn a() -> anyhow::Result<()> { Ok(()) }'
+  expect_source "eyre path" fail crates/x/src/lib.rs 'use eyre::Report;'
+  expect_source "a cfg(test) item is not the test module" fail crates/x/src/lib.rs \
+    "$(printf '#[cfg(test)]\nuse std::fs;\nfn a() -> Result<(), String> { Ok(()) }')"
+  expect_source "out-of-line test module declaration is skipped, not the end" fail crates/x/src/lib.rs \
+    "$(printf '#[cfg(test)]\nmod tests;\npub fn a() -> Result<(), String> { Ok(()) }')"
+  expect_source "test module" pass crates/x/src/lib.rs \
+    "$(printf 'fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() -> Result<(), String> { Ok(()) }\n}')"
+  expect_source "integration test" pass crates/x/tests/it.rs 'fn b() -> Result<(), String> { Ok(()) }'
+  expect_source "tests file" pass crates/x/src/concurrency_tests.rs 'fn b() -> Result<(), String> { Ok(()) }'
+  expect_source "comment" pass crates/x/src/lib.rs '/// Never returns Result<(), String>.'
+  ERROR_ALLOW+=('crates/x/src/lib.rs|fn a() -> Result<(), String> { Ok(()) }')
+  expect_source "allow-listed line" pass crates/x/src/lib.rs 'fn a() -> Result<(), String> { Ok(()) }'
+  expect_source "allow-list is per line" fail crates/x/src/lib.rs 'fn c() -> Result<(), String> { Ok(()) }'
+  expect_pass_source() {
+    if source_check "$ROOT" > /dev/null 2>&1; then echo "ok   current sources are clean (allow-list applied)"; else
+      echo "FAIL current sources: $(source_violations "$ROOT")"; failures=$((failures + 1)); fi
+  }
+  expect_pass_source
+
   # The entry point must exit non-zero on a violation.
   if "$0" --metadata "$tmp/1.json" > /dev/null 2>&1; then
     echo "FAIL check exits 0 on a violation"
@@ -155,7 +242,15 @@ self_test() {
 }
 
 case "${1:-}" in
-  "") metadata="$(mktemp)"; trap 'rm -f "$metadata"' EXIT; workspace_metadata > "$metadata"; check "$metadata" ;;
+  "")
+    metadata="$(mktemp)"
+    trap 'rm -f "$metadata"' EXIT
+    workspace_metadata > "$metadata"
+    status=0
+    check "$metadata" || status=1
+    source_check "$ROOT" || status=1
+    exit "$status"
+    ;;
   --metadata) check "${2:?--metadata needs a file}" ;;
   --self-test) self_test ;;
   *) echo "usage: $0 [--metadata FILE | --self-test]" >&2; exit 2 ;;

@@ -169,6 +169,8 @@ pub struct Worker {
     last_sweep: Option<Instant>,
     /// The claudius skills, refreshed between jobs.
     skills: Option<Arc<Skills>>,
+    /// Free space the scratch filesystem must keep for a claim.
+    disk_reserve: Option<crate::scratch::Reserve>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -201,7 +203,14 @@ impl Worker {
             session_retention: None,
             last_sweep: None,
             skills: None,
+            disk_reserve: None,
         }
+    }
+
+    /// Takes no job while the scratch filesystem has less free space than `reserve` asks.
+    pub fn with_disk_reserve(mut self, reserve: crate::scratch::Reserve) -> Self {
+        self.disk_reserve = Some(reserve);
+        self
     }
 
     /// Refreshes the claudius skills between jobs at their interval.
@@ -261,16 +270,27 @@ impl Worker {
         }
     }
 
-    /// One claim; runs the claimed job to its end. `None` when nothing was runnable.
+    /// One claim; runs the claimed job to its end. `None` when nothing was runnable. Below the scratch
+    /// filesystem's reserve the claim offers no credential, so the server hands out no job but still sends its
+    /// session drops.
     pub async fn poll_once(&mut self) -> Result<Option<JobEnd>, ClientError> {
         // The previous attempt (and its credential copy-back) is over before the next claim.
         self.executor.settled().await;
-        let request = ClaimRequest {
-            runner_id: self.runner_id.clone(),
-            credentials: vec![CredentialStatus {
+        let takes_jobs = self
+            .disk_reserve
+            .as_mut()
+            .is_none_or(crate::scratch::Reserve::allows_claim);
+        let credentials = if takes_jobs {
+            vec![CredentialStatus {
                 credential: self.executor.credential().clone(),
                 usable: (self.credential_usable)(),
-            }],
+            }]
+        } else {
+            Vec::new()
+        };
+        let request = ClaimRequest {
+            runner_id: self.runner_id.clone(),
+            credentials,
             dropped_sessions: self.dropped_sessions.clone(),
         };
         let sent = Instant::now();

@@ -86,13 +86,20 @@ jobs:
       - name: Install Python test dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends python3-pytest python3-jsonschema
+          sudo apt-get install -y --no-install-recommends python3-pytest python3-jsonschema sqlite3
       - name: Script tests
         run: python3 -m pytest -q scripts/tests
+      - name: Backup script self-test (online snapshot under a live writer, restore)
+        run: deploy/backup.sh --self-test
       - name: Architecture check self-test
         run: scripts/check-architecture.sh --self-test
       - name: Architecture check
         run: scripts/check-architecture.sh
+      # Applied migrations are immutable (the server verifies their checksums at start).
+      - name: Migrations unchanged
+        run: |
+          scripts/check-migrations.sh --self-test
+          scripts/check-migrations.sh
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
@@ -136,7 +143,7 @@ jobs:
         env:
           R1_SUPERVISOR: rust
           R1_SKIP_CODEX: "1"
-        run: R1_TMP="$RUNNER_TEMP" deploy/runner/r1-test/run.sh "$RUNNER_TEMP/r1-test.log"
+        run: deploy/runner/r1-test/run.sh "$RUNNER_TEMP/r1-test.log"
       - name: Build the server image
         run: docker build -f deploy/server/Dockerfile -t smart-review-server:local .
       - name: Server image answers its healthcheck

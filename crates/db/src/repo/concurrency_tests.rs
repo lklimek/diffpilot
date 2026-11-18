@@ -16,7 +16,9 @@ use tempfile::TempDir;
 
 use super::Db;
 use super::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
+use super::documents::DocumentKind;
 use super::feedback::{MemcanOutcome, NewFeedback};
+use super::flow_work::NextFlow;
 use super::jobs::{ClaimParams, JobStage, NewJob};
 use super::questions::{NewQuestion, QuestionLimits};
 use super::testing::file_backed;
@@ -237,4 +239,47 @@ async fn every_pool_connection_has_the_settings() {
             "journal_mode, busy_timeout ms, synchronous FULL, foreign_keys"
         );
     }
+}
+
+/// A user's Retry stored while the driver asks for the next flow is seen by that choice: it uses no automatic
+/// retry of the flow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flow_requested_while_the_driver_picks_it_keeps_its_automatic_retries() {
+    let (_dir, db) = file_db().await;
+    let analysis = seed_analysis(&db).await.expect("seed");
+    let flow = FlowId("f1".to_owned());
+    let plan = json!({ "flows": [{ "id": "f1", "importance_rank": 1 }], "unassigned": [] });
+    db.documents()
+        .put(analysis, DocumentKind::Plan, "", &plan, at(0))
+        .await
+        .expect("plan");
+    db.flow_work()
+        .fail(analysis, &flow, "Failed")
+        .await
+        .expect("fail");
+    // The request's transaction is open (write lock held) when the driver picks.
+    let mut request = super::write_tx(&db.pool).await.expect("request");
+    sqlx::query("UPDATE flow_work SET requested_at = ? WHERE analysis_id = ?")
+        .bind(super::jobs::ts(at(1)))
+        .bind(analysis.to_string())
+        .execute(&mut *request)
+        .await
+        .expect("requested");
+    let driver = tokio::spawn({
+        let db = db.clone();
+        async move { db.flow_work().next(analysis).await }
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    request.commit().await.expect("commit");
+    assert_eq!(
+        driver.await.expect("join").expect("next"),
+        NextFlow::Run(flow.clone())
+    );
+    assert_eq!(
+        super::flow_work::testing::retries(&db, analysis, &flow)
+            .await
+            .expect("retries"),
+        (1, 0),
+        "a new round, and no automatic retry used"
+    );
 }

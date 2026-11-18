@@ -8,7 +8,9 @@
 //! documents. The driver is restart-safe (`runner-protocol.md` "Pipeline recovery"): stages with a document are
 //! skipped, the others are submitted again, which `JobExecutor::submit` answers with the existing live or
 //! succeeded job of the stage and generation. The Tour opens after planning and PR context; demand then precedes background rank order. A failed
-//! flow stays retryable while other results remain available. Cancel discards analysis data but keeps
+//! flow is retried automatically twice at most and stays retryable on request while other results remain
+//! available. While flows remain but none is admitted the driver ends; a flow request or background analysis
+//! starts one again. Cancel discards analysis data but keeps
 //! the PR-level analytic and working sessions (ADR-004).
 
 use std::borrow::Cow;
@@ -196,6 +198,27 @@ impl PipelineError {
     }
 }
 
+/// Whether a driver task of `analysis` runs in this process.
+pub fn is_driven(analysis: AnalysisId) -> bool {
+    DRIVING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .contains(&analysis)
+}
+
+/// How a driver task ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DriverEnd {
+    /// The analysis is finished (or was not live when the driver started).
+    Finished,
+    /// Flows remain but none is admitted; the analysis stays `running` without a driver.
+    Parked,
+    /// An error ended the analysis and its final state is stored (or it had ended already).
+    Failed,
+    /// An error ended the driver and the final state could not be stored.
+    Unstored,
+}
+
 /// Starts the driver task of `analysis` unless one runs already.
 pub fn start(state: &AppState, analysis: AnalysisId) {
     {
@@ -207,25 +230,43 @@ pub fn start(state: &AppState, analysis: AnalysisId) {
     let state = state.clone();
     tokio::spawn(async move {
         let ended = match driver::drive(&state, analysis).await {
-            Ok(()) => false,
-            Err(error) => end(&state, analysis, error).await,
-        };
-        state.statistics.forget(analysis);
-        DRIVING
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&analysis);
-        // A Retry between this driver's end and its removal found the slot taken: start the next driver now.
-        if ended {
-            match state.db.analyses().summary(analysis).await {
-                Ok(summary) if control::is_live(&summary.state) => start(&state, analysis),
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::error!(%analysis, ?error, "could not re-read the ended analysis");
+            Ok(ended) => ended,
+            Err(error) => {
+                if end(&state, analysis, error).await {
+                    DriverEnd::Failed
+                } else {
+                    DriverEnd::Unstored
                 }
+            }
+        };
+        match release(&state, analysis, ended).await {
+            Ok(true) => start(&state, analysis),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(%analysis, ?error, "could not re-read the analysis after its driver ended");
             }
         }
     });
+}
+
+/// Frees the driver slot of `analysis` after its driver ended with `end`, and says whether a new driver must
+/// start: after a Retry that found the slot taken, or for flow work admitted (a flow request, background
+/// analysis switched on) while the driver parked. An end that could not be stored starts none: the next driver
+/// would fail the same way.
+async fn release(state: &AppState, analysis: AnalysisId, end: DriverEnd) -> Result<bool, DbError> {
+    // A parked analysis may never end: its `analysis parked` line carried the run facts, the next driver plans
+    // again.
+    state.statistics.forget(analysis);
+    DRIVING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&analysis);
+    let work = match end {
+        DriverEnd::Unstored => return Ok(false),
+        DriverEnd::Parked => state.db.flow_work().has_work(analysis).await?,
+        DriverEnd::Finished | DriverEnd::Failed => true,
+    };
+    Ok(work && control::is_live(&state.db.analyses().summary(analysis).await?.state))
 }
 
 /// Ends the analysis after `error`: a failure cancels its jobs and stores `failed`; a cancel discards its partial
@@ -254,16 +295,23 @@ async fn end(state: &AppState, analysis: AnalysisId, error: PipelineError) -> bo
     }
 }
 
-/// Starts a driver for every analysis left planning, running or paused (server start).
+/// Starts a driver for every analysis left planning, running or paused that has work (server start); returns
+/// how many. An open review without admitted flow work waits for a request without a driver.
 pub async fn resume_unfinished(state: &AppState) -> Result<usize, DbError> {
-    let unfinished = state.db.analyses().unfinished().await?;
-    for analysis in &unfinished {
+    let mut started = 0;
+    // TODO: every parked analysis stays `running` for good (never end one: that would discard its partial review),
+    // so this reads all of them at each start; filter the ones that can only be parked in SQL inside `unfinished()`.
+    for analysis in state.db.analyses().unfinished().await? {
+        if state.db.flow_work().parked(analysis.id).await? {
+            continue;
+        }
         start(state, analysis.id);
+        started += 1;
     }
-    if !unfinished.is_empty() {
-        tracing::info!(analyses = unfinished.len(), "resuming unfinished analyses");
+    if started > 0 {
+        tracing::info!(analyses = started, "resuming unfinished analyses");
     }
-    Ok(unfinished.len())
+    Ok(started)
 }
 
 /// Fetches the base tip and head into the mirror and stores their merge base as the analysis base; returns the
@@ -342,4 +390,114 @@ async fn diff_files(
         .await
         .map_err(PrDiffError::Task)?
         .map_err(PrDiffError::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use db::repo::analyses::testing::seed_analysis;
+    use db::repo::documents::DocumentKind;
+    use serde_json::json;
+
+    use super::*;
+    use crate::test_support::logs::LogCapture;
+
+    /// A state whose repositories are local and missing (the driver's preparation fails at once), and a live
+    /// analysis with an accepted plan of two flows and PR context: flow work is admitted.
+    async fn with_flow_work() -> (tempfile::TempDir, AppState, AnalysisId) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut config = crate::config::tests::test_config();
+        config.data_dir = dir.path().join("data");
+        config.github.clone_url =
+            url::Url::parse(&format!("file://{}", dir.path().join("remotes").display()))
+                .expect("url");
+        let db = db::repo::Db::in_memory().await.expect("db");
+        let state = AppState::with_queue(config, db);
+        let id = seed_analysis(&state.db).await.expect("seed");
+        state
+            .db
+            .flow_work()
+            .set_background(id, true, chrono::Utc::now())
+            .await
+            .expect("background on");
+        let flow = |rank: u32| {
+            json!({
+                "id": format!("f{rank}"), "title": "flow", "classification": "behavioural",
+                "importance_rank": rank, "intent": "bounds retries", "hunks": [], "depends_on": []
+            })
+        };
+        let plan = json!({ "flows": [flow(1), flow(2)], "unassigned": [] });
+        for (kind, body) in [
+            (DocumentKind::Plan, plan),
+            (DocumentKind::PrContext, json!({})),
+        ] {
+            state
+                .db
+                .documents()
+                .put(id, kind, "", &body, chrono::Utc::now())
+                .await
+                .expect("document");
+        }
+        (dir, state, id)
+    }
+
+    /// A flow request that found the parked driver's slot still taken starts the next driver when it is freed;
+    /// without admitted work none starts. A park releases the run facts (its `analysis parked` line carries
+    /// them; the next driver plans again): an analysis that never ends holds no memory.
+    #[tokio::test]
+    async fn parked_driver_is_followed_by_a_new_one_only_for_admitted_work() {
+        let (_dir, state, id) = with_flow_work().await;
+        let now = chrono::Utc::now();
+        let flows = state.db.flow_work();
+        flows.set_background(id, false, now).await.expect("off");
+        state.statistics.planned(id, 3100, 31, 20, 3);
+        DRIVING.lock().expect("lock").insert(id);
+        assert!(!release(&state, id, DriverEnd::Parked).await.expect("end"));
+        assert!(!is_driven(id));
+        let flow = contracts::ids::FlowId("f2".to_owned());
+        flows.request(id, &flow, now).await.expect("request");
+        assert!(release(&state, id, DriverEnd::Parked).await.expect("end"));
+        let logs = LogCapture::start();
+        control::cancel(&state, id).await.expect("cancel");
+        let text = logs.text();
+        let last: Vec<_> = text
+            .lines()
+            .filter(|line| line.contains("analysis statistics"))
+            .collect();
+        assert_eq!(last.len(), 1, "{text}");
+        assert!(!last[0].contains("plan_batches"), "{text}");
+        assert!(!release(&state, id, DriverEnd::Failed).await.expect("end"));
+    }
+
+    /// Writes fail while reads work (a full disk): the driver's error cannot be stored, the analysis reads as
+    /// live with admitted work, and still no new driver starts.
+    #[tokio::test]
+    async fn end_that_cannot_be_stored_starts_no_new_driver() {
+        let (_dir, state, id) = with_flow_work().await;
+        assert!(state.db.flow_work().has_work(id).await.expect("work"));
+        db::repo::testing::refuse_writes(&state.db)
+            .await
+            .expect("read-only");
+        let logs = LogCapture::start();
+        start(&state, id);
+        for _ in 0..500 {
+            if logs
+                .text()
+                .contains("could not store the ended analysis state")
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let text = logs.text();
+        assert_eq!(
+            text.matches("could not store the ended analysis state")
+                .count(),
+            1,
+            "{text}"
+        );
+        assert!(!is_driven(id), "{text}");
+    }
 }
