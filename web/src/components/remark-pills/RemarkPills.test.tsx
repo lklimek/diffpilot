@@ -15,14 +15,13 @@ const step: RemarkSummary = {
   ratings: [{ rating: "high", steps: 1 }],
 };
 
-it("a step: the LLM rating, then the remark count in plain weight; one pill, never split by severity", async () => {
+it("a step: the pill shows the LLM rating only; the remark count is in its tooltip", async () => {
   const onSelect = vi.fn();
   render(<RemarkPill summary={step} scope="step" subject="this step" onSelect={onSelect} />);
   const pill = screen.getByRole("button");
-  expect(pill).toHaveTextContent("▲ HIGH · 5 remarks");
-  expect(pill).toHaveAccessibleName("LLM rated this step HIGH (not checked) · 5 LLM remarks");
-  expect(pill).toHaveAccessibleDescription(/go to its first LLM remark/);
-  expect(pill.querySelector(".font-normal")).toHaveTextContent("5 remarks");
+  expect(pill).toHaveTextContent(/^▲ HIGH$/);
+  expect(pill).toHaveAccessibleName("LLM rated this step HIGH (not checked)");
+  expect(pill).toHaveAccessibleDescription(/^5 LLM remarks on this step\. .*go to its first LLM remark/);
   expect(pill.className).toContain("bg-llm-bg");
   expect(pill.className).toContain(REMARK_LOOK.high.text);
   expect(pill.className).toMatch(/min-h-6/);
@@ -31,7 +30,7 @@ it("a step: the LLM rating, then the remark count in plain weight; one pill, nev
   expectTrustWording(document.body.textContent ?? "");
 });
 
-it("remarks without a rating get a neutral pill; a rating without remarks stands alone", () => {
+it("remarks without a rating get a small neutral marker, never an all-clear; a rating without remarks stands alone", () => {
   const { rerender } = render(
     <RemarkPill
       summary={{
@@ -47,9 +46,13 @@ it("remarks without a rating get a neutral pill; a rating without remarks stands
       onSelect={() => {}}
     />,
   );
-  expect(screen.getByRole("button")).toHaveTextContent(/^2 remarks$/);
-  expect(screen.getByRole("button")).toHaveAccessibleName("LLM did not rate step 3 · 2 LLM remarks");
-  expect(screen.getByRole("button").className).toContain(REMARK_LOOK.none.text);
+  const marker = screen.getByRole("button");
+  expect(marker).toHaveTextContent(/^$/);
+  expect(marker).toHaveAccessibleName("2 LLM remarks on step 3");
+  expect(marker).toHaveAccessibleDescription(/^2 LLM remarks on step 3; the LLM did not rate it\. /);
+  expect(marker.className).toContain(REMARK_LOOK.none.text);
+  expect(marker.className).toMatch(/min-h-6/);
+  expect(marker.className).toMatch(/min-w-6/);
   rerender(
     <RemarkPill
       summary={{
@@ -67,9 +70,10 @@ it("remarks without a rating get a neutral pill; a rating without remarks stands
   );
   expect(screen.getByRole("button")).toHaveTextContent(/^● LOW$/);
   expect(screen.getByRole("button")).toHaveAccessibleName("LLM rated step 3 LOW (not checked)");
+  expect(screen.getByRole("button")).toHaveAccessibleDescription("Click to open the step.");
 });
 
-it("a flow: the highest step rating ×steps at it and all remarks; the tooltip lists the steps per rating", () => {
+it("a flow: the highest step rating ×steps at it; the tooltip has the remarks and the steps per rating", () => {
   render(
     <RemarkPill
       summary={{
@@ -90,17 +94,19 @@ it("a flow: the highest step rating ×steps at it and all remarks; the tooltip l
     />,
   );
   const pill = screen.getByRole("button");
-  expect(pill).toHaveTextContent("▲ HIGH ×2 · 11 remarks");
+  expect(pill).toHaveTextContent(/^▲ HIGH ×2$/);
   expect(pill).toHaveAccessibleName(
-    "LLM rated 2 steps in flow 2 HIGH (not checked), the highest rating there · 11 LLM remarks",
+    "LLM rated 2 steps in flow 2 HIGH (not checked), the highest rating there",
   );
-  expect(pill).toHaveAccessibleDescription(/Steps by LLM rating: HIGH 2, LOW 3, not rated 1\./);
+  expect(pill).toHaveAccessibleDescription(
+    /^11 LLM remarks in flow 2\. Steps by LLM rating: HIGH 2, LOW 3, not rated 1\./,
+  );
   // All remarks have the user's feedback: dimmed, and said.
   expect(pill.className).toContain("text-muted");
   expect(pill).toHaveAccessibleDescription(/All 11 have your feedback/);
 });
 
-it("next to the flow's own rating label it shows the remarks only; the tooltip keeps the steps per rating", () => {
+it("next to the flow's own rating label: a neutral marker for its remarks; the tooltip keeps the steps per rating", () => {
   const flow: RemarkSummary = {
     rating: "high",
     rated: 1,
@@ -116,10 +122,10 @@ it("next to the flow's own rating label it shows the remarks only; the tooltip k
     <RemarkPill summary={flow} scope="flow" subject="flow 2" withRating={false} onSelect={() => {}} />,
   );
   const pill = screen.getByRole("button");
-  expect(pill).toHaveTextContent(/^11 remarks$/);
+  expect(pill).toHaveTextContent(/^$/);
   expect(pill).toHaveAccessibleName("11 LLM remarks in flow 2");
   expect(pill).toHaveAccessibleDescription(
-    /Steps by LLM rating: HIGH 1, LOW 2 \(the flow's rating is its highest step rating\)\./,
+    /^11 LLM remarks in flow 2\. Steps by LLM rating: HIGH 1, LOW 2 \(the flow's rating is its highest step rating\)\./,
   );
   rerender(
     <RemarkPill
@@ -145,17 +151,23 @@ it("can carry a leading label", () => {
   expect(screen.getByText("LLM:")).toBeVisible();
 });
 
-it("counts the LLM's flags by level in the tooltip, the rating and remark count unchanged", () => {
-  render(
+it("counts the LLM's flags by level in the tooltip; the pill still shows only the rating", () => {
+  const flags = { red: 1, yellow: 2, unknown: 0 };
+  const { rerender } = render(
+    <RemarkPill summary={{ ...step, flags }} scope="step" subject="this step" onSelect={() => {}} />,
+  );
+  const pill = screen.getByRole("button");
+  expect(pill).toHaveTextContent(/^▲ HIGH$/);
+  expect(pill).toHaveAccessibleName("LLM rated this step HIGH (not checked)");
+  expect(pill).toHaveAccessibleDescription(/^LLM flags on this step: 1 red flag, 2 yellow flags\. /);
+  // The neutral marker of an unrated step is named by its flags.
+  rerender(
     <RemarkPill
-      summary={{ ...step, flags: { red: 1, yellow: 2, unknown: 0 } }}
+      summary={{ ...step, rating: null, rated: 0, flags }}
       scope="step"
-      subject="this step"
+      subject="step 3"
       onSelect={() => {}}
     />,
   );
-  const pill = screen.getByRole("button");
-  expect(pill).toHaveTextContent("▲ HIGH · 5 remarks");
-  expect(pill).toHaveAccessibleName("LLM rated this step HIGH (not checked) · 5 LLM remarks");
-  expect(pill).toHaveAccessibleDescription(/^LLM flags: 1 red flag, 2 yellow flags\. /);
+  expect(screen.getByRole("button")).toHaveAccessibleName("LLM flags on step 3: 1 red flag, 2 yellow flags");
 });

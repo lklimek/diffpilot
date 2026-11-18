@@ -6,7 +6,6 @@ import { ANALYSIS_ID, openTour } from "./support";
 const dir = process.env.SCREENSHOT_DIR;
 
 const nav = (page: Page) => page.getByRole("navigation");
-const inspector = (page: Page) => page.getByRole("complementary", { name: "Inspector" });
 
 // What each state shows (as the mockup's state switcher does).
 const STATES: Record<string, (page: Page) => Promise<void>> = {

@@ -716,23 +716,43 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   offers Hide; the top-bar switch still shows or hides all; the total note stays. Only the first line of a
   remark range is never hidden (it carries the marker); the rest may fold inside the bar.
 - **Ask** is a collapsible Inspector section like the others (remembered with them; the header keeps the
-  step's question count); `a` opens it and focuses the field. Its caption says answers appear below the field,
-  newest first.
+  step's question count); `a` opens it and focuses the field. (Its caption: see "Ask as a chat" below, which
+  supersedes "answers appear below the field, newest first".)
 
 ### Owner-approved amendment — 2026-11-18: LLM rating and remark pills in navigation
 
-- On the wire a remark has no severity of its own; only its step has the LLM's rating. A pill therefore shows two
-  separate facts: the step's LLM rating and the number of its LLM remarks ("▲ HIGH · 5 remarks"; name "LLM rated
-  this step HIGH (not checked) · 5 LLM remarks"). Remark counts are never split by rating.
+- On the wire a remark has no severity of its own; only its step has the LLM's rating. A pill shows the step's LLM
+  rating only ("▲ HIGH"; name "LLM rated this step HIGH (not checked)"); the number of its LLM remarks is in the
+  tooltip ("5 LLM remarks on this step"). Remark counts are never split by rating (amended 2026-11-18, F27).
 - The navigation shows one pill per step and per flow row (also collapsed); the flow introduction and the step
   (above the code) show the same. A flow's rating on the wire is its highest step rating, already shown by the flow's
-  LLM label, so the flow pill shows only the flow's total remarks ("11 remarks"); its tooltip lists the steps per
-  rating.
-- Remarks on an unrated step get a neutral pill ("5 remarks"); a rated step without remarks shows its rating alone;
-  a step with neither shows nothing, never an all-clear. Remarks with the user's feedback dim the pill.
+  LLM label, so a flow with remarks gets a small neutral marker (a dot, name "11 LLM remarks in flow 2"); its
+  tooltip has the remark count and lists the steps per rating.
+- Remarks on an unrated step get the same neutral marker ("5 LLM remarks on step 3"); a rated step without remarks
+  shows its rating alone; a step with neither shows nothing, never an all-clear. Remarks with the user's feedback
+  dim the pill.
 - A pill leads to the first remark (on a step at the highest rating for a flow) and flashes its code line and
   Inspector entry. `r` goes to the next step with remarks after the current position (from a flow introduction:
   that flow's first step), wraps around, and says "No more steps with remarks" when there are none.
 - Amends §1 "badges only for deterministic facts": these pills are LLM judgements and are allowed in navigation
   because they are styled as LLM content (the LLM tint, the remark bar's colour and pattern, a word label) and say
   "LLM" and "not checked" in their accessible name.
+
+### Owner-approved amendment — 2026-11-18: Ask as a conversation
+
+- **Ask as a chat.** The Ask area shows the user's conversation of the analysis as one thread, oldest at the top
+  and newest at the bottom, the field below it. Each entry is the question with the step it was asked on (a small
+  link that opens that step) and its answer; questions asked on other steps belong to the same thread: it is the
+  user's conversation about this pull request's analysis. "Whole conversation" (default) and
+  "This step" filter it. The thread follows the newest entry unless the reader scrolled up; a new question always
+  shows. Pending answers keep their progress line, failed ones Ask again. Answers keep their line breaks; list
+  lines are shown as typed with a hanging indent. Supersedes "Answers render below the question field, newest
+  first" above.
+- **Resizable Ask.** A horizontal handle on the dock's top edge (`role="separator"`, its height as value) makes
+  the Ask area taller by dragging up (the Inspector sections above shrink, keeping room for the heading) or with
+  the arrow keys; Home and End go to the limits, Enter or double-click resets. The height is remembered with the
+  tour layout like the diagram's. A collapsed Ask has no handle and its natural height.
+- **Ask about a line.** Each line of the step's code view and of the classic diff has a small "?" action (shown on
+  hover and on keyboard focus; Tab from the line's comment action reaches it, arrow keys move between lines). It
+  puts `path:line` (`path:start-end` when the line is inside a selection of several lines; " (old code)" for a
+  removed line) into the Ask field at the cursor, opens Ask and focuses the field; nothing is sent.

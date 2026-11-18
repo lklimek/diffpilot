@@ -1,5 +1,7 @@
 // Layout of the review screen (brief §4.3): three columns, each hideable and full screen, two resizable widths, the
-// flow diagram pane; remembered in localStorage.
+// flow diagram pane, the Ask area's height; remembered in localStorage.
+
+import { ASK_MIN_PX } from "../../components/inspector/Inspector";
 
 /** A column of the review screen. */
 export type Column = "nav" | "main" | "inspector";
@@ -19,6 +21,8 @@ export interface TourLayout {
   diagram: boolean;
   /** Dragged height in px of the flow diagram; null = default. */
   diagramHeight: number | null;
+  /** Dragged height in px of the Inspector's Ask area (its dock); null = default. */
+  askHeight: number | null;
 }
 
 /** localStorage key of the layout. */
@@ -31,6 +35,7 @@ export const DEFAULT_LAYOUT: TourLayout = {
   widths: { nav: null, inspector: null },
   diagram: false,
   diagramHeight: null,
+  askHeight: null,
 };
 
 /** Smallest height in px of the flow diagram, so it never collapses to nothing. */
@@ -47,6 +52,8 @@ const GUTTERS_PX = 2 * GUTTER_PX;
 // Larger stored widths are not a preference but damage (no screen is that wide).
 const MAX_STORED_PX = 8192;
 
+const height = (value: unknown, min: number) =>
+  typeof value === "number" && value >= min && value <= MAX_STORED_PX ? Math.round(value) : null;
 const isColumn = (value: unknown): value is Column => COLUMNS.includes(value as Column);
 const width = (column: "nav" | "inspector", value: unknown) =>
   typeof value === "number" &&
@@ -70,12 +77,8 @@ export function loadLayout(): TourLayout {
       full: isColumn(raw.full) ? raw.full : null,
       widths: { nav: width("nav", raw.widths?.nav), inspector: width("inspector", raw.widths?.inspector) },
       diagram: raw.diagram === true,
-      diagramHeight:
-        typeof raw.diagramHeight === "number" &&
-        raw.diagramHeight >= DIAGRAM_MIN_PX &&
-        raw.diagramHeight <= MAX_STORED_PX
-          ? Math.round(raw.diagramHeight)
-          : null,
+      diagramHeight: height(raw.diagramHeight, DIAGRAM_MIN_PX),
+      askHeight: height(raw.askHeight, ASK_MIN_PX),
     };
     return COLUMNS.some((c) => !layout.hidden[c]) ? layout : { ...layout, hidden: DEFAULT_LAYOUT.hidden };
   } catch {

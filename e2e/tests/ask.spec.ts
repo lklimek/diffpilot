@@ -16,7 +16,7 @@ import { expect, test } from "../support/fixtures";
 test.describe.configure({ mode: "serial" });
 
 const answers = (page: Page) =>
-  inspector(page).getByRole("list", { name: "Questions asked about this step" });
+  inspector(page).getByRole("list", { name: "Ask conversation" });
 
 async function ask(page: Page, question: string): Promise<void> {
   await page.keyboard.press("a");

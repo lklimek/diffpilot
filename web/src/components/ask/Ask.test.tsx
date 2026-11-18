@@ -7,6 +7,7 @@ import { expectTrustWording } from "../../__tests__/wording";
 import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import { AskAnswers } from "./AskAnswers";
 import { AskForm } from "./AskForm";
+import { AskThread } from "./AskThread";
 
 const question = (over: Partial<AskQuestion>): AskQuestion => ({
   id: "q1",
@@ -152,42 +153,37 @@ describe("AskForm", () => {
     expect(screen.getByText(/Ask works on a step/)).toBeInTheDocument();
   });
 
-  it("shows the answers below the question field, newest first, pending and failed in the same place", () => {
+  it("shows the conversation above the question field: the field stays at the bottom, like a chat", () => {
     const questions = [
       question({ id: "old", text: "Old question?", state: "failed", failure: "the job failed." }),
       question({ id: "new", text: "New question?", created_at: "2026-11-16T10:30:00Z" }),
     ];
-    render(<AskForm step={step5} onAsk={() => {}} answers={<AskAnswers questions={questions} />} />);
-    const field = screen.getByRole("textbox");
-    const items = within(screen.getByRole("list", { name: "Questions asked about this step" })).getAllByRole(
-      "listitem",
+    render(
+      <AskForm
+        step={step5}
+        onAsk={() => {}}
+        answers={
+          <AskThread
+            questions={questions}
+            stepId="f1.5"
+            scope="conversation"
+            onScope={() => {}}
+            placeOf={() => null}
+          />
+        }
+      />,
     );
+    const field = screen.getByRole("textbox");
+    const items = within(screen.getByRole("list", { name: "Ask conversation" })).getAllByRole("listitem");
     expect(items.map((i) => i.textContent)).toEqual([
-      expect.stringContaining("Asked by you: New question?"),
       expect.stringContaining("Asked by you: Old question?"),
+      expect.stringContaining("Asked by you: New question?"),
     ]);
     for (const item of items)
-      expect(field.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(items[0]).toHaveTextContent("Waiting for the LLM");
-    expect(items[1]).toHaveTextContent("No answer: the job failed.");
-    expect(screen.getByRole("heading", { name: /Ask/ })).toHaveTextContent(/answers appear below/);
-  });
-
-  it("keeps the answers in a block of bounded height with its own scroll, so the rest of the dock stays in view", async () => {
-    const user = userEvent.setup();
-    const onAsk = vi.fn().mockResolvedValue(undefined);
-    render(
-      <AskForm step={step5} onAsk={onAsk} answers={<AskAnswers questions={[question({ id: "q" })]} />} />,
-    );
-    const block = screen.getByRole("region", { name: "Answers" });
-    expect(block).toContainElement(screen.getByRole("list", { name: "Questions asked about this step" }));
-    expect(block.className).toMatch(/(^|\s)max-h-\[/);
-    expect(block.className).toMatch(/(^|\s)overflow-y-auto(\s|$)/);
-    expect(block).toHaveAttribute("tabindex", "0");
-    // A new question goes to the top of the newest-first list: the block shows its start.
-    block.scrollTop = 120;
-    await user.type(screen.getByRole("textbox"), "Why?{Enter}");
-    expect(block.scrollTop).toBe(0);
+      expect(field.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(items[0]).toHaveTextContent("No answer: the job failed.");
+    expect(items[1]).toHaveTextContent("Waiting for the LLM");
+    expect(screen.getByRole("heading", { name: /Ask/ })).toHaveTextContent(/newest at the bottom/);
   });
 });
 
@@ -236,10 +232,10 @@ describe("AskForm: a collapsible Inspector section", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Connection lost.");
   });
 
-  it("says where answers appear: below the field, newest first", () => {
+  it("says where answers appear: one conversation, newest at the bottom", () => {
     render(<AskForm step={step5} onAsk={() => {}} sections={control(true)} count={0} />);
     const ask = screen.getByRole("region", { name: /^Ask/ });
-    expect(ask).toHaveTextContent("answers appear below the field, newest first");
+    expect(ask).toHaveTextContent("one conversation per analysis, newest at the bottom");
     expect(ask).not.toHaveTextContent(/pinned/);
     expect(screen.getByRole("button", { name: "Ask" })).not.toHaveAccessibleDescription(/pinned/);
   });

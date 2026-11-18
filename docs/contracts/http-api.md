@@ -32,29 +32,29 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | GET | `/api/v1/me` | public | – | `MeResponse` |
 | POST | `/api/v1/pr/resolve` | session_csrf | `ResolvePrRequest` | `ResolvePrResponse` |
 | POST | `/api/v1/analyses` | session_csrf | `CreateAnalysisRequest` | 201 `AnalysisSummary` |
-| GET | `/api/v1/analyses/{id}` | session | – | `AnalysisSummary` |
-| GET | `/api/v1/analyses/{id}/events` | session | – | SSE (`sse-events.md`) |
+| GET | `/api/v1/analyses/{id}` | read | – | `AnalysisSummary` |
+| GET | `/api/v1/analyses/{id}/events` | read | – | SSE (`sse-events.md`) |
 | PUT | `/api/v1/settings/llm` | session_csrf | `ModelChoice` | `LlmSelection` |
 | PUT | `/api/v1/settings/llm/ask-effort` | session_csrf | `SetAskEffortRequest` | `LlmSelection` (Ask jobs' reasoning effort, default `medium`; every other job uses `current`; `LlmSelection.ask_effort` reports it; `changed_by`/`changed_at` are shared with the model choice) |
 | POST | `/api/v1/analyses/{id}/pause` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/resume` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/cancel` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/retry` | session_csrf | – | `AnalysisSummary` |
-| GET | `/api/v1/analyses/{id}/tour` | session | – | `Tour` (409 `analysis_not_finished` until plan and PR context are accepted) |
-| GET | `/api/v1/analyses/{id}/lines` | session | `RangeQuery` | `LinesResponse` (409 `analysis_not_finished` before the analysis is ready) |
-| GET | `/api/v1/analyses/{id}/diff` | session | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis is ready) |
-| GET / PUT | `/api/v1/analyses/{id}/review-state` | session / session_csrf | – / `ReviewState` | `ReviewState` / 204 (PUT: 409 `analysis_not_finished` before `finished`) |
-| GET | `/api/v1/analyses/{id}/questions` | session | – | `AskQuestion[]` |
+| GET | `/api/v1/analyses/{id}/tour` | read | – | `Tour` (409 `analysis_not_finished` until plan and PR context are accepted) |
+| GET | `/api/v1/analyses/{id}/lines` | read | `RangeQuery` | `LinesResponse` (409 `analysis_not_finished` before the analysis is ready) |
+| GET | `/api/v1/analyses/{id}/diff` | read | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis is ready) |
+| GET / PUT | `/api/v1/analyses/{id}/review-state` | read / session_csrf | – / `ReviewState` | `ReviewState` / 204 (PUT: 409 `analysis_not_finished` before `finished`) |
+| GET | `/api/v1/analyses/{id}/questions` | read | – | `AskQuestion[]` |
 | POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` |
-| GET / POST | `/api/v1/analyses/{id}/feedback` | session / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
+| GET / POST | `/api/v1/analyses/{id}/feedback` | read / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
 | DELETE | `…/feedback/{feedback_id}` | session_csrf | – | 204 |
-| GET | `/api/v1/analyses/{id}/pending-review` | session | – | `PendingReview` |
+| GET | `/api/v1/analyses/{id}/pending-review` | read | – | `PendingReview` |
 | POST | `/api/v1/analyses/{id}/pending-review/comments` | session_csrf | `CreateCommentRequest` | 201 `CreateCommentResponse` |
 | PATCH | `…/pending-review/comments/{comment_id}` | session_csrf | `UpdateCommentRequest` | `PendingComment` |
 | DELETE | `…/pending-review/comments/{comment_id}` | session_csrf | – | 204 |
-| GET | `/api/v1/settings` | session | – | `Settings` |
+| GET | `/api/v1/settings` | read | – | `Settings` |
 | PUT | `/api/v1/settings/language` | session_csrf | `SetLanguageRequest` | 204 |
-| GET | `/api/v1/repos/{owner}/{name}/settings` | session | – | `RepoSettings` (read-only; 409 `analysis_not_finished` while not known) |
+| GET | `/api/v1/repos/{owner}/{name}/settings` | read | – | `RepoSettings` (read-only; 409 `analysis_not_finished` while not known) |
 
 ## Rules
 - **Ranges** (`lines`, `diff`): query `path`, `side` (`head` | `base`), `from`, `to`; `1 ≤ from ≤ to`,
@@ -264,7 +264,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `token_limit_reached` | 409 | the user has 10 live access tokens |
 | `invalid_dashboard_settings` | 422 | dashboard settings or time zone break a rule of plan §F.6; the message names the field and the rule |
 | `github_rate_limited` | 429 | starting a refresh while the user's GitHub rate limit is exhausted; `Retry-After` and the message give the reset time |
-| `rate_limited` | 429 | over an access token's request rate (120/min) or a client's failed bearer attempts (30/min); `Retry-After` |
+| `rate_limited` | 429 | over an access token's request rate (120/min), or a failed attempt past a client's 30 failed bearer attempts/min; `Retry-After` |
 
 ## Endpoint × fixture-state inventory
 Fixture PR `acme/node-client#482` (`fixtures/pr-482/`): `api-seed/default/` plus merge patches per state.
@@ -562,8 +562,8 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 | R9 | POST | `/api/v1/settings/access-tokens` | session_csrf | `CreateAccessToken` | 201 `CreatedAccessToken`; 409 `token_limit_reached` |
 | R10 | DELETE | `/api/v1/settings/access-tokens/{id}` | session_csrf | – | 204 (404 for an unknown, revoked or another user's token) |
 
-Existing v1 `GET` routes with `session` auth become `read` in WP11-TOKENS (ADR-019 lists them; paths and shapes do
-not change). Until the token middleware exists, `read` routes accept the session only.
+Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and shapes unchanged); only R8 stays
+`session`. How an agent reads with a token: `agent-api.md`.
 
 ### Rules
 - **Scope.** Every response is the signed-in user's (or the token's user's) own: summary, items, refreshes, events
@@ -623,13 +623,16 @@ not change). Until the token middleware exists, `read` routes accept the session
   (anything else: 400 `invalid_request`); `expires_in_days` one of 30, 90, 365 (`CreateAccessToken::EXPIRY_DAYS`).
   A name, scope or expiry outside these rules answers 400 `invalid_request`, a name in use 409 `conflict`. At most
   10 live (not revoked, not expired) tokens per user. R8 lists tokens that are not revoked, newest first.
-- **Token check** (middleware on the public router, WP11-TOKENS): both a session cookie and a bearer token → 400
+- **Token check** (middleware on the public router, WP11-TOKENS; only `Authorization: Bearer srp_…` is a token
+  attempt, any other `Authorization` value passes to the session check): both a session cookie and such a token → 400
   `invalid_request`; a token on a route that is not `read` or with a non-safe method → 403 `token_not_accepted`;
   unknown, malformed, expired or revoked token, or its user off the allow-list → 401 `unauthenticated` with
   `WWW-Authenticate: Bearer` (no reason given); valid without the route's scope → 403 `insufficient_scope`; over the
-  rate limits → 429 `rate_limited` with `Retry-After`. `GET /api/v1/me` answers a token with its user and
-  `csrf_token: null`. Runner bearers sent to the public API are unknown tokens; `srp_` tokens are rejected on the
-  runner listener.
+  rate limits → 429 `rate_limited` with `Retry-After` (the token is checked first; only failures count against the
+  per-address limit, IPv6 per /64). `GET /api/v1/me` answers a token with its user and `csrf_token: null`. Runner
+  bearers sent to the public API reach the session check (401); `srp_` tokens are refused on the runner listener
+  before any lookup (401). GitHub-backed reads (pending review, related-link checks, App installations) are reused
+  for 60 s per user for tokens.
 - **Refresh states** (the one state table; `RefreshState`, `RankingState` and `db::repo::dashboard` follow it).
   The current snapshot is that of the user's newest refresh in `ranking` or `finished`; `failed` and `cancelled`
   refreshes never hold one, so the previous snapshot stays. A stored snapshot stays current whatever happens to

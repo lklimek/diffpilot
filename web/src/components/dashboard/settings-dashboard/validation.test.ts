@@ -110,6 +110,12 @@ describe("dashboard settings validation (plan §F.6)", () => {
     expect(policy("acme", "p", "a\\..\\b.json")).toHaveProperty(["repositories.0.policy"]);
     expect(policy("acme", "p", "../b.json")).toHaveProperty(["repositories.0.policy"]);
     expect(policy("acme", "p", "a..b.json")).toEqual({});
+    // The server refuses these too: the path becomes part of a GitHub contents URL.
+    for (const path of ["a%2e%2e/b.json", "dir\\a.json", "%2F.json"]) {
+      expect(policy("acme", "p", path)["repositories.0.policy"]).toBe(
+        'Repository 1: the policy path may not contain "%" or "\\".',
+      );
+    }
     expect(policy("acme", "p", "a.yaml")).toHaveProperty(["repositories.0.policy"]);
     expect(policy("acme", "p", "dir/a.json")).toEqual({});
   });

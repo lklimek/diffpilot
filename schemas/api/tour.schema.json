@@ -1,0 +1,3208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tour",
+  "description": "Response of `GET /api/v1/analyses/{id}/tour`.",
+  "type": "object",
+  "properties": {
+    "analysis": {
+      "description": "The analysis.",
+      "$ref": "#/$defs/AnalysisSummary"
+    },
+    "pr_context": {
+      "description": "The PR context block.",
+      "$ref": "#/$defs/PrContextBlock"
+    },
+    "flows": {
+      "description": "Flows in tour order: behaviour by importance, LLM-classified refactors, LLM-classified tests.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Flow"
+      }
+    },
+    "quiet": {
+      "description": "Quiet rows, always after the flows.",
+      "$ref": "#/$defs/QuietRows"
+    },
+    "threads": {
+      "description": "Every GitHub review thread of the pull request.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/GithubThread"
+      }
+    }
+  },
+  "required": [
+    "analysis",
+    "pr_context",
+    "flows",
+    "quiet",
+    "threads"
+  ],
+  "$defs": {
+    "AnalysisSummary": {
+      "description": "An analysis and its state.",
+      "type": "object",
+      "properties": {
+        "review_ready": {
+          "description": "Plan and PR context are accepted; analysed flows can be reviewed while work continues.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "background_analysis": {
+          "description": "Whether unrequested flows are analysed in rank order.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "models_used": {
+          "description": "Distinct model choices of jobs actually claimed, in first-use order.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/ModelChoice"
+          }
+        },
+        "usage": {
+          "description": "Provider-reported totals of finished jobs; null without reports.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageTotals"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "progress": {
+          "description": "Whole-run progress derived from existing jobs and documents, absent on older servers.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalysisProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "has_my_state": {
+          "description": "Whether this reader has saved review state (including explicitly empty state).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Analysis id.",
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "pr": {
+          "description": "The pull request as analysed (its head is the analysis head).",
+          "$ref": "#/$defs/PrSummary"
+        },
+        "language": {
+          "description": "Language of the LLM texts.",
+          "$ref": "#/$defs/LlmLanguage"
+        },
+        "state": {
+          "description": "State and progress.",
+          "$ref": "#/$defs/AnalysisState"
+        },
+        "created_at": {
+          "description": "When the analysis was requested.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "description": "When it finished, failed or was cancelled.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "pr",
+        "language",
+        "state",
+        "created_at"
+      ]
+    },
+    "ModelChoice": {
+      "description": "Model and reasoning effort (plan §5.2, ADR-002).",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Provider model id, e.g. `gpt-6.1-sol`.",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "description": "Reasoning effort.",
+          "$ref": "#/$defs/ReasoningEffort"
+        }
+      },
+      "required": [
+        "model",
+        "reasoning_effort"
+      ]
+    },
+    "ReasoningEffort": {
+      "description": "Reasoning effort of the model.",
+      "oneOf": [
+        {
+          "description": "Low effort.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Medium effort.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "High effort (v1 default for every job kind).",
+          "type": "string",
+          "const": "high"
+        }
+      ]
+    },
+    "UsageTotals": {
+      "description": "Token sums; cached input is included in input, not additional to it.",
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "description": "Input tokens, including cached input.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cached_input_tokens": {
+          "description": "Cached input tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "description": "Output tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reasoning_output_tokens": {
+          "description": "Unknown: the retained job-result contract does not store reasoning tokens separately.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "jobs": {
+          "description": "Finished jobs with a provider usage report, including Ask and all analysis rounds.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "jobs"
+      ]
+    },
+    "AnalysisProgress": {
+      "description": "Whole-analysis waiting progress, never review completion or confidence.",
+      "type": "object",
+      "properties": {
+        "started_at": {
+          "description": "Start of this run, preserved across parts and server restarts.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "planning": {
+          "description": "Plan parts accepted.",
+          "$ref": "#/$defs/RunStage"
+        },
+        "pr_context": {
+          "description": "PR context accepted.",
+          "$ref": "#/$defs/RunStage"
+        },
+        "flows": {
+          "description": "Flows completed; total unknown until the plan is accepted.",
+          "$ref": "#/$defs/RunStage"
+        },
+        "finishing": {
+          "description": "Final verification and projection.",
+          "$ref": "#/$defs/RunStage"
+        },
+        "estimate": {
+          "description": "Estimated remaining time; null without sufficient observations, or while paused/terminal. With background\nanalysis off it covers plan and PR context only and is null once the review is ready.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalysisEstimate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "percent": {
+          "description": "Overall waiting progress, 0..=100; null until a denominator can be estimated or counted. With background\nanalysis off it covers plan and PR context only and is null once the review is ready (until finished).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        }
+      },
+      "required": [
+        "started_at",
+        "planning",
+        "pr_context",
+        "flows",
+        "finishing"
+      ]
+    },
+    "RunStage": {
+      "description": "One stage in the short whole-run list.",
+      "type": "object",
+      "properties": {
+        "done": {
+          "description": "Accepted units, not attempts (repairs do not count twice).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "total": {
+          "description": "Unit count; null until known.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "state": {
+          "description": "Position relative to the currently executing stage.",
+          "$ref": "#/$defs/RunStageState"
+        }
+      },
+      "required": [
+        "done",
+        "state"
+      ]
+    },
+    "RunStageState": {
+      "description": "State of a whole-run stage; pause/failure remain on AnalysisState.",
+      "oneOf": [
+        {
+          "description": "Has not started.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "Current work (possibly paused or failed).",
+          "type": "string",
+          "const": "current"
+        },
+        {
+          "description": "Completed.",
+          "type": "string",
+          "const": "done"
+        }
+      ]
+    },
+    "AnalysisEstimate": {
+      "description": "A bounded estimate, not a deadline or a guarantee.",
+      "type": "object",
+      "properties": {
+        "remaining_seconds": {
+          "description": "Remaining seconds, never more than seven days.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "basis": {
+          "description": "Strongest observation used; before planning ends the flow component is only line-based.",
+          "$ref": "#/$defs/EstimateBasis"
+        },
+        "rough": {
+          "description": "True while the flow count is unknown and estimated from changed lines.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "remaining_seconds",
+        "basis",
+        "rough"
+      ]
+    },
+    "EstimateBasis": {
+      "description": "Where waiting-time estimates came from.",
+      "oneOf": [
+        {
+          "description": "Uses completed plan parts or flows of this run, with history for unstarted kinds.",
+          "type": "string",
+          "const": "this_analysis"
+        },
+        {
+          "description": "Uses recent completed runs with known unit counts.",
+          "type": "string",
+          "const": "recent_runs"
+        },
+        {
+          "description": "Only historical time per changed line; the flow count is not known yet.",
+          "type": "string",
+          "const": "lines_only"
+        }
+      ]
+    },
+    "AnalysisId": {
+      "description": "Identifier of an analysis (one per pull request, head commit and LLM language).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "PrSummary": {
+      "description": "A pull request as GitHub reports it.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "Repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "Number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "author": {
+          "description": "Author login.",
+          "type": "string"
+        },
+        "html_url": {
+          "description": "Pull request page on GitHub.",
+          "type": "string"
+        },
+        "base_sha": {
+          "description": "Base commit.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "head_sha": {
+          "description": "Head commit.",
+          "$ref": "#/$defs/CommitSha"
+        }
+      },
+      "required": [
+        "repo",
+        "number",
+        "title",
+        "author",
+        "html_url",
+        "base_sha",
+        "head_sha"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "CommitSha": {
+      "description": "A full 40-character hexadecimal git commit id.",
+      "type": "string"
+    },
+    "LlmLanguage": {
+      "description": "Language of LLM-written texts.",
+      "oneOf": [
+        {
+          "description": "English (default).",
+          "type": "string",
+          "const": "en"
+        },
+        {
+          "description": "Polish.",
+          "type": "string",
+          "const": "pl"
+        }
+      ]
+    },
+    "AnalysisState": {
+      "description": "State of an analysis (brief §4.2).",
+      "oneOf": [
+        {
+          "description": "Planning flows; the number of flows is not known yet.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "planning"
+            },
+            "stage": {
+              "description": "The current stage; absent when no job of the analysis is queued, running or paused.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AnalysisStage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Analysing flows.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "running"
+            },
+            "done": {
+              "description": "Flows analysed.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "total": {
+              "description": "Flows in total.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "idle": {
+              "description": "True when flows remain but none is admitted (none requested, background analysis off or the rest\nfailed for good): nothing is analysed until a flow is requested or background analysis is switched on.",
+              "type": "boolean",
+              "default": false
+            },
+            "stage": {
+              "description": "The current stage; absent when no job of the analysis is queued, running or paused.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AnalysisStage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "done",
+            "total"
+          ]
+        },
+        {
+          "description": "Waiting for the user or the provider usage limit.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "paused"
+            },
+            "reason": {
+              "description": "User pause takes precedence over a provider usage limit.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PauseReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "paused_by": {
+              "description": "Login that requested the pause.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "paused_at": {
+              "description": "When the user requested the pause.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "resumes_at": {
+              "description": "When it resumes, if known.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "done": {
+              "description": "Flows analysed before the pause.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "total": {
+              "description": "Flows in total; null while planning (the number of flows is not known yet).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "stage": {
+              "description": "The stage that resumes; absent when no job of the analysis is queued, running or paused.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AnalysisStage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "done"
+          ]
+        },
+        {
+          "description": "Failed; configuration problems require administrator action before another attempt.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "failed"
+            },
+            "reason": {
+              "description": "Typed cause when known; absent on older failures.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ApiErrorCode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "flow": {
+              "description": "The flow that failed, or null when it failed before any flow existed.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FlowRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "message": {
+              "description": "Plain description of what failed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "message"
+          ]
+        },
+        {
+          "description": "Every flow analysed; the review can open.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "finished"
+            },
+            "total": {
+              "description": "Flows in total.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "state",
+            "total"
+          ]
+        },
+        {
+          "description": "Cancelled; partial results discarded.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "cancelled"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        }
+      ]
+    },
+    "AnalysisStage": {
+      "description": "The stage of the analysis's live job (the queued, running or paused job of its current round); only facts the\nserver knows, no estimate.",
+      "type": "object",
+      "properties": {
+        "part": {
+          "description": "Current planning part; present only for a multi-part plan.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanPart"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "description": "What the job does.",
+          "$ref": "#/$defs/StageKind"
+        },
+        "flow": {
+          "description": "The flow analysed (`flow` only); absent when the stored plan does not list it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageFlow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started_at": {
+          "description": "When the server handed the job to the runner; null while the job waits for the runner.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "PlanPart": {
+      "description": "Position within the fixed plan batches of this run.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "description": "One-based current part.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "total": {
+          "description": "Total parts, fixed before the first plan job is submitted.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "index",
+        "total"
+      ]
+    },
+    "StageKind": {
+      "description": "Kind of an analysis stage.",
+      "oneOf": [
+        {
+          "description": "Planning the flows.",
+          "type": "string",
+          "const": "plan"
+        },
+        {
+          "description": "Describing the pull request context.",
+          "type": "string",
+          "const": "pr_context"
+        },
+        {
+          "description": "Analysing one flow.",
+          "type": "string",
+          "const": "flow"
+        }
+      ]
+    },
+    "StageFlow": {
+      "description": "The flow of a `flow` stage.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "description": "1-based position of the flow in the stored plan (the order flows are analysed in).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "description": "Flow title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "title"
+      ]
+    },
+    "PauseReason": {
+      "description": "Why an analysis waits; absent reasons in older responses mean a usage limit.",
+      "oneOf": [
+        {
+          "description": "The user decides when to resume.",
+          "type": "string",
+          "const": "user"
+        },
+        {
+          "description": "The provider decides when a job may run again.",
+          "type": "string",
+          "const": "usage_limit"
+        }
+      ]
+    },
+    "ApiErrorCode": {
+      "description": "Machine-readable API error code.",
+      "oneOf": [
+        {
+          "description": "Server configuration requires administrator action.",
+          "type": "string",
+          "const": "configuration"
+        },
+        {
+          "description": "Not signed in.",
+          "type": "string",
+          "const": "unauthenticated"
+        },
+        {
+          "description": "The GitHub login is not allowed to sign in.",
+          "type": "string",
+          "const": "login_not_allowed"
+        },
+        {
+          "description": "Missing or wrong CSRF token.",
+          "type": "string",
+          "const": "csrf_rejected"
+        },
+        {
+          "description": "The resource does not exist or is not visible.",
+          "type": "string",
+          "const": "not_found"
+        },
+        {
+          "description": "Malformed request.",
+          "type": "string",
+          "const": "invalid_request"
+        },
+        {
+          "description": "The URL is not a GitHub pull request URL.",
+          "type": "string",
+          "const": "not_a_pr_url"
+        },
+        {
+          "description": "The repository is private (v1 supports public repositories only).",
+          "type": "string",
+          "const": "private_repository"
+        },
+        {
+          "description": "The GitHub App is not installed where it is needed.",
+          "type": "string",
+          "const": "app_not_installed"
+        },
+        {
+          "description": "The analysis has not finished yet.",
+          "type": "string",
+          "const": "analysis_not_finished"
+        },
+        {
+          "description": "The request conflicts with the current state.",
+          "type": "string",
+          "const": "conflict"
+        },
+        {
+          "description": "The pull request head moved since the analysis.",
+          "type": "string",
+          "const": "pr_head_changed"
+        },
+        {
+          "description": "GitHub rejected the comment position.",
+          "type": "string",
+          "const": "position_rejected"
+        },
+        {
+          "description": "The pending comment was published on GitHub meanwhile; the edit or deletion applied to the published one.",
+          "type": "string",
+          "const": "comment_published"
+        },
+        {
+          "description": "The requested line range is too large.",
+          "type": "string",
+          "const": "range_too_large"
+        },
+        {
+          "description": "The file is not rendered (generated material).",
+          "type": "string",
+          "const": "not_rendered"
+        },
+        {
+          "description": "GitHub did not answer as expected.",
+          "type": "string",
+          "const": "github_unavailable"
+        },
+        {
+          "description": "An internal error.",
+          "type": "string",
+          "const": "internal"
+        },
+        {
+          "description": "The server is busy (e.g. its database is locked); retry after `Retry-After`.",
+          "type": "string",
+          "const": "unavailable"
+        },
+        {
+          "description": "A dashboard refresh of the user is already scanning (R2), or live (R4).",
+          "type": "string",
+          "const": "refresh_running"
+        },
+        {
+          "description": "GitHub's rate limit for the user's token is reached; the message names the reset time.",
+          "type": "string",
+          "const": "github_rate_limited"
+        },
+        {
+          "description": "Dashboard settings break a rule; the message names the field and the rule.",
+          "type": "string",
+          "const": "invalid_dashboard_settings"
+        },
+        {
+          "description": "The list changed since the cursor was issued; read it again from the start.",
+          "type": "string",
+          "const": "cursor_expired"
+        },
+        {
+          "description": "The access token lacks the scope the route needs.",
+          "type": "string",
+          "const": "insufficient_scope"
+        },
+        {
+          "description": "The route does not accept access tokens.",
+          "type": "string",
+          "const": "token_not_accepted"
+        },
+        {
+          "description": "The user has the maximum number of live access tokens.",
+          "type": "string",
+          "const": "token_limit_reached"
+        },
+        {
+          "description": "Too many requests; retry after `Retry-After`.",
+          "type": "string",
+          "const": "rate_limited"
+        }
+      ]
+    },
+    "FlowRef": {
+      "description": "A flow named in a state message.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Flow id.",
+          "$ref": "#/$defs/FlowId"
+        },
+        "title": {
+          "description": "Flow title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ]
+    },
+    "FlowId": {
+      "description": "Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….",
+      "type": "string",
+      "pattern": "^f[0-9]+$"
+    },
+    "PrContextBlock": {
+      "description": "The PR context: deterministic facts and LLM content.",
+      "type": "object",
+      "properties": {
+        "facts": {
+          "description": "Deterministic facts.",
+          "$ref": "#/$defs/PrContextFacts"
+        },
+        "llm": {
+          "description": "LLM analysis.",
+          "$ref": "#/$defs/PrContextOutput"
+        }
+      },
+      "required": [
+        "facts",
+        "llm"
+      ]
+    },
+    "PrContextFacts": {
+      "description": "Deterministic facts of the PR context.",
+      "type": "object",
+      "properties": {
+        "related_work_links": {
+          "description": "Structured GitHub targets resolved independently of the agent's prose; missing on older Tours.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/RelatedWorkLink"
+          }
+        },
+        "memcan_status": {
+          "description": "Current observed MemCan connection state, separate from the analysis's profile lookup.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MemcanStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ci": {
+          "description": "CI status of the head commit.",
+          "$ref": "#/$defs/CiStatus"
+        },
+        "threads_status": {
+          "description": "Whether `Tour.threads` holds every review thread of the pull request.",
+          "$ref": "#/$defs/ThreadsStatus"
+        },
+        "counters": {
+          "description": "Counters from the pre-pass.",
+          "$ref": "#/$defs/Counters"
+        },
+        "project_profile": {
+          "description": "Where the project profile came from.",
+          "$ref": "#/$defs/ProjectProfileStatus"
+        },
+        "agent_instruction_files": {
+          "description": "Paths in the pull request diff that look like agent instruction files (AGENTS.md, CLAUDE.md, `.agents/`,\n`.codex/`, `.claude/`, `.cursor*`, `.github/copilot-instructions.md`); shown as a notice, empty = none.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "related_work_checked": {
+          "description": "False when related work could not be looked up (the GitHub App is not installed on the repository);\nthe related-work list then reads \"not checked\".",
+          "type": "boolean"
+        },
+        "flow_count": {
+          "description": "Number of flows.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "step_count": {
+          "description": "Number of steps over all flows.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ci",
+        "threads_status",
+        "counters",
+        "project_profile",
+        "agent_instruction_files",
+        "related_work_checked",
+        "flow_count",
+        "step_count"
+      ]
+    },
+    "RelatedWorkLink": {
+      "description": "A validated target syntax and the result of checking it against GitHub.",
+      "type": "object",
+      "properties": {
+        "reference": {
+          "description": "Exact reference in the agent output, used only to associate the item.",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository in owner/name form, validated by the server.",
+          "type": "string"
+        },
+        "number": {
+          "description": "Positive GitHub issue or pull request number.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "Resource kind, from GitHub when verified, otherwise inferred from the reference.",
+          "$ref": "#/$defs/RelatedWorkTargetKind"
+        },
+        "verified": {
+          "description": "GitHub confirmed the resource exists and its kind; false if it could not be read.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reference",
+        "repo",
+        "number",
+        "kind",
+        "verified"
+      ]
+    },
+    "RelatedWorkTargetKind": {
+      "description": "GitHub resource linked from related work (distinct from the LLM's relationship kind).",
+      "oneOf": [
+        {
+          "description": "A pull request.",
+          "type": "string",
+          "const": "pull_request"
+        },
+        {
+          "description": "An issue.",
+          "type": "string",
+          "const": "issue"
+        }
+      ]
+    },
+    "MemcanStatus": {
+      "description": "Most recent observed MemCan connectivity; never an on-demand health probe.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "Outcome observed by the server's client.",
+          "$ref": "#/$defs/MemcanState"
+        },
+        "last_success_at": {
+          "description": "Last successful tool call in this server process, retained after a later failure.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "MemcanState": {
+      "description": "What the server knows about MemCan connectivity.",
+      "oneOf": [
+        {
+          "description": "No connection configuration.",
+          "type": "string",
+          "const": "not_configured"
+        },
+        {
+          "description": "Configured, but no completed attempt since this server started.",
+          "type": "string",
+          "const": "not_checked"
+        },
+        {
+          "description": "The most recent attempt reached MemCan.",
+          "type": "string",
+          "const": "reachable"
+        },
+        {
+          "description": "The most recent attempt could not reach MemCan or timed out.",
+          "type": "string",
+          "const": "not_reachable"
+        }
+      ]
+    },
+    "CiStatus": {
+      "description": "CI status of the head commit: its check runs and its commit statuses.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "Overall state.",
+          "$ref": "#/$defs/CiState"
+        },
+        "total": {
+          "description": "Number of checks read: check runs plus commit statuses.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "failing": {
+          "description": "Failing checks (check runs and commit statuses).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CiCheck"
+          }
+        },
+        "check_runs": {
+          "description": "Check runs by outcome; absent when the check runs were not read.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CiCounts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "statuses": {
+          "description": "Commit statuses (latest per context) by outcome; absent when the statuses were not read.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CiCounts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "total",
+        "failing"
+      ]
+    },
+    "CiState": {
+      "description": "Overall CI state.",
+      "oneOf": [
+        {
+          "description": "Both sources were read and every check run and commit status concluded `success`.",
+          "type": "string",
+          "const": "passing"
+        },
+        {
+          "description": "Every check read has concluded and none failed, but not every one succeeded (some skipped or neutral) or\none source was not read: never \"all passing\".",
+          "type": "string",
+          "const": "no_failures"
+        },
+        {
+          "description": "At least one check failed.",
+          "type": "string",
+          "const": "failing"
+        },
+        {
+          "description": "Checks still running.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "No checks reported for the head commit.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "The check runs could not be read (no GitHub token, GitHub error or rate limit); nothing is claimed.",
+          "type": "string",
+          "const": "not_checked"
+        }
+      ]
+    },
+    "CiCheck": {
+      "description": "A failing check.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Check name.",
+          "type": "string"
+        },
+        "url": {
+          "description": "Link to the check, if any.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failing_tests": {
+          "description": "Names of failing tests, when the check reports them.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "failing_tests"
+      ]
+    },
+    "CiCounts": {
+      "description": "Checks of one CI source by outcome.",
+      "type": "object",
+      "properties": {
+        "passed": {
+          "description": "Concluded `success`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "failed": {
+          "description": "Failed: `failure`, `error`, `timed_out`, `cancelled`, `action_required` and any other conclusion.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "pending": {
+          "description": "Not concluded yet (queued, in progress, a `pending` status).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "skipped": {
+          "description": "Concluded `skipped` (check runs only): did not run.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "neutral": {
+          "description": "Concluded `neutral` (check runs only).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "passed",
+        "failed",
+        "pending",
+        "skipped",
+        "neutral"
+      ]
+    },
+    "ThreadsStatus": {
+      "description": "How completely the pull request's review threads were read.",
+      "oneOf": [
+        {
+          "description": "Every review thread was read.",
+          "type": "string",
+          "const": "checked"
+        },
+        {
+          "description": "Only the first threads were read (the server's read cap); more exist on GitHub.",
+          "type": "string",
+          "const": "partial"
+        },
+        {
+          "description": "The threads could not be read (no token, GitHub error or rate limit).",
+          "type": "string",
+          "const": "not_checked"
+        }
+      ]
+    },
+    "Counters": {
+      "description": "Counters over material that is not analysed.",
+      "type": "object",
+      "properties": {
+        "lines_added_to_tests": {
+          "description": "Added diff lines in deterministically classified test files; not an assertion or test-function count.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "lines_removed_from_tests": {
+          "description": "Removed diff lines from test files, including replacements; label as \"changed or removed\".",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "dependencies_changed": {
+          "description": "Names of changed dependencies.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependency_files_not_checked": {
+          "description": "Changed dependency files whose dependencies were not checked (other ecosystems, unreadable or unparsable\nfiles); their changes are not counted in `dependencies_changed`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "lines_removed_from_tests",
+        "dependencies_changed",
+        "dependency_files_not_checked"
+      ]
+    },
+    "ProjectProfileStatus": {
+      "description": "Sources of the project profile; empty with MemCan `checked` means no profile (ratings are component-level).",
+      "type": "object",
+      "properties": {
+        "sources": {
+          "description": "Where the profile came from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProfileSource"
+          }
+        },
+        "memcan": {
+          "description": "Whether MemCan was searched for a `type: project-profile` memory; `not_checked` means a MemCan profile\nmay exist that `sources` does not list.",
+          "$ref": "#/$defs/SourceCheck"
+        }
+      },
+      "required": [
+        "sources",
+        "memcan"
+      ]
+    },
+    "ProfileSource": {
+      "description": "A source of the project profile.",
+      "oneOf": [
+        {
+          "description": "`.claudius/project-profile.md` on the base ref.",
+          "type": "string",
+          "const": "repository_file"
+        },
+        {
+          "description": "MemCan memory `type: project-profile`.",
+          "type": "string",
+          "const": "memcan"
+        }
+      ]
+    },
+    "SourceCheck": {
+      "description": "Whether a source was checked.",
+      "oneOf": [
+        {
+          "description": "The source was read.",
+          "type": "string",
+          "const": "checked"
+        },
+        {
+          "description": "The source was not read; nothing is claimed about it.",
+          "type": "string",
+          "const": "not_checked"
+        }
+      ]
+    },
+    "PrContextOutput": {
+      "description": "The pull request at project scale.",
+      "type": "object",
+      "properties": {
+        "problem": {
+          "description": "The problem the pull request solves.",
+          "type": "string"
+        },
+        "why_needed": {
+          "description": "Why the change is needed.",
+          "type": "string"
+        },
+        "what_it_gives": {
+          "description": "What the change gives users or developers.",
+          "type": "string"
+        },
+        "related_work": {
+          "description": "Related pull requests, issues or mechanisms; may be empty.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RelatedWork"
+          }
+        },
+        "fit_questions": {
+          "description": "Questions about the fit of the change, never verdicts.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FitQuestion"
+          }
+        }
+      },
+      "required": [
+        "problem",
+        "why_needed",
+        "what_it_gives",
+        "related_work",
+        "fit_questions"
+      ]
+    },
+    "RelatedWork": {
+      "description": "One piece of related work.",
+      "type": "object",
+      "properties": {
+        "reference": {
+          "description": "URL or `owner/repo#number` of the related item.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Kind of relation.",
+          "$ref": "#/$defs/RelatedWorkKind"
+        },
+        "overlap": {
+          "description": "One line on the overlap with this pull request.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference",
+        "kind",
+        "overlap"
+      ]
+    },
+    "RelatedWorkKind": {
+      "description": "Kind of related work in the PR context.",
+      "oneOf": [
+        {
+          "description": "Duplicates this change.",
+          "type": "string",
+          "const": "duplicate"
+        },
+        {
+          "description": "A competing solution to the same problem.",
+          "type": "string",
+          "const": "competing_solution"
+        },
+        {
+          "description": "A pull request stacked on or under this one.",
+          "type": "string",
+          "const": "stacked_pr"
+        },
+        {
+          "description": "An issue linked to this change.",
+          "type": "string",
+          "const": "linked_issue"
+        },
+        {
+          "description": "A matching change in a companion repository.",
+          "type": "string",
+          "const": "companion_repository"
+        }
+      ]
+    },
+    "FitQuestion": {
+      "description": "A question about the fit of the change at project scale.",
+      "type": "object",
+      "properties": {
+        "question": {
+          "description": "The question, phrased as a question.",
+          "type": "string"
+        },
+        "topic": {
+          "description": "What the question is about.",
+          "$ref": "#/$defs/FitTopic"
+        },
+        "evidence": {
+          "description": "Lines read that motivate the question.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          }
+        }
+      },
+      "required": [
+        "question",
+        "topic",
+        "evidence"
+      ]
+    },
+    "FitTopic": {
+      "description": "Topic of a fit question.",
+      "oneOf": [
+        {
+          "description": "Right layer or repository?",
+          "type": "string",
+          "const": "layer_or_repository"
+        },
+        {
+          "description": "Oversized for the problem?",
+          "type": "string",
+          "const": "size_for_problem"
+        },
+        {
+          "description": "Duplicates an existing mechanism?",
+          "type": "string",
+          "const": "duplicate_mechanism"
+        },
+        {
+          "description": "Another fit question.",
+          "type": "string",
+          "const": "other"
+        }
+      ]
+    },
+    "Evidence": {
+      "description": "A line the agent actually read and cites as evidence.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "head for the checked-out code; base only for removed code read from the base commit.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "line": {
+          "description": "1-based line number on that side.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "line"
+      ]
+    },
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    },
+    "Flow": {
+      "description": "One flow.",
+      "type": "object",
+      "properties": {
+        "analysis_status": {
+          "description": "Present on lazy Tours; absent on older finished Tours.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FlowAnalysisStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "planned": {
+          "description": "Plan metadata and deterministic ranges, available before step analysis.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlannedFlowDetails"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "description": "Flow id.",
+          "$ref": "#/$defs/FlowId"
+        },
+        "position": {
+          "description": "1-based position in the tour.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "group": {
+          "description": "Ordering group and menu label, derived from the classification.",
+          "$ref": "#/$defs/FlowGroup"
+        },
+        "facts": {
+          "description": "Deterministic facts.",
+          "$ref": "#/$defs/FlowFacts"
+        },
+        "llm": {
+          "description": "LLM analysis.",
+          "$ref": "#/$defs/FlowLlm"
+        },
+        "graph": {
+          "description": "Flow graph; nodes derived by the server from the steps.",
+          "$ref": "#/$defs/FlowGraph"
+        },
+        "steps": {
+          "description": "Steps in order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Step"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "position",
+        "group",
+        "facts",
+        "llm",
+        "graph",
+        "steps"
+      ]
+    },
+    "FlowAnalysisStatus": {
+      "description": "Work status, separate from risk or the reviewer's ticks.",
+      "type": "object",
+      "properties": {
+        "state": {
+          "description": "Where the work stands.",
+          "$ref": "#/$defs/FlowAnalysisState"
+        },
+        "started_at": {
+          "description": "Runner claim time for the current attempt, if any.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "message": {
+          "description": "Plain failure description; never provider output.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state"
+      ]
+    },
+    "FlowAnalysisState": {
+      "description": "Progress of one planned flow.",
+      "oneOf": [
+        {
+          "description": "No accepted output or request.",
+          "type": "string",
+          "const": "not_analysed"
+        },
+        {
+          "description": "Requested, queued or waiting for a provider limit.",
+          "type": "string",
+          "const": "queued"
+        },
+        {
+          "description": "The runner claimed this flow.",
+          "type": "string",
+          "const": "analysing"
+        },
+        {
+          "description": "An accepted output exists.",
+          "type": "string",
+          "const": "analysed"
+        },
+        {
+          "description": "The attempt or its repairs failed; explicit retry is possible.",
+          "type": "string",
+          "const": "failed"
+        }
+      ]
+    },
+    "PlannedFlowDetails": {
+      "description": "Information from the accepted plan, before step analysis.",
+      "type": "object",
+      "properties": {
+        "intent": {
+          "description": "LLM intent from planning.",
+          "type": "string"
+        },
+        "importance_rank": {
+          "description": "Unique reading rank from planning.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "ranges": {
+          "description": "Changed ranges assigned by the verified plan.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FileRanges"
+          }
+        }
+      },
+      "required": [
+        "intent",
+        "importance_rank",
+        "ranges"
+      ]
+    },
+    "FileRanges": {
+      "description": "Several line ranges of one file on one side.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "Commit the lines refer to.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "ranges": {
+          "description": "The lines, ascending and disjoint.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LineRange"
+          }
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "ranges"
+      ]
+    },
+    "LineRange": {
+      "description": "Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.",
+      "type": "object",
+      "properties": {
+        "start_line": {
+          "description": "First line, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "description": "Last line, inclusive.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ]
+    },
+    "FlowGroup": {
+      "description": "Ordering group of a flow (brief §4.3 flow order).",
+      "oneOf": [
+        {
+          "description": "Ordinary flow, ordered by importance.",
+          "type": "string",
+          "const": "behaviour"
+        },
+        {
+          "description": "Labelled \"LLM-classified refactor\"; never collapsed.",
+          "type": "string",
+          "const": "llm_classified_refactor"
+        },
+        {
+          "description": "Labelled \"LLM-classified tests\"; never hidden.",
+          "type": "string",
+          "const": "llm_classified_tests"
+        }
+      ]
+    },
+    "FlowFacts": {
+      "description": "Deterministic facts of a flow.",
+      "type": "object",
+      "properties": {
+        "files": {
+          "description": "Files touched by the flow's steps.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "step_count": {
+          "description": "Number of steps.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "files",
+        "step_count"
+      ]
+    },
+    "FlowLlm": {
+      "description": "LLM content of a flow.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "classification": {
+          "description": "Classification.",
+          "$ref": "#/$defs/Classification"
+        },
+        "risk": {
+          "description": "Highest band of the step assessments; null when no step is assessed.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RiskBand"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "introduction": {
+          "description": "Flow introduction.",
+          "$ref": "#/$defs/FlowIntroduction"
+        },
+        "depends_on": {
+          "description": "Flows this flow depends on.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FlowId"
+          }
+        },
+        "pattern_repetitions": {
+          "description": "Patterns explained once, applied elsewhere.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PatternRepetition"
+          }
+        }
+      },
+      "required": [
+        "title",
+        "classification",
+        "introduction",
+        "depends_on",
+        "pattern_repetitions"
+      ]
+    },
+    "Classification": {
+      "description": "Classification of a flow (brief §3, closed list).",
+      "oneOf": [
+        {
+          "description": "Changes observable behaviour.",
+          "type": "string",
+          "const": "behavioural"
+        },
+        {
+          "description": "Changes a public API or contract.",
+          "type": "string",
+          "const": "api_contract"
+        },
+        {
+          "description": "Adds new code.",
+          "type": "string",
+          "const": "new_code"
+        },
+        {
+          "description": "Claimed refactor without behaviour change.",
+          "type": "string",
+          "const": "refactor_pure"
+        },
+        {
+          "description": "Moves code.",
+          "type": "string",
+          "const": "move"
+        },
+        {
+          "description": "Renames identifiers.",
+          "type": "string",
+          "const": "rename"
+        },
+        {
+          "description": "Documentation and comments.",
+          "type": "string",
+          "const": "docs_comments"
+        },
+        {
+          "description": "Generated or mechanical changes.",
+          "type": "string",
+          "const": "generated_mechanical"
+        },
+        {
+          "description": "Configuration and build.",
+          "type": "string",
+          "const": "config_build"
+        },
+        {
+          "description": "Dependency changes.",
+          "type": "string",
+          "const": "dependency"
+        },
+        {
+          "description": "Anything else.",
+          "type": "string",
+          "const": "other"
+        }
+      ]
+    },
+    "RiskBand": {
+      "description": "Risk at system scale, rated by the LLM (no numbers, brief §1).",
+      "oneOf": [
+        {
+          "description": "Small or contained effect.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Noticeable in some situations or by some users.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "A production user or operator would clearly notice.",
+          "type": "string",
+          "const": "high"
+        }
+      ]
+    },
+    "FlowIntroduction": {
+      "description": "Introduction of a flow (brief §3).",
+      "type": "object",
+      "properties": {
+        "problem_before": {
+          "description": "Problem before this pull request: the local trigger and what was wrong or missing.",
+          "type": "string"
+        },
+        "change": {
+          "description": "The intended correction this pull request makes.",
+          "type": "string"
+        },
+        "example_before_after": {
+          "description": "A short concrete example of behaviour before and after.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "problem_before",
+        "change",
+        "example_before_after"
+      ]
+    },
+    "PatternRepetition": {
+      "description": "A pattern explained once and applied in several places (\"same pattern × N\").",
+      "type": "object",
+      "properties": {
+        "description": {
+          "description": "The pattern.",
+          "type": "string"
+        },
+        "explained_in": {
+          "description": "The step that explains it.",
+          "$ref": "#/$defs/StepId"
+        },
+        "sites": {
+          "description": "The other places.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PatternSite"
+          }
+        }
+      },
+      "required": [
+        "description",
+        "explained_in",
+        "sites"
+      ]
+    },
+    "StepId": {
+      "description": "Identifier of a step, assigned by the server in step order: `\"<flow>.<n>\"`, e.g. `f2.3`.",
+      "type": "string"
+    },
+    "PatternSite": {
+      "description": "One place where a repeated pattern is applied.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "Commit the lines refer to.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "range": {
+          "description": "Lines.",
+          "$ref": "#/$defs/LineRange"
+        },
+        "step_id": {
+          "description": "The step containing these lines, if any.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "github_url": {
+          "description": "GitHub link.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "range",
+        "github_url"
+      ]
+    },
+    "FlowGraph": {
+      "description": "A flow graph: nodes are steps.",
+      "type": "object",
+      "properties": {
+        "nodes": {
+          "description": "One node per step.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GraphNode"
+          }
+        },
+        "edges": {
+          "description": "Edges in execution order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GraphEdge"
+          }
+        }
+      },
+      "required": [
+        "nodes",
+        "edges"
+      ]
+    },
+    "GraphNode": {
+      "description": "A graph node, the diagram twin of one step.",
+      "type": "object",
+      "properties": {
+        "step_id": {
+          "description": "The step.",
+          "$ref": "#/$defs/StepId"
+        },
+        "number": {
+          "description": "Step number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "Node kind.",
+          "$ref": "#/$defs/NodeKind"
+        },
+        "label": {
+          "description": "Label (the step title).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step_id",
+        "number",
+        "kind",
+        "label"
+      ]
+    },
+    "NodeKind": {
+      "description": "Kind of a flow-graph node, derived from the step kind.",
+      "oneOf": [
+        {
+          "description": "The step's code is new.",
+          "type": "string",
+          "const": "added"
+        },
+        {
+          "description": "The step's code changed.",
+          "type": "string",
+          "const": "changed"
+        },
+        {
+          "description": "Unchanged context.",
+          "type": "string",
+          "const": "unchanged"
+        }
+      ]
+    },
+    "GraphEdge": {
+      "description": "A graph edge.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Source step.",
+          "$ref": "#/$defs/StepId"
+        },
+        "to": {
+          "description": "Target step.",
+          "$ref": "#/$defs/StepId"
+        },
+        "label": {
+          "description": "Branch label (decision outcome, loop back-edge, error exit).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "Step": {
+      "description": "One step of a flow.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Step id.",
+          "$ref": "#/$defs/StepId"
+        },
+        "number": {
+          "description": "1-based number within the flow.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "facts": {
+          "description": "Deterministic facts.",
+          "$ref": "#/$defs/StepFacts"
+        },
+        "llm": {
+          "description": "LLM analysis.",
+          "$ref": "#/$defs/StepLlm"
+        }
+      },
+      "required": [
+        "id",
+        "number",
+        "facts",
+        "llm"
+      ]
+    },
+    "StepFacts": {
+      "description": "Deterministic facts of a step.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on the step's side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "`head` normally; `base` for removed code without a head location (deleted or emptied file).",
+          "$ref": "#/$defs/LineSide"
+        },
+        "range": {
+          "description": "Step lines on that side.",
+          "$ref": "#/$defs/LineRange"
+        },
+        "github_url": {
+          "description": "GitHub link to the lines at the head commit (base commit for a base-side step).",
+          "type": "string"
+        },
+        "changed_lines": {
+          "description": "Changed lines inside the step: added lines of a head step, removed lines of a base step.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LineRange"
+          }
+        },
+        "moved": {
+          "description": "Move check result, for steps whose code was moved.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MoveFact"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "call_hierarchy": {
+          "description": "Callers and callees from the tech plugin; null in v1 (\"n/a — needs a language plugin\").",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CallHierarchy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "thread_ids": {
+          "description": "Ids of the GitHub threads located in this step.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "range",
+        "github_url",
+        "changed_lines",
+        "thread_ids"
+      ]
+    },
+    "MoveFact": {
+      "description": "Result of the deterministic move check.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "The original block at the base commit.",
+          "$ref": "#/$defs/FileRange"
+        },
+        "badge": {
+          "description": "`text_identical` when no line differs after whitespace normalisation, else null.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProvenanceBadge"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "differing_lines": {
+          "description": "Number of lines that differ from the original.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "from",
+        "differing_lines"
+      ]
+    },
+    "FileRange": {
+      "description": "A line range of one file.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "Commit the lines refer to.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "range": {
+          "description": "The lines.",
+          "$ref": "#/$defs/LineRange"
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "range"
+      ]
+    },
+    "ProvenanceBadge": {
+      "description": "A deterministic check that a badge names (brief §1, §3). No badge means LLM analysis.",
+      "oneOf": [
+        {
+          "description": "Moved block equal to its original after whitespace normalisation.",
+          "type": "string",
+          "const": "text_identical"
+        },
+        {
+          "description": "Recognised by a path rule.",
+          "type": "string",
+          "const": "classified_by_path"
+        },
+        {
+          "description": "Recognised by a line rule.",
+          "type": "string",
+          "const": "classified_by_line_rule"
+        },
+        {
+          "description": "Git treats the file as binary (content check); it is not shown or analysed.",
+          "type": "string",
+          "const": "binary_content"
+        }
+      ]
+    },
+    "CallHierarchy": {
+      "description": "Callers and callees of a step symbol.",
+      "type": "object",
+      "properties": {
+        "callers": {
+          "description": "Callers.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CallSite"
+          }
+        },
+        "callees": {
+          "description": "Callees.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CallSite"
+          }
+        }
+      },
+      "required": [
+        "callers",
+        "callees"
+      ]
+    },
+    "CallSite": {
+      "description": "A caller or callee.",
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "description": "Symbol.",
+          "type": "string"
+        },
+        "file": {
+          "description": "Repository-relative path.",
+          "type": "string"
+        },
+        "line": {
+          "description": "Line.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "github_url": {
+          "description": "GitHub link.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "file",
+        "line",
+        "github_url"
+      ]
+    },
+    "StepLlm": {
+      "description": "LLM content of a step.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Step kind.",
+          "$ref": "#/$defs/FragmentKind"
+        },
+        "symbol": {
+          "description": "Enclosing symbol.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "called_by": {
+          "description": "Who reaches this step.",
+          "type": "string"
+        },
+        "decides": {
+          "description": "What it decides or changes.",
+          "type": "string"
+        },
+        "next": {
+          "description": "Where execution goes next.",
+          "type": "string"
+        },
+        "why": {
+          "description": "Why it is needed.",
+          "type": "string"
+        },
+        "annotations": {
+          "description": "Annotations.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Annotation"
+          }
+        },
+        "assessment": {
+          "description": "Assessment, collapsed by default; null when the LLM gave none.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Assessment"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "moved_from": {
+          "description": "Original location the LLM claims for a moved block.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MovedFrom"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "impact": {
+          "description": "Code outside the diff this step may affect, shown inline as real code.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ImpactRef"
+          }
+        }
+      },
+      "required": [
+        "title",
+        "kind",
+        "called_by",
+        "decides",
+        "next",
+        "why",
+        "annotations",
+        "impact"
+      ]
+    },
+    "FragmentKind": {
+      "description": "Kind of a step (fragment) of a flow (brief §3).",
+      "oneOf": [
+        {
+          "description": "Logic changed in place.",
+          "type": "string",
+          "const": "modified"
+        },
+        {
+          "description": "New code.",
+          "type": "string",
+          "const": "added"
+        },
+        {
+          "description": "Block moved from elsewhere.",
+          "type": "string",
+          "const": "moved"
+        },
+        {
+          "description": "Identifier rename only.",
+          "type": "string",
+          "const": "renamed"
+        },
+        {
+          "description": "Code removed here.",
+          "type": "string",
+          "const": "deleted_site"
+        },
+        {
+          "description": "Unchanged code connecting the flow.",
+          "type": "string",
+          "const": "context"
+        }
+      ]
+    },
+    "Annotation": {
+      "description": "An annotation anchored to lines of a step (same side as the step); its range is a highlight.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Annotation id.",
+          "$ref": "#/$defs/AnnotationId"
+        },
+        "type": {
+          "description": "Type.",
+          "$ref": "#/$defs/AnnotationType"
+        },
+        "basis": {
+          "description": "Fact or inference.",
+          "$ref": "#/$defs/Basis"
+        },
+        "range": {
+          "description": "Annotated lines.",
+          "$ref": "#/$defs/LineRange"
+        },
+        "was": {
+          "description": "Behaviour before the pull request; the hover tooltip shows only was → is.",
+          "type": "string"
+        },
+        "is": {
+          "description": "Behaviour after the pull request.",
+          "type": "string"
+        },
+        "text": {
+          "description": "The consequence, the flag's title or the note; null for a behaviour annotation.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "description": "Evidence lines.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          }
+        },
+        "flag": {
+          "description": "Present exactly on a flag: its level (`unknown` for a flag stored before levels), scenario and what was\nnot checked.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Flag"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "basis",
+        "range",
+        "was",
+        "is",
+        "evidence"
+      ]
+    },
+    "AnnotationId": {
+      "description": "Identifier of an annotation, assigned by the server: `\"<step>.a<n>\"`, e.g. `f2.3.a1`.",
+      "type": "string"
+    },
+    "AnnotationType": {
+      "description": "Type of an annotation inside a step.",
+      "oneOf": [
+        {
+          "description": "Behaviour change, was → is.",
+          "type": "string",
+          "const": "behaviour"
+        },
+        {
+          "description": "A consequence of the change.",
+          "type": "string",
+          "const": "consequence"
+        },
+        {
+          "description": "A risk the LLM states as a concrete scenario (brief §1 addendum 2026-11-18).",
+          "type": "string",
+          "const": "flag"
+        },
+        {
+          "description": "Any other remark.",
+          "type": "string",
+          "const": "note"
+        }
+      ]
+    },
+    "Basis": {
+      "description": "Whether a statement was read in the code or inferred.",
+      "oneOf": [
+        {
+          "description": "Read in the code; needs at least one evidence line.",
+          "type": "string",
+          "const": "fact"
+        },
+        {
+          "description": "Not directly read; a conclusion.",
+          "type": "string",
+          "const": "inference"
+        }
+      ]
+    },
+    "Flag": {
+      "description": "The scenario of a flag; its title (the risk class, \"Potential …\") is the annotation's `text`.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "red or yellow in agent output; unknown only on a flag stored before levels.",
+          "$ref": "#/$defs/FlagLevel"
+        },
+        "scenario": {
+          "description": "Ordered steps: who acts, the order of events, the outcome and its cost.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_checked": {
+          "description": "One line: what was not reproduced or run.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "scenario",
+        "not_checked"
+      ]
+    },
+    "FlagLevel": {
+      "description": "How strongly the LLM flags a risk: its own judgement, not checked.",
+      "oneOf": [
+        {
+          "description": "A likely defect or damage if the scenario is reachable.",
+          "type": "string",
+          "const": "red"
+        },
+        {
+          "description": "Worth a look: plausible but weaker, or of lower cost.",
+          "type": "string",
+          "const": "yellow"
+        },
+        {
+          "description": "A flag stored before flags had levels (a former question to check); never in new agent output.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "Assessment": {
+      "description": "Assessment of a step at system scale (brief §3); evidence comes before it.",
+      "type": "object",
+      "properties": {
+        "headline": {
+          "description": "What a production user or operator would notice.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "risk": {
+          "description": "Risk band from the severity skill; never its numeric scores.",
+          "$ref": "#/$defs/RiskBand"
+        },
+        "reason": {
+          "description": "Reason for the band, also for low.",
+          "type": "string"
+        },
+        "basis_note": {
+          "description": "What the agent did: `Read: …` and, if it ran anything, `Ran: …`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "not_checked": {
+          "description": "What was not checked.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "origin": {
+          "description": "Introduced by this pull request or pre-existing.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Origin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "blocking": {
+          "description": "Whether an action is proposed before merge, as a follow-up, or neither.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Blocking"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "smallest_correction": {
+          "description": "The smallest correction, or null; the agent may omit it for low.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "risk",
+        "reason"
+      ]
+    },
+    "Origin": {
+      "description": "Whether an issue was introduced by the pull request.",
+      "oneOf": [
+        {
+          "description": "Introduced by this pull request.",
+          "type": "string",
+          "const": "introduced"
+        },
+        {
+          "description": "Existed before this pull request.",
+          "type": "string",
+          "const": "pre_existing"
+        },
+        {
+          "description": "Cannot be told from what was read.",
+          "type": "string",
+          "const": "unclear"
+        }
+      ]
+    },
+    "Blocking": {
+      "description": "Merge impact of an assessed step.",
+      "oneOf": [
+        {
+          "description": "No blocking action or follow-up proposed; this is not an assurance of safety.",
+          "type": "string",
+          "const": "no_action_proposed"
+        },
+        {
+          "description": "Should be resolved before this pull request merges.",
+          "type": "string",
+          "const": "blocks_this_pr"
+        },
+        {
+          "description": "Can be handled in a follow-up.",
+          "type": "string",
+          "const": "follow_up"
+        }
+      ]
+    },
+    "MovedFrom": {
+      "description": "Original location of a moved block at the base commit.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path at the base commit.",
+          "type": "string"
+        },
+        "base_start": {
+          "description": "First base line.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "base_end": {
+          "description": "Last base line.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "file",
+        "base_start",
+        "base_end"
+      ]
+    },
+    "ImpactRef": {
+      "description": "Code outside the diff that a step may affect.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path at the head commit.",
+          "type": "string"
+        },
+        "range": {
+          "description": "Lines.",
+          "$ref": "#/$defs/LineRange"
+        },
+        "symbol": {
+          "description": "Enclosing symbol.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "Why it may be affected.",
+          "type": "string"
+        },
+        "basis": {
+          "description": "Fact or inference.",
+          "$ref": "#/$defs/Basis"
+        },
+        "github_url": {
+          "description": "GitHub link.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "range",
+        "reason",
+        "basis",
+        "github_url"
+      ]
+    },
+    "QuietRows": {
+      "description": "Quiet rows: never ranked above a flow.",
+      "type": "object",
+      "properties": {
+        "unexplained": {
+          "description": "Changed lines no flow explains (\"Unexplained — read these yourself\"); listed first. Removed lines\nwithout a head location are base-side entries.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UnexplainedRanges"
+          }
+        },
+        "moves": {
+          "description": "Moves whose text is deterministically identical.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/IdenticalMove"
+          }
+        },
+        "not_analysed": {
+          "description": "Material recognised by path or line rules.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NotAnalysedSection"
+          }
+        }
+      },
+      "required": [
+        "unexplained",
+        "moves",
+        "not_analysed"
+      ]
+    },
+    "UnexplainedRanges": {
+      "description": "Unexplained lines of one file on one side, with why the server left them out when it decided so.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "Commit the lines refer to.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "ranges": {
+          "description": "The lines, ascending and disjoint.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LineRange"
+          }
+        },
+        "reason": {
+          "description": "Why the server did not send these lines to the LLM (deterministic); absent when the LLM did not\nexplain them.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnexplainedReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "ranges"
+      ]
+    },
+    "UnexplainedReason": {
+      "description": "Why the server left Unexplained lines out of every LLM request.",
+      "oneOf": [
+        {
+          "description": "Not sent to the LLM: the request holding them would be larger than one prompt may be.",
+          "type": "string",
+          "const": "too_large_for_prompt"
+        }
+      ]
+    },
+    "IdenticalMove": {
+      "description": "A moved block whose text is identical after whitespace normalisation. The UI says \"Body text identical\"\nand nothing more: identical text does not mean unchanged behaviour, and no call-site flow is linked in v1\n(ADR-008).",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Original block at the base commit.",
+          "$ref": "#/$defs/FileRange"
+        },
+        "to": {
+          "description": "New block at the head commit.",
+          "$ref": "#/$defs/FileRange"
+        },
+        "badge": {
+          "description": "Always `text_identical`.",
+          "$ref": "#/$defs/ProvenanceBadge"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "badge"
+      ]
+    },
+    "NotAnalysedSection": {
+      "description": "A Not analysed section.",
+      "type": "object",
+      "properties": {
+        "category": {
+          "description": "Section.",
+          "$ref": "#/$defs/NotAnalysedCategory"
+        },
+        "file_count": {
+          "description": "Number of files in the section.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "items": {
+          "description": "Items.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NotAnalysedItem"
+          }
+        }
+      },
+      "required": [
+        "category",
+        "file_count",
+        "items"
+      ]
+    },
+    "NotAnalysedCategory": {
+      "description": "Section of material that is not analysed.",
+      "oneOf": [
+        {
+          "description": "Tests.",
+          "type": "string",
+          "const": "tests"
+        },
+        {
+          "description": "Docs and comments.",
+          "type": "string",
+          "const": "docs_comments"
+        },
+        {
+          "description": "Mechanical and generated material, lockfiles included.",
+          "type": "string",
+          "const": "generated_mechanical"
+        }
+      ]
+    },
+    "NotAnalysedItem": {
+      "description": "One file (or line ranges of it) recognised by a rule; one item per file and side.",
+      "type": "object",
+      "properties": {
+        "renderable": {
+          "description": "Whether the server can show code for this side and file; absent on older Tours.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "rule_kind": {
+          "description": "Detector that actually matched; absent on older stored pre-passes.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "`base` for a deleted file or removed lines, else `head`.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "ranges": {
+          "description": "Matched changed lines on that side; null for the whole file.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/LineRange"
+          }
+        },
+        "badge": {
+          "description": "How it was recognised.",
+          "$ref": "#/$defs/ProvenanceBadge"
+        },
+        "rule": {
+          "description": "The matching rule or detector description.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "badge",
+        "rule"
+      ]
+    },
+    "RuleKind": {
+      "description": "Kind of rule.",
+      "oneOf": [
+        {
+          "description": "Matches file paths.",
+          "type": "string",
+          "const": "path_glob"
+        },
+        {
+          "description": "Matches lines.",
+          "type": "string",
+          "const": "line_regex"
+        },
+        {
+          "description": "Comment-only lines recognised by a language lexer.",
+          "type": "string",
+          "const": "lexer"
+        },
+        {
+          "description": "A generated-file marker in the header.",
+          "type": "string",
+          "const": "header"
+        },
+        {
+          "description": "Git's binary-content detection.",
+          "type": "string",
+          "const": "binary"
+        }
+      ]
+    },
+    "GithubThread": {
+      "description": "A GitHub review thread of the pull request.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "GitHub node id.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Repository-relative path.",
+          "type": "string"
+        },
+        "line": {
+          "description": "Last line; null for file-level threads.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start_line": {
+          "description": "First line of a multi-line thread.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "side": {
+          "description": "Diff side (GitHub LEFT = base, RIGHT = head); null for file-level threads.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineSide"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "author": {
+          "description": "Author login of the first comment.",
+          "type": "string"
+        },
+        "excerpt": {
+          "description": "Start of the first comment.",
+          "type": "string"
+        },
+        "comment_count": {
+          "description": "Number of comments.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "url": {
+          "description": "Link to the thread.",
+          "type": "string"
+        },
+        "is_resolved": {
+          "description": "Resolved on GitHub.",
+          "type": "boolean"
+        },
+        "is_outdated": {
+          "description": "Outdated on GitHub.",
+          "type": "boolean"
+        },
+        "step_id": {
+          "description": "The step the thread is located in, if any.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StepId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "llm_status": {
+          "description": "LLM status for threads located in a flow's steps; null otherwise.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadLlmStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "llm_reason": {
+          "description": "LLM reason for the status.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "author",
+        "excerpt",
+        "comment_count",
+        "url",
+        "is_resolved",
+        "is_outdated"
+      ]
+    },
+    "ThreadLlmStatus": {
+      "description": "LLM status of an existing GitHub review thread.",
+      "oneOf": [
+        {
+          "description": "The thread still applies to the current code.",
+          "type": "string",
+          "const": "still_valid"
+        },
+        {
+          "description": "The thread refers to code that no longer exists here.",
+          "type": "string",
+          "const": "stale"
+        },
+        {
+          "description": "The current code already addresses the thread.",
+          "type": "string",
+          "const": "already_addressed"
+        }
+      ]
+    }
+  }
+}

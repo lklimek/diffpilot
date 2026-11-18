@@ -428,7 +428,7 @@ describe("Tour screen (brief §4.3)", () => {
     const field = within(inspector()).getByRole("textbox", { name: /Ask the LLM about Step 5/ });
     expect(field).toHaveFocus();
     await user().type(field, "Is the retry idempotent?{Enter}");
-    const answers = await within(inspector()).findByRole("list", { name: "Questions asked about this step" });
+    const answers = await within(inspector()).findByRole("list", { name: "Ask conversation" });
     expect(answers).toHaveTextContent("Is the retry idempotent?");
     const asked = readStore("questions").at(-1)!;
     const answered: AskQuestion = {
@@ -443,13 +443,15 @@ describe("Tour screen (brief §4.3)", () => {
   it("rating pills: the flow intro and step show them; a pill jumps to the first remark and flashes it", async () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
-    const flowPill = await within(main()).findByRole("button", { name: "19 LLM remarks in this flow" });
-    expect(flowPill).toHaveTextContent(/^19 remarks$/);
+    const flowPill = await within(main()).findByRole("button", {
+      name: "LLM flags in this flow: 1 red flag, 4 yellow flags",
+    });
+    expect(flowPill).toHaveTextContent(/^$/);
     await user().click(flowPill);
     expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
-    expect(within(main()).getByRole("button", { name: /^LLM rated this step HIGH/ })).toHaveTextContent(
-      "▲ HIGH · 3 remarks",
-    );
+    const stepPill = within(main()).getByRole("button", { name: "LLM rated this step HIGH (not checked)" });
+    expect(stepPill).toHaveTextContent(/^▲ HIGH$/);
+    expect(stepPill).toHaveAccessibleDescription(/^LLM flags on this step: 1 red flag\./);
     // The code line of the first remark and its Inspector entry flash.
     await waitFor(() => expect(main().querySelector("[data-flash]")).not.toBeNull());
     await waitFor(() => expect(inspector().querySelector("[data-flash]")).not.toBeNull());

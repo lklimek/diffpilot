@@ -1,9 +1,10 @@
 //! GitHub App sign-in, cookie sessions and CSRF (ADR-007, threat model T7a).
 //!
 //! Protect handlers with an extractor matching the route's `RouteAuth`:
-//! - [`Session`] for `session` routes: a valid session cookie, else 401 `unauthenticated`;
-//! - [`SessionCsrf`] for `session_csrf` routes (every non-GET public route): additionally the
-//!   `X-CSRF-Token` header must equal the session's CSRF token, else 403 `csrf_rejected`.
+//! - [`Session`] for `session` and `read` routes: a valid session cookie, or the [`TokenPrincipal`] the token
+//!   check ([`access_tokens::check`], `read` routes only) admitted; else 401 `unauthenticated`;
+//! - [`SessionCsrf`] for `session_csrf` routes (every non-GET public route): a session cookie (never a token)
+//!   whose CSRF token the `X-CSRF-Token` header carries, else 403 `csrf_rejected`.
 //!
 //! The signed-in user's GitHub token comes from [`user_access_token`], which refreshes it when due.
 //!
@@ -24,6 +25,7 @@ use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue};
 use chrono::{DateTime, TimeDelta, Utc};
+use contracts::api::access_tokens::AccessTokenId;
 use contracts::api::error::ApiErrorCode;
 use db::error::DbError;
 use db::repo::sessions::Liveness;
@@ -33,9 +35,12 @@ use crate::config::Config;
 use crate::secrets::{secrets_equal, sha256};
 use crate::state::AppState;
 
+pub mod access_tokens;
 #[cfg(test)]
 mod tests;
 mod tokens;
+
+pub use access_tokens::{TokenGate, TokenPrincipal};
 
 pub use tokens::{
     PendingPairs, UserLock, UserTokenError, end_sign_in, lock_user, store_sign_in_tokens,
@@ -177,16 +182,26 @@ impl FromRequestParts<AppState> for BrowserTransport {
     }
 }
 
-/// A signed-in browser session (`session` routes).
+/// A signed-in browser session, or on `read` routes a personal access token speaking for its user.
 #[derive(Clone)]
 pub struct Session {
     /// Signed-in user.
     pub user_id: String,
     /// Tenant of the session.
     pub tenant_id: String,
-    csrf_token: String,
+    credential: Credential,
+    /// SHA-256 of the presented credential (session token or access token).
     token_hash: [u8; 32],
     transport: BrowserTransport,
+}
+
+/// How the request authenticated.
+#[derive(Clone)]
+enum Credential {
+    /// A session cookie with its CSRF token.
+    Cookie { csrf_token: String },
+    /// A personal access token (ADR-019).
+    AccessToken(AccessTokenId),
 }
 
 impl std::fmt::Debug for Session {
@@ -199,9 +214,53 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
-    /// The CSRF token the browser must echo in `X-CSRF-Token`.
-    pub fn csrf_token(&self) -> &str {
-        &self.csrf_token
+    /// The CSRF token the browser must echo in `X-CSRF-Token`; `None` for an access token.
+    pub fn csrf_token(&self) -> Option<&str> {
+        match &self.credential {
+            Credential::Cookie { csrf_token } => Some(csrf_token),
+            Credential::AccessToken(_) => None,
+        }
+    }
+
+    /// Whether the request authenticated with a personal access token.
+    pub(crate) fn is_access_token(&self) -> bool {
+        matches!(self.credential, Credential::AccessToken(_))
+    }
+
+    /// Whether the session or token still passes the checks of a new request (SSE heartbeat): the session is
+    /// live, or the token is neither revoked nor expired; either way the user is still on the allow-list.
+    pub(crate) async fn is_live(&self, state: &AppState) -> Result<bool, DbError> {
+        let now = Utc::now();
+        match &self.credential {
+            Credential::Cookie { .. } => Ok(state
+                .db
+                .sessions()
+                .live(&self.token_hash, liveness(now))
+                .await?
+                .is_some()),
+            Credential::AccessToken(id) => access_tokens::token_live(&state.db, id, now).await,
+        }
+    }
+
+    fn of_token(principal: &TokenPrincipal, transport: BrowserTransport) -> Self {
+        Self {
+            user_id: principal.user_id.clone(),
+            tenant_id: principal.tenant_id.clone(),
+            credential: Credential::AccessToken(principal.token_id.clone()),
+            token_hash: principal.token_hash,
+            transport,
+        }
+    }
+
+    /// The token's principal if the token check admitted one, else the session cookie's session.
+    async fn load_any(parts: &Parts, state: &AppState) -> Result<Option<Self>, AuthError> {
+        match parts.extensions.get::<TokenPrincipal>() {
+            Some(principal) => Ok(Some(Self::of_token(
+                principal,
+                BrowserTransport::of(parts, &state.config),
+            ))),
+            None => Self::load(parts, state).await,
+        }
     }
 
     pub(crate) fn token_hash(&self) -> &[u8] {
@@ -239,7 +298,9 @@ impl Session {
         Ok(record.map(|record| Self {
             user_id: record.user_id,
             tenant_id: record.tenant_id,
-            csrf_token: record.csrf_token,
+            credential: Credential::Cookie {
+                csrf_token: record.csrf_token,
+            },
             token_hash,
             transport,
         }))
@@ -253,7 +314,7 @@ impl FromRequestParts<AppState> for Session {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        Self::load(parts, state)
+        Self::load_any(parts, state)
             .await?
             .ok_or(ApiFailure(AuthError::Unauthenticated))
     }
@@ -266,7 +327,7 @@ impl OptionalFromRequestParts<AppState> for Session {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Option<Self>, Self::Rejection> {
-        Ok(Self::load(parts, state).await?)
+        Ok(Self::load_any(parts, state).await?)
     }
 }
 
@@ -281,14 +342,16 @@ impl FromRequestParts<AppState> for SessionCsrf {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let session =
-            <Session as FromRequestParts<AppState>>::from_request_parts(parts, state).await?;
+        // The cookie only: a token principal never authorises a mutation.
+        let session = Session::load(parts, state)
+            .await?
+            .ok_or(ApiFailure(AuthError::Unauthenticated))?;
         let presented = parts
             .headers
             .get(CSRF_HEADER)
             .and_then(|value| value.to_str().ok());
-        match presented {
-            Some(token) if secrets_equal(token, session.csrf_token()) => Ok(Self(session)),
+        match (presented, session.csrf_token()) {
+            (Some(token), Some(expected)) if secrets_equal(token, expected) => Ok(Self(session)),
             _ => Err(ApiFailure(AuthError::CsrfRejected)),
         }
     }

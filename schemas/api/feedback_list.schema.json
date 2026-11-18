@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Array_of_Feedback",
+  "type": "array",
+  "items": {
+    "$ref": "#/$defs/Feedback"
+  },
+  "$defs": {
+    "Feedback": {
+      "description": "A stored feedback entry.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Feedback id.",
+          "$ref": "#/$defs/FeedbackId"
+        },
+        "calibration_example": {
+          "description": "Whether this value is a severity calibration example; saved only when `memory` is `written`.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "target": {
+          "description": "What it is about.",
+          "$ref": "#/$defs/FeedbackTarget"
+        },
+        "value": {
+          "description": "The value.",
+          "$ref": "#/$defs/FeedbackValue"
+        },
+        "note": {
+          "description": "Optional note.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "description": "When it was recorded.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "memory": {
+          "description": "The copy of this entry's current revision in MemCan (calibration memory for `overrated` /\n`underrated`); only `written` means MemCan confirmed it.",
+          "$ref": "#/$defs/FeedbackMemory"
+        }
+      },
+      "required": [
+        "id",
+        "target",
+        "value",
+        "created_at",
+        "memory"
+      ]
+    },
+    "FeedbackId": {
+      "description": "Identifier of a feedback entry.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "FeedbackTarget": {
+      "description": "What a feedback entry is about.",
+      "oneOf": [
+        {
+          "description": "A step, its assessment included.",
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "const": "step"
+            },
+            "step_id": {
+              "description": "The step.",
+              "$ref": "#/$defs/StepId"
+            }
+          },
+          "required": [
+            "target",
+            "step_id"
+          ]
+        },
+        {
+          "description": "An annotation.",
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "const": "annotation"
+            },
+            "annotation_id": {
+              "description": "The annotation.",
+              "$ref": "#/$defs/AnnotationId"
+            }
+          },
+          "required": [
+            "target",
+            "annotation_id"
+          ]
+        },
+        {
+          "description": "A plain changed line (used by `missed_by_llm`).",
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "const": "line"
+            },
+            "path": {
+              "description": "Repository-relative path on that side.",
+              "type": "string"
+            },
+            "side": {
+              "description": "`base` for a removed line.",
+              "$ref": "#/$defs/LineSide"
+            },
+            "line": {
+              "description": "Line on that side.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "target",
+            "path",
+            "side",
+            "line"
+          ]
+        }
+      ]
+    },
+    "StepId": {
+      "description": "Identifier of a step, assigned by the server in step order: `\"<flow>.<n>\"`, e.g. `f2.3`.",
+      "type": "string"
+    },
+    "AnnotationId": {
+      "description": "Identifier of an annotation, assigned by the server: `\"<step>.a<n>\"`, e.g. `f2.3.a1`.",
+      "type": "string"
+    },
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    },
+    "FeedbackValue": {
+      "description": "Every stored feedback value (brief §3).",
+      "oneOf": [
+        {
+          "description": "The analysis is correct.",
+          "type": "string",
+          "const": "correct"
+        },
+        {
+          "description": "The analysis is wrong.",
+          "type": "string",
+          "const": "wrong"
+        },
+        {
+          "description": "The analysis is irrelevant.",
+          "type": "string",
+          "const": "irrelevant"
+        },
+        {
+          "description": "The risk is rated too high.",
+          "type": "string",
+          "const": "overrated"
+        },
+        {
+          "description": "The risk is rated too low.",
+          "type": "string",
+          "const": "underrated"
+        },
+        {
+          "description": "The reviewer commented on a changed line without annotation (recorded automatically).",
+          "type": "string",
+          "const": "missed_by_llm"
+        }
+      ]
+    },
+    "FeedbackMemory": {
+      "description": "State of the MemCan copy of a feedback entry's current revision.",
+      "oneOf": [
+        {
+          "description": "Not confirmed yet (queued, or waiting until an earlier unconfirmed write can no longer land).",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "MemCan confirmed the copy.",
+          "type": "string",
+          "const": "written"
+        },
+        {
+          "description": "The last attempt failed; it is retried later.",
+          "type": "string",
+          "const": "failed"
+        }
+      ]
+    }
+  }
+}

@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use contracts::generate::{SCHEMA_DIR, TS_DIR, generated_files};
-use contracts::routes::{Listener, ROUTES};
+use contracts::generate::{API_SCHEMA_DIR, API_SCHEMAS, SCHEMA_DIR, TS_DIR, generated_files};
+use contracts::routes::{GET_ME, Listener, ROUTES, RouteAuth};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -39,7 +39,7 @@ fn generated_artifacts_are_current() {
             stale.push(file.path.clone());
         }
     }
-    for dir in [SCHEMA_DIR, TS_DIR] {
+    for dir in [SCHEMA_DIR, API_SCHEMA_DIR, TS_DIR] {
         for extra in files_in(&root.join(dir)).difference(&expected) {
             if update {
                 fs::remove_file(extra).expect("remove orphaned generated file");
@@ -87,4 +87,28 @@ fn routes_ts_lists_only_public_routes() {
         let listed = routes.contents.contains(&format!("  {}: {{", route.name));
         assert_eq!(listed, route.listener == Listener::Public, "{}", route.name);
     }
+}
+
+/// Every route a personal access token may read names its response schema in `schemas/api/` exactly once, and
+/// no schema names another route (plan v1.1 §E.5 E5-7, `docs/contracts/agent-api.md`).
+#[test]
+fn every_token_readable_route_has_a_response_schema() {
+    let readable: BTreeSet<&str> = ROUTES
+        .iter()
+        .filter(|route| matches!(route.auth, RouteAuth::SessionOrToken(_)) || **route == GET_ME)
+        .map(|route| route.name)
+        .collect();
+    let mut described = Vec::new();
+    for api in API_SCHEMAS {
+        described.extend(api.responses.iter().map(|route| route.name));
+    }
+    let unique: BTreeSet<&str> = described.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        described.len(),
+        "a route with two schemas: {described:?}"
+    );
+    assert_eq!(unique, readable);
+    let stems: BTreeSet<&str> = API_SCHEMAS.iter().map(|api| api.stem).collect();
+    assert_eq!(stems.len(), API_SCHEMAS.len(), "duplicate file stem");
 }
