@@ -47,7 +47,10 @@ export function resetLazyFlows(): void {
 const plan = () => (seedFor("default", "tour") as Tour).flows;
 const active = (id: string) => ["queued", "analysing"].includes(states.get(id)?.state ?? "");
 
-/** Publishes the running state like the server: the stage of the flow being analysed (or next), else none. */
+/**
+ * Publishes the running state like the server: the stage of the flow being analysed (or next); idle when no flow
+ * work is admitted (nothing requested, and background analysis off or nothing left).
+ */
 function publish(): void {
   const current = liveAnalysis().state;
   if (current.state !== "running") return void setLiveState(current);
@@ -55,10 +58,12 @@ function publish(): void {
   const working =
     flows.find((f) => states.get(f.id)?.state === "analysing") ?? flows.find((f) => active(f.id));
   const done = flows.filter((f) => f.position === 1 || states.get(f.id)?.state === "analysed").length;
+  const left = flows.some((f) => f.position !== 1 && !states.has(f.id));
   setLiveState({
     state: "running",
     done,
     total: flows.length,
+    idle: !working && !(liveAnalysis().background_analysis && left),
     ...(working ? { stage: flowStage(working.position, states.get(working.id)?.started_at ?? null) } : {}),
   });
 }

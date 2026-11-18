@@ -63,7 +63,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
   });
 
   it("running: k of n flows analysed, determinate bar, Cancel analysis", () => {
-    show({ state: "running", done: 2, total: 5 });
+    show({ state: "running", done: 2, total: 5, idle: false });
     expect(screen.getByText("2 of 5 flows analysed")).toBeVisible();
     expect(bar()).toHaveAttribute("aria-valuenow", "2");
     expect(bar()).toHaveAttribute("aria-valuemax", "5");
@@ -175,7 +175,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
   it("every button and link has a tooltip; no banned wording in any state", () => {
     const states: AnalysisState[] = [
       { state: "planning" },
-      { state: "running", done: 1, total: 3 },
+      { state: "running", done: 1, total: 3, idle: false },
       { state: "paused", resumes_at: null, done: 1, total: 3 },
       { state: "failed", flow: null, message: "Failed." },
       { state: "finished", total: 3 },
@@ -231,7 +231,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
         "Waiting for the runner; next: planning the review.",
       ],
       // Parked: no flow job runs and none is admitted; nothing claims the server is working.
-      [{ state: "running", done: 1, total: 4 }, "No flow job is running."],
+      [{ state: "running", done: 1, total: 4, idle: true }, "No flow job is running."],
       [{ state: "planning" }, "Between two jobs: the server starts the next one."],
     ] as [AnalysisState, string][])("names the stage from the server: %j", (state, text) => {
       show(state, false, activity());
@@ -490,7 +490,7 @@ it("user pause resumes without a usage-limit claim and Cancel needs inline confi
 it("opens the review as soon as context is ready while flows are still running", () => {
   render(
     <AnalysisProgress
-      state={{ state: "running", done: 1, total: 5 }}
+      state={{ state: "running", done: 1, total: 5, idle: true }}
       reviewReady
       busy={false}
       reviewHref="/analyses/a1"
@@ -510,7 +510,7 @@ it.each([
 ])("parked while the review is open (started: %s): the line names the button, %s review", (started, verb) => {
   render(
     <AnalysisProgress
-      state={{ state: "running", done: 1, total: 5 }}
+      state={{ state: "running", done: 1, total: 5, idle: true }}
       reviewReady
       reviewStarted={started}
       busy={false}
@@ -527,7 +527,7 @@ it("plan ready with background off: not stuck; says so and offers Open review an
   const onBackground = vi.fn();
   render(
     <AnalysisProgress
-      state={{ state: "running", done: 1, total: 5 }}
+      state={{ state: "running", done: 1, total: 5, idle: true }}
       reviewReady
       backgroundAnalysis={false}
       onBackground={onBackground}
@@ -571,7 +571,7 @@ it("a failure without a flow after planning never claims it failed before planni
 it("review open with background off: no percent and no estimate from the server, so no bar and no number", () => {
   render(
     <AnalysisProgress
-      state={{ state: "running", done: 1, total: 5 }}
+      state={{ state: "running", done: 1, total: 5, idle: true }}
       reviewReady
       backgroundAnalysis={false}
       onBackground={() => {}}

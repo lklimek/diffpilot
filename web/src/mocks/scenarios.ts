@@ -319,11 +319,17 @@ const SCENARIOS = {
       return tour;
     },
   },
-  "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5 } },
+  "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5, idle: true } },
   "lazy-background": {
     lazy: true,
     background: true,
-    analysis: { state: "running", done: 1, total: 5, stage: flowStage(2, "2026-11-17T18:04:00Z") },
+    analysis: {
+      state: "running",
+      done: 1,
+      total: 5,
+      idle: false,
+      stage: flowStage(2, "2026-11-17T18:04:00Z"),
+    },
   },
   "lazy-paused": {
     lazy: true,
@@ -413,6 +419,8 @@ const SCENARIOS = {
       ...seed,
       analysis: null,
       commenting_available: true,
+      size: { changed_lines: 27081, changed_files: 371 },
+      planning_estimate: { remaining_seconds: 14400, basis: "lines_only", rough: true },
       size_warning: {
         changed_lines: 27081,
         changed_files: 371,
@@ -425,6 +433,7 @@ const SCENARIOS = {
       ...seed,
       analysis: null,
       commenting_available: true,
+      size: { changed_lines: 3000, changed_files: 24 },
       size_warning: { changed_lines: 3000, changed_files: 24, estimate: null },
     }),
   },
@@ -434,7 +443,7 @@ const SCENARIOS = {
     script: [[60_000, () => partState(7, now())]],
   },
   "estimate-recent": {
-    analysis: { state: "running", done: 2, total: 6, stage: flowStage(3, LOADED) },
+    analysis: { state: "running", done: 2, total: 6, idle: false, stage: flowStage(3, LOADED) },
     progress: (state) => waitingProgress("recent_runs", state),
   },
   "estimate-lines": {
@@ -462,8 +471,8 @@ const SCENARIOS = {
     }),
   },
   "existing-running": {
-    resolve: withAnalysis({ state: "running", done: 2, total: 5 }),
-    analysis: { state: "running", done: 2, total: 5 },
+    resolve: withAnalysis({ state: "running", done: 2, total: 5, idle: false }),
+    analysis: { state: "running", done: 2, total: 5, idle: false },
   },
   "existing-failed": {
     resolve: withAnalysis({
@@ -498,19 +507,22 @@ const SCENARIOS = {
   "first-flow": {
     analysis: { state: "planning", stage: stage("plan", LOADED) },
     script: [
-      [RUN_STEP_MS, () => ({ state: "running", done: 0, total: 1, stage: stage("pr_context", now()) })],
-      [30_000, () => ({ state: "running", done: 0, total: 1, stage: flowStage(1, now()) })],
+      [
+        RUN_STEP_MS,
+        () => ({ state: "running", done: 0, total: 1, idle: false, stage: stage("pr_context", now()) }),
+      ],
+      [30_000, () => ({ state: "running", done: 0, total: 1, idle: false, stage: flowStage(1, now()) })],
     ],
   },
   // The plan job waits behind another analysis's job.
   waiting: { analysis: { state: "planning", stage: stage("plan", null) } },
   // One job ended, the next is not submitted yet.
-  "between-jobs": { analysis: { state: "running", done: 1, total: 5 } },
+  "between-jobs": { analysis: { state: "running", done: 1, total: 5, idle: false } },
   "signal-lost": {
-    analysis: { state: "running", done: 2, total: 5, stage: flowStage(3, LOADED) },
+    analysis: { state: "running", done: 2, total: 5, idle: false, stage: flowStage(3, LOADED) },
     silent: true,
   },
-  running: { analysis: { state: "running", done: 2, total: 5, stage: flowStage(3, LOADED) } },
+  running: { analysis: { state: "running", done: 2, total: 5, idle: false, stage: flowStage(3, LOADED) } },
   paused: {
     analysis: {
       state: "paused",

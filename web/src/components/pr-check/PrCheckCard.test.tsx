@@ -98,11 +98,8 @@ describe("PrCheckCard (Home: the result of Check)", () => {
     render(
       <PrCheckCard
         pr={pr}
-        size={{
-          changed_lines: 1240,
-          changed_files: 12,
-          estimate: { remaining_seconds: 1500, basis: "recent_runs", rough: false },
-        }}
+        size={{ changed_lines: 1240, changed_files: 12 }}
+        estimate={{ remaining_seconds: 1500, basis: "recent_runs", rough: false }}
         onCancel={() => {}}
       >
         {null}

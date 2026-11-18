@@ -52,7 +52,7 @@ test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, conte
   ).toBeVisible({ timeout: 180_000 });
   await expect(page.getByText(/^0 of 5 flows analysed/)).toBeVisible();
   await page.waitForTimeout(2_000);
-  expect(await analysisState(page, id)).toMatchObject({ state: "running", done: 0 });
+  expect(await analysisState(page, id)).toMatchObject({ state: "running", done: 0, idle: true });
   expect((await analysisState(page, id)).stage).toBeUndefined();
   await analyseAllRemainingFlows(page);
   await waitForState(page, id, "finished");

@@ -107,13 +107,13 @@ test.describe("stage and liveness", () => {
     await expect(page.getByText(/No signal from the server/)).toHaveCount(0);
   });
 
-  test("waiting for the runner, and no flow job running", async ({ page }) => {
+  test("waiting for the runner, and between two jobs (not idle)", async ({ page }) => {
     await open(page, "waiting");
     await expect(page.getByText("Waiting for the runner; next: planning the review.")).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
     await expectTrustWording(page);
     await open(page, "between-jobs");
-    await expect(page.getByText("No flow job is running.")).toBeVisible();
+    await expect(page.getByText("Between two jobs: the server starts the next one.")).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
   });
 

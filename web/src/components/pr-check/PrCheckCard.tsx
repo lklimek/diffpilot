@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
-import type { AnalysisEstimate, PrSummary } from "../../api/generated/types";
+import type { AnalysisEstimate, PrSize, PrSummary } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { estimateText, grouped } from "../pr-form/SizeWarning";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -7,18 +7,13 @@ import { Tooltip } from "../tooltip/Tooltip";
 /** Keys right after the card appears belong to what came before (the Enter that ran Check), not to the card. */
 export const SETTLE_MS = 400;
 
-/** Size facts of the PR with the pre-start estimate. */
-export interface PrSize {
-  changed_lines: number;
-  changed_files: number;
-  estimate: AnalysisEstimate | null;
-}
-
 interface PrCheckCardProps {
   /** The pull request found; null when the check failed (the children say why). */
   pr: PrSummary | null;
   /** Size facts, when the check returned them. */
   size?: PrSize;
+  /** The pre-start estimate (plan and PR context), shown with the size. */
+  estimate?: AnalysisEstimate;
   /** What the check found: warnings, an existing analysis, or the error. */
   children: ReactNode;
   /**
@@ -31,7 +26,7 @@ interface PrCheckCardProps {
 }
 
 /** Result of Home's Check, apart from the field: what was found and the explicit next step. */
-export function PrCheckCard({ pr, size, children, actions, onCancel }: PrCheckCardProps) {
+export function PrCheckCard({ pr, size, estimate, children, actions, onCancel }: PrCheckCardProps) {
   const card = useRef<HTMLElement>(null);
   const bodyId = useId();
   const shownAt = useRef(0);
@@ -67,7 +62,7 @@ export function PrCheckCard({ pr, size, children, actions, onCancel }: PrCheckCa
         {size && (
           <p className="text-sm">
             {grouped(size.changed_lines)} changed lines in {grouped(size.changed_files)} files.
-            {size.estimate && ` ${estimateText(size.estimate)}`}
+            {estimate && ` ${estimateText(estimate)}`}
           </p>
         )}
         {children}

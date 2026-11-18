@@ -11,7 +11,7 @@ export const resumeAnalysis = route(
     const summary = setLiveState(
       state.total === null
         ? { state: "planning" }
-        : { state: "running", done: state.done, total: state.total },
+        : { state: "running", done: state.done, total: state.total, idle: false },
     );
     startRun(state.done + 1, state.total ?? 5);
     return HttpResponse.json(summary);

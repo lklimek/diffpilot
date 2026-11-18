@@ -1,13 +1,13 @@
 import { useRef } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
-import type { AnalysisEstimate, ResolvePrResponse } from "../../api/generated/types";
+import type { ResolvePrResponse } from "../../api/generated/types";
 import { useCreateAnalysis, useMe, useResolvePr, useResumeAnalysis } from "../../api/queries";
 import { AnalyzeHelp } from "../../components/analyze-help/AnalyzeHelp";
 import { Banner } from "../../components/banner/Banner";
 import { busyTip, buttonClass } from "../../components/button/button";
 import { PAUSE_REASON, pausedText } from "../../components/progress/paused";
-import { PrCheckCard, type PrSize } from "../../components/pr-check/PrCheckCard";
+import { PrCheckCard } from "../../components/pr-check/PrCheckCard";
 import { PrUrlForm } from "../../components/pr-form/PrUrlForm";
 import { SizeWarning } from "../../components/pr-form/SizeWarning";
 import { COMMENTING_UNAVAILABLE_WHY } from "../../components/comment/unavailable";
@@ -39,17 +39,6 @@ const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 const short = (sha: string) => <code>{sha.slice(0, 7)}</code>;
 const SMALL_PRIMARY = buttonClass("primary", true);
-
-// Size facts and the planning estimate of the lookup (server fields not yet in the generated types).
-type Sized = ResolvePrResponse & {
-  size?: { changed_lines: number; changed_files: number };
-  planning_estimate?: AnalysisEstimate | null;
-};
-// A size warning already states the size; the facts line is for every other PR.
-const sizeOf = (resolved: Sized): PrSize | undefined =>
-  resolved.size && !resolved.size_warning
-    ? { ...resolved.size, estimate: resolved.planning_estimate ?? null }
-    : undefined;
 
 /** Home (brief §4.1): sign-in, PR URL, resume, head moved, errors. */
 export function HomeScreen() {
@@ -188,7 +177,9 @@ export function HomeScreen() {
                   {resolved && (
                     <PrCheckCard
                       pr={resolved.pr}
-                      size={sizeOf(resolved)}
+                      // A size warning already states the size; the facts line is for every other PR.
+                      size={resolved.size_warning ? undefined : resolved.size}
+                      estimate={resolved.planning_estimate}
                       onCancel={clear}
                       actions={(describedBy) => (
                         <>
