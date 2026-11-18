@@ -169,6 +169,8 @@ pub struct Worker {
     last_sweep: Option<Instant>,
     /// The claudius skills, refreshed between jobs.
     skills: Option<Arc<Skills>>,
+    /// Free space the scratch filesystem must keep for a claim.
+    disk_reserve: Option<crate::scratch::Reserve>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -201,7 +203,14 @@ impl Worker {
             session_retention: None,
             last_sweep: None,
             skills: None,
+            disk_reserve: None,
         }
+    }
+
+    /// Claims no job while the scratch filesystem has less free space than `reserve` asks.
+    pub fn with_disk_reserve(mut self, reserve: crate::scratch::Reserve) -> Self {
+        self.disk_reserve = Some(reserve);
+        self
     }
 
     /// Refreshes the claudius skills between jobs at their interval.
@@ -261,10 +270,16 @@ impl Worker {
         }
     }
 
-    /// One claim; runs the claimed job to its end. `None` when nothing was runnable.
+    /// One claim; runs the claimed job to its end. `None` when nothing was runnable, or when the scratch
+    /// filesystem is below its reserve (then no claim is sent).
     pub async fn poll_once(&mut self) -> Result<Option<JobEnd>, ClientError> {
         // The previous attempt (and its credential copy-back) is over before the next claim.
         self.executor.settled().await;
+        if let Some(reserve) = &mut self.disk_reserve
+            && !reserve.allows_claim()
+        {
+            return Ok(None);
+        }
         let request = ClaimRequest {
             runner_id: self.runner_id.clone(),
             credentials: vec![CredentialStatus {

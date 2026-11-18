@@ -103,6 +103,8 @@ async fn run() -> Result<(), StartError> {
             for dir in [&config.state_dir, &isolation.codex_homes, &dirs.work] {
                 set_mode(dir, 0o711)?;
             }
+            // Order kept in step with `startup_order_keeps_the_rotated_credential_and_empties_scratch`: the
+            // agent homes are copied out before the work volume is emptied and the master is recovered.
             empty_private_tmp(&std::env::temp_dir())?;
             dirs.codex_homes = config.state_dir.join(CODEX_STAGING);
             private_dir(&dirs.codex_homes).await?;
@@ -182,6 +184,10 @@ async fn run() -> Result<(), StartError> {
     )
     .with_session_retention(config.session_retention)
     .with_skills(skills)
+    .with_disk_reserve(scratch::Reserve::new(
+        config.work_dir.clone(),
+        config.disk_reserve,
+    ))
     .run(shutdown_signal())
     .await;
     tracing::info!("runner stopped");

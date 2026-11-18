@@ -21,7 +21,7 @@ pub const AGENT_UID: &str = "SR_AGENT_UID";
 pub const RUNNER_ID: &str = "SR_RUNNER_ID";
 /// The runner's persistent private volume: credentials, per-job `CODEX_HOME`s, mirrors, sessions.
 pub const STATE_DIR: &str = "SR_RUNNER_STATE_DIR";
-/// Directory for job work dirs (may be tmpfs); default `<state>/work`.
+/// Directory for job work dirs (a disposable volume, emptied at start); default `<state>/work`.
 pub const WORK_DIR: &str = "SR_RUNNER_WORK_DIR";
 /// Id of the LLM credential the runner holds (`<state>/credentials/<id>/auth.json`). Reserved: v1 has one
 /// credential and the server assigns every job to `default`, so any other value is rejected.
@@ -44,6 +44,8 @@ pub const CLAUDIUS_REFRESH_SECS: &str = "SR_RUNNER_CLAUDIUS_REFRESH_SECS";
 pub const SKILLS: &str = "SR_RUNNER_SKILLS";
 /// Days an agent session is kept after its last job (default 14).
 pub const SESSION_RETENTION_DAYS: &str = "SR_RUNNER_SESSION_RETENTION_DAYS";
+/// MiB that must stay free on the work directory's filesystem for the runner to claim a job (default 2048).
+pub const DISK_RESERVE_MIB: &str = "SR_RUNNER_DISK_RESERVE_MIB";
 
 const DEFAULT_RUNNER_ID: &str = "runner";
 const DEFAULT_STATE_DIR: &str = "/var/lib/smart-review-runner";
@@ -51,6 +53,8 @@ const DEFAULT_CREDENTIAL_ID: &str = "default";
 const DEFAULT_CODEX_BIN: &str = "codex";
 const DEFAULT_GITHUB_MCP_BIN: &str = "/opt/github-mcp/github-mcp-server";
 const DEFAULT_SESSION_RETENTION_DAYS: u64 = 14;
+const DEFAULT_DISK_RESERVE_MIB: u64 = 2048;
+const MIB: u64 = 1024 * 1024;
 const DEFAULT_CLAUDIUS_URL: &str = "https://github.com/lklimek/claudius.git";
 const DEFAULT_CLAUDIUS_REF: &str = "main";
 const DEFAULT_CLAUDIUS_REFRESH_SECS: u64 = 6 * 3600;
@@ -104,6 +108,8 @@ pub struct Config {
     pub claudius_refresh: Duration,
     /// Skills a job may be given.
     pub skills: Vec<String>,
+    /// Bytes that must stay free on the work directory's filesystem for a claim.
+    pub disk_reserve: u64,
 }
 
 /// Invalid or missing configuration.
@@ -240,6 +246,14 @@ impl Config {
                 .ok_or(ConfigError::NotPositive(CLAUDIUS_REFRESH_SECS))?,
             None => DEFAULT_CLAUDIUS_REFRESH_SECS,
         };
+        let disk_reserve_mib = match get(DISK_RESERVE_MIB) {
+            Some(mib) => mib
+                .parse::<u64>()
+                .ok()
+                .filter(|mib| (1..=u64::MAX / MIB).contains(mib))
+                .ok_or(ConfigError::NotPositive(DISK_RESERVE_MIB))?,
+            None => DEFAULT_DISK_RESERVE_MIB,
+        };
         let claudius_url = get(CLAUDIUS_URL).unwrap_or_else(|| DEFAULT_CLAUDIUS_URL.to_owned());
         if !(claudius_url.starts_with("https://") || claudius_url.starts_with("file://")) {
             return Err(ConfigError::NotHttpUrl(CLAUDIUS_URL));
@@ -274,6 +288,7 @@ impl Config {
                 .filter(|name| !name.is_empty())
                 .map(str::to_owned)
                 .collect(),
+            disk_reserve: disk_reserve_mib * MIB,
         })
     }
 
@@ -474,6 +489,22 @@ mod tests {
             config(&pairs).unwrap().session_retention,
             Duration::from_secs(3 * 24 * 3600)
         );
+    }
+
+    #[test]
+    fn disk_reserve_is_a_positive_number_of_mib_defaulting_to_2_gib() {
+        assert_eq!(config(&BASE).unwrap().disk_reserve, 2048 * 1024 * 1024);
+        for mib in ["0", "-1", "x", "1.5"] {
+            let mut pairs = BASE.to_vec();
+            pairs.push((DISK_RESERVE_MIB, mib));
+            assert!(
+                matches!(config(&pairs), Err(ConfigError::NotPositive(_))),
+                "{mib}"
+            );
+        }
+        let mut pairs = BASE.to_vec();
+        pairs.push((DISK_RESERVE_MIB, "512"));
+        assert_eq!(config(&pairs).unwrap().disk_reserve, 512 * 1024 * 1024);
     }
 
     #[test]

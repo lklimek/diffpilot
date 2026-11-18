@@ -1,5 +1,6 @@
 //! Disposable scratch directories on Docker volumes (`tmp-*`, ADR-013): they survive a container restart, so the
-//! runner empties them at its start, before the first claim.
+//! runner empties them at its start, before the first claim; and it claims no job while their filesystem is short
+//! of free space ([`Reserve`]).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -31,6 +32,55 @@ pub fn clear(dir: &Path) -> io::Result<Cleared> {
         }
     }
     Ok(cleared)
+}
+
+/// Free space the scratch filesystem must keep for the runner to claim a job: a start condition, not a quota.
+#[derive(Debug)]
+pub struct Reserve {
+    dir: PathBuf,
+    bytes: u64,
+    /// The last state seen, so each change is logged once.
+    low: Option<bool>,
+}
+
+impl Reserve {
+    /// At least `bytes` free (for unprivileged users) on the filesystem holding `dir`.
+    pub fn new(dir: PathBuf, bytes: u64) -> Self {
+        Self {
+            dir,
+            bytes,
+            low: None,
+        }
+    }
+
+    /// Whether a job may be claimed now; a filesystem that cannot be inspected counts as full.
+    pub fn allows_claim(&mut self) -> bool {
+        let free = free_bytes(&self.dir);
+        let low = free.as_ref().map_or(true, |free| *free < self.bytes);
+        if self.low != Some(low) {
+            match (&free, low) {
+                (Err(error), _) => {
+                    tracing::error!(dir = %self.dir.display(), %error, "cannot read the free space of the job scratch filesystem; no job is claimed until it can")
+                }
+                (Ok(free), true) => {
+                    tracing::warn!(dir = %self.dir.display(), free_bytes = free, reserve_bytes = self.bytes, "the job scratch filesystem is below its free-space reserve; no job is claimed until space is freed (docs/runbook.md, \"Temporary volumes\")")
+                }
+                (Ok(free), false) if self.low.is_some() => tracing::info!(
+                    free_bytes = free,
+                    "the job scratch filesystem has its free-space reserve again; claiming jobs"
+                ),
+                (Ok(_), false) => {}
+            }
+            self.low = Some(low);
+        }
+        !low
+    }
+}
+
+/// Bytes available to unprivileged users on the filesystem holding `dir`.
+pub fn free_bytes(dir: &Path) -> io::Result<u64> {
+    let stat = rustix::fs::statvfs(dir)?;
+    Ok(stat.f_bavail.saturating_mul(stat.f_frsize))
 }
 
 #[cfg(test)]
@@ -106,5 +156,17 @@ mod tests {
     fn a_missing_directory_is_an_error() {
         let root = tempfile::tempdir().unwrap();
         assert!(clear(&root.path().join("absent")).is_err());
+    }
+
+    #[test]
+    fn the_reserve_follows_the_free_space_and_an_unreadable_filesystem_counts_as_full() {
+        let root = tempfile::tempdir().unwrap();
+        let free = free_bytes(root.path()).unwrap();
+        assert!(free > 0);
+        assert!(Reserve::new(root.path().to_owned(), 1).allows_claim());
+        let mut short = Reserve::new(root.path().to_owned(), free.saturating_add(1 << 40));
+        assert!(!short.allows_claim());
+        assert!(!short.allows_claim(), "stays refused");
+        assert!(!Reserve::new(root.path().join("absent"), 1).allows_claim());
     }
 }

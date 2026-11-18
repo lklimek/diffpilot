@@ -662,6 +662,61 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
 }
 
 #[tokio::test]
+async fn no_claim_while_the_scratch_disk_is_below_the_reserve() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/runner/v1/claim"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            claim: None,
+            drop_sessions: Vec::new(),
+        }))
+        .mount(&server)
+        .await;
+    let root = TempDir::new().unwrap();
+    let worker = |reserve: u64| {
+        let executor = Arc::new(Executor::new(
+            Arc::new(Scripted::new(0, UNIT)),
+            dirs(root.path()),
+            credential(),
+        ));
+        let client = ServerClient::new(
+            &server.uri(),
+            Secret::new(RUNNER_SECRET),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        Worker::new(
+            client,
+            executor,
+            "r".to_owned(),
+            Secret::new(RUNNER_SECRET),
+            timing(),
+            Arc::new(|| true),
+        )
+        .with_disk_reserve(crate::scratch::Reserve::new(
+            root.path().to_owned(),
+            reserve,
+        ))
+    };
+
+    let mut full = worker(u64::MAX);
+    assert_eq!(full.poll_once().await.unwrap(), None);
+    assert_eq!(full.poll_once().await.unwrap(), None);
+    assert!(
+        server.received_requests().await.unwrap().is_empty(),
+        "no claim below the reserve"
+    );
+
+    let mut roomy = worker(1);
+    assert_eq!(roomy.poll_once().await.unwrap(), None);
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "claims again once enough is free"
+    );
+}
+
+#[tokio::test]
 async fn wrong_runner_secret_is_a_rejected_claim() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
