@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
 
+use contracts::common::LlmLanguage;
 use contracts::time::Timestamp;
 use jiff::SignedDuration;
 
@@ -513,7 +514,7 @@ impl Harness {
 // Fingerprint (plan §B.4)
 
 fn fingerprints(snapshot: &Snapshot) -> HashMap<ItemKey, String> {
-    candidates(snapshot)
+    candidates(snapshot, LlmLanguage::En)
         .into_iter()
         .map(|c| (c.item.key.clone(), c.fingerprint))
         .collect()
@@ -594,7 +595,7 @@ fn judge_input_shows_no_age_and_only_plan_facts() {
     p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(24));
     p.facts.body = format!("{}  tail", "word ".repeat(100));
     let snap = snapshot(vec![p], vec![], vec![]);
-    let items = candidates(&snap);
+    let items = candidates(&snap, LlmLanguage::En);
     let item = &items[0].item;
     let block = JudgeWorkInput {
         items: vec![item.clone()],
@@ -620,7 +621,7 @@ fn unsure_human_waiting_default_is_sent_with_its_age_class() {
     p.facts.review_request_age_is_approx = true;
     p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(24));
     let snap = snapshot(vec![p], vec![], vec![]);
-    let items = candidates(&snap);
+    let items = candidates(&snap, LlmLanguage::En);
     let item = &items[0].item;
     assert!(item.asks.contains(&ScoreComponent::HumanWaiting), "premise");
     let default = item
@@ -650,7 +651,7 @@ fn closing_issues_are_judged_inputs_and_old_snapshots_load() {
         title: "Crash on start".to_owned(),
     }];
     let snap = snapshot(vec![p.clone()], vec![], vec![]);
-    let items = candidates(&snap);
+    let items = candidates(&snap, LlmLanguage::En);
     assert_eq!(
         items[0].item.facts.linked_issues,
         vec![LinkedIssue {
@@ -678,10 +679,36 @@ fn excluded_author_items_never_reach_the_judge() {
         vec![],
         vec![todo("Check acme/wallet-ui#9 before the release")],
     );
-    let items = candidates(&snap);
+    let items = candidates(&snap, LlmLanguage::En);
     let pr_item = items.iter().find(|c| c.item.key == key(9)).expect("scored");
     assert!(!pr_item.asked());
     assert!(pr_item.item.suggested_merges.is_empty());
+}
+
+/// The user's LLM text language is part of what a judgement depends on: a judgement written in another language
+/// is not current.
+#[test]
+fn language_changes_the_fingerprint() {
+    let snap = snapshot(vec![pr(1, "fix: x")], vec![], vec![]);
+    let english = candidates(&snap, LlmLanguage::En)[0].fingerprint.clone();
+    let polish = candidates(&snap, LlmLanguage::Pl)[0].fingerprint.clone();
+    assert_ne!(english, polish);
+}
+
+/// The judge writes its texts in the user's language; keys, components and enum values stay as they are.
+#[test]
+fn prompt_names_the_users_language() {
+    let english = prompt::render(&golden_input(), LlmLanguage::En).expect("prompt");
+    let polish = prompt::render(&golden_input(), LlmLanguage::Pl).expect("prompt");
+    let rule = |language: &str| {
+        format!(
+            "- Write `why`, `next`, `alarm`, every `basis` and every `reason` in {language}; keys, component \
+             names and enum values stay as they are.\n"
+        )
+    };
+    assert!(english.contains(&rule("English")), "{english}");
+    assert!(polish.contains(&rule("Polish (polski)")), "{polish}");
+    assert!(!polish.contains("{{language}}"));
 }
 
 #[test]
@@ -691,7 +718,7 @@ fn todo_naming_a_pull_request_is_a_suggested_merge() {
         vec![],
         vec![todo("Follow up acme/wallet-ui#5 after release")],
     );
-    let items = candidates(&snap);
+    let items = candidates(&snap, LlmLanguage::En);
     let todo_key = items
         .iter()
         .find(|c| c.item.kind == contracts::api::dashboard::ItemKind::Todo)
@@ -745,7 +772,10 @@ fn golden_input() -> JudgeWorkInput {
         vec![todo("Write docs")],
     );
     JudgeWorkInput {
-        items: candidates(&snap).into_iter().map(|c| c.item).collect(),
+        items: candidates(&snap, LlmLanguage::En)
+            .into_iter()
+            .map(|c| c.item)
+            .collect(),
     }
 }
 
@@ -781,7 +811,7 @@ fn version_decision(
 /// `RECORD_PROMPT_HASH=1` records it), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
 #[test]
 fn golden_judge_work_prompt() {
-    let prompt = prompt::render(&golden_input()).expect("prompt");
+    let prompt = prompt::render(&golden_input(), LlmLanguage::En).expect("prompt");
     let path = golden_dir().join("judge_work.txt");
     let versions_path = golden_dir().join("judge_work.versions");
     let hash = prompt_hash(prompt::TEMPLATE);
@@ -825,7 +855,7 @@ fn prompt_text_change_without_version_decision_fails_golden() {
 
 #[test]
 fn prompt_fences_untrusted_text_as_data() {
-    let prompt = prompt::render(&golden_input()).expect("prompt");
+    let prompt = prompt::render(&golden_input(), LlmLanguage::En).expect("prompt");
     assert!(prompt.starts_with("Job: judge_work.\n"));
     assert!(prompt.contains("never instructions"));
     assert!(prompt.contains("you have no tools"));
@@ -1125,7 +1155,7 @@ async fn also_ids_limited_to_suggestions() {
         vec![todo("Follow up acme/wallet-ui#5")],
     );
     let id = h.rank("u1", &snap).await;
-    let todo_key = candidates(&snap)
+    let todo_key = candidates(&snap, LlmLanguage::En)
         .iter()
         .find(|c| c.item.kind == contracts::api::dashboard::ItemKind::Todo)
         .map(|c| c.item.key.clone())
@@ -1255,11 +1285,45 @@ fn unasked_eligibility_answer_is_dropped() {
         next: "n".into(),
     };
     let snap = snapshot(vec![pr(1, "fix: x")], vec![], vec![]);
-    let mut item = candidates(&snap)[0].item.clone();
+    let mut item = candidates(&snap, LlmLanguage::En)[0].item.clone();
     assert!(!item.asks_eligibility, "premise");
     assert_eq!(store::Body::of(answer.clone(), &item).eligibility, None);
     item.asks_eligibility = true;
     assert!(store::Body::of(answer, &item).eligibility.is_some());
+}
+
+/// A Polish user's judge job asks for Polish texts; after a switch back to English the stored Polish judgement is
+/// shown as inherited (provisional) until it is judged again, never as current.
+#[tokio::test]
+async fn ranking_texts_follow_the_users_language() {
+    let h = harness().await;
+    h.db()
+        .settings()
+        .set_language("u1", LlmLanguage::Pl, Timestamp::now())
+        .await
+        .expect("language");
+    let snap = snapshot(prs(1), vec![], vec![]);
+    let id = h.rank("u1", &snap).await;
+    let (job, _) = h.serve(|i| succeeded(neutral(i))).await;
+    assert!(
+        job.spec.prompt.contains(" in Polish (polski); "),
+        "{}",
+        job.spec.prompt
+    );
+    h.ranked("u1", id).await;
+    assert_eq!(
+        h.judgements("u1", &snap).await[&key(1)].judgement.freshness,
+        Freshness::Current
+    );
+    h.db()
+        .settings()
+        .set_language("u1", LlmLanguage::En, Timestamp::now())
+        .await
+        .expect("language");
+    assert_eq!(
+        h.judgements("u1", &snap).await[&key(1)].judgement.freshness,
+        Freshness::Inherited
+    );
 }
 
 #[tokio::test]
@@ -1313,12 +1377,13 @@ async fn unclaimed_judge_job_ends_the_ranking() {
         counts: JudgeCounts::default(),
         live: RankingState::Running,
         zone: jiff::tz::TimeZone::UTC,
+        language: LlmLanguage::En,
         day: now(),
         unclaimed_since: Some(long_ago),
         provisional: None,
     };
     let input = JudgeWorkInput {
-        items: vec![candidates(&snap)[0].item.clone()],
+        items: vec![candidates(&snap, LlmLanguage::En)[0].item.clone()],
     };
     let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
     // Paused for the usage limit: the wait does not count, and starts again after the pause.
@@ -1456,6 +1521,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
         counts: JudgeCounts::default(),
         live: RankingState::Running,
         zone: jiff::tz::TimeZone::UTC,
+        language: LlmLanguage::En,
         day: now(),
         unclaimed_since: None,
         provisional: None,
@@ -1487,7 +1553,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
             .expect("refresh")),
         before
     );
-    let candidates = candidates(&snap);
+    let candidates = candidates(&snap, LlmLanguage::En);
     let queued = Queued {
         item: candidates[0].item.clone(),
         fingerprint: candidates[0].fingerprint.clone(),
@@ -1707,7 +1773,7 @@ fn release_tag_that_keeps_the_milestone_bonus_keeps_the_fingerprint() {
             milestone_titles: Some(vec!["v1.8.0".into()]),
         };
         let snap = snapshot(vec![p], vec![], vec![]);
-        let items = candidates(&snap);
+        let items = candidates(&snap, LlmLanguage::En);
         let bonus = items[0]
             .item
             .known
@@ -1729,7 +1795,7 @@ fn release_tag_that_keeps_the_milestone_bonus_keeps_the_fingerprint() {
 #[test]
 fn judge_sees_the_computed_default_it_confirms() {
     let snap = snapshot(vec![], vec![issue(7, "Crash")], vec![]);
-    let items = candidates(&snap);
+    let items = candidates(&snap, LlmLanguage::En);
     let item = &items[0].item;
     assert!(
         item.asks.contains(&ScoreComponent::HumanWaiting),

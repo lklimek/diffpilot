@@ -10,7 +10,7 @@ use contracts::agent::judge_work::{
 use contracts::api::dashboard::{
     ItemKey, ItemKind, PartSource, PartStatus, ScoreComponent, ScorePart,
 };
-use contracts::common::RepoRef;
+use contracts::common::{LlmLanguage, RepoRef};
 use contracts::time::Timestamp;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -23,7 +23,7 @@ use crate::dashboard::score::{
 use crate::dashboard::snapshot::{Snapshot, StoredIssue, StoredPr, StoredTodo};
 
 /// Version of the judged inputs and their fingerprint; a bump re-judges every item within the caps.
-pub const JUDGE_INPUT_VERSION: u32 = 2;
+pub const JUDGE_INPUT_VERSION: u32 = 3;
 /// Body excerpt sent per pull request or issue, in characters.
 const EXCERPT_CHARS: usize = 300;
 /// Release tags or milestone titles listed in `release_context`, at most each.
@@ -83,7 +83,7 @@ impl Candidate<'_> {
 }
 
 /// Every scoreable item of the snapshot, scored at its scan time like the read path (`snapshot::build`).
-pub(super) fn candidates(snapshot: &Snapshot) -> Vec<Candidate<'_>> {
+pub(super) fn candidates(snapshot: &Snapshot, language: LlmLanguage) -> Vec<Candidate<'_>> {
     let rules = ScoreRules::new(&snapshot.own_login, &snapshot.settings);
     let at = snapshot.scanned_at;
     let todo_ids = todo_display_ids(
@@ -133,7 +133,7 @@ pub(super) fn candidates(snapshot: &Snapshot) -> Vec<Candidate<'_>> {
                 previous: None,
                 suggested_merges: merges.get(&scored.key).cloned().unwrap_or_default(),
             };
-            let fingerprint = fingerprint(&item, &scored);
+            let fingerprint = fingerprint(&item, &scored, language);
             Candidate {
                 source,
                 scored,
@@ -157,6 +157,8 @@ struct Fingerprinted<'a> {
     eligibility: &'a Eligibility,
     suggested_merges: &'a [ItemKey],
     signals: &'a score::FingerprintSignals,
+    /// The user's LLM text language: the judge writes its texts in it.
+    language: LlmLanguage,
 }
 
 /// A known part as fingerprinted: component and points only.
@@ -167,7 +169,7 @@ struct KnownValue {
 }
 
 /// `SHA-256(JUDGE_INPUT_VERSION ‖ JUDGE_PROMPT_VERSION ‖ canonical JSON)` in hex (plan §B.4).
-fn fingerprint(item: &JudgeItem, scored: &Scored) -> String {
+fn fingerprint(item: &JudgeItem, scored: &Scored, language: LlmLanguage) -> String {
     let inputs = Fingerprinted {
         key: &item.key,
         kind: item.kind,
@@ -185,6 +187,7 @@ fn fingerprint(item: &JudgeItem, scored: &Scored) -> String {
         eligibility: &item.eligibility,
         suggested_merges: &item.suggested_merges,
         signals: &scored.signals,
+        language,
     };
     let mut hash = Sha256::new();
     hash.update(format!("{JUDGE_INPUT_VERSION}\n{JUDGE_PROMPT_VERSION}\n"));
