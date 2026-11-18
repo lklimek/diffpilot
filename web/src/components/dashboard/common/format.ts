@@ -4,6 +4,9 @@ import type { ItemScore, Tier } from "../../../api/generated/types";
 /** `+4`, `−3` (minus sign), `0`. */
 export const signed = (n: number): string => (n > 0 ? `+${n}` : n < 0 ? `−${Math.abs(n)}` : "0");
 
+/** Text colour of a net (closed − opened): `ok` when closed more, `high` when opened more, none at 0; the sign stays. */
+export const netTone = (n: number): string => (n > 0 ? "text-ok" : n < 0 ? "text-high" : "");
+
 /** Points of a part from tenths: `+12.7`, `−20`, `0`. */
 export function pointsText(tenths: number): string {
   const text = (Math.abs(tenths) / 10).toFixed(1).replace(/\.0$/, "");

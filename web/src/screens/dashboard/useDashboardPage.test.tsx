@@ -47,11 +47,11 @@ const emit = (status: RefreshStatus) =>
   );
 
 describe("useDashboardPage", () => {
-  it("loads the summary and all items; the list opens with pull requests (and TODOs)", async () => {
+  it("loads the summary and all items; the list opens with every kind on", async () => {
     const { result } = renderPage();
     await waitFor(() => expect(result.current.allItems).toHaveLength(14));
     expect(result.current.view).toMatchObject({ scanning: null, ranking: null, empty: false });
-    expect(result.current.filter).toBe("pr");
+    expect(result.current.filter).toEqual(["pr", "issue", "todo"]);
     // A finished refresh has no stream.
     expect(FakeEventSource.instances).toHaveLength(0);
   });
@@ -59,11 +59,22 @@ describe("useDashboardPage", () => {
   it("remembers the kind filter", async () => {
     const { result } = renderPage();
     await waitFor(() => expect(result.current.allItems).toBeDefined());
-    act(() => result.current.setFilter("issue"));
-    expect(result.current.filter).toBe("issue");
-    expect(localStorage.getItem(FILTER_KEY)).toBe("issue");
+    act(() => result.current.setFilter(["pr", "issue"]));
+    expect(result.current.filter).toEqual(["pr", "issue"]);
     const again = renderPage();
-    expect(again.result.current.filter).toBe("issue");
+    expect(again.result.current.filter).toEqual(["pr", "issue"]);
+  });
+
+  it("maps a stored single choice of the earlier switch to the matching toggles (TODOs were listed with each)", () => {
+    const stored = (value: string) => {
+      localStorage.setItem(FILTER_KEY, value);
+      return renderPage().result.current.filter;
+    };
+    expect(stored("pr")).toEqual(["pr", "todo"]);
+    expect(stored("issue")).toEqual(["issue", "todo"]);
+    expect(stored("both")).toEqual(["pr", "issue", "todo"]);
+    expect(stored("nonsense")).toEqual(["pr", "issue", "todo"]);
+    localStorage.removeItem(FILTER_KEY);
   });
 
   it("reads nothing while signed out", async () => {

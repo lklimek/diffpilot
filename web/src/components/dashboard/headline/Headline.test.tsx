@@ -48,6 +48,38 @@ describe("Headline", () => {
     expect(screen.queryByRole("button", { name: /issues/i })).toBeNull();
   });
 
+  it("colours every net by its sign (closed more: ok, opened more: high, zero: neutral); counts stay neutral", async () => {
+    const figures: HeadlineFigures = {
+      week: { closed: 2, opened: 5, label: "Mon–Wed" },
+      yesterday: { closed: 3, opened: 3, label: "Tue 17 Nov" },
+      lastWeek: { closed: 7, opened: 4, label: "9–13 Nov" },
+      fourWeeks: { net: -2, before: 5 },
+    };
+    const days = [point("16 Nov", 1, 3), point("17 Nov", 4, 1), point("18 Nov", 2, 2, true)];
+    render(<Headline figures={figures} days={days} weeks={WEEKS} unit="day" onUnitChange={() => {}} />);
+    const tone = (el: Element | null) =>
+      el?.classList.contains("text-ok") ? "ok" : el?.classList.contains("text-high") ? "high" : "neutral";
+    const headline = document.querySelector("[data-headline-value]");
+    expect([headline?.textContent, tone(headline)]).toEqual(["−3", "high"]);
+    const tile = (label: string) => screen.getByText(label).parentElement!;
+    expect(tone(within(tile("Yesterday")).getByText("0"))).toBe("neutral");
+    expect(tone(within(tile("Last week")).getByText("+3"))).toBe("ok");
+    expect(tone(within(tile("4 weeks")).getByText("−2"))).toBe("high");
+    expect(tone(within(tile("4 weeks")).getByText("+5"))).toBe("ok");
+    expect(tone(within(tile("Yesterday")).getByText("3 − 3"))).toBe("neutral");
+    await userEvent.click(screen.getByRole("button", { name: "Show as table" }));
+    // Newest first: today (0, running +1), 17 Nov (+3, +1), 16 Nov (−2, −2).
+    const cells = within(screen.getByRole("table"))
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row).getAllByRole("cell").slice(1).map(tone));
+    expect(cells).toEqual([
+      ["neutral", "neutral", "neutral", "ok"],
+      ["neutral", "neutral", "ok", "ok"],
+      ["neutral", "neutral", "high", "high"],
+    ]);
+  });
+
   it("switches between days and weeks with pressed buttons", async () => {
     render(<Harness />);
     expect(screen.getByRole("button", { name: "Days" })).toHaveAttribute("aria-pressed", "true");

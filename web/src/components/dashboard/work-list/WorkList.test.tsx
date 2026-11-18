@@ -4,25 +4,25 @@ import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { TodosState, WorkItem } from "../../../api/generated/types";
 import { ITEMS, NOW, PROVISIONAL_ITEMS } from "../test-fixtures";
-import { WorkList, type KindFilter } from "./WorkList";
+import { ALL_KINDS, WorkList, type ItemKind } from "./WorkList";
 
 const reviewHref = (item: WorkItem) => `/review?pr=${encodeURIComponent(item.url ?? "")}`;
 
 function List(props: {
   items?: WorkItem[];
-  initial?: KindFilter;
+  initial?: ItemKind[];
   onNavigate?: (href: string) => void;
   onHelp?: () => void;
   todos?: TodosState;
 }) {
-  const [kind, setKind] = useState<KindFilter>(props.initial ?? "pr");
+  const [kinds, setKinds] = useState<ItemKind[]>(props.initial ?? ALL_KINDS);
   return (
     <>
       <input aria-label="search" />
       <WorkList
         items={props.items ?? ITEMS}
-        kind={kind}
-        onKindChange={setKind}
+        kinds={kinds}
+        onKindsChange={setKinds}
         reviewHref={reviewHref}
         onNavigate={props.onNavigate}
         onHelp={props.onHelp}
@@ -37,25 +37,77 @@ const rowIds = () =>
   [...document.querySelectorAll("li[data-item]")].map((li) => li.getAttribute("data-item"));
 
 describe("WorkList", () => {
-  it("shows pull requests and TODOs on PRs, P0 alarms of every kind, issues only on Issues or Both", async () => {
+  it("PRs, Issues and TODOs are independent toggles, all on at first; kinds combine; P0 alarms always show", async () => {
     render(<List />);
-    expect(screen.getByRole("button", { name: /PRs 8/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("group", { name: "Kinds shown" })).toBeInTheDocument();
+    const prs = screen.getByRole("button", { name: /PRs 8/ });
+    const issues = screen.getByRole("button", { name: /Issues 4/ });
+    const todos = screen.getByRole("button", { name: /TODOs 2/ });
+    for (const button of [prs, issues, todos]) expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(rowIds()).toHaveLength(13);
+
+    await userEvent.click(issues);
+    expect(issues).toHaveAttribute("aria-pressed", "false");
     expect(rowIds()).toContain("acme~platform~pr~1203");
     expect(rowIds()).toContain("memcan~3fa91c2e-0000-4000-8000-000000000000");
     expect(rowIds()).not.toContain("acme~platform~issue~1210");
     // The P0 issue stays visible as an alarm.
     expect(screen.getByRole("group", { name: "P0 alarm PLAT-1187" })).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: /Issues 4/ }));
+    await userEvent.click(prs);
+    expect(rowIds()).toHaveLength(2);
+    expect(rowIds().every((id) => id?.startsWith("memcan~"))).toBe(true);
+    await userEvent.click(issues);
     expect(rowIds()).toContain("acme~platform~issue~1210");
     expect(rowIds()).not.toContain("acme~platform~pr~1203");
+  });
 
-    await userEvent.click(screen.getByRole("button", { name: /Both 12/ }));
-    expect(rowIds()).toHaveLength(13);
+  it("the last kind on stays on and says why; keyboard toggles", async () => {
+    render(<List initial={["pr", "issue"]} />);
+    const prs = screen.getByRole("button", { name: /PRs 8/ });
+    const issues = screen.getByRole("button", { name: /Issues 4/ });
+    expect(prs).not.toHaveAttribute("aria-disabled");
+    issues.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(issues).toHaveAttribute("aria-pressed", "false");
+    expect(prs).toHaveAttribute("aria-disabled", "true");
+    expect(prs).toHaveAccessibleDescription(/At least one kind stays shown/);
+    await userEvent.click(prs);
+    expect(prs).toHaveAttribute("aria-pressed", "true");
+    expect(rowIds()).toContain("acme~platform~pr~1203");
+    issues.focus();
+    await userEvent.keyboard(" ");
+    expect(prs).not.toHaveAttribute("aria-disabled");
+    expect(issues).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("the TODOs toggle is hidden while TODOs are off and none are listed", () => {
+    const noTodos = ITEMS.filter((item) => item.kind !== "todo");
+    const { unmount } = render(
+      <List items={noTodos} todos={{ status: "off", read_at: null, failed_at: null }} />,
+    );
+    expect(screen.queryByRole("button", { name: /TODOs/ })).toBeNull();
+    expect(screen.getAllByRole("button", { pressed: true })).toHaveLength(2);
+    unmount();
+    // Stored as TODOs only while TODOs are off: the other kinds show instead of nothing.
+    const again = render(
+      <List
+        items={noTodos}
+        initial={["todo"]}
+        todos={{ status: "not_configured", read_at: null, failed_at: null }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /PRs 8/ })).toHaveAttribute("aria-pressed", "true");
+    expect(rowIds()).toContain("acme~platform~pr~1203");
+    again.unmount();
+    render(
+      <List items={noTodos} todos={{ status: "read", read_at: "2026-11-18T09:24:00Z", failed_at: null }} />,
+    );
+    expect(screen.getByRole("button", { name: /TODOs 0/ })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("groups items by tier in the server's order, with new items under Not judged yet", () => {
-    render(<List items={PROVISIONAL_ITEMS} initial="both" />);
+    render(<List items={PROVISIONAL_ITEMS} />);
     const headings = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
     expect(headings).toEqual([
       expect.stringMatching(/^P1/),
@@ -85,7 +137,7 @@ describe("WorkList", () => {
   });
 
   it("every LLM text carries the LLM tag", async () => {
-    render(<List items={PROVISIONAL_ITEMS} initial="both" />);
+    render(<List items={PROVISIONAL_ITEMS} />);
     for (const button of screen.getAllByRole("button", { name: /^Details of/ }))
       await userEvent.click(button);
     const texts = [...document.querySelectorAll("[data-llm-text]")];
@@ -190,8 +242,8 @@ describe("WorkList", () => {
     render(
       <WorkList
         items={ITEMS}
-        kind="pr"
-        onKindChange={() => {}}
+        kinds={["pr"]}
+        onKindsChange={() => {}}
         reviewHref={reviewHref}
         stale={{ at: "08:12", note: "It is replaced when a scan finishes." }}
         now={NOW}
@@ -208,7 +260,7 @@ describe("WorkList", () => {
   });
 
   it("counts the P0 alarms of a hidden kind among the listed items", async () => {
-    render(<List />);
+    render(<List initial={["pr", "todo"]} />);
     const listed = () =>
       document.querySelectorAll("li[data-item]").length + document.querySelectorAll("[data-alarm]").length;
     const header = () => screen.getByText(/of 14 items, ranked/);
@@ -216,12 +268,23 @@ describe("WorkList", () => {
     expect(header()).toHaveTextContent("11 of 14 items, ranked");
     await userEvent.click(screen.getByRole("button", { name: /Issues 4/ }));
     expect(header()).toHaveTextContent(`${listed()} of 14 items, ranked`);
+    expect(header()).not.toHaveTextContent(/listed with every choice/);
   });
 
   it("says when no item of the chosen kind needs the user", async () => {
-    render(<List items={ITEMS.filter((item) => item.kind !== "issue")} />);
-    await userEvent.click(screen.getByRole("button", { name: /Issues 0/ }));
+    const { unmount } = render(
+      <List items={ITEMS.filter((item) => item.kind !== "issue")} initial={["issue"]} />,
+    );
     expect(screen.getByText("No issues need you.")).toBeInTheDocument();
+    unmount();
+    render(
+      <List
+        items={ITEMS.filter((item) => item.kind === "pr")}
+        initial={["issue", "todo"]}
+        todos={{ status: "read", read_at: "2026-11-18T09:24:00Z", failed_at: null }}
+      />,
+    );
+    expect(screen.getByText("No issues or TODOs need you.")).toBeInTheDocument();
   });
 
   it("tags and scores show their tooltip on keyboard focus", () => {

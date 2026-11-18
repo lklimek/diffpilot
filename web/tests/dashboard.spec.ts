@@ -15,22 +15,45 @@ test.describe("My work (msw)", () => {
   };
   const main = (page: Page) => page.getByRole("main");
 
-  test("normal: shell, ranked list opened on pull requests, side panel, keyboard tooltips", async ({
-    page,
-  }) => {
+  test("normal: shell, ranked list with every kind on, side panel, keyboard tooltips", async ({ page }) => {
     await open(page);
     await expect(
       page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /My work/ }),
     ).toHaveAttribute("aria-current", "page");
     await expect(page.locator("[data-nav-count]")).toHaveText("14");
     await expect(main(page).getByText("fix(sync): retry header fetch after peer timeout")).toBeVisible();
-    // Opened on pull requests (TODOs listed too): an issue that is not a P0 alarm is not shown.
-    await expect(main(page).getByText("Wallet balance shows a stale value after a reorg")).toHaveCount(0);
+    // Every kind on at first: pull requests, issues and TODOs.
+    await expect(main(page).getByText("Wallet balance shows a stale value after a reorg")).toBeVisible();
     await expect(main(page).getByText("Write the migration note for config v3")).toBeVisible();
     await expect(page.locator("[data-scan-info]")).toHaveText(/Refreshed manually at/);
     // The live region says the state only, not the ticking "… ago".
     await expect(page.getByRole("status").filter({ hasText: /^Refreshed at \d\d:\d\d\.$/ })).toBeAttached();
     await expectKeyboardTooltips(page);
+  });
+
+  test("kind toggles combine by keyboard, the last one on stays on, and the choice is remembered", async ({
+    page,
+  }) => {
+    await open(page);
+    const kinds = main(page).getByRole("group", { name: "Kinds shown" });
+    const issue = main(page).getByText("Wallet balance shows a stale value after a reorg");
+    const todo = main(page).getByText("Write the migration note for config v3");
+    await kinds.getByRole("button", { name: /^Issues/ }).focus();
+    await page.keyboard.press("Enter");
+    await expect(issue).toHaveCount(0);
+    await kinds.getByRole("button", { name: /^PRs/ }).focus();
+    await page.keyboard.press("Space");
+    await expect(todo).toBeVisible();
+    await expect(main(page).getByText("fix(sync): retry header fetch after peer timeout")).toHaveCount(0);
+    const todos = kinds.getByRole("button", { name: /^TODOs/ });
+    await expect(todos).toHaveAttribute("aria-disabled", "true");
+    await todos.focus();
+    await page.keyboard.press("Enter");
+    await expect(todos).toHaveAttribute("aria-pressed", "true");
+    await page.reload();
+    await expect(kinds.getByRole("button", { name: /^TODOs/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(kinds.getByRole("button", { name: /^PRs/ })).toHaveAttribute("aria-pressed", "false");
+    await expect(todo).toBeVisible();
   });
 
   test("refreshing: the scan's progress and Cancel scan keep the earlier snapshot", async ({ page }) => {

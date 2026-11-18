@@ -5,6 +5,7 @@ import { ApiError } from "../../api/client";
 import { useMe } from "../../api/queries";
 import type { RefreshStatus } from "../../api/generated/types";
 import { useNow } from "../../app/now";
+import { ALL_KINDS, type ItemKind } from "../../components/dashboard/work-list/WorkList";
 import {
   SUMMARY_KEY,
   useCancelRefresh,
@@ -23,27 +24,33 @@ export const FILTER_KEY = "sr.dashboard.kind";
 /** How long the "Ranking finished" notice stays. */
 export const NOTICE_MS = 6000;
 
-/** The list's kind switch: pull requests, issues or both (TODOs are listed with each). */
-export type KindFilter = "pr" | "issue" | "both";
+/** Stored values of the earlier single-choice switch (TODOs were listed with each). */
+const LEGACY: Record<string, ItemKind[]> = {
+  pr: ["pr", "todo"],
+  issue: ["issue", "todo"],
+  both: ALL_KINDS,
+};
 
-const FILTERS: readonly KindFilter[] = ["pr", "issue", "both"];
-
-function storedFilter(): KindFilter {
+/** The stored kinds (`pr,todo`, or a value of the earlier switch); every kind when none or unreadable. */
+function storedFilter(): ItemKind[] {
   try {
-    const value = localStorage.getItem(FILTER_KEY);
-    return FILTERS.find((f) => f === value) ?? "pr";
+    const value = localStorage.getItem(FILTER_KEY) ?? "";
+    const legacy = LEGACY[value];
+    if (legacy) return legacy;
+    const kinds = ALL_KINDS.filter((kind) => value.split(",").includes(kind));
+    return kinds.length > 0 ? kinds : ALL_KINDS;
   } catch {
-    return "pr";
+    return ALL_KINDS;
   }
 }
 
-/** The kind filter, remembered across visits; the list opens with pull requests. */
-function useKindFilter(): [KindFilter, (filter: KindFilter) => void] {
+/** The kinds shown, remembered across visits; the list opens with every kind. */
+function useKindFilter(): [ItemKind[], (filter: ItemKind[]) => void] {
   const [filter, setFilter] = useState(storedFilter);
-  const set = useCallback((next: KindFilter) => {
+  const set = useCallback((next: ItemKind[]) => {
     setFilter(next);
     try {
-      localStorage.setItem(FILTER_KEY, next);
+      localStorage.setItem(FILTER_KEY, next.join(","));
     } catch {
       // Not remembered without storage; the choice still applies.
     }
