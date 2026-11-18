@@ -320,6 +320,22 @@ fn input_check_enforces_the_batch_shape() {
     let mut aged = input();
     aged.items[0].known[0].component = ScoreComponent::Recency;
     assert!(matches!(aged.check(), Err(InputError::AgePart { .. })));
+    let mut aged_previous = input();
+    aged_previous.items[0].previous = Some(PreviousJudgement {
+        parts: vec![KnownPart {
+            component: ScoreComponent::ChangeSize,
+            points_tenths: Some(50),
+            status: PartStatus::Computed,
+            basis: "120 lines".to_owned(),
+        }],
+        why: "w".to_owned(),
+        next: "n".to_owned(),
+        alarm: None,
+    });
+    assert!(matches!(
+        aged_previous.check(),
+        Err(InputError::AgePart { .. })
+    ));
     let mut computed_only = input();
     computed_only.items[0].asks.push(ScoreComponent::ChangeSize);
     assert!(matches!(

@@ -70,7 +70,7 @@ pub struct JudgeItem {
     /// Scan facts.
     pub facts: JudgeFacts,
     /// Parts known without the judge (computed values and defaults, with their basis); never recency or change
-    /// size, which rest on ages (not judged inputs, plan §B.4).
+    /// size, which rest on ages (not judged inputs, plan §B.4), and no basis that names an age.
     pub known: Vec<KnownPart>,
     /// Components the answer must judge (the scorer's `Scored.asks`).
     pub asks: Vec<ScoreComponent>,
@@ -241,7 +241,13 @@ impl JudgeWorkInput {
             if !seen.insert(&item.key) {
                 return Err(InputError::DuplicateItem(item.key.clone()));
             }
-            if let Some(part) = item.known.iter().find(|part| is_age_part(part.component)) {
+            let previous = item.previous.iter().flat_map(|previous| &previous.parts);
+            if let Some(part) = item
+                .known
+                .iter()
+                .chain(previous)
+                .find(|part| is_age_part(part.component))
+            {
                 return Err(InputError::AgePart {
                     key: item.key.clone(),
                     component: part.component,
