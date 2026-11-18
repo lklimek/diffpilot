@@ -74,6 +74,9 @@ export function FlowDiagram({ graph, title, currentStepId, onSelectStep, decisio
   const scroller = useRef<HTMLDivElement>(null);
   const nodeRefs = useRef(new Map<StepId, SVGGElement>());
   const [width, setWidth] = useState(0);
+  // The hovered edge (or label) and the focused step, whose edges are highlighted.
+  const [hotEdge, setHotEdge] = useState<string | null>(null);
+  const [hotStep, setHotStep] = useState<StepId | null>(null);
   // Per graph: the text measure (page font when a canvas is available; its cache lives with this graph) and
   // each direction's layout, computed only when that direction is shown.
   const drawing = useMemo(() => {
@@ -194,43 +197,81 @@ export function FlowDiagram({ graph, title, currentStepId, onSelectStep, decisio
             className="mx-auto block max-w-none"
           >
             <defs>
-              <marker
-                id={arrowId}
-                viewBox="0 0 10 10"
-                refX="9"
-                refY="5"
-                markerWidth="7"
-                markerHeight="7"
-                orient="auto-start-reverse"
-              >
-                <path d="M0,0 L10,5 L0,10 z" className="fill-muted" />
-              </marker>
+              {[arrowId, `${arrowId}-hot`].map((id, hot) => (
+                <marker
+                  key={id}
+                  id={id}
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0,0 L10,5 L0,10 z" className={hot ? "fill-text" : "fill-muted"} />
+                </marker>
+              ))}
             </defs>
-            {layout.edges.map((edge) => (
-              <path
-                key={edge.key}
-                data-edge
-                d={edge.points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ")}
-                markerEnd={`url(#${arrowId})`}
-                className="fill-none stroke-muted stroke-[1.6]"
-              />
-            ))}
-            {layout.edges.map(
-              ({ key, labelBox: box, labelLines }) =>
-                box && (
-                  <g key={key} data-edge-label>
-                    <rect {...box} rx={3} className="fill-surface opacity-90" />
-                    <text
-                      x={box.x + box.width / 2}
-                      y={box.y + 13}
-                      textAnchor="middle"
-                      className="fill-text text-[11px] font-semibold"
-                    >
-                      {lineSpans(labelLines, box.x + box.width / 2, EDGE_LINE_HEIGHT)}
-                    </text>
-                  </g>
-                ),
-            )}
+            {layout.edges.map((edge) => {
+              // Hover (edge or label) or a focused step lights its edges; the others dim, so a bundle can be traced.
+              const hot =
+                hotEdge === edge.key || (hotStep !== null && (edge.from === hotStep || edge.to === hotStep));
+              const dim = !hot && (hotEdge !== null || hotStep !== null);
+              const d = edge.points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ");
+              return (
+                <g
+                  key={edge.key}
+                  data-edge-group={edge.key}
+                  data-hot={hot || undefined}
+                  data-dim={dim || undefined}
+                  className={dim ? "opacity-25" : undefined}
+                  onMouseEnter={() => setHotEdge(edge.key)}
+                  onMouseLeave={() => setHotEdge((k) => (k === edge.key ? null : k))}
+                >
+                  {/* A wider invisible stroke makes the thin line easy to hover. */}
+                  <path d={d} className="fill-none stroke-transparent stroke-[8]" />
+                  <path
+                    data-edge
+                    d={d}
+                    markerEnd={`url(#${hot ? `${arrowId}-hot` : arrowId})`}
+                    className={`fill-none ${hot ? "stroke-text stroke-[2.4]" : "stroke-muted stroke-[1.6]"}`}
+                  />
+                  {edge.leader && (
+                    <path
+                      data-edge-leader
+                      d={edge.leader.map((p, i) => `${i === 0 ? "M" : "L"}${p.x},${p.y}`).join(" ")}
+                      className={`fill-none stroke-[1] [stroke-dasharray:2_3] ${hot ? "stroke-text" : "stroke-muted"}`}
+                    />
+                  )}
+                </g>
+              );
+            })}
+            {layout.edges.map((edge) => {
+              const box = edge.labelBox;
+              if (!box) return null;
+              const hot =
+                hotEdge === edge.key || (hotStep !== null && (edge.from === hotStep || edge.to === hotStep));
+              const dim = !hot && (hotEdge !== null || hotStep !== null);
+              return (
+                <g
+                  key={edge.key}
+                  data-edge-label={edge.key}
+                  className={dim ? "opacity-25" : undefined}
+                  onMouseEnter={() => setHotEdge(edge.key)}
+                  onMouseLeave={() => setHotEdge((k) => (k === edge.key ? null : k))}
+                >
+                  <rect {...box} rx={3} className={`fill-surface opacity-90 ${hot ? "stroke-text" : ""}`} />
+                  <text
+                    x={box.x + box.width / 2}
+                    y={box.y + 13}
+                    textAnchor="middle"
+                    className="fill-text text-[11px] font-semibold"
+                  >
+                    {lineSpans(edge.labelLines, box.x + box.width / 2, EDGE_LINE_HEIGHT)}
+                  </text>
+                </g>
+              );
+            })}
             {ordered.map((node, index) => {
               const kind = KIND[node.kind];
               const current = node.stepId === currentStepId;
@@ -253,7 +294,11 @@ export function FlowDiagram({ graph, title, currentStepId, onSelectStep, decisio
                   data-kind={node.kind}
                   className="group cursor-pointer outline-none"
                   onClick={() => onSelectStep(node.stepId)}
-                  onFocus={() => setFocusedId(node.stepId)}
+                  onFocus={() => {
+                    setFocusedId(node.stepId);
+                    setHotStep(node.stepId);
+                  }}
+                  onBlur={() => setHotStep((id) => (id === node.stepId ? null : id))}
                   onKeyDown={(event) => onKeyDown(event, index)}
                 >
                   {decisions[node.stepId] && <title>{decisions[node.stepId]}</title>}

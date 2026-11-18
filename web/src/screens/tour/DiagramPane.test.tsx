@@ -103,7 +103,9 @@ describe("DiagramPane", () => {
     it("fits a height stored on a taller screen into this window and reports the height shown", () => {
       const { handle } = pane(5000);
       expect(handle).toHaveAttribute("aria-valuenow", String(diagramMaxPx()));
-      expect(screen.getByRole("region", { name: "Flow diagram" }).querySelector("[data-diagram-body]")).toHaveStyle({
+      expect(
+        screen.getByRole("region", { name: "Flow diagram" }).querySelector("[data-diagram-body]"),
+      ).toHaveStyle({
         height: `${diagramMaxPx()}px`,
       });
     });
