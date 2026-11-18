@@ -826,12 +826,19 @@ mod tests {
             "UTC",
             "Etc/GMT+5",
             "America/Port-au-Prince",
+            "America/Santiago",
+            "Etc/UTC",
+            "GMT",
+            "US/Pacific",
+            "Asia/Calcutta",
         ] {
             assert_eq!(check_time_zone(good), Ok(()), "{good}");
         }
         for bad in [
             "",
+            "utc",
             "europe/warsaw",
+            "EUROPE/WARSAW",
             "Europe//Warsaw",
             "../etc/passwd",
             "Europe/Warsaw ",

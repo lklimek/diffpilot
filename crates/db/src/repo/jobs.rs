@@ -1284,6 +1284,91 @@ mod tests {
         Db::in_memory().await.expect("in-memory database")
     }
 
+    /// Stored text is fixed-width microseconds with `Z`, truncated; rows written by the running stack read back.
+    #[test]
+    fn stored_timestamps_keep_their_text_form() {
+        for (stored, rewritten) in [
+            ("2026-11-16T12:00:00Z", "2026-11-16T12:00:00.000000Z"),
+            ("2026-11-16T12:00:00.000000Z", "2026-11-16T12:00:00.000000Z"),
+            ("2026-11-16T12:00:00.120000Z", "2026-11-16T12:00:00.120000Z"),
+            ("2026-11-16T12:00:00.123456Z", "2026-11-16T12:00:00.123456Z"),
+            (
+                "2026-11-16T12:00:00.123456789Z",
+                "2026-11-16T12:00:00.123456Z",
+            ),
+            (
+                "2026-11-16T12:00:00.999999999Z",
+                "2026-11-16T12:00:00.999999Z",
+            ),
+            ("2026-11-16T14:00:00.5+02:00", "2026-11-16T12:00:00.500000Z"),
+            (
+                "2026-11-16T12:00:00.123456789+00:00",
+                "2026-11-16T12:00:00.123456Z",
+            ),
+        ] {
+            let at = parse_ts(stored, "test").expect("stored text parses");
+            assert_eq!(ts(at), rewritten, "from {stored}");
+        }
+        for corrupt in ["", "2026-11-16 12:00", "2026-11-16T12:00:00"] {
+            assert!(
+                matches!(
+                    parse_ts(corrupt, "c"),
+                    Err(DbError::Corrupt { column: "c" })
+                ),
+                "{corrupt:?}"
+            );
+        }
+    }
+
+    /// Installation token expiries keep their RFC 3339 `+00:00` text with the fewest of 0, 3, 6 or 9 digits.
+    #[tokio::test]
+    async fn installation_token_expiry_keeps_its_offset_text_form() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        let cases = [
+            (1, "2026-11-16T19:00:00Z", "2026-11-16T19:00:00+00:00"),
+            (
+                2,
+                "2026-11-16T19:00:00.120Z",
+                "2026-11-16T19:00:00.120+00:00",
+            ),
+            (
+                3,
+                "2026-11-16T19:00:00.123450Z",
+                "2026-11-16T19:00:00.123450+00:00",
+            ),
+            (
+                4,
+                "2026-11-16T19:00:00.123456789Z",
+                "2026-11-16T19:00:00.123456789+00:00",
+            ),
+        ];
+        for (attempt, expires_at, stored) in cases {
+            let at = expires_at.parse().expect("time");
+            db.jobs()
+                .record_github_token(job, attempt, b"ct", at)
+                .await
+                .expect("record");
+            let text: String = sqlx::query_scalar(
+                "SELECT expires_at FROM installation_tokens WHERE job_id = ? AND attempt = ?",
+            )
+            .bind(job.to_string())
+            .bind(attempt)
+            .fetch_one(&db.pool)
+            .await
+            .expect("stored");
+            assert_eq!(text, stored);
+        }
+        let listed = db.jobs().github_tokens_to_revoke().await.expect("list");
+        let expiries: Vec<_> = listed.iter().map(|t| t.expires_at).collect();
+        let expected: Vec<DateTime<Utc>> = cases
+            .iter()
+            .map(|(_, at, _)| at.parse().expect("time"))
+            .collect();
+        assert_eq!(expiries, expected, "stored text reads back");
+    }
+
     fn new_job(analysis: AnalysisId, flow: &str, priority: JobPriority) -> NewJob {
         NewJob {
             spec: job_spec(analysis, JobKind::AnalyseFlow),
