@@ -729,3 +729,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   shows. Pending answers keep their progress line, failed ones Ask again. Answers keep their line breaks; list
   lines are shown as typed with a hanging indent. Supersedes "Answers render below the question field, newest
   first" above.
+- **Resizable Ask.** A horizontal handle on the dock's top edge (`role="separator"`, its height as value) makes
+  the Ask area taller by dragging up (the Inspector sections above shrink, keeping room for the heading) or with
+  the arrow keys; Home and End go to the limits, Enter or double-click resets. The height is remembered with the
+  tour layout like the diagram's. A collapsed Ask has no handle and its natural height.

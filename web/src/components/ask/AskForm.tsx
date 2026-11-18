@@ -89,7 +89,8 @@ function AskDraft({
     if (alerting && !open) reveal?.("ask");
   }, [alerting, open, reveal]);
   return (
-    <section aria-labelledby={`${id}-h`}>
+    // `data-dock-grow`: in a resized Inspector dock, Ask takes the room.
+    <section aria-labelledby={`${id}-h`} data-dock-grow className="flex min-h-0 flex-col">
       <h3 id={`${id}-h`} className="m-0 text-[10.5px] font-bold tracking-wide text-muted uppercase">
         {sections ? (
           <button

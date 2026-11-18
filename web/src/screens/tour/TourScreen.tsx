@@ -923,6 +923,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             askRef={askRef}
             sections={sections}
             commentRef={commentRef}
+            askHeight={layout.askHeight}
+            onAskHeight={(askHeight) => setLayout({ ...layout, askHeight })}
           />
         }
       />

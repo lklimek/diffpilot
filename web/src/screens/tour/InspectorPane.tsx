@@ -73,6 +73,9 @@ interface InspectorPaneProps {
   /** Open / collapsed Inspector sections, Ask included (the `a` shortcut reveals Ask). */
   sections: SectionControl;
   commentRef: RefObject<HTMLTextAreaElement | null>;
+  /** Dragged height of the Ask area (remembered with the layout); null = default. */
+  askHeight: number | null;
+  onAskHeight: (height: number | null) => void;
 }
 
 /** GitHub link to a line at the analysed commit of its side. */
@@ -172,6 +175,8 @@ export function InspectorPane(props: InspectorPaneProps) {
   return (
     <Inspector
       sections={props.sections}
+      dockHeight={props.askHeight}
+      onDockHeight={step ? props.onAskHeight : undefined}
       tour={tour}
       block={block}
       annotationId={annotationId}

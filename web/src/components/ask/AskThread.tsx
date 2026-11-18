@@ -93,7 +93,7 @@ export function AskThread({
             const e = event.currentTarget;
             following.current = e.scrollTop + e.clientHeight >= e.scrollHeight - FOLLOW_PX;
           }}
-          className="max-h-[24vh] min-h-0 flex-1 overflow-y-auto overscroll-contain"
+          className="max-h-[24vh] min-h-0 flex-1 overflow-y-auto overscroll-contain [[data-sized]_&]:max-h-none"
         >
           <ol aria-label="Ask conversation" className="m-0 grid list-none gap-2.5 p-0">
             {shown.map((q) => {
