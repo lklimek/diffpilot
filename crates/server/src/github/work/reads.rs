@@ -14,7 +14,11 @@ const FILES_CAP: usize = 3000;
 /// GitHub serves at most 300 events of a user.
 const EVENTS_CAP: usize = 300;
 /// Event types about pull requests (Q14: pull request throughput of unsearchable logins).
-const PR_EVENT_TYPES: [&str; 2] = ["PullRequestEvent", "PullRequestReviewEvent"];
+const PR_EVENT_TYPES: [&str; 3] = [
+    "PullRequestEvent",
+    "PullRequestReviewEvent",
+    "PullRequestReviewCommentEvent",
+];
 
 /// A changed file of a pull request.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -62,21 +66,25 @@ pub struct RestMilestone {
     pub due_on: Option<Timestamp>,
 }
 
-/// A pull request event of a login.
+/// A pull request event of a login: only which pull request and when (GitHub's feed payload is slim; a merge is
+/// action `merged` without author or merge flag, and not every merge appears).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserEvent {
-    /// `PullRequestEvent` or `PullRequestReviewEvent`.
+    /// `PullRequestEvent`, `PullRequestReviewEvent` or `PullRequestReviewCommentEvent`.
     pub kind: String,
     /// The pull request.
     pub item: ItemRef,
-    /// `opened`, `closed`, `created`, …
-    pub action: Option<String>,
-    /// For a closing `PullRequestEvent`: merged.
-    pub merged: Option<bool>,
-    /// Author of the pull request (the event's actor may be someone else).
-    pub author: Option<String>,
     /// When.
     pub created_at: Timestamp,
+}
+
+/// The pull request events among a login's last public events (Q14).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UserFeed {
+    /// Pull request events.
+    pub events: Vec<UserEvent>,
+    /// Oldest event read when the feed was cut at its cap (older events are unknown); `None` when it was read whole.
+    pub reaches_back_to: Option<Timestamp>,
 }
 
 #[derive(Deserialize)]
@@ -165,33 +173,36 @@ impl<T: TokenSource> WorkClient<T> {
     }
 
     /// Pull request events among the last 300 public events of `login` (Q14; coverage is partial).
-    pub async fn user_events(&self, login: &str) -> Result<Vec<UserEvent>, WorkError> {
+    pub async fn user_events(&self, login: &str) -> Result<UserFeed, WorkError> {
         if !valid_login(login) {
             return Err(WorkError::NotFound);
         }
         let raw: Vec<RawEvent> = self
             .rest_pages(&format!("users/{login}/events"), &[], EVENTS_CAP)
             .await?;
-        Ok(raw
+        let reaches_back_to = (raw.len() >= EVENTS_CAP)
+            .then(|| raw.iter().map(|event| event.created_at).min())
+            .flatten();
+        let events = raw
             .into_iter()
             .filter_map(|event| {
                 let kind = event
                     .kind
                     .filter(|kind| PR_EVENT_TYPES.contains(&kind.as_str()))?;
-                let pull = &event.payload["pull_request"];
-                let number = pull["number"]
+                let number = event.payload["pull_request"]["number"]
                     .as_u64()
                     .or_else(|| event.payload["number"].as_u64())
                     .and_then(|n| u32::try_from(n).ok())?;
                 Some(UserEvent {
                     kind,
                     item: ItemRef::parse(&event.repo.name, number)?,
-                    action: event.payload["action"].as_str().map(str::to_owned),
-                    merged: pull["merged"].as_bool(),
-                    author: pull["user"]["login"].as_str().map(str::to_owned),
                     created_at: event.created_at,
                 })
             })
-            .collect())
+            .collect();
+        Ok(UserFeed {
+            events,
+            reaches_back_to,
+        })
     }
 }

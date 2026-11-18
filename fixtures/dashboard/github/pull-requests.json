@@ -1786,5 +1786,175 @@
     },
     "closedAt": "2026-07-01T10:00:00Z",
     "mergedAt": "2026-07-01T10:00:00Z"
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/consensus"
+    },
+    "number": 1501,
+    "title": "fix(mempool): bound the orphan pool",
+    "author": {
+      "__typename": "User",
+      "login": "alice-helper"
+    },
+    "state": "MERGED",
+    "createdAt": "2026-10-20T09:00:00Z",
+    "updatedAt": "2026-11-03T10:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "fix/orphan-pool",
+    "headRefOid": "1501aa0000000000000000000000000000000001",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "additions": 20,
+    "deletions": 4,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-11-03T10:00:00Z",
+    "mergedAt": "2026-11-03T10:00:00Z",
+    "mergedBy": {
+      "login": "alice"
+    },
+    "reviews": {
+      "nodes": []
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1231,
+    "title": "fix(sync): drop stale peers on reconnect",
+    "author": {
+      "__typename": "User",
+      "login": "alice-helper"
+    },
+    "state": "MERGED",
+    "createdAt": "2026-11-10T08:00:00Z",
+    "updatedAt": "2026-11-17T13:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "fix/stale-peers",
+    "headRefOid": "1231aa0000000000000000000000000000000001",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "additions": 20,
+    "deletions": 4,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-11-17T13:00:00Z",
+    "mergedAt": "2026-11-17T13:00:00Z",
+    "mergedBy": {
+      "login": "alice"
+    },
+    "reviews": {
+      "nodes": []
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/consensus"
+    },
+    "number": 1536,
+    "title": "test(consensus): cover the empty proposal",
+    "author": {
+      "__typename": "User",
+      "login": "alice-helper"
+    },
+    "state": "MERGED",
+    "createdAt": "2026-11-12T10:00:00Z",
+    "updatedAt": "2026-11-18T07:30:00Z",
+    "baseRefName": "main",
+    "headRefName": "test/empty-proposal",
+    "headRefOid": "1536aa0000000000000000000000000000000001",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "additions": 20,
+    "deletions": 4,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-11-18T07:30:00Z",
+    "mergedAt": "2026-11-18T07:30:00Z",
+    "mergedBy": {
+      "login": "mira-k"
+    },
+    "reviews": {
+      "nodes": []
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/platform"
+    },
+    "number": 1233,
+    "title": "refactor(wallet): rename the fee helper",
+    "author": {
+      "__typename": "User",
+      "login": "alice-helper"
+    },
+    "state": "MERGED",
+    "createdAt": "2026-11-11T09:00:00Z",
+    "updatedAt": "2026-11-16T12:00:00Z",
+    "baseRefName": "main",
+    "headRefName": "refactor/fee-helper",
+    "headRefOid": "1233aa0000000000000000000000000000000001",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "additions": 20,
+    "deletions": 4,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-11-16T12:00:00Z",
+    "mergedAt": "2026-11-16T12:00:00Z",
+    "mergedBy": {
+      "login": "renata-s"
+    },
+    "reviews": {
+      "nodes": []
+    }
+  },
+  {
+    "repository": {
+      "nameWithOwner": "acme/review-policies"
+    },
+    "number": 7,
+    "title": "docs(policies): add the wallet area",
+    "author": {
+      "__typename": "User",
+      "login": "alice-helper"
+    },
+    "state": "MERGED",
+    "createdAt": "2026-11-17T13:07:31Z",
+    "updatedAt": "2026-11-18T08:36:10Z",
+    "baseRefName": "main",
+    "headRefName": "docs/wallet-area",
+    "headRefOid": "0007aa0000000000000000000000000000000001",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "APPROVED",
+    "additions": 20,
+    "deletions": 4,
+    "milestone": null,
+    "participants": {
+      "totalCount": 2
+    },
+    "closedAt": "2026-11-18T08:36:10Z",
+    "mergedAt": "2026-11-18T08:36:10Z",
+    "mergedBy": {
+      "login": "alice"
+    },
+    "reviews": {
+      "nodes": []
+    }
   }
 ]

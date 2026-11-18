@@ -309,6 +309,17 @@ impl Executor<'_> {
                     .map(|node| if field.name == "issues" { node.clone() } else { self.pull(node) })
                     .collect();
                 items.sort_by_key(|node| node["number"].as_u64());
+                if let Some(order) = arg("orderBy") {
+                    let key = match order["field"].as_str() {
+                        Some("UPDATED_AT") => "updatedAt",
+                        _ => "createdAt",
+                    };
+                    // RFC 3339 UTC strings order as their instants.
+                    items.sort_by(|a, b| a[key].as_str().cmp(&b[key].as_str()));
+                    if order["direction"] == "DESC" {
+                        items.reverse();
+                    }
+                }
                 connection(items, field)
             }
             ("Organization" | "User", "repositories") => {

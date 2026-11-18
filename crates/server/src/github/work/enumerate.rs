@@ -2,7 +2,7 @@
 //! owners with open items, its open pull requests and issues, matched against the logins locally. Mentions are
 //! matched in issue bodies and the last 50 comments only.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use contracts::api::dashboard::ScanNote;
 use contracts::time::Timestamp;
@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use super::batch::{literal, query};
 use super::client::{TokenSource, WorkClient, WorkError};
-use super::details::{Count, Login, Name, Nodes, ReviewRequest};
+use super::details::{Count, HistoryPr, Login, Name, Nodes, ReviewRequest};
 use super::search::{Candidates, IssueCandidate, IssueRelation, PrRelation};
 use super::{ItemRef, Milestone, note, parse_repo, repo_name};
 use contracts::common::RepoRef;
@@ -90,6 +90,49 @@ const ISSUE_NODES: &str = "number title url body createdAt updatedAt authorAssoc
 assignees(first: 20) { nodes { login } } labels(first: 20) { nodes { name } } \
 comments(last: 50) { totalCount nodes { body } } milestone { title number state }";
 
+/// Pages read per repository by [`WorkClient::authored_pull_requests`]: the 500 pull requests updated most
+/// recently (100 per page).
+pub const AUTHORED_PAGES: usize = 5;
+
+/// Pull requests some logins authored in a set of repositories, read by repository (Q16).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuthoredPulls {
+    /// Pull requests updated in the window that a login authored, with their times (no reviews).
+    pub found: BTreeMap<ItemRef, HistoryPr>,
+    /// Repositories read.
+    pub repositories: Vec<RepoRef>,
+    /// Repositories read only back to this update time (more than [`AUTHORED_PAGES`] pages in the window).
+    pub cut_short: Vec<(RepoRef, Timestamp)>,
+    /// One note per owner or repository that could not be listed.
+    pub notes: Vec<ScanNote>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActiveRepo {
+    name_with_owner: String,
+    pushed_at: Option<Timestamp>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthoredNode {
+    number: u32,
+    created_at: Timestamp,
+    updated_at: Timestamp,
+    closed_at: Option<Timestamp>,
+    merged_at: Option<Timestamp>,
+    author: Option<Login>,
+}
+
+/// One repository's pull requests updated at or after `since`, newest update first, by `authors`.
+struct RepoAuthored {
+    /// GitHub's name of the repository (the configured one may differ in case).
+    name: Option<String>,
+    found: Vec<(u32, HistoryPr)>,
+    cut_short: Option<Timestamp>,
+}
+
 /// `@login` in `text`, not part of a longer login or an e-mail address (case-insensitive).
 pub(crate) fn mentions(text: &str, login: &str) -> bool {
     let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
@@ -133,6 +176,164 @@ impl<T: TokenSource> WorkClient<T> {
                 _ => return Ok(nodes),
             }
         }
+    }
+
+    /// Every pull request `authors` opened in `repos` and in the repositories of `owners` pushed to since `since`,
+    /// updated at or after `since` (Q16): the history source for logins search refuses, independent of their event
+    /// feed. Per repository the newest-updated [`AUTHORED_PAGES`] pages are read.
+    pub async fn authored_pull_requests(
+        &self,
+        repos: &[RepoRef],
+        owners: &[String],
+        authors: &[String],
+        since: Timestamp,
+    ) -> Result<AuthoredPulls, WorkError> {
+        let mut result = AuthoredPulls::default();
+        let mut wanted: Vec<RepoRef> = Vec::new();
+        let add = |repo: RepoRef, wanted: &mut Vec<RepoRef>| {
+            if !wanted
+                .iter()
+                .any(|seen| same(&seen.owner, &repo.owner) && same(&seen.name, &repo.name))
+            {
+                wanted.push(repo);
+            }
+        };
+        for repo in repos {
+            add(repo.clone(), &mut wanted);
+        }
+        for owner in owners {
+            let listed = self
+                .all_nodes::<ActiveRepo>(
+                    |after| {
+                        format!(
+                            "repositoryOwner(login: {}) {{ repositories(first: 100, isArchived: false{after}) {{ \
+                             pageInfo {{ hasNextPage endCursor }} nodes {{ nameWithOwner pushedAt }} }} }}",
+                            literal(owner)
+                        )
+                    },
+                    &["repositories"],
+                )
+                .await;
+            match listed {
+                Ok(listed) => {
+                    for repo in listed {
+                        if repo.pushed_at.is_none_or(|at| at >= since)
+                            && let Some(name) = parse_repo(&repo.name_with_owner)
+                        {
+                            add(name, &mut wanted);
+                        }
+                    }
+                }
+                Err(error) if error.ends_refresh() => return Err(error),
+                Err(error) => result.notes.push(note(
+                    format!(
+                        "Repositories of {owner} could not be listed ({error}); pull requests there of logins \
+                         search refuses are missing from the charts"
+                    ),
+                    None,
+                )),
+            }
+        }
+        let reads = join_all(
+            wanted
+                .iter()
+                .map(|repo| self.repo_authored(repo, authors, since)),
+        )
+        .await;
+        for (repo, read) in wanted.into_iter().zip(reads) {
+            match read {
+                Ok(read) => {
+                    let name = read.name.unwrap_or_else(|| repo_name(&repo));
+                    for (number, pr) in read.found {
+                        if let Some(item) = ItemRef::parse(&name, number) {
+                            result.found.insert(item, pr);
+                        }
+                    }
+                    if let Some(at) = read.cut_short {
+                        result.cut_short.push((repo.clone(), at));
+                    }
+                    result.repositories.push(repo);
+                }
+                Err(error) if error.ends_refresh() => return Err(error),
+                Err(error) => result.notes.push(note(
+                    format!(
+                        "Pull requests of {} could not be listed ({error}); those of logins search refuses are \
+                         missing from the charts",
+                        repo_name(&repo)
+                    ),
+                    None,
+                )),
+            }
+        }
+        Ok(result)
+    }
+
+    async fn repo_authored(
+        &self,
+        repo: &RepoRef,
+        authors: &[String],
+        since: Timestamp,
+    ) -> Result<RepoAuthored, WorkError> {
+        let mut read = RepoAuthored {
+            name: None,
+            found: Vec::new(),
+            cut_short: None,
+        };
+        let mut after = String::new();
+        for page_number in 1..=AUTHORED_PAGES {
+            let lookup = format!(
+                "repository(owner: {}, name: {}) {{ nameWithOwner pullRequests(first: {}, orderBy: {{field: \
+                 UPDATED_AT, direction: DESC}}{after}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ number \
+                 createdAt updatedAt closedAt mergedAt author {{ login }} }} }} }}",
+                literal(&repo.owner),
+                literal(&repo.name),
+                self.page_size
+            );
+            let mut data = self.graphql(&query("", &[lookup])).await?;
+            let mut repository = data.remove("a0").unwrap_or(Value::Null);
+            read.name = repository["nameWithOwner"].as_str().map(str::to_owned);
+            let connection = repository["pullRequests"].take();
+            if connection.is_null() {
+                // Not visible to the token: the reach diagnostic reports it.
+                return Ok(read);
+            }
+            let page: Page = serde_json::from_value(connection).map_err(WorkError::Malformed)?;
+            let mut oldest = None;
+            for node in page.nodes {
+                let node: AuthoredNode =
+                    serde_json::from_value(node).map_err(WorkError::Malformed)?;
+                oldest = Some(node.updated_at);
+                if node.updated_at < since {
+                    return Ok(read);
+                }
+                let author = node.author.map(|a| a.login);
+                if author
+                    .as_deref()
+                    .is_some_and(|login| authors.iter().any(|wanted| same(wanted, login)))
+                {
+                    read.found.push((
+                        node.number,
+                        HistoryPr {
+                            created_at: node.created_at,
+                            closed_at: node.closed_at,
+                            merged_at: node.merged_at,
+                            author,
+                            reviews: BTreeMap::new(),
+                        },
+                    ));
+                }
+            }
+            match page.page_info.end_cursor {
+                Some(cursor) if page.page_info.has_next_page => {
+                    if page_number == AUTHORED_PAGES {
+                        read.cut_short = oldest;
+                    }
+                    after = format!(", after: {}", literal(&cursor));
+                }
+                _ => return Ok(read),
+            }
+        }
+        Ok(read)
     }
 
     /// Open pull requests and issues of `owners`' repositories that involve `logins` (Q11).

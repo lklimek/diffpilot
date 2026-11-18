@@ -37,6 +37,8 @@ enum Expect {
     Bool,
     /// An enum value or a list of them.
     Enums,
+    /// An order object `{field: ENUM, direction: ASC|DESC}`.
+    Order,
 }
 
 impl Expect {
@@ -51,6 +53,10 @@ impl Expect {
                         .as_array()
                         .is_some_and(|items| items.iter().all(Value::is_string))
             }
+            Self::Order => {
+                value["field"].is_string()
+                    && matches!(value["direction"].as_str(), Some("ASC" | "DESC"))
+            }
         }
     }
 
@@ -60,6 +66,7 @@ impl Expect {
             Self::Int => "Int",
             Self::Bool => "Boolean",
             Self::Enums => "[Enum!]",
+            Self::Order => "IssueOrder",
         };
         format!("{name}{}", if required { "!" } else { "" })
     }
@@ -86,6 +93,7 @@ fn arg_spec(typename: &str, field: &str, connection: bool) -> ArgSpec {
             AFTER,
             ("baseRefName", Expect::Str, false),
             ("headRefName", Expect::Str, false),
+            ("orderBy", Expect::Order, false),
         ],
         ("Repository", "issues") => &[STATES, FIRST, LAST, AFTER],
         ("Organization" | "User", "repositories") => {

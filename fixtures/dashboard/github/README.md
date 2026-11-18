@@ -13,6 +13,7 @@ Served by `tools/fake-github --dashboard-fixture-dir fixtures/dashboard/github` 
 | Archived | `acme/legacy-wallet#9` (excluded by `archived:false`) |
 | Fork | `acme/docs-site#80` (`isCrossRepository`, head `main` of the fork: not a base for `#77`) |
 | Linked login (unsearchable) | `acme/consensus#1541` (author `alice-helper`, stacked on #1534), issue `#1525` (assignee `alice-helper`), events of `alice-helper` |
+| Merged, linked login | authored by `alice-helper`: `acme/platform#1231` (merged by `alice`), `acme/consensus#1536` (merged by `mira-k`, absent from the feed), `acme/platform#1233` (merged by `renata-s`, files outside `alice`'s owned paths), `acme/consensus#1501` (older), `acme/review-policies#7` (opened 2026-11-17, merged 2026-11-18 by `alice` in a repository only enumerated; only its `opened` event is in the feed). The feed reports merges as action `merged` with GitHub's slim payload |
 | Issues | `acme/platform#1187` (assigned, production report, mention in a comment), `#1210` (assigned), `#1215` (watched repository only), `#1150` (closed), `acme/consensus#1520` (assigned, "Blocked by #1534"), `acme/wallet-ui#305` (mention) |
 | History | merged `acme/platform#1190`, closed unmerged `acme/wallet-ui#300`, reviewed by `alice`: `acme/platform#1195` (two reviews), `acme/consensus#1510`; outside the window: `acme/platform#1100` |
 | REST | releases (prerelease and draft skipped by `latest`; none for docs-site), milestones (open/closed), ownership policy `acme/review-policies:policies/platform.json`, files of #1203, #1199, #1176, #311 |
