@@ -1040,6 +1040,48 @@ async fn logout_keeps_tokens_until_the_last_session_ends() {
     );
 }
 
+/// ADR-020: with the dashboard schedule on, signing out of the last session keeps the GitHub tokens for the
+/// scheduled refresh; signing out everywhere deletes them.
+#[tokio::test]
+async fn last_sign_out_keeps_tokens_while_the_schedule_runs() {
+    let h = harness().await;
+    let first = h.sign_in("lklimek", 1001).await;
+    let settings = contracts::api::dashboard::DashboardSettings {
+        time_zone: Some("Europe/Warsaw".to_owned()),
+        ..Default::default()
+    };
+    h.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, &first.user_id, &settings, Utc::now())
+        .await
+        .expect("schedule on");
+    let stored = || async { h.state.db.user_tokens().get(&first.user_id).await };
+    let response = h
+        .send(logout_request(
+            Some(&first.cookie),
+            Some(&first.csrf),
+            false,
+        ))
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(me_login(&h, &first.cookie).await, None, "signed out");
+    assert!(
+        stored().await.expect("lookup").is_some(),
+        "the schedule keeps the GitHub tokens"
+    );
+    let again = h.sign_in("lklimek", 1001).await;
+    let response = h
+        .send(logout_request(Some(&again.cookie), Some(&again.csrf), true))
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        stored().await.expect("lookup"),
+        None,
+        "signing out everywhere deletes them"
+    );
+}
+
 /// A sign-in whose token write fails leaves no session behind, so logging out the only delivered session still
 /// deletes the pair.
 #[tokio::test]

@@ -232,7 +232,8 @@ pub async fn end_sign_in(state: &AppState, user_id: &str) -> Result<(), DbError>
     Ok(())
 }
 
-/// Ends one session (sign-out); the token pair is deleted with the user's last live session.
+/// Ends one session (sign-out); the token pair is deleted with the user's last live session unless the user's
+/// dashboard schedule keeps it (ADR-020).
 pub(crate) async fn end_session(state: &AppState, session: &Session) -> Result<(), DbError> {
     let _lock = lock_user(&session.user_id).await;
     state

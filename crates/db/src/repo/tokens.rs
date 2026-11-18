@@ -8,7 +8,8 @@ use sqlx::{Row, SqlitePool};
 
 use super::Db;
 use super::sessions::{
-    Liveness, NewSession, insert_session, live_session, parse_timestamp, timestamp,
+    Liveness, NewSession, insert_session, live_session, pair_kept_by_schedule, parse_timestamp,
+    timestamp,
 };
 use crate::error::DbError;
 
@@ -227,8 +228,8 @@ impl UserTokens<'_> {
         Ok(true)
     }
 
-    /// Ends the user's session `token_hash`; when the user has no other live session left (see [`Liveness`]),
-    /// deletes the token pair in the same transaction. True if the pair was deleted.
+    /// Ends the user's session `token_hash`; when the user has no other live session left (see [`Liveness`]) and no
+    /// dashboard schedule keeps the pair (ADR-020), deletes it in the same transaction. True if the pair was deleted.
     pub async fn end_session(
         &self,
         user_id: &str,
@@ -245,7 +246,8 @@ impl UserTokens<'_> {
             "DELETE FROM user_tokens WHERE user_id = ?3
              AND NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.user_id = ?3 AND ",
             live_session!(),
-            ")"
+            ") AND NOT ",
+            pair_kept_by_schedule!()
         ))
         .bind(timestamp(live.now))
         .bind(timestamp(live.seen_after))
@@ -573,6 +575,46 @@ mod tests {
             "the last live session takes the pair with it"
         );
         assert_eq!(tokens.get("u-1").await.expect("get"), None);
+    }
+
+    /// ADR-020: sign-out of the last session keeps the pair while the schedule is on; sign-out everywhere deletes it.
+    #[tokio::test]
+    async fn last_sign_out_keeps_the_pair_while_schedule_on() {
+        let db = db_with_signed_in_user().await;
+        let tokens = db.user_tokens();
+        let now = Utc::now();
+        crate::repo::tenants::testing::allow_login(&db, DEFAULT_TENANT, "lklimek", 42)
+            .await
+            .expect("allowed");
+        let settings = contracts::api::dashboard::DashboardSettings {
+            time_zone: Some("Europe/Warsaw".to_owned()),
+            ..Default::default()
+        };
+        assert!(settings.schedule_enabled, "on by default");
+        db.dashboard()
+            .save_settings(DEFAULT_TENANT, "u-1", &settings, now)
+            .await
+            .expect("settings");
+        assert!(
+            !tokens
+                .end_session("u-1", b"h", live_at(now))
+                .await
+                .expect("end"),
+            "the schedule keeps the pair"
+        );
+        assert!(tokens.get("u-1").await.expect("get").is_some());
+        assert_eq!(session_count(&db).await, 0);
+        assert!(
+            tokens
+                .end_sign_in("u-1", PairCondition::Any)
+                .await
+                .expect("everywhere")
+        );
+        assert_eq!(
+            tokens.get("u-1").await.expect("get"),
+            None,
+            "sign-out everywhere deletes it"
+        );
     }
 
     #[tokio::test]

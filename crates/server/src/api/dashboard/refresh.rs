@@ -17,7 +17,6 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
 use contracts::api::dashboard::{
     DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery, RefreshStatus,
     RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, WorkItem,
@@ -38,6 +37,7 @@ use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf};
 use crate::dashboard::refresh::rank::ItemJudgement;
 use crate::dashboard::refresh::{self, ControlError, Scope, StartError, status_of};
+use crate::dashboard::schedule::Schedule;
 use crate::dashboard::snapshot::{self, CursorError, Snapshot, View};
 use crate::state::AppState;
 
@@ -199,46 +199,52 @@ async fn summary(
         .await?
         .as_ref()
         .map(status_of);
-    let (revision, meta) = match current_view(&state, &scope).await? {
-        Some((revision, snapshot, view, record)) => (revision, Some(view.meta(&snapshot, &record))),
-        None => (snapshot::NO_SNAPSHOT.to_owned(), None),
+    let (revision, meta, scanned_at) = match current_view(&state, &scope).await? {
+        Some((revision, snapshot, view, record)) => (
+            revision,
+            Some(view.meta(&snapshot, &record)),
+            record.scanned_at,
+        ),
+        None => (snapshot::NO_SNAPSHOT.to_owned(), None, None),
     };
     let stored = dashboard.settings(&scope.tenant_id, &scope.user_id).await?;
     Ok(Json(DashboardSummary {
         revision,
         latest_refresh,
         snapshot: meta,
-        schedule: schedule_status(stored.as_ref()),
+        schedule: schedule_status(stored.as_ref(), state.dashboard.now(), scanned_at),
         // TODO(WP11-JUDGE): count the snapshot's judgements made with an older ranking prompt.
         older_prompt_judgements: 0,
     }))
 }
 
-/// The schedule as stored (ADR-020); the last run's instant is the configured local time of its date.
-fn schedule_status(stored: Option<&StoredDashboardSettings>) -> ScheduleStatus {
+/// The schedule as stored (ADR-020): the last run's instant is the configured local time of its date, the next
+/// run follows the due rule given the current snapshot's scan time (`last_success`).
+fn schedule_status(
+    stored: Option<&StoredDashboardSettings>,
+    now: DateTime<Utc>,
+    last_success: Option<DateTime<Utc>>,
+) -> ScheduleStatus {
     let settings = stored.map(|s| s.settings.clone()).unwrap_or_default();
-    let zone: Option<Tz> = settings.time_zone.as_deref().and_then(|z| z.parse().ok());
-    let time = chrono::NaiveTime::parse_from_str(&settings.schedule_time, "%H:%M").ok();
-    let last_run = stored
-        .and_then(|s| s.last_scheduled.as_ref())
-        .and_then(|run| {
-            let at = run
-                .on
-                .and_time(time?)
-                .and_local_timezone(zone?)
-                .earliest()?;
-            Some(ScheduledRun {
-                at: at.with_timezone(&Utc),
-                outcome: run.outcome,
-                reason: run.reason.clone(),
-            })
-        });
+    let configured = settings
+        .time_zone
+        .as_deref()
+        .and_then(|zone| Schedule::parse(zone, &settings.schedule_time));
+    let last_scheduled = stored.and_then(|s| s.last_scheduled.as_ref());
+    let last_run = last_scheduled.and_then(|run| {
+        Some(ScheduledRun {
+            at: configured?.instant(run.on),
+            outcome: run.outcome,
+            reason: run.reason.clone(),
+        })
+    });
+    let next_run_at = Schedule::of(&settings)
+        .map(|schedule| schedule.next_run_at(now, last_scheduled.map(|run| run.on), last_success));
     ScheduleStatus {
         enabled: settings.schedule_enabled,
         time: settings.schedule_time,
         time_zone: settings.time_zone,
-        // TODO(WP11-SCHED): the next due instant from the schedule's due rule (DST-aware, plan §A.5).
-        next_run_at: None,
+        next_run_at,
         last_run,
     }
 }
