@@ -1,14 +1,15 @@
 import { useEffect, useRef } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
-import type { ResolvePrResponse } from "../../api/generated/types";
-import { useCreateAnalysis, useMe, useResolvePr, useResumeAnalysis } from "../../api/queries";
+import type { MyAnalysis, ResolvePrResponse } from "../../api/generated/types";
+import { useCreateAnalysis, useMe, useMyAnalyses, useResolvePr, useResumeAnalysis } from "../../api/queries";
 import { AnalyzeHelp } from "../../components/analyze-help/AnalyzeHelp";
 import { Banner } from "../../components/banner/Banner";
 import { busyTip, buttonClass } from "../../components/button/button";
 import { PAUSE_REASON, pausedText } from "../../components/progress/paused";
 import { PrCheckCard } from "../../components/pr-check/PrCheckCard";
 import { PrUrlForm } from "../../components/pr-form/PrUrlForm";
+import { RecentReviews } from "../../components/recent-reviews/RecentReviews";
 import { SizeWarning } from "../../components/pr-form/SizeWarning";
 import { COMMENTING_UNAVAILABLE_WHY } from "../../components/comment/unavailable";
 import { SignInCard } from "../../components/sign-in/SignInCard";
@@ -39,6 +40,9 @@ const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Try again.";
 const short = (sha: string) => <code>{sha.slice(0, 7)}</code>;
 const SMALL_PRIMARY = buttonClass("primary", true);
+/** The review of a finished analysis, else its progress screen (which offers the review once it is ready). */
+const recentHref = (analysis: MyAnalysis) =>
+  analysis.status === "finished" ? `/analyses/${analysis.id}` : `/analyses/${analysis.id}/progress`;
 
 /** Home (brief §4.1): sign-in, PR URL, resume, head moved, errors. */
 export function HomeScreen() {
@@ -58,6 +62,7 @@ export function HomeScreen() {
   // arrival, so new / found / moved shows at once; nothing starts.
   const givenPrUrl = params.get("pr") ?? undefined;
   const user = me.data?.user ?? null;
+  const mine = useMyAnalyses(user !== null);
   const checkedOnArrival = useRef(false);
   useEffect(() => {
     if (checkedOnArrival.current || !givenPrUrl || !user || cancelledPrUrl) return;
@@ -329,6 +334,13 @@ export function HomeScreen() {
                 </PrCheckCard>
               )}
             </div>
+            <RecentReviews
+              analyses={mine.data?.analyses}
+              error={mine.isError ? errorText(mine.error) : null}
+              hrefOf={recentHref}
+              now={new Date()}
+              onNavigate={(href) => void navigate(href)}
+            />
           </>
         )}
       </div>

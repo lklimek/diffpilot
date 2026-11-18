@@ -272,3 +272,60 @@ pub struct BackgroundAnalysisRequest {
     /// Analyse remaining flows automatically.
     pub enabled: bool,
 }
+
+/// Query of `GET /api/v1/analyses`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MyAnalysesQuery {
+    /// Most rows returned, 1 to 100; 20 when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub limit: Option<u32>,
+}
+
+impl MyAnalysesQuery {
+    /// Rows returned without `limit`.
+    pub const DEFAULT_LIMIT: u32 = 20;
+    /// The largest accepted `limit`.
+    pub const MAX_LIMIT: u32 = 100;
+}
+
+/// Response of `GET /api/v1/analyses`: the reader's own analyses (requested by them), the latest per pull
+/// request, newest first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MyAnalyses {
+    /// The analyses, newest first.
+    pub analyses: Vec<MyAnalysis>,
+}
+
+/// One analysis of the reader's list, as stored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct MyAnalysis {
+    /// Analysis id.
+    pub id: AnalysisId,
+    /// The pull request.
+    pub pr: PrRef,
+    /// The pull request title as last fetched (untrusted text).
+    pub title: String,
+    /// The stored status.
+    pub status: AnalysisStatus,
+    /// When the analysis was requested.
+    pub created_at: Timestamp,
+}
+
+/// The stored status of an analysis (the `state` of [`AnalysisState`] without its details).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisStatus {
+    /// Planning flows.
+    Planning,
+    /// Analysing flows.
+    Running,
+    /// Waiting for a resume or a usage limit.
+    Paused,
+    /// Failed; can be retried.
+    Failed,
+    /// All flows analysed.
+    Finished,
+    /// Cancelled; partial results discarded.
+    Cancelled,
+}

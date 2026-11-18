@@ -142,3 +142,30 @@ test("cancelled: Home says 'Analysis cancelled. Check the PR to start again.' wi
   await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
   await expectTrustWording(page);
 });
+
+test("Recent reviews: own analyses under the form, keyboard to open, fits a narrow screen", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto("/review");
+  const section = page.getByRole("region", { name: "Recent reviews" });
+  await expect(section.getByRole("listitem")).toHaveCount(3);
+  await expect(section.getByRole("listitem").first()).toContainText("acme/node-client #482");
+  // The rows wrap inside the column (the page's own minimum width is outside this section).
+  const overflow = await section.evaluate((el) => el.scrollWidth - el.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+  await expectTrustWording(page);
+  await expectAccessible(page);
+  const link = section.getByRole("link").first();
+  await link.focus();
+  await expect(link).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}`));
+});
+
+test("Recent reviews: empty state", async ({ page }) => {
+  await page.goto("/review?scenario=no-reviews");
+  const section = page.getByRole("region", { name: "Recent reviews" });
+  await expect(section.getByText(/^No reviews yet\./)).toBeVisible();
+  await expectAccessible(page);
+});

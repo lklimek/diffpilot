@@ -37,6 +37,7 @@ import { getReviewState } from "./get-review-state";
 import { getSettings } from "./get-settings";
 import { getTour } from "./get-tour";
 import { listFeedback } from "./list-feedback";
+import { listMyAnalyses } from "./list-my-analyses";
 import { listQuestions } from "./list-questions";
 import { postFeedback } from "./post-feedback";
 import { putReviewState } from "./put-review-state";
@@ -56,6 +57,7 @@ export const handlers = [
   authLogout,
   resolvePr,
   createAnalysis,
+  listMyAnalyses,
   getAnalysis,
   getTour,
   getLines,

@@ -11,6 +11,7 @@ export const routes = {
   getMe: { method: "GET", path: "/api/v1/me", auth: "public" },
   resolvePr: { method: "POST", path: "/api/v1/pr/resolve", auth: "session_csrf" },
   createAnalysis: { method: "POST", path: "/api/v1/analyses", auth: "session_csrf" },
+  listMyAnalyses: { method: "GET", path: "/api/v1/analyses", auth: "read" },
   getAnalysis: { method: "GET", path: "/api/v1/analyses/{id}", auth: "read" },
   analysisEvents: { method: "GET", path: "/api/v1/analyses/{id}/events", auth: "read" },
   cancelAnalysis: { method: "POST", path: "/api/v1/analyses/{id}/cancel", auth: "session_csrf" },

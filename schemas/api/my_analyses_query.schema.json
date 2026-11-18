@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MyAnalysesQuery",
+  "description": "Query of `GET /api/v1/analyses`.",
+  "type": "object",
+  "properties": {
+    "limit": {
+      "description": "Most rows returned, 1 to 100; 20 when absent.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "minimum": 0
+    }
+  }
+}

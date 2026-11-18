@@ -56,6 +56,7 @@ marked `read` in `routes.rs`; every other route answers 403 `token_not_accepted`
 | A13 | `GET /api/v1/analyses/{id}/feedback` | `Feedback[]` (`feedback_list`), the user's own |
 | A14 | `GET /api/v1/analyses/{id}/pending-review` | `PendingReview` (`pending_review`) |
 | A15 | `GET /api/v1/settings`, `GET /api/v1/repos/{owner}/{name}/settings` | `Settings`, `RepoSettings` (`settings`, `repo_settings`) |
+| A16 | `GET /api/v1/analyses` | `MyAnalyses` (`my_analyses`), the user's own; query `MyAnalysesQuery` (`my_analyses_query`) |
 
 Never with a token: refreshing, cancelling or ranking the dashboard, any settings change, starting or steering an
 analysis, asking, feedback, pending comments, listing or creating tokens (`/api/v1/settings/access-tokens`), and

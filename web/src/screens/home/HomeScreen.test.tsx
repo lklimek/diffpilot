@@ -415,3 +415,57 @@ it.each([
     `/analyses/${analysis.id}`,
   );
 });
+
+describe("Recent reviews", () => {
+  it("lists the user's own analyses under the form; a row opens its analysis", async () => {
+    const router = renderRoute("/review");
+    const section = await screen.findByRole("region", { name: "Recent reviews" });
+    const items = await within(section).findAllByRole("listitem");
+    expect(items).toHaveLength(3);
+    const [one, two, three] = items as [HTMLElement, HTMLElement, HTMLElement];
+    expect(one).toHaveTextContent(`acme/node-client #482`);
+    expect(one).toHaveTextContent(analysis.pr.title);
+    expect(two).toHaveTextContent("acme/wallet-ui #96");
+    expect(two).toHaveTextContent("Analysing flows");
+    expect(three).toHaveTextContent("Analysis failed");
+    // The form comes first in reading order.
+    const field = screen.getByLabelText("GitHub pull request URL");
+    expect(field.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const link = within(one).getByRole("link");
+    await userEvent.click(link);
+    await waitFor(() =>
+      expect(router.state.location.pathname).toMatch(new RegExp(`^/analyses/${analysis.id}`)),
+    );
+    expectTrustWording(section.textContent ?? "");
+  });
+
+  it("empty state when the user has started none", async () => {
+    setScenario("no-reviews");
+    renderRoute("/review");
+    const section = await screen.findByRole("region", { name: "Recent reviews" });
+    expect(
+      await within(section).findByText(/No reviews yet\. Paste a PR URL above to start\./),
+    ).toBeVisible();
+  });
+
+  it("an error loading the list is shown in the section; the form still works", async () => {
+    server.use(
+      http.get("/api/v1/analyses", () =>
+        HttpResponse.json({ code: "unavailable", message: "The server is busy." }, { status: 500 }),
+      ),
+    );
+    renderRoute("/review");
+    const section = await screen.findByRole("region", { name: "Recent reviews" });
+    expect(await within(section).findByRole("alert")).toHaveTextContent(
+      "Recent reviews could not be loaded. The server is busy.",
+    );
+    expect(screen.getByLabelText("GitHub pull request URL")).toBeEnabled();
+  });
+
+  it("is not shown signed out", async () => {
+    setScenario("signed-out");
+    renderRoute("/review");
+    await screen.findByRole("link", { name: "Sign in with GitHub" });
+    expect(screen.queryByRole("region", { name: "Recent reviews" })).toBeNull();
+  });
+});
