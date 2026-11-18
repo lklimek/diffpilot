@@ -540,7 +540,7 @@ impl Jobs<'_> {
     }
 
     /// Claims the next runnable job: `queued`, credential usable and idle, no other running job of the same
-    /// analysis, a dashboard job only while its refresh is ranking; interactive before batch, then oldest first.
+    /// analysis, a dashboard job only while its refresh is ranking in the job's attempt; interactive before batch, then oldest first.
     /// Increments the attempt.
     pub async fn claim(&self, params: ClaimParams<'_>) -> Result<Option<JobRecord>, DbError> {
         if params.credential_ids.is_empty() {
@@ -559,7 +559,7 @@ impl Jobs<'_> {
             " WHERE id = (SELECT j.id FROM jobs j WHERE j.state = 'queued'
                  AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.id = j.analysis_id AND (a.state = 'cancelled' OR (a.user_paused_at IS NOT NULL AND j.kind <> 'ask')))
                  AND NOT EXISTS (SELECT 1 FROM analyses a JOIN pull_requests p ON p.id=a.pull_request_id WHERE a.id=j.analysis_id AND p.session_state='drop_requested')
-                 AND NOT EXISTS (SELECT 1 FROM dashboard_refreshes d WHERE d.id = j.refresh_id AND d.state <> 'ranking')
+                 AND NOT EXISTS (SELECT 1 FROM dashboard_refreshes d WHERE d.id = j.refresh_id AND (d.state <> 'ranking' OR d.ranking_attempt <> j.round))
                  AND j.credential_id IN (",
         );
         let mut ids = query.separated(", ");
@@ -2384,6 +2384,46 @@ mod tests {
         let claimed = claim(&db, 2).await.expect("claimed");
         assert_eq!(claimed.id, job);
         assert_eq!(claimed.spec.target.pull_request(), None);
+    }
+
+    /// A restart interrupts the ranking and leaves its queued judge job queued; Retry ranking starts the next
+    /// attempt, which runs only its own jobs.
+    #[tokio::test]
+    async fn judge_job_of_a_superseded_ranking_attempt_is_never_claimed() {
+        let db = db().await;
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let stale = db
+            .jobs()
+            .enqueue(judge_job(refresh, 1), at(0))
+            .await
+            .expect("enqueue")
+            .id;
+        db.dashboard().interrupt_live(at(1)).await.expect("restart");
+        let restarted = db
+            .dashboard()
+            .restart_ranking(crate::repo::DEFAULT_TENANT, "u1", refresh)
+            .await
+            .expect("retry ranking");
+        assert!(
+            matches!(
+                restarted,
+                crate::repo::dashboard::RestartOutcome::Restarted(_)
+            ),
+            "{restarted:?}"
+        );
+        assert_eq!(
+            claim(&db, 2).await,
+            None,
+            "the first attempt's job stays unclaimed"
+        );
+        let current = db
+            .jobs()
+            .enqueue(judge_job(refresh, 1), at(3))
+            .await
+            .expect("enqueue again")
+            .id;
+        assert_ne!(current, stale, "a new attempt has its own job");
+        assert_eq!(claim(&db, 4).await.expect("claimed").id, current);
     }
 
     #[tokio::test]

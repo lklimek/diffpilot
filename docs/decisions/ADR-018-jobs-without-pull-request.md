@@ -59,4 +59,4 @@ copies every row (each stored spec moves `analysis_id`, `pull_request_id` and `r
 first and renames the new ones (renaming rewrites the children's references). v1 jobs, usage, events and pending
 token revocations survive; the fresh database at deployment (OD8) stays allowed. `round` holds the refresh's
 ranking attempt for judge jobs, so the one-live-judge-job index is per (refresh, stage, generation, round) and
-Retry ranking can resubmit a batch. A judge job is claimed only while its refresh is `ranking`.
+Retry ranking can resubmit a batch. A judge job is claimed only while its refresh is `ranking` in the job's attempt (`round` = `ranking_attempt`).
