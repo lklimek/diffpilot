@@ -6,6 +6,8 @@
 - Evidence: `deploy/runner/r1-test/run.sh` (43 named checks, all PASS); ledger
   `/data/artifacts/smart-review/2026-11-17/wp3-ops/r1-test.log`. Docker 29.9.2, kernel 7.0, default seccomp,
   AppArmor `docker-default (enforce)`, real Codex CLI 0.167.0 and `github-mcp-server` 2.1.0, fake keys only.
+- Revised 2026-11-18 (owner decision): every scratch area is a disposable Docker volume on disk instead of a
+  tmpfs or the bounded codex-homes filesystem ("Scratch volumes" below).
 
 ## Decision
 One runner container. PID 1 is Docker's init (`init: true`); its child is a root **supervisor** whose only
@@ -92,42 +94,48 @@ anyway (`copy_back_as_agent_cannot_reach_runner_files`) — no confused deputy.
 | `…/credentials/`, `…/credentials/<id>/auth.json` | same | runner | 0700 / 0600 | no |
 | `…/sessions/`, `…/sessions/<analysis>/` | same | runner | 0700 | no |
 | `…/mirrors/` (and any claudius checkout) | same | runner | 0700 | no |
-| `…/codex-homes/` | **bounded persistent filesystem** (below), mounted here | runner | 0711 | traverse only |
+| `…/codex-homes/` | volume `tmp-runner-codex-homes` (below), mounted here | runner | 0711 | traverse only |
 | `…/codex-homes/<job>-<attempt>/` = `CODEX_HOME` | same | agent (handover) | 0700 | read/write |
-| `/work` (`SR_RUNNER_WORK_DIR`) | tmpfs, `size=`, `uid=10001,mode=0711` | runner | 0711 | traverse only |
+| `/work` (`SR_RUNNER_WORK_DIR`) | volume `tmp-runner-work` | runner | 0711 | traverse only |
 | `/work/<job>-<attempt>/` = Codex cwd; `repo/` | same | runner | 0755; files 0644 | read only |
 | `/work/<job>-<attempt>/{home,tmp}` = `HOME`, `TMPDIR` | same | agent (handover) | 0700 | read/write |
-| `/tmp` | tmpfs, `uid=10001,mode=0700` | runner | 0700 | no |
+| `/tmp` | volume `tmp-runner` | runner | 0700 | no |
 | `/dev/mqueue` | IPC namespace view (1777) | — | — | writable; emptied at job end |
 
-**`codex-homes` must be persistent and bounded.** A tmpfs is not viable: Codex may rotate the single-use refresh
-token during a job, and until copy-back the only valid token is in the per-job `auth.json`; a container crash
-would then lose the credential (ADR-003, T1c, T13 start-up recovery). A plain named volume is not viable either:
-the agent could fill the host disk (no capacity or inode limit). Decision: a dedicated filesystem of fixed size
-and inode count, separate from the session store (T8b): an ext4 image file created by the owner (e.g. 2 GiB,
-`mkfs.ext4 -N 65536`), loop-mounted on the host (`/etc/fstab`: `loop,nosuid,nodev,noexec`) and bind-mounted at
-`…/codex-homes`. Docker's `local` volume driver cannot loop-mount an image (tried: `loop: invalid argument`), so
-this is host preparation: `deploy/host/prepare-codex-homes.sh` (ext4 image, fstab `loop,nosuid,nodev,noexec`, no
-`lost+found`, fsck pass 0), a compose bind mount, and a start-up check in the image: the CMD runs
-`deploy/runner/preflight.sh` as `runner` before the runner, which exits **78** (the container stops; the restart
-policy retries, the log names the reason) unless `codex-homes` is a mount point on its own filesystem, ext4,
-mounted `nosuid,nodev,noexec`, within `SR_CODEX_HOMES_MAX_BYTES`/`_MAX_INODES`. A tmpfs passes only with
-`SR_CODEX_HOMES_ALLOW_TMPFS=1` and a localhost public URL (`deploy/compose.local.yaml`). `noexec` holds for Codex:
-it only places symlinks to its own binary there (`tmp/arg0-linux/*`), and exec resolves to `/opt/codex`. The runner
-binary repeats the check at its start ("Rust implementation"), so a changed CMD does not skip it. The test uses a `size=16m,nr_inodes=2048` tmpfs as a stand-in for the bound
-(`codex_home_exhaustion_fails_job_cleanly`: the agent hits `ENOSPC` for bytes and inodes, the runner still writes
-its state, copies `auth.json` back and cleans up).
+**Scratch volumes (owner decision 2026-11-18: nothing in RAM, no size limit for now).** `codex-homes`, `/work`
+and `/tmp` are Docker named volumes (`tmp-*`, label `smart-review.volume=temporary`, never backed up). They are
+persistent, which `codex-homes` needs: Codex may rotate the single-use refresh token during a job, and until
+copy-back the only valid token is in the per-job `auth.json` (ADR-003, T1c, T13 start-up recovery). Volumes have
+no uid, mode or mount options and survive restarts, so start-up establishes what the tmpfs options gave: the
+supervisor `lchown`s each root that is not the runner's yet (`serve.rs`, setup), the runner sets `0711`
+(`codex-homes`, `/work`) and `0700` (`/tmp`), recovers and empties `codex-homes` and the job directories (order
+step 1), and empties `/tmp`, failing the start if a leftover there cannot be removed (`main.rs`,
+`empty_private_tmp`; `scratch::clear`). Per job, steps 2 and 5 are unchanged, so no job reads another job's area.
+The image gives fresh volumes the same owners and modes. Accepted losses (threat model AR-8):
+- **No size bound.** An agent can fill Docker's disk (bytes and inodes), and with it the state volume and the
+  database, which share that filesystem; before this, `codex-homes` was a separate bounded filesystem (T8b) and
+  `/work` a capped tmpfs. TODO: a soft quota (e.g. per-job usage checked by the runner) once needed.
+- **`nosuid`, `nodev`, `noexec` are gone** (Docker mounts volumes without them). No replacement is needed for this
+  threat: `nodev` — creating a device node needs `CAP_MKNOD`, which no process here has (`cap_drop: ALL`; the
+  supervisor holds only `CHOWN`, `SETUID`, `SETGID`, `KILL`), and Docker's device cgroup refuses unlisted devices
+  anyway; `nosuid` — the agent can set the setuid bit only on its own files (no `CHOWN`), and
+  `no-new-privileges` stops any gain at `execve`; `noexec` (codex-homes only) — the agent could already execute
+  files in its `HOME`/`TMPDIR` under `/work`, which never had `noexec`.
+- **Remanence:** deleted scratch stays on the host disk until overwritten (readable by host root only).
+- A job directory that start-up recovery quarantined stays until removed by hand (it is runner-owned, 0700).
+The test keeps a `size=16m,nr_inodes=2048` tmpfs as a stand-in for a full disk (`codex_home_exhaustion_fails_job_cleanly`:
+the agent hits `ENOSPC` for bytes and inodes, the runner still writes its state, copies `auth.json` back and
+cleans up).
 
 Skills exposed to the agent must not live under a 0700 runner dir: copy them in per job or keep them in a
-runner-owned 0755/0644 tree. Supervisor start-up `lchown`s the three mount roots to `runner` when a fresh mount
-is root-owned; the runner sets the modes.
+runner-owned 0755/0644 tree.
 
 ## Container options (compose, WP3-OPS phase 2)
 `init: true`; `restart: unless-stopped` (a fail-closed exit brings a clean container); no `user:` (the image's
 entrypoint is the supervisor as root); `cap_drop: [ALL]`; `cap_add: [CHOWN, SETUID, SETGID, KILL]`;
 `security_opt: [no-new-privileges:true]` and nothing `unconfined`; `read_only: true`; `ipc: none` (no `/dev/shm`);
-`pids_limit` (mandatory); `mem_limit`; `cpus` (default 2); the two tmpfs, the state volume and the bounded
-`codex-homes` mount above; no Docker socket. Image: `deploy/runner/Dockerfile` (uids 10001/10002, no shared group,
+`pids_limit` (mandatory); `mem_limit`; `cpus` (default 2); the state volume and the three scratch volumes above;
+no Docker socket. Image: `deploy/runner/Dockerfile` (uids 10001/10002, no shared group,
 setuid/setgid bits stripped, no package manager or interpreter beyond Codex's needs).
 Restart policy: exits 70 (sweep failed), 71 (supervisor setup failed) and 78 (preflight refused) end the
 container; `unless-stopped` restarts it clean, and a repeating exit is visible in the restart count (runbook).
@@ -172,13 +180,6 @@ development smoke only (rejected by `check-production-config.sh` and the image c
   sweep scoped to its own descendants outside the runner; ignored as root); `R1_FAULT_SWEEP_FAILS=1` (every sweep
   fails) and `R1_FAULT_CLEAR_FAILS=<name>` (`clear` of a directory with that name is refused, so it gets
   quarantined) are refused unless `SR_SUPERVISOR_TEST_FAULTS=1`. The image sets none of them.
-- **codex-homes check:** under the supervisor, before recovery and the first claim, the runner refuses to start
-  (exit 78, as the image's preflight, so a changed command does not bypass it) unless `<state>/codex-homes` is on
-  another filesystem than the state directory, ext4 (a tmpfs only with `SR_CODEX_HOMES_ALLOW_TMPFS=1` and
-  `SR_CODEX_HOMES_TMPFS_PUBLIC_URL` on localhost: local stack, never set by the image), mounted
-  `nosuid,nodev,noexec`, with a finite capacity and inode count of at most `SR_CODEX_HOMES_MAX_BYTES` (default
-  16 GiB) and `SR_CODEX_HOMES_MAX_INODES` (default 1048576). Its root-owned `lost+found` is never treated as a job
-  home nor removed.
 - **Runner secret file:** under the supervisor the runner refuses to start (exit 78) when the agent could read
   `SR_RUNNER_SECRET_FILE`: the file is owned by the agent uid, has any `other` bit, or has any group bit with the
   agent's gid as its group (the agent has gid = uid and no supplementary group). Only the file itself is checked;
