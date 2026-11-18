@@ -1,3 +1,4 @@
+import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
@@ -424,6 +425,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     block = (
       <FlowIntroBlock
         flow={flow}
+        analysis={tour.analysis.state}
         now={now}
         onRequest={workAllowed ? () => work.request.mutate(flow.id) : undefined}
         busy={work.request.isPending}
@@ -555,6 +557,16 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         : null;
   const centre = (
     <>
+      <AnalysisStateBanner
+        state={tour.analysis.state}
+        busy={work.resume.isPending || work.retry.isPending}
+        onResume={() => work.resume.mutate()}
+        onRetry={() => work.retry.mutate()}
+        progressHref={`/analyses/${analysisId}/progress`}
+        error={
+          work.resume.error || work.retry.error ? errorText(work.resume.error || work.retry.error) : undefined
+        }
+      />
       {tour.analysis.review_ready && workAllowed && (
         <FlowWork
           done={tour.flows.filter((f) => f.analysis_status?.state === "analysed").length}
@@ -651,6 +663,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         nav={
           <NavList
             flows={tour.flows}
+            analysis={tour.analysis.state}
             quiet={tour.quiet}
             ticked={ticked}
             pendingCount={pendingCount}

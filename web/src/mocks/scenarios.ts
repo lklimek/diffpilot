@@ -239,6 +239,32 @@ const REPORTED_USAGE: UsageTotals = {
 const SCENARIOS = {
   "show-less": { showLess: true },
   "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5 } },
+  "lazy-paused": {
+    lazy: true,
+    analysis: {
+      state: "paused",
+      reason: "user",
+      paused_by: "alice",
+      paused_at: "2026-11-17T18:04:00Z",
+      resumes_at: null,
+      done: 1,
+      total: 5,
+    },
+  },
+  "lazy-limit": {
+    lazy: true,
+    analysis: {
+      state: "paused",
+      reason: "usage_limit",
+      resumes_at: "2026-11-17T14:20:00Z",
+      done: 1,
+      total: 5,
+    },
+  },
+  "lazy-failed": {
+    lazy: true,
+    analysis: { state: "failed", flow: null, message: "The repository mirror could not be updated." },
+  },
   "llm-save-fails": { llmSaveFails: true },
   "many-repos": {
     manyRepos: true,

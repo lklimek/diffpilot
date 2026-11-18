@@ -1,13 +1,23 @@
 import { useId, type ReactNode } from "react";
-import type { BlockRef, Flow, QuietRowRef, QuietRows, StepId } from "../../api/generated/types";
+import type {
+  AnalysisState,
+  BlockRef,
+  Flow,
+  QuietRowRef,
+  QuietRows,
+  StepId,
+} from "../../api/generated/types";
 import { GroupLabel, RiskLabel } from "../badge/LlmLabel";
 import { isFlowReviewed } from "../flow-intro/progress";
+import { FlowWorkLabel } from "../flow-intro/status";
 import { NOT_ANALYSED_LABEL, fileCount, lineCount, plural } from "../quiet/labels";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface NavListProps {
   /** Flows in tour order. */
   flows: Flow[];
+  /** State of the whole analysis: pending flows say what they wait for; without it, only the flow's own state. */
+  analysis?: AnalysisState;
   /** Quiet rows of the analysis, listed after every flow. */
   quiet: QuietRows;
   /** Steps the user ticked. */
@@ -78,7 +88,7 @@ function pendingText(count: NonNullable<NavListProps["pendingCount"]>): string {
 }
 
 /** Left menu: PR context, flows in tour order with risk and ticks, quiet rows, pending review. */
-export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect }: NavListProps) {
+export function NavList({ flows, analysis, quiet, ticked, pendingCount, current, onSelect }: NavListProps) {
   const openFlow = currentFlowId(flows, current);
   const unexplainedLines = quiet.unexplained.reduce((n, f) => n + lineCount(f.ranges), 0);
   const sections = quiet.not_analysed.filter((s) => s.items.length > 0);
@@ -120,15 +130,7 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
                 </button>
                 <span className="flex flex-col items-end gap-0.5 pt-1.5">
                   {flow.analysis_status && flow.analysis_status.state !== "analysed" ? (
-                    <span className="text-xs">
-                      {flow.analysis_status.state === "analysing"
-                        ? "Being analysed"
-                        : flow.analysis_status.state === "failed"
-                          ? "Failed"
-                          : flow.analysis_status.state === "queued"
-                            ? "Queued"
-                            : "Not analysed yet"}
-                    </span>
+                    <FlowWorkLabel status={flow.analysis_status} analysis={analysis} />
                   ) : (
                     <RiskLabel risk={flow.llm.risk} />
                   )}
