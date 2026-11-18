@@ -861,7 +861,7 @@ async fn requeued_attempt_returns_a_ready_answer_to_answering() {
     assert_eq!(again.answer, None);
     f.scripted.send(job, finished(job, JobOutcome::Cancelled));
     let cancelled = f.wait_for(id, |q| q.state == AskState::Failed).await;
-    assert_eq!(cancelled.failure.as_deref(), Some(job::SUPERSEDED));
+    assert_eq!(cancelled.failure.as_deref(), Some(job::CANCELLED));
 }
 
 #[tokio::test]
@@ -1092,7 +1092,7 @@ async fn restart_after_a_cancelled_result_withdraws_a_provisional_answer() {
     resume_unanswered(&f.state).await.expect("resume");
     let failed = f.wait_for(id, |q| q.state == AskState::Failed).await;
     assert_eq!(failed.answer, None);
-    assert_eq!(failed.failure.as_deref(), Some(job::SUPERSEDED));
+    assert_eq!(failed.failure.as_deref(), Some(job::CANCELLED));
     let (_, listed) = f.list().await;
     assert_eq!(listed[0]["answer"], Value::Null, "withdrawn from the list");
 }
@@ -1691,4 +1691,108 @@ async fn private_working_thread_is_committed_without_advancing_analytic_and_refo
             "analysis and repair packs have no private Q&A"
         );
     }
+}
+
+/// A ready answer whose check ends after the analysis was cancelled is not published: the validity is checked
+/// again under the lock that publishes.
+#[tokio::test]
+async fn ready_answer_checked_after_a_cancel_is_not_published() {
+    let f = fixture(false).await;
+    let id = f.asked("f1.5", QUESTION).await;
+    let job = f.scripted_job(id).await.spec.job_id;
+    f.scripted.send(job, event(1));
+    f.wait_for(id, |q| q.state == AskState::Answering).await;
+    let running = AnalysisState::Running {
+        done: 5,
+        total: 5,
+        stage: None,
+    };
+    f.state
+        .db
+        .analyses()
+        .set_state(f.analysis, &running, Utc::now())
+        .await
+        .expect("running");
+    pipeline::control::cancel(&f.state, f.analysis)
+        .await
+        .expect("cancel");
+    let mut events = f.state.progress.subscribe(f.analysis);
+    f.scripted.send(job, JobUpdate::OutputReady(good_answer()));
+    f.scripted.send(job, finished(job, JobOutcome::Cancelled));
+    let failed = f.wait_for(id, |q| q.state == AskState::Failed).await;
+    assert_eq!(failed.answer, None);
+    while let Ok(event) = events.try_recv() {
+        if let AnalysisEvent::Question { question } = event {
+            assert_eq!(
+                question.answer, None,
+                "an answer was published after the cancel"
+            );
+        }
+    }
+}
+
+/// A failed pipeline and a Retry leave the open questions alone: they do not depend on the failed work.
+#[tokio::test]
+async fn pipeline_failure_and_retry_keep_open_questions() {
+    let f = fixture(true).await;
+    let id = f.asked("f1.5", QUESTION).await;
+    let job = f.queued_job(id).await;
+    // What the pipeline does when it fails: the analysis's unfinished jobs are cancelled, then `failed` is stored.
+    f.state
+        .executor
+        .cancel_analysis(f.analysis)
+        .await
+        .expect("cancel");
+    let failed = AnalysisState::Failed {
+        reason: None,
+        flow: None,
+        message: "The analysis stopped because of a server error. Retry the analysis.".to_owned(),
+    };
+    f.state
+        .db
+        .analyses()
+        .set_state(f.analysis, &failed, Utc::now())
+        .await
+        .expect("failed");
+    assert!(
+        f.state
+            .db
+            .analyses()
+            .retry(f.analysis, Utc::now())
+            .await
+            .expect("retry")
+    );
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let stored = f.state.db.jobs().get(job).await.expect("job");
+    assert_eq!(stored.state, JobState::Queued);
+    assert!(!stored.cancel_requested);
+    assert_ne!(f.question(id).await.state, AskState::Failed);
+}
+
+/// A question cancelled together with its analysis says so, not that the pull request was analysed again.
+#[tokio::test]
+async fn question_cancelled_with_its_analysis_says_what_happened() {
+    let f = fixture(true).await;
+    let id = f.asked("f1.5", QUESTION).await;
+    f.queued_job(id).await;
+    let running = AnalysisState::Running {
+        done: 5,
+        total: 5,
+        stage: None,
+    };
+    f.state
+        .db
+        .analyses()
+        .set_state(f.analysis, &running, Utc::now())
+        .await
+        .expect("running");
+    pipeline::control::cancel(&f.state, f.analysis)
+        .await
+        .expect("cancel");
+    let failed = f.wait_for(id, |q| q.state == AskState::Failed).await;
+    assert_eq!(failed.failure.as_deref(), Some(job::ANALYSIS_CANCELLED));
+    assert_eq!(
+        job::ANALYSIS_CANCELLED,
+        "The question was cancelled because its analysis was cancelled."
+    );
 }

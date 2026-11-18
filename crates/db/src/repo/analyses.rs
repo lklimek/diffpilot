@@ -476,8 +476,9 @@ impl Analyses<'_> {
     }
 
     /// Starts a new round of a failed analysis (explicit Retry): state `planning` and the round incremented, and in
-    /// the same transaction every unfinished job of earlier rounds cancelled (queued and paused ones at once,
-    /// claimed and running ones flagged), so no submit of the new round re-uses them; a `not_checked` MemCan profile
+    /// the same transaction every unfinished pipeline job of earlier rounds cancelled (queued and paused ones at
+    /// once, claimed and running ones flagged), so no submit of the new round re-uses them; `ask` jobs are left
+    /// alone (a question does not depend on the failed work); a `not_checked` MemCan profile
     /// lookup is deleted too, so the new round looks the profile up again. `false` when the analysis is not failed
     /// (nothing changed).
     pub async fn retry(&self, id: AnalysisId, now: DateTime<Utc>) -> Result<bool, DbError> {
@@ -495,7 +496,7 @@ impl Analyses<'_> {
             return Ok(false);
         }
         let waiting: Vec<(String, u32)> = sqlx::query_as(
-            "SELECT id, attempt FROM jobs WHERE analysis_id = ? AND state IN ('queued', 'paused')",
+            "SELECT id, attempt FROM jobs WHERE analysis_id = ? AND kind <> 'ask' AND state IN ('queued', 'paused')",
         )
         .bind(id.to_string())
         .fetch_all(&mut *tx)
@@ -515,7 +516,8 @@ impl Analyses<'_> {
             .await?;
         }
         sqlx::query(
-            "UPDATE jobs SET cancel_requested = 1 WHERE analysis_id = ? AND state IN ('claimed', 'running')",
+            "UPDATE jobs SET cancel_requested = 1
+             WHERE analysis_id = ? AND kind <> 'ask' AND state IN ('claimed', 'running')",
         )
         .bind(id.to_string())
         .execute(&mut *tx)
