@@ -12,7 +12,7 @@ use db::repo::jobs::ClaimParams;
 use super::*;
 use crate::dashboard::judge::JudgeRanker;
 use crate::dashboard::score::{EligibilityJudgement, Freshness, JudgedPart, Judgement};
-use crate::dashboard::snapshot;
+use crate::dashboard::snapshot::{self, StoredLinkedIssue};
 use crate::pipeline::CREDENTIAL_ID;
 
 /// The runner's fake-provider answer: every asked part 0 (defect 0 and 0), eligibility as computed.
@@ -155,6 +155,19 @@ async fn judged_refresh_ranks_the_fixture_world_as_the_scorer_expects() {
         .await
         .expect("load")
         .expect("snapshot");
+    // Plan §B.2: the scan keeps the issues a pull request closes (the judge input maps them, `judge::tests`).
+    let fix = stored
+        .pull_requests
+        .iter()
+        .find(|p| p.facts.repo.name == "platform" && p.facts.number == 1203)
+        .expect("acme/platform#1203 scanned");
+    assert_eq!(
+        fix.linked_issues,
+        vec![StoredLinkedIssue {
+            number: 1187,
+            title: "Block sync stalls after the 2.4 upgrade on three nodes".to_owned(),
+        }]
+    );
     let applied: HashMap<ItemKey, ItemJudgement> =
         items.iter().map(|i| (i.key.clone(), expected(i))).collect();
     let view = snapshot::build(&stored, &applied, None);

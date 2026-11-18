@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use contracts::agent::judge_work::{
-    Eligibility, JudgeFacts, JudgeItem, KnownPart, PreviousJudgement, TodoJudgeFacts,
+    Eligibility, JudgeFacts, JudgeItem, KnownPart, LinkedIssue, PreviousJudgement, TodoJudgeFacts,
 };
 use contracts::api::dashboard::{
     ItemKey, ItemKind, PartSource, PartStatus, ScoreComponent, ScorePart,
@@ -413,7 +413,14 @@ fn facts(rules: &ScoreRules, source: Source<'_>, scored: &Scored) -> JudgeFacts 
                 stacked_on: ids(&pr.stacked_on),
                 milestone: milestone_title(&pr.milestone),
                 release_context: release_context(scored, &pr.milestone_context),
-                linked_issues: Vec::new(),
+                linked_issues: stored
+                    .linked_issues
+                    .iter()
+                    .map(|issue| LinkedIssue {
+                        reference: format!("{}#{}", place(&pr.repo), issue.number),
+                        title: issue.title.clone(),
+                    })
+                    .collect(),
                 owned_change: Some(wire(pr.owned_change)),
                 change_size: size_class(pr),
                 todo: None,

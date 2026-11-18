@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use contracts::agent::judge_work::{JudgeWorkInput, part_values};
+use contracts::agent::judge_work::{JudgeWorkInput, LinkedIssue, part_values};
 use contracts::api::dashboard::{
     DashboardSettings, ItemKey, ItemTarget, KindCounts, PartStatus, RankingState, RefreshState,
     RefreshStatus, RefreshTrigger, ScoreComponent, ScoreState, Tier, TodosState, TodosStatus,
@@ -32,7 +32,9 @@ use crate::dashboard::score::{
     CiEffective, IssueFacts, Mergeable, MilestoneContext, OwnedChange, PrFacts, Relation,
     TodoFacts, TodoStatus,
 };
-use crate::dashboard::snapshot::{SNAPSHOT_VERSION, StoredIssue, StoredPr, StoredTodo};
+use crate::dashboard::snapshot::{
+    SNAPSHOT_VERSION, StoredIssue, StoredLinkedIssue, StoredPr, StoredTodo,
+};
 
 /// Bound of every wait (real time; a judge job round trip takes well under a second).
 const WAIT: Duration = Duration::from_secs(20);
@@ -95,6 +97,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
         created_at: now() - TimeDelta::days(3),
         ci_red: Vec::new(),
         ci_pending: Vec::new(),
+        linked_issues: Vec::new(),
     }
 }
 
@@ -634,6 +637,32 @@ fn unsure_human_waiting_default_is_sent_with_its_age_class() {
         "default to confirm: a request within 2 days → 15; unsure: a team review request, an approximate request \
          date or an unanswered comment"
     );
+}
+
+/// Plan §B.2, §B.4: the issues a pull request closes are judged inputs; a snapshot stored before they were kept
+/// still loads (none known).
+#[test]
+fn closing_issues_are_judged_inputs_and_old_snapshots_load() {
+    let mut p = pr(4, "fix: z");
+    let without = fingerprints(&snapshot(vec![p.clone()], vec![], vec![]));
+    p.linked_issues = vec![StoredLinkedIssue {
+        number: 9,
+        title: "Crash on start".to_owned(),
+    }];
+    let snap = snapshot(vec![p.clone()], vec![], vec![]);
+    let items = candidates(&snap);
+    assert_eq!(
+        items[0].item.facts.linked_issues,
+        vec![LinkedIssue {
+            reference: "acme/wallet-ui#9".to_owned(),
+            title: "Crash on start".to_owned(),
+        }]
+    );
+    assert_ne!(fingerprints(&snap), without);
+    let mut old = serde_json::to_value(&p).expect("json");
+    old.as_object_mut().expect("object").remove("linked_issues");
+    let loaded: StoredPr = serde_json::from_value(old).expect("an old stored pull request loads");
+    assert!(loaded.linked_issues.is_empty());
 }
 
 #[test]
