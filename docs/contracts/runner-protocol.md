@@ -167,7 +167,9 @@ Durable state only; no in-memory handle is needed after a restart.
   explicit Retry increments `analyses.round` atomically with failed → planning and cancels the earlier round's
   unfinished jobs in the same transaction; jobs are enqueued in the current round and `submit` finds only jobs of
   that round, so a Retry calls the agent again while a restart (same round) re-uses stored outputs. Accepted
-  results of an earlier round are re-used only as verified documents.
+  results of an earlier round are re-used only as verified documents. A flow's retry (automatic or requested)
+  increments the round too; the succeeded jobs of other flows whose repair was postponed move to the new round,
+  so that repair still starts from the stored output.
 - **One job at a time.** The driver submits an analysis's pipeline jobs one at a time, in order: plan batches,
   PR context, then the flows in plan order. The next job is submitted only after the previous result was verified
   and its document stored (or the stage ended), so a claim never overtakes the previous result and every context

@@ -338,7 +338,10 @@ job seconds (`plan_seconds`, `pr_context_seconds`, `flow_seconds`, `ask_seconds`
 `total_seconds`, the usage totals/report count, and `initial_estimate_seconds` when known. It includes
 all rounds; wall time includes pauses. Cancelled or failed jobs without a finish timestamp contribute
 no execution duration. It is a snapshot at the transition: later Ask jobs and late runner completion
-after cancellation remain visible in usage summaries but cannot change this single event.
+after cancellation remain visible in usage summaries but cannot change this single event. Each time the
+driver of an open review ends without admitted flow work (background analysis off and nothing requested, or
+the remaining flows failed for good) it emits an `analysis parked` info event with the same fields for the run
+so far, without `total_seconds`; an analysis can log it many times before its one `analysis statistics` event.
 
 The initial estimate is the first pre-start estimate actually returned to the initiating reader for
 that PR head. This small, bounded process-local observation is not persisted; after restart, eviction,

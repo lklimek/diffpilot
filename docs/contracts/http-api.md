@@ -443,11 +443,15 @@ is 404. PUT `/api/v1/analyses/{id}/background` takes `{"enabled":false}` and ret
 Both require session/CSRF and tenant access; requesting work or enabling background checks the current PR
 head. Latest requested flow runs first, then background flows by plan rank. Already claimed work finishes;
 queued work may be withdrawn; a repair run refused because the demand changed waits for its flow's next turn
-and then repairs the stored output. A user pause still prevents submission/claim. With background analysis on,
-a failed flow is retried automatically at most twice, after the flows not analysed yet; then it stays `failed`
-and needs explicit Retry. Its `analysis_status.message` names the cause: `The flow analysis failed. <cause
-sentence of the failed call> Retry this flow.` An unusable LLM credential fails the analysis instead (state
-`failed` with the sign-in sentence and the flow). Requests/preferences survive restart.
+and then repairs the stored output, also after another flow's retry started a new job round. A user pause still
+prevents submission/claim. With background analysis on, a failed flow is retried automatically at most twice,
+after the flows not analysed yet; then it stays `failed` and needs explicit Retry. Its `analysis_status.message`
+names the cause and what happens next: `The flow analysis failed. <cause sentence of the failed call>` followed
+by `It will be tried again automatically.` while an automatic retry is left and background analysis is on, else
+by `Retry this flow.` (likewise after `The flow output failed verification after repairs.`). A flow too large
+for the agent request (`This flow is too large for the agent request.`) is never retried automatically: the
+same plan and diff give the same prompt. An unusable LLM credential fails the analysis instead (state `failed`
+with the sign-in sentence and the flow). Requests/preferences survive restart.
 
 When no flow work is admitted (every flow analysed or failed for good, or the rest not requested with background
 off) and flows remain, the analysis stays `running {done, total}` without `stage` and no server task holds it;

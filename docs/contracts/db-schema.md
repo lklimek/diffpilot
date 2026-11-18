@@ -1,7 +1,9 @@
 # Database schema (summary)
 
 Source of truth: `crates/db/migrations/` (`0001_init.sql`, then additive migrations that upgrade an existing
-database in place and keep its data: `0002_flow_auto_retries.sql`). SQLite in WAL mode, foreign keys on, `STRICT` tables, timestamps as RFC 3339 UTC text. Only
+database in place and keep its data: `0002_flow_auto_retries.sql`). An applied migration file is never edited
+(sqlx compares its checksum at start). A server binary older than the database (an applied migration it does not
+know) refuses to start; going back needs a database copy of that version. SQLite in WAL mode, foreign keys on, `STRICT` tables, timestamps as RFC 3339 UTC text. Only
 `crates/db` uses sqlx; everything else goes through the repository API (`crates/db/src/repo/*.rs`, one module per
 aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}` — sqlx types stay private.
 
@@ -73,11 +75,14 @@ pause and keeps an unexpired job usage-limit pause. Jobs retain the model choice
 Analytic completion advances the generation even when it keeps the same thread id. Ask completion updates
 only `working_sessions` using the job's durable question owner. A stale fork is not selected at claim. Successful
 analytic output without an archive clears its reference and invalidates forks. Cancel/Re-analyze keep archives;
-explicit PR removal or PR-wide retention deletes them. This migration is rewritten, not upgraded in place.
+explicit PR removal or PR-wide retention deletes them.
 
 Lazy review adds `analyses.background_analysis` (boolean, default 1) and `flow_work` keyed by analysis/flow,
 with tenant, nullable requested timestamp and nullable plain error. Lazy scheduling adds no fields to stored
 plan or flow documents; the separate concise-assessment amendment makes low assessment details optional.
 Accepted flow documents override scheduling rows. Newest demand precedes plan rank; a failed flow is scheduled
 again by background work until `flow_work.auto_retries` (integer, default 0, migration 0002) reaches 2, each
-automatic retry counting one, and after that only on request. Explicit retry advances the job round only between serial pipeline jobs.
+automatic retry counting one, and after that only on request; a flow with an `unsent` document (too large for
+the agent request) only on request. A flow retry advances the job round only between serial pipeline jobs, in the
+transaction that chose the flow; succeeded jobs of other flows that have neither a flow document nor a failure
+(an output waiting for its postponed repair) move to the new round with it (`jobs.round`).
