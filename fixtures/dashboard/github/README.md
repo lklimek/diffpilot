@@ -8,7 +8,7 @@ Served by `tools/fake-github --dashboard-fixture-dir fixtures/dashboard/github` 
 | Case | Items |
 |---|---|
 | Authored, open | `acme/wallet-ui#311` (CI failing, 2 unresolved threads, changes requested, milestone v2.5), `#298` (stacked on #311's head, team review request), `acme/node-client#476` (awaiting `tobias-w`), `#490` (draft), `acme/platform#1176` (ready label, awaiting `jun-park` + team) |
-| Review requested | `acme/platform#1203` (fixes #1187, CI green, milestone v2.4, owned path), `#1199` (large, milestone v3.0), `acme/wallet-ui#320` (requested today), `acme/node-client#482` (the recorded PR; head follows `POST /_fake/head`), `#495` (bot author), `acme/docs-site#77`, `acme/consensus#1534` (3 unresolved threads) |
+| Review requested | `acme/platform#1203` (fixes #1187, CI green, milestone v2.4, owned path), `#1199` (large, milestone v3.0), `acme/wallet-ui#320` (requested today), `acme/node-client#482` (the recorded PR; head follows `POST /_fake/head`), `#495` (excluded bot author, review requested from alice: listed), `acme/docs-site#77`, `acme/consensus#1534` (3 unresolved threads) |
 | Assigned PR, private | `acme/ops-runbooks#14` (private repository: needs a token) |
 | Archived | `acme/legacy-wallet#9` (excluded by `archived:false`) |
 | Fork | `acme/docs-site#80` (`isCrossRepository`, head `main` of the fork: not a base for `#77`) |

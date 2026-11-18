@@ -337,13 +337,14 @@ impl Dashboard<'_> {
     ) -> Result<(), DbError> {
         let saved = sqlx::query(
             "INSERT INTO dashboard_settings (user_id, tenant_id, linked_logins, enumerate_owners, repositories,
-                 lookback_days, ready_label, skip_authors, include_todos, memcan_extra_projects, schedule_enabled,
-                 schedule_time, time_zone, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 lookback_days, ready_label, skip_authors, known_bots, include_todos, memcan_extra_projects,
+                 schedule_enabled, schedule_time, time_zone, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (user_id) DO UPDATE SET linked_logins = excluded.linked_logins,
                  enumerate_owners = excluded.enumerate_owners, repositories = excluded.repositories,
                  lookback_days = excluded.lookback_days, ready_label = excluded.ready_label,
-                 skip_authors = excluded.skip_authors, include_todos = excluded.include_todos,
+                 skip_authors = excluded.skip_authors, known_bots = excluded.known_bots,
+                 include_todos = excluded.include_todos,
                  memcan_extra_projects = excluded.memcan_extra_projects,
                  schedule_enabled = excluded.schedule_enabled, schedule_time = excluded.schedule_time,
                  time_zone = excluded.time_zone, updated_at = excluded.updated_at
@@ -357,6 +358,7 @@ impl Dashboard<'_> {
         .bind(i64::from(settings.lookback_days))
         .bind(&settings.ready_label)
         .bind(serde_json::to_string(&settings.skip_authors)?)
+        .bind(serde_json::to_string(&settings.known_bots)?)
         .bind(settings.include_todos)
         .bind(serde_json::to_string(&settings.memcan_extra_projects)?)
         .bind(settings.schedule_enabled)
@@ -1375,6 +1377,7 @@ fn settings_of(row: &SqliteRow) -> Result<StoredDashboardSettings, DbError> {
             lookback_days: count(row, "lookback_days")?,
             ready_label: row.try_get("ready_label")?,
             skip_authors: json_column(row, "skip_authors")?,
+            known_bots: json_column(row, "known_bots")?,
             include_todos: row.try_get("include_todos")?,
             memcan_extra_projects: json_column(row, "memcan_extra_projects")?,
             schedule_enabled: row.try_get("schedule_enabled")?,
@@ -1641,6 +1644,7 @@ mod tests {
             lookback_days: 14,
             ready_label: "ready".to_owned(),
             skip_authors: Vec::new(),
+            known_bots: vec!["Carol".to_owned()],
             include_todos: false,
             memcan_extra_projects: vec!["notes".to_owned()],
             schedule_enabled: false,
@@ -3794,5 +3798,22 @@ mod tests {
             dash.write_ranking(T, "u1", id, 0, &ending).await,
             Err(DbError::Conflict)
         ));
+    }
+
+    /// A settings row stored before migration 0009, or created with column defaults, reads the default known bots.
+    #[tokio::test]
+    async fn rows_without_known_bots_read_the_default_list() {
+        let db = db().await;
+        let dash = db.dashboard();
+        assert!(
+            dash.set_time_zone_if_unset(T, "u1", "Europe/Warsaw", at(0))
+                .await
+                .expect("zone")
+        );
+        let stored = dash.settings(T, "u1").await.expect("read").expect("row");
+        assert_eq!(
+            stored.settings.known_bots,
+            ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"]
+        );
     }
 }

@@ -80,11 +80,23 @@
           "type": "string"
         },
         "skip_authors": {
-          "description": "Bot authors whose items are left out.",
+          "description": "Excluded authors: items they author are left out unless a review is requested from one of the user's\nlogins or the item is assigned to one. Being listed does not make a login a bot.",
           "type": "array",
           "items": {
             "type": "string"
           }
+        },
+        "known_bots": {
+          "description": "Logins treated as bots besides GitHub's `Bot` accounts and `[bot]` logins: never a waiting human.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "thepastaclaw",
+            "Claudius-Maginificent",
+            "DCG-Claude"
+          ]
         },
         "include_todos": {
           "description": "Show the user's MemCan TODOs.",

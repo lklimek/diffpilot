@@ -463,19 +463,107 @@ fn human_waiting_ignores_bot_and_own_authors() {
     }
 }
 
+/// A bot is GitHub's `Bot` type, a `[bot]` login or a login of the user's known bots (defaults: the review bots);
+/// an excluded author is no bot.
 #[test]
-fn is_bot_uses_typename_suffix_pseudo_bots_and_skipped_authors() {
+fn is_bot_uses_typename_suffix_and_known_bots_only() {
     let r = rules();
     for (login, typename_bot, expected) in [
         ("dependabot", true, true),
         ("renovate[bot]", false, true),
         ("thepastaclaw", false, true),
         ("DCG-Claude", false, true),
-        ("Dependabot", false, true),
+        ("claudius-maginificent", false, true),
+        ("Dependabot", false, false),
         ("bob", false, false),
     ] {
         assert_eq!(r.is_bot(login, typename_bot), expected, "{login}");
     }
+    let edited = ScoreRules::new(
+        "alice",
+        &DashboardSettings {
+            known_bots: vec!["Carol".into()],
+            ..DashboardSettings::default()
+        },
+    );
+    assert!(
+        !edited.is_bot("thepastaclaw", false),
+        "removed from the known bots"
+    );
+    assert!(edited.is_bot("carol", false), "added to the known bots");
+}
+
+/// A pull request by `author` (a human by GitHub's type) whose review is requested from alice.
+fn requested_by(author: &str, settings: &DashboardSettings) -> Scored {
+    score_pr(
+        &ScoreRules::new("alice", settings),
+        &PrFacts {
+            author: Some(author.into()),
+            relations: vec![Relation::ReviewRequested],
+            review_pending_for_us: true,
+            review_requested_at: Some(now() - Duration::days(1)),
+            ..pr()
+        },
+        None,
+        now(),
+    )
+    .expect("scores")
+}
+
+/// The known bots decide who counts as a waiting human: a known bot's review request gives no human-waiting
+/// points; removed from the list, the same login is a human waiting.
+#[test]
+fn known_bots_decide_the_waiting_human() {
+    let defaults = DashboardSettings::default();
+    assert_eq!(
+        part(&requested_by("thepastaclaw", &defaults), C::HumanWaiting).points_tenths,
+        Some(0)
+    );
+    let without = DashboardSettings {
+        known_bots: vec![],
+        ..DashboardSettings::default()
+    };
+    assert_eq!(
+        part(&requested_by("thepastaclaw", &without), C::HumanWaiting).points_tenths,
+        Some(150)
+    );
+    let with_carol = DashboardSettings {
+        known_bots: vec!["carol".into()],
+        ..DashboardSettings::default()
+    };
+    assert_eq!(
+        part(&requested_by("carol", &with_carol), C::HumanWaiting).points_tenths,
+        Some(0)
+    );
+}
+
+/// An excluded human author: their undirected items are left out, but a review they request from the user is a
+/// human waiting (being excluded does not make a login a bot).
+#[test]
+fn excluded_human_author_is_left_out_but_still_a_waiting_human() {
+    let settings = DashboardSettings {
+        skip_authors: vec!["carol".into()],
+        ..DashboardSettings::default()
+    };
+    let rules = ScoreRules::new("alice", &settings);
+    let mentioned = score_pr(
+        &rules,
+        &PrFacts {
+            author: Some("carol".into()),
+            relations: vec![Relation::Mentioned],
+            ..pr()
+        },
+        None,
+        now(),
+    )
+    .expect("scores");
+    assert_eq!(
+        mentioned.excluded.as_deref(),
+        Some("author @carol is excluded (not assigned to you or requested from you)")
+    );
+    let requested = requested_by("carol", &settings);
+    assert_eq!(requested.excluded, None);
+    assert_eq!(part(&requested, C::HumanWaiting).points_tenths, Some(150));
 }
 
 #[test]
@@ -913,36 +1001,94 @@ fn eligibility_ownership_policy_and_drafts() {
     );
 }
 
-#[test]
-fn skipped_bot_items_are_excluded() {
-    let item = scored(&PrFacts {
+/// A dependabot pull request with `relations`.
+fn dependabot(relations: Vec<Relation>) -> Scored {
+    scored(&PrFacts {
         author: Some("dependabot[bot]".into()),
         author_is_bot: true,
+        relations,
         ..pr()
-    });
-    assert!(
-        item.excluded
-            .as_deref()
-            .is_some_and(|r| r.contains("dependabot"))
+    })
+}
+
+const SKIPPED_REASON: &str =
+    "author @dependabot[bot] is excluded (not assigned to you or requested from you)";
+
+#[test]
+fn skipped_bot_items_are_excluded_unless_directed_at_the_user() {
+    // Review requested from a scanned login (directly or through a team) or assigned to one: listed.
+    assert_eq!(dependabot(vec![Relation::ReviewRequested]).excluded, None);
+    assert_eq!(dependabot(vec![Relation::Assigned]).excluded, None);
+    // Only mentioned, only in a watched repository, or nothing directed at the user: left out.
+    for relations in [
+        vec![Relation::Mentioned],
+        vec![Relation::RepoOpen],
+        vec![Relation::Authored],
+        vec![],
+    ] {
+        assert_eq!(
+            dependabot(relations.clone()).excluded.as_deref(),
+            Some(SKIPPED_REASON),
+            "{relations:?}"
+        );
+    }
+    let issue_by = |relations| {
+        score_issue(
+            &rules(),
+            &IssueFacts {
+                author: Some("Dependabot".into()),
+                relations,
+                ..issue()
+            },
+            None,
+            now(),
+        )
+        .expect("scores")
+        .excluded
+    };
+    assert_eq!(issue_by(vec![Relation::Assigned]), None);
+    assert_eq!(
+        issue_by(vec![Relation::Mentioned]).as_deref(),
+        Some("author @Dependabot is excluded (not assigned to you or requested from you)")
     );
-    let issue = score_issue(
-        &rules(),
-        &IssueFacts {
-            author: Some("Dependabot".into()),
-            ..issue()
-        },
-        None,
-        now(),
-    );
-    assert!(issue.expect("scores").excluded.is_some());
     let renovate = scored(&PrFacts {
         author: Some("renovate[bot]".into()),
         author_is_bot: true,
+        relations: vec![],
         ..pr()
     });
     assert!(
         renovate.excluded.is_none(),
         "only the configured bot authors are skipped"
+    );
+}
+
+/// A kept bot pull request whose review is requested from the user scores like any review request without the
+/// human-waiting part: the bot's request is no human waiting.
+#[test]
+fn kept_bot_review_request_scores_without_human_waiting() {
+    let request = |author: &str, author_is_bot| PrFacts {
+        title: "chore(deps): bump serde from 1.0.1 to 1.0.2".into(),
+        author: Some(author.into()),
+        author_is_bot,
+        relations: vec![Relation::ReviewRequested],
+        review_pending_for_us: true,
+        review_requested_at: Some(now() - Duration::days(1)),
+        additions: Some(4),
+        deletions: Some(4),
+        base_ref: Some("main".into()),
+        ..pr()
+    };
+    let item = scored(&request("dependabot[bot]", true));
+    assert_eq!(item.excluded, None);
+    assert_eq!(part(&item, C::HumanWaiting).points_tenths, Some(0));
+    assert_eq!((item.score.tier, item.score.total_tenths), (Tier::P2, 575));
+    // The same request from a human: 15 human-waiting points more.
+    let human = scored(&request("carol", false));
+    assert_eq!(part(&human, C::HumanWaiting).points_tenths, Some(150));
+    assert_eq!(
+        (human.score.tier, human.score.total_tenths),
+        (Tier::P1, 725)
     );
 }
 
