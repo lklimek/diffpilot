@@ -81,8 +81,11 @@ const withReview = (review: (current: WorkItem["review"]) => WorkItem["review"])
 const SCENARIOS = {
   /** A finished manual refresh of 08:12, ranked at 08:15. */
   normal: (): Base => ({ summary: SUMMARY, items: ITEMS }),
-  /** A scan running (PR details 23 of 41); the list is the 08:12 snapshot. */
-  refreshing: (): Base => ({ summary: { ...SUMMARY, latest_refresh: SCANNING }, items: ITEMS }),
+  /** A scan running for 47 s (PR details 23 of 41); the list is the 08:12 snapshot. */
+  refreshing: (): Base => {
+    const started_at = new Date(LOADED - 47_000).toISOString();
+    return { summary: { ...SUMMARY, latest_refresh: { ...SCANNING, started_at } }, items: ITEMS };
+  },
   /** The scan finished at 10:29; the LLM ranks (10 of 14); changed and new items are provisional. */
   provisional: () => ranking("running"),
   /** As provisional, but the ranking waits for a review analysis holding the LLM credential. */
@@ -106,8 +109,12 @@ const SCENARIOS = {
   /** The last scan stopped on GitHub's rate limit; the 08:12 snapshot stays; Refresh waits for the reset. */
   error: (): Base => {
     const retry_at = new Date(LOADED + 14 * 60_000).toISOString();
+    const started_at = new Date(LOADED - 70_000).toISOString();
     return {
-      summary: { ...SUMMARY, latest_refresh: { ...FAILED, failure: { ...FAILED.failure!, retry_at } } },
+      summary: {
+        ...SUMMARY,
+        latest_refresh: { ...FAILED, started_at, failure: { ...FAILED.failure!, retry_at } },
+      },
       items: ITEMS,
     };
   },

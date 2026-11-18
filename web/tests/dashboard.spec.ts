@@ -6,10 +6,6 @@ import { ANALYSIS_ID } from "./support";
 // (`?dashboard=<name>`, src/mocks/handlers/dashboard.ts).
 
 test.describe("My work (msw)", () => {
-  // TODO(WP11-WEB-S after WEB-C merge): the screen arranges the WEB-C components (components/app-shell,
-  // components/dashboard); remove this fixme once they are merged.
-  test.fixme(true, "needs the WP11-WEB-C components");
-
   const open = async (page: Page, scenario = "normal", extra = "") => {
     await page.goto(`/my-work?dashboard=${scenario}${extra}`);
     await expect(page.getByRole("heading", { name: "My work", level: 1 })).toBeVisible();
@@ -126,7 +122,17 @@ test.describe("My work (msw)", () => {
   for (const colorScheme of ["light", "dark"] as const) {
     test(`no serious axe violations in every mockup state, ${colorScheme}`, async ({ page }) => {
       await page.emulateMedia({ colorScheme });
-      for (const scenario of ["normal", "refreshing", "provisional", "waiting", "empty", "error"]) {
+      for (const scenario of [
+        "normal",
+        "refreshing",
+        "provisional",
+        "waiting",
+        "ranking-failed",
+        "empty",
+        "error",
+        "first-run",
+        "no-time-zone",
+      ]) {
         await test.step(scenario, async () => {
           await open(page, scenario);
           await expectAccessible(page);
@@ -137,9 +143,6 @@ test.describe("My work (msw)", () => {
 });
 
 test.describe("review start from a PR row (msw)", () => {
-  // TODO(WP11-WEB-S after WEB-C merge): remove this fixme once the WP11-WEB-C components are merged.
-  test.fixme(true, "needs the WP11-WEB-C components");
-
   const row = (page: Page) =>
     page.getByRole("listitem").filter({ hasText: "feat(rpc): retry with backoff on timeout" });
 

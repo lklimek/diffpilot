@@ -69,6 +69,7 @@ export function WorkList({
   const [cursor, setCursor] = useState<string | null>(null);
   const expanders = useRef(new Map<string, HTMLButtonElement>());
   const titleId = useId();
+  const staleId = useId();
 
   const shown = items.filter((item) => shows(kind, item));
   // P0 alarms stay visible whatever the kind switch says.
@@ -201,8 +202,17 @@ export function WorkList({
           ]}
         />
       </div>
-      {staleNote && <p className="mt-1.5 text-xs text-muted">{staleNote}</p>}
-      <div className={staleNote ? "opacity-[.62]" : ""}>
+      {staleNote && (
+        <p id={staleId} className="mt-1.5 text-xs text-muted">
+          {staleNote}
+        </p>
+      )}
+      {/* A stale list keeps full text contrast: the note describes it and a dashed frame marks it. */}
+      <div
+        data-stale={staleNote ? true : undefined}
+        aria-describedby={staleNote ? staleId : undefined}
+        className={staleNote ? "mt-1.5 rounded-md border border-dashed border-border px-2 pb-1.5" : ""}
+      >
         {alarms.length > 0 && (
           <div className="mt-2.5 grid gap-2.5">
             {alarms.map((item) => (

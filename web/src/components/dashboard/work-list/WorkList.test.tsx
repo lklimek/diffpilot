@@ -167,6 +167,23 @@ describe("WorkList", () => {
     expect(onNavigate).toHaveBeenCalledOnce();
   });
 
+  it("marks a stale list by its note and a dashed frame, never by lowering text contrast", () => {
+    render(
+      <WorkList
+        items={ITEMS}
+        kind="pr"
+        onKindChange={() => {}}
+        reviewHref={reviewHref}
+        staleNote="08:12 snapshot. It is replaced when a scan finishes."
+        now={NOW}
+      />,
+    );
+    const rows = document.querySelector("[data-stale]")!;
+    expect(rows).toHaveAccessibleDescription("08:12 snapshot. It is replaced when a scan finishes.");
+    expect(rows.className).not.toMatch(/opacity/);
+    expect(rows.className).toMatch(/border-dashed/);
+  });
+
   it("says when no item of the chosen kind needs the user", async () => {
     render(<List items={ITEMS.filter((item) => item.kind !== "issue")} />);
     await userEvent.click(screen.getByRole("button", { name: /Issues 0/ }));
