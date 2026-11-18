@@ -1,6 +1,6 @@
-import { useId } from "react";
+import { type ReactNode, useId } from "react";
 import { Tooltip } from "../../tooltip/Tooltip";
-import { signed } from "../common/format";
+import { netTone, signed } from "../common/format";
 import { Segmented } from "../common/Segmented";
 import { NetChart, type NetPoint } from "../net-chart/NetChart";
 
@@ -41,12 +41,14 @@ interface HeadlineProps {
 
 const net = (period: PeriodCount) => period.closed - period.opened;
 
-function Tile({ label, value, sub, tip }: { label: string; value: number; sub: string; tip: string }) {
+function Tile({ label, value, sub, tip }: { label: string; value: number; sub: ReactNode; tip: string }) {
   return (
     <Tooltip tip={tip}>
       <div tabIndex={0} className="cursor-help rounded-md border border-border bg-surface-2 px-2.5 py-1.5">
         <div className="text-[11px] text-muted">{label}</div>
-        <div className="font-mono text-lg font-bold tabular-nums">{signed(value)}</div>
+        <div className="font-mono text-lg font-bold tabular-nums">
+          <span className={netTone(value)}>{signed(value)}</span>
+        </div>
         <div className="text-[11px] text-muted">{sub}</div>
       </div>
     </Tooltip>
@@ -76,7 +78,7 @@ export function Headline({ figures, days, weeks, unit, onUnitChange, staleNote }
           <div
             aria-describedby={subId}
             data-headline-value
-            className="mt-1.5 mb-0.5 text-[56px] leading-[1.05] font-bold tracking-tight tabular-nums"
+            className={`mt-1.5 mb-0.5 text-[56px] leading-[1.05] font-bold tracking-tight tabular-nums ${netTone(net(week))}`}
           >
             {signed(net(week))}
           </div>
@@ -100,7 +102,11 @@ export function Headline({ figures, days, weeks, unit, onUnitChange, staleNote }
             <Tile
               label="4 weeks"
               value={fourWeeks.net}
-              sub={`before: ${signed(fourWeeks.before)}`}
+              sub={
+                <>
+                  before: <span className={netTone(fourWeeks.before)}>{signed(fourWeeks.before)}</span>
+                </>
+              }
               tip={`Net of the last 20 working days; the 20 before them: ${signed(fourWeeks.before)}`}
             />
           </div>

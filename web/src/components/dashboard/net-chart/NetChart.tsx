@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Tooltip } from "../../tooltip/Tooltip";
-import { signed } from "../common/format";
+import { netTone, signed } from "../common/format";
 
 /** One bar of the chart: pull requests closed and opened in a working day or a week (bucketed by the screen). */
 export interface NetPoint {
@@ -298,8 +298,8 @@ export function NetChart({ points, unit }: NetChartProps) {
                   </td>
                   <td>{row.closed}</td>
                   <td>{row.opened}</td>
-                  <td>{signed(row.net)}</td>
-                  <td>{signed(row.running)}</td>
+                  <td className={netTone(row.net)}>{signed(row.net)}</td>
+                  <td className={netTone(row.running)}>{signed(row.running)}</td>
                 </tr>
               ))}
             </tbody>
