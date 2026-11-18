@@ -455,6 +455,57 @@ async fn cancel_with_full_event_channels_settles_a_detached_attempt() {
     );
 }
 
+/// A stop signal while a job runs: the attempt is cancelled and the worker returns only after it has ended
+/// (under the supervisor: stop, sweep and credential copy-back), not while it is still finishing.
+#[tokio::test]
+async fn shutdown_cancels_the_running_attempt_and_waits_for_it_to_end() {
+    let mut provider = Scripted::new(usize::MAX, UNIT / 4);
+    provider.honour_cancel = false;
+    provider.ends_after_cancel = Some(UNIT * 5);
+    let setup = setup_with(provider, Duration::ZERO, true).await;
+    mount(&setup, "events", ack(false)).await;
+    let provider = Arc::clone(&setup.provider);
+    let running = Arc::clone(&setup.provider);
+    let shutdown = async move {
+        while running.sent.load(Ordering::SeqCst) == 0 {
+            sleep(UNIT / 4).await;
+        }
+    };
+    tokio::time::timeout(UNIT * 200, setup.worker.run(shutdown))
+        .await
+        .expect("the wait for the attempt is bounded");
+    assert!(
+        provider.cancel_called.load(Ordering::SeqCst),
+        "the running attempt is cancelled"
+    );
+    assert!(
+        provider.finished.load(Ordering::SeqCst),
+        "the attempt ended before the worker returned"
+    );
+}
+
+/// An attempt that does not end is not waited for beyond the bound.
+#[tokio::test]
+async fn shutdown_does_not_wait_for_an_attempt_that_never_ends() {
+    let mut provider = Scripted::new(usize::MAX, UNIT / 4);
+    provider.honour_cancel = false;
+    let setup = setup_with(provider, Duration::ZERO, true).await;
+    mount(&setup, "events", ack(false)).await;
+    let running = Arc::clone(&setup.provider);
+    let shutdown = async move {
+        while running.sent.load(Ordering::SeqCst) == 0 {
+            sleep(UNIT / 4).await;
+        }
+    };
+    let started = Instant::now();
+    setup.worker.run(shutdown).await;
+    let waited = started.elapsed();
+    assert!(
+        waited >= timing().term_grace + timing().kill_and_cleanup && waited < UNIT * 100,
+        "{waited:?}"
+    );
+}
+
 /// The claim reply is delayed by 600 ms and no later request is ever acked: the deadline runs from the claim's
 /// SEND time (1400 ms), so the agent is stopped and cleaned up well before the lease (2400 ms from receipt) and
 /// before a deadline wrongly measured from the delayed ack (2000 ms).

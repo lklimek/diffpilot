@@ -216,21 +216,34 @@ impl Worker {
         self
     }
 
-    /// Claims and runs jobs until `shutdown` completes; a running job is then stopped and cleaned up.
+    /// Claims and runs jobs until `shutdown` completes; a running job is then cancelled, and its stop, sweep and
+    /// credential copy-back end before this returns (waited for at most three stop sequences, which stays below
+    /// the container's stop grace of 60 s).
     pub async fn run(mut self, shutdown: impl Future<Output = ()>) {
-        tokio::pin!(shutdown);
+        tokio::select! {
+            () = shutdown => {}
+            () = self.serve() => {}
+        }
+        // Dropping the loop cancelled its attempt; a detached one (process isolation) is still finishing.
+        let wait = (self.timing.term_grace + self.timing.kill_and_cleanup) * 3;
+        if tokio::time::timeout(wait, self.executor.settled())
+            .await
+            .is_err()
+        {
+            tracing::error!(
+                "the running job did not finish stopping before the runner exits; a Codex credential it refreshed is recovered at the next start"
+            );
+        }
+    }
+
+    /// Claims and runs jobs, forever.
+    async fn serve(&mut self) {
         loop {
             self.remove_expired_sessions();
             if let Some(skills) = &self.skills {
-                tokio::select! {
-                    () = &mut shutdown => return,
-                    () = skills.refresh_if_due() => {}
-                }
+                skills.refresh_if_due().await;
             }
-            let polled = tokio::select! {
-                () = &mut shutdown => return,
-                polled = self.poll_once() => polled,
-            };
+            let polled = self.poll_once().await;
             match polled {
                 Ok(Some(end)) => {
                     tracing::trace!(?end, "claiming the next job at once");
@@ -244,10 +257,7 @@ impl Worker {
                 }
                 Err(error) => tracing::warn!(%error, "claim failed; retrying"),
             }
-            tokio::select! {
-                () = &mut shutdown => return,
-                () = sleep(self.timing.idle_poll) => {}
-            }
+            sleep(self.timing.idle_poll).await;
         }
     }
 

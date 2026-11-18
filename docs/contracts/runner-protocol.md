@@ -87,7 +87,14 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
   uid gets access only to its own job's directory), never on tmpfs or under `/tmp`. Only the checkout / work
   directory may be tmpfs.
 - Copy-back happens after the agent process has exited, with compare-and-swap on the master `auth.json`
-  (written back only if the master is unchanged since the copy).
+  (written back only if the master is unchanged since the copy) and only for a copy of the master's identity:
+  the stored account id, which its id token must name, and every user and access-token claim the master has
+  (threat model T13). A master whose id token does not name its stored account, or whose access token names
+  another, is reported unusable at once.
+- Stop signal (SIGTERM, SIGINT): the runner cancels the running job and waits for its stop, sweep and
+  copy-back, at most 45 s (below the container's 60 s stop grace), then exits without posting a result; the
+  server re-queues the job when its lease expires. A copy not brought back by then keeps its compare-and-swap
+  base, so the next start recovers it.
 - Recovery: on start, before claiming, the runner applies the same CAS to every per-job `CODEX_HOME` left by
   a crash (a rotated refresh token is the only valid one), then deletes those directories. A container
   restart therefore never loses a rotated credential.
@@ -118,7 +125,9 @@ The existing Ask tests cover early publication and reconciliation with cancellat
   discards the ready output and its publication. When cancel was requested before the output arrived the
   output is stored but not published (`OutputRecorded::Stored {cancel_requested: true}`).
 - Failed archival after the output does not fail the job: the result is `succeeded` with
-  `session: null` (lost; the next job uses the context pack).
+  `session: null` (lost; the next job uses the context pack). This includes a session the runner refuses to
+  copy back: more than 4 rollouts or 512 MiB for the thread, a rollout over 256 MiB, or one that is not a
+  single regular file (threat model T8b). The rollout restored before the turn is never reported instead.
 
 ## Result
 - Posted once per attempt; retried with the same body until 204 or a 4xx. The server applies it idempotently
@@ -126,6 +135,11 @@ The existing Ask tests cover early publication and reconciliation with cancellat
 - Cancel wins: if cancel was requested, any result (also `succeeded`) ends the job `cancelled` and the output is
   discarded.
 - `llm_call` (last provider call outcome) updates the LLM status in Settings; `usage` is the job's own delta.
+- `usage_limited.resets_at` comes from a rollout the agent can write, and a pause does not count as an
+  attempt. A time at or before receipt is stored as unknown, so the job waits the 30 minutes of an unknown
+  reset (`PAUSE_WITHOUT_RESET`). A coming time is accepted between the first retry pause (1 s,
+  `output_retry_secs[0]`) and 7 days after receipt and limited to that range. Both corrections are logged and
+  apply to the stored result, `resumes_at` and the credential's pause.
 
 ## Agent session (ADR-004)
 - One analytic session per PR. `JobSpec.pull_request_id` is the stable PR database key.

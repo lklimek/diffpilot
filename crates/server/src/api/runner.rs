@@ -8,11 +8,13 @@ use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::routing::post;
 use axum::{Json, Router};
-use chrono::Utc;
+use chrono::{TimeDelta, Utc};
 use contracts::api::error::ApiErrorCode;
 use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
-use contracts::job::protocol::{ClaimRequest, ClaimResponse, EventBatch, EventsAck, OutputReady};
+use contracts::job::protocol::{
+    ClaimRequest, ClaimResponse, EventBatch, EventsAck, LeaseTiming, OutputReady,
+};
 use contracts::job::result::{JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus};
 use contracts::job::state::JobState;
 use contracts::routes::{RUNNER_CLAIM, RUNNER_EVENTS, RUNNER_OUTPUT, RUNNER_RESULT};
@@ -34,6 +36,10 @@ const OUTPUT_BODY_LIMIT: usize = 4 * 1024 * 1024;
 
 /// Longest event summary kept (`runner-protocol.md` Events).
 const SUMMARY_MAX_CHARS: usize = 200;
+
+/// Longest usage-limit pause accepted from a result (the longest ChatGPT window is a week). The reset time is
+/// read from files the agent can write, so a later one must not stop the installation's only credential.
+const MAX_USAGE_LIMIT_PAUSE: TimeDelta = TimeDelta::days(7);
 
 /// Replacement for a known secret value found in runner data.
 const REDACTED: &str = "[redacted]";
@@ -450,7 +456,22 @@ async fn apply_result(
         &mut result,
         &known_secrets(state, &auth.token, installation.as_ref()),
     );
-    let completion = state.db.jobs().complete(&result, Utc::now()).await?;
+    let now = Utc::now();
+    if let JobOutcome::UsageLimited { resets_at } = &mut result.outcome
+        && let Some(reported) = *resets_at
+    {
+        // A pause does not count as an attempt, so a time that has passed must not re-queue the job at once:
+        // it tells nothing and is stored as unknown (the default pause applies). A coming time is accepted
+        // from the protocol's first retry pause on.
+        let first_retry = TimeDelta::seconds(i64::from(LeaseTiming::V1.output_retry_secs[0]));
+        let accepted = (reported > now)
+            .then(|| reported.clamp(now + first_retry, now + MAX_USAGE_LIMIT_PAUSE));
+        if accepted != Some(reported) {
+            tracing::warn!(job = %auth.job, %reported, ?accepted, "the reported usage-limit reset time is not accepted as reported: a passed one counts as unknown, a coming one is limited to between 1 s and 7 days from now");
+            *resets_at = accepted;
+        }
+    }
+    let completion = state.db.jobs().complete(&result, now).await?;
     if let Completion::Applied { state: job_state } = completion {
         tracing::info!(
             job = %auth.job,
@@ -497,7 +518,7 @@ mod tests {
     use db::repo::analyses::SessionState;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
     use db::repo::documents::DocumentKind;
-    use db::repo::jobs::{JobStage, NewJob};
+    use db::repo::jobs::{JobStage, NewJob, PAUSE_WITHOUT_RESET};
     use http_body_util::BodyExt;
     use serde::Serialize;
     use serde_json::json;
@@ -1165,6 +1186,85 @@ mod tests {
         );
         let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
         assert_eq!(job.state, JobState::Paused);
+    }
+
+    /// The reset time comes from files the agent can write: a far-away one must not stop the installation.
+    #[tokio::test]
+    async fn usage_limit_reset_time_is_clamped_to_seven_days() {
+        let harness = Harness::new().await;
+        harness.enqueue(CREDENTIAL).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        let mut result = succeeded(claimed.job, 1);
+        result.outcome = JobOutcome::UsageLimited {
+            resets_at: Some(Utc::now() + TimeDelta::days(36_500)),
+        };
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_RESULT.path, claimed.job),
+                Some(&claimed.token),
+                result,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let latest = Utc::now() + TimeDelta::days(7);
+        let earliest = latest - TimeDelta::minutes(1);
+        let credential = harness
+            .state
+            .db
+            .llm_credentials()
+            .get(CREDENTIAL)
+            .await
+            .expect("credential");
+        let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
+        let stored = match job.result.map(|result| result.outcome) {
+            Some(JobOutcome::UsageLimited { resets_at }) => resets_at,
+            other => panic!("{other:?}"),
+        };
+        for until in [credential.paused_until, job.resumes_at, stored] {
+            assert!(
+                until.is_some_and(|until| until >= earliest && until <= latest),
+                "{until:?}"
+            );
+        }
+    }
+
+    /// A usage-limit pause does not count as an attempt, so a reset time that has passed must not re-queue the
+    /// job at once (nor a second later): it tells nothing and is treated as unknown.
+    #[tokio::test]
+    async fn usage_limit_reset_time_in_the_past_waits_the_pause_of_an_unknown_reset() {
+        for passed in [TimeDelta::days(1), TimeDelta::zero()] {
+            let harness = Harness::new().await;
+            harness.enqueue(CREDENTIAL).await;
+            let claimed = harness.claim(CREDENTIAL).await;
+            let mut result = succeeded(claimed.job, 1);
+            result.outcome = JobOutcome::UsageLimited {
+                resets_at: Some(Utc::now() - passed),
+            };
+            let earliest = Utc::now() + PAUSE_WITHOUT_RESET;
+            let (status, _) = harness
+                .send(
+                    &path(RUNNER_RESULT.path, claimed.job),
+                    Some(&claimed.token),
+                    result,
+                )
+                .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            let latest = Utc::now() + PAUSE_WITHOUT_RESET;
+            let credential = harness
+                .state
+                .db
+                .llm_credentials()
+                .get(CREDENTIAL)
+                .await
+                .expect("credential");
+            let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
+            for until in [credential.paused_until, job.resumes_at] {
+                assert!(
+                    until.is_some_and(|until| until >= earliest && until <= latest),
+                    "{until:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

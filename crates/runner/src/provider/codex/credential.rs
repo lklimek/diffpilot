@@ -3,9 +3,11 @@
 //! persistent volume, and whether claims may use the credential.
 //!
 //! A copy is agent-writable: it is read only as a small regular file without following symlinks, and written
-//! back only when it is a ChatGPT credential of the master's (non-empty) account and the master is still the
-//! one the copy was taken from. Next to each per-job `CODEX_HOME` the runner keeps `<home>.cas`, the SHA-256 of
-//! that master (runner-only directory), so recovery after a crash applies the same compare-and-swap.
+//! back only when it is a ChatGPT credential of the master's account and user, read from the token claims (the
+//! agent can write the `account_id` field), and the master is still the one the copy was taken from. A master
+//! whose tokens do not name its stored account is refused before any job uses it. Next to
+//! each per-job `CODEX_HOME` the runner keeps `<home>.cas`, the SHA-256 of that master (runner-only directory),
+//! so recovery after a crash applies the same compare-and-swap.
 //! A master that can no longer be refreshed is recorded by digest in `auth.json.unusable`; signing in again
 //! replaces the master, which makes the credential usable without further steps.
 
@@ -15,6 +17,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use contracts::ids::JobId;
 use rustix::fs::OFlags;
 use serde_json::Value;
@@ -76,7 +80,8 @@ impl CodexCredential {
     }
 
     /// Whether jobs may use the credential (reported in claims): a readable ChatGPT master that is not marked
-    /// unusable.
+    /// unusable. A master without an [`identity`] is marked here, before a job can spend its refresh token: a
+    /// refreshed copy of it could not be told from a foreign credential.
     pub fn usable(&self) -> bool {
         let Ok(master) = read_regular(&self.master) else {
             return false;
@@ -90,7 +95,17 @@ impl CodexCredential {
         }
         let persisted = read_regular(&self.unusable_file())
             .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned());
-        !persisted.is_ok_and(|marked| marked == hex(&digest))
+        if persisted.is_ok_and(|marked| marked == hex(&digest)) {
+            return false;
+        }
+        if identity(&master).is_none() {
+            self.mark_unusable(
+                digest,
+                "its id token does not name the stored account, or its access token names another, so a refreshed copy could not be verified",
+            );
+            return false;
+        }
+        true
     }
 
     /// Applies the compare-and-swap write-back to every per-job `CODEX_HOME` a previous run left in
@@ -179,6 +194,10 @@ impl CodexCredential {
                 return Ok(false);
             }
         };
+        if !read_regular(&self.master).is_ok_and(|master| sha256(&master) == base) {
+            tracing::warn!(dir = %home.display(), "the credential copy of an interrupted job was taken from an older master; it is discarded and the current master is kept");
+            return Ok(false);
+        }
         match self.write_back(&current, base) {
             WriteBack::Written => {
                 tracing::info!(dir = %home.display(), "recovered the refreshed Codex credential of a crashed job");
@@ -193,7 +212,7 @@ impl CodexCredential {
     }
 
     /// Writes `copy` to the master if it changed, the master is still the one with digest `base`, and the copy
-    /// is a ChatGPT credential of the master's account.
+    /// is a ChatGPT credential of the master's account and user.
     fn write_back(&self, copy: &[u8], base: Digest) -> WriteBack {
         if sha256(copy) == base {
             return WriteBack::Unchanged;
@@ -214,13 +233,12 @@ impl CodexCredential {
             );
             return WriteBack::Rejected;
         }
-        let master_account = parse(&master).and_then(|(_, account)| account);
-        let copy_account = parse(copy).and_then(|(_, account)| account);
-        let same_account = matches!((&master_account, &copy_account), (Some(old), Some(new)) if !old.is_empty() && old == new);
-        if !same_account {
+        let same_identity = parse(copy).is_some()
+            && matches!((identity(&master), identity(copy)), (Some(old), Some(new)) if old.kept_by(&new));
+        if !same_identity {
             self.mark_unusable(
                 current,
-                "the job's credential copy changed but is not a credential of the same account",
+                "the job's credential copy changed but is not a credential of the same account and user",
             );
             return WriteBack::Rejected;
         }
@@ -283,6 +301,9 @@ pub(crate) struct JobCredential<'a> {
     scrubber: Scrubber,
     remembered_tokens: usize,
     remembered_bytes: usize,
+    /// The agent holds the only current copy (process isolation, from its start to the copy-back): the staged
+    /// copy proves nothing.
+    away: bool,
     /// Set once settled: whether the scrubber is known complete.
     settled: Option<bool>,
 }
@@ -304,7 +325,7 @@ impl<'a> JobCredential<'a> {
         }
         let original =
             read_regular(&credential.master).map_err(|_| ProviderError::CredentialUnusable)?;
-        let Some((tokens, _)) = parse(&original) else {
+        let Some(tokens) = parse(&original) else {
             return Err(ProviderError::CredentialUnusable);
         };
         let base = sha256(&original);
@@ -325,6 +346,7 @@ impl<'a> JobCredential<'a> {
             scrubber,
             remembered_tokens: 0,
             remembered_bytes: 0,
+            away: false,
             settled: None,
         })
     }
@@ -344,7 +366,7 @@ impl<'a> JobCredential<'a> {
             return true;
         }
         self.last_seen = current;
-        let Some((tokens, _)) = parse(&self.last_seen) else {
+        let Some(tokens) = parse(&self.last_seen) else {
             return true;
         };
         self.remembered_tokens += tokens.len();
@@ -364,7 +386,7 @@ impl<'a> JobCredential<'a> {
     pub(crate) fn rescan(&mut self) -> bool {
         match read_regular(&self.copy) {
             Ok(current) => {
-                if let Some((tokens, _)) = parse(&current) {
+                if let Some(tokens) = parse(&current) {
                     self.scrubber.extend(tokens.iter().map(String::as_str));
                 }
                 true
@@ -385,9 +407,27 @@ impl<'a> JobCredential<'a> {
         self.settled = Some(false);
     }
 
+    /// The agent started with its own copy (process isolation): from now on only its `CODEX_HOME` holds the
+    /// current credential, until [`Self::returned`].
+    pub(crate) fn handed_over(&mut self) {
+        self.away = true;
+    }
+
+    /// The agent's copy is back in the staging home.
+    pub(crate) fn returned(&mut self) {
+        self.away = false;
+    }
+
     pub(crate) fn settle(&mut self, refresh_failed: bool) -> bool {
         if let Some(certain) = self.settled {
             return certain;
+        }
+        if self.away {
+            // Settling the stale staged copy would discard a refresh Codex made: the base file stays, so
+            // start-up recovery applies the compare-and-swap to the copy left in the agent's home.
+            tracing::warn!(job = %self.job, "the job ended before the agent's Codex credential was copied back; its compare-and-swap base is kept for the next runner start");
+            self.settled = Some(false);
+            return false;
         }
         let certain = self.settle_once(refresh_failed);
         self.settled = Some(certain);
@@ -407,7 +447,7 @@ impl<'a> JobCredential<'a> {
                 return false;
             }
         };
-        if let Some((tokens, _)) = parse(&current) {
+        if let Some(tokens) = parse(&current) {
             self.scrubber.extend(tokens.iter().map(String::as_str));
         }
         match self.credential.write_back(&current, self.base) {
@@ -442,7 +482,8 @@ impl<'a> JobCredential<'a> {
 }
 
 impl Drop for JobCredential<'_> {
-    /// A timed-out, cancelled or fenced call still writes a refreshed copy back before the job dir is removed.
+    /// A timed-out, cancelled or fenced call still writes a refreshed copy back before the job dir is removed;
+    /// a copy still with the agent is left to start-up recovery.
     fn drop(&mut self) {
         self.settle(false);
     }
@@ -455,8 +496,8 @@ fn base_file(codex_home: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Token values and account id of a ChatGPT `auth.json`; `None` if it is not one.
-fn parse(auth: &[u8]) -> Option<(Vec<String>, Option<String>)> {
+/// Token values of a ChatGPT `auth.json`; `None` if it is not one.
+fn parse(auth: &[u8]) -> Option<Vec<String>> {
     let json = serde_json::from_slice::<Value>(auth).ok()?;
     if json.get("auth_mode").and_then(Value::as_str) != Some("chatgpt") {
         return None;
@@ -466,10 +507,6 @@ fn parse(auth: &[u8]) -> Option<(Vec<String>, Option<String>)> {
         .get("refresh_token")
         .and_then(Value::as_str)
         .filter(|token| !token.is_empty())?;
-    let account = tokens
-        .get("account_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
     let mut values: Vec<String> = tokens
         .iter()
         .filter(|(key, _)| key.as_str() != "account_id")
@@ -479,7 +516,96 @@ fn parse(auth: &[u8]) -> Option<(Vec<String>, Option<String>)> {
     if let Some(key) = json.get("OPENAI_API_KEY").and_then(Value::as_str) {
         values.push(key.to_owned());
     }
-    Some((values, account))
+    Some(values)
+}
+
+/// Whom a ChatGPT `auth.json` acts as. Its id token binds it to the stored account; every other claim is
+/// optional in Codex, and the access token need not be a JWT.
+struct Identity {
+    /// The stored `account_id`, which the id token names as well.
+    account: String,
+    /// The id token's user.
+    user: Option<String>,
+    /// What the access token names.
+    access: Claims,
+}
+
+/// Account and user in the `https://api.openai.com/auth` claim of a token; nothing for a token without it.
+#[derive(Default)]
+struct Claims {
+    account: Option<String>,
+    user: Option<String>,
+}
+
+impl Identity {
+    /// Whether `copy`, a refreshed copy of this credential, acts as the same account and user: it keeps every
+    /// claim this one has (a refresh may add one).
+    fn kept_by(&self, copy: &Self) -> bool {
+        let kept = |old: &Option<String>, new: &Option<String>| old.is_none() || old == new;
+        copy.account == self.account
+            && kept(&self.user, &copy.user)
+            && kept(&self.access.account, &copy.access.account)
+            && kept(&self.access.user, &copy.access.user)
+    }
+}
+
+/// The identity of `auth`; `None` unless it stores an account id, its id token names that account and its
+/// access token names no other.
+fn identity(auth: &[u8]) -> Option<Identity> {
+    let json = serde_json::from_slice::<Value>(auth).ok()?;
+    let tokens = json.get("tokens")?;
+    let account = nonempty(tokens, "account_id")?;
+    let id_token = claims(nonempty(tokens, "id_token")?);
+    let access = nonempty(tokens, "access_token")
+        .map(claims)
+        .unwrap_or_default();
+    if id_token.account.as_deref() != Some(account)
+        || access
+            .account
+            .as_deref()
+            .is_some_and(|named| named != account)
+    {
+        return None;
+    }
+    Some(Identity {
+        account: account.to_owned(),
+        user: id_token.user,
+        access,
+    })
+}
+
+/// The claims of `token`, read as Codex reads them (`chatgpt_user_id`, else `user_id`).
+/// No signature check: identities are compared, not authenticated (a forged token fails at the backend).
+fn claims(token: &str) -> Claims {
+    let mut parts = token.split('.');
+    let (Some(_), Some(payload), Some(_), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Claims::default();
+    };
+    let payload = URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()
+        .and_then(|payload| serde_json::from_slice::<Value>(&payload).ok());
+    let Some(auth) = payload
+        .as_ref()
+        .and_then(|payload| payload.get("https://api.openai.com/auth"))
+    else {
+        return Claims::default();
+    };
+    Claims {
+        account: nonempty(auth, "chatgpt_account_id").map(str::to_owned),
+        user: nonempty(auth, "chatgpt_user_id")
+            .or_else(|| nonempty(auth, "user_id"))
+            .map(str::to_owned),
+    }
+}
+
+fn nonempty<'a>(object: &'a Value, key: &str) -> Option<&'a str> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
 }
 
 fn sha256(bytes: &[u8]) -> Digest {

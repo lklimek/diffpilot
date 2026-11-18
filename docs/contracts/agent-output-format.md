@@ -20,7 +20,10 @@ is `key: value` on one line. For raw multiline prose or code use `key: <<END`, t
 raw lines, and `END` on a line of its own. Choose any alphanumeric/underscore
 terminator absent from the value. Structural lines use LF; raw heredoc bodies preserve
 carriage returns and newlines exactly. There is no escaping or Markdown interpretation.
-Maximum document size is 1 MiB.
+Maximum document size is 1 MiB, with at most 2000 sections (headings). Flow ids, step ids
+and thread aliases are 1 to 64 characters of `A-Z`, `a-z`, `0-9`, `_` or `-`; a declared
+file id is 1 to 64 letters or digits. A heading word is at most 128 bytes and a field name
+at most 80 bytes. Violations are reported with their line.
 
 - `# flow <id>` exactly once. Optional `file <id>: <repo-relative-path>` declarations
   name additional context/evidence files once; never redeclare a known path/id.
