@@ -71,6 +71,10 @@ import {
 } from "./sequence";
 import { useNow } from "../../app/now";
 import { Workspace } from "./Workspace";
+import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
+
+/** The PR's checks page on GitHub, which the CI summary links to. */
+const checksHref = (pr: { html_url: string }) => `${pr.html_url.replace(/\/+$/, "")}/checks`;
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
 
@@ -194,6 +198,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   useForgetReanalysedFlows(analysisId, tour);
   const stream = useQuestionEvents(analysisId);
   const questions = useQuestions(analysisId);
+  useTabActivity("analysis", analysisActivity(tour.analysis.state));
+  useTabActivity("ask", questionsActivity(questions.data ?? []));
+  usePrTabSubject(tour.analysis.pr);
   const ask = useAskQuestion(analysisId);
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
@@ -709,6 +716,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         pr={tour.analysis.pr}
         context={tour.pr_context}
         threadCount={tour.threads.length}
+        checksHref={checksHref(tour.analysis.pr)}
       />
     );
   }
@@ -847,6 +855,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       <TopBar
         pr={tour.analysis.pr}
         ci={tour.pr_context.facts.ci}
+        checksHref={checksHref(tour.analysis.pr)}
         language={tour.analysis.language}
         login={login}
         hideContextChanges={hideContextChanges}

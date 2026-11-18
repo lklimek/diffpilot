@@ -17,6 +17,7 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import { TopBar } from "../../components/top-bar/TopBar";
 import { LANGUAGE_NAME, LanguageTag } from "../../components/language-tag/LanguageTag";
 import { analysisHref, homeOutcome, reviewLabel } from "./outcome";
+import { usePrTabSubject, useTabActivity } from "../../app/tabStatus";
 
 /** Router state of Home after Cancel analysis on the progress screen. */
 export interface HomeState {
@@ -45,6 +46,11 @@ export function HomeScreen() {
   const me = useMe();
   const resolve = useResolvePr();
   const create = useCreateAnalysis();
+  useTabActivity(
+    "pr-check",
+    resolve.isPending ? "busy" : resolve.isSuccess ? "ready" : resolve.isError ? "attention" : null,
+  );
+  usePrTabSubject(resolve.data?.pr);
   const resume = useResumeAnalysis();
   const navigate = useNavigate();
   const [params] = useSearchParams();
