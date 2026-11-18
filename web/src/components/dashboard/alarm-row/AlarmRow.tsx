@@ -2,10 +2,11 @@ import type { Ref } from "react";
 import type { WorkItem } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { LlmLine } from "../common/LlmLine";
+import { OpenExternal, openLabel } from "../common/OpenExternal";
 import type { Navigate } from "../common/navigate";
 import { FactTags } from "../common/Tags";
 import { ItemAction } from "../work-item/ItemAction";
-import { itemHost, itemPlace, provisionalPill } from "../work-item/WorkItemRow";
+import { itemPlace, provisionalPill } from "../work-item/WorkItemRow";
 
 interface AlarmRowProps {
   /** A P0 item. */
@@ -45,15 +46,8 @@ export function AlarmRow({ item, reviewHref, onNavigate, current = false, focusR
       <div className="grid min-w-0 gap-1">
         <div className="text-[15px] font-bold [overflow-wrap:anywhere]">{item.title}</div>
         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted">
-          {item.url ? (
-            <Tooltip tip={`Open ${item.id} in ${itemHost(item)} (new tab)`}>
-              <a href={item.url} target="_blank" rel="noopener noreferrer" className="font-mono">
-                {item.id}
-              </a>
-            </Tooltip>
-          ) : (
-            <span className="font-mono">{item.id}</span>
-          )}
+          <span className="font-mono">{item.id}</span>
+          <OpenExternal href={item.url} label={openLabel(item)} />
           <span>
             {itemPlace(item)}
             {item.author ? ` · @${item.author}` : ""}

@@ -31,6 +31,32 @@ test.describe("My work (msw)", () => {
     await expectKeyboardTooltips(page);
   });
 
+  test("every row shows a GitHub / MemCan icon link without hover; it opens a new tab, not the row", async ({
+    page,
+  }) => {
+    await open(page);
+    const link = main(page).getByRole("link", { name: "Open PLAT-1203 on GitHub" });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute("href", "https://github.com/acme/platform/pull/1203");
+    await expect(link).toHaveAttribute("target", "_blank");
+    const box = await link.boundingBox();
+    expect(box!.width).toBeGreaterThanOrEqual(24);
+    expect(box!.height).toBeGreaterThanOrEqual(24);
+    await expect(main(page).getByRole("link", { name: "Open PLAT-1187 on GitHub" })).toBeVisible();
+    await expect(main(page).getByRole("link", { name: "Open TODO in MemCan" })).toHaveCount(2);
+    await link.focus();
+    await expect(page.getByRole("tooltip")).toHaveText("Open PLAT-1203 on GitHub");
+    await page.context().route("https://github.com/**", (route) => route.fulfill({ body: "GitHub" }));
+    const popup = page.waitForEvent("popup");
+    await link.click();
+    await (await popup).close();
+    expect(new URL(page.url()).pathname).toBe("/");
+    await expect(main(page).getByRole("button", { name: "Details of PLAT-1203" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
+
   test("kind toggles combine by keyboard, the last one on stays on, and the choice is remembered", async ({
     page,
   }) => {

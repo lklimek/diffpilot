@@ -1,6 +1,7 @@
 import type { AwaitingItem } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { daysSince } from "../common/format";
+import { OpenExternal, openLabel } from "../common/OpenExternal";
 import { FactTags } from "../common/Tags";
 import { AsideSection } from "../side-panel/AsideSection";
 
@@ -33,16 +34,8 @@ export function WaitingOnOthers({ items, now }: { items: AwaitingItem[]; now: Da
           {sorted.map((item) => (
             <li key={item.url} className="grid gap-0.5 border-t border-border py-1.5 first:border-t-0">
               <div className="flex items-baseline gap-2">
-                <Tooltip tip="Open on GitHub (new tab)">
-                  <a
-                    href={item.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="font-mono text-[12.5px] font-semibold"
-                  >
-                    {item.id}
-                  </a>
-                </Tooltip>
+                <span className="font-mono text-[12.5px] font-semibold">{item.id}</span>
+                <OpenExternal href={item.url} label={openLabel(item)} />
                 <span className="flex-1" />
                 {item.total_tenths === null ? (
                   <Tooltip tip="Not ranked: left out of your ranking (e.g. no owned change)">

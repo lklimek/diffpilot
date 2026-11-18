@@ -5,6 +5,7 @@ import { Tooltip } from "../../tooltip/Tooltip";
 import { dayText, scoreText } from "../common/format";
 import { KIND_LABEL, KindIcon } from "../common/icons";
 import { LlmLine } from "../common/LlmLine";
+import { OpenExternal, openLabel } from "../common/OpenExternal";
 import type { Navigate } from "../common/navigate";
 import { FactTags, ProvisionalPill } from "../common/Tags";
 import { ScoreBreakdown } from "../score-breakdown/ScoreBreakdown";
@@ -31,9 +32,6 @@ interface WorkItemRowProps {
 /** `owner/name#n`, or `MemCan` for a TODO (its project is a tag). */
 export const itemPlace = (item: WorkItem): string =>
   item.repo ? `${item.repo.owner}/${item.repo.name}#${item.number ?? ""}` : "MemCan";
-
-/** Where the item's link opens. */
-export const itemHost = (item: WorkItem): string => (item.kind === "todo" ? "MemCan" : "GitHub");
 
 /** The provisional marker of a row, or null when its score is final. */
 export function provisionalPill(item: WorkItem) {
@@ -116,20 +114,10 @@ export function WorkItemRow({
             <KindIcon kind={item.kind} />
             {KIND_LABEL[item.kind] ?? item.kind}
           </span>
-          {item.url ? (
-            <Tooltip tip={`Open ${item.id} in ${itemHost(item)} (new tab)`}>
-              <a
-                href={item.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="break-all text-text no-underline hover:underline"
-              >
-                {item.id}
-              </a>
-            </Tooltip>
-          ) : (
-            <span className="break-all">{item.id}</span>
-          )}
+          <span className="flex items-start gap-1.5">
+            <span className="min-w-0 break-all">{item.id}</span>
+            <OpenExternal href={item.url} label={openLabel(item)} />
+          </span>
         </div>
         <div className="min-w-0">
           <div className="text-sm font-semibold [overflow-wrap:anywhere]">{item.title}</div>
