@@ -1,8 +1,8 @@
 import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
-import { RemarkPills } from "../../components/remark-pills/RemarkPills";
-import { firstRemark, remarkCounts } from "../../components/remark-pills/remarks";
+import { RemarkPill } from "../../components/remark-pills/RemarkPills";
+import { remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
@@ -17,7 +17,6 @@ import type {
   PendingComment,
   Step,
   StepId,
-  RiskBand,
   Tour,
 } from "../../api/generated/types";
 import {
@@ -202,9 +201,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const handledRemarks = new Set(
     (feedback.data ?? []).flatMap((f) => (f.target.target === "annotation" ? [f.target.annotation_id] : [])),
   );
-  const stepRemarks = Object.fromEntries(
-    tour.flows.flatMap((f) => f.steps).map((s) => [s.id, remarkCounts([s], handledRemarks)]),
-  );
+  // Said by `r` when no step has remarks.
+  const [remarkNotice, setRemarkNotice] = useState<{ text: string; nonce: number } | null>(null);
   const comments = useCommentActions(analysisId);
   const ticked = state.ticked_steps;
 
@@ -388,10 +386,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     }
   };
   // LLM remark pills and `r`: the remark's code line and its Inspector entry flash.
-  const jumpToRemark = ({ steps, band }: { steps: Step[]; band: RiskBand }) => {
-    const remark = firstRemark(steps, band, handledRemarks);
+  const jumpToRemark = (steps: Step[]) => {
+    const remark = remarkTarget(steps, handledRemarks);
     if (!remark) return;
     const { step: owner, annotation } = remark;
+    if (!annotation) return go({ block: "step", step_id: owner.id });
     showEvidence(
       { file: owner.facts.file, side: owner.facts.side, line: annotation.range.start_line },
       owner.id,
@@ -431,10 +430,20 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           event.preventDefault();
           return commentOnCurrentLine();
         case "next_remark": {
+          // After the current step; on a flow introduction from that flow's first step; then around.
           const order = tour.flows.flatMap((f) => f.steps);
-          const at = step ? order.findIndex((s) => s.id === step.id) : -1;
-          const next = order.slice(at + 1).find((s) => (stepRemarks[s.id] ?? []).length > 0);
-          if (next) jumpToRemark({ steps: [next], band: stepRemarks[next.id]![0]!.band });
+          const from =
+            step && current.block === "step"
+              ? order.findIndex((s) => s.id === step.id) + 1
+              : current.block === "flow_intro" && flow
+                ? tour.flows.slice(0, tour.flows.indexOf(flow)).reduce((n, f) => n + f.steps.length, 0)
+                : 0;
+          const start = Math.max(0, from);
+          const next = [...order.slice(start), ...order.slice(0, start)].find(
+            (s) => s.llm.annotations.length > 0,
+          );
+          if (next) jumpToRemark([next]);
+          else setRemarkNotice((n) => ({ text: "No more steps with remarks", nonce: (n?.nonce ?? 0) + 1 }));
           return;
         }
         case "ask":
@@ -548,11 +557,12 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   } else if (current.block === "flow_intro" && flow) {
     block = (
       <>
-        <RemarkPills
-          counts={remarkCounts(flow.steps, handledRemarks)}
-          subject="in this flow"
-          label="Remarks in this flow:"
-          onSelect={(band) => jumpToRemark({ steps: flow.steps, band })}
+        <RemarkPill
+          summary={summariseRemarks(flow.steps, handledRemarks)}
+          scope="flow"
+          subject="this flow"
+          label="LLM rating and remarks:"
+          onSelect={() => jumpToRemark(flow.steps)}
         />
         <FlowIntroBlock
           flow={flow}
@@ -584,11 +594,12 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         threadsStatus={tour.pr_context.facts.threads_status}
         code={
           <>
-            <RemarkPills
-              counts={stepRemarks[step.id] ?? []}
-              subject="on this step"
-              label="Remarks on this step:"
-              onSelect={(band) => jumpToRemark({ steps: [step], band })}
+            <RemarkPill
+              summary={summariseRemarks([step], handledRemarks)}
+              scope="step"
+              subject="this step"
+              label="LLM rating and remarks:"
+              onSelect={() => jumpToRemark([step])}
             />
             {oldCode ? (
               <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
@@ -799,6 +810,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       <p className="sr-only" aria-live="polite">
         {questionsView ? "Your questions and answers" : blockTitle(tour, current)}
       </p>
+      <p key={remarkNotice?.nonce} className="sr-only" role="status">
+        {remarkNotice?.text}
+      </p>
     </>
   );
 
@@ -838,7 +852,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           <>
             {flowWork}
             <NavList
-              remarks={stepRemarks}
+              handledRemarks={handledRemarks}
               onRemark={jumpToRemark}
               flows={tour.flows}
               analysis={tour.analysis.state}

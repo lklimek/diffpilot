@@ -1,40 +1,65 @@
 import type { Annotation, AnnotationId, RiskBand, Step } from "../../api/generated/types";
 
-/** Remarks of one band: how many, and how many of them have the user's feedback. */
-export interface RemarkCount {
-  band: RiskBand;
-  count: number;
+/**
+ * The LLM's rating of steps and their remark count, two separate facts: on the wire a remark has no severity of
+ * its own, only its step has a rating (`assessment.risk`). For one step: its rating; for several: the highest.
+ */
+export interface RemarkSummary {
+  /** Highest LLM rating among the steps; null when none is rated. */
+  rating: RiskBand | null;
+  /** Steps at `rating`. */
+  rated: number;
+  /** LLM remarks on all the steps, rated or not. */
+  remarks: number;
+  /** Remarks with the user's feedback. */
   handled: number;
+  /** Steps per rating, highest first, unrated (`null`) last; ratings without steps left out. */
+  ratings: { rating: RiskBand | null; steps: number }[];
 }
 
-const ORDER: RiskBand[] = ["high", "medium", "low"];
+const ORDER: (RiskBand | null)[] = ["high", "medium", "low", null];
 
-// A remark's severity on the wire is its step's LLM risk band (as the code view's label draws it); remarks of a
-// step the LLM did not rate have none and are not counted.
-const bandOf = (step: Step): RiskBand | null => step.llm.assessment?.risk ?? null;
+const ratingOf = (step: Step): RiskBand | null => step.llm.assessment?.risk ?? null;
 
-/** Remarks of `steps` by band, highest first; bands without remarks are left out (never a zero). */
-export function remarkCounts(steps: readonly Step[], handled: ReadonlySet<AnnotationId>): RemarkCount[] {
-  return ORDER.flatMap((band) => {
-    const remarks = steps.filter((s) => bandOf(s) === band).flatMap((s) => s.llm.annotations);
-    return remarks.length === 0
-      ? []
-      : [{ band, count: remarks.length, handled: remarks.filter((a) => handled.has(a.id)).length }];
-  });
-}
-
-/** The first remark of `band` in step order (by line within a step), one without feedback first. */
-export function firstRemark(
+/** Rating and remarks of `steps`; null with neither (never an all-clear). */
+export function summariseRemarks(
   steps: readonly Step[],
-  band: RiskBand,
   handled: ReadonlySet<AnnotationId>,
-): { step: Step; annotation: Annotation } | undefined {
-  const all = steps
-    .filter((s) => bandOf(s) === band)
-    .flatMap((step) =>
+): RemarkSummary | null {
+  const remarks = steps.flatMap((s) => s.llm.annotations);
+  const ratings = ORDER.flatMap((rating) => {
+    const count = steps.filter((s) => ratingOf(s) === rating).length;
+    return count === 0 ? [] : [{ rating, steps: count }];
+  });
+  const top = ratings.find((r) => r.rating !== null);
+  if (!top && remarks.length === 0) return null;
+  return {
+    rating: top?.rating ?? null,
+    rated: top?.steps ?? 0,
+    remarks: remarks.length,
+    handled: remarks.filter((a) => handled.has(a.id)).length,
+    ratings,
+  };
+}
+
+/**
+ * Where a pill leads: the first remark (one without feedback first, by line) on a step at the highest rating, else
+ * on any step; without remarks the first step at the highest rating (annotation null).
+ */
+export function remarkTarget(
+  steps: readonly Step[],
+  handled: ReadonlySet<AnnotationId>,
+): { step: Step; annotation: Annotation | null } | undefined {
+  const top = summariseRemarks(steps, handled)?.rating ?? null;
+  const remarksOf = (list: readonly Step[]) =>
+    list.flatMap((step) =>
       [...step.llm.annotations]
         .sort((a, b) => a.range.start_line - b.range.start_line)
         .map((annotation) => ({ step, annotation })),
     );
-  return all.find((r) => !handled.has(r.annotation.id)) ?? all[0];
+  const atTop = top === null ? [] : steps.filter((s) => ratingOf(s) === top);
+  const all = remarksOf(atTop).length > 0 ? remarksOf(atTop) : remarksOf(steps);
+  const found = all.find((r) => !handled.has(r.annotation.id)) ?? all[0];
+  if (found) return found;
+  return atTop[0] && { step: atTop[0], annotation: null };
 }

@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { PendingReview, ReviewState, Tour } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
 import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
-import { remarkCounts } from "../remark-pills/remarks";
 import { NavList } from "./NavList";
 
 const tour = seedFor("default", "tour") as Tour;
@@ -241,41 +240,38 @@ describe("NavList: the user's questions", () => {
   });
 });
 
-describe("NavList: LLM remark pills", () => {
-  const remarks = Object.fromEntries(
-    tour.flows.flatMap((f) => f.steps).map((s) => [s.id, remarkCounts([s], new Set())]),
-  );
+describe("NavList: LLM rating and remark pills", () => {
   const props = {
     flows: tour.flows,
     quiet: tour.quiet,
     ticked: [],
     onSelect: () => {},
-    remarks,
+    onRemark: () => {},
+    handledRemarks: new Set<string>(),
   };
 
-  it("each flow row shows its steps' remarks by band, also while collapsed; open steps show their own", () => {
+  it("each flow row shows its highest step rating and all its remarks, also while collapsed; steps show theirs", () => {
     render(<NavList {...props} current={{ block: "step", step_id: "f1.5" }} />);
-    const flow2 = screen.getByRole("group", { name: "LLM remarks in flow 2" });
-    expect(
-      within(flow2)
-        .getAllByRole("button")
-        .map((b) => b.textContent),
-    ).toEqual(["◆ MED 3", "● LOW 2"]);
-    const step5 = screen.getByRole("group", { name: "LLM remarks on step 5" });
-    expect(within(step5).getByRole("button")).toHaveTextContent("▲ HIGH 3");
+    expect(screen.getByRole("button", { name: /^LLM rated 1 step in flow 2 MEDIUM/ })).toHaveTextContent(
+      "◆ MEDIUM ×1 · 5 remarks",
+    );
+    expect(screen.getByRole("button", { name: /^LLM rated step 5 HIGH/ })).toHaveTextContent(
+      "▲ HIGH · 3 remarks",
+    );
   });
 
-  it("a pill leads to the first remark of its band", async () => {
+  it("a pill leads to the remarks of its steps", async () => {
     const onRemark = vi.fn();
     render(<NavList {...props} current={{ block: "pr_context" }} onRemark={onRemark} />);
-    const flow1 = screen.getByRole("group", { name: "LLM remarks in flow 1" });
-    await userEvent.click(within(flow1).getByRole("button", { name: /HIGH/ }));
-    expect(onRemark).toHaveBeenCalledWith({ steps: tour.flows[0]!.steps, band: "high" });
+    await userEvent.click(screen.getByRole("button", { name: /^LLM rated 1 step in flow 1 HIGH/ }));
+    expect(onRemark).toHaveBeenCalledWith(tour.flows[0]!.steps);
   });
 
-  it("a step without rated remarks shows no pill", () => {
-    const none = { ...remarks, "f1.3": [] };
-    render(<NavList {...props} remarks={none} current={{ block: "step", step_id: "f1.3" }} />);
-    expect(screen.queryByRole("group", { name: "LLM remarks on step 3" })).toBeNull();
+  it("a step with neither a rating nor remarks shows no pill", () => {
+    const flows = structuredClone(tour.flows);
+    flows[0]!.steps[2]!.llm.assessment = null;
+    flows[0]!.steps[2]!.llm.annotations = [];
+    render(<NavList {...props} flows={flows} current={{ block: "step", step_id: "f1.3" }} />);
+    expect(screen.queryByRole("button", { name: /step 3 / })).toBeNull();
   });
 });

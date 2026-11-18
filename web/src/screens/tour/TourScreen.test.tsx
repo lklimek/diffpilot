@@ -415,25 +415,56 @@ describe("Tour screen (brief §4.3)", () => {
     expect(await within(answers).findByText("It is not.")).toBeInTheDocument();
   });
 
-  it("remark pills: the flow intro and step show them; a pill jumps to the first remark and flashes it", async () => {
+  it("rating pills: the flow intro and step show them; a pill jumps to the first remark and flashes it", async () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
-    const flowLine = await within(main()).findByRole("group", { name: "LLM remarks in this flow" });
-    expect(flowLine).toHaveTextContent("Remarks in this flow:");
-    await user().click(within(flowLine).getByRole("button", { name: /HIGH 3/ }));
+    const flowPill = await within(main()).findByRole("button", {
+      name: /^LLM rated 1 step in this flow HIGH/,
+    });
+    expect(flowPill).toHaveTextContent("▲ HIGH ×1 · 19 remarks");
+    await user().click(flowPill);
     expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
-    const stepLine = within(main()).getByRole("group", { name: "LLM remarks on this step" });
-    expect(within(stepLine).getByRole("button")).toHaveTextContent("▲ HIGH 3");
+    expect(within(main()).getByRole("button", { name: /^LLM rated this step HIGH/ })).toHaveTextContent(
+      "▲ HIGH · 3 remarks",
+    );
     // The code line of the first remark and its Inspector entry flash.
     await waitFor(() => expect(main().querySelector("[data-flash]")).not.toBeNull());
     await waitFor(() => expect(inspector().querySelector("[data-flash]")).not.toBeNull());
   });
 
-  it("r goes to the next step with LLM remarks", async () => {
+  it("r goes to the next step with LLM remarks after the current position", async () => {
     await open();
     await openStep("1", "4");
     await user().keyboard("r");
     expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
+  });
+
+  it("r from a flow introduction starts at that flow; after the last step it wraps to the first", async () => {
+    await open();
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 2:/ }));
+    await user().keyboard("r");
+    expect(
+      await within(main()).findByRole("heading", { level: 2, name: /Default timeout 30 s/ }),
+    ).toBeVisible();
+    expect(within(main()).getByRole("button", { name: /^LLM rated this step MEDIUM/ })).toBeVisible();
+    await openStep("5", "2");
+    await user().keyboard("r");
+    expect(
+      await within(main()).findByRole("heading", { level: 2, name: /Trigger: callers of send/ }),
+    ).toBeVisible();
+  });
+
+  it("r says so when no step has LLM remarks", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/tour", () => {
+        const tour = structuredClone(seedFor("default", "tour") as Tour);
+        for (const s of tour.flows.flatMap((f) => f.steps)) s.llm.annotations = [];
+        return HttpResponse.json(tour);
+      }),
+    );
+    await open();
+    await user().keyboard("r");
+    expect(await screen.findByText("No more steps with remarks")).toBeInTheDocument();
   });
 
   it("a collapsed Ask stays collapsed across steps; a expands it and focuses the field", async () => {

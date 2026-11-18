@@ -74,12 +74,13 @@ const LEGEND: ReactNode[] = [
   </>,
   <>
     <span className="mr-1.5 font-mono text-[11px] font-semibold">
-      <span className={REMARK_LOOK.high.text}>▲ HIGH 1</span>{" "}
-      <span className={REMARK_LOOK.medium.text}>◆ MED 2</span>{" "}
-      <span className={REMARK_LOOK.low.text}>● LOW 3</span>
+      <span className={REMARK_LOOK.high.text}>
+        ▲ HIGH · <span className="font-normal">5 remarks</span>
+      </span>
     </span>
-    pills in the list and above the code: LLM remarks by the LLM&apos;s rating, not checked; no pill means no
-    rated remark, not that the code is safe
+    pills in the list and above the code: the LLM&apos;s rating of a step (not checked) and the number of its
+    LLM remarks, two separate facts; a flow shows its highest step rating ×the steps at it and all its
+    remarks; remarks on an unrated step: a neutral pill; no pill means neither, not that the code is safe
   </>,
   <>
     <Swatch look="outline-2 -outline-offset-2 outline-med-bd" />

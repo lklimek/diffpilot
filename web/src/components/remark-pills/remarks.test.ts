@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import type { Step, Tour } from "../../api/generated/types";
 import { seedFor } from "../../mocks/fixtures";
-import { firstRemark, remarkCounts } from "./remarks";
+import { remarkTarget, summariseRemarks } from "./remarks";
 
 const tour = seedFor("default", "tour") as Tour;
 const steps = tour.flows.flatMap((f) => f.steps);
@@ -22,30 +22,49 @@ const rated = (band: "high" | "medium" | "low" | null, n: number, id = "s"): Ste
   } as Step;
 };
 
-it("counts each step's remarks under the step's LLM risk band, highest first; no zero entries", () => {
-  const counts = remarkCounts([rated("low", 3, "a"), rated("high", 1, "b"), rated("low", 0, "c")], new Set());
-  expect(counts).toEqual([
-    { band: "high", count: 1, handled: 0 },
-    { band: "low", count: 3, handled: 0 },
-  ]);
-});
-
-it("leaves remarks of an unrated step uncounted (no severity on the wire)", () => {
-  expect(remarkCounts([rated(null, 2)], new Set())).toEqual([]);
-});
-
-it("counts remarks with the user's feedback as handled", () => {
-  expect(remarkCounts([rated("medium", 2, "m")], new Set(["m.a0"]))).toEqual([
-    { band: "medium", count: 2, handled: 1 },
-  ]);
-});
-
-it("finds the first remark of a band in order, preferring one not handled yet", () => {
-  const list = [rated("low", 1, "a"), rated("high", 2, "b")];
-  expect(firstRemark(list, "high", new Set())).toMatchObject({
-    step: { id: "b" },
-    annotation: { id: "b.a0" },
+it("a step: its LLM rating and its remark count, as two separate facts", () => {
+  expect(summariseRemarks([rated("high", 5)], new Set())).toEqual({
+    rating: "high",
+    rated: 1,
+    remarks: 5,
+    handled: 0,
+    ratings: [{ rating: "high", steps: 1 }],
   });
-  expect(firstRemark(list, "high", new Set(["b.a0"]))).toMatchObject({ annotation: { id: "b.a1" } });
-  expect(firstRemark(list, "medium", new Set())).toBeUndefined();
+});
+
+it("remarks on an unrated step still count; a rating without remarks stands alone; neither gives nothing", () => {
+  expect(summariseRemarks([rated(null, 2)], new Set())).toMatchObject({ rating: null, remarks: 2 });
+  expect(summariseRemarks([rated("low", 0)], new Set())).toMatchObject({ rating: "low", remarks: 0 });
+  expect(summariseRemarks([rated(null, 0)], new Set())).toBeNull();
+});
+
+it("a flow: the highest step rating with the number of steps at it, all remarks, the ratings per step", () => {
+  const flow = [rated("low", 3, "a"), rated("high", 1, "b"), rated("high", 4, "c"), rated(null, 2, "d")];
+  expect(summariseRemarks(flow, new Set(["a.a0", "d.a1"]))).toEqual({
+    rating: "high",
+    rated: 2,
+    remarks: 10,
+    handled: 2,
+    ratings: [
+      { rating: "high", steps: 2 },
+      { rating: "low", steps: 1 },
+      { rating: null, steps: 1 },
+    ],
+  });
+});
+
+it("leads to the first remark on a step at the highest rating, one without feedback first", () => {
+  const flow = [rated("low", 1, "a"), rated("high", 0, "b"), rated("high", 2, "c")];
+  expect(remarkTarget(flow, new Set())).toMatchObject({ step: { id: "c" }, annotation: { id: "c.a0" } });
+  expect(remarkTarget(flow, new Set(["c.a0"]))).toMatchObject({ annotation: { id: "c.a1" } });
+  // No remark at the highest rating: the first remark anywhere; no remark at all: the rated step itself.
+  expect(remarkTarget([rated("high", 0, "b"), rated("low", 1, "a")], new Set())).toMatchObject({
+    step: { id: "a" },
+    annotation: { id: "a.a0" },
+  });
+  expect(remarkTarget([rated("medium", 0, "b")], new Set())).toEqual({
+    step: expect.objectContaining({ id: "b" }),
+    annotation: null,
+  });
+  expect(remarkTarget([rated(null, 0)], new Set())).toBeUndefined();
 });

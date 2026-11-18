@@ -298,7 +298,7 @@ const SCENARIOS = {
   "show-less": { showLess: true },
   // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.
   "remark-layout": { tour: remarkLayoutTour, lines: remarkLayoutLines },
-  // Remark pills: mixed bands, a step without remarks (f1.3) and an unrated one (f2.2, not counted).
+  // Rating and remark pills: a rated step without remarks (f1.3) and an unrated one with remarks (f2.2).
   "remark-pills": {
     tour: (seed) => {
       const tour = structuredClone(seed);

@@ -1,11 +1,11 @@
 import { useId, type ReactNode } from "react";
 import type {
   AnalysisState,
+  AnnotationId,
   BlockRef,
   Flow,
   QuietRowRef,
   QuietRows,
-  RiskBand,
   Step,
   StepId,
 } from "../../api/generated/types";
@@ -13,8 +13,8 @@ import { GroupLabel, RiskLabel } from "../badge/LlmLabel";
 import { isFlowReviewed } from "../flow-intro/progress";
 import { FlowWorkLabel } from "../flow-intro/status";
 import { NOT_ANALYSED_LABEL, fileCount, lineCount, plural } from "../quiet/labels";
-import { RemarkPills } from "../remark-pills/RemarkPills";
-import type { RemarkCount } from "../remark-pills/remarks";
+import { RemarkPill } from "../remark-pills/RemarkPills";
+import { summariseRemarks } from "../remark-pills/remarks";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface NavListProps {
@@ -36,24 +36,10 @@ interface NavListProps {
   questionCounts?: Readonly<Record<StepId, number>>;
   /** The entry of the user's questions page; no entry when omitted. */
   questions?: { count: number | "loading" | "error"; open: boolean; onOpen: () => void };
-  /** LLM remarks per step by band (`remarkCounts`); steps without remarks have none. */
-  remarks?: Readonly<Record<StepId, RemarkCount[]>>;
-  /** A remark pill: go to the first remark of `band` among `steps`. */
-  onRemark?: (target: { steps: Step[]; band: RiskBand }) => void;
-}
-
-// Flow total of its steps' pills.
-function sum(counts: RemarkCount[][]): RemarkCount[] {
-  const all = new Map<RiskBand, RemarkCount>();
-  for (const c of counts.flat()) {
-    const had = all.get(c.band);
-    all.set(c.band, {
-      band: c.band,
-      count: (had?.count ?? 0) + c.count,
-      handled: (had?.handled ?? 0) + c.handled,
-    });
-  }
-  return (["high", "medium", "low"] as const).flatMap((b) => all.get(b) ?? []);
+  /** Remarks with the user's feedback (their pills dim). */
+  handledRemarks?: ReadonlySet<AnnotationId>;
+  /** A rating/remark pill: go to the first remark among `steps`; without it no pills are shown. */
+  onRemark?: (steps: Step[]) => void;
 }
 
 // Spoken count of the questions entry while it has no number.
@@ -127,7 +113,7 @@ export function NavList({
   onSelect,
   questionCounts = {},
   questions,
-  remarks = {},
+  handledRemarks = new Set(),
   onRemark,
 }: NavListProps) {
   const openFlow = currentFlowId(flows, shown);
@@ -178,11 +164,14 @@ export function NavList({
                     <RiskLabel risk={flow.llm.risk} />
                   )}
                   <GroupLabel group={flow.group} />
-                  <RemarkPills
-                    counts={sum(flow.steps.map((s) => remarks[s.id] ?? []))}
-                    subject={`in flow ${flow.position}`}
-                    onSelect={(band) => onRemark?.({ steps: flow.steps, band })}
-                  />
+                  {onRemark && (
+                    <RemarkPill
+                      summary={summariseRemarks(flow.steps, handledRemarks)}
+                      scope="flow"
+                      subject={`flow ${flow.position}`}
+                      onSelect={() => onRemark(flow.steps)}
+                    />
+                  )}
                 </span>
               </div>
               {flow.id === openFlow && (
@@ -226,11 +215,14 @@ export function NavList({
                           )}
                         </button>
                         <span className="pt-0.5">
-                          <RemarkPills
-                            counts={remarks[step.id] ?? []}
-                            subject={`on step ${step.number}`}
-                            onSelect={(band) => onRemark?.({ steps: [step], band })}
-                          />
+                          {onRemark && (
+                            <RemarkPill
+                              summary={summariseRemarks([step], handledRemarks)}
+                              scope="step"
+                              subject={`step ${step.number}`}
+                              onSelect={() => onRemark([step])}
+                            />
+                          )}
                         </span>
                       </li>
                     );

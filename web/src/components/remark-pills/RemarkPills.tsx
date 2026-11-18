@@ -1,61 +1,74 @@
-import type { RiskBand } from "../../api/generated/types";
 import { REMARK_LOOK } from "../code-view/changeLook";
 import { Tooltip } from "../tooltip/Tooltip";
-import type { RemarkCount } from "./remarks";
+import type { RemarkSummary } from "./remarks";
 
-const SHORT: Record<RiskBand, string> = { high: "HIGH", medium: "MED", low: "LOW" };
+const WORD = { high: "HIGH", medium: "MEDIUM", low: "LOW" } as const;
 
-interface RemarkPillsProps {
-  /** Remarks by band, highest first (`remarkCounts`). */
-  counts: RemarkCount[];
-  /** Where the remarks are, for the tooltip: "on this step", "in this flow". */
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+interface RemarkPillProps {
+  /** Rating and remarks (`summariseRemarks`); nothing is shown for null. */
+  summary: RemarkSummary | null;
+  /** One step, or a flow (its highest step rating). */
+  scope: "step" | "flow";
+  /** What it is about, in the name: "this step", "step 5", "flow 2". */
   subject: string;
-  /** Text before the pills, e.g. "Remarks in this flow:". */
+  /** Text before the pill. */
   label?: string;
-  /** Accessible name of the group; defaults to "LLM remarks <subject>". */
-  name?: string;
-  /** Goes to the first remark of the band. */
-  onSelect: (band: RiskBand) => void;
+  /** Goes to the first remark (or the rated step). */
+  onSelect: () => void;
 }
 
 /**
- * LLM remarks as small pills by band (the LLM's rating, styled as LLM content, never a deterministic badge).
- * Nothing at all without remarks: an absence of remarks is never shown as an all-clear.
+ * The LLM's rating of a step (or a flow's highest step rating) and the number of LLM remarks, as one LLM-styled
+ * pill: two separate facts, never remark counts per severity. Nothing without either: never an all-clear.
  */
-export function RemarkPills({ counts, subject, label, name, onSelect }: RemarkPillsProps) {
-  if (counts.length === 0) return null;
-  const summary = counts.map((c) => `${c.count} ${c.band}`).join(", ");
+export function RemarkPill({ summary, scope, subject, label, onSelect }: RemarkPillProps) {
+  if (!summary) return null;
+  const { rating, rated, remarks, handled } = summary;
+  const look = REMARK_LOOK[rating ?? "none"];
+  const done = remarks > 0 && handled === remarks;
+  const ratingText =
+    rating && `${look.label?.split(" ")[0] ?? ""} ${WORD[rating]}${scope === "flow" ? ` ×${rated}` : ""}`;
+  const countText = remarks > 0 ? plural(remarks, "remark") : null;
+  const ratingName = rating
+    ? scope === "flow"
+      ? `LLM rated ${plural(rated, "step")} in ${subject} ${WORD[rating]} (not checked), the highest rating there`
+      : `LLM rated ${subject} ${WORD[rating]} (not checked)`
+    : scope === "flow"
+      ? `LLM rated no step in ${subject}`
+      : `LLM did not rate ${subject}`;
+  const name = `${ratingName}${remarks > 0 ? ` · ${plural(remarks, "LLM remark")}` : ""}`;
+  const breakdown =
+    scope === "flow"
+      ? `Steps by LLM rating: ${summary.ratings.map((r) => `${r.rating ? WORD[r.rating] : "not rated"} ${r.steps}`).join(", ")}. `
+      : "";
+  const action =
+    remarks === 0
+      ? "Click to open the step."
+      : scope === "flow" && rating
+        ? `Click to go to the first LLM remark on a step rated ${WORD[rating]}.`
+        : "Click to go to its first LLM remark.";
   return (
-    <span
-      role="group"
-      aria-label={name ?? `LLM remarks ${subject}`}
-      className="inline-flex flex-wrap items-center gap-1"
-    >
+    <span className="inline-flex flex-wrap items-center gap-1">
       {label && <span className="text-[12px] text-muted">{label}</span>}
-      {counts.map(({ band, count, handled }) => {
-        const look = REMARK_LOOK[band];
-        const done = handled === count;
-        const glyph = look.label?.split(" ")[0] ?? "";
-        return (
-          <Tooltip
-            key={band}
-            tip={`LLM remarks ${subject}: ${summary} — click to go to the first ${band} one${done ? `; all ${count} have your feedback` : ""}.`}
-          >
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onSelect(band);
-              }}
-              className={`inline-flex min-h-6 cursor-pointer items-center rounded border-0 border-l-[3px] bg-llm-bg px-1.5 font-mono text-[11px] font-semibold whitespace-nowrap ${look.bar} ${
-                done ? "text-muted" : look.text
-              }`}
-            >
-              {`${glyph} ${SHORT[band]} ${count}`}
-            </button>
-          </Tooltip>
-        );
-      })}
+      <Tooltip tip={`${breakdown}${action}${done ? ` All ${remarks} have your feedback.` : ""}`}>
+        <button
+          type="button"
+          aria-label={name}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSelect();
+          }}
+          className={`inline-flex min-h-6 cursor-pointer items-center gap-1 rounded border-0 border-l-[3px] bg-llm-bg px-1.5 font-mono text-[11px] font-semibold whitespace-nowrap ${look.bar} ${
+            done ? "text-muted" : look.text
+          }`}
+        >
+          {ratingText}
+          {ratingText && countText && <span aria-hidden> · </span>}
+          {countText && <span className="font-normal">{countText}</span>}
+        </button>
+      </Tooltip>
     </span>
   );
 }

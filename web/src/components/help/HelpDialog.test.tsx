@@ -56,7 +56,11 @@ describe("HelpDialog", () => {
       "GitHub review thread (slate bubble)",
       "N comment/import lines hidden · Show",
       "fading frame: the line an evidence link jumped to",
-      "▲ HIGH 1 ◆ MED 2 ● LOW 3pills in the list and above the code: LLM remarks by the LLM's rating, not checked; no pill means no rated remark, not that the code is safe",
+      "▲ HIGH · 5 remarks",
+      "the LLM's rating of a step (not checked) and the number of its LLM remarks, two separate facts",
+      "a flow shows its highest step rating ×the steps at it and all its remarks",
+      "remarks on an unrated step: a neutral pill",
+      "no pill means neither, not that the code is safe",
     ]) {
       expect(text).toContain(part);
     }

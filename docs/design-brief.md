@@ -687,15 +687,19 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
   step's question count); `a` opens it and focuses the field. Its caption says answers appear below the field,
   newest first.
 
-### Owner-approved amendment — 2026-11-18: LLM remark pills in navigation
+### Owner-approved amendment — 2026-11-18: LLM rating and remark pills in navigation
 
-- The navigation lists, per step with LLM remarks, small pills by band with counts, highest first
-  ("▲ HIGH 1", "◆ MED 2", "● LOW 3"); each flow row shows its steps' total (also collapsed); the flow
-  introduction and the step (above the code) show the same pills. A pill leads to the first remark of its band
-  and flashes its code line and Inspector entry; `r` goes to the next step with remarks.
-- A remark's band is its step's LLM risk rating, as the code view's remark label shows it; remarks of an unrated
-  step are not counted. Remarks with the user's feedback dim their pill.
+- On the wire a remark has no severity of its own; only its step has the LLM's rating. A pill therefore shows two
+  separate facts: the step's LLM rating and the number of its LLM remarks ("▲ HIGH · 5 remarks"; name "LLM rated
+  this step HIGH (not checked) · 5 LLM remarks"). Remark counts are never split by rating.
+- The navigation shows one pill per step and per flow row (also collapsed); the flow introduction and the step
+  (above the code) show the same. A flow row shows its highest step rating with the number of steps at it and the
+  flow's total remarks ("▲ HIGH ×2 · 11 remarks"); its tooltip lists the steps per rating.
+- Remarks on an unrated step get a neutral pill ("5 remarks"); a rated step without remarks shows its rating alone;
+  a step with neither shows nothing, never an all-clear. Remarks with the user's feedback dim the pill.
+- A pill leads to the first remark (on a step at the highest rating for a flow) and flashes its code line and
+  Inspector entry. `r` goes to the next step with remarks after the current position (from a flow introduction:
+  that flow's first step), wraps around, and says "No more steps with remarks" when there are none.
 - Amends §1 "badges only for deterministic facts": these pills are LLM judgements and are allowed in navigation
-  because they are styled as LLM content (the LLM tint, the remark bar's colour and pattern, a word label), say
-  "LLM remarks" in their tooltip, and are never shown as an all-clear: a step or flow without remarks shows no
-  pill, never a zero.
+  because they are styled as LLM content (the LLM tint, the remark bar's colour and pattern, a word label) and say
+  "LLM" and "not checked" in their accessible name.
