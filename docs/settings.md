@@ -181,7 +181,7 @@ How you find out: after a refresh, What the scan missed names the accounts searc
 ### Ready for a human label
 
 - **What:** The label that marks a pull request ready for a human review.
-- **When used:** Every ranking: a pull request with this label ranks higher, and one of yours with it, green checks and no open threads counts as ready for others.
+- **When used:** Every ranking: a pull request with this label ranks higher, and one of yours with it, green checks and no open threads counts as ready for others. A ready pull request of yours with reviews requested from others, where nothing is your move (no review asked of you, no change request, no comment awaiting your reply, no conflicts, not approved for you to merge), is listed under Waiting on others only, not in Needs you.
 - **Empty or default:** ready-for-human.
 - **Limits:** 1 to 50 characters; compared without regard to case.
 - **Example:** needs-review.

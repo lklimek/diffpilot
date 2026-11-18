@@ -665,7 +665,7 @@
           }
         },
         "total_tenths": {
-          "description": "Its score in tenths, when it is also ranked.",
+          "description": "Always null: a pull request waiting only on others is not ranked (kept for compatibility).",
           "type": [
             "integer",
             "null"

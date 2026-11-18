@@ -1421,6 +1421,51 @@ fn excluded_list_is_capped_and_counted_in_full() {
     );
 }
 
+/// B10 (owner's report, dashpay/platform#5949 shape): the user's own ready PR (ready label, CI green, no threads,
+/// mergeable) with reviews requested from six people, approved only by a known bot, `REVIEW_REQUIRED`: nothing is
+/// the user's move, so it is listed under Waiting on others only: not ranked, not excluded, not judged.
+#[test]
+fn a_pull_request_waiting_only_on_others_is_not_in_needs_you() {
+    let mut waiting = pr(5949, "feat(sdk): waits for reviews");
+    let f = &mut waiting.facts;
+    f.labels = vec!["ready-for-human".to_owned()];
+    f.review_decision = Some(crate::dashboard::score::ReviewDecision::ReviewRequired);
+    f.approved_by = vec!["thepastaclaw".to_owned()];
+    f.review_requested_from_others = ["ana", "ben", "cid", "dee", "eve", "fay"]
+        .map(str::to_owned)
+        .to_vec();
+    f.others_review_requested_at = Some(now() - SignedDuration::from_hours(24));
+    let snap = snapshot(vec![waiting, pr(2, "fix: other")], vec![], vec![]);
+    let view = snapshot::build(&snap, &HashMap::new(), None);
+    let ranked: Vec<_> = view
+        .items
+        .iter()
+        .map(|i| {
+            (
+                i.item.id.as_str(),
+                i.item.score.tier,
+                i.item.score.total_tenths,
+            )
+        })
+        .collect();
+    let awaiting: Vec<_> = view
+        .awaiting
+        .iter()
+        .map(|a| (a.id.as_str(), a.total_tenths))
+        .collect();
+    assert_eq!(
+        (ranked.len(), awaiting, view.exclusions.total),
+        (1, vec![("wallet-ui#5949", None)], 0),
+        "ranked: {ranked:?}"
+    );
+    assert_eq!(view.item_counts.total, 1);
+    let judged: Vec<_> = candidates(&snap, LlmLanguage::En)
+        .into_iter()
+        .map(|c| c.item.id.clone())
+        .collect();
+    assert_eq!(judged, ["wallet-ui#2"]);
+}
+
 #[tokio::test]
 async fn usage_limit_pauses_ranking() {
     let h = harness().await;

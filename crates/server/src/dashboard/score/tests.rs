@@ -1845,9 +1845,12 @@ fn awaiting_others_lists_only_ready_prs_longest_wait_first() {
         PrFacts {
             labels: vec![],
             approved_by: vec!["alice".into()],
-            mergeable: Mergeable::Conflicting,
             review_requested_from_others: vec!["team:core".into(), "carol".into()],
             ..ready(2, "alice-ci", Some(6.0))
+        },
+        PrFacts {
+            mergeable: Mergeable::Conflicting,
+            ..ready(12, "alice", Some(9.0))
         },
         ready(3, "alice", None),
         PrFacts {
@@ -1886,6 +1889,116 @@ fn awaiting_others_lists_only_ready_prs_longest_wait_first() {
         .map(|p| p.number)
         .collect();
     assert_eq!(numbers, [2, 1, 3]);
+}
+
+/// B10: a ready PR of the user waits only on others (Waiting on others, not Needs you) unless something is the
+/// user's move: a review pending for a scanned login, a change request, a comment awaiting the reply, conflicts,
+/// a draft, or a merge the user can make (review decision approved; without a decision, a human approval).
+#[test]
+fn waits_on_others_only_when_nothing_is_the_users_move() {
+    use crate::dashboard::score::ReviewDecision as D;
+    let r = rules();
+    // dashpay/platform#5949 as stored.
+    let platform = PrFacts {
+        labels: vec!["ready-for-human".into()],
+        review_decision: Some(D::ReviewRequired),
+        approved_by: vec!["thepastaclaw".into()],
+        review_requested_from_others: ["ana", "ben", "cid", "dee", "eve", "fay"]
+            .map(Into::into)
+            .to_vec(),
+        others_review_requested_at: Some(ago(1.0)),
+        ..pr()
+    };
+    let cases = [
+        ("the reported PR", platform.clone(), true),
+        (
+            "only a team is requested",
+            PrFacts {
+                review_requested_from_others: vec!["team:core".into()],
+                ..platform.clone()
+            },
+            true,
+        ),
+        (
+            "no decision, only a bot approved",
+            PrFacts {
+                review_decision: None,
+                ..platform.clone()
+            },
+            true,
+        ),
+        (
+            "a review is pending for us",
+            PrFacts {
+                review_pending_for_us: true,
+                ..platform.clone()
+            },
+            false,
+        ),
+        (
+            "changes requested",
+            PrFacts {
+                review_decision: Some(D::ChangesRequested),
+                changes_requested_by: vec!["ana".into()],
+                changes_requested_by_human: true,
+                ..platform.clone()
+            },
+            false,
+        ),
+        (
+            "a bot requests changes",
+            PrFacts {
+                changes_requested_by: vec!["coderabbitai".into()],
+                ..platform.clone()
+            },
+            false,
+        ),
+        (
+            "approved and mergeable: merging is the user's move",
+            PrFacts {
+                review_decision: Some(D::Approved),
+                approved_by: vec!["ana".into()],
+                ..platform.clone()
+            },
+            false,
+        ),
+        (
+            "no decision, a human approved",
+            PrFacts {
+                review_decision: None,
+                approved_by: vec!["ana".into(), "thepastaclaw".into()],
+                ..platform.clone()
+            },
+            false,
+        ),
+        (
+            "a comment awaits our reply",
+            PrFacts {
+                awaiting_our_reply: true,
+                ..platform.clone()
+            },
+            false,
+        ),
+        (
+            "conflicts",
+            PrFacts {
+                mergeable: Mergeable::Conflicting,
+                ..platform.clone()
+            },
+            false,
+        ),
+        (
+            "draft",
+            PrFacts {
+                is_draft: true,
+                ..platform.clone()
+            },
+            false,
+        ),
+    ];
+    for (case, facts, waits) in cases {
+        assert_eq!(waits_on_others(&r, &facts), waits, "{case}");
+    }
 }
 
 /// A linked login listed as an excluded author: its pull requests are not shown as waiting on others either.

@@ -686,7 +686,9 @@ impl World {
 
 /// The dashboard world as the scan sees it on 2026-11-18 (`fixtures/dashboard/github/README.md`). The ownership
 /// policy of `acme/platform` finds only minor owned changes in #1176, #1199 and #1203, but all three are directed
-/// at alice (authored by her, or her review requested directly), so the policy keeps them (D19).
+/// at alice (authored by her, or her review requested directly), so the policy keeps them (D19). #1176 (hers,
+/// ready, reviews requested from others, nothing her move) waits only on others: Waiting on others, not ranked (B10).
+/// Every scanned item is in exactly one place: Needs you, Waiting on others or Excluded.
 #[tokio::test]
 async fn full_refresh_stores_the_expected_snapshot() {
     let w = world().await;
@@ -757,15 +759,15 @@ async fn full_refresh_stores_the_expected_snapshot() {
     assert_eq!(
         meta.item_counts,
         ItemCounts {
-            total: 21,
-            pr: 13,
+            total: 20,
+            pr: 12,
             issue: 6,
             todo: 2,
             p0: 0,
-            p1: 8,
+            p1: 7,
             p2: 5,
             p3: 8,
-            not_judged: 21,
+            not_judged: 20,
         }
     );
     assert_eq!(meta.excluded, 1, "the excluded bot author");
@@ -789,6 +791,12 @@ async fn full_refresh_stores_the_expected_snapshot() {
             vec!["jun-park".to_owned(), "team:core".to_owned()],
             at("2026-11-07T10:00:00Z")
         )]
+    );
+    assert_eq!(meta.awaiting[0].total_tenths, None, "not ranked");
+    assert_eq!(
+        meta.checked.pr,
+        meta.item_counts.pr + u32::try_from(meta.awaiting.len()).expect("count") + meta.excluded,
+        "scanned = Needs you + Waiting on others + Excluded"
     );
     let history: Vec<_> = meta
         .history
@@ -846,7 +854,6 @@ async fn full_refresh_stores_the_expected_snapshot() {
             "WUI-320",
             "NC-482",
             "WUI-311",
-            "PLAT-1176",
             "DOC-77",
             "NC-476",
             "CON-1534",
@@ -1182,7 +1189,7 @@ async fn items_page_with_cursor_etag_and_expired_cursor() {
     let w = world().await;
     w.refreshed().await;
     let all = w.items("").await;
-    assert_eq!(all.items.len(), 21, "default limit 100");
+    assert_eq!(all.items.len(), 20, "default limit 100");
     let first = w.items("?limit=5").await;
     assert_eq!(alias_ids(&first.items), alias_ids(&all.items[..5]));
     let cursor = first.next_cursor.clone().expect("next page");
@@ -1257,7 +1264,6 @@ async fn items_filters() {
             "WUI-320",
             "NC-482",
             "WUI-311",
-            "PLAT-1176",
             "DOC-77",
             "NC-476",
             "CON-1534"
@@ -1279,7 +1285,7 @@ async fn items_filters() {
         "TODO items whatever kind says"
     );
     let prs = w.items("?kind=pr&todos=false").await;
-    assert_eq!(prs.items.len(), 13);
+    assert_eq!(prs.items.len(), 12);
     assert!(prs.items.iter().all(|i| i.kind == ItemKind::Pr));
     let wallet = w.items("?repo=ACME/wallet-ui").await;
     assert_eq!(
@@ -1589,7 +1595,7 @@ async fn search_outage_keeps_previous_snapshot() {
     let meta = summary.snapshot.expect("snapshot");
     assert_eq!(
         (second.state, meta.refresh_id, meta.item_counts.pr),
-        (RefreshState::Failed, first.id, 13),
+        (RefreshState::Failed, first.id, 12),
         "outage refresh: {:?}; current snapshot items {:?}",
         second.failure,
         meta.item_counts

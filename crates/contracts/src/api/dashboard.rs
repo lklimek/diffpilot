@@ -403,7 +403,7 @@ pub struct AwaitingItem {
     pub waiting_since: Timestamp,
     /// Deterministic tags from scan facts (e.g. CI passing).
     pub tags: Vec<FactTag>,
-    /// Its score in tenths, when it is also ranked.
+    /// Always null: a pull request waiting only on others is not ranked (kept for compatibility).
     pub total_tenths: Option<i32>,
 }
 

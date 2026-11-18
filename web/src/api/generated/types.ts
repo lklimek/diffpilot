@@ -497,7 +497,7 @@ waiting_since: string,
  */
 tags: Array<FactTag>,
 /**
- * Its score in tenths, when it is also ranked.
+ * Always null: a pull request waiting only on others is not ranked (kept for compatibility).
  */
 total_tenths: number | null, };
 

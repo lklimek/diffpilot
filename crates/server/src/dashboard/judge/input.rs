@@ -98,7 +98,12 @@ pub(super) fn candidates(snapshot: &Snapshot, language: LlmLanguage) -> Vec<Cand
         Ok(item) => scored.push((source, item)),
         Err(error) => tracing::debug!(%error, "dashboard item not judged: it cannot be scored"),
     };
-    for pr in &snapshot.pull_requests {
+    // Like the read path: a PR waiting only on others is not ranked, so it is not judged (B10).
+    for pr in snapshot
+        .pull_requests
+        .iter()
+        .filter(|pr| !score::waits_on_others(&rules, &pr.facts))
+    {
         keep(Source::Pr(pr), score::score_pr(&rules, &pr.facts, None, at));
     }
     for issue in &snapshot.issues {
