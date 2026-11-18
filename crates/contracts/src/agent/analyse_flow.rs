@@ -121,7 +121,7 @@ pub struct Assessment {
     pub risk: RiskBand,
     /// Reason for the band, also for low.
     pub reason: String,
-    /// What was read and that nothing was executed.
+    /// What the agent did: `Read: …` and, if it ran anything, `Ran: …`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub basis_note: Option<String>,

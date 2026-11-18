@@ -140,7 +140,7 @@
       qs: ['Can <code>broadcast_tx</code> be sent twice when the reply arrives late? <code>should_retry</code> receives only the attempt number; no method or idempotency input reaches it.'],
       as: { notice: 'A wallet user could see one payment broadcast twice after a slow node reply. An operator would see duplicate-transaction rejections in the node log.', risk: 'HIGH',
         reason: 'A repeated value-moving request at system scale (wallet and relay both call it). It needs a reply delayed past 5 s, which flow 2 makes more likely.',
-        basis: 'read 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs); nothing executed. Not checked: node-side deduplication (not in this repository).',
+        basis: 'Read: 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs). Not checked: node-side deduplication (not in this repository).',
         orig: 'introduced by this PR', blocks: 'blocks this PR', fix: 'Pass an idempotency input into <code>should_retry</code> (or skip retry for <code>broadcast_tx</code>); add a test with a transport that delivers the request and then times out.' },
       th: [['bob', 'Should we retry non-idempotent calls at all?', 'valid', 'src/rpc/client.rs:99']] },
     '1-6': { t: 'Wait, then try again', file: 'src/rpc/client.rs', a: 100, z: 103, kind: 'added',
@@ -153,7 +153,7 @@
       callers: [['RpcClient::send', 'src/rpc/client.rs', 100]], callees: [['RetryPolicy::backoff', 'src/rpc/retry.rs', 28], ['with_jitter', 'src/rpc/retry.rs', 45]],
       qs: ['With jitter applied after the cap, can one sleep exceed <code>max_delay</code> (4 s)?'],
       as: { notice: 'On a slow link a retry may wait up to 6 s instead of 4 s. Few users would notice.', risk: 'LOW', reason: 'Bounded (at most 1.5 &times; the cap) and only on the third attempt path.',
-        basis: 'read 2 files (retry.rs, client.rs); nothing executed.', orig: 'introduced by this PR', blocks: 'follow-up', fix: 'Apply the jitter before <code>min(max_delay)</code>.' },
+        basis: 'Read: 2 files (retry.rs, client.rs).', orig: 'introduced by this PR', blocks: 'follow-up', fix: 'Apply the jitter before <code>min(max_delay)</code>.' },
       th: [['carol', 'Use a seeded RNG for the jitter so tests are stable.', 'stale', 'src/rpc/retry.rs:30']] },
     '1-7': { t: 'Give up: Exhausted', file: 'src/rpc/client.rs', a: 104, z: 106, kind: 'added',
       tip: 'Was: the call ended with Timeout. Is: the call ends with Exhausted { attempts } after the last attempt.',
@@ -165,7 +165,7 @@
       callers: [['RpcClient::send', 'src/rpc/client.rs', 104]], callees: [['RpcError::Exhausted', 'src/rpc/error.rs', 13]],
       qs: ['Do all callers of <code>send</code> still handle the case that used to be <code>Timeout</code>? Two wildcard sites were found (flow 3).'],
       as: { notice: 'Wallet users get a generic RPC error instead of the &ldquo;offline&rdquo; message once retries run out.', risk: 'MEDIUM', reason: 'User-visible message change on a common failure; not data-affecting.',
-        basis: 'read 3 files; nothing executed. Not checked: callers in other repositories.', orig: 'introduced by this PR', blocks: 'follow-up', fix: 'Map <code>Exhausted</code> to the same wallet error as <code>Timeout</code>.' },
+        basis: 'Read: 3 files. Not checked: callers in other repositories.', orig: 'introduced by this PR', blocks: 'follow-up', fix: 'Map <code>Exhausted</code> to the same wallet error as <code>Timeout</code>.' },
       th: [] },
     '1-8': { t: 'Other errors returned as before', file: 'src/rpc/client.rs', a: 107, z: 107, kind: 'changed',
       tip: 'Was: every error was returned by <code>?</code>. Is: non-timeout errors are returned from the match, never retried.',
@@ -180,7 +180,7 @@
       callers: [['RpcClient::new', 'src/rpc/client.rs', 40]], callees: [],
       qs: ['Does <code>sync::fetch_headers</code> finish within 5 s for 2000 headers on slow peers? Its own comment says 10&ndash;20 s, and the failing CI test is about this.'],
       as: { notice: 'Header sync from slow peers may fail where it used to finish; an operator would see sync stall on slow links.', risk: 'MEDIUM', reason: 'Affects node sync on slow links, not wallet funds; CI already shows a failing test for it.',
-        basis: 'read 3 files (config.rs, sync/mod.rs, CI log); nothing executed. Not checked: real peer latencies.', orig: 'introduced by this PR', blocks: 'blocks this PR until the failing test is resolved', fix: 'Keep a longer timeout for <code>get_headers</code> or pass a per-request timeout in <code>fetch_headers</code>.' },
+        basis: 'Read: 3 files (config.rs, sync/mod.rs, CI log). Not checked: real peer latencies.', orig: 'introduced by this PR', blocks: 'blocks this PR until the failing test is resolved', fix: 'Keep a longer timeout for <code>get_headers</code> or pass a per-request timeout in <code>fetch_headers</code>.' },
       th: [] },
     '2-2': { t: 'Affected code: sync::fetch_headers', file: 'src/sync/mod.rs', a: 61, z: 67, kind: 'unchanged',
       tip: 'Was: waits up to 30 s for a reply with 2000 headers. Is: gives up after 5 s per attempt, then retries.',
@@ -196,7 +196,7 @@
       conseq: ['Two wildcard <code>match</code> sites outside the diff swallow it (wallet and peers).'], callers: [['RpcClient::send', 'src/rpc/client.rs', 105]], callees: [],
       qs: ['Should the two wildcard sites handle <code>Exhausted</code> explicitly?'],
       as: { notice: 'A wallet user sees a generic RPC error; a peer that keeps timing out is silently ignored instead of being marked failed.', risk: 'MEDIUM', reason: 'Wrong handling of a common failure in two places; no data loss.',
-        basis: 'read 3 files, searched the repository for <code>match</code> on <code>send</code> results; nothing executed.', orig: 'introduced by this PR', blocks: 'follow-up', fix: 'Handle <code>Exhausted</code> explicitly in both <code>match</code> sites.' },
+        basis: 'Read: 3 files, searched the repository for <code>match</code> on <code>send</code> results.', orig: 'introduced by this PR', blocks: 'follow-up', fix: 'Handle <code>Exhausted</code> explicitly in both <code>match</code> sites.' },
       th: [] },
     '3-2': { t: 'Affected code: wildcard match on send()', file: 'src/wallet/mod.rs', a: 118, z: 122, kind: 'unchanged',
       tip: 'Was: Err(_) caught Transport errors only. Is: Err(_) also catches Exhausted.',
@@ -213,7 +213,7 @@
       callers: [['search for send_once in this repository: 0 hits', 'src/', 0]], callees: [],
       qs: ['Does <code>acme/node-sdk</code> (PR #118) still call <code>send_once()</code>?', 'How does a caller now send a request that must not be repeated?'],
       as: { notice: 'A downstream developer gets a compile error; a user of <code>broadcast_tx</code> loses the only no-retry path.', risk: 'MEDIUM', reason: 'Public API removal with a known downstream user; ties to the double-send question.',
-        basis: 'read 2 files, searched this repository and the stacked PR title; nothing executed. Not checked: other downstream crates.', orig: 'introduced by this PR', blocks: 'blocks this PR', fix: 'Keep <code>send_once</code> (or add a per-call retry opt-out) until the SDK has moved.' },
+        basis: 'Read: 2 files, searched this repository and the stacked PR title. Not checked: other downstream crates.', orig: 'introduced by this PR', blocks: 'blocks this PR', fix: 'Keep <code>send_once</code> (or add a per-call retry opt-out) until the SDK has moved.' },
       th: [] },
     '5-1': { t: 'Backoff helpers moved', file: 'src/rpc/retry.rs', a: 38, z: 95, kind: 'moved',
       tip: 'Was: jitter of up to 10% of the delay. Is: jitter of up to 50% of the delay.',
@@ -223,11 +223,11 @@
       conseq: ['Retry times of concurrent clients are spread over a wider window.'], callers: [['RetryPolicy::backoff', 'src/rpc/retry.rs', 30]], callees: [],
       qs: ['Is the jump from &plusmn;10% to &plusmn;50% intended in a PR that is described as a move?'],
       as: { notice: 'Retries wait noticeably longer or shorter from run to run; few users would see it.', risk: 'LOW', reason: 'A tuning change inside a bounded delay.',
-        basis: 'read 2 files (old and new location); nothing executed.', orig: 'introduced by this PR', blocks: 'follow-up', fix: 'Say it in the PR description, or keep 0.1 in the move.' },
+        basis: 'Read: 2 files (old and new location).', orig: 'introduced by this PR', blocks: 'follow-up', fix: 'Say it in the PR description, or keep 0.1 in the move.' },
       th: [] }
   };
   var ALT = { wrong: { '3-1': { as: { notice: 'Every downstream crate that matches <code>RpcError</code> exhaustively stops compiling.', risk: 'HIGH',
-    reason: 'Adding a variant is a breaking change for all consumers of the crate.', basis: 'read <code>src/rpc/error.rs</code> lines 9&ndash;16 only. Not checked: attributes on the enum.',
+    reason: 'Adding a variant is a breaking change for all consumers of the crate.', basis: 'Read: <code>src/rpc/error.rs</code> lines 9&ndash;16 only. Not checked: attributes on the enum.',
     orig: 'introduced by this PR', blocks: 'blocks this PR', fix: 'Bump the major version or box the error.' } } } };
   function getI(id) {
     var d = INSP[id]; if (!d) return null;
@@ -542,7 +542,7 @@
     $('#ask-input').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('#ask-form').requestSubmit(); } });
     $('#ask-form').addEventListener('submit', function (e) {
       e.preventDefault(); var i = $('#ask-input'), q = i.value.trim(); if (!q) return;
-      var id = S.blk; (S.answers[id] = S.answers[id] || []).unshift({ q: q, a: 'I read the files around this step and searched for callers (nothing executed). I did not check other repositories.' });
+      var id = S.blk; (S.answers[id] = S.answers[id] || []).unshift({ q: q, a: 'I read the files around this step and searched for callers. I did not check other repositories.' });
       i.value = ''; grow(i); var an = $('#answers'); if (an) an.innerHTML = answersHTML(id);
       var sd = $('.sec[data-sec="ask"]'); if (sd) sd.open = true;
       toast('Answer pinned in the inspector (mock).');

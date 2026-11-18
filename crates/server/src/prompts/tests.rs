@@ -1288,7 +1288,7 @@ fn long_flow() -> FlowAnalysisOutput {
             "headline": "LAST STEP HEADLINE: a payment may be sent twice",
             "risk": "high",
             "reason": "send retries broadcast_tx",
-            "basis_note": "read 2 files; nothing executed",
+            "basis_note": "Read: 2 files",
             "not_checked": "node-side deduplication",
             "origin": "introduced",
             "blocking": "blocks_this_pr",

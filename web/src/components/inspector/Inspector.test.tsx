@@ -35,7 +35,7 @@ describe("Inspector at a step", () => {
     await userEvent.click(sectionButton(/^Assessment/));
     expect(region(/^Assessment/)).toHaveTextContent("LOW");
     expect(region(/^Assessment/)).toHaveTextContent(step(tour, "f1.1").llm.assessment!.reason);
-    expect(region(/^Assessment/)).not.toHaveTextContent("nothing executed");
+    expect(region(/^Assessment/)).not.toHaveTextContent("Read: ");
   });
 
   it("shows populated sections in review order", () => {

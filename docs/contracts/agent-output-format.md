@@ -88,7 +88,7 @@ evidence: p1:head:10 p1:head:12
 headline: The worker stops after closure
 risk: low
 reason: The change affects only the closed-queue branch.
-basis_note: Read receive and its caller; nothing was executed.
+basis_note: Read: receive and its caller.
 not_checked: Whether shutdown drains messages already in the queue.
 origin: introduced
 blocking: no_action_proposed

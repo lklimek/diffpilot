@@ -380,7 +380,7 @@ risk: RiskBand,
  */
 reason: string,
 /**
- * What was read and that nothing was executed.
+ * What the agent did: `Read: …` and, if it ran anything, `Ran: …`.
  */
 basis_note?: string,
 /**

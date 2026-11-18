@@ -193,7 +193,7 @@
           "end_line": 199,
           "was": "",
           "is": "",
-          "text": "TestDispatcherSurplusResponseDoesNotBlock fills the channel, checks refusal of nil, valid and malformed surplus responses, and checks that the queued answer survives. The test was read; nothing was executed.",
+          "text": "TestDispatcherSurplusResponseDoesNotBlock fills the channel, checks refusal of nil, valid and malformed surplus responses, and checks that the queued answer survives. The test was read.",
           "evidence": [
             {
               "file": "internal/statesync/dispatcher_test.go",

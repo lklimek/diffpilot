@@ -166,8 +166,8 @@ Every changed line has a neutral gutter mark (deterministic fact). LLM colouring
 annotated ranges, so "changed, no LLM remark" is its own visible category.
 
 **Assessment** (per step, collapsed by default): headline = what a production user or operator would notice;
-risk level at system scale with reason (also for LOW); basis ("read 2 files, nothing executed") and what was
-not checked; introduced by this PR or pre-existing; blocks this PR or follow-up; smallest correction. The
+risk level at system scale with reason (also for LOW); basis (what the agent did: "Read: 2 files", "Ran: …" if
+it ran anything) and what was not checked; introduced by this PR or pre-existing; blocks this PR or follow-up; smallest correction. The
 risk shown for a flow in the menu is LLM-rated; there is no PR-level risk.
 
 **Annotation** — anchored to lines inside a step. Types: `behaviour` (was → is), `consequence`, `question`

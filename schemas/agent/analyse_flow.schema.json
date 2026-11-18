@@ -254,7 +254,7 @@
                     "type": "string"
                   },
                   "basis_note": {
-                    "description": "What was read and that nothing was executed.",
+                    "description": "What the agent did: `Read: …` and, if it ran anything, `Ran: …`.",
                     "type": [
                       "string",
                       "null"

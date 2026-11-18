@@ -39,7 +39,7 @@
       "text": "Does the node deduplicate broadcast_tx by transaction id?",
       "state": "answered",
       "answer": {
-        "answer": "Not visible in this repository. mempool::broadcast_tx says the node accepts each transaction once (src/mempool/mod.rs:129) but does not check for a prior submit, and should_retry has no input that could skip it. I read the files around this step and searched for callers; nothing executed, other repositories not checked. Does the node's own documentation state that a repeated broadcast is rejected?",
+        "answer": "Not visible in this repository. mempool::broadcast_tx says the node accepts each transaction once (src/mempool/mod.rs:129) but does not check for a prior submit, and should_retry has no input that could skip it. I read the files around this step and searched for callers; other repositories not checked. Does the node's own documentation state that a repeated broadcast is rejected?",
         "evidence": [
           {
             "file": "src/mempool/mod.rs",

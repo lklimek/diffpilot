@@ -981,7 +981,7 @@ why: The description changed.
 headline: The documentation wording changes
 risk: low
 reason: Only this description changes.
-basis_note: Read README.md; nothing executed.
+basis_note: Read: README.md.
 not_checked: Whether the description is useful to a new reader.
 origin: introduced
 blocking: no_action_proposed

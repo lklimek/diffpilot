@@ -27,7 +27,7 @@ evidence: p15:head:129
 headline: A caller may see a repeated request after a timeout.
 risk: low
 reason: This context step submits one request; repetition is introduced by the downstream retry decision.
-basis_note: Read src/mempool/mod.rs and the flow's caller context; nothing executed.
+basis_note: Read: src/mempool/mod.rs and the flow's caller context.
 not_checked: Downstream handling of repeated requests.
 origin: introduced
 blocking: no_action_proposed
@@ -52,7 +52,7 @@ text: Every attempt gets the full per-attempt timeout, so the worst case is 3 ×
 headline: A rebuilt request may carry different data on a later attempt.
 risk: low
 reason: The attempt counter and request construction are local; the retry decision controls whether another request is sent.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
+basis_note: Read: src/rpc/client.rs and the flow's caller context.
 not_checked: Request equality across attempts.
 origin: introduced
 blocking: no_action_proposed
@@ -74,7 +74,7 @@ evidence: p6:head:97
 headline: Callers receive the result selected by this branch.
 risk: low
 reason: Only timeouts take the new path; success and other errors return directly.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
+basis_note: Read: src/rpc/client.rs and the flow's caller context.
 not_checked: Transport error classification at runtime.
 origin: introduced
 blocking: no_action_proposed
@@ -96,7 +96,7 @@ evidence: p6:head:98
 headline: The caller receives the successful response.
 risk: low
 reason: This unchanged return exits the loop immediately without another send.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
+basis_note: Read: src/rpc/client.rs and the flow's caller context.
 not_checked: Runtime response decoding.
 origin: introduced
 blocking: no_action_proposed
@@ -126,7 +126,7 @@ evidence: p9:head:23
 headline: A wallet user could see one payment broadcast twice after a slow node reply; an operator would see duplicate-transaction rejections in the node log.
 risk: high
 reason: A repeated value-moving request at system scale (wallet and relay both call send). It needs a reply delayed past 5 s, which flow 2 makes more likely.
-basis_note: read 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs); nothing executed
+basis_note: Read: 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs)
 not_checked: node-side deduplication (not in this repository)
 origin: introduced
 blocking: blocks_this_pr
@@ -153,7 +153,7 @@ evidence: p9:head:30
 headline: With the default policy the two waits stay at most 300 ms and 600 ms; a policy with more attempts could wait up to half longer than max_delay.
 risk: low
 reason: Latent: the 4 s cap is out of reach while every client uses the default of 3 attempts, and no setter can change it.
-basis_note: read 2 files (retry.rs, client.rs); nothing executed
+basis_note: Read: 2 files (retry.rs, client.rs)
 not_checked: the jitter range at run time
 origin: introduced
 blocking: follow_up
@@ -183,7 +183,7 @@ text: Two wildcard sites were found (flow 3): do all callers of send still handl
 headline: Wallet users get a generic RPC error instead of the “offline” message once retries run out.
 risk: medium
 reason: User-visible message change on a common failure; no data is affected.
-basis_note: read 3 files; nothing executed
+basis_note: Read: 3 files
 not_checked: callers in other repositories
 origin: introduced
 blocking: follow_up
@@ -206,7 +206,7 @@ evidence: p6:head:107
 headline: The caller receives a transport error without another attempt.
 risk: low
 reason: The existing error return remains separate from the timeout retry path.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
+basis_note: Read: src/rpc/client.rs and the flow's caller context.
 not_checked: Other transport error variants at runtime.
 origin: introduced
 blocking: no_action_proposed
@@ -232,7 +232,7 @@ evidence: p6:head:42
 headline: New clients use the default retry limits.
 risk: low
 reason: Policy construction is bounded to client setup; retry exposure is assessed at the decision step.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
+basis_note: Read: src/rpc/client.rs and the flow's caller context.
 not_checked: Configuration in downstream clients.
 origin: introduced
 blocking: no_action_proposed
@@ -258,7 +258,7 @@ evidence: p9:head:17 p9:head:30 p9:head:46 p9:head:54
 headline: The policy controls how long the caller waits.
 risk: low
 reason: The default attempt limit bounds the loop; the send and jitter steps carry the concrete concerns.
-basis_note: Read src/rpc/retry.rs and the flow's caller context; nothing executed.
+basis_note: Read: src/rpc/retry.rs and the flow's caller context.
 not_checked: Runtime delays and custom policy use.
 origin: introduced
 blocking: no_action_proposed

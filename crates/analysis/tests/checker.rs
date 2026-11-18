@@ -93,7 +93,7 @@ fn checker_accepts_fixture_file_and_reports_line_numbered_rejections() {
         )
     };
     let low = concise(&text);
-    assert!(!low.contains("basis_note: Read src/sync/mod.rs"));
+    assert!(!low.contains("basis_note: Read: src/sync/mod.rs"));
     std::fs::write(&path, &low).unwrap();
     let accepted = check();
     assert!(

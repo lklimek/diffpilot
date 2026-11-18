@@ -26,7 +26,7 @@ text: Is the jump from a tenth to a half of the delay intended in a PR that is d
 headline: Retries wait noticeably longer or shorter from run to run; few users would see it.
 risk: low
 reason: A tuning change inside a bounded delay.
-basis_note: read 2 files (old and new location); nothing executed
+basis_note: Read: 2 files (old and new location)
 not_checked: how often retries happen in production
 origin: introduced
 blocking: follow_up
@@ -48,7 +48,7 @@ evidence: p5:head:13 p5:base:18
 headline: Consumers may need the new module path.
 risk: low
 reason: The module declarations wire the moved implementation; there is no runtime branch here.
-basis_note: Read src/lib.rs and the flow's caller context; nothing executed.
+basis_note: Read: src/lib.rs and the flow's caller context.
 not_checked: External imports of the old module path.
 origin: introduced
 blocking: no_action_proposed

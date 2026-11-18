@@ -31,7 +31,7 @@ evidence: p15:head:63
 headline: Header sync from slow peers may fail where it used to finish; an operator would see sync stall on slow links.
 risk: medium
 reason: Affects node sync on slow links, not wallet funds; CI already shows a failing test for it.
-basis_note: read 3 files (config.rs, sync/mod.rs, the CI log); nothing executed
+basis_note: Read: 3 files (config.rs, sync/mod.rs, the CI log)
 not_checked: real peer latencies
 origin: introduced
 blocking: blocks_this_pr
@@ -56,7 +56,7 @@ text: Is a 2000-header reply from a slow peer expected to arrive within 5 s?
 headline: Header sync may fail on slow links.
 risk: low
 reason: This caller requests a large batch; the timeout change that reaches it is assessed in the preceding step.
-basis_note: Read src/sync/mod.rs and the flow's caller context; nothing executed.
+basis_note: Read: src/sync/mod.rs and the flow's caller context.
 not_checked: Production peer response times.
 origin: introduced
 blocking: no_action_proposed

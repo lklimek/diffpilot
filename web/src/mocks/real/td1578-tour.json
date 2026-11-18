@@ -370,7 +370,7 @@
               "headline": "Surplus replies could stall all state-sync message handling.",
               "risk": "high",
               "reason": "The addressed condition can stop the shared reactor loop and prevent request cleanup, leaving active state sync unable to progress until the response context ends.",
-              "basis_note": "Read the base response sends, head dispatcher and reactor paths, callers and regression cases. Nothing was executed. The severity skill was unavailable; the band reflects the component-wide availability effect.",
+              "basis_note": "Read: the base response sends, head dispatcher and reactor paths, callers and regression cases. The severity skill was unavailable; the band reflects the component-wide availability effect.",
               "not_checked": "Runtime scheduling, race detection, sustained response floods and live network behavior were not checked.",
               "origin": "pre_existing",
               "blocking": "follow_up",
