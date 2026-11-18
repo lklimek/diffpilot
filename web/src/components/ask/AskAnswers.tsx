@@ -48,7 +48,52 @@ function AskAgain({
   );
 }
 
-function Answer({
+// A list line as the LLM typed it: "- ", "* ", "• ", "1. " or "1) " (the Ask plain-text check allows them).
+const LIST_LINE = /^\s*(?:[-*•]|\d+[.)])\s+(?=\S)/;
+
+/**
+ * Answer text: line breaks kept, backtick and fenced code drawn as code; list lines (outside fences) as typed, one
+ * block each with a hanging indent so a wrapped line stays under its text.
+ */
+export function AnswerText({ text }: { text: string }) {
+  const parts: ({ list: string; marker: number } | { text: string[] })[] = [];
+  let fence = false;
+  for (const line of text.split("\n")) {
+    const list = !fence && LIST_LINE.exec(line);
+    if (line.startsWith("```")) fence = !fence;
+    const last = parts.at(-1);
+    if (list) parts.push({ list: line, marker: list[0].length });
+    else if (last && "text" in last) last.text.push(line);
+    else parts.push({ text: [line] });
+  }
+  if (!parts.some((p) => "list" in p)) return <CodeText text={text} />;
+  return (
+    <>
+      {parts.map((part, i) => {
+        if ("text" in part)
+          return (
+            <span key={i} className="block min-h-[1lh]">
+              <CodeText text={part.text.join("\n")} />
+            </span>
+          );
+        const indent = `${part.marker}ch`;
+        return (
+          <span
+            key={i}
+            data-list-line
+            className="block"
+            style={{ paddingLeft: indent, textIndent: `-${indent}` }}
+          >
+            <CodeText text={part.list} />
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+/** The state of a question, or its whole LLM answer with evidence. */
+export function Answer({
   question,
   onAskAgain,
   onEvidence,
@@ -92,7 +137,7 @@ function Answer({
             </span>
           </Tooltip>
           <div className="mt-0.5 min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap">
-            <CodeText text={answer.answer} />
+            <AnswerText text={answer.answer} />
           </div>
           {answer.evidence.length > 0 && (
             <div className="mt-1 text-[11.5px] text-muted">

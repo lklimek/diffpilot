@@ -54,6 +54,8 @@ export interface CodeContext {
   activeLine: CommentTarget | null;
   /** A line number was activated: comment on it; `lines` are the displayed lines it belongs to. */
   onComment: (target: CommentTarget, lines: LinesResponse) => void;
+  /** "Ask about this line" (or the selected lines); not offered without it (no step open). */
+  onAskLine?: (target: CommentTarget) => void;
   /** A pending comment to show open where its line is displayed. */
   revealComment: string | null;
   /** Edit and delete of a pending comment, on GitHub. */
@@ -110,6 +112,7 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         activeLine={active && { side: active.side, line: active.line }}
         highlight={highlight}
         onLineAction={(target) => ctx.onComment(target, data)}
+        onAskLine={ctx.onAskLine}
         onLoadDeleted={(block) => setOpened((all) => [...all, block.base_start])}
         onShowInInspector={ctx.onShowInInspector}
         otherThreadStep={ctx.otherThreadStep}
@@ -218,7 +221,7 @@ export function DiffCode({
   analysisId: AnalysisId;
   query: RangeQuery;
   /** The reviewer's pending comments with edit and delete, marked on their lines. */
-  comments?: Pick<CodeContext, "comments" | "onEditComment" | "onDeleteComment">;
+  comments?: Pick<CodeContext, "comments" | "onEditComment" | "onDeleteComment" | "onAskLine">;
 }) {
   const diff = useDiff(analysisId, query);
   if (diff.isPending) return <StatusMessage kind="loading">Loading the diff…</StatusMessage>;
@@ -232,6 +235,7 @@ export function DiffCode({
       comments={comments?.comments}
       onEditComment={comments?.onEditComment}
       onDeleteComment={comments?.onDeleteComment}
+      onAskLine={comments?.onAskLine}
     />
   );
 }

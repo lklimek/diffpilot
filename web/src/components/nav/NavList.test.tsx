@@ -250,12 +250,14 @@ describe("NavList: LLM rating and remark pills", () => {
     handledRemarks: new Set<string>(),
   };
 
-  it("each flow row shows its rating once (its label) and all its remarks, also collapsed; steps show theirs", () => {
+  it("each flow row shows its rating once (its label) and a marker for its remarks; steps show their rating", () => {
     render(<NavList {...props} current={{ block: "step", step_id: "f1.5" }} />);
-    expect(screen.getByRole("button", { name: "5 LLM remarks in flow 2" })).toHaveTextContent(/^5 remarks$/);
-    expect(screen.getByRole("button", { name: /^LLM rated step 5 HIGH/ })).toHaveTextContent(
-      "▲ HIGH · 3 remarks",
-    );
+    const flow = screen.getByRole("button", { name: "5 LLM remarks in flow 2" });
+    expect(flow).toHaveTextContent(/^$/);
+    expect(flow).toHaveAccessibleDescription(/^5 LLM remarks in flow 2\./);
+    const step = screen.getByRole("button", { name: "LLM rated step 5 HIGH (not checked)" });
+    expect(step).toHaveTextContent(/^▲ HIGH$/);
+    expect(step).toHaveAccessibleDescription(/^3 LLM remarks on step 5\./);
   });
 
   it("a pill leads to the remarks of its steps", async () => {

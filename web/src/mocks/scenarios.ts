@@ -323,6 +323,41 @@ const SCENARIOS = {
   },
   "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5, idle: true } },
   // Work longer than the tab title's threshold: a requested flow (70 s) and a slow answer.
+  // The Ask conversation: questions on several steps, the newest still being answered.
+  "ask-thread": {
+    questions: (seed) => {
+      const base = seed[0] ?? null;
+      const ask = (
+        id: string,
+        step_id: string,
+        minute: number,
+        text: string,
+        answer: string | null,
+      ): AskQuestion => ({
+        id,
+        mine: true,
+        asked_by: base?.asked_by ?? "alice",
+        step_id,
+        text,
+        state: answer === null ? "answering" : "answered",
+        answer: answer === null ? null : { answer, evidence: [] },
+        failure: null,
+        created_at: `2026-11-16T10:${String(minute).padStart(2, "0")}:00Z`,
+      });
+      return [
+        ask(
+          "t1",
+          "f1.5",
+          0,
+          "Can the retry send the same transaction twice?",
+          "Potential double send:\n1. The first reply is late.\n2. The client retries.\n- Not reproduced.",
+        ),
+        ask("t2", "f1.2", 5, "Where is the timeout set?", "In `RpcConfig::default`."),
+        ask("t3", "f1.5", 10, "Is the reply deduplicated?", "No deduplication is visible in these lines."),
+        ask("t4", "f1.2", 15, "Why 5 s?", null),
+      ];
+    },
+  },
   "tab-status": {
     lazy: true,
     analysis: { state: "running", done: 1, total: 5, idle: true },

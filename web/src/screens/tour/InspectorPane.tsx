@@ -1,5 +1,5 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import type { RefObject } from "react";
+import { useState, type RefObject } from "react";
 import type {
   AnalysisId,
   AnnotationId,
@@ -21,14 +21,15 @@ import {
   useQuestions,
   type useCommentActions,
 } from "../../api/queries";
-import { AskAnswers } from "../../components/ask/AskAnswers";
 import { AskForm } from "../../components/ask/AskForm";
+import { AskThread, type AskScope } from "../../components/ask/AskThread";
 import {
   CommentComposer,
   type CommentDrafts,
   type UnresolvedPosts,
 } from "../../components/comment/CommentComposer";
 import { commentPlacement, isChangedLine } from "../../components/comment/placement";
+import type { QuestionPlace } from "../../components/questions/QuestionsBlock";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
 import { Inspector, type InspectorProps } from "../../components/inspector/Inspector";
 import type { SectionControl } from "../../components/inspector/sectionState";
@@ -55,6 +56,8 @@ interface InspectorPaneProps {
   onFlashed?: () => void;
   onBackToStep: () => void;
   onSelectStep: (step: StepId) => void;
+  /** The step of the tour a question was asked on (its link in the Ask conversation). */
+  placeOf: (step: StepId) => QuestionPlace | null;
   onEvidence: (evidence: Evidence) => void;
   codeShown: boolean;
   pending: UseQueryResult<PendingReview>;
@@ -70,6 +73,14 @@ interface InspectorPaneProps {
   /** Open / collapsed Inspector sections, Ask included (the `a` shortcut reveals Ask). */
   sections: SectionControl;
   commentRef: RefObject<HTMLTextAreaElement | null>;
+  /** Dragged height of the Ask area (remembered with the layout); null = default. */
+  askHeight: number | null;
+  onAskHeight: (height: number | null) => void;
+  /** "Ask about this line" from a code line of the step. */
+  onAskLine?: (target: CommentTarget) => void;
+  /** Text for the Ask field from "Ask about this line"; `onAskInserted` once it is in. */
+  askInsert: { text: string } | null;
+  onAskInserted: () => void;
 }
 
 /** GitHub link to a line at the analysed commit of its side. */
@@ -89,6 +100,7 @@ export function InspectorPane(props: InspectorPaneProps) {
   const postFeedback = usePostFeedback(analysisId);
   const deleteFeedback = useDeleteFeedback(analysisId);
   const annotation = step?.llm.annotations.find((a) => a.id === annotationId);
+  const [askScope, setAskScope] = useState<AskScope>("conversation");
 
   const onAsk = (stepId: StepId, text: string) => ask.mutateAsync({ step: stepId, text });
   // Feedback on a plain line only where the server takes it: a changed line of the diff on its side.
@@ -109,6 +121,7 @@ export function InspectorPane(props: InspectorPaneProps) {
         comments: pending.data?.comments ?? [],
         onEditComment: comments.edit,
         onDeleteComment: comments.remove,
+        onAskLine: props.onAskLine,
       }}
       query={
         annotation
@@ -123,11 +136,15 @@ export function InspectorPane(props: InspectorPaneProps) {
       <StatusMessage kind="error">Cannot read the questions: {errorText(questions.error)}</StatusMessage>
     ) : questions.isPending ? (
       <StatusMessage kind="loading">Loading the questions…</StatusMessage>
-    ) : !questions.data.some((q) => q.step_id === step.id) ? null : (
-      <AskAnswers
+    ) : questions.data.length === 0 ? null : (
+      <AskThread
+        questions={questions.data}
+        stepId={step.id}
+        scope={askScope}
+        onScope={setAskScope}
+        placeOf={props.placeOf}
         onEvidence={props.onEvidence}
         currentFile={step.facts.file}
-        questions={questions.data.filter((q) => q.step_id === step.id)}
         onAskAgain={onAsk}
       />
     ));
@@ -164,6 +181,8 @@ export function InspectorPane(props: InspectorPaneProps) {
   return (
     <Inspector
       sections={props.sections}
+      dockHeight={props.askHeight}
+      onDockHeight={step ? props.onAskHeight : undefined}
       tour={tour}
       block={block}
       annotationId={annotationId}
@@ -182,6 +201,8 @@ export function InspectorPane(props: InspectorPaneProps) {
             step={step ? { id: step.id, label: `Step ${step.number} · ${step.llm.title}` } : null}
             onAsk={onAsk}
             inputRef={props.askRef}
+            insert={props.askInsert}
+            onInserted={props.onAskInserted}
             answers={answers}
             sections={props.sections}
             notice={
