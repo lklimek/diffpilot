@@ -1608,6 +1608,47 @@ async fn quarantine_sets_the_mode_in_the_supervisor_before_replying() {
     );
 }
 
+/// The runner's start-up order (`main.rs`, isolation branch): empty `/tmp`, bring the crashed job's credential
+/// back from its agent home, empty the work volume, then recover the master. Mirrors the r1 container check
+/// `startup_empties_scratch_and_recovers_the_credential`.
+#[tokio::test]
+async fn startup_order_keeps_the_rotated_credential_and_empties_scratch() {
+    use sha2::Digest as _;
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    let root = h._dir.path().to_path_buf();
+    let tmp = root.join("tmp");
+    fs::create_dir_all(tmp.join("left/deep")).unwrap();
+    fs::write(tmp.join("left/deep/file"), "x").unwrap();
+    let work = root.join("work");
+    fs::create_dir_all(work.join("j-1/repo")).unwrap();
+    fs::write(work.join("j-1/repo/README"), "x").unwrap();
+    // A crash in the middle of job j-1: the agent rotated the token, the base digest is in staging.
+    let staging = root.join("staging");
+    fs::create_dir(&staging).unwrap();
+    let digest: String = sha2::Sha256::digest(fs::read(&h.master_auth).unwrap())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    fs::write(staging.join("j-1.cas"), digest).unwrap();
+    let crashed = agent_home.with_file_name("j-1");
+    fs::create_dir(&crashed).unwrap();
+    fs::write(crashed.join("auth.json"), rotated_auth()).unwrap();
+
+    crate::scratch::clear(&tmp).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    isolation.recover(&staging, &work).await.expect("recovered");
+    let cleared = crate::scratch::clear(&work).unwrap();
+    assert!(cleared.failed.is_empty());
+    assert_eq!(h.provider.settings.credential.recover(&staging).unwrap(), 1);
+
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), rotated_auth());
+    assert!(usable(&h));
+    for dir in [&tmp, &work, &staging, agent_home.parent().unwrap()] {
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 0, "{}", dir.display());
+    }
+}
+
 #[tokio::test]
 async fn recovery_quarantines_a_reachable_leftover_and_verifies_it() {
     let mut h = harness("plan.jsonl", 0);

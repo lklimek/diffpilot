@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Fails when a production deployment file enables a development or test switch (ADR-013 "Rust implementation",
 # threat model T1/T4): the dev no-isolation mode, the supervisor's fault injection or unprivileged test mode,
-# the prototype's fault switches, the fake LLM provider, or (production compose only) the tmpfs codex-homes switch.
-# The rendered configurations (docker compose config) are checked too: production with the env file, and the local
-# variant (compose.local.yaml) only with an SR_PUBLIC_URL on localhost. Without docker compose the check fails
-# unless --no-render is given.
+# the prototype's fault switches or the fake LLM provider. The rendered configurations (docker compose config) are
+# checked too: production with the env file (also: nothing in RAM, i.e. no tmpfs but the proxy's few-byte config
+# dir; scratch belongs on the tmp-* volumes), and the local variant (compose.local.yaml). Without docker compose
+# the check fails unless --no-render is given.
 #
 # With --env-file (production, without --local) FILE's values are checked too, by name only (never printed): no
 # value left from .env.example, secrets set (runner secret at least 32 characters), an https public URL, no
@@ -16,7 +16,7 @@
 #        deploy/check-production-config.sh --self-test [--no-render]
 #   (no option)       the files, production rendered with .env.example, local rendered with it on localhost
 #   --env-file FILE   production rendered with FILE (for example the deployment's .env), and FILE's values
-#   --local           also the local variant rendered with FILE; fails unless FILE's SR_PUBLIC_URL is on localhost
+#   --local           also the local variant rendered with FILE
 #   --secret-files    secrets as files (compose.secrets.yaml): rendered with it; the four secret variables must be
 #                     empty and their files in SR_SECRETS_DIR present (run as root to read them)
 #   --no-render       no rendering (the files and FILE's values only)
@@ -27,13 +27,12 @@ forbidden='SR_RUNNER_DEV_NO_ISOLATION|SR_RUNNER_DEV_HOST_GATEWAY|SR_SUPERVISOR_T
 # Files that build or run the production stack (the local variant runs the same images).
 files=(
   deploy/compose.yaml deploy/compose.local.yaml .env.example
-  deploy/server/Dockerfile deploy/server/healthcheck.sh
+  deploy/server/Dockerfile deploy/server/healthcheck.sh deploy/server/entrypoint.sh
   deploy/runner/Dockerfile deploy/runner/strip-image.sh
   deploy/egress-proxy/Dockerfile deploy/egress-proxy/entrypoint.sh deploy/egress-proxy/squid.conf
 )
-# Production only: the local variant may put codex-homes on a tmpfs.
-production_only='SR_CODEX_HOMES_ALLOW_TMPFS'
-production_files=(deploy/compose.yaml .env.example deploy/runner/Dockerfile deploy/server/Dockerfile)
+# The only tmpfs allowed in RAM (service and target): the proxy's configuration, written at every start.
+ram_allowed='^egress-proxy /run/squid$'
 
 # scan ROOT: prints every offending line, returns 1 if there is one.
 scan() {
@@ -41,9 +40,6 @@ scan() {
   for file in "${files[@]}"; do
     [[ -f "$root/$file" ]] || { echo "check-production-config: missing $file" >&2; found=1; continue; }
     if grep -nEH "$forbidden" "$root/$file"; then found=1; fi
-  done
-  for file in "${production_files[@]}"; do
-    if grep -nEH "$production_only" "$root/$file"; then found=1; fi
   done
   return "$found"
 }
@@ -56,7 +52,7 @@ declare -A secret_file_names=(
 # Values that must differ from .env.example's.
 own_values=(SR_PUBLIC_URL SR_GITHUB_APP_ID SR_GITHUB_CLIENT_ID SR_MEMCAN_URL "${secrets[@]}")
 # Variables that only the local or development overrides use.
-dev_only='^(SR_SERVER_UID|SR_SERVER_GID|SR_LOCAL_CODEX_HOMES_SIZE|SR_CODEX_HOMES_ALLOW_TMPFS|SR_CODEX_HOMES_TMPFS_PUBLIC_URL)$'
+dev_only='^(SR_SERVER_UID|SR_SERVER_GID)$'
 agent_uid=10002
 
 # load_env FILE NAME: fills the associative array NAME as docker compose reads an env file (last assignment wins,
@@ -191,36 +187,49 @@ while (($#)); do
   esac
 done
 
-# can_render: 0 when rendering is wanted and possible; 1 when --no-render; exits 1 when compose is missing.
+# can_render: 0 when rendering is wanted and possible; 1 when --no-render; exits 1 when compose or jq is missing.
 can_render() {
   ((render)) || return 1
-  docker compose version > /dev/null 2>&1 && return 0
-  echo "check-production-config: docker compose is not available, so the rendered configuration cannot be checked; install it or pass --no-render" >&2
-  exit 1
+  if ! docker compose version > /dev/null 2>&1; then
+    echo "check-production-config: docker compose is not available, so the rendered configuration cannot be checked; install it or pass --no-render" >&2
+    exit 1
+  fi
+  if ! command -v jq > /dev/null 2>&1; then
+    echo "check-production-config: jq is not available, so the rendered configuration cannot be checked for RAM mounts; install jq or pass --no-render" >&2
+    exit 1
+  fi
 }
 
-# rendered ROOT ENV_FILE [OVERRIDE]: `docker compose config` of the production stack has no switch.
+# rendered ROOT ENV_FILE [OVERRIDE]: `docker compose config` of the production stack has no switch and keeps
+# nothing in RAM (OVERRIDE: a file in ROOT/deploy, or an absolute path).
 rendered() {
-  local out files=(-f "$1/deploy/compose.yaml")
-  [[ -z "${3:-}" ]] || files+=(-f "$1/deploy/$3")
+  local out mounts ram files=(-f "$1/deploy/compose.yaml")
+  case "${3:-}" in
+    "") ;;
+    /*) files+=(-f "$3") ;;
+    *) files+=(-f "$1/deploy/$3") ;;
+  esac
   # Bind mount sources only have to exist for `up`; `config` does not check them.
-  out="$(docker compose --env-file "$2" "${files[@]}" config 2>&1)" || { echo "$out" >&2; return 1; }
-  if grep -nE "$forbidden|$production_only" <<< "$out"; then return 1; fi
-  return 0
-}
-
-# rendered_local ROOT ENV_FILE: the local variant has no switch but its tmpfs one, and serves localhost only.
-rendered_local() {
-  local out url
-  out="$(docker compose --env-file "$2" -f "$1/deploy/compose.yaml" -f "$1/deploy/compose.local.yaml" config 2>&1)" ||
-    { echo "$out" >&2; return 1; }
+  out="$(docker compose --env-file "$2" "${files[@]}" config --format json 2>&1)" || { echo "$out" >&2; return 1; }
   if grep -nE "$forbidden" <<< "$out"; then return 1; fi
-  url="$(sed -n 's/^ *SR_PUBLIC_URL: *//p' <<< "$out" | head -n 1)"
-  if ! grep -Eq '^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?/?$' <<< "$url"; then
-    echo "check-production-config: compose.local.yaml with SR_PUBLIC_URL=$url: the local variant (tmpfs codex-homes) is for localhost only" >&2
+  # shellcheck disable=SC2016 # jq program
+  mounts="$(jq -r '.services | to_entries[] | .key as $s
+    | ((.value.tmpfs // [])[] | "\($s) \(split(":")[0])"),
+      ((.value.volumes // [])[] | select(.type == "tmpfs") | "\($s) \(.target)")' <<< "$out")" || {
+    echo "check-production-config: cannot list the tmpfs mounts of the rendered configuration (jq failed)" >&2
+    return 1
+  }
+  ram="$(grep -vE "$ram_allowed" <<< "$mounts")" || true
+  if [[ -n "$ram" ]]; then
+    echo "check-production-config: keeps scratch in RAM (tmpfs), use a tmp-* volume instead: $(tr '\n' ';' <<< "$ram")" >&2
     return 1
   fi
   return 0
+}
+
+# rendered_local ROOT ENV_FILE: the local variant has no switch either and keeps nothing in RAM.
+rendered_local() {
+  rendered "$1" "$2" compose.local.yaml
 }
 
 if ((self_test)); then
@@ -234,8 +243,6 @@ if ((self_test)); then
   echo 'ENV SR_RUNNER_DEV_NO_ISOLATION=1' >> "$tmp/deploy/runner/Dockerfile"
   if scan "$tmp" > /dev/null; then echo "self-test: dev switch in the runner Dockerfile not caught" >&2; exit 1; fi
   cp "$repo/deploy/runner/Dockerfile" "$tmp/deploy/runner/Dockerfile"
-  printf '      SR_CODEX_HOMES_ALLOW_TMPFS: "1"\n' >> "$tmp/deploy/compose.yaml"
-  if scan "$tmp" > /dev/null; then echo "self-test: tmpfs switch in production compose not caught" >&2; exit 1; fi
   # Env values: a complete production env passes, each defect alone fails, no value is ever printed.
   sed -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=https://review.test.invalid|' \
     -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=CANARY-secret-key-0123456789abcdefghijklmnopqrstu|' \
@@ -315,8 +322,25 @@ if ((self_test)); then
     rendered "$repo" "$tmp/files.env" compose.secrets.yaml > /dev/null || { echo "self-test: secrets variant rejected" >&2; exit 1; }
     sed 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://localhost:3000|' "$repo/.env.example" > "$tmp/local.env"
     rendered_local "$repo" "$tmp/local.env" > /dev/null 2>&1 || { echo "self-test: localhost local variant rejected" >&2; exit 1; }
-    if rendered_local "$repo" "$repo/.env.example" > /dev/null 2>&1; then
-      echo "self-test: local variant with a public SR_PUBLIC_URL not caught" >&2
+    rendered "$repo" "$repo/.env.example" > /dev/null 2>&1 || { echo "self-test: production stack rejected" >&2; exit 1; }
+    # Nothing in RAM: a tmpfs scratch area (short or long syntax) is refused; the proxy's config dir is the exception.
+    for ram in 'runner: {tmpfs: ["/scratch:size=1g"]}' 'server: {volumes: [{type: tmpfs, target: /scratch}]}'; do
+      printf 'services:\n  %s\n' "$ram" > "$tmp/deploy/ram.yaml"
+      out="$(rendered "$repo" "$repo/.env.example" "$tmp/deploy/ram.yaml" 2>&1)" || true
+      if ! grep -q 'keeps scratch in RAM' <<< "$out"; then
+        echo "self-test: a tmpfs scratch area ($ram) not caught" >&2
+        exit 1
+      fi
+    done
+    # Without jq the RAM check cannot run: refused up front, and a failing jq fails the rendering (fail closed).
+    mkdir "$tmp/nojq"
+    ln -s "$(command -v docker)" "$tmp/nojq/docker"
+    if out="$(PATH="$tmp/nojq" can_render 2>&1)" || ! grep -q 'jq is not available' <<< "$out"; then
+      echo "self-test: a missing jq not refused: $out" >&2
+      exit 1
+    fi
+    if out="$(jq() { return 2; }; rendered "$repo" "$repo/.env.example" 2>&1)" || ! grep -q 'jq failed' <<< "$out"; then
+      echo "self-test: a failing jq passed the RAM check: $out" >&2
       exit 1
     fi
   fi

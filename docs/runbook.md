@@ -13,8 +13,8 @@ sr() { docker compose --env-file /srv/smart-review/.env -f /srv/smart-review/app
 ```
 
 Volumes (compose project `smart-review`): `smart-review_server-data` (SQLite database `smart-review.sqlite`,
-bare mirrors), `smart-review_runner-state` (Codex credential, agent sessions, mirrors, claudius checkout). The
-per-job `CODEX_HOME` root is the host's ext4 loop image (`/srv/smart-review/codex-homes`), not a volume. Networks:
+bare mirrors), `smart-review_runner-state` (Codex credential, agent sessions, mirrors, claudius checkout), and the
+disposable `smart-review_tmp-*` volumes (section "Temporary volumes"). Networks:
 `public` 172.29.73.0/24 (server), `runner` 172.29.71.0/24 (internal and isolated: no route out and no host
 address, so the runner reaches only the server's runner listener and the proxy), `egress` 172.29.72.0/24 (proxy).
 
@@ -22,12 +22,7 @@ address, so the runner reaches only the server's runner listener and the proxy),
 
 Requirements: Docker Engine 28.0 or newer (bridge gateway mode `isolated` of the runner network; older engines
 ignore the option, and the runner's preflight then refuses to start with exit 78), Docker Compose 2.24.4 or newer (`!override` in the local variant), about 15 GB free
-disk for images and build cache, plus the codex-homes image. Check: `docker version -f '{{.Server.Version}}'`.
-Memory: the runner's job checkout lives in the RAM-backed `/work` (`SR_RUNNER_WORK_SIZE`, charged to
-`SR_RUNNER_MEM_LIMIT`); a full-history checkout of a large repository (for example `dashpay/platform`) takes about
-1.5 GB of it; raise `SR_RUNNER_WORK_SIZE` and `SR_RUNNER_MEM_LIMIT` together. Planned: a bounded disk filesystem
-for `/work` (a second host-prepared ext4 image), which keeps the agent's full git view and adds a size bound; a
-shallow fetch would save the same memory but break merge-base, the `base...head` diff and blame.
+disk for images and build cache, plus the scratch volumes. Check: `docker version -f '{{.Server.Version}}'`.
 
 1. Checkout (any user with access to `/srv/smart-review`):
 
@@ -36,17 +31,10 @@ shallow fetch would save the same memory but break merge-base, the `base...head`
    sudo git clone https://github.com/lklimek/smart-review.git /srv/smart-review/app
    ```
 
-2. Bounded filesystem for the per-job `CODEX_HOME`s (root; creates an 8 GiB ext4 image, an `/etc/fstab` line and
-   mounts it; safe to run again, never reformats):
-
-   ```sh
-   sudo SR_CODEX_HOMES_SIZE=8G /srv/smart-review/app/deploy/host/prepare-codex-homes.sh
-   ```
-
-   The runner's start-up check (`deploy/runner/preflight.sh`, exit 78) refuses to start unless
-   `/var/lib/smart-review-runner/codex-homes` is a separate ext4 filesystem mounted `nosuid,nodev,noexec`, no
-   larger than `SR_CODEX_HOMES_MAX_BYTES` (default 16 GiB) and `SR_CODEX_HOMES_MAX_INODES`. The runner binary
-   repeats the same check at its own start (exit 78 too), so it holds even when the container's command is changed.
+2. Disk (nothing to prepare): compose creates every volume, and nothing is kept in RAM. The job work area holds
+   a full-history checkout per job (a large repository such as `dashpay/platform` takes about 1.7 GB) and has no
+   size limit, so keep several GB free on Docker's disk (`df -h "$(docker info -f '{{.DockerRootDir}}')"`). Where
+   that is the host's root filesystem, a full disk stops the whole host, not only this stack.
 
 3. GitHub App (github.com → Settings → Developer settings → GitHub Apps → the App):
    - Callback URL, exactly: `https://review.klimek.ws/auth/github/callback` (no wildcard); "Expire user
@@ -312,13 +300,11 @@ sr logs runner | grep -i credential
 
 ### Full backup (stopped)
 
-A full backup is three parts taken together with every service stopped: the `server-data` volume (consistent
-SQLite), the `runner-state` volume and the codex-homes filesystem. Stopping the runner interrupts a running job;
-the job's Codex `CODEX_HOME` then stays in codex-homes, and its `auth.json` may be the only current copy of the
-credential (a refresh during the job rotates the single-use refresh token). The runner brings that copy back to
-the master at its next start, using the job's record in `runner-state` (`codex-staging/`), so both parts must come
-from the same moment. The archives contain the Codex credential: store them like a password (root only,
-encrypted off-site), together with `.env`.
+A full backup is the `server-data` volume (consistent SQLite) and the `runner-state` volume, taken with every
+service stopped; the temporary volumes are never backed up. A graceful stop copies a running job's credential back
+to the master first. After a crash of the runner, start it once before the backup: only then has it recovered a
+credential that a job refreshed into `tmp-runner-codex-homes` (section "Temporary volumes"). The archives contain
+the Codex credential: store them like a password (root only, encrypted off-site), together with `.env`.
 
 ```sh
 sudo install -d -m 0700 /srv/smart-review/backup
@@ -328,15 +314,14 @@ for v in server-data runner-state; do
   docker run --rm --network none -v "smart-review_$v:/v:ro" -v /srv/smart-review/backup:/backup ubuntu:26.04 \
     tar -C /v --numeric-owner -czpf "/backup/$v-$STAMP.tar.gz" .
 done
-sudo tar -C /srv/smart-review/codex-homes --numeric-owner -czpf "/srv/smart-review/backup/codex-homes-$STAMP.tar.gz" .
 sudo cp /srv/smart-review/.env "/srv/smart-review/backup/env-$STAMP"
 sudo tar -C /srv/smart-review/secrets --numeric-owner -czpf "/srv/smart-review/backup/secrets-$STAMP.tar.gz" .
 sr start
 ```
 
-Restore all three parts of one `STAMP` (on a new host: steps 1 to 4 and 6 of "First deploy" first, with the
-backed-up `.env`). `sr up --no-start` creates missing volumes without starting anything. The runner recovers an
-interrupted job's credential at its start.
+Restore both volumes of one `STAMP` (on a new host: steps 1 to 4 and 6 of "First deploy" first, with the
+backed-up `.env`). `sr up --no-start` creates missing volumes without starting anything; the temporary volumes
+are emptied at start anyway.
 
 ```sh
 STAMP=REPLACE_WITH_THE_BACKUP_STAMP
@@ -346,11 +331,54 @@ for v in server-data runner-state; do
   docker run --rm --network none -v "smart-review_$v:/v" -v /srv/smart-review/backup:/backup:ro ubuntu:26.04 \
     sh -c "find /v -mindepth 1 -delete && tar -C /v --numeric-owner -xzpf /backup/$v-$STAMP.tar.gz"
 done
-sudo find /srv/smart-review/codex-homes -mindepth 1 -delete
-sudo tar -C /srv/smart-review/codex-homes --numeric-owner -xzpf "/srv/smart-review/backup/codex-homes-$STAMP.tar.gz"
 sr up -d
 sr logs runner | grep -i credential
 ```
+
+## Temporary volumes
+
+Owner decision: nothing is kept in RAM, and scratch areas have no size limit for now. The scratch areas are Docker
+volumes whose names start with `tmp-` and that carry the label `smart-review.volume=temporary`:
+
+| Volume | Mounted at | Holds |
+|---|---|---|
+| `smart-review_tmp-runner-work` | runner `/work` | per-job checkout, the agent's `HOME` and `TMPDIR` |
+| `smart-review_tmp-runner-codex-homes` | runner `/var/lib/smart-review-runner/codex-homes` | per-job agent `CODEX_HOME` (a copy of the credential while a job runs) |
+| `smart-review_tmp-runner` | runner `/tmp` | the runner's own temporary files |
+| `smart-review_tmp-server` | server `/tmp` | the server's temporary files |
+
+Their content is disposable: never backed up, emptied at every start (the runner: after bringing a credential
+copy of an interrupted job back to the master, before the first job; the server: its entrypoint), and safe to
+delete whenever the stack is stopped. The only loss: after a crash, a credential a job had just refreshed lives
+only in `tmp-runner-codex-homes` until the runner's next start; deleting it before that means signing in again
+(section "LLM credential"). Remove them (they are created anew at the next start):
+
+```sh
+sr stop
+docker volume ls -q --filter label=smart-review.volume=temporary --filter label=com.docker.compose.project=smart-review \
+  | xargs -r docker volume rm
+sr up -d
+```
+
+Free-space reserve: the runner takes no job while the filesystem of `/work` (Docker's data root, shared by all
+volumes) has less than `SR_RUNNER_DISK_RESERVE_MIB` free (default 2048). It keeps polling the server, so session
+deletions still happen, but jobs stay queued. What you see:
+- `sr ps` shows the runner `unhealthy` (marker file `/var/lib/smart-review-runner/disk-below-reserve`);
+- the runner log says `the job scratch filesystem is below its free-space reserve` with `free_mib` and
+  `required_mib`, at once and then every hour.
+
+What to do: free space on Docker's disk (`df -h "$(docker info -f '{{.DockerRootDir}}')"`; `docker system df`),
+for example by removing the temporary volumes as above. Within one poll after space is back, the runner logs
+`... has its free-space reserve again; taking jobs`, and the next healthcheck reports it `healthy`. The reserve
+only stops new jobs: a running job can still fill the disk. If a job's copy-back of the Codex credential then
+fails (`the agent's auth.json could not be copied back`), the rotated token is lost: sign in again (section "LLM
+credential").
+
+`docker volume rm` refuses a volume a container still uses (stopped containers included); then `sr down` first
+(containers and networks only, the durable volumes stay). A start that cannot empty a leftover stops with exit 1
+(runner: `could not empty ...`; server: `cannot empty /tmp`); remove the temporary volumes as above. A job
+directory that start-up recovery quarantined (runner-owned, mode 0700, ADR-013) stays in `tmp-runner-work` with an
+error log until removed this way.
 
 ## Exit codes and restarts
 
@@ -361,10 +389,10 @@ smart-review-runner-1` show the last exit.
 |---|---|---|---|
 | 70 | runner | The supervisor's job-end sweep could not prove every agent process gone within `SR_SUPERVISOR_SWEEP_DEADLINE_MS`; it ended the container (fail closed, ADR-013). The restart starts clean. | Repeated exits (`docker inspect -f '{{.RestartCount}}'`): read the runner log before the exit; an agent may be resisting the sweep. Stop the runner (`sr stop runner`) if it loops. |
 | 71 | runner | The supervisor could not set itself up (capabilities, uids, control socket). | Check that the compose file's `cap_add`, `init` and `ipc` are unchanged and the image is the production image. |
-| 78 | runner | Preflight or the runner's own start-up check refused. Either codex-homes is missing, not ext4, mounted without `nosuid,nodev,noexec`, or larger than the limits (or, local stack only, a tmpfs with a non-localhost `SR_PUBLIC_URL`); or the runner network is not isolated (a default route, or a gateway address answers); or `SR_RUNNER_SECRET_FILE` is readable by the agent uid 10002 (owned by it, any `other` bit, or a group bit with group 10002). The log line says which. | Filesystem: run `prepare-codex-homes.sh` again; check `findmnt /srv/smart-review/codex-homes` and `SR_CODEX_HOMES_DIR`. Network: upgrade Docker Engine to 28.0 or newer, keep the runner network's `gateway_mode_*: isolated` options, then `sr down && sr up -d` (networks are created anew). |
+| 78 | runner | Preflight or the runner's own start-up check refused: the runner network is not isolated (a default route, or a gateway address answers), or `SR_RUNNER_SECRET_FILE` is readable by the agent uid 10002 (owned by it, any `other` bit, or a group bit with group 10002). The log line says which. | Network: upgrade Docker Engine to 28.0 or newer, keep the runner network's `gateway_mode_*: isolated` options, then `sr down && sr up -d` (networks are created anew). Secret file: section "Secrets as files". |
 | 64 | egress-proxy | `SR_MEMCAN_URL` is not `http(s)://host[:port][/path]`. | Fix `.env`, `sr up -d`. |
 | 65 | egress-proxy | The MemCan host name of `SR_MEMCAN_URL` does not resolve (the proxy pins its address at start). | Check DNS from the host (`getent hosts HOST`); the proxy retries with every restart. |
-| 1 | server, runner | Configuration or start-up error; the log's last line names the variable. | Fix `.env`, `sr up -d`. |
+| 1 | server, runner | Configuration or start-up error; the log's last line names the variable. `could not empty ...` (runner) or `cannot empty /tmp` (server): a leftover in a temporary volume could not be removed. | Fix `.env`, `sr up -d`. A leftover: section "Temporary volumes". |
 | 1 | server | `the schema migration failed` in the last log line: the image does not match the database (section "Upgrade"). | Roll back (section "Upgrade"); never delete the database. |
 
 **MemCan moved to another address:** the proxy keeps the address it resolved at its start, so agents keep
@@ -435,9 +463,8 @@ full-URL logs and a host allow-list (`dstdomain` / `ssl::server_name` ACL files)
 
 ## Local stack (http://localhost)
 
-The same images on one machine, with the per-job `CODEX_HOME` root on a capped tmpfs instead of the loop image
-(`deploy/compose.local.yaml`; no host preparation). Its env file needs `SR_PUBLIC_URL=http://localhost:3000`: the
-runner refuses the tmpfs otherwise, and `deploy/check-production-config.sh --env-file FILE --local` checks it.
+The same images and volumes on one machine, published on loopback only (`deploy/compose.local.yaml`). Its env file
+sets `SR_PUBLIC_URL=http://localhost:3000`; `deploy/check-production-config.sh --env-file FILE --local` checks it.
 Sign-in needs the GitHub App callback `http://localhost:3000/auth/github/callback` registered on the App.
 
 The development host's instance (compose project `smart-review-local`) takes its generated secrets from
