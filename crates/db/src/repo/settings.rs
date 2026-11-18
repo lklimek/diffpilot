@@ -5,6 +5,7 @@ use chrono::{DateTime, Utc};
 use contracts::common::{LlmLanguage, RepoRef};
 use contracts::ids::AnalysisId;
 use contracts::job::result::{JobFailureKind, JobOutcome, LlmCallOutcome};
+use contracts::job::spec::{ModelChoice, ReasoningEffort};
 use sqlx::{Row, SqlitePool};
 
 use super::Db;
@@ -84,26 +85,37 @@ pub struct LastCall {
     pub failure: Option<CallFailure>,
 }
 
+/// Ranking effort of the dashboard (`judge_work`) before anyone saved one (the column default).
+pub const DEFAULT_JUDGE_EFFORT: ReasoningEffort = ReasoningEffort::Low;
+
 /// Persisted installation selection; model allowlist belongs to the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredLlmSelection {
     /// Choice copied into new job specs.
-    pub choice: contracts::job::spec::ModelChoice,
-    /// Editor's login at save time.
+    pub choice: ModelChoice,
+    /// Reasoning effort of the dashboard ranking (`judge_work`).
+    pub judge_effort: ReasoningEffort,
+    /// Editor's login of the model, effort or ranking effort.
     pub changed_by: String,
-    /// Save time.
+    /// Save time of any of them.
     pub changed_at: DateTime<Utc>,
 }
 
+const SELECTION_SQL: &str = "SELECT * FROM llm_selection WHERE singleton = 1";
+
 fn selection(row: &sqlx::sqlite::SqliteRow) -> Result<StoredLlmSelection, DbError> {
     Ok(StoredLlmSelection {
-        choice: contracts::job::spec::ModelChoice {
+        choice: ModelChoice {
             model: row.try_get("model")?,
             reasoning_effort: parse_wire(
                 &row.try_get::<String, _>("reasoning_effort")?,
                 "llm_selection.reasoning_effort",
             )?,
         },
+        judge_effort: parse_wire(
+            &row.try_get::<String, _>("judge_effort")?,
+            "llm_selection.judge_effort",
+        )?,
         changed_by: row.try_get("changed_by")?,
         changed_at: parse_ts(
             &row.try_get::<String, _>("changed_at")?,
@@ -115,7 +127,7 @@ fn selection(row: &sqlx::sqlite::SqliteRow) -> Result<StoredLlmSelection, DbErro
 impl SettingsRepo<'_> {
     /// Installation-wide choice, independent of tenant or requesting user.
     pub async fn llm_selection(&self) -> Result<Option<StoredLlmSelection>, DbError> {
-        sqlx::query("SELECT * FROM llm_selection WHERE singleton = 1")
+        sqlx::query(SELECTION_SQL)
             .fetch_optional(self.pool)
             .await?
             .as_ref()
@@ -123,32 +135,71 @@ impl SettingsRepo<'_> {
             .transpose()
     }
 
-    /// Saves a choice and returns the previous and new values under one write transaction.
+    /// Saves a choice (keeping the ranking effort) and returns the previous and new values under one write
+    /// transaction.
     pub async fn set_llm_selection(
         &self,
-        choice: &contracts::job::spec::ModelChoice,
+        choice: &ModelChoice,
         login: &str,
         now: DateTime<Utc>,
     ) -> Result<(Option<StoredLlmSelection>, StoredLlmSelection), DbError> {
         let mut tx = super::write_tx(self.pool).await?;
-        let old = sqlx::query("SELECT * FROM llm_selection WHERE singleton = 1")
-            .fetch_optional(&mut *tx)
-            .await?
-            .as_ref()
-            .map(selection)
-            .transpose()?;
+        let old = read_selection(&mut tx).await?;
         sqlx::query("INSERT INTO llm_selection (singleton, model, reasoning_effort, changed_by, changed_at) VALUES (1, ?, ?, ?, ?) ON CONFLICT(singleton) DO UPDATE SET model=excluded.model, reasoning_effort=excluded.reasoning_effort, changed_by=excluded.changed_by, changed_at=excluded.changed_at")
             .bind(&choice.model).bind(wire_name(choice.reasoning_effort)?).bind(login).bind(ts(now)).execute(&mut *tx).await?;
+        let new = read_selection(&mut tx).await?.ok_or(DbError::NotFound)?;
         tx.commit().await?;
-        Ok((
-            old,
-            StoredLlmSelection {
-                choice: choice.clone(),
-                changed_by: login.into(),
-                changed_at: parse_ts(&ts(now), "llm_selection.changed_at")?,
-            },
-        ))
+        Ok((old, new))
     }
+
+    /// The installation-wide ranking effort of the dashboard; [`DEFAULT_JUDGE_EFFORT`] before the first save.
+    pub async fn judge_effort(&self) -> Result<ReasoningEffort, DbError> {
+        Ok(self
+            .llm_selection()
+            .await?
+            .map_or(DEFAULT_JUDGE_EFFORT, |saved| saved.judge_effort))
+    }
+
+    /// Saves the ranking effort (R7) and returns the previous and new selection under one write transaction; the
+    /// model choice is kept, or `default_choice` is stored with it when none was saved yet (the row needs one).
+    /// That first save pins the shown default model as the saved choice.
+    pub async fn set_judge_effort(
+        &self,
+        effort: ReasoningEffort,
+        default_choice: &ModelChoice,
+        login: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(Option<StoredLlmSelection>, StoredLlmSelection), DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let old = read_selection(&mut tx).await?;
+        sqlx::query(
+            "INSERT INTO llm_selection (singleton, model, reasoning_effort, judge_effort, changed_by, changed_at)
+             VALUES (1, ?, ?, ?, ?, ?)
+             ON CONFLICT (singleton) DO UPDATE SET judge_effort = excluded.judge_effort,
+                 changed_by = excluded.changed_by, changed_at = excluded.changed_at",
+        )
+        .bind(&default_choice.model)
+        .bind(wire_name(default_choice.reasoning_effort)?)
+        .bind(wire_name(effort)?)
+        .bind(login)
+        .bind(ts(now))
+        .execute(&mut *tx)
+        .await?;
+        let new = read_selection(&mut tx).await?.ok_or(DbError::NotFound)?;
+        tx.commit().await?;
+        Ok((old, new))
+    }
+}
+
+async fn read_selection(
+    tx: &mut sqlx::Transaction<'static, sqlx::Sqlite>,
+) -> Result<Option<StoredLlmSelection>, DbError> {
+    sqlx::query(SELECTION_SQL)
+        .fetch_optional(&mut **tx)
+        .await?
+        .as_ref()
+        .map(selection)
+        .transpose()
 }
 
 impl SettingsRepo<'_> {
@@ -486,5 +537,74 @@ mod tests {
         assert_eq!(old.unwrap().changed_by, "alice");
         assert_eq!(saved.changed_by, "bob");
         assert_eq!(saved.choice, next);
+    }
+
+    #[tokio::test]
+    async fn judge_effort_defaults_to_low_and_shares_the_change_pair() {
+        let db = Db::in_memory().await.expect("db");
+        let settings = db.settings();
+        let at = |minute: i64| {
+            DateTime::parse_from_rfc3339("2026-11-18T06:00:00Z")
+                .expect("time")
+                .with_timezone(&Utc)
+                + chrono::TimeDelta::minutes(minute)
+        };
+        assert_eq!(
+            settings.judge_effort().await.expect("default"),
+            ReasoningEffort::Low
+        );
+        let default = ModelChoice {
+            model: "gpt-6.1-sol".to_owned(),
+            reasoning_effort: ReasoningEffort::High,
+        };
+        let (old, saved) = settings
+            .set_judge_effort(ReasoningEffort::Medium, &default, "alice", at(1))
+            .await
+            .expect("first save");
+        assert_eq!(old, None);
+        assert_eq!(
+            saved,
+            StoredLlmSelection {
+                choice: default.clone(),
+                judge_effort: ReasoningEffort::Medium,
+                changed_by: "alice".to_owned(),
+                changed_at: at(1),
+            }
+        );
+        assert_eq!(settings.llm_selection().await.expect("read"), Some(saved));
+
+        let astra = ModelChoice {
+            model: "gpt-6-astra".to_owned(),
+            reasoning_effort: ReasoningEffort::Low,
+        };
+        let (_, saved) = settings
+            .set_llm_selection(&astra, "bob", at(2))
+            .await
+            .expect("model");
+        assert_eq!(
+            (saved.judge_effort, saved.changed_by.as_str()),
+            (ReasoningEffort::Medium, "bob"),
+            "a model change keeps the ranking effort"
+        );
+
+        let (old, saved) = settings
+            .set_judge_effort(ReasoningEffort::High, &default, "carol", at(3))
+            .await
+            .expect("effort");
+        assert_eq!(old.map(|old| old.choice), Some(astra.clone()));
+        assert_eq!(
+            saved,
+            StoredLlmSelection {
+                choice: astra,
+                judge_effort: ReasoningEffort::High,
+                changed_by: "carol".to_owned(),
+                changed_at: at(3),
+            },
+            "an effort change keeps the saved model choice"
+        );
+        assert_eq!(
+            settings.judge_effort().await.expect("saved"),
+            ReasoningEffort::High
+        );
     }
 }
