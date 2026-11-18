@@ -1,7 +1,7 @@
 //! The runner core `execute(JobSpec, EventSink) -> JobResult` (rule A4): prepares a fresh job directory with
-//! the checkout at `job_dir/repo` and a per-job `CODEX_HOME`, runs the provider within the runtime cap,
-//! streams numbered and scrubbed events, maps the outcome to a `JobResult` and removes both directories on
-//! every path (success, failure, and the job loop dropping the future).
+//! the checkout at `job_dir/repo` (none for dashboard jobs, ADR-018) and a per-job `CODEX_HOME`, runs the
+//! provider within the runtime cap, streams numbered and scrubbed events, maps the outcome to a `JobResult` and
+//! removes both directories on every path (success, failure, and the job loop dropping the future).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -9,13 +9,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use contracts::agent::JobKind;
 use contracts::ids::JobId;
+use contracts::job::access::AgentAccess;
 use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
     SessionReport,
 };
-use contracts::job::spec::{JobLimits, JobSpec, LlmCredentialRef};
+use contracts::job::spec::{JobLimits, JobSpec, JobTarget, LlmCredentialRef};
 use tokio::sync::mpsc;
 
 use crate::git;
@@ -196,6 +198,10 @@ impl Executor {
                 "the runner does not hold the LLM credential this job needs",
             );
         }
+        if let Some(problem) = misfit(spec) {
+            tracing::error!(job = %spec.job_id, problem, "refusing a job whose kind, target and access do not fit");
+            return failed(spec, JobFailureKind::Internal, problem);
+        }
         match tokio::time::timeout_at(deadline, self.prepare(spec, job_dir, codex_home, phases))
             .await
         {
@@ -227,14 +233,21 @@ impl Executor {
                 "invalid private session routing",
             );
         }
-        let analytic_dir = self.sessions().dir(spec.pull_request_id);
-        let save_dir = spec.working_session.as_ref().map_or_else(
-            || analytic_dir.clone(),
-            |route| {
-                self.sessions()
-                    .working_dir(spec.pull_request_id, &route.user_key)
-            },
-        );
+        let (analytic_dir, save_dir) = match spec.target.pull_request() {
+            Some(target) => {
+                let analytic_dir = self.sessions().dir(target.pull_request_id);
+                let save_dir = spec.working_session.as_ref().map_or_else(
+                    || analytic_dir.clone(),
+                    |route| {
+                        self.sessions()
+                            .working_dir(target.pull_request_id, &route.user_key)
+                    },
+                );
+                (analytic_dir, save_dir)
+            }
+            // Fresh and non-persistent: the provider's session files stay in the job directory, removed with it.
+            None => (job_dir.join("session"), job_dir.join("session")),
+        };
         let scrubber = sink.secrets.with(&Scrubber::new(
             spec.access
                 .github
@@ -286,6 +299,10 @@ impl Executor {
         };
         let ((outcome, session_outcome), ()) = tokio::join!(run, pump(rx, sink, &scrubber));
         let outcome = match outcome {
+            Ok(mut done) if spec.target.pull_request().is_none() => {
+                done.session_id = None;
+                Ok(done)
+            }
             Ok(mut done) if done.session_id.is_some() && !sink.secrets.is_empty() => {
                 let scrub = tokio::time::Instant::now();
                 let scrubbed =
@@ -326,6 +343,13 @@ impl Executor {
         mut call: ProviderCall,
         events: mpsc::Sender<ProviderEvent>,
     ) -> (Result<ProviderOutcome, ProviderError>, SessionOutcome) {
+        let Some(target) = spec.target.pull_request() else {
+            // A dashboard job always starts a fresh session: nothing to resume, seed or keep (ADR-018).
+            return (
+                self.provider.run(&call, events).await,
+                SessionOutcome::Started,
+            );
+        };
         if let Some(route) = &spec.working_session {
             if let Some(thread) = &route.thread_id {
                 call.restore_dir = call.session_dir.clone();
@@ -336,13 +360,13 @@ impl Executor {
             }
             // Lazy fork, stale fork, or lost working archive: seed the fork with only the
             // asker's earlier answers, fenced as data, even when the analytic restore succeeds.
-            call.restore_dir = self.sessions().dir(spec.pull_request_id);
+            call.restore_dir = self.sessions().dir(target.pull_request_id);
             if let Some(pack) = &spec.context_pack {
                 call.prompt = format!("{pack}\n\n{}", spec.prompt);
             }
         }
         if let Some(session) = &spec.session {
-            if session.pull_request_id == spec.pull_request_id {
+            if session.pull_request_id == target.pull_request_id {
                 // A new working fork is compacted once, in its first turn (ADR-004 addendum 2026-11-18).
                 call.compact_on_start = spec.working_session.is_some();
                 if call.compact_on_start {
@@ -389,7 +413,8 @@ impl Executor {
         (self.provider.run(&call, events).await, outcome)
     }
 
-    /// Creates the job directories and checks the repository out; the error is the job's failure.
+    /// Creates the job directories and checks the repository out (dashboard jobs have none); the error is the job's
+    /// failure.
     async fn prepare(
         &self,
         spec: &JobSpec,
@@ -416,11 +441,17 @@ impl Executor {
                 "the flow output directory could not be prepared",
             ));
         }
-        let mirror = git::mirror_path(&self.dirs.mirrors, &spec.repo.clone_url);
-        let commits = [spec.repo.head_sha.0.as_str(), spec.repo.base_sha.0.as_str()];
+        let Some(target) = spec.target.pull_request() else {
+            return Ok(());
+        };
+        let mirror = git::mirror_path(&self.dirs.mirrors, &target.repo.clone_url);
+        let commits = [
+            target.repo.head_sha.0.as_str(),
+            target.repo.base_sha.0.as_str(),
+        ];
         if let Err(error) = git::checkout(
             &mirror,
-            &spec.repo.clone_url,
+            &target.repo.clone_url,
             &commits,
             &job_dir.join("repo"),
             phases,
@@ -435,6 +466,23 @@ impl Executor {
         }
         Ok(())
     }
+}
+
+/// Why a job's kind, target and access do not fit together (ADR-018, threat model T17): a judge job is a
+/// dashboard job and the other way round, and a dashboard job carries no agent access, skills, flow file or
+/// session to resume.
+fn misfit(spec: &JobSpec) -> Option<&'static str> {
+    let dashboard = matches!(spec.target, JobTarget::Dashboard { .. });
+    if dashboard != (spec.kind == JobKind::JudgeWork) {
+        return Some("the job kind does not match its target");
+    }
+    let holds_something = spec.access != AgentAccess::default()
+        || !spec.skills.is_empty()
+        || spec.flow_file.is_some()
+        || spec.session.is_some()
+        || spec.working_session.is_some();
+    (dashboard && holds_something)
+        .then_some("a dashboard job must not carry agent access, skills or a session")
 }
 
 /// Numbers activities from 1, scrubs every known secret and then clips them, forwards at most one ready
