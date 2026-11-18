@@ -92,6 +92,8 @@ interface Scenario {
   lines?: (answer: LinesResponse) => LinesResponse;
   /** Changes to the stored questions. */
   questions?: (seed: AskQuestion[]) => AskQuestion[];
+  /** How long the LLM takes to answer a question (default `ANSWER_MS`). */
+  answerMs?: number;
   /** Outcome of the MemCan write of feedback (default `written`). */
   memcan?: FeedbackMemory;
   /** Changes to the seeded pending review. */
@@ -320,6 +322,12 @@ const SCENARIOS = {
     },
   },
   "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5, idle: true } },
+  // Work longer than the tab title's threshold: a requested flow (70 s) and a slow answer.
+  "tab-status": {
+    lazy: true,
+    analysis: { state: "running", done: 1, total: 5, idle: true },
+    answerMs: 15_000,
+  },
   "lazy-background": {
     lazy: true,
     background: true,

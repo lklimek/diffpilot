@@ -71,6 +71,7 @@ import {
 } from "./sequence";
 import { useNow } from "../../app/now";
 import { Workspace } from "./Workspace";
+import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
 
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
 
@@ -194,6 +195,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   useForgetReanalysedFlows(analysisId, tour);
   const stream = useQuestionEvents(analysisId);
   const questions = useQuestions(analysisId);
+  useTabActivity("analysis", analysisActivity(tour.analysis.state));
+  useTabActivity("ask", questionsActivity(questions.data ?? []));
+  usePrTabSubject(tour.analysis.pr);
   const ask = useAskQuestion(analysisId);
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
