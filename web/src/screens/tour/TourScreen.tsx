@@ -594,13 +594,16 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         threadsStatus={tour.pr_context.facts.threads_status}
         code={
           <>
-            <RemarkPill
-              summary={summariseRemarks([step], handledRemarks)}
-              scope="step"
-              subject="this step"
-              label="LLM rating and remarks:"
-              onSelect={() => jumpToRemark([step])}
-            />
+            {/* Apart from the remark label at the top of the code, so both keep a 24 px target. */}
+            <div className="mb-2">
+              <RemarkPill
+                summary={summariseRemarks([step], handledRemarks)}
+                scope="step"
+                subject="this step"
+                label="LLM rating and remarks:"
+                onSelect={() => jumpToRemark([step])}
+              />
+            </div>
             {oldCode ? (
               <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
             ) : (
@@ -810,9 +813,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       <p className="sr-only" aria-live="polite">
         {questionsView ? "Your questions and answers" : blockTitle(tour, current)}
       </p>
-      <p key={remarkNotice?.nonce} className="sr-only" role="status">
-        {remarkNotice?.text}
-      </p>
+      {remarkNotice && (
+        <p key={remarkNotice.nonce} className="sr-only" role="status">
+          {remarkNotice.text}
+        </p>
+      )}
     </>
   );
 
