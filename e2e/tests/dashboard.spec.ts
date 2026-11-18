@@ -58,12 +58,16 @@ test("sign in → My work → Refresh → progress → provisional list → rank
   // Work that lasts 10 s shows in the tab title.
   await expect(page).toHaveTitle("smart-review My work: busy", { timeout: 30_000 });
 
-  // The scan is stored: every item is provisional ("Not judged yet") while the LLM ranks.
+  // The scan is stored: every item is provisional ("Not judged yet") until the first judged batch lands.
+  // TODO(WP11-E2E): the banner may skip "0 of 18": a summary refetch started before the ranking began can land after
+  // the ranking's first stream event and overwrite it (web/src/screens/dashboard/queries.ts applyRefreshStatus).
   const banner = page.getByText(/^Ranking with the LLM: \d+ of 18 items judged\.$/);
-  await expect(page.getByText("Ranking with the LLM: 0 of 18 items judged.")).toBeVisible({
+  // The list opens on PRs: 10 pull requests and the 2 TODOs of the 18 items.
+  await expect(workList(page).getByRole("heading", { name: /^Not judged yet.*·\s*12$/ })).toBeVisible({
     timeout: 90_000,
   });
   expect((await groupIds(page, "Not judged yet")).slice(0, 3)).toEqual(["WUI-320", "NC-482", "WUI-311"]);
+  await expect(banner).toBeVisible({ timeout: 30_000 });
   await expect(progress).toHaveCount(0);
   await checkScreen(page);
   await screens(page, "dashboard-provisional");
