@@ -785,6 +785,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           onSelectStep={selectStep}
           open={layout.diagram}
           onToggle={() => setLayout({ ...layout, diagram: !layout.diagram })}
+          height={layout.diagramHeight}
+          onHeight={(diagramHeight) => setLayout({ ...layout, diagramHeight })}
         />
       )}
       {block ?? <StatusMessage kind="empty">This block is not part of the analysis.</StatusMessage>}

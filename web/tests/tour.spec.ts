@@ -163,6 +163,16 @@ test("agent_output_xss_renders_as_text", async ({ page }) => {
   const diagram = main.getByRole("region", { name: "Flow diagram" });
   await expect(diagram.locator("svg").first()).toBeVisible();
   await expect(diagram.getByRole("button", { name: /^Step 1, .*<img src=x/ })).toBeVisible();
+  // The bottom edge drags the diagram taller.
+  const body = diagram.locator("[data-diagram-body]");
+  const before = (await body.boundingBox())!.height;
+  const edge = (await diagram.getByRole("separator", { name: "Resize the flow diagram" }).boundingBox())!;
+  expect(edge.height).toBeGreaterThanOrEqual(24);
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2 + 120, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => (await body.boundingBox())!.height).toBeGreaterThan(before + 80);
   await expectInert();
 
   // Step 1: title (heading and menu aria-label), why, inspector, the pinned LLM answer.
