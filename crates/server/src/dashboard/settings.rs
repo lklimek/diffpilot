@@ -271,8 +271,9 @@ fn check_repositories(rows: &[RepositoryRule]) -> Result<(), InvalidSettings> {
         if let Some(policy) = &row.ownership_policy {
             let repo_given = !policy.repo.owner.is_empty() || !policy.repo.name.is_empty();
             if !repo_given || policy.path.is_empty() {
+                let missing = if repo_given { "path" } else { "repository" };
                 return invalid(format!(
-                    "{label}: give both the policy repository and its path, or neither."
+                    "{label}: the policy {missing} is missing. Give the repository and the path of the policy file, or leave both empty."
                 ));
             }
             if !valid_repo(&policy.repo) {
@@ -678,11 +679,19 @@ mod tests {
             let rule = with_policy(owner, name, path);
             problem(|s| s.repositories = vec![rule])
         };
-        let both = Some(
-            "Repository 1: give both the policy repository and its path, or neither.".to_owned(),
+        // The client's wording (validation.ts), so both sides name the missing half alike.
+        assert_eq!(
+            policy("acme", "p", "").as_deref(),
+            Some(
+                "Repository 1: the policy path is missing. Give the repository and the path of the policy file, or leave both empty."
+            )
         );
-        assert_eq!(policy("acme", "p", ""), both);
-        assert_eq!(policy("", "", "a.json"), both);
+        assert_eq!(
+            policy("", "", "a.json").as_deref(),
+            Some(
+                "Repository 1: the policy repository is missing. Give the repository and the path of the policy file, or leave both empty."
+            )
+        );
         assert_eq!(
             policy("acme", "", "a.json").as_deref(),
             Some("Repository 1: the policy repository uses owner/name.")
