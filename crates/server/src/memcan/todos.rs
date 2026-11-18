@@ -1,8 +1,14 @@
 //! Read-only MemCan TODO reader of the dashboard (plan §G, spike S11-4): one connection per refresh, then
 //! `list_todos` per project, sequentially; no other MemCan tool is ever called. Open statuses are kept
 //! client-side; a project reporting `has_more` is re-read once per open status; an over-size answer is retried
-//! once with a smaller limit. Problems with one project become scan notes; an unavailable MemCan stops the read
-//! and never fails the refresh.
+//! once with a smaller limit. Problems with one project become scan notes; an unavailable MemCan, or a read longer
+//! than [`READ_BUDGET`], stops the read and never fails the refresh.
+//!
+//! TODO text is untrusted (agents write it from external content) and later enters the judge prompt as data:
+//! every text field is cleaned of control and format characters (bidi overrides included) and capped here.
+
+use std::collections::HashSet;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -20,8 +26,16 @@ const LIST_TODOS: &str = "list_todos";
 const LIMIT: u32 = 100;
 /// TODOs asked for when the answer at [`LIMIT`] was too large.
 const SMALL_LIMIT: u32 = 25;
+/// Longest whole TODO read of a refresh (all projects).
+const READ_BUDGET: Duration = Duration::from_secs(120);
 /// Longest description kept, in characters.
 const MAX_DESCRIPTION_CHARS: usize = 500;
+/// Longest title kept, in characters.
+const MAX_TITLE_CHARS: usize = 200;
+/// Longest owner and priority kept, in characters.
+const MAX_SHORT_CHARS: usize = 100;
+/// Most blocking TODO ids kept.
+const MAX_BLOCKED_BY: usize = 50;
 /// MemCan statuses of open TODOs, in the order of the per-status reads.
 const OPEN_STATUSES: [(&str, TodoStatus); 4] = [
     ("pending", TodoStatus::Pending),
@@ -35,19 +49,19 @@ const OPEN_STATUSES: [(&str, TodoStatus); 4] = [
 pub struct Todo {
     /// MemCan id (item key `memcan~<uuid>`, link `<SR_MEMCAN_UI_URL>/tasks/<uuid>`).
     pub id: Uuid,
-    /// Title.
+    /// Title, at most 200 characters (untrusted text, see the module documentation).
     pub title: String,
-    /// Description as plain text, at most 500 characters; none when MemCan has none.
+    /// Description as plain text, at most 500 characters (untrusted); none when MemCan has none.
     pub description: Option<String>,
     /// The project it was read from.
     pub project: String,
-    /// MemCan priority (`high`, `medium`, `low`), as stored.
+    /// MemCan priority (`high`, `medium`, `low`), cleaned, at most 100 characters.
     pub priority: String,
     /// Status.
     pub status: TodoStatus,
-    /// Owner, if any.
+    /// Owner, at most 100 characters; none when MemCan has none.
     pub owner: Option<String>,
-    /// Ids of the TODOs blocking it.
+    /// Ids (UUIDs) of the TODOs blocking it, at most 50.
     pub blocked_by: Vec<String>,
     /// Creation time.
     pub created_at: DateTime<Utc>,
@@ -99,24 +113,30 @@ pub async fn read(config: &MemcanConfig, projects: &[String]) -> TodosRead {
         Ok(client) => client,
         Err(error) => return unavailable(&error),
     };
-    read_with(projects, async |arguments| {
+    read_with(projects, READ_BUDGET, async |arguments| {
         client.call(LIST_TODOS, arguments).await
     })
     .await
 }
 
-/// [`read`] over `list`, which carries out one `list_todos` call with the given arguments.
+/// [`read`] over `list`, which carries out one `list_todos` call with the given arguments, within `budget`.
 async fn read_with(
     projects: &[String],
+    budget: Duration,
     mut list: impl AsyncFnMut(Value) -> Result<String, MemcanError>,
 ) -> TodosRead {
     let mut todos = Vec::new();
     let mut notes = Vec::new();
-    for project in projects {
-        match read_project(project, &mut list, &mut notes).await {
-            Ok(found) => todos.extend(found),
-            Err(error) => return unavailable(&error),
+    let all = async {
+        for project in projects {
+            todos.extend(read_project(project, &mut list, &mut notes).await?);
         }
+        Ok(())
+    };
+    match tokio::time::timeout(budget, all).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return unavailable(&error),
+        Err(_) => return unavailable(&MemcanError::Timeout),
     }
     tracing::debug!(
         projects = projects.len(),
@@ -186,12 +206,15 @@ async fn read_project(
     };
     let mut unreadable = 0_usize;
     let mut todos = Vec::new();
+    // A TODO whose status changed between the per-status reads is in two pages: the first wins.
+    let mut seen = HashSet::new();
     for value in pages.into_iter().flat_map(|page| page.todos) {
         let Some(status) = open_status(&value) else {
             continue;
         };
         match serde_json::from_value::<Raw>(value) {
-            Ok(raw) => todos.push(todo(project, status, raw)),
+            Ok(raw) if seen.insert(raw.id) => todos.push(todo(project, status, raw)),
+            Ok(_) => {}
             Err(_) => unreadable += 1,
         }
     }
@@ -296,27 +319,68 @@ fn todo(project: &str, status: TodoStatus, raw: Raw) -> Todo {
     ]);
     Todo {
         id: raw.id,
-        description: raw.description.as_deref().map(plain),
+        title: clean(&raw.title, false, MAX_TITLE_CHARS),
+        description: raw
+            .description
+            .as_deref()
+            .map(|text| clean(text, true, MAX_DESCRIPTION_CHARS)),
         project: project.to_owned(),
+        priority: clean(&raw.priority, false, MAX_SHORT_CHARS),
         status,
+        owner: raw
+            .owner
+            .as_deref()
+            .map(|text| clean(text, false, MAX_SHORT_CHARS)),
+        blocked_by: raw
+            .blocked_by
+            .iter()
+            .filter(|id| Uuid::parse_str(id).is_ok())
+            .take(MAX_BLOCKED_BY)
+            .cloned()
+            .collect(),
+        created_at: raw.created_at,
         change_key: sha256(changed.to_string().as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect(),
-        title: raw.title,
-        priority: raw.priority,
-        owner: raw.owner,
-        blocked_by: raw.blocked_by,
-        created_at: raw.created_at,
     }
 }
 
-/// `text` without control characters other than line breaks and tabs, cut to [`MAX_DESCRIPTION_CHARS`].
-fn plain(text: &str) -> String {
+/// `text` without control characters (line breaks and tabs kept when `multiline`) and format characters
+/// (bidi overrides and isolates, zero-width characters), cut to `max_chars`.
+fn clean(text: &str, multiline: bool, max_chars: usize) -> String {
     text.chars()
-        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
-        .take(MAX_DESCRIPTION_CHARS)
+        .filter(|&c| !(c.is_control() && !(multiline && matches!(c, '\n' | '\t'))) && !is_format(c))
+        .take(max_chars)
         .collect()
+}
+
+/// Unicode general category Cf (format), Unicode 16.
+fn is_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61c}'
+            | '\u{6dd}'
+            | '\u{70f}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
 }
 
 #[cfg(test)]
@@ -332,6 +396,8 @@ mod tests {
     struct Script {
         answers: RefCell<VecDeque<Result<String, MemcanError>>>,
         calls: RefCell<Vec<Value>>,
+        /// Time each call takes.
+        delay: Option<Duration>,
     }
 
     impl Script {
@@ -339,13 +405,17 @@ mod tests {
             Self {
                 answers: RefCell::new(answers.into()),
                 calls: RefCell::default(),
+                delay: None,
             }
         }
 
         async fn read(&self, projects: &[&str]) -> TodosRead {
             let projects: Vec<String> = projects.iter().map(|p| (*p).to_owned()).collect();
-            read_with(&projects, async |arguments| {
+            read_with(&projects, READ_BUDGET, async |arguments| {
                 self.calls.borrow_mut().push(arguments);
+                if let Some(delay) = self.delay {
+                    tokio::time::sleep(delay).await;
+                }
                 self.answers
                     .borrow_mut()
                     .pop_front()
@@ -490,6 +560,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_todo_in_two_status_pages_is_kept_once() {
+        let mut moved = raw(12, "in_progress");
+        moved["title"] = json!("moved meanwhile");
+        let script = Script::new(vec![
+            page(vec![raw(1, "pending")], true),
+            page(vec![raw(12, "pending")], false),
+            page(vec![moved], false),
+            page(vec![], false),
+            page(vec![], false),
+        ]);
+        let read = script.read(&["p"]).await;
+        assert_eq!(ids(&read), [12], "first occurrence wins");
+        let TodosRead::Read { todos, .. } = read else {
+            unreachable!()
+        };
+        assert_eq!(todos[0].status, TodoStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn every_text_field_is_cleaned_and_capped() {
+        let mut dirty = raw(1, "pending");
+        dirty["title"] = json!(format!(
+            "a\u{202e}b\u{2066}c\u{200b}d\ne\u{7}{}",
+            "t".repeat(300)
+        ));
+        dirty["description"] = json!("x\u{202a}y\u{2069}z\u{feff}\nnext\tline");
+        dirty["owner"] = json!(format!("o\u{202d}w\n{}", "n".repeat(200)));
+        dirty["priority"] = json!(format!("hi\u{200f}gh{}", "h".repeat(200)));
+        let blockers: Vec<String> = (0..60)
+            .map(|i| format!("00000000-0000-4000-8000-{i:012}"))
+            .chain(["not-an-id".to_owned()])
+            .collect();
+        dirty["blocked_by"] = json!(blockers);
+        let script = Script::new(vec![page(vec![dirty], false)]);
+        let TodosRead::Read { todos, .. } = script.read(&["p"]).await else {
+            panic!("unavailable")
+        };
+        let todo = &todos[0];
+        assert!(todo.title.starts_with("abcde"), "{}", todo.title);
+        assert_eq!(todo.title.chars().count(), 200);
+        assert_eq!(todo.description.as_deref(), Some("xyz\nnext\tline"));
+        let owner = todo.owner.as_deref().expect("owner");
+        assert!(owner.starts_with("own"), "{owner}");
+        assert_eq!(owner.chars().count(), 100);
+        assert!(todo.priority.starts_with("high"), "{}", todo.priority);
+        assert_eq!(todo.priority.chars().count(), 100);
+        assert_eq!(todo.blocked_by.len(), 50);
+        assert!(todo.blocked_by.iter().all(|id| Uuid::parse_str(id).is_ok()));
+    }
+
+    #[tokio::test]
     async fn oversized_answer_is_asked_again_with_limit_25_then_noted_too_large() {
         let script = Script::new(vec![
             too_large(),
@@ -594,6 +715,23 @@ mod tests {
             }
         );
         assert_eq!(slow.calls().len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_whole_read_stops_after_its_time_budget() {
+        let mut slow = Script::new(
+            (0..10)
+                .map(|i| page(vec![raw(i, "pending")], false))
+                .collect(),
+        );
+        slow.delay = Some(Duration::from_secs(50));
+        assert_eq!(
+            slow.read(&["a", "b", "c", "d", "e"]).await,
+            TodosRead::Unavailable {
+                note: "MemCan did not answer in time: TODOs not refreshed.".to_owned()
+            }
+        );
+        assert_eq!(slow.calls().len(), 3, "no call starts after 120 s");
     }
 
     #[tokio::test]

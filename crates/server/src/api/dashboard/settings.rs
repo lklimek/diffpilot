@@ -1,6 +1,6 @@
 //! Dashboard settings (R6, R6b, plan §F.6): every request reads or writes the signed-in user's own row only.
 //! Reading takes the session (`read`); writing takes the session and its CSRF token, never a personal access
-//! token. An absent row answers the defaults.
+//! token. An absent row answers the defaults. R6b only fills a missing zone; Settings (R6) changes a stored one.
 
 use std::borrow::Cow;
 
@@ -103,10 +103,10 @@ async fn set_time_zone(
 ) -> SettingsResult<StatusCode> {
     let Json(request) = body.map_err(failure)?;
     settings::check_time_zone(&request.time_zone).map_err(failure)?;
-    state
+    let stored = state
         .db
         .dashboard()
-        .set_time_zone(
+        .set_time_zone_if_unset(
             &session.tenant_id,
             &session.user_id,
             &request.time_zone,
@@ -114,7 +114,11 @@ async fn set_time_zone(
         )
         .await
         .map_err(failure)?;
-    tracing::info!(user_id = %session.user_id, time_zone = %request.time_zone, "dashboard time zone stored");
+    if stored {
+        tracing::info!(user_id = %session.user_id, time_zone = %request.time_zone, "dashboard time zone stored");
+    } else {
+        tracing::debug!(user_id = %session.user_id, "browser time zone ignored: the user's settings hold one");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -419,7 +423,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn time_zone_is_stored_alone_and_unknown_zones_are_422() {
+    async fn time_zone_is_stored_once_alone_and_unknown_zones_are_422() {
         let h = harness().await;
         let (status, body) = h.set_zone("America/Argentina/Buenos_Aires").await;
         assert_eq!((status, body), (StatusCode::NO_CONTENT, Value::Null));
@@ -431,6 +435,17 @@ mod tests {
             "a defaults row with the zone"
         );
         let (status, _) = h.save(filled()).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = h.set_zone("UTC").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let read = h.read().await;
+        assert_eq!(
+            read["settings"]["time_zone"], "Europe/Warsaw",
+            "the first-visit save never replaces a stored zone"
+        );
+        let mut no_zone = filled();
+        no_zone["time_zone"] = Value::Null;
+        let (status, _) = h.save(no_zone).await;
         assert_eq!(status, StatusCode::OK);
         let (status, _) = h.set_zone("UTC").await;
         assert_eq!(status, StatusCode::NO_CONTENT);
