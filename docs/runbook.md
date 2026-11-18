@@ -68,10 +68,13 @@ disk for images and build cache, plus the codex-homes image. Check: `docker vers
    ```
 
    In the editor set `SR_GITHUB_APP_ID`, `SR_GITHUB_CLIENT_ID`, `SR_GITHUB_CLIENT_SECRET`, `SR_MEMCAN_URL` (the
-   full MCP endpoint, e.g. `http://memcan.lan:8190/mcp`), `SR_MEMCAN_TOKEN`, and `SR_RUNNER_CLAUDIUS_REF` (a
-   claudius commit SHA pins the agent's skills; recommended); keep the rest unless an address clashes.
-   `SR_SECRET_KEY` encrypts stored tokens and cannot be rotated in v1: keep a copy with the backups.
-   `sudo /srv/smart-review/app/deploy/check-production-config.sh --env-file /srv/smart-review/.env` must pass.
+   full MCP endpoint, e.g. `http://memcan.lan:8190/mcp`), `SR_MEMCAN_TOKEN`, and `SR_RUNNER_CLAUDIUS_REF` (the
+   claudius commit SHA, or `refs/tags/<tag>`, that pins the agent's skills; never a branch); keep the rest unless
+   an address clashes. `SR_SECRET_KEY` encrypts stored tokens and cannot be rotated in v1: keep a copy with the
+   backups. `sudo /srv/smart-review/app/deploy/check-production-config.sh --env-file /srv/smart-review/.env` must
+   pass: besides development switches it refuses values left from `.env.example`, empty secrets, a runner secret
+   under 32 characters, a public URL that is not https, an empty `SR_TRUSTED_PROXIES`, an unpinned skills ref
+   and local or development overrides, naming the variable only.
 
 5. MemCan: the server connects directly, the agents through the egress proxy. Add the host name of
    `SR_MEMCAN_URL` to MemCan's `MEMCAN_ALLOWED_HOSTS`, and both source addresses to its `TRAEFIK_IP_ALLOWLIST`:
