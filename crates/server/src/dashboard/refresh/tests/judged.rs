@@ -300,6 +300,7 @@ async fn invalid_output_leaves_the_provisional_order() {
             ("NC-476", Tier::P1, 678),
             ("CON-1534", Tier::P1, 654),
             ("OPS-14", Tier::P2, 550),
+            ("NC-495", Tier::P2, 548),
             ("PLAT-1187", Tier::P2, 429),
             ("WUI-298", Tier::P2, 376),
             ("NC-490", Tier::P2, 356),

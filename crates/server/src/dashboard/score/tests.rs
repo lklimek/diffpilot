@@ -913,36 +913,94 @@ fn eligibility_ownership_policy_and_drafts() {
     );
 }
 
-#[test]
-fn skipped_bot_items_are_excluded() {
-    let item = scored(&PrFacts {
+/// A dependabot pull request with `relations`.
+fn dependabot(relations: Vec<Relation>) -> Scored {
+    scored(&PrFacts {
         author: Some("dependabot[bot]".into()),
         author_is_bot: true,
+        relations,
         ..pr()
-    });
-    assert!(
-        item.excluded
-            .as_deref()
-            .is_some_and(|r| r.contains("dependabot"))
+    })
+}
+
+const SKIPPED_REASON: &str =
+    "bot author @dependabot[bot] is skipped (not assigned to you or requested from you)";
+
+#[test]
+fn skipped_bot_items_are_excluded_unless_directed_at_the_user() {
+    // Review requested from a scanned login (directly or through a team) or assigned to one: listed.
+    assert_eq!(dependabot(vec![Relation::ReviewRequested]).excluded, None);
+    assert_eq!(dependabot(vec![Relation::Assigned]).excluded, None);
+    // Only mentioned, only in a watched repository, or nothing directed at the user: left out.
+    for relations in [
+        vec![Relation::Mentioned],
+        vec![Relation::RepoOpen],
+        vec![Relation::Authored],
+        vec![],
+    ] {
+        assert_eq!(
+            dependabot(relations.clone()).excluded.as_deref(),
+            Some(SKIPPED_REASON),
+            "{relations:?}"
+        );
+    }
+    let issue_by = |relations| {
+        score_issue(
+            &rules(),
+            &IssueFacts {
+                author: Some("Dependabot".into()),
+                relations,
+                ..issue()
+            },
+            None,
+            now(),
+        )
+        .expect("scores")
+        .excluded
+    };
+    assert_eq!(issue_by(vec![Relation::Assigned]), None);
+    assert_eq!(
+        issue_by(vec![Relation::Mentioned]).as_deref(),
+        Some("bot author @Dependabot is skipped (not assigned to you or requested from you)")
     );
-    let issue = score_issue(
-        &rules(),
-        &IssueFacts {
-            author: Some("Dependabot".into()),
-            ..issue()
-        },
-        None,
-        now(),
-    );
-    assert!(issue.expect("scores").excluded.is_some());
     let renovate = scored(&PrFacts {
         author: Some("renovate[bot]".into()),
         author_is_bot: true,
+        relations: vec![],
         ..pr()
     });
     assert!(
         renovate.excluded.is_none(),
         "only the configured bot authors are skipped"
+    );
+}
+
+/// A kept bot pull request whose review is requested from the user scores like any review request without the
+/// human-waiting part: the bot's request is no human waiting.
+#[test]
+fn kept_bot_review_request_scores_without_human_waiting() {
+    let request = |author: &str, author_is_bot| PrFacts {
+        title: "chore(deps): bump serde from 1.0.1 to 1.0.2".into(),
+        author: Some(author.into()),
+        author_is_bot,
+        relations: vec![Relation::ReviewRequested],
+        review_pending_for_us: true,
+        review_requested_at: Some(now() - Duration::days(1)),
+        additions: Some(4),
+        deletions: Some(4),
+        base_ref: Some("main".into()),
+        ..pr()
+    };
+    let item = scored(&request("dependabot[bot]", true));
+    assert_eq!(item.excluded, None);
+    assert_eq!(part(&item, C::HumanWaiting).points_tenths, Some(0));
+    assert_eq!((item.score.tier, item.score.total_tenths), (Tier::P2, 575));
+    // The same request from a human: 15 human-waiting points more.
+    let human = scored(&request("carol", false));
+    assert_eq!(part(&human, C::HumanWaiting).points_tenths, Some(150));
+    assert_eq!(
+        (human.score.tier, human.score.total_tenths),
+        (Tier::P1, 725)
     );
 }
 
