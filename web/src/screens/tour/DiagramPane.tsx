@@ -130,18 +130,27 @@ export function DiagramPane({
   );
   return (
     <section aria-label="Flow diagram" className="mb-3 rounded-lg border border-border bg-surface">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={onToggle}
-        className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-3 py-1.5 text-left text-[12.5px] font-semibold text-text"
+      <Tooltip
+        tip={
+          open
+            ? "Hides the diagram; it stays hidden for the other flows until you show it again."
+            : "Shows this flow's steps and branches as a diagram; click a step to open it."
+        }
+        className="block"
       >
-        <span aria-hidden>{open ? "▾" : "▸"}</span>
-        {open ? "Hide flow diagram" : "Show flow diagram"}
-        <span className="font-normal text-muted">
-          Flow {flow.position}: {flow.llm.title}
-        </span>
-      </button>
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={onToggle}
+          className="flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-3 py-1.5 text-left text-[12.5px] font-semibold text-text"
+        >
+          <span aria-hidden>{open ? "▾" : "▸"}</span>
+          {open ? "Hide flow diagram" : "Show flow diagram"}
+          <span className="font-normal text-muted">
+            Flow {flow.position}: {flow.llm.title}
+          </span>
+        </button>
+      </Tooltip>
       {open && (
         <div
           ref={body}

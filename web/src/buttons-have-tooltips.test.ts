@@ -51,11 +51,6 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
     reason: "Step row named by its destination; a tip would cover the rows below.",
   },
   {
-    file: "screens/tour/DiagramPane.tsx",
-    match: "aria-expanded",
-    reason: "Disclosure header (Show/Hide flow diagram): its text says what it does, its state is announced.",
-  },
-  {
     file: "components/help/HelpDialog.tsx",
     match: "onClick={onClose}",
     reason: "Close of the modal help dialog: takes the focus on open, where a tip would cover the dialog.",
