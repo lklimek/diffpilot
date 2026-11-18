@@ -264,7 +264,10 @@
           "number": 1541,
           "pull_request": {
             "number": 1541,
-            "merged": false
+            "merged": false,
+            "user": {
+              "login": "alice-helper"
+            }
           }
         },
         "public": true,
@@ -320,7 +323,10 @@
           "number": 1501,
           "pull_request": {
             "number": 1501,
-            "merged": true
+            "merged": true,
+            "user": {
+              "login": "alice-helper"
+            }
           }
         },
         "public": true,

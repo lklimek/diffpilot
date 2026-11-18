@@ -238,6 +238,7 @@ async fn search_is_paced_and_retried_on_secondary_limit() {
     );
 
     assert!(found.unsearchable.is_empty() && found.notes.is_empty());
+    assert_eq!(found.answered, 3, "a retried search counts once");
     let prs = &found.candidates.pull_requests;
     let relations = |key: &str| prs[&item(key)].relations["alice"].clone();
     assert_eq!(
@@ -365,6 +366,10 @@ async fn issue_search_merges_relations_of_watched_repositories_and_logins() {
         .unwrap();
 
     assert!(found.notes.is_empty());
+    assert_eq!(
+        found.answered, 3,
+        "repository, assignee and mention searches"
+    );
     let issues = &found.candidates.issues;
     let relations = |key: &str| issues[&item(key)].relations.clone();
     assert_eq!(
@@ -580,6 +585,11 @@ async fn invisible_repository_is_reported() {
 
     assert_eq!(reach.invisible_repositories, [repo("acme/secret")]);
     assert_eq!(reach.invisible_owners, ["ghost-org"]);
+    assert_eq!(
+        reach.private_repositories,
+        [repo("acme/ops-runbooks")],
+        "privacy in the same query"
+    );
     let texts: Vec<&str> = reach.notes.iter().map(|n| n.text.as_str()).collect();
     assert_eq!(
         texts,
