@@ -25,6 +25,8 @@ secrecy = "0.10.3"
 url = { version = "2.5.8", features = ["serde"] }
 ipnet = "2.12.2"
 chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
+# IANA time zones of the dashboard settings and schedule (plan §A.5).
+chrono-tz = "0.10.4"
 uuid = { version = "1.29.2", features = ["v4", "serde"] }
 base64 = "0.23.1"
 # Runner: process-group signals and O_NOFOLLOW opens without unsafe code.

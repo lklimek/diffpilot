@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use fake_memcan::{Call, Config, Mode, Snapshot};
+use fake_memcan::{Call, Config, Mode, Snapshot, Todo};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult};
 use rmcp::service::{RoleClient, RunningService, ServiceError};
@@ -521,4 +521,189 @@ async fn reset_clears_memories_calls_and_mode() {
         .status();
     assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
     assert_eq!(fake.state().await, Snapshot::default());
+}
+
+fn todo(id: &str, project: &str, priority: &str, status: &str, created_at: &str) -> Todo {
+    Todo {
+        id: id.to_owned(),
+        title: format!("TODO {id}"),
+        description: Some("synthetic description".to_owned()),
+        project: project.to_owned(),
+        priority: priority.to_owned(),
+        status: status.to_owned(),
+        owner: None,
+        blocked_by: Vec::new(),
+        created_at: created_at.to_owned(),
+        completed_at: None,
+    }
+}
+
+impl Fake {
+    async fn seed_todos(&self, todos: &[Todo]) {
+        let status = self
+            .http
+            .post(format!("{}/_fake/todos", self.base))
+            .bearer_auth(TOKEN)
+            .json(todos)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
+    }
+}
+
+fn ids(page: &Value) -> Vec<&str> {
+    page["todos"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|todo| todo["id"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn list_todos_scopes_by_project_and_orders_by_priority_then_age() {
+    let fake = Fake::start().await;
+    let mut owned = todo("o", "p", "low", "pending", "2026-11-01T00:00:00+00:00");
+    owned.owner = Some("alice".to_owned());
+    fake.seed_todos(&[
+        todo("l", "p", "low", "pending", "2026-10-01T00:00:00+00:00"),
+        todo(
+            "h2",
+            "p",
+            "high",
+            "in_progress",
+            "2026-11-02T00:00:00+00:00",
+        ),
+        todo("h1", "p", "high", "done", "2026-11-01T00:00:00+00:00"),
+        todo("m", "p", "medium", "blocked", "2026-09-01T00:00:00+00:00"),
+        todo("x", "other", "high", "pending", "2026-01-01T00:00:00+00:00"),
+        owned,
+    ])
+    .await;
+    let client = fake.connect().await.unwrap();
+    let list = |arguments: Value| {
+        let client = &client;
+        async move { answer(&call(client, "list_todos", arguments).await.unwrap()) }
+    };
+    let all = list(json!({"project": "p"})).await;
+    assert_eq!(ids(&all), ["h1", "h2", "m", "l", "o"]);
+    assert_eq!(all["has_more"], false);
+    let entry = &all["todos"][0];
+    for key in [
+        "id",
+        "title",
+        "description",
+        "project",
+        "priority",
+        "status",
+        "owner",
+        "blocked_by",
+        "created_at",
+        "completed_at",
+    ] {
+        assert!(entry.get(key).is_some(), "{key} missing in {entry}");
+    }
+    let page = list(json!({"project": "p", "limit": 2})).await;
+    assert_eq!(
+        (ids(&page), &page["has_more"]),
+        (vec!["h1", "h2"], &json!(true))
+    );
+    let exact = list(json!({"project": "p", "limit": 5})).await;
+    assert_eq!(exact["has_more"], false, "exactly the limit");
+    let blocked = list(json!({"project": "p", "status": "blocked"})).await;
+    assert_eq!(ids(&blocked), ["m"]);
+    let alice = list(json!({"project": "p", "owner": " alice "})).await;
+    assert_eq!(ids(&alice), ["o"]);
+    let blank_owner = list(json!({"project": "p", "owner": "  "})).await;
+    assert_eq!(ids(&blank_owner).len(), 5, "blank owner = all owners");
+    let unknown = list(json!({"project": "nope"})).await;
+    assert_eq!(
+        (ids(&unknown).len(), &unknown["has_more"]),
+        (0, &json!(false))
+    );
+}
+
+#[tokio::test]
+async fn list_todos_clamps_the_limit_like_memcan() {
+    let fake = Fake::start().await;
+    let many: Vec<Todo> = (0..205)
+        .map(|i| {
+            todo(
+                &format!("t{i:03}"),
+                "p",
+                "medium",
+                "pending",
+                "2026-11-01T00:00:00+00:00",
+            )
+        })
+        .collect();
+    fake.seed_todos(&many).await;
+    let client = fake.connect().await.unwrap();
+    for (limit, expected) in [(json!(null), 100), (json!(0), 1), (json!(500), 200)] {
+        let mut arguments = json!({"project": "p"});
+        if !limit.is_null() {
+            arguments["limit"] = limit.clone();
+        }
+        let page = answer(&call(&client, "list_todos", arguments).await.unwrap());
+        assert_eq!(ids(&page).len(), expected, "limit {limit}");
+        assert_eq!(page["has_more"], true, "limit {limit}");
+    }
+}
+
+#[tokio::test]
+async fn list_todos_refuses_a_missing_project_and_an_unknown_status() {
+    let fake = Fake::start().await;
+    let client = fake.connect().await.unwrap();
+    let (code, message) =
+        mcp_error(call(&client, "list_todos", json!({"status": "pending"})).await);
+    assert_eq!(code, -32602);
+    assert!(message.contains("project"), "{message}");
+    let (code, message) = mcp_error(
+        call(
+            &client,
+            "list_todos",
+            json!({"project": "p", "status": "open"}),
+        )
+        .await,
+    );
+    assert_eq!(code, -32603, "MemCan's internal error");
+    assert_eq!(
+        message,
+        "list_todos failed: invalid status 'open', must be one of: pending, in_progress, blocked, done, \
+         postponed, cancelled"
+    );
+}
+
+#[tokio::test]
+async fn list_todos_works_while_embedding_fails_and_reset_forgets_todos() {
+    let fake = Fake::start().await;
+    fake.seed_todos(&[todo(
+        "a",
+        "p",
+        "high",
+        "pending",
+        "2026-11-01T00:00:00+00:00",
+    )])
+    .await;
+    assert_eq!(fake.state().await.todos.len(), 1);
+    fake.set_mode(Mode::EmbeddingFailure).await;
+    let client = fake.connect().await.unwrap();
+    let page = answer(
+        &call(&client, "list_todos", json!({"project": "p"}))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(ids(&page), ["a"], "listing needs no embedding");
+    let status = fake
+        .http
+        .post(format!("{}/_fake/reset", fake.base))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
+    assert!(fake.state().await.todos.is_empty());
 }
