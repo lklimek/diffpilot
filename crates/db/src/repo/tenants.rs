@@ -99,6 +99,18 @@ pub mod testing {
         Ok(())
     }
 
+    /// Review repro: every recorded scheduled run of `user_id` fails (persistent per-user database error).
+    pub async fn fail_scheduled_run_records(db: &Db, user_id: &str) -> Result<(), DbError> {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "CREATE TRIGGER fail_scheduled_run BEFORE UPDATE OF last_scheduled_on ON dashboard_settings
+                 WHEN NEW.user_id = '{user_id}'
+                 BEGIN SELECT RAISE(ABORT, 'injected scheduled run record failure'); END;"
+        )))
+        .execute(&db.pool)
+        .await?;
+        Ok(())
+    }
+
     /// Removes `login` from the tenant's allowlist, as the owner would by hand.
     pub async fn remove_login(db: &Db, tenant_id: &str, login: &str) -> Result<(), DbError> {
         sqlx::query("DELETE FROM tenant_allowed_logins WHERE tenant_id = ? AND login = ?")

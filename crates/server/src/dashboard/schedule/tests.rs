@@ -818,3 +818,74 @@ async fn summary_reports_next_and_last_run_across_a_dst_gap() {
         "recorded for 2026-03-29 (ahead of the local date): the next date's 02:30 CEST"
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Review repros (branch review/v11-sched-repro)
+
+const SANTIAGO: &str = "America/Santiago";
+
+/// Santiago changes clocks at local midnight: 2026-09-06 00:00 (-04) jumps to 01:00 (-03); 2026-04-05 00:00 (-03)
+/// falls back to 2026-04-04 23:00 (-04), so 23:xx of 2026-04-04 happens twice.
+#[test]
+fn review_santiago_midnight_dst_runs_once_per_local_date() {
+    let midnight = schedule(SANTIAGO, "00:00");
+    assert_eq!(
+        midnight.instant(date(2026, 9, 6)),
+        utc(2026, 9, 6, 4, 0),
+        "gap: first valid instant"
+    );
+    assert_eq!(
+        midnight.due(utc(2026, 9, 6, 3, 59), Some(date(2026, 9, 5))),
+        Due::Later {
+            instant: utc(2026, 9, 6, 4, 0)
+        }
+    );
+    assert_eq!(
+        midnight.due(utc(2026, 9, 6, 4, 0), Some(date(2026, 9, 5))),
+        Due::Now {
+            on: date(2026, 9, 6),
+            instant: utc(2026, 9, 6, 4, 0)
+        }
+    );
+    let late = schedule(SANTIAGO, "23:30");
+    let first = utc(2026, 4, 5, 2, 30);
+    assert_eq!(
+        late.instant(date(2026, 4, 4)),
+        first,
+        "overlap: first occurrence"
+    );
+    assert_eq!(
+        late.due(first, Some(date(2026, 4, 3))),
+        Due::Now {
+            on: date(2026, 4, 4),
+            instant: first
+        }
+    );
+    assert_eq!(
+        late.due(utc(2026, 4, 5, 3, 30), Some(date(2026, 4, 4))),
+        Due::Later {
+            instant: utc(2026, 4, 6, 3, 30)
+        },
+        "the second 23:30 does not run again"
+    );
+}
+
+/// Contract (module doc, plan §A.5): a failing user is tried at most once a day and the scheduler goes on with the
+/// others. A persistent database error for the first due user must not keep the later user from running.
+#[tokio::test]
+async fn review_one_failing_user_does_not_block_the_others() {
+    let (early, late) = staggered_users();
+    let world = world().await;
+    add_user(&world, &early, 101, Some(28_800)).await;
+    add_user(&world, &late, 102, Some(28_800)).await;
+    db::repo::tenants::testing::fail_scheduled_run_records(&world.state.db, &early)
+        .await
+        .expect("inject");
+    for _ in 0..3 {
+        let _ = tick(world.state.clone()).await;
+    }
+    assert!(
+        latest_refresh(&world, &late).await.is_some() || last_run(&world, &late).await.is_some(),
+        "the later user never ran: one user's persistent error starves every other user"
+    );
+}
