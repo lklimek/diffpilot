@@ -58,7 +58,9 @@ sessions. A 06:00 run after a quiet weekend would find no pair.
 - **Decision.** chrono and chrono-tz are replaced by jiff 0.2 workspace-wide. RustSec marks both unmaintained
   (RUSTSEC-2026-0543, RUSTSEC-2026-0555) and recommends jiff, which also covers IANA zones and DST in one crate.
 - **Zones.** jiff's bundled IANA database only (feature `tzdb-bundle-always`, no system tzdata), so zone names and
-  rules do not depend on the minimal server image. `server::dashboard::zone` accepts exact names only (jiff's lookup
+  rules do not depend on the minimal server image. The rules ship in `jiff-tzdb` (pinned in `Cargo.lock`): run
+  `cargo update -p jiff-tzdb` and redeploy on each IANA release; this move takes the data from 2025b (chrono-tz
+  0.10.4) to 2026f, which shifts local times of about 15 zones in 2025–2027 (e.g. America/Vancouver). `server::dashboard::zone` accepts exact names only (jiff's lookup
   is case-insensitive; chrono-tz was not), links included, `Etc/Unknown` refused. The DST rules above, the chart
   window (midnight gaps such as America/Santiago) and the local-day judge cap keep their behaviour and tests.
 - **Wire and storage unchanged.** `contracts::time::Timestamp` wraps `jiff::Timestamp` and serialises as before:
