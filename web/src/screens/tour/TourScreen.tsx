@@ -73,6 +73,9 @@ import { useNow } from "../../app/now";
 import { Workspace } from "./Workspace";
 import { analysisActivity, questionsActivity, usePrTabSubject, useTabActivity } from "../../app/tabStatus";
 
+/** The PR's checks page on GitHub, which the CI summary links to. */
+const checksHref = (pr: { html_url: string }) => `${pr.html_url.replace(/\/+$/, "")}/checks`;
+
 const PR_CONTEXT: BlockRef = { block: "pr_context" };
 
 // Ignore shortcuts while the user types or uses modifier keys.
@@ -713,6 +716,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         pr={tour.analysis.pr}
         context={tour.pr_context}
         threadCount={tour.threads.length}
+        checksHref={checksHref(tour.analysis.pr)}
       />
     );
   }
@@ -851,6 +855,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       <TopBar
         pr={tour.analysis.pr}
         ci={tour.pr_context.facts.ci}
+        checksHref={checksHref(tour.analysis.pr)}
         language={tour.analysis.language}
         login={login}
         hideContextChanges={hideContextChanges}
