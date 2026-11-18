@@ -8,9 +8,9 @@ import { Section } from "../section/Section";
 import { ReviewToggle } from "../step/ReviewToggle";
 import { reviewedSteps } from "./progress";
 import { flowWorkStatus } from "./status";
+import { ANALYSE_AGAIN, ANALYSE_AGAIN_SENTENCE } from "./again";
 
 /** The action a failed flow's server message names when the flow is analysed again from scratch. */
-const ANALYSE_AGAIN = "Analyse this flow again";
 /** What analysing a flow again does to what was said about its steps (said before the click). */
 const REPLACES_STEPS = "Replaces this flow's steps. Ticks, questions and feedback on them are removed.";
 
@@ -60,9 +60,11 @@ export function FlowIntroBlock({
         : null;
     const work = flowWorkStatus(status, analysis);
     // A failed flow of a finished analysis, or one whose message names it, is analysed again from scratch.
+    // TODO: replace the message match with a typed field of `FlowAnalysisStatus` (e.g. `replaces_steps: bool`)
+    // once the contract has it.
     const again =
       status.state === "failed" &&
-      (analysis?.state === "finished" || (status.message?.endsWith(`${ANALYSE_AGAIN}.`) ?? false));
+      (analysis?.state === "finished" || (status.message?.endsWith(ANALYSE_AGAIN_SENTENCE) ?? false));
     const text =
       work.text === "Being analysed" && minutes !== null
         ? `${work.text} · started ${minutes} min ago`

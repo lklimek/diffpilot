@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ReviewState } from "./generated/types";
+import { ApiError } from "./client";
 import { createReviewStateStore } from "./review-state";
 
 const ID = "a1";
@@ -149,5 +150,39 @@ describe("review-state store", () => {
     puts[1]!.reply.resolve();
     await flush();
     expect(store.view(ID)).toMatchObject({ state: state(["f1.1", "f1.2"]), saveError: null });
+  });
+
+  it("forgets the ticks of a flow analysed again (exact prefix) and a last viewed step of it, saved and unsaved", async () => {
+    const { store, gets, puts, tick } = setup();
+    const read = store.read(ID);
+    gets[0]!.resolve(state(["f1.2", "f10.1", "f2.1"], "f1.2"));
+    await read;
+    tick("f1.3");
+    store.forgetFlow(ID, "f1");
+    expect(store.view(ID).state).toEqual({
+      ticked_steps: ["f10.1", "f2.1"],
+      last_viewed: { block: "flow_intro", flow_id: "f1" },
+    });
+    // The save waiting in the queue goes out without them too.
+    puts[0]!.reply.resolve();
+    await flush();
+    expect(puts.at(-1)!.body.ticked_steps).toEqual(["f10.1", "f2.1"]);
+  });
+
+  it("a save refused for a stale step reads the stored state again instead of sending the stale one again", async () => {
+    const { store, gets, puts, tick } = setup();
+    const read = store.read(ID);
+    gets[0]!.resolve(state(["f1.2"]));
+    await read;
+    tick("f2.1");
+    puts[0]!.reply.reject(
+      new ApiError(400, "invalid_request", "The review state names a step that is not part."),
+    );
+    await flush();
+    expect(gets).toHaveLength(2);
+    gets[1]!.resolve(state(["f2.1"]));
+    await flush();
+    expect(store.view(ID).state).toEqual(state(["f2.1"]));
+    expect(puts).toHaveLength(1);
   });
 });

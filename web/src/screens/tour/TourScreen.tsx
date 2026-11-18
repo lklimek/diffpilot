@@ -28,6 +28,7 @@ import {
   useTour,
   useFeedback,
   useFlowWork,
+  useForgetReanalysedFlows,
   useQuestionEvents,
   useQuestions,
 } from "../../api/queries";
@@ -190,12 +191,14 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   };
   const { state, change: save, loadError, saveError } = review;
   const work = useFlowWork(analysisId);
+  useForgetReanalysedFlows(analysisId, tour);
   const stream = useQuestionEvents(analysisId);
   const questions = useQuestions(analysisId);
   const ask = useAskQuestion(analysisId);
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
-  // A finished analysis takes a request only for a flow shown failed (a stored flow today's checks reject).
+  // A finished analysis takes a request for any flow shown failed (a stored flow today's checks reject, or one
+  // that failed for good); the request analyses it again from scratch.
   const finished = tour.analysis.state.state === "finished";
   const pending = usePendingReview(analysisId);
   // Remarks the user gave feedback on dim their pills; nothing else is per-user state of a remark.
