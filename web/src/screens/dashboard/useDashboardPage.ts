@@ -16,12 +16,15 @@ import {
   useSnapshotRefresh,
   useStartRefresh,
 } from "./queries";
-import { dashboardView, filterItems, type KindFilter } from "./state";
+import { dashboardView } from "./state";
 
 /** localStorage key of the list's kind filter. */
 export const FILTER_KEY = "sr.dashboard.kind";
 /** How long the "Ranking finished" notice stays. */
 export const NOTICE_MS = 6000;
+
+/** The list's kind switch: pull requests, issues or both (TODOs are listed with each). */
+export type KindFilter = "pr" | "issue" | "both";
 
 const FILTERS: readonly KindFilter[] = ["pr", "issue", "both"];
 
@@ -120,6 +123,17 @@ export function useDashboardPage() {
   const rank = useRankAgain();
   const notice = useRankingFinished(data?.latest_refresh, snapshotRefresh.data);
 
+  // An action's error belongs to the refresh it was about: a change of the latest refresh clears it.
+  const latestKey = `${data?.latest_refresh?.id}:${data?.latest_refresh?.state}`;
+  const { reset: resetStart } = start;
+  const { reset: resetCancel } = cancel;
+  const { reset: resetRank } = rank;
+  useEffect(() => {
+    resetStart();
+    resetCancel();
+    resetRank();
+  }, [latestKey, resetStart, resetCancel, resetRank]);
+
   // Items of a newer revision than the summary: the summary is behind, read it again.
   const itemsRevision = items.data?.revision;
   useEffect(() => {
@@ -128,12 +142,8 @@ export function useDashboardPage() {
     }
   }, [client, data, itemsRevision, items.isPlaceholderData]);
 
-  const view = useMemo(
-    () => data && dashboardView(data, snapshotRefresh.data, now),
-    [data, snapshotRefresh.data, now],
-  );
-  const all = items.data?.items;
-  const shown = useMemo(() => (all ? filterItems(all, filter) : undefined), [all, filter]);
+  const view = useMemo(() => data && dashboardView(data, snapshotRefresh.data), [data, snapshotRefresh.data]);
+  const nowDate = useMemo(() => new Date(now), [now]);
 
   return {
     me,
@@ -141,13 +151,11 @@ export function useDashboardPage() {
     summary,
     items,
     view,
-    /** All items of the snapshot, rank order. */
-    allItems: all,
-    /** The items of the current kind filter, rank order. */
-    shownItems: shown,
+    /** All items of the snapshot in rank order. */
+    allItems: items.data?.items,
     filter,
     setFilter,
-    now,
+    now: nowDate,
     notice,
     refresh: {
       start: () => start.mutate(),
@@ -166,6 +174,3 @@ export function useDashboardPage() {
     },
   };
 }
-
-/** What `useDashboardPage` returns. */
-export type DashboardPage = ReturnType<typeof useDashboardPage>;

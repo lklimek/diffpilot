@@ -1,7 +1,7 @@
 // History bucketing of the dashboard charts (plan §C.1, §F.3): the snapshot's dated pull-request and review events
 // counted by the browser's local working day and week. Pull requests only (OD16): closed = merged or closed
 // unmerged, opened = opened; reviews given are counted apart and never enter the net.
-import type { AwaitingItem, HistoryEvent, HistoryKind } from "../../api/generated/types";
+import type { HistoryEvent, HistoryKind } from "../../api/generated/types";
 
 /** One bucket of the net chart; `day` is its first local date (`YYYY-MM-DD`; Monday for weeks). */
 export interface NetBucket {
@@ -30,14 +30,17 @@ export interface NetCount {
   net: number;
 }
 
-/** Values of the headline card. */
+/** A period of the headline with its name in the tile (`Mon–Wed`, `Tue 17 Nov`, `9–13 Nov`). */
+export type Period = NetCount & { label: string };
+
+/** Values of the headline card (the headline component's figures). */
 export interface Headline {
   /** This week from Monday to now. */
-  week: NetCount & { from: string };
+  week: Period;
   /** The previous working day (with the weekend after it). */
-  yesterday: NetCount & { day: string };
+  yesterday: Period;
   /** Last week, Monday to Friday (its weekend included). */
-  lastWeek: NetCount & { from: string; to: string };
+  lastWeek: Period;
   /** The last twenty working days, and the twenty before them. */
   fourWeeks: { net: number; before: number };
 }
@@ -57,6 +60,23 @@ export const CHART_DAYS = 20;
 export const CHART_WEEKS = 12;
 /** Weeks of the throughput mini charts. */
 export const THROUGHPUT_WEEKS = 8;
+
+const DAY = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" });
+const WEEKDAY = new Intl.DateTimeFormat("en-GB", { weekday: "short" });
+const WEEKDAY_DAY = new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short" });
+
+/** Local midnight of a `YYYY-MM-DD` date. */
+function parseDay(day: string): Date {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(y!, m! - 1, d!);
+}
+
+/** `9–13 Nov`, or `30 Nov – 4 Dec` across months. */
+function rangeLabel(from: Date, to: Date): string {
+  return from.getMonth() === to.getMonth()
+    ? `${from.getDate()}–${DAY.format(to)}`
+    : `${DAY.format(from)} – ${DAY.format(to)}`;
+}
 
 const CLOSED: readonly HistoryKind[] = ["pr_merged", "pr_closed_unmerged"];
 const OPENED: readonly HistoryKind[] = ["pr_opened"];
@@ -165,20 +185,24 @@ export function weeklyCounts(
 /** Headline values: this week, yesterday, last week and the last four weeks against the four before. */
 export function headline(events: readonly HistoryEvent[], now: Date): Headline {
   const weekStart = monday(now);
-  const tomorrow = addDays(workingDay(now), 1);
-  const yesterdayStart = previousWorkingDay(workingDay(now));
+  const today = workingDay(now);
+  const tomorrow = addDays(today, 1);
+  const yesterdayStart = previousWorkingDay(today);
   const lastWeekStart = addDays(weekStart, -7);
   const window = workingDays(now, 2 * CHART_DAYS);
   const recentStart = window[CHART_DAYS]!;
+  const weekdays = [weekStart, today].map((d) => WEEKDAY.format(d));
   return {
-    week: { from: localDay(weekStart), ...netBetween(events, weekStart, tomorrow) },
+    week: {
+      label: weekdays[0] === weekdays[1] ? weekdays[0]! : weekdays.join("–"),
+      ...netBetween(events, weekStart, tomorrow),
+    },
     yesterday: {
-      day: localDay(yesterdayStart),
+      label: WEEKDAY_DAY.format(yesterdayStart),
       ...netBetween(events, yesterdayStart, addDays(yesterdayStart, 1)),
     },
     lastWeek: {
-      from: localDay(lastWeekStart),
-      to: localDay(addDays(lastWeekStart, 4)),
+      label: rangeLabel(lastWeekStart, addDays(lastWeekStart, 4)),
       ...netBetween(events, lastWeekStart, weekStart),
     },
     fourWeeks: {
@@ -205,21 +229,46 @@ export function yesterday(events: readonly HistoryEvent[], now: Date): Yesterday
   };
 }
 
-/** Wait buckets of the review-queue age chart, in whole local days. */
-const AGE_BUCKETS: readonly { label: string; max: number }[] = [
-  { label: "≤ 2 d", max: 2 },
-  { label: "3–7 d", max: 7 },
-  { label: "8–14 d", max: 14 },
-  { label: "> 14 d", max: Infinity },
-];
+/** The day of `yesterday()` as the section names it (`Tue 17 Nov`). */
+export const fullDayLabel = (day: string): string => WEEKDAY_DAY.format(parseDay(day));
 
-/** How long the user's pull requests have waited on others, bucketed by whole local days. */
-export function queueAge(awaiting: readonly AwaitingItem[], now: Date): { label: string; count: number }[] {
-  const today = midnight(now).getTime();
-  const counts = AGE_BUCKETS.map((b) => ({ label: b.label, count: 0 }));
-  for (const item of awaiting) {
-    const days = Math.round((today - midnight(new Date(item.waiting_since)).getTime()) / 86_400_000);
-    counts[AGE_BUCKETS.findIndex((b) => days <= b.max)]!.count += 1;
-  }
-  return counts;
+/** A bucket of the net chart with its axis label, full name and whether the axis labels it. */
+export type ChartPoint = NetBucket & { label: string; full: string; tick: boolean };
+
+/** Labels the buckets of the day or week chart: days by date with Mondays on the axis, weeks every second. */
+export function chartPoints(buckets: readonly NetBucket[], unit: "day" | "week"): ChartPoint[] {
+  return buckets.map((b, i) => {
+    const start = parseDay(b.day);
+    const last = i === buckets.length - 1;
+    return {
+      ...b,
+      label: DAY.format(start),
+      full: unit === "day" ? WEEKDAY_DAY.format(start) : `Week of ${DAY.format(start)}`,
+      tick: last || (unit === "day" ? start.getDay() === 1 : i % 2 === 1),
+    };
+  });
+}
+
+/** One week of the throughput charts: the user's PRs merged and the reviews given. */
+export interface ThroughputPoint {
+  label: string;
+  merged: number;
+  reviews: number;
+  partial: boolean;
+}
+
+/** Merged pull requests and reviews given per week, the last `count` weeks; this week is partial. */
+export function throughputWeeks(
+  events: readonly HistoryEvent[],
+  now: Date,
+  count = THROUGHPUT_WEEKS,
+): ThroughputPoint[] {
+  const merged = weeklyCounts(events, ["pr_merged"], now, count);
+  const reviews = weeklyCounts(events, ["review_given"], now, count);
+  return merged.map((week, i) => ({
+    label: DAY.format(parseDay(week.day)),
+    merged: week.count,
+    reviews: reviews[i]!.count,
+    partial: week.partial,
+  }));
 }

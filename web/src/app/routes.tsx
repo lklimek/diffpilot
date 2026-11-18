@@ -11,5 +11,11 @@ export const appRoutes: RouteObject[] = [
   { path: "/analyses/:analysisId", element: <TourScreen /> },
   { path: "/analyses/:analysisId/progress", element: <ProgressScreen /> },
   { path: "/settings", element: <SettingsScreen /> },
+  // Dark launch (plan §H.2.2): unlinked until WP11-SWITCH makes My work the start page.
+  // TODO(WP11-WEB-S after WEB-C merge): import DashboardScreen statically like the other screens.
+  {
+    path: "/my-work",
+    lazy: async () => ({ Component: (await import("../screens/dashboard/DashboardScreen")).DashboardScreen }),
+  },
   { path: "*", element: <NotFoundScreen /> },
 ];

@@ -50,13 +50,8 @@ describe("useDashboardPage", () => {
   it("loads the summary and all items; the list opens with pull requests (and TODOs)", async () => {
     const { result } = renderPage();
     await waitFor(() => expect(result.current.allItems).toHaveLength(14));
-    expect(result.current.view).toMatchObject({
-      refreshButton: { state: "ready" },
-      ranking: null,
-      empty: false,
-    });
+    expect(result.current.view).toMatchObject({ scanning: null, ranking: null, empty: false });
     expect(result.current.filter).toBe("pr");
-    expect(new Set(result.current.shownItems!.map((i) => i.kind))).toEqual(new Set(["pr", "todo"]));
     // A finished refresh has no stream.
     expect(FakeEventSource.instances).toHaveLength(0);
   });
@@ -65,7 +60,7 @@ describe("useDashboardPage", () => {
     const { result } = renderPage();
     await waitFor(() => expect(result.current.allItems).toBeDefined());
     act(() => result.current.setFilter("issue"));
-    expect(new Set(result.current.shownItems!.map((i) => i.kind))).toEqual(new Set(["issue", "todo"]));
+    expect(result.current.filter).toBe("issue");
     expect(localStorage.getItem(FILTER_KEY)).toBe("issue");
     const again = renderPage();
     expect(again.result.current.filter).toBe("issue");
@@ -83,8 +78,7 @@ describe("useDashboardPage", () => {
     const { result } = renderPage();
     await waitFor(() => expect(result.current.view).toBeDefined());
     act(() => result.current.refresh.start());
-    await waitFor(() => expect(result.current.view?.scanning).not.toBeNull());
-    expect(result.current.view?.refreshButton).toEqual({ state: "scanning" });
+    await waitFor(() => expect(result.current.view?.scanning).toBeTruthy());
     expect(result.current.view?.stale).toBe(true);
     const id = result.current.view!.scanning!.id;
     expect(FakeEventSource.latest().url).toBe(`/api/v1/dashboard/refreshes/${id}/events`);
@@ -96,17 +90,21 @@ describe("useDashboardPage", () => {
   it("a refused second start says a scan runs", async () => {
     setDashboardScenario("refreshing");
     const { result } = renderPage();
-    await waitFor(() => expect(result.current.view?.scanning).not.toBeNull());
+    await waitFor(() => expect(result.current.view?.scanning).toBeTruthy());
     act(() => result.current.refresh.start());
     await waitFor(() =>
       expect(result.current.refresh.error).toBe("A refresh is already scanning; its progress is shown."),
     );
+    // The message belongs to that scan: once it ended, it goes.
+    act(() => result.current.cancel.run(result.current.view!.scanning!.id));
+    await waitFor(() => expect(result.current.view?.scanning).toBeNull());
+    expect(result.current.refresh.error).toBeNull();
   });
 
   it("says Ranking finished when the watched ranking ends", async () => {
     setDashboardScenario("provisional");
     const { result } = renderPage();
-    await waitFor(() => expect(result.current.view?.ranking).toMatchObject({ kind: "running" }));
+    await waitFor(() => expect(result.current.view?.ranking).toMatchObject({ status: { state: "running" } }));
     const summary = result.current.summary.data!;
     const latest = summary.latest_refresh!;
     expect(result.current.notice).toBeNull();
@@ -126,12 +124,9 @@ describe("useDashboardPage", () => {
   it("Rank again restarts a failed ranking", async () => {
     setDashboardScenario("ranking-failed");
     const { result } = renderPage();
-    await waitFor(() =>
-      expect(result.current.view?.ranking).toMatchObject({ kind: "stopped", canRankAgain: true }),
-    );
-    const ranking = result.current.view!.ranking!;
-    act(() => result.current.rankAgain.run(ranking.kind === "stopped" ? ranking.refreshId : ""));
-    await waitFor(() => expect(result.current.view?.ranking).toMatchObject({ kind: "running" }));
+    await waitFor(() => expect(result.current.view?.ranking).toMatchObject({ status: { state: "failed" } }));
+    act(() => result.current.rankAgain.run(result.current.view!.ranking!.refreshId));
+    await waitFor(() => expect(result.current.view?.ranking).toMatchObject({ status: { state: "running" } }));
   });
 
   it("an empty snapshot and a first visit without a snapshot read no items", async () => {

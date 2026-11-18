@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { AwaitingItem, HistoryEvent, HistoryKind } from "../../api/generated/types";
+import type { HistoryEvent, HistoryKind } from "../../api/generated/types";
 import {
+  chartPoints,
   dailySeries,
+  fullDayLabel,
   headline,
   localDay,
-  queueAge,
+  throughputWeeks,
   weeklyCounts,
   weeklySeries,
   workingDay,
@@ -45,16 +47,19 @@ describe("workingDay", () => {
 describe("headline (pull requests only, closed − opened)", () => {
   it("counts this week from Monday to now, the previous working day, last week and four weeks", () => {
     const h = headline(EVENTS, NOW);
-    expect(h.week).toEqual({ from: "2026-11-16", closed: 3, opened: 1, net: 2 });
-    expect(h.yesterday).toEqual({ day: "2026-11-17", closed: 2, opened: 0, net: 2 });
+    expect(h.week).toEqual({ label: "Mon–Wed", closed: 3, opened: 1, net: 2 });
+    expect(h.yesterday).toEqual({ label: "Tue 17 Nov", closed: 2, opened: 0, net: 2 });
     // Mon 9 – Sun 15 Nov: opened Mon 9 and Sat 14, merged Sun 15.
-    expect(h.lastWeek).toEqual({ from: "2026-11-09", to: "2026-11-13", closed: 1, opened: 2, net: -1 });
+    expect(h.lastWeek).toEqual({ label: "9–13 Nov", closed: 1, opened: 2, net: -1 });
     expect(h.fourWeeks).toEqual({ net: 1, before: 0 });
   });
 
   it("on a Monday, yesterday is the Friday with the weekend after it", () => {
     const h = headline(EVENTS, new Date(2026, 10, 16, 9));
-    expect(h.yesterday).toEqual({ day: "2026-11-13", closed: 1, opened: 1, net: 0 });
+    expect(h.yesterday).toEqual({ label: "Fri 13 Nov", closed: 1, opened: 1, net: 0 });
+    expect(h.week.label).toBe("Mon");
+    expect(headline([], new Date(2026, 11, 2, 9)).lastWeek.label).toBe("23–27 Nov");
+    expect(headline([], new Date(2026, 11, 9, 9)).lastWeek.label).toBe("30 Nov – 4 Dec");
   });
 
   it("counts the four weeks before the last twenty working days", () => {
@@ -129,17 +134,35 @@ describe("yesterday", () => {
   });
 });
 
-describe("queueAge", () => {
-  const waiting = (days: number): AwaitingItem =>
-    ({ waiting_since: new Date(2026, 10, 18 - days, 9).toISOString() }) as AwaitingItem;
+describe("chart labels", () => {
+  it("names days and weeks; Mondays (days) and every second week are on the axis, the last always", () => {
+    const days = chartPoints(dailySeries(EVENTS, NOW), "day");
+    expect(days.at(-1)).toMatchObject({ label: "18 Nov", full: "Wed 18 Nov", tick: true, partial: true });
+    expect(days.find((d) => d.day === "2026-11-16")).toMatchObject({ full: "Mon 16 Nov", tick: true });
+    expect(days.find((d) => d.day === "2026-11-17")!.tick).toBe(false);
+    const weeks = chartPoints(weeklySeries(EVENTS, NOW), "week");
+    expect(weeks.map((w) => w.tick)).toEqual([
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+      false,
+      true,
+    ]);
+    expect(weeks.at(-1)).toMatchObject({ label: "16 Nov", full: "Week of 16 Nov" });
+    expect(fullDayLabel("2026-11-17")).toBe("Tue 17 Nov");
+  });
 
-  it("buckets waits by whole local days: ≤ 2, 3–7, 8–14, > 14", () => {
-    const counts = queueAge([waiting(0), waiting(2), waiting(3), waiting(7), waiting(11), waiting(30)], NOW);
-    expect(counts).toEqual([
-      { label: "≤ 2 d", count: 2 },
-      { label: "3–7 d", count: 2 },
-      { label: "8–14 d", count: 1 },
-      { label: "> 14 d", count: 1 },
+  it("throughput weeks: merged pull requests and reviews given", () => {
+    expect(throughputWeeks(EVENTS, NOW, 2)).toEqual([
+      { label: "9 Nov", merged: 1, reviews: 0, partial: false },
+      { label: "16 Nov", merged: 2, reviews: 1, partial: true },
     ]);
   });
 });
