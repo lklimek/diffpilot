@@ -384,6 +384,7 @@ impl CodexProvider {
             } else {
                 config::AUTO_COMPACT_TOKEN_LIMIT
             },
+            call.answer_only,
         );
         replace_private(&call.codex_home.join(CONFIG_FILE), config.as_bytes())
     }
@@ -470,7 +471,7 @@ impl CodexProvider {
             .take()
             .ok_or_else(|| io::Error::other("Codex stdout was not captured"))?;
         let mut lines = Lines::new(BufReader::new(stdout));
-        let mut parsed = CodexStream::default();
+        let mut parsed = CodexStream::answer_only(call.answer_only);
         let status = read_until_exit(
             &mut child,
             &mut group,
@@ -795,14 +796,19 @@ async fn read_until_exit<R: AsyncBufRead + Unpin>(
 
 /// Forwards the activity of `line` with every secret the provider knows scrubbed, the tokens of a credential
 /// rotated meanwhile included. Not clipped: `execute` clips after scrubbing the secrets only it knows. Fails
-/// when the credential copy was rewritten more often than a refresh does.
+/// when the credential copy was rewritten more often than a refresh does, and at the first tool item of an
+/// answer-only job (the caller then stops Codex).
 async fn forward(
     parsed: &mut CodexStream,
     line: &str,
     credential: &mut JobCredential<'_>,
     events: Option<&mpsc::Sender<ProviderEvent>>,
 ) -> Result<(), ProviderError> {
-    if let Some((activity, summary)) = parsed.line(line) {
+    let activity = parsed.line(line);
+    if let Some(tool) = parsed.tool_used() {
+        return Err(stream::tool_used_error(tool));
+    }
+    if let Some((activity, summary)) = activity {
         if !credential.watch() {
             return Err(ProviderError::CredentialUnusable);
         }

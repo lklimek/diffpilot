@@ -18,7 +18,8 @@ use contracts::ids::{AnalysisId, FlowId, JobId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobPriority, JobSpec, LlmCredentialRef, RepoCheckout,
+    CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
+    PullRequestTarget, RepoCheckout,
 };
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
@@ -437,7 +438,7 @@ impl Driver<'_> {
             }
             JobStage::PrContext => self.results.pr_context.is_some(),
             JobStage::Flow(id) => self.ended.contains_key(id),
-            JobStage::Ask(_) => true,
+            JobStage::Ask(_) | JobStage::Judge { .. } => true,
         }
     }
 
@@ -687,7 +688,9 @@ impl Driver<'_> {
                         Err(issues) => Some(issues),
                     }
                 }
-                JobStage::Ask(_) => return Err(self.invalid(&stage, "not a pipeline stage")),
+                JobStage::Ask(_) | JobStage::Judge { .. } => {
+                    return Err(self.invalid(&stage, "not a pipeline stage"));
+                }
             }
         };
         let Some(issues) = issues else {
@@ -765,10 +768,12 @@ impl Driver<'_> {
                 stage: stage.key(),
                 what: "plan of the flows",
             }),
-            JobStage::PrContext | JobStage::Ask(_) => Err(PipelineError::RepairExhausted {
-                stage: stage.key(),
-                what: "PR context",
-            }),
+            JobStage::PrContext | JobStage::Ask(_) | JobStage::Judge { .. } => {
+                Err(PipelineError::RepairExhausted {
+                    stage: stage.key(),
+                    what: "PR context",
+                })
+            }
         }
     }
 
@@ -909,7 +914,9 @@ impl Driver<'_> {
                 };
                 finish(RepairOf::Flow(&input), &|| prompts::analyse_flow(&input))?
             }
-            JobStage::Ask(_) => return Err(self.invalid(stage, "not a pipeline stage")),
+            JobStage::Ask(_) | JobStage::Judge { .. } => {
+                return Err(self.invalid(stage, "not a pipeline stage"));
+            }
         };
         Ok(prompt)
     }
@@ -982,23 +989,25 @@ impl Driver<'_> {
             job_id: JobId::new_random(),
             attempt: 0,
             kind,
-            analysis_id: self.analysis,
-            pull_request_id: self
-                .state
-                .db
-                .analyses()
-                .get(self.analysis)
-                .await?
-                .pull_request_id,
-            repo: RepoCheckout {
-                clone_url: endpoint(
-                    &self.state.config.github.clone_url,
-                    &format!("{}/{}.git", pr.repo.owner, pr.repo.name),
-                )
-                .to_string(),
-                base_sha: pr.base_sha.clone(),
-                head_sha: pr.head_sha.clone(),
-            },
+            target: JobTarget::PullRequest(PullRequestTarget {
+                analysis_id: self.analysis,
+                pull_request_id: self
+                    .state
+                    .db
+                    .analyses()
+                    .get(self.analysis)
+                    .await?
+                    .pull_request_id,
+                repo: RepoCheckout {
+                    clone_url: endpoint(
+                        &self.state.config.github.clone_url,
+                        &format!("{}/{}.git", pr.repo.owner, pr.repo.name),
+                    )
+                    .to_string(),
+                    base_sha: pr.base_sha.clone(),
+                    head_sha: pr.head_sha.clone(),
+                },
+            }),
             prompt,
             output_schema: if matches!(stage, JobStage::Flow(_)) {
                 Value::Null
@@ -1038,7 +1047,7 @@ impl Driver<'_> {
                 priority: JobPriority::Batch,
                 stage: stage.clone(),
                 generation,
-                pr_repo: pr.repo.clone(),
+                pr_repo: Some(pr.repo.clone()),
             })
             .await?;
         log_submitted(

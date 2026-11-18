@@ -12,7 +12,8 @@ use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobPriority, JobSpec, LlmCredentialRef, RepoCheckout,
+    CredentialKind, JobLimits, JobPriority, JobSpec, JobTarget, LlmCredentialRef,
+    PullRequestTarget, RepoCheckout,
 };
 use db::error::DbError;
 use db::repo::Db;
@@ -397,17 +398,19 @@ async fn submit(
         job_id: JobId::new_random(),
         attempt: 0,
         kind: JobKind::Ask,
-        analysis_id: summary.id,
-        pull_request_id: state.db.analyses().get(summary.id).await?.pull_request_id,
-        repo: RepoCheckout {
-            clone_url: endpoint(
-                &state.config.github.clone_url,
-                &format!("{}/{}.git", pr.repo.owner, pr.repo.name),
-            )
-            .to_string(),
-            base_sha: pr.base_sha.clone(),
-            head_sha: pr.head_sha.clone(),
-        },
+        target: JobTarget::PullRequest(PullRequestTarget {
+            analysis_id: summary.id,
+            pull_request_id: state.db.analyses().get(summary.id).await?.pull_request_id,
+            repo: RepoCheckout {
+                clone_url: endpoint(
+                    &state.config.github.clone_url,
+                    &format!("{}/{}.git", pr.repo.owner, pr.repo.name),
+                )
+                .to_string(),
+                base_sha: pr.base_sha.clone(),
+                head_sha: pr.head_sha.clone(),
+            },
+        }),
         prompt,
         output_schema: agent::output_schema(JobKind::Ask)?,
         flow_file: None,
@@ -436,7 +439,7 @@ async fn submit(
             priority: JobPriority::Interactive,
             stage: JobStage::Ask(question.id),
             generation: 0,
-            pr_repo: pr.repo.clone(),
+            pr_repo: Some(pr.repo.clone()),
         })
         .await?;
     tracing::debug!(question = %question.id, job = %handle.job_id, "ask job submitted");

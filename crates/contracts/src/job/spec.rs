@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::agent::JobKind;
-use crate::ids::{AnalysisId, CommitSha, JobId};
+use crate::ids::{AnalysisId, CommitSha, JobId, RefreshId};
 use crate::job::access::AgentAccess;
 
 /// One agent job, self-contained (brief §5 item 1).
@@ -17,12 +17,8 @@ pub struct JobSpec {
     pub attempt: u32,
     /// Job kind.
     pub kind: JobKind,
-    /// The analysis the job belongs to.
-    pub analysis_id: AnalysisId,
-    /// Stable database key of the pull request; root of its analytic and private working archives.
-    pub pull_request_id: i64,
-    /// The repository to check out.
-    pub repo: RepoCheckout,
+    /// What the job works on (ADR-018).
+    pub target: JobTarget,
     /// The full prompt, built by the server.
     pub prompt: String,
     /// The output JSON Schema (Codex strict subset), or null when `flow_file` is present.
@@ -47,6 +43,45 @@ pub struct JobSpec {
     pub skills: Vec<String>,
     /// Agent credentials, filled at claim.
     pub access: AgentAccess,
+}
+
+/// What a job works on (ADR-018); exhaustive matches mark every pull-request-only site.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JobTarget {
+    /// A job of an analysis: checkout, the pull request's sessions, GitHub and MemCan access.
+    PullRequest(PullRequestTarget),
+    /// A dashboard ranking job: no checkout, no session, no GitHub or MemCan access.
+    Dashboard {
+        /// The refresh whose items are judged.
+        refresh_id: RefreshId,
+    },
+}
+
+impl JobTarget {
+    /// The pull request of an analysis job; `None` for dashboard jobs.
+    pub fn pull_request(&self) -> Option<&PullRequestTarget> {
+        match self {
+            Self::PullRequest(target) => Some(target),
+            Self::Dashboard { .. } => None,
+        }
+    }
+
+    /// The analysis of an analysis job; `None` for dashboard jobs.
+    pub fn analysis_id(&self) -> Option<AnalysisId> {
+        self.pull_request().map(|target| target.analysis_id)
+    }
+}
+
+/// The pull request an analysis job works on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PullRequestTarget {
+    /// The analysis the job belongs to.
+    pub analysis_id: AnalysisId,
+    /// Stable database key of the pull request; root of its analytic and private working archives.
+    pub pull_request_id: i64,
+    /// The repository to check out.
+    pub repo: RepoCheckout,
 }
 
 /// Where the runner fetches the repository from.
@@ -135,7 +170,7 @@ pub struct SessionRef {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum JobPriority {
-    /// Ask jobs.
+    /// Ask and dashboard ranking jobs.
     Interactive,
     /// Pipeline jobs.
     Batch,

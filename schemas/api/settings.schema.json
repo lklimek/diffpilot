@@ -98,7 +98,7 @@
           "$ref": "#/$defs/ModelChoice"
         },
         "judge_effort": {
-          "description": "Reasoning effort of the dashboard ranking (`judge_work`; default low). Optional on the wire until WP11-JOB\nstores and fills it; absent on older servers.",
+          "description": "Reasoning effort of the dashboard ranking (`judge_work`; default low). Optional on the wire; absent on\nolder servers.",
           "anyOf": [
             {
               "$ref": "#/$defs/ReasoningEffort"

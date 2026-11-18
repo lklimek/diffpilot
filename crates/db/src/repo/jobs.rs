@@ -3,11 +3,11 @@
 
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use contracts::agent::JobKind;
-use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId};
+use contracts::ids::{AnalysisId, FlowId, JobId, QuestionId, RefreshId};
 use contracts::job::access::AgentAccess;
 use contracts::job::event::JobEvent;
 use contracts::job::result::{JobFailureKind, JobOutcome, JobResult, LlmCallStatus};
-use contracts::job::spec::{JobPriority, JobSpec};
+use contracts::job::spec::{JobPriority, JobSpec, JobTarget};
 use contracts::job::state::{JobState, JobTransition};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -40,8 +40,9 @@ pub struct TokenToRevoke {
     pub expires_at: DateTime<Utc>,
 }
 
-/// The pipeline stage a job serves: the durable link from analysis progress to its job (restart recovery).
-/// At most one job per (analysis, stage) is live or succeeded, so a repeated submit is a `Conflict`.
+/// The stage a job serves: the durable link from analysis progress (or a dashboard ranking) to its job (restart
+/// recovery). At most one job per (analysis or refresh, stage) is live or succeeded, so a repeated submit is a
+/// `Conflict`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum JobStage {
     /// A `plan` job; huge pull requests are planned in several directory batches, numbered from 1.
@@ -55,16 +56,24 @@ pub enum JobStage {
     Flow(FlowId),
     /// The `ask` job of a question.
     Ask(QuestionId),
+    /// A `judge_work` batch of a dashboard refresh's ranking, numbered from 1.
+    Judge {
+        /// The refresh.
+        refresh: RefreshId,
+        /// Batch number.
+        batch: u32,
+    },
 }
 
 impl JobStage {
-    /// The stored key: `plan:<batch>`, `pr_context`, `flow:<id>`, `ask:<question id>`.
+    /// The stored key: `plan:<batch>`, `pr_context`, `flow:<id>`, `ask:<question id>`, `judge:<refresh>:<batch>`.
     pub fn key(&self) -> String {
         match self {
             Self::Plan { batch } => format!("plan:{batch}"),
             Self::PrContext => "pr_context".to_owned(),
             Self::Flow(flow) => format!("flow:{flow}"),
             Self::Ask(question) => format!("ask:{question}"),
+            Self::Judge { refresh, batch } => format!("judge:{refresh}:{batch}"),
         }
     }
 
@@ -80,6 +89,14 @@ impl JobStage {
             "ask" => serde_json::from_value(serde_json::Value::String(rest.to_owned()))
                 .ok()
                 .map(Self::Ask),
+            "judge" => {
+                let (refresh, batch) = rest.split_once(':')?;
+                Some(Self::Judge {
+                    refresh: serde_json::from_value(serde_json::Value::String(refresh.to_owned()))
+                        .ok()?,
+                    batch: batch.parse().ok()?,
+                })
+            }
             _ => None,
         }
     }
@@ -91,11 +108,12 @@ impl JobStage {
             Self::PrContext => JobKind::PrContext,
             Self::Flow(_) => JobKind::AnalyseFlow,
             Self::Ask(_) => JobKind::Ask,
+            Self::Judge { .. } => JobKind::JudgeWork,
         }
     }
 }
 
-/// A job to enqueue; the tenant is the analysis's.
+/// A job to enqueue; the tenant is the analysis's or the refresh's (`spec.target`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewJob {
     /// The spec; `access` must be empty (credentials are added at claim).
@@ -113,8 +131,10 @@ pub struct NewJob {
 pub struct JobRecord {
     /// Job id.
     pub id: JobId,
-    /// Analysis.
-    pub analysis_id: AnalysisId,
+    /// Analysis of an analysis job; none for dashboard jobs.
+    pub analysis_id: Option<AnalysisId>,
+    /// Refresh of a dashboard job; none for analysis jobs.
+    pub refresh_id: Option<RefreshId>,
     /// Kind.
     pub kind: JobKind,
     /// Claim priority.
@@ -141,7 +161,8 @@ pub struct JobRecord {
     pub stage: JobStage,
     /// 0 for the first run, else the repair run number.
     pub generation: u32,
-    /// The analysis's round when it was enqueued; an explicit Retry starts a new round.
+    /// The analysis's round (or the refresh's ranking attempt) when it was enqueued; an explicit Retry starts a new
+    /// round.
     pub round: u32,
     /// The last claim gave the job a GitHub installation token (its agent had the GitHub tool).
     pub github_access_granted: bool,
@@ -296,7 +317,7 @@ pub(crate) fn server_result(job: JobId, attempt: u32, outcome: JobOutcome) -> Jo
 
 macro_rules! job_columns {
     () => {
-        "id, analysis_id, kind, priority, state, attempt, max_attempts, spec, cancel_requested, lease_expires_at,
+        "id, analysis_id, refresh_id, kind, priority, state, attempt, max_attempts, spec, cancel_requested, lease_expires_at,
          resumes_at, ready_output, result, stage, generation, round, github_access_granted, created_at, finished_at"
     };
 }
@@ -319,7 +340,8 @@ fn optional_json<T: DeserializeOwned>(
 
 fn job_from_row(row: &SqliteRow) -> Result<JobRecord, DbError> {
     let id: String = row.try_get("id")?;
-    let analysis: String = row.try_get("analysis_id")?;
+    let analysis: Option<String> = row.try_get("analysis_id")?;
+    let refresh: Option<String> = row.try_get("refresh_id")?;
     let kind: String = row.try_get("kind")?;
     let state: String = row.try_get("state")?;
     let spec: String = row.try_get("spec")?;
@@ -327,7 +349,12 @@ fn job_from_row(row: &SqliteRow) -> Result<JobRecord, DbError> {
     let created_at: String = row.try_get("created_at")?;
     Ok(JobRecord {
         id: parse_wire(&id, "jobs.id")?,
-        analysis_id: parse_wire(&analysis, "jobs.analysis_id")?,
+        analysis_id: analysis
+            .map(|id| parse_wire(&id, "jobs.analysis_id"))
+            .transpose()?,
+        refresh_id: refresh
+            .map(|id| parse_wire(&id, "jobs.refresh_id"))
+            .transpose()?,
         kind: parse_wire(&kind, "jobs.kind")?,
         priority: match row.try_get::<i64, _>("priority")? {
             0 => JobPriority::Interactive,
@@ -462,8 +489,11 @@ impl Current {
 }
 
 impl Jobs<'_> {
-    /// Enqueues a job in state `queued` in the analysis's current round; `Conflict` if a live or succeeded job of
-    /// the same stage, generation and round exists (look it up with [`Jobs::current_for_stage`] and reuse it).
+    /// Enqueues a job in state `queued` in the analysis's current round (a dashboard job: the refresh's ranking
+    /// attempt); `Conflict` if a live or succeeded job of the same stage, generation and round exists (look it up
+    /// with [`Jobs::current_for_stage`] or [`Jobs::current_for_judge_stage`] and reuse it). `NotFound` when the
+    /// target's analysis does not exist, or its refresh does not exist or no longer ranks (a job that could never
+    /// be claimed).
     pub async fn enqueue(&self, job: NewJob, now: DateTime<Utc>) -> Result<JobRecord, DbError> {
         let mut spec = job.spec;
         // The stored spec never holds a credential (threat model T3b); access is filled at claim.
@@ -472,26 +502,37 @@ impl Jobs<'_> {
         let (flow_id, question_id) = match &job.stage {
             JobStage::Flow(flow) => (Some(flow.0.clone()), None),
             JobStage::Ask(question) => (None, Some(question.to_string())),
-            JobStage::Plan { .. } | JobStage::PrContext => (None, None),
+            JobStage::Plan { .. } | JobStage::PrContext | JobStage::Judge { .. } => (None, None),
         };
-        let inserted = sqlx::query(
-            "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, stage,
-                 generation, flow_id, question_id, created_at, round)
-             SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?",
-        )
-        .bind(spec.job_id.to_string())
-        .bind(wire_name(spec.kind)?)
-        .bind(priority_value(job.priority))
-        .bind(serde_json::to_string(&spec)?)
-        .bind(&spec.credential.id)
-        .bind(job.stage.key())
-        .bind(job.generation)
-        .bind(flow_id)
-        .bind(question_id)
-        .bind(ts(now))
-        .bind(spec.analysis_id.to_string())
-        .execute(self.pool)
-        .await?;
+        let (sql, owner) = match &spec.target {
+            JobTarget::PullRequest(target) => (
+                "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, stage,
+                     generation, flow_id, question_id, created_at, round)
+                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, round FROM analyses WHERE id = ?",
+                target.analysis_id.to_string(),
+            ),
+            JobTarget::Dashboard { refresh_id } => (
+                "INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, credential_id, stage,
+                     generation, flow_id, question_id, created_at, round)
+                 SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ranking_attempt
+                 FROM dashboard_refreshes WHERE id = ? AND state = 'ranking'",
+                refresh_id.to_string(),
+            ),
+        };
+        let inserted = sqlx::query(sql)
+            .bind(spec.job_id.to_string())
+            .bind(wire_name(spec.kind)?)
+            .bind(priority_value(job.priority))
+            .bind(serde_json::to_string(&spec)?)
+            .bind(&spec.credential.id)
+            .bind(job.stage.key())
+            .bind(job.generation)
+            .bind(flow_id)
+            .bind(question_id)
+            .bind(ts(now))
+            .bind(owner)
+            .execute(self.pool)
+            .await?;
         if inserted.rows_affected() == 0 {
             return Err(DbError::NotFound);
         }
@@ -499,7 +540,8 @@ impl Jobs<'_> {
     }
 
     /// Claims the next runnable job: `queued`, credential usable and idle, no other running job of the same
-    /// analysis; interactive before batch, then oldest first. Increments the attempt.
+    /// analysis, a dashboard job only while its refresh is ranking in the job's attempt; interactive before batch, then oldest first.
+    /// Increments the attempt.
     pub async fn claim(&self, params: ClaimParams<'_>) -> Result<Option<JobRecord>, DbError> {
         if params.credential_ids.is_empty() {
             return Ok(None);
@@ -517,6 +559,7 @@ impl Jobs<'_> {
             " WHERE id = (SELECT j.id FROM jobs j WHERE j.state = 'queued'
                  AND NOT EXISTS (SELECT 1 FROM analyses a WHERE a.id = j.analysis_id AND (a.state = 'cancelled' OR (a.user_paused_at IS NOT NULL AND j.kind <> 'ask')))
                  AND NOT EXISTS (SELECT 1 FROM analyses a JOIN pull_requests p ON p.id=a.pull_request_id WHERE a.id=j.analysis_id AND p.session_state='drop_requested')
+                 AND NOT EXISTS (SELECT 1 FROM dashboard_refreshes d WHERE d.id = j.refresh_id AND (d.state <> 'ranking' OR d.ranking_attempt <> j.round))
                  AND j.credential_id IN (",
         );
         let mut ids = query.separated(", ");
@@ -683,6 +726,12 @@ impl Jobs<'_> {
         .execute(&mut *tx)
         .await?;
         apply_credential_effects(&mut tx, &credential, result, now).await?;
+        let kind: String = row.try_get("kind")?;
+        // A dashboard job has no pull request: nothing it reports touches a session (ADR-018).
+        if kind == JobKind::JudgeWork.as_str() {
+            tx.commit().await?;
+            return Ok(Completion::Applied { state });
+        }
         // Publish the reported analytic or private working checkpoint only for the first effective,
         // not cancelled result: a repeated or late result never restores an older session. A session already asked
         // to be dropped waits for its deletion acknowledgement before another job can start.
@@ -690,7 +739,6 @@ impl Jobs<'_> {
             &stored.session,
             matches!(stored.outcome, JobOutcome::Cancelled),
         ) {
-            let kind: String = row.try_get("kind")?;
             if kind == "ask" {
                 // The PR claim lock keeps the analytic generation unchanged for the entire Ask turn.
                 // Derive the owner from the durable question, never the runner's result.
@@ -711,7 +759,6 @@ impl Jobs<'_> {
             sqlx::query("UPDATE analyses SET skills_commit = COALESCE(?, skills_commit) WHERE id = (SELECT analysis_id FROM jobs WHERE id = ?)")
                 .bind(stored.skills_commit.as_deref()).bind(result.job_id.to_string()).execute(&mut *tx).await?;
         }
-        let kind: String = row.try_get("kind")?;
         if kind != "ask"
             && stored.session.is_none()
             && matches!(stored.outcome, JobOutcome::Succeeded { .. })
@@ -931,6 +978,30 @@ impl Jobs<'_> {
         row.as_ref().map(job_from_row).transpose()
     }
 
+    /// The live or succeeded job of a judge `stage` and `generation` in the refresh's current ranking attempt, if
+    /// any: what an idempotent submit of a dashboard job answers with.
+    pub async fn current_for_judge_stage(
+        &self,
+        refresh: RefreshId,
+        stage: &JobStage,
+        generation: u32,
+    ) -> Result<Option<JobRecord>, DbError> {
+        let row = sqlx::query(concat!(
+            "SELECT ",
+            job_columns!(),
+            " FROM jobs j WHERE refresh_id = ? AND stage = ? AND generation = ?
+                 AND state NOT IN ('failed', 'cancelled')
+                 AND round = (SELECT ranking_attempt FROM dashboard_refreshes WHERE id = j.refresh_id)
+             ORDER BY created_at DESC, rowid DESC LIMIT 1"
+        ))
+        .bind(refresh.to_string())
+        .bind(stage.key())
+        .bind(generation)
+        .fetch_optional(self.pool)
+        .await?;
+        row.as_ref().map(job_from_row).transpose()
+    }
+
     /// A job.
     pub async fn get(&self, job: JobId) -> Result<JobRecord, DbError> {
         let row = sqlx::query(concat!(
@@ -956,6 +1027,36 @@ impl Jobs<'_> {
             " FROM jobs WHERE analysis_id = "
         ));
         query.push_bind(analysis.to_string());
+        if !states.is_empty() {
+            query.push(" AND state IN (");
+            let mut list = query.separated(", ");
+            for state in states {
+                list.push_bind(state.as_str());
+            }
+            query.push(")");
+        }
+        query.push(" ORDER BY created_at, rowid");
+        query
+            .build()
+            .fetch_all(self.pool)
+            .await?
+            .iter()
+            .map(job_from_row)
+            .collect()
+    }
+
+    /// Jobs of a dashboard refresh, oldest first; only those in `states` unless `states` is empty.
+    pub async fn list_for_refresh(
+        &self,
+        refresh: RefreshId,
+        states: &[JobState],
+    ) -> Result<Vec<JobRecord>, DbError> {
+        let mut query = QueryBuilder::<Sqlite>::new(concat!(
+            "SELECT ",
+            job_columns!(),
+            " FROM jobs WHERE refresh_id = "
+        ));
+        query.push_bind(refresh.to_string());
         if !states.is_empty() {
             query.push(" AND state IN (");
             let mut list = query.separated(", ");
@@ -1168,7 +1269,9 @@ mod tests {
 
     use super::*;
     use crate::repo::Db;
-    use crate::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
+    use crate::repo::analyses::testing::{
+        CREDENTIAL, job_spec, judge_spec, seed_analysis, seed_ranking_refresh,
+    };
 
     fn at(second: i64) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 11, 16, 12, 0, 0)
@@ -2112,20 +2215,32 @@ mod tests {
     #[test]
     fn stage_keys_round_trip_and_are_distinct() {
         let question = QuestionId::new_random();
+        let refresh = RefreshId::new_random();
         let stages = [
             JobStage::Plan { batch: 1 },
             JobStage::Plan { batch: 2 },
             JobStage::PrContext,
             JobStage::Flow(FlowId("f3".to_owned())),
             JobStage::Ask(question),
+            JobStage::Judge { refresh, batch: 2 },
         ];
         let keys: Vec<String> = stages.iter().map(JobStage::key).collect();
         assert_eq!(keys[0], "plan:1");
         assert_eq!(keys[2], "pr_context");
         assert_eq!(keys[3], "flow:f3");
         assert_eq!(keys[4], format!("ask:{question}"));
+        assert_eq!(keys[5], format!("judge:{refresh}:2"));
         for (stage, key) in stages.iter().zip(&keys) {
             assert_eq!(JobStage::parse(key).as_ref(), Some(stage), "{key}");
+        }
+        let bad_judge = [
+            "judge:".to_owned(),
+            format!("judge:{refresh}"),
+            format!("judge:{refresh}:x"),
+            "judge:not-a-uuid:1".to_owned(),
+        ];
+        for bad in bad_judge {
+            assert_eq!(JobStage::parse(&bad), None, "{bad}");
         }
         for bad in ["", "plan", "plan:x", "flow:", "ask:not-a-uuid", "other"] {
             assert_eq!(JobStage::parse(bad), None, "{bad}");
@@ -2141,5 +2256,273 @@ mod tests {
             JobKind::AnalyseFlow
         );
         assert_eq!(JobStage::Ask(QuestionId::new_random()).kind(), JobKind::Ask);
+        assert_eq!(
+            JobStage::Judge {
+                refresh: RefreshId::new_random(),
+                batch: 1
+            }
+            .kind(),
+            JobKind::JudgeWork
+        );
+    }
+
+    fn judge_job(refresh: RefreshId, batch: u32) -> NewJob {
+        NewJob {
+            spec: judge_spec(refresh),
+            priority: JobPriority::Interactive,
+            stage: JobStage::Judge { refresh, batch },
+            generation: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn judge_job_belongs_to_its_refresh_and_is_idempotent_per_ranking_attempt() {
+        let db = db().await;
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let record = db
+            .jobs()
+            .enqueue(judge_job(refresh, 1), at(0))
+            .await
+            .expect("enqueue");
+        assert_eq!(
+            (record.analysis_id, record.refresh_id, record.kind),
+            (None, Some(refresh), JobKind::JudgeWork)
+        );
+        assert_eq!(record.round, 0, "the refresh's ranking attempt");
+        assert!(matches!(
+            db.jobs().enqueue(judge_job(refresh, 1), at(1)).await,
+            Err(DbError::Conflict)
+        ));
+        let stage = JobStage::Judge { refresh, batch: 1 };
+        assert_eq!(
+            db.jobs()
+                .current_for_judge_stage(refresh, &stage, 0)
+                .await
+                .expect("current")
+                .map(|job| job.id),
+            Some(record.id)
+        );
+        sqlx::query("UPDATE dashboard_refreshes SET ranking_attempt = 1 WHERE id = ?")
+            .bind(refresh.to_string())
+            .execute(&db.pool)
+            .await
+            .expect("retry ranking");
+        assert_eq!(
+            db.jobs()
+                .current_for_judge_stage(refresh, &stage, 0)
+                .await
+                .expect("current"),
+            None,
+            "a new ranking attempt starts fresh"
+        );
+        let again = db
+            .jobs()
+            .enqueue(judge_job(refresh, 1), at(2))
+            .await
+            .expect("same batch in the next attempt");
+        assert_eq!(again.round, 1);
+        let listed: Vec<JobId> = db
+            .jobs()
+            .list_for_refresh(refresh, &[JobState::Queued])
+            .await
+            .expect("list")
+            .iter()
+            .map(|job| job.id)
+            .collect();
+        assert_eq!(listed, [record.id, again.id]);
+        assert!(matches!(
+            db.jobs()
+                .enqueue(judge_job(RefreshId::new_random(), 1), at(3))
+                .await,
+            Err(DbError::NotFound)
+        ));
+        sqlx::query(
+            "UPDATE dashboard_refreshes SET state = 'finished', ranking_state = 'cancelled', finished_at = 't'
+             WHERE id = ?",
+        )
+        .bind(refresh.to_string())
+        .execute(&db.pool)
+        .await
+        .expect("ranking ended");
+        assert!(
+            matches!(
+                db.jobs().enqueue(judge_job(refresh, 2), at(4)).await,
+                Err(DbError::NotFound)
+            ),
+            "no job for a ranking that ended"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_job_is_claimed_only_while_its_refresh_ranks() {
+        let db = db().await;
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let job = db
+            .jobs()
+            .enqueue(judge_job(refresh, 1), at(0))
+            .await
+            .expect("enqueue")
+            .id;
+        sqlx::query(
+            "UPDATE dashboard_refreshes SET state = 'finished', ranking_state = 'cancelled', finished_at = 't'
+             WHERE id = ?",
+        )
+        .bind(refresh.to_string())
+        .execute(&db.pool)
+        .await
+        .expect("superseded");
+        assert_eq!(
+            claim(&db, 1).await,
+            None,
+            "a superseded ranking runs no job"
+        );
+        sqlx::query("UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running', finished_at = NULL WHERE id = ?")
+            .bind(refresh.to_string())
+            .execute(&db.pool)
+            .await
+            .expect("ranking again");
+        let claimed = claim(&db, 2).await.expect("claimed");
+        assert_eq!(claimed.id, job);
+        assert_eq!(claimed.spec.target.pull_request(), None);
+    }
+
+    /// A restart interrupts the ranking and leaves its queued judge job queued; Retry ranking starts the next
+    /// attempt, which runs only its own jobs.
+    #[tokio::test]
+    async fn judge_job_of_a_superseded_ranking_attempt_is_never_claimed() {
+        let db = db().await;
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let stale = db
+            .jobs()
+            .enqueue(judge_job(refresh, 1), at(0))
+            .await
+            .expect("enqueue")
+            .id;
+        db.dashboard().interrupt_live(at(1)).await.expect("restart");
+        let restarted = db
+            .dashboard()
+            .restart_ranking(crate::repo::DEFAULT_TENANT, "u1", refresh)
+            .await
+            .expect("retry ranking");
+        assert!(
+            matches!(
+                restarted,
+                crate::repo::dashboard::RestartOutcome::Restarted(_)
+            ),
+            "{restarted:?}"
+        );
+        assert_eq!(
+            claim(&db, 2).await,
+            None,
+            "the first attempt's job stays unclaimed"
+        );
+        let current = db
+            .jobs()
+            .enqueue(judge_job(refresh, 1), at(3))
+            .await
+            .expect("enqueue again")
+            .id;
+        assert_ne!(current, stale, "a new attempt has its own job");
+        assert_eq!(claim(&db, 4).await.expect("claimed").id, current);
+    }
+
+    #[tokio::test]
+    async fn judge_job_and_analysis_job_never_run_together_on_one_credential() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        enqueue(&db, analysis, "f1", 0).await;
+        db.jobs()
+            .enqueue(judge_job(refresh, 1), at(1))
+            .await
+            .expect("enqueue");
+        let first = claim(&db, 2).await.expect("interactive judge job first");
+        assert_eq!(first.kind, JobKind::JudgeWork);
+        assert_eq!(claim(&db, 3).await, None, "the credential is busy");
+    }
+
+    /// Judge jobs leave the analysis-job rules as they were: per-PR, per-analysis and cancelled-analysis
+    /// exclusions still hold, and a running judge job blocks only its own credential.
+    #[tokio::test]
+    async fn analysis_job_exclusions_unchanged() {
+        let db = db().await;
+        let cancelled = seed_analysis(&db).await.expect("seed");
+        enqueue(&db, cancelled, "f1", -1).await;
+        db.analyses()
+            .set_state(
+                cancelled,
+                &contracts::api::analyses::AnalysisState::Cancelled,
+                at(0),
+            )
+            .await
+            .expect("cancel");
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let mut judge = judge_job(refresh, 1);
+        judge.spec.credential.id = "spare".to_owned();
+        db.jobs().enqueue(judge, at(0)).await.expect("judge job");
+        let first = enqueue(&db, analysis, "f1", 1).await;
+        enqueue(&db, analysis, "f2", 2).await;
+        let both = [CREDENTIAL.to_owned(), "spare".to_owned()];
+        let jobs = db.jobs();
+        let claim_on = |now: i64| {
+            jobs.claim(ClaimParams {
+                credential_ids: &both,
+                job_token_hash: b"hash",
+                lease_until: at(now + 60),
+                now: at(now),
+            })
+        };
+        let judging = claim_on(3).await.expect("claim").expect("judge job");
+        assert_eq!(judging.kind, JobKind::JudgeWork);
+        let analysing = claim_on(4).await.expect("claim").expect("analysis job");
+        assert_eq!(
+            analysing.id, first,
+            "another credential is free; the cancelled analysis's older job is skipped"
+        );
+        assert_eq!(
+            claim_on(5).await.expect("claim"),
+            None,
+            "one running job per analysis and per credential"
+        );
+    }
+
+    #[tokio::test]
+    async fn judge_result_never_touches_a_pull_request_session() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        db.analyses()
+            .set_session(analysis, "analytic", None)
+            .await
+            .expect("session");
+        let generation = db.agent_sessions().generation(1).await.expect("generation");
+        let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+        let job = db
+            .jobs()
+            .enqueue(judge_job(refresh, 1), at(0))
+            .await
+            .expect("enqueue")
+            .id;
+        claim(&db, 1).await.expect("claimed");
+        let mut reported = succeeded(job, 1);
+        reported.session = Some(contracts::job::result::SessionReport {
+            thread_id: "judge-thread".to_owned(),
+            outcome: contracts::job::result::SessionOutcome::Started,
+        });
+        assert_eq!(
+            db.jobs()
+                .complete(&reported, at(2))
+                .await
+                .expect("complete"),
+            Completion::Applied {
+                state: JobState::Succeeded
+            }
+        );
+        let record = db.analyses().get(analysis).await.expect("analysis");
+        assert_eq!(record.agent_thread_id.as_deref(), Some("analytic"));
+        assert_eq!(
+            db.agent_sessions().generation(1).await.expect("generation"),
+            generation
+        );
     }
 }

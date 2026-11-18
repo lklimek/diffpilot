@@ -17,9 +17,15 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use super::*;
-use crate::test_support::{build_repo, commits, credential, dirs, shared_repo, spec};
+use crate::test_support::{
+    build_repo, commits, credential, dirs, judge_input, judge_spec, shared_repo, spec,
+};
 
 const TOKEN_CANARY: &str = "ghs_EXECUTE_CANARY_000000000000001";
+
+fn pr_id(spec: &JobSpec) -> i64 {
+    spec.target.pull_request().unwrap().pull_request_id
+}
 /// A secret only the receiver of the sink knows (job token, runner secret).
 const SINK_SECRET: &str = "sink-SECRET-job-token-000000000002";
 
@@ -31,6 +37,9 @@ struct Seen {
     head: String,
     base_present: bool,
     prompt: String,
+    session_dir: PathBuf,
+    access: AgentAccess,
+    answer_only: bool,
 }
 
 enum Behaviour {
@@ -100,6 +109,9 @@ impl LlmProvider for Stub {
                 head: fs::read_to_string(repo.join(".git/HEAD")).unwrap_or_default(),
                 base_present,
                 prompt: call.prompt.clone(),
+                session_dir: call.session_dir.clone(),
+                access: call.access.clone(),
+                answer_only: call.answer_only,
             });
             let activity = |summary: String| {
                 ProviderEvent::Activity(JobEvent {
@@ -244,6 +256,7 @@ async fn work_dir_removed_on_success() {
         "head checked out at job_dir/repo"
     );
     assert!(seen.base_present, "base commit fetched for diffs");
+    assert!(!seen.answer_only, "pull request jobs keep their tools");
     assert!(
         seen.codex_home
             .starts_with(root.path().join("state/codex-homes"))
@@ -419,7 +432,7 @@ async fn requested_session_counts_as_lost_and_the_context_pack_seeds_the_new_one
     let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
     let mut spec = spec(JobKind::Plan, shared_repo());
     spec.session = Some(SessionRef {
-        pull_request_id: spec.pull_request_id,
+        pull_request_id: pr_id(&spec),
         thread_id: "old-thread".to_owned(),
     });
     spec.context_pack = Some("CONTEXT PACK".to_owned());
@@ -441,7 +454,7 @@ async fn own_session_is_resumed_without_the_context_pack() {
     let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
     let mut spec = spec(JobKind::Plan, shared_repo());
     spec.session = Some(SessionRef {
-        pull_request_id: spec.pull_request_id,
+        pull_request_id: pr_id(&spec),
         thread_id: "thread-1".to_owned(),
     });
     spec.context_pack = Some("CONTEXT PACK".to_owned());
@@ -468,7 +481,7 @@ async fn session_of_another_pull_request_is_never_resumed() {
     let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
     let mut spec = spec(JobKind::Plan, shared_repo());
     spec.session = Some(SessionRef {
-        pull_request_id: spec.pull_request_id + 1,
+        pull_request_id: pr_id(&spec) + 1,
         thread_id: "thread-of-another-pr".to_owned(),
     });
     spec.context_pack = Some("CONTEXT PACK".to_owned());
@@ -490,10 +503,7 @@ async fn stored_session_is_scrubbed_of_the_sink_secrets() {
         credential(),
     );
     let spec = spec(JobKind::Plan, shared_repo());
-    let stored = executor
-        .sessions()
-        .dir(spec.pull_request_id)
-        .join("rollout.jsonl");
+    let stored = executor.sessions().dir(pr_id(&spec)).join("rollout.jsonl");
     let (result, _) = execute_collect(&executor, spec).await;
     assert!(result.session.is_some());
     assert_eq!(
@@ -867,7 +877,9 @@ async fn hanging_fetch_ends_with_timeout_and_kills_the_whole_git_group() {
     let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
     let (url, closed) = hanging_http_remote(Duration::from_secs(5));
     let mut spec = spec(JobKind::Plan, shared_repo());
-    spec.repo.clone_url = url;
+    if let JobTarget::PullRequest(target) = &mut spec.target {
+        target.repo.clone_url = url;
+    }
     spec.limits.max_runtime_secs = 1;
     let key = format!("{}-{}", spec.job_id, spec.attempt);
     let (result, _) =
@@ -972,7 +984,7 @@ async fn ask_never_saves_into_the_analytic_archive() {
     let mut wire = serde_json::to_value(spec(JobKind::Ask, shared_repo())).unwrap();
     wire["working_session"] = json!({"user_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "analytic_generation": 1, "thread_id": null});
     let spec: JobSpec = serde_json::from_value(wire).unwrap();
-    let analytic = executor.sessions().dir(spec.pull_request_id);
+    let analytic = executor.sessions().dir(pr_id(&spec));
     fs::create_dir_all(&analytic).unwrap();
     fs::write(analytic.join("rollout.jsonl"), "ANALYTIC").unwrap();
     let (result, _) = execute_collect(&executor, spec).await;
@@ -1183,4 +1195,142 @@ fn preparing(events: &[ProviderEvent]) -> bool {
         matches!(event, ProviderEvent::Activity(activity)
             if activity.summary == "Preparing the conversation (first question after an analysis)")
     })
+}
+
+/// A dashboard job runs fresh in an empty job directory: no checkout, no resume, its session files stay in the job
+/// directory and go with it, nothing reaches the session store and no session is reported (ADR-018).
+#[tokio::test]
+async fn judge_job_runs_without_checkout_or_session() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::WriteSession);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let mut spec = judge_spec(&judge_input());
+    spec.context_pack = Some("never used".to_owned());
+    let (result, _) = execute_collect(&executor, spec).await;
+    assert!(
+        matches!(result.outcome, JobOutcome::Succeeded { .. }),
+        "{:?}",
+        result.outcome
+    );
+    assert_eq!(result.session, None, "nothing to resume later");
+    let seen = stub.seen();
+    assert!(!seen.job_dir.join("repo").exists() && seen.head.is_empty() && !seen.base_present);
+    assert!(seen.session_dir.starts_with(&seen.job_dir), "{seen:?}");
+    assert_eq!(seen.access, AgentAccess::default());
+    assert!(seen.answer_only, "no command, web or image tool");
+    assert!(!seen.prompt.contains("never used"));
+    assert!(stub.resumed.lock().unwrap().is_empty());
+    assert_removed(&seen);
+    let stored = fs::read_dir(root.path().join("state/sessions"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(stored, 0, "the session store is untouched");
+}
+
+/// A dashboard job that carries access, skills or a session, or a kind that does not match its target, is refused
+/// before anything runs (threat model T17).
+#[tokio::test]
+async fn misfit_dashboard_jobs_are_refused_before_the_provider_runs() {
+    let root = TempDir::new().unwrap();
+    let stub = Stub::new(Behaviour::Succeed);
+    let executor = Executor::new(stub.clone(), dirs(root.path()), credential());
+    let with_memcan = {
+        let mut spec = judge_spec(&judge_input());
+        spec.access.memcan = Some(contracts::job::access::McpHttpEndpoint {
+            url: "https://memcan.example/mcp".to_owned(),
+            token: Secret::new("memcan-token"),
+            allow_write: false,
+        });
+        spec
+    };
+    let with_skills = JobSpec {
+        skills: vec!["severity".to_owned()],
+        ..judge_spec(&judge_input())
+    };
+    let with_session = JobSpec {
+        session: Some(SessionRef {
+            pull_request_id: 1,
+            thread_id: "thread-1".to_owned(),
+        }),
+        ..judge_spec(&judge_input())
+    };
+    let plan_on_dashboard = JobSpec {
+        kind: JobKind::Plan,
+        ..judge_spec(&judge_input())
+    };
+    let judge_on_pr = JobSpec {
+        kind: JobKind::JudgeWork,
+        ..spec(JobKind::Plan, shared_repo())
+    };
+    for spec in [
+        with_memcan,
+        with_skills,
+        with_session,
+        plan_on_dashboard,
+        judge_on_pr,
+    ] {
+        let (result, _) = execute_collect(&executor, spec).await;
+        assert!(
+            matches!(
+                result.outcome,
+                JobOutcome::Failed {
+                    kind: JobFailureKind::Internal,
+                    ..
+                }
+            ),
+            "{:?}",
+            result.outcome
+        );
+    }
+    assert!(
+        stub.seen.lock().unwrap().is_none(),
+        "the provider never ran"
+    );
+}
+
+#[cfg(feature = "fake-provider")]
+#[tokio::test]
+async fn fake_provider_answers_judge_jobs_with_valid_judgements() {
+    use contracts::agent::judge_work::JudgeWorkOutput;
+
+    use crate::provider::fake::FakeProvider;
+    let root = TempDir::new().unwrap();
+    let executor = Executor::new(
+        Arc::new(FakeProvider::default()),
+        dirs(root.path()),
+        credential(),
+    );
+    let input = judge_input();
+    let (result, _) = execute_collect(&executor, judge_spec(&input)).await;
+    let JobOutcome::Succeeded { output } = result.outcome else {
+        panic!("{:?}", result.outcome);
+    };
+    assert_eq!(result.session, None);
+    let answer: JudgeWorkOutput = serde_json::from_value(output).unwrap();
+    let validated = answer.validate(&input);
+    assert_eq!(validated.unknown_answers, 0);
+    for (key, outcome) in &validated.items {
+        assert!(outcome.is_ok(), "{key}: {outcome:?}");
+    }
+    let script = root.path().join("script.json");
+    fs::write(
+        &script,
+        json!({"rules": [{"id": "judge-fails", "job": "judge_work", "times": 1,
+            "action": {"fail": {"message": "scripted judge failure"}}}]})
+        .to_string(),
+    )
+    .unwrap();
+    let scripted = Executor::new(
+        Arc::new(FakeProvider::default().with_script(script)),
+        dirs(root.path()),
+        credential(),
+    );
+    let (failed, _) = execute_collect(&scripted, judge_spec(&input)).await;
+    assert!(
+        matches!(failed.outcome, JobOutcome::Failed { .. }),
+        "{:?}",
+        failed.outcome
+    );
+    let (again, _) = execute_collect(&scripted, judge_spec(&input)).await;
+    assert!(matches!(again.outcome, JobOutcome::Succeeded { .. }));
 }

@@ -1,0 +1,382 @@
+{
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "description": "The judgement of one item. Every value needs its basis; never judge from the title alone.",
+        "type": "object",
+        "properties": {
+          "key": {
+            "description": "The item's `key`, exactly as in the input.",
+            "type": "string"
+          },
+          "defect": {
+            "description": "The pre-existing problem the item addresses: required when `defect_severity` is asked (0 and 0 when it\naddresses none), else null unless you replace a known value.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "likelihood": {
+                "description": "How likely users meet the problem, 0–10.",
+                "type": "integer",
+                "maximum": 10,
+                "minimum": 0
+              },
+              "impact": {
+                "description": "How much harm when they do, 0–10.",
+                "type": "integer",
+                "maximum": 10,
+                "minimum": 0
+              },
+              "basis": {
+                "description": "Short evidence.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "likelihood",
+              "impact",
+              "basis"
+            ],
+            "additionalProperties": false
+          },
+          "parts": {
+            "description": "Every other asked component, plus any known part you replace with stated evidence.",
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "enum": [
+                        "advancement"
+                      ]
+                    },
+                    "points": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        10,
+                        15,
+                        20,
+                        30
+                      ]
+                    },
+                    "basis": {
+                      "type": "string",
+                      "description": "Short evidence."
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "points",
+                    "basis"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "enum": [
+                        "unblocks"
+                      ]
+                    },
+                    "points": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        5,
+                        10,
+                        15
+                      ]
+                    },
+                    "basis": {
+                      "type": "string",
+                      "description": "Short evidence."
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "points",
+                    "basis"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "enum": [
+                        "human_waiting"
+                      ]
+                    },
+                    "points": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        5,
+                        10,
+                        15
+                      ]
+                    },
+                    "basis": {
+                      "type": "string",
+                      "description": "Short evidence."
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "points",
+                    "basis"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "enum": [
+                        "change_impact"
+                      ]
+                    },
+                    "points": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        5,
+                        10
+                      ]
+                    },
+                    "basis": {
+                      "type": "string",
+                      "description": "Short evidence."
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "points",
+                    "basis"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "enum": [
+                        "completion"
+                      ]
+                    },
+                    "points": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        5,
+                        10
+                      ]
+                    },
+                    "basis": {
+                      "type": "string",
+                      "description": "Short evidence."
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "points",
+                    "basis"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "enum": [
+                        "urgency_bonus"
+                      ]
+                    },
+                    "points": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        30
+                      ]
+                    },
+                    "basis": {
+                      "type": "string",
+                      "description": "Short evidence."
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "points",
+                    "basis"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "enum": [
+                        "blocked_penalty"
+                      ]
+                    },
+                    "points": {
+                      "type": "integer",
+                      "enum": [
+                        -20,
+                        0
+                      ]
+                    },
+                    "basis": {
+                      "type": "string",
+                      "description": "Short evidence."
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "points",
+                    "basis"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "enum": [
+                        "default_branch_bonus"
+                      ]
+                    },
+                    "points": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        5
+                      ]
+                    },
+                    "basis": {
+                      "type": "string",
+                      "description": "Short evidence."
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "points",
+                    "basis"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "component": {
+                      "type": "string",
+                      "enum": [
+                        "milestone_bonus"
+                      ]
+                    },
+                    "points": {
+                      "type": "integer",
+                      "enum": [
+                        -10,
+                        0,
+                        10,
+                        20
+                      ]
+                    },
+                    "basis": {
+                      "type": "string",
+                      "description": "Short evidence."
+                    }
+                  },
+                  "required": [
+                    "component",
+                    "points",
+                    "basis"
+                  ]
+                }
+              ],
+              "description": "One judged component."
+            }
+          },
+          "eligibility": {
+            "description": "Ranked or left out: required when `asks_eligibility` is true, else null unless you change the computed\neligibility.",
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "eligible": {
+                "description": "Ranked (true) or left out (false).",
+                "type": "boolean"
+              },
+              "reason": {
+                "description": "Plain reason.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "eligible",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "also_keys": {
+            "description": "Keys from the item's `suggested_merges` that this item covers; usually empty.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "alarm": {
+            "description": "What needs the user's attention now (P0 alarm), or null; a high score alone is no alarm.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "why": {
+            "description": "Why the item ranks where it does, one or two plain sentences.",
+            "type": "string"
+          },
+          "next": {
+            "description": "The next concrete action, one plain sentence.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "defect",
+          "parts",
+          "eligibility",
+          "also_keys",
+          "alarm",
+          "why",
+          "next"
+        ],
+        "additionalProperties": false
+      },
+      "description": "One answer per input item."
+    }
+  },
+  "required": [
+    "items"
+  ],
+  "description": "The judge's answer.",
+  "additionalProperties": false
+}

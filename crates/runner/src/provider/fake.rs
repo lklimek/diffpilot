@@ -2,7 +2,8 @@
 //! the recorded Codex streams of the fixture PR (`fixtures/pr-482/codex/`) through the Codex stream parser.
 //!
 //! The recording is chosen by file mode or the call's output schema and, for `analyse_flow`, by the first flow
-//! id token `f<n>` of the prompt's `Job: analyse_flow f<n>.` line. `ask` has no recording.
+//! id token `f<n>` of the prompt's `Job: analyse_flow f<n>.` line. `ask` has no recording; `judge_work` answers
+//! every item of the prompt's data block neutrally (asked parts 0, eligibility as computed).
 //!
 //! A script (JSON file named by [`SCRIPT_ENV`], read before every call; no file: plain replay) overrides calls
 //! for the full-stack tests: the first rule matching the job kind, the flow and a prompt substring applies, at
@@ -17,7 +18,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use chrono::{TimeDelta, Utc};
+use contracts::agent::judge_work::{JudgeWorkInput, part_values};
 use contracts::agent::{JobKind, output_schema};
+use contracts::api::dashboard::ScoreComponent;
 use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
 use contracts::job::result::Usage;
@@ -214,12 +217,12 @@ impl FakeProvider {
         let kind = job_kind(call)?;
         let mut scripted_output = None;
         let (jsonl, step_delay) = match self.scripted(kind, &call.prompt)? {
-            None => (recorded(kind, &call.prompt)?.to_owned(), self.step_delay),
+            None => (stream(kind, &call.prompt)?, self.step_delay),
             Some((id, action)) => {
                 tracing::info!(job = %call.job_id, rule = %id, "fake provider script rule applied");
                 match action {
                     Action::Replay { step_delay_ms } => (
-                        recorded(kind, &call.prompt)?.to_owned(),
+                        stream(kind, &call.prompt)?,
                         Duration::from_millis(step_delay_ms),
                     ),
                     Action::UsageLimit { resets_in_secs } => {
@@ -377,15 +380,58 @@ fn job_kind(call: &ProviderCall) -> Result<JobKind, ProviderError> {
         })
 }
 
+/// The Codex stream replayed for a call of `kind`: its recording, or for `judge_work` a neutral answer to the
+/// prompt's items.
+fn stream(kind: JobKind, prompt: &str) -> Result<String, ProviderError> {
+    match kind {
+        JobKind::JudgeWork => Ok(answer_stream(&judge_answer(prompt)?)),
+        _ => recorded(kind, prompt).map(str::to_owned),
+    }
+}
+
+/// A valid neutral answer to every item of the prompt's judge input: each asked part 0 (defect likelihood and
+/// impact 0), eligibility kept as computed when asked, no merges, no alarm.
+fn judge_answer(prompt: &str) -> Result<Value, ProviderError> {
+    let input = JudgeWorkInput::from_prompt(prompt).ok_or_else(|| ProviderError::Failed {
+        message: "the fake provider found no judge input in the prompt".to_owned(),
+    })?;
+    let basis = "fake judgement for tests";
+    let items: Vec<Value> = input
+        .items
+        .iter()
+        .map(|item| {
+            let defect = item
+                .asks
+                .contains(&ScoreComponent::DefectSeverity)
+                .then(|| json!({"likelihood": 0, "impact": 0, "basis": basis}));
+            let parts: Vec<Value> = item
+                .asks
+                .iter()
+                .filter(|component| part_values(**component).is_some())
+                .map(|component| json!({"component": component, "points": 0, "basis": basis}))
+                .collect();
+            let eligibility = item
+                .asks_eligibility
+                .then(|| json!({"eligible": item.eligibility.eligible, "reason": basis}));
+            json!({
+                "key": item.key, "defect": defect, "parts": parts, "eligibility": eligibility,
+                "also_keys": [], "alarm": null,
+                "why": "Fake judgement for tests.", "next": "No action: fake judgement."
+            })
+        })
+        .collect();
+    Ok(json!({ "items": items }))
+}
+
 /// The recording for a call of `kind`; the flow comes from the prompt.
 fn recorded(kind: JobKind, prompt: &str) -> Result<&'static str, ProviderError> {
     let name = match kind {
         JobKind::Plan => "plan".to_owned(),
         JobKind::PrContext => "pr-context".to_owned(),
         JobKind::AnalyseFlow => format!("analyse-flow-{}", flow_number(prompt).unwrap_or(1)),
-        JobKind::Ask => {
+        JobKind::Ask | JobKind::JudgeWork => {
             return Err(ProviderError::Failed {
-                message: "the fake provider has no recording for ask jobs".to_owned(),
+                message: "the fake provider has no recording for ask or judge_work jobs".to_owned(),
             });
         }
     };
@@ -459,6 +505,7 @@ mod tests {
             model: spec.model,
             limits: spec.limits,
             access: spec.access,
+            answer_only: false,
             compact_on_start: false,
             phases: Default::default(),
             skills: Vec::new(),
@@ -659,6 +706,7 @@ mod file_tests {
             model: crate::test_support::spec(JobKind::AnalyseFlow, root.path()).model,
             limits: Default::default(),
             access: Default::default(),
+            answer_only: false,
             compact_on_start: false,
             phases: Default::default(),
             skills: vec![],
