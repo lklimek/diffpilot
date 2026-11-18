@@ -2,7 +2,8 @@
 
 - Status: accepted (owner answers 2026-11-18: OD3, OD4, OD6, OD7, OD10–OD13, OD16, OD18, OD19);
   plan `docs/v1.1-dashboard-plan.md` §A, §B, §C, §G. Depends on ADR-018 for the job shape.
-- Spikes: S11-2 (scan cost and pacing), S11-3 (judgement quality), S11-4 (MemCan export shape).
+- Spikes: S11-2 done (`docs/spikes/S11-2-scan-cost.md`), S11-4 done (`docs/spikes/S11-4-memcan-todos.md`),
+  S11-3 (judgement quality) open.
 
 ## Context
 The `daily-priorities` skill scans GitHub with `gh` (the owner's credential) across many repositories and
@@ -15,8 +16,9 @@ In smart-review the runner must not hold user tokens (T3, ADR-005) or contain Gi
 1. **Scan on the server.** A Rust port of `scan.py`, `stats.py` (pull requests only, OD16) and `todos.py` runs as
    a server task started by `POST /api/v1/dashboard/refreshes` or by the daily schedule (ADR-020). GitHub calls are in
    `server::github::work`, read-only (REST `GET`, GraphQL queries), with the signed-in user's GitHub App user
-   token (refresh serialised per user, ADR-007). REST search for discovery with the skill's pacing; GraphQL
-   details batched by alias; enumeration of configured owners for logins search refuses. Inventory: plan §A.2.
+   token (refresh serialised per user, ADR-007). REST search for discovery with the skill's pacing (3 s, 60/120 s retries); GraphQL
+   details batched by alias, 10 PRs per request, never more than 20 (new work: the skill sends one query per PR,
+   S11-2); blocker relations from one open-PR ref listing per repository instead of per-PR `gh pr list`; enumeration of configured owners for logins search refuses. Inventory: plan §A.2.
 2. **Reach is assumed, then reported.** The owner installs or grants the App where he works (OD7); each refresh
    looks up the configured repositories and owners with the user token and reports the invisible ones as scan
    notes and in Settings.
@@ -35,8 +37,10 @@ In smart-review the runner must not hold user tokens (T3, ADR-005) or contain Gi
    inputs** (plan §B.4): unchanged items reuse their stored judgement, no job is created when nothing changed, and
    per-refresh and per-day caps bound the rest. A prompt or schema change takes effect only through an explicit
    prompt-version bump.
-6. **MemCan TODOs** are read by the server's MemCan client (`export_collection`, paged) for each user with
-   "show my MemCan TODOs" on (default on); no writes. MemCan failure keeps the previous TODO rows with a note.
+6. **MemCan TODOs** are read by the server's MemCan client with `list_todos` per MemCan project (limit 100,
+   open statuses filtered client-side, per-status calls when `has_more`) for each user with "show my MemCan TODOs"
+   on (default on); no writes. MemCan has no users or project listing, so the projects are a per-user setting:
+   the short names of the user's dashboard repositories plus extra names (S11-4). MemCan failure keeps the previous TODO rows with a note.
 7. **History for charts** (PRs opened/merged/closed, reviews given) is computed from GitHub at each refresh over a
    12-week window and stored as dated events in the snapshot; no accumulated history tables.
 8. **Private repositories** the token reads are included and shown only to that user.
@@ -48,7 +52,8 @@ In smart-review the runner must not hold user tokens (T3, ADR-005) or contain Gi
 | Scan by an agent through `github-mcp-server` with an installation token | one installation cannot search the user's work across orgs; slow, costly, non-deterministic |
 | Server calls Codex directly | only `runner::provider` knows Codex (A5); the server has no Codex or credential |
 | Python skill as a sidecar | second runtime, untyped output, no contract generation |
-| GraphQL `search` for discovery and details in one call | limits for user tokens unverified; S11-2 may adopt it later as an optimisation |
+| GraphQL `search` for discovery and details in one call | limits for user tokens unverified; a later optimisation at most |
+| MemCan `export_collection` over all projects | raw SQL filter built from input, unordered, double payload (S11-4) |
 | Accumulated daily snapshots for charts | GitHub search gives the history at refresh time |
 | Judgement effort tied to the review effort | the owner wants a light default for ranking and the review effort unchanged |
 
