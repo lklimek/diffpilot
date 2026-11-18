@@ -6,7 +6,7 @@ fake MemCan (`tools/fake-memcan`). Every reached state is checked by `checkScree
 (`scripts/wording-rules.json`, shared with `scripts/check-wording.sh`) on the page text, hidden tooltips included,
 no `%` at all in the top bar, every tooltip opened by keyboard focus (aria-disabled controls included) and closed
 when focus leaves (its text checked too), the controls each screen must give a tooltip (`REQUIRED_TIPS`: top bar,
-quiet rows, risk and provenance labels, Previous/Next, feedback values, Ask, Analyze, Cancel/Retry) present with a
+quiet rows, risk and provenance labels, Previous/Next, feedback values, Ask, Check, Cancel/Retry) present with a
 non-empty tip, no `aria-describedby` naming a missing element, and axe (serious or critical = failure). When a local stack stops, its component logs are checked for leaked secrets
 (`support/secrets.ts`): generated secrets, the App private key lines, every App JWT and installation token fake
 GitHub issued, fixture credentials, session secrets the tests registered, and anything shaped like the server's
@@ -18,16 +18,16 @@ hash). A leak fails the run.
 | `check-screen.spec.ts`            | self-test of `checkScreen` on static pages (no stack): it fails on each kind of violation                             |
 | `secrets.spec.ts`                 | self-test of the leak check's token shape (no stack): any 43-character base64url run, known non-secrets excluded      |
 | `slice.spec.ts`                   | sign in, analyse PR 482, flow 1 step 1; a read-only installation token per job, revoked; no secret in the logs so far |
-| `analysis-cancel.spec.ts`         | planning, cancel → "analyze again"; failure before any flow → Retry → `k of n` → finished                             |
+| `analysis-cancel.spec.ts`         | planning, cancel → "Check the PR to start again"; failure before any flow → Retry → `k of n` → finished                             |
 | `analysis-cancel-running.spec.ts` | cancel while a flow job runs: the job stops, stored flows and session discarded, a clean new analysis                 |
 | `analysis-pause.spec.ts`          | usage limit → "Paused until HH:MM" of `resumes_at`, no attempt before it, one after; failed flow → Retry this flow    |
 | `tour.spec.ts`                    | PR context facts, flow order, quiet rows, no LLM questions (hard case 3), classic diff, resume, columns               |
 | `flow-groups.spec.ts`             | a flow the LLM classifies as refactor: after the behaviour flows, labelled; tests listed once, not as a flow          |
 | `comments.spec.ts`                | pending review: create, second comment, edit, delete, outside the diff, missed by the LLM (hard case 2)               |
-| `head-moved.spec.ts`              | `pr_head_changed`, "The PR has moved" → Re-analyze without ticks, Ask on the superseded analysis still answered       |
+| `head-moved.spec.ts`              | `pr_head_changed`, "The PR has moved" → Start analysis without ticks, Ask on the superseded analysis still answered   |
 | `feedback.spec.ts`                | wrong + overrated → MemCan calibration example (hard case 1), removal, MemCan failures, recovery                      |
 | `ask.spec.ts`                     | answered and pinned, usage-limit wait until `resumes_at`, failed answer, Ask again, markup as text                    |
-| `settings.spec.ts`                | signed-out screens, LLM status after a failed and a working call, language                                            |
+| `settings.spec.ts`                | signed-out screens, LLM status after a failed and a working call, language, Sign out                                  |
 | `security.spec.ts`                | CSP header; an inline script does not run; LLM analysis text with markup renders as text                              |
 
 ## Run

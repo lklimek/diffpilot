@@ -30,6 +30,19 @@ describe("Tour layout (brief §4.3 columns)", () => {
     expect(loadLayout()).toEqual({ ...layout, widths: { nav: 320, inspector: 480 } });
   });
 
+  it("remembers the flow diagram's height with the layout; a damaged value falls back to the default", () => {
+    expect(DEFAULT_LAYOUT.diagramHeight).toBeNull();
+    saveLayout({ ...DEFAULT_LAYOUT, diagramHeight: 420 });
+    expect(loadLayout().diagramHeight).toBe(420);
+    for (const bad of [10, -5, "big", 1e9]) {
+      window.localStorage.setItem(
+        LAYOUT_STORAGE_KEY,
+        JSON.stringify({ ...DEFAULT_LAYOUT, diagramHeight: bad }),
+      );
+      expect(loadLayout().diagramHeight).toBeNull();
+    }
+  });
+
   it("lets a column be hidden only while another one stays visible", () => {
     expect(canHide(DEFAULT_LAYOUT, "main")).toBe(true);
     const onlyMain = hideColumn(hideColumn(DEFAULT_LAYOUT, "nav"), "inspector");

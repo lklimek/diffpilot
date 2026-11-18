@@ -106,6 +106,63 @@ it("shows pending planned ranges without an assessment or review tick", () => {
   expect(screen.queryByText("▲ HIGH")).not.toBeInTheDocument();
 });
 
+it("a flow not analysed yet shows its files with line counts and a primary Analyse this flow", async () => {
+  const onRequest = vi.fn();
+  const pending = {
+    ...f1,
+    steps: [],
+    analysis_status: { state: "not_analysed", started_at: null, message: null },
+    planned: {
+      intent: "Bound RPC retries",
+      importance_rank: 1,
+      ranges: [
+        {
+          file: "src/client.rs",
+          side: "head",
+          ranges: [
+            { start_line: 4, end_line: 8 },
+            { start_line: 20, end_line: 20 },
+          ],
+        },
+        { file: "src/retry.rs", side: "head", ranges: [{ start_line: 1, end_line: 10 }] },
+      ],
+    },
+  } as Tour["flows"][number];
+  render(<FlowIntroBlock flow={pending} dependencies={[]} ticked={[]} onRequest={onRequest} />);
+  expect(screen.getByText("2 files, 16 changed lines")).toBeVisible();
+  expect(screen.getByText("src/client.rs").closest("li")).toHaveTextContent(
+    "src/client.rs: lines 4–8, 20–20 (6 lines)",
+  );
+  const analyse = screen.getByRole("button", { name: "Analyse this flow" });
+  expect(analyse).toHaveAccessibleDescription(/runs the LLM analysis of this flow/i);
+  expect(analyse).not.toHaveAccessibleDescription(/opening/i);
+  await userEvent.click(analyse);
+  expect(onRequest).toHaveBeenCalledOnce();
+});
+
+it("a refused request is said next to Analyse this flow", () => {
+  const pending = {
+    ...f1,
+    steps: [],
+    analysis_status: { state: "not_analysed", started_at: null, message: null },
+    planned: { intent: "Bound RPC retries", importance_rank: 1, ranges: [] },
+  } as Tour["flows"][number];
+  render(
+    <FlowIntroBlock
+      flow={pending}
+      dependencies={[]}
+      ticked={[]}
+      onRequest={() => {}}
+      error="The PR has moved."
+    />,
+  );
+  const alert = screen.getByRole("alert");
+  expect(alert).toHaveTextContent("This flow was not requested: The PR has moved.");
+  expect(
+    screen.getByRole("button", { name: "Analyse this flow" }).parentElement?.parentElement,
+  ).toContainElement(alert);
+});
+
 it("a pending flow says what it waits for in a paused or failed analysis, never Queued forever", () => {
   const queued = {
     ...f1,
@@ -141,4 +198,21 @@ it("a pending flow says what it waits for in a paused or failed analysis, never 
   );
   expect(screen.getByRole("status")).toHaveTextContent("Not analysed — the analysis failed");
   expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("1 Send an RPC request with retry");
+});
+
+it("a queued flow that failed and will be retried says so with the server's message", () => {
+  const queued = {
+    ...f1,
+    steps: [],
+    analysis_status: {
+      state: "queued",
+      started_at: null,
+      message: "The flow analysis timed out. It will be tried again automatically.",
+    },
+    planned: { intent: "Bound RPC retries", importance_rank: 1, ranges: [] },
+  } as Tour["flows"][number];
+  render(<FlowIntroBlock flow={queued} dependencies={[]} ticked={[]} onRequest={() => {}} />);
+  expect(
+    screen.getByText("The flow analysis timed out. It will be tried again automatically."),
+  ).toBeVisible();
 });

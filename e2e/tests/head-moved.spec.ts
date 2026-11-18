@@ -1,15 +1,17 @@
 // Journey (c)/(e): the PR head moves after the analysis — a comment answers pr_head_changed, Home shows the moved
-// head with Re-analyze, the new analysis starts without ticks, and Ask on the superseded analysis is still answered
+// head with Start analysis, the new analysis starts without ticks, and Ask on the superseded analysis is still answered
 // (the PR keeps its session).
 import { type Page } from "@playwright/test";
 import {
+  analyseAllRemainingFlows,
+  checkPr,
   checkScreen,
   finishedReview,
   heading,
   inspector,
   nav,
   openStep,
-  PR_URL,
+  startAnalysis,
   waitForState,
 } from "../support/app";
 import { expect, test } from "../support/fixtures";
@@ -21,7 +23,7 @@ const pending = async (page: Page, id: string) =>
     }
   ).comments;
 
-test("head moved: comment refused with pr_head_changed, Re-analyze, the superseded analysis still takes Ask", async ({
+test("head moved: comment refused with pr_head_changed, Start analysis, the superseded analysis still takes Ask", async ({
   page,
   stack,
 }) => {
@@ -54,8 +56,7 @@ test("head moved: comment refused with pr_head_changed, Re-analyze, the supersed
   await checkScreen(page);
 
   await page.goto("/");
-  await page.getByLabel("GitHub pull request URL").fill(PR_URL);
-  await page.getByRole("button", { name: "Analyze" }).click();
+  await checkPr(page);
   const banner = page.getByRole("alert").filter({ hasText: "The PR has moved." });
   await expect(banner).toContainText(`This analysis is for 52d2da1; the PR is now at ${moved.slice(0, 7)}.`);
   await expect(banner.getByRole("link", { name: "Open the old analysis" })).toHaveAttribute(
@@ -63,10 +64,9 @@ test("head moved: comment refused with pr_head_changed, Re-analyze, the supersed
     `/analyses/${old}`,
   );
   await checkScreen(page);
-  await banner.getByRole("button", { name: "Re-analyze" }).click();
-  await expect(page).toHaveURL(/\/analyses\/[0-9a-f-]+\/progress$/);
-  const fresh = new URL(page.url()).pathname.split("/")[2];
+  const fresh = await startAnalysis(page);
   expect(fresh).not.toBe(old);
+  await analyseAllRemainingFlows(page);
   await waitForState(page, fresh, "finished");
   await page.getByRole("link", { name: "Open review" }).click();
   await expect(page.getByRole("banner")).toContainText(moved.slice(0, 7));
@@ -81,7 +81,7 @@ test("head moved: comment refused with pr_head_changed, Re-analyze, the supersed
     .getByRole("textbox", { name: /^Ask the LLM about / })
     .fill("Is this still current?");
   await inspector(page).getByRole("button", { name: "Ask", exact: true }).click();
-  // The PR keeps its agent session over Re-analyze: the old analysis still takes questions (refused only when the
+  // The PR keeps its agent session over a fresh analysis: the old analysis still takes questions (refused only when the
   // PR's data was explicitly removed, http-api.md Ask) and the question is answered on it.
   await expect(inspector(page).getByRole("alert")).toHaveCount(0);
   const asked = inspector(page).getByRole("list", { name: "Questions asked about this step" });

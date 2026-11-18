@@ -12,7 +12,7 @@ import { deleteFeedback } from "./delete-feedback";
 import { getAnalysis } from "./get-analysis";
 import { getDiff } from "./get-diff";
 import { getLines } from "./get-lines";
-import { getMe } from "./get-me";
+import { authLogout, getMe } from "./get-me";
 import { getPendingReview } from "./get-pending-review";
 import { getRepoSettings } from "./get-repo-settings";
 import { getReviewState } from "./get-review-state";
@@ -35,6 +35,7 @@ export const handlers = [
   pauseAnalysis,
   resumeAnalysis,
   getMe,
+  authLogout,
   resolvePr,
   createAnalysis,
   getAnalysis,

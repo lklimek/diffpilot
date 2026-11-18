@@ -31,6 +31,7 @@ import {
 import { commentPlacement, isChangedLine } from "../../components/comment/placement";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
 import { Inspector, type InspectorProps } from "../../components/inspector/Inspector";
+import type { SectionControl } from "../../components/inspector/sectionState";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { DiffCode, errorText } from "./code";
 import { stepQuery } from "./sequence";
@@ -66,6 +67,8 @@ interface InspectorPaneProps {
   /** Where the PR can be analysed again (after a head-moved refusal of a comment). */
   reanalyseHref?: string;
   askRef: RefObject<HTMLTextAreaElement | null>;
+  /** Open / collapsed Inspector sections, Ask included (the `a` shortcut reveals Ask). */
+  sections: SectionControl;
   commentRef: RefObject<HTMLTextAreaElement | null>;
 }
 
@@ -120,20 +123,13 @@ export function InspectorPane(props: InspectorPaneProps) {
       <StatusMessage kind="error">Cannot read the questions: {errorText(questions.error)}</StatusMessage>
     ) : questions.isPending ? (
       <StatusMessage kind="loading">Loading the questions…</StatusMessage>
-    ) : !props.streamLost && !questions.data.some((q) => q.step_id === step.id) ? null : (
-      <>
-        {props.streamLost && (
-          <p role="status" className="mb-1 text-[12px] text-high">
-            The connection that delivers answers was lost. Reconnecting; answers already given are read again.
-          </p>
-        )}
-        <AskAnswers
-          onEvidence={props.onEvidence}
-          currentFile={step.facts.file}
-          questions={questions.data.filter((q) => q.step_id === step.id)}
-          onAskAgain={onAsk}
-        />
-      </>
+    ) : !questions.data.some((q) => q.step_id === step.id) ? null : (
+      <AskAnswers
+        onEvidence={props.onEvidence}
+        currentFile={step.facts.file}
+        questions={questions.data.filter((q) => q.step_id === step.id)}
+        onAskAgain={onAsk}
+      />
     ));
 
   const comment = pending.isSuccess ? (
@@ -167,6 +163,7 @@ export function InspectorPane(props: InspectorPaneProps) {
 
   return (
     <Inspector
+      sections={props.sections}
       tour={tour}
       block={block}
       annotationId={annotationId}
@@ -186,6 +183,15 @@ export function InspectorPane(props: InspectorPaneProps) {
             onAsk={onAsk}
             inputRef={props.askRef}
             answers={answers}
+            sections={props.sections}
+            notice={
+              props.streamLost
+                ? "The connection that delivers answers was lost. Reconnecting; answers already given are read again."
+                : null
+            }
+            count={
+              step && questions.data ? questions.data.filter((q) => q.step_id === step.id).length : undefined
+            }
           />
           <FeedbackButtons
             target={target}

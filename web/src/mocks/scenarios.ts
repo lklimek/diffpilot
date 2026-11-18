@@ -1,6 +1,7 @@
 // Screen scenarios of the msw mocks (Home, progress, Settings), selected with `?scenario=<name>`; orthogonal to
 // the fixture states of fixtures.ts. Default settings come from the api-seed; repository settings have none yet.
 import type {
+  FlowGraph,
   UsageTotals,
   AnalysisProgress,
   EstimateBasis,
@@ -10,6 +11,7 @@ import type {
   FeedbackMemory,
   PendingReview,
   AskQuestion,
+  LinesResponse,
   MeResponse,
   RepoSettings,
   ResolvePrResponse,
@@ -18,6 +20,7 @@ import type {
   ThreadsStatus,
   Tour,
 } from "../api/generated/types";
+import largeGraphs from "./diagrams/large-flow-graphs.json";
 import { seedFor, seedNow } from "./fixtures";
 import { REAL_QUESTIONS, REAL_TOURS } from "./real";
 
@@ -62,13 +65,15 @@ export const REPO_SETTINGS: RepoSettings = {
 interface Scenario {
   showLess?: boolean;
   lazy?: boolean;
+  /** `background_analysis` of a lazy analysis (default off: flows run on request only). */
+  background?: boolean;
   llmSaveFails?: boolean;
   manyRepos?: boolean;
   /** `me` answer. */
   me?: () => MeResponse;
   /** Changes to the `pr/resolve` answer of the fixture PR. */
   resolve?: (seed: ResolvePrResponse) => ResolvePrResponse;
-  /** The analysis stays in this state (no scripted run after Analyze). */
+  /** The analysis stays in this state (no scripted run after Start analysis). */
   analysis?: AnalysisState;
   usage?: UsageTotals;
   /** Waiting facts, projected on each scripted stage change. */
@@ -83,6 +88,8 @@ interface Scenario {
   repoSettings?: RepoSettings | null;
   /** Changes to the `tour` answer. */
   tour?: (seed: Tour) => Tour;
+  /** Changes to a `lines` answer. */
+  lines?: (answer: LinesResponse) => LinesResponse;
   /** Changes to the stored questions. */
   questions?: (seed: AskQuestion[]) => AskQuestion[];
   /** Outcome of the MemCan write of feedback (default `written`). */
@@ -91,6 +98,57 @@ interface Scenario {
   pendingReview?: (seed: PendingReview) => PendingReview;
   /** Comment writes answer 409 `comment_published` (the review was published meanwhile). */
   commentPublished?: true;
+}
+
+/** Step f1.2 with one behaviour remark over lines 90–95 (see `remarkLayoutLines`), rated LOW. */
+function remarkLayoutTour(seed: Tour): Tour {
+  const tour = structuredClone(seed);
+  const step = tour.flows.flatMap((f) => f.steps).find((s) => s.id === "f1.2")!;
+  const [first] = step.llm.annotations;
+  step.llm.annotations = [
+    {
+      ...first!,
+      type: "behaviour",
+      range: { start_line: 90, end_line: 95 },
+      was: "checks the wallet",
+      is: "checks the core transaction",
+      text: null,
+    },
+  ];
+  if (step.llm.assessment) step.llm.assessment.risk = "low";
+  return tour;
+}
+
+/** Lines 88–96 of src/rpc/client.rs: base line 99 replaced by 90, unchanged 91–92, added comments 93–94. */
+function remarkLayoutLines(answer: LinesResponse): LinesResponse {
+  if (answer.path !== "src/rpc/client.rs" || answer.side !== "head" || answer.from !== 88) return answer;
+  return {
+    ...answer,
+    to: 96,
+    lines: [
+      "fn check(&self) -> Result<()> {",
+      "    let result = self",
+      "        .core_wallet",
+      "        .check_core_transaction(tx)",
+      "        .await;",
+      "    // retry once on a timeout",
+      "    // then give up",
+      "    result?",
+      "}",
+    ],
+    changed: [90, 93, 94, 95],
+    context_only: [93, 94],
+    deleted: [
+      {
+        after_line: 89,
+        base_start: 99,
+        lines: ["        .wallet"],
+        total_lines: 1,
+        replacement: { start_line: 90, end_line: 90 },
+      },
+    ],
+    moved: [],
+  };
 }
 
 /** The seed tour with review threads read partly, or not at all (no threads listed then). */
@@ -238,7 +296,41 @@ const REPORTED_USAGE: UsageTotals = {
 
 const SCENARIOS = {
   "show-less": { showLess: true },
-  "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5 } },
+  // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.
+  "remark-layout": { tour: remarkLayoutTour, lines: remarkLayoutLines },
+  // Rating and remark pills: a rated step without remarks (f1.3) and an unrated one with remarks (f2.2).
+  "remark-pills": {
+    tour: (seed) => {
+      const tour = structuredClone(seed);
+      const steps = tour.flows.flatMap((f) => f.steps);
+      steps.find((s) => s.id === "f1.3")!.llm.annotations = [];
+      steps.find((s) => s.id === "f2.2")!.llm.assessment = null;
+      return tour;
+    },
+  },
+  // Larger flow diagrams (fictional): 27 steps with branches, joins, a back edge, skip edges and detached chains
+  // in flow 1; 12 steps in flow 2.
+  "large-diagram": {
+    tour: (seed) => {
+      const tour = structuredClone(seed);
+      const graphs = largeGraphs as Record<string, FlowGraph>;
+      tour.flows[0]!.graph = graphs.large!;
+      tour.flows[1]!.graph = graphs.medium!;
+      return tour;
+    },
+  },
+  "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5, idle: true } },
+  "lazy-background": {
+    lazy: true,
+    background: true,
+    analysis: {
+      state: "running",
+      done: 1,
+      total: 5,
+      idle: false,
+      stage: flowStage(2, "2026-11-17T18:04:00Z"),
+    },
+  },
   "lazy-paused": {
     lazy: true,
     analysis: {
@@ -327,6 +419,8 @@ const SCENARIOS = {
       ...seed,
       analysis: null,
       commenting_available: true,
+      size: { changed_lines: 27081, changed_files: 371 },
+      planning_estimate: { remaining_seconds: 14400, basis: "lines_only", rough: true },
       size_warning: {
         changed_lines: 27081,
         changed_files: 371,
@@ -339,6 +433,7 @@ const SCENARIOS = {
       ...seed,
       analysis: null,
       commenting_available: true,
+      size: { changed_lines: 3000, changed_files: 24 },
       size_warning: { changed_lines: 3000, changed_files: 24, estimate: null },
     }),
   },
@@ -348,7 +443,7 @@ const SCENARIOS = {
     script: [[60_000, () => partState(7, now())]],
   },
   "estimate-recent": {
-    analysis: { state: "running", done: 2, total: 6, stage: flowStage(3, LOADED) },
+    analysis: { state: "running", done: 2, total: 6, idle: false, stage: flowStage(3, LOADED) },
     progress: (state) => waitingProgress("recent_runs", state),
   },
   "estimate-lines": {
@@ -376,8 +471,8 @@ const SCENARIOS = {
     }),
   },
   "existing-running": {
-    resolve: withAnalysis({ state: "running", done: 2, total: 5 }),
-    analysis: { state: "running", done: 2, total: 5 },
+    resolve: withAnalysis({ state: "running", done: 2, total: 5, idle: false }),
+    analysis: { state: "running", done: 2, total: 5, idle: false },
   },
   "existing-failed": {
     resolve: withAnalysis({
@@ -392,6 +487,12 @@ const SCENARIOS = {
     },
   },
   "existing-cancelled": { resolve: withAnalysis({ state: "cancelled" }) },
+  "existing-other-language": {
+    resolve: (seed) => ({
+      ...seed,
+      analysis: { ...analysisAt({ state: "finished", total: 5 }), language: "pl" },
+    }),
+  },
   "existing-paused": {
     resolve: withAnalysis({ state: "paused", resumes_at: "2026-11-17T14:20:00Z", done: 2, total: 5 }),
     analysis: { state: "paused", resumes_at: "2026-11-17T14:20:00Z", done: 2, total: 5 },
@@ -406,19 +507,22 @@ const SCENARIOS = {
   "first-flow": {
     analysis: { state: "planning", stage: stage("plan", LOADED) },
     script: [
-      [RUN_STEP_MS, () => ({ state: "running", done: 0, total: 1, stage: stage("pr_context", now()) })],
-      [30_000, () => ({ state: "running", done: 0, total: 1, stage: flowStage(1, now()) })],
+      [
+        RUN_STEP_MS,
+        () => ({ state: "running", done: 0, total: 1, idle: false, stage: stage("pr_context", now()) }),
+      ],
+      [30_000, () => ({ state: "running", done: 0, total: 1, idle: false, stage: flowStage(1, now()) })],
     ],
   },
   // The plan job waits behind another analysis's job.
   waiting: { analysis: { state: "planning", stage: stage("plan", null) } },
   // One job ended, the next is not submitted yet.
-  "between-jobs": { analysis: { state: "running", done: 1, total: 5 } },
+  "between-jobs": { analysis: { state: "running", done: 1, total: 5, idle: false } },
   "signal-lost": {
-    analysis: { state: "running", done: 2, total: 5, stage: flowStage(3, LOADED) },
+    analysis: { state: "running", done: 2, total: 5, idle: false, stage: flowStage(3, LOADED) },
     silent: true,
   },
-  running: { analysis: { state: "running", done: 2, total: 5, stage: flowStage(3, LOADED) } },
+  running: { analysis: { state: "running", done: 2, total: 5, idle: false, stage: flowStage(3, LOADED) } },
   paused: {
     analysis: {
       state: "paused",
@@ -505,7 +609,7 @@ export const SCENARIO_NAMES = Object.keys(SCENARIOS) as ScenarioName[];
 
 let current: ScenarioName | null = null;
 
-/** Selects a scenario (null = none: fixture answers and a scripted run after Analyze). */
+/** Selects a scenario (null = none: fixture answers and a scripted run after Start analysis). */
 export function setScenario(name: ScenarioName | null): void {
   if (name !== null && !(name in SCENARIOS)) throw new Error(`unknown scenario "${String(name)}"`);
   current = name;

@@ -37,7 +37,6 @@ function read(key: string): Record<string, string> {
 /**
  * Removes `login`'s comment drafts and unconfirmed posts from this tab: for an explicit sign-out of that user.
  * An ended session keeps them (the key has the login), so the same user gets them back after signing in.
- * TODO: call from the sign-out action once the web app has one (no sign-out control exists yet).
  */
 export function clearCommentDrafts(login: string): void {
   generation += 1;

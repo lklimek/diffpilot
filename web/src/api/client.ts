@@ -15,6 +15,7 @@ import type {
   FeedbackId,
   FeedbackRequest,
   LinesResponse,
+  LogoutRequest,
   MeResponse,
   PendingComment,
   PendingReview,
@@ -149,6 +150,11 @@ export function createApiClient(baseUrl = "") {
 
   return {
     getMe,
+    /** Ends the session (`POST /auth/logout`); the CSRF token of the old session is dropped. */
+    logout: async (body: LogoutRequest) => {
+      await call<void>("authLogout", { body });
+      csrfToken = undefined;
+    },
     resolvePr: (body: ResolvePrRequest) => call<ResolvePrResponse>("resolvePr", { body }),
     createAnalysis: (body: CreateAnalysisRequest) => call<AnalysisSummary>("createAnalysis", { body }),
     getAnalysis: (id: AnalysisId) => call<AnalysisSummary>("getAnalysis", { params: { id } }),

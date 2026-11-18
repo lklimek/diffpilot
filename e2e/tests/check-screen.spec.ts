@@ -59,16 +59,16 @@ const cases: [string, string, RegExp | null][] = [
     page("", '<button type="button" aria-describedby="gone">Fact</button>'),
     /aria-describedby names no element: .*gone/,
   ],
-  ["Home with Analyze and its tooltip", page("", home(tooltip("Analyze", "Opens the pull request."))), null],
+  ["Home with Check and its tooltip", page("", home(tooltip("Check", "Looks the pull request up."))), null],
   [
-    "Home with Analyze but no tooltip",
-    page("", home('<button type="submit">Analyze</button>')),
-    /required tooltip missing: Analyze .*Analyze/,
+    "Home with Check but no tooltip",
+    page("", home('<button type="submit">Check</button>')),
+    /required tooltip missing: Check .*Check/,
   ],
   [
-    "Home without Analyze",
+    "Home without Check",
     page("", home(tooltip("Open", "Opens the pull request."))),
-    /required control missing: Analyze \(0 of 1 rendered\)/,
+    /required control missing: Check \(0 of 1 rendered\)/,
   ],
   [
     "a trigger without keyboard focus",

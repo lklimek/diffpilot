@@ -25,7 +25,7 @@ export function liveAnalysis(): AnalysisSummary {
   const pinned = scenario().analysis;
   const usageSeed = {
     ...seed,
-    ...(scenario().lazy ? { review_ready: true, background_analysis: true } : {}),
+    ...(scenario().lazy ? { review_ready: true, background_analysis: scenario().background ?? false } : {}),
     usage: scenario().usage ?? seed.usage,
   };
   const summary = pinned ? { ...usageSeed, state: pinned, finished_at: null } : usageSeed;
@@ -65,7 +65,7 @@ export function startRun(done = 0, total = 5): void {
       }
       // The runner takes flow k + 1 right away (the PR context ran before flow 1 in the real order).
       const next = k < total ? { stage: flowStage(k + 1, new Date().toISOString()) } : {};
-      setLiveState({ state: "running", done: k, total, ...next });
+      setLiveState({ state: "running", done: k, total, idle: false, ...next });
       step(k + 1);
     }, RUN_STEP_MS);
   };

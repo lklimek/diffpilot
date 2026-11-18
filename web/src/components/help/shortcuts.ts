@@ -10,6 +10,7 @@ export type ShortcutAction =
   | "toggle_old_code"
   | "comment"
   | "ask"
+  | "next_remark"
   | "help"
   | "close";
 
@@ -28,6 +29,12 @@ export const SHORTCUTS: { key: string; label: string; action: ShortcutAction; te
   { key: "d", label: "d", action: "toggle_old_code", text: "show / hide old code of the current step" },
   { key: "c", label: "c", action: "comment", text: "comment on the current line" },
   { key: "a", label: "a", action: "ask", text: "ask about the current step" },
+  {
+    key: "r",
+    label: "r",
+    action: "next_remark",
+    text: "next step with LLM remarks (its first remark flashes)",
+  },
   { key: "?", label: "?", action: "help", text: "this help" },
   { key: "Escape", label: "Esc", action: "close", text: "close" },
 ];

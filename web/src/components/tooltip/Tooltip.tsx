@@ -90,7 +90,9 @@ export function Tooltip({ tip, children, className = "", placement = "below" }: 
       }}
     >
       <Enclosing.Provider value={cover}>
-        {cloneElement(children, { "aria-describedby": id })}
+        {cloneElement(children, {
+          "aria-describedby": [children.props["aria-describedby"], id].filter(Boolean).join(" "),
+        })}
       </Enclosing.Provider>
       <span
         id={id}

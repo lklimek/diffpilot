@@ -43,7 +43,9 @@ export const componentRules = {
 };
 
 export default tseslint.config(
-  { ignores: ["dist/", "test-results/", "playwright-report/", "src/api/generated/"] },
+  {
+    ignores: ["dist/", "dist-diagram-preview/", "test-results/", "playwright-report/", "src/api/generated/"],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

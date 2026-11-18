@@ -86,6 +86,9 @@ describe("readable", () => {
     const names = ["code-bg", "high-bg", "med-bg", "low-bg", "llm-bg", "mv-bg", "rm-bg", "accent-bg"];
     expect(names.map((n) => value(light!, n))).toEqual(CODE_BACKGROUNDS.light.slice(0, names.length));
     expect(names.map((n) => value(dark!, n))).toEqual(CODE_BACKGROUNDS.dark.slice(0, names.length));
+    // Added lines are filled like the classic diff's.
+    expect(CODE_BACKGROUNDS.light).toContain(value(light!, "ad-bg"));
+    expect(CODE_BACKGROUNDS.dark).toContain(value(dark!, "ad-bg"));
   });
 });
 

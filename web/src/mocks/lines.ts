@@ -62,5 +62,5 @@ export function mockLines(path: string, side: LineSide, from: number, to: number
       replacement: { start_line: 23, end_line: 23 },
     }));
   }
-  return answer;
+  return answer && scenario().lines ? scenario().lines!(answer) : answer;
 }

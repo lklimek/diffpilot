@@ -26,6 +26,8 @@ import { useFlashTarget } from "../flash/useFlashTarget";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { Highlight, Token } from "./highlight";
 import { Mark, RemarkMarker, ThreadMarker, type MarkerTarget } from "./markers";
+import { CHANGE_LOOK, REMARK_LOOK } from "./changeLook";
+import { foldRuns, type Piece } from "./fold";
 import { buildSegments, type Segment, type Row } from "./rows";
 import { CodeText, useTokens } from "./tokens";
 import { hiddenLines } from "./visibility";
@@ -82,35 +84,7 @@ export interface CodeViewProps {
   otherThreadStep?: (thread: GithubThread) => string | null;
 }
 
-// The bar pattern is the colour-independent signal; an unrated remark gets a thin neutral line of its own, so it
-// never reads as LOW. The 5 px border stays reserved (transparent) so nothing shifts.
-const BANDS: Record<RiskBand | "none", { label: string | null; pattern: string; bar: string; text: string }> =
-  {
-    high: {
-      label: "▲ HIGH",
-      pattern: "solid",
-      bar: "border-solid border-high-bd bg-high-bg",
-      text: "text-high",
-    },
-    medium: {
-      label: "◆ MEDIUM",
-      pattern: "dashed",
-      bar: "border-dashed border-med-bd bg-med-bg",
-      text: "text-med",
-    },
-    low: {
-      label: "● LOW",
-      pattern: "dotted",
-      bar: "border-dotted border-low-bd bg-low-bg",
-      text: "text-low",
-    },
-    none: {
-      label: null,
-      pattern: "thin",
-      bar: "border-solid border-transparent bg-llm-bg bg-[linear-gradient(var(--color-mark),var(--color-mark))] bg-size-[2px_auto] bg-origin-border bg-no-repeat",
-      text: "text-llm",
-    },
-  };
+const BANDS = REMARK_LOOK;
 
 // Every segment reserves the same 5 px left bar column, so line numbers and code never shift.
 const SEGMENT = "border-l-5 min-w-full w-max";
@@ -145,36 +119,24 @@ interface LineProps {
   tokens: Token[] | undefined;
   row?: Row;
   removed?: boolean;
-  /** Inside an LLM highlight: the band tint is the background. */
-  highlighted?: boolean;
   /** First line of an LLM highlight: the remarks its marker shows. */
   remarks?: readonly Annotation[];
 }
 
-function Line({
-  ctx,
-  side,
-  line,
-  text,
-  tokens,
-  row,
-  removed = false,
-  highlighted = false,
-  remarks,
-}: LineProps) {
+function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: LineProps) {
   const key = keyOf({ side, line });
   const commenting = ctx.activeKey === key;
   const changed = row?.changed ?? false;
   const removedLine = removed || (side === "base" && changed);
+  // The classic diff's colours: green added, red removed. A moved line is added code there, so it gets the
+  // same fill; its double bar says it moved.
   const background = commenting
     ? "bg-accent-bg outline-3 -outline-offset-3 outline-accent"
-    : highlighted
-      ? ""
-      : removedLine
-        ? "bg-rm-bg"
-        : row?.moved
-          ? "bg-mv-bg"
-          : "";
+    : removedLine
+      ? CHANGE_LOOK.removed.fill
+      : changed
+        ? CHANGE_LOOK.added.fill
+        : "";
   const label = `Comment on ${removedLine ? "removed line" : "line"} ${line}`;
   const mine = ctx.comments.get(key);
   const open = mine !== undefined && ctx.isOpen(key);
@@ -211,16 +173,20 @@ function Line({
         ) : (
           <span className="sticky left-0 pr-2.5 text-right text-muted select-none">{line}</span>
         )}
-        <span className="flex items-center gap-px select-none">
+        <span className="flex items-center gap-1 select-none">
           <span className={`h-[1.35em] w-1 ${row?.moved ? "border-l-4 border-double border-mv-bd" : ""}`} />
-          {changed ? (
-            <span data-mark="changed" className="h-[1.35em] w-2 text-accent">
-              <span className="font-bold">{side === "base" ? "−" : "+"}</span>
-              <span className="sr-only">changed line</span>
-            </span>
-          ) : (
-            <span className="w-1" />
-          )}
+          {/* The sign has its own column: a marker beside it never reads as part of it. */}
+          <span className="inline-flex w-2 justify-center">
+            {changed && (
+              <Mark
+                mark="changed"
+                glyph={CHANGE_LOOK[side === "base" ? "removed" : "added"].sign}
+                text="changed line"
+                tip={side === "base" ? "Removed line (from the diff)." : "Added line (from the diff)."}
+                className={`font-bold ${CHANGE_LOOK[side === "base" ? "removed" : "added"].signLook}`}
+              />
+            )}
+          </span>
           {removed && (
             <Mark
               mark="removed"
@@ -299,22 +265,25 @@ function WasIs({ annotations, unrated }: { annotations: readonly Annotation[]; u
 }
 
 interface HighlightRunProps {
-  rows: Row[];
   annotations: Annotation[];
   band: RiskBand | null;
   selected: boolean;
-  line: (row: Row, highlighted: boolean, remarks?: readonly Annotation[]) => ReactNode;
   onSelect?: (ids: AnnotationId[]) => void;
+  /** The lines of the range, with removed blocks and fold rows inside it. */
+  children: ReactNode;
 }
 
-function HighlightRun({ rows, annotations, band, selected, line, onSelect }: HighlightRunProps) {
+/** One LLM remark range: a single label at its top and a bar along it; the lines keep their own look. */
+function HighlightRun({ annotations, band, selected, onSelect, children }: HighlightRunProps) {
   const descriptionId = useId();
   const look = BANDS[band ?? "none"];
   const ids = annotations.map((a) => a.id);
   const remark = `LLM remark: ${[...new Set(annotations.map((a) => a.type))].join(", ")}`;
   const text = look.label ? `${look.label} · ${remark}` : remark;
   const description = <WasIs annotations={annotations} unrated={band === null} />;
-  const labelClass = `${STRIP} border-0 bg-transparent text-left text-[10.5px] leading-[17px] font-bold ${look.text}`;
+  const labelClass = `${STRIP} border-0 bg-transparent text-left text-[10.5px] leading-[17px] font-bold ${look.text} ${
+    selected ? "rounded-sm outline-2 -outline-offset-2 outline-accent" : ""
+  }`;
   return (
     <Tooltip tip={description} className="block">
       <div
@@ -325,9 +294,7 @@ function HighlightRun({ rows, annotations, band, selected, line, onSelect }: Hig
         data-bar={look.pattern}
         data-selected={selected || undefined}
         onClick={onSelect && (() => onSelect(ids))}
-        className={`${SEGMENT} ${look.bar} ${onSelect ? "cursor-pointer" : "cursor-help"} ${
-          selected ? "outline-2 -outline-offset-2 outline-accent" : ""
-        }`}
+        className={`${SEGMENT} ${look.bar} ${onSelect ? "cursor-pointer" : "cursor-help"}`}
       >
         <span id={descriptionId} hidden>
           {description}
@@ -349,7 +316,7 @@ function HighlightRun({ rows, annotations, band, selected, line, onSelect }: Hig
             {text}
           </span>
         )}
-        {rows.map((row, i) => line(row, true, i === 0 ? annotations : undefined))}
+        {children}
       </div>
     </Tooltip>
   );
@@ -357,43 +324,30 @@ function HighlightRun({ rows, annotations, band, selected, line, onSelect }: Hig
 
 interface DeletedRunProps {
   block: DeletedBlock;
+  /** The block's base lines, with fold rows. */
+  rows: ReactNode;
   paired?: ReactNode;
-  /** Base lines hidden by "hide comment and import changes". */
-  hidden: ReadonlySet<number>;
   anchor: string;
-  ctx: LineContext;
-  /** Token lists of the block's lines, from the view's single highlight call. */
-  tokens?: Token[][];
+  /** Inside a remark range: the range's bar column is the left edge. */
+  nested?: boolean;
   onLoadDeleted?: (block: DeletedBlock) => void;
 }
 
-function DeletedRun({ block, anchor, ctx, tokens, onLoadDeleted, paired, hidden }: DeletedRunProps) {
+function DeletedRun({ block, rows, anchor, nested = false, onLoadDeleted, paired }: DeletedRunProps) {
   const more = plural(block.total_lines - block.lines.length, "more deleted line");
   return (
     <div
       role="group"
       aria-label={`${block.replacement ? "Changed" : "Removed"} code ${anchor}: ${plural(block.total_lines, "line")} from base line ${block.base_start}`}
       data-segment
-      className={`${SEGMENT} my-0.5 border-y-2 border-dashed border-transparent border-y-high-bd`}
+      className={`${nested ? "w-max min-w-full" : `${SEGMENT} border-transparent`} my-0.5 border-y-2 border-dashed border-y-high-bd`}
     >
       <span className={`${STRIP} text-[11px] leading-[17px] font-semibold text-high`}>
         {block.replacement
           ? `Changed: ${plural(block.total_lines, "line")} replaced`
           : `Removed here: ${plural(block.total_lines, "line")} of the base commit`}
       </span>
-      {block.lines.map((text, i) =>
-        hidden.has(block.base_start + i) ? null : (
-          <Line
-            key={i}
-            ctx={ctx}
-            side="base"
-            line={block.base_start + i}
-            text={text}
-            tokens={tokens?.[i]}
-            removed
-          />
-        ),
-      )}
+      {rows}
       {block.lines.length < block.total_lines && (
         <span className={`${STRIP} py-0.5 text-[11.5px]`}>
           {onLoadDeleted ? (
@@ -416,6 +370,49 @@ function DeletedRun({ block, anchor, ctx, tokens, onLoadDeleted, paired, hidden 
   );
 }
 
+/** Where rule-covered lines are hidden: what and how many, with Show (or Hide once shown) for just that run. */
+function FoldRow({
+  count,
+  removed,
+  shown,
+  onToggle,
+}: {
+  count: number;
+  removed: boolean;
+  shown: boolean;
+  onToggle: () => void;
+}) {
+  // The diff marks these lines as rule-covered only, not whether each is a comment or an import.
+  const what = `${removed ? "removed " : ""}comment/import ${count === 1 ? "line" : "lines"}`;
+  return (
+    <div
+      data-fold
+      className="sticky left-0 flex w-max items-center gap-2 py-px pr-2 pl-[calc(var(--ln)+var(--gutter))] font-sans text-[11.5px] text-muted"
+    >
+      <span>{`${count} ${what} ${shown ? "shown" : "hidden"}`}</span>
+      <Tooltip
+        tip={
+          shown
+            ? "Hides these lines here again; the classic diff keeps them."
+            : "Shows these lines here with their changed marks; the classic diff always has them. Hide comment and import changes in the top bar shows or hides all."
+        }
+      >
+        <button
+          type="button"
+          aria-label={shown ? `Hide ${count} ${what}` : `Show ${count} hidden ${what}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle();
+          }}
+          className="min-h-6 cursor-pointer rounded border border-border bg-surface px-2 text-text hover:border-accent"
+        >
+          {shown ? "Hide" : "Show"}
+        </button>
+      </Tooltip>
+    </div>
+  );
+}
+
 // Arrow keys, Home and End move between line actions: one tab stop for all lines.
 function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
   const target = event.target as HTMLElement;
@@ -432,8 +429,9 @@ function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
 }
 
 /**
- * Line renderer of one range (brief §4.3 Code view): neutral mark on every changed line, LLM bar by risk band
- * only on annotated ranges (hover: was → is only), `≠` on differing moved lines, markers, removed code inline.
+ * Line renderer of one range (brief §4.3 Code view): green/red fill and +/− on changed lines (`CHANGE_LOOK`), a
+ * remark bar in its own column (`REMARK_LOOK`; hover: was → is only), `≠` on differing moved lines, markers,
+ * removed code inline, hidden comment/import lines folded in place.
  */
 export function CodeView({
   lines,
@@ -490,29 +488,68 @@ export function CodeView({
   });
   if (revealLine !== undefined) hidden.delete(revealLine);
   if (flashLine !== undefined) hidden.delete(flashLine);
+  // Hidden lines the reader showed in place (per view, not stored), by line key; the top-bar switch resets them.
+  const [opened, setOpened] = useState<{ hide: boolean; lines: ReadonlySet<string> }>({
+    hide: hideContextChanges,
+    lines: new Set(),
+  });
+  if (opened.hide !== hideContextChanges) setOpened({ hide: hideContextChanges, lines: new Set() });
+  const shownLines = opened.hide === hideContextChanges ? opened.lines : new Set<string>();
+  const setShownLines = (update: (all: ReadonlySet<string>) => ReadonlySet<string>) =>
+    setOpened((s) => ({ hide: s.hide, lines: update(s.lines) }));
+  const isHidden = (ref: LineRef) =>
+    (ref.side === lines.side ? hidden : hiddenBase).has(ref.line) && !shownLines.has(keyOf(ref));
   const hiddenRemoved = lines.deleted.reduce(
-    (n, block) => n + block.lines.filter((_, i) => hiddenBase.has(block.base_start + i)).length,
+    (n, block) =>
+      n + block.lines.filter((_, i) => isHidden({ side: "base", line: block.base_start + i })).length,
     0,
   );
-  const hiddenCount = hidden.size + hiddenRemoved;
-  const segments = buildSegments(lines, annotations).flatMap<Segment>((segment) => {
-    if (segment.kind === "deleted") {
-      const paired = segment.paired.filter((row) => !hidden.has(row.line));
-      const { block } = segment;
-      const hiddenInBlock = (block.context_only ?? []).filter((line) => hiddenBase.has(line)).length;
-      if (paired.length === 0 && hiddenInBlock === block.total_lines) return [];
-      return [{ ...segment, paired }];
+  const hiddenCount =
+    [...hidden].filter((line) => isHidden({ side: lines.side, line })).length + hiddenRemoved;
+  const segments = buildSegments(lines, annotations);
+  // A remark range continues across removed blocks inside it: one run, one label, one bar.
+  type Run = { kind: "run"; parts: Segment[]; annotations: Annotation[] };
+  const items: (Segment | Run)[] = [];
+  {
+    let run: Run | null = null;
+    let between: Segment[] = [];
+    const close = () => {
+      if (run) items.push(run);
+      items.push(...between);
+      run = null;
+      between = [];
+    };
+    for (const segment of segments) {
+      const marked = segment.kind === "rows" ? [] : segment.annotations;
+      const open = run as Run | null;
+      if (marked.length > 0 && open && marked.some((a) => open.annotations.includes(a))) {
+        open.parts.push(...between, segment);
+        between = [];
+        for (const a of marked) if (!open.annotations.includes(a)) open.annotations.push(a);
+      } else if (marked.length > 0) {
+        close();
+        run = { kind: "run", parts: [segment], annotations: [...marked] };
+      } else if (open && segment.kind === "deleted") {
+        between.push(segment);
+      } else {
+        close();
+        items.push(segment);
+      }
     }
-    const rows = segment.rows.filter((row) => !hidden.has(row.line));
-    return rows.length ? [{ ...segment, rows }] : [];
-  });
+    close();
+  }
+  const baseRows = (block: DeletedBlock) =>
+    block.lines.map((text, i) => ({ line: block.base_start + i, text, index: i }));
   const keys = segments.flatMap((s) =>
-    s.kind === "deleted"
+    (s.kind === "deleted"
       ? [
-          ...s.block.lines.map((_, i) => keyOf({ side: "base", line: s.block.base_start + i })),
-          ...s.paired.map((row) => keyOf({ side: lines.side, line: row.line })),
+          ...baseRows(s.block).map((r) => ({ side: "base" as LineSide, line: r.line })),
+          ...s.paired.map((row) => ({ side: lines.side, line: row.line })),
         ]
-      : s.rows.map((r) => keyOf({ side: lines.side, line: r.line })),
+      : s.rows.map((r) => ({ side: lines.side, line: r.line }))
+    )
+      .filter((ref) => !isHidden(ref))
+      .map(keyOf),
   );
   const byLine = commentsByLine(comments, lines.path);
   // File comments without a displayed line are listed at the top of the file's code.
@@ -548,18 +585,22 @@ export function CodeView({
     const key = keyOf({ side: t.side, line: t.line });
     ctx.threads.set(key, [...(ctx.threads.get(key) ?? []), t]);
   }
-  // The gutter fits the most marker buttons any displayed line has (remark, threads, own comments).
+  // The remark marker sits on the first line of each run its remarks cover (the line that never folds).
+  const firstOf = (run: Run) => {
+    const part = run.parts[0]!;
+    if (part.kind === "highlight") return part.rows[0];
+    if (part.kind !== "deleted") return undefined;
+    const covered = (r: Row) =>
+      run.annotations.some((a) => a.range.start_line <= r.line && r.line <= a.range.end_line);
+    return part.paired.find(covered) ?? part.paired[0];
+  };
   const remarkKeys = new Set(
-    segments.flatMap((s) => {
-      const first =
-        s.kind === "highlight"
-          ? s.rows[0]
-          : s.kind === "deleted" && s.annotations.length
-            ? s.paired[0]
-            : undefined;
+    items.flatMap((item) => {
+      const first = item.kind === "run" ? firstOf(item) : undefined;
       return first ? [keyOf({ side: lines.side, line: first.line })] : [];
     }),
   );
+  // The gutter fits the most marker buttons any displayed line has (remark, threads, own comments).
   const buttons = Math.max(
     0,
     ...keys.map((k) => Number(remarkKeys.has(k)) + Number(ctx.threads.has(k)) + Number(byLine.has(k))),
@@ -569,7 +610,7 @@ export function CodeView({
   const base = lines.side === "base";
   const unchangedContext = kind === "context" && lines.changed.length === 0;
   const label = `${lines.path}, lines ${lines.from} to ${lines.to}${base ? ", removed code at the base commit" : ""}`;
-  const line = (row: Row, highlighted = false, remarks?: readonly Annotation[]) => (
+  const line = (row: Row, remarks?: readonly Annotation[]) => (
     <Line
       key={row.line}
       ctx={ctx}
@@ -578,10 +619,70 @@ export function CodeView({
       text={row.text}
       tokens={tokens?.[row.index]}
       row={row}
-      highlighted={highlighted}
       remarks={remarks}
     />
   );
+  // Lines in order, a fold row where rule-covered lines are hidden; a shown fold keeps its Hide row.
+  const folded = <T extends { line: number; text: string }>(
+    side: LineSide,
+    rows: readonly T[],
+    render: (row: T) => ReactNode,
+  ) =>
+    foldRuns(rows, (r) => (side === lines.side ? hidden : hiddenBase).has(r.line)).map((piece: Piece<T>) => {
+      if (piece.kind === "item") return render(piece.item);
+      const refs = piece.items.map((r) => keyOf({ side, line: r.line }));
+      const shown = refs.every((k) => shownLines.has(k));
+      return (
+        <div key={`fold:${refs[0]}`} className="contents">
+          <FoldRow
+            count={piece.items.length}
+            removed={side === "base" && !(lines.side === "base")}
+            shown={shown}
+            onToggle={() =>
+              setShownLines((all) => {
+                const next = new Set(all);
+                for (const k of refs) {
+                  if (shown) next.delete(k);
+                  else next.add(k);
+                }
+                return next;
+              })
+            }
+          />
+          {shown && piece.items.map(render)}
+        </div>
+      );
+    });
+  const deletedRun = (
+    segment: Extract<Segment, { kind: "deleted" }>,
+    nested: boolean,
+    first?: Row,
+    remarks?: readonly Annotation[],
+  ) => {
+    const { block } = segment;
+    const after = block.after_line;
+    return (
+      <DeletedRun
+        key={`d${after}:${block.base_start}`}
+        block={block}
+        nested={nested}
+        rows={folded("base", baseRows(block), (r) => (
+          <Line
+            key={r.index}
+            ctx={ctx}
+            side="base"
+            line={r.line}
+            text={r.text}
+            tokens={fragmentTokens?.[1 + lines.deleted.indexOf(block)]?.[r.index]}
+            removed
+          />
+        ))}
+        paired={folded(lines.side, segment.paired, (row) => line(row, row === first ? remarks : undefined))}
+        anchor={after < lines.from ? `before line ${lines.from}` : `after line ${after}`}
+        onLoadDeleted={onLoadDeleted}
+      />
+    );
+  };
 
   return (
     <div
@@ -594,7 +695,7 @@ export function CodeView({
       style={
         {
           "--ln": `${String(maxLine).length + 2}ch`,
-          "--gutter": `${Math.max(46, 26 + 25 * buttons)}px`,
+          "--gutter": `${Math.max(50, 30 + 28 * buttons)}px`,
         } as CSSProperties
       }
       className={`min-w-0 max-w-full overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${
@@ -637,52 +738,32 @@ export function CodeView({
         </p>
       )}
       {lines.lines.length === 0 && <p className={`${STRIP} m-0 text-muted`}>No lines in this range.</p>}
-      {segments.map((segment) => {
-        if (segment.kind === "deleted") {
-          const after = segment.block.after_line;
+      {items.map((item) => {
+        if (item.kind === "run") {
+          const first = firstOf(item);
           return (
-            <DeletedRun
-              key={`d${after}:${segment.block.base_start}`}
-              block={segment.block}
-              hidden={hiddenBase}
-              paired={
-                segment.annotations.length > 0 ? (
-                  <HighlightRun
-                    rows={segment.paired}
-                    annotations={segment.annotations}
-                    band={band}
-                    selected={segment.annotations.some((a) => a.id === selectedAnnotation)}
-                    line={line}
-                    onSelect={onSelectAnnotation}
-                  />
-                ) : (
-                  segment.paired.map((row) => line(row))
-                )
-              }
-              anchor={after < lines.from ? `before line ${lines.from}` : `after line ${after}`}
-              ctx={ctx}
-              tokens={fragmentTokens?.[1 + lines.deleted.indexOf(segment.block)] ?? undefined}
-              onLoadDeleted={onLoadDeleted}
-            />
+            <HighlightRun
+              key={`h${item.parts[0]!.kind === "deleted" ? `d${item.parts[0]!.block.base_start}` : first?.line}`}
+              annotations={item.annotations}
+              band={band}
+              selected={item.annotations.some((a) => a.id === selectedAnnotation)}
+              onSelect={onSelectAnnotation}
+            >
+              {item.parts.map((part) =>
+                part.kind === "deleted"
+                  ? deletedRun(part, true, first, item.annotations)
+                  : folded(lines.side, part.rows, (row) =>
+                      line(row, row === first ? item.annotations : undefined),
+                    ),
+              )}
+            </HighlightRun>
           );
         }
-        if (segment.kind === "rows") {
-          return (
-            <div key={`r${segment.rows[0]!.line}`} data-segment className={`${SEGMENT} border-transparent`}>
-              {segment.rows.map((row) => line(row))}
-            </div>
-          );
-        }
+        if (item.kind === "deleted") return deletedRun(item, false);
         return (
-          <HighlightRun
-            key={`h${segment.rows[0]!.line}`}
-            rows={segment.rows}
-            annotations={segment.annotations}
-            band={band}
-            selected={segment.annotations.some((a) => a.id === selectedAnnotation)}
-            line={line}
-            onSelect={onSelectAnnotation}
-          />
+          <div key={`r${item.rows[0]!.line}`} data-segment className={`${SEGMENT} border-transparent`}>
+            {folded(lines.side, item.rows, (row) => line(row))}
+          </div>
         );
       })}
     </div>

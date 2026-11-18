@@ -28,7 +28,7 @@ export function flowWorkStatus(status: FlowAnalysisStatus, analysis?: AnalysisSt
       ? `The analysis is paused, so this flow waits until it resumes. ${NOT_ASSESSED}`
       : status.state === "queued"
         ? `Requested; it runs after the job that is running now. ${NOT_ASSESSED}`
-        : `The LLM has not analysed this flow yet; opening it requests it. ${NOT_ASSESSED}`,
+        : `The LLM has not analysed this flow yet; it runs when you ask for it. ${NOT_ASSESSED}`,
   };
 }
 

@@ -1,24 +1,28 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisSummary } from "../../api/generated/types";
+import type { AnalysisSummary, ResolvePrResponse } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { MOVED_HEAD, setScenario } from "../../mocks/scenarios";
+import { SETTLE_MS } from "../../components/pr-check/PrCheckCard";
 
 const server = startMockServer();
 const analysis = seedFor("default", "analysis") as AnalysisSummary;
 const PR_URL = "https://github.com/acme/node-client/pull/482";
 const PROGRESS = `/analyses/${analysis.id}/progress`;
 
+/** Types `url` and runs the check (lookup only: nothing starts). */
 async function analyze(url = PR_URL) {
   const field = await screen.findByLabelText("GitHub pull request URL");
   await userEvent.clear(field);
   await userEvent.type(field, url);
-  await userEvent.click(screen.getByRole("button", { name: "Analyze" }));
+  await userEvent.click(screen.getByRole("button", { name: "Check" }));
 }
+
+const card = () => screen.findByRole("region", { name: "Pull request check" });
 
 const pageText = () => document.body.textContent ?? "";
 
@@ -55,20 +59,142 @@ describe("Home (brief §4.1)", () => {
     expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
   });
 
-  it("signed in: URL form with an example and the 'What happens after Analyze' aside", async () => {
+  it("signed in: URL form with an example and the 'What happens after Start analysis' aside", async () => {
     renderRoute("/");
     expect(await screen.findByRole("heading", { level: 1, name: "Which pull request?" })).toBeVisible();
     expect(screen.getByLabelText("GitHub pull request URL")).toHaveAccessibleDescription(
       /Example: https:\/\/github\.com/,
     );
-    expect(screen.getByRole("complementary", { name: "What happens after Analyze" })).toBeVisible();
+    expect(screen.getByRole("complementary", { name: "What happens after Start analysis" })).toBeVisible();
     expect(screen.getByRole("banner")).toHaveTextContent("alice");
     expectTrustWording(pageText());
   });
 
-  it("a PR without an analysis starts one and opens the progress screen", async () => {
+  it("Check shows the PR in a card; nothing starts until Start analysis, which has the focus", async () => {
+    let created = 0;
+    server.events.on("request:start", ({ request }) => {
+      if (request.method === "POST" && new URL(request.url).pathname === "/api/v1/analyses") created += 1;
+    });
     const router = renderRoute("/");
     await analyze();
+    const result = await card();
+    expect(result).toHaveTextContent("#482 feat(rpc): retry with backoff on timeout");
+    expect(result.closest("[aria-live]")).not.toBeNull();
+    const start = within(result).getByRole("button", { name: "Start analysis" });
+    await waitFor(() => expect(start).toHaveFocus());
+    expect(created).toBe(0);
+    expect(router.state.location.pathname).toBe("/");
+    // The card reads as a whole: its findings describe the primary button, in a live region that is a real box.
+    expect(start).toHaveAccessibleDescription(/#482|Starts the analysis/);
+    expect(start.getAttribute("aria-describedby")?.split(" ")).toHaveLength(2);
+    expect(getComputedStyle(result.closest("[aria-live]")!).display).not.toBe("contents");
+    expect(result.closest("[aria-live]")).not.toHaveClass("contents");
+    // A second, deliberate Enter starts it (not one in the same moment the card appears).
+    await new Promise((resolve) => setTimeout(resolve, SETTLE_MS + 50));
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
+    expect(created).toBe(1);
+  });
+
+  it("shows the check running on the field", async () => {
+    server.use(
+      http.post("/api/v1/pr/resolve", async () => {
+        await delay(200);
+        return HttpResponse.json(seedFor("default", "pr-resolve") as ResolvePrResponse);
+      }),
+    );
+    renderRoute("/");
+    await analyze();
+    const field = screen.getByLabelText("GitHub pull request URL");
+    expect(field).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByRole("button", { name: "Checking…" })).toHaveAttribute("aria-disabled", "true");
+    await card();
+    expect(field).not.toHaveAttribute("aria-busy");
+  });
+
+  it("editing the field after a check clears the card: Start analysis never starts another PR", async () => {
+    renderRoute("/");
+    await analyze();
+    await card();
+    const field = screen.getByLabelText("GitHub pull request URL");
+    await userEvent.type(field, "9");
+    expect(screen.queryByRole("region", { name: "Pull request check" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Start analysis/ })).toBeNull();
+    // Back to the checked URL: still no card until Check.
+    await userEvent.type(field, "{Backspace}");
+    expect(screen.queryByRole("region", { name: "Pull request check" })).toBeNull();
+  });
+
+  it("an existing analysis in another language: tagged, Open review first, Analyse again in English", async () => {
+    setScenario("existing-other-language");
+    let created = 0;
+    server.events.on("request:start", ({ request }) => {
+      if (request.method === "POST" && new URL(request.url).pathname === "/api/v1/analyses") created += 1;
+    });
+    const router = renderRoute("/");
+    await analyze();
+    const result = await card();
+    expect(within(result).getByText("PL")).toHaveAccessibleDescription(
+      "LLM texts of this analysis are in Polish.",
+    );
+    const open = within(result).getByRole("link", { name: "Open review" });
+    await waitFor(() => expect(open).toHaveFocus());
+    const again = within(result).getByRole("button", { name: "Analyse again in English" });
+    expect(again).toHaveAccessibleDescription(/English/);
+    expect(created).toBe(0);
+    await userEvent.click(again);
+    await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
+    expect(created).toBe(1);
+  });
+
+  it("an existing analysis in the user's language offers no second analysis", async () => {
+    setFixtureState("resume");
+    renderRoute("/");
+    await analyze();
+    const result = await card();
+    expect(within(result).getByText("EN")).toBeVisible();
+    expect(within(result).queryByRole("button", { name: /Analyse again/ })).toBeNull();
+  });
+
+  it("the card shows the PR's size and the planning estimate when the lookup has them", async () => {
+    server.use(
+      http.post("/api/v1/pr/resolve", () =>
+        HttpResponse.json({
+          ...(seedFor("default", "pr-resolve") as ResolvePrResponse),
+          size: { changed_lines: 412, changed_files: 9 },
+          planning_estimate: { remaining_seconds: 300, basis: "lines_only", rough: true },
+        }),
+      ),
+    );
+    renderRoute("/");
+    await analyze();
+    expect(await card()).toHaveTextContent(
+      "412 changed lines in 9 files. Planning: about 5 min (rough estimate from changed lines in recent runs).",
+    );
+  });
+
+  it("Cancel clears the card and returns to the field", async () => {
+    renderRoute("/");
+    await analyze();
+    await userEvent.click(within(await card()).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("region", { name: "Pull request check" })).toBeNull();
+    expect(screen.getByLabelText("GitHub pull request URL")).toHaveFocus();
+  });
+
+  it("a large PR: the size warning above Start analysis anyway; nothing starts without it", async () => {
+    setScenario("large-pr");
+    const router = renderRoute("/");
+    await analyze();
+    const result = await card();
+    expect(within(result).getByRole("note")).toHaveTextContent(
+      "Large PR: 27 081 changed lines in 371 files.",
+    );
+    const start = within(result).getByRole("button", { name: "Start analysis anyway" });
+    expect(
+      within(result).getByRole("note").compareDocumentPosition(start) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(router.state.location.pathname).toBe("/");
+    await userEvent.click(start);
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
   });
 
@@ -78,7 +204,7 @@ describe("Home (brief §4.1)", () => {
   ])("error for %s", async (url, message) => {
     const router = renderRoute("/");
     await analyze(url);
-    const alert = await screen.findByRole("alert");
+    const alert = within(await card()).getByRole("alert");
     expect(alert).toHaveTextContent("Cannot open this pull request.");
     expect(alert).toHaveTextContent(message);
     expect(router.state.location.pathname).toBe("/");
@@ -108,7 +234,7 @@ describe("Home (brief §4.1)", () => {
     expect(router.state.location.pathname).toBe("/");
   });
 
-  it("head moved: banner with both heads, Re-analyze starts a fresh analysis, the old one stays reachable", async () => {
+  it("head moved: banner with both heads, Start analysis starts a fresh analysis, the old one stays reachable", async () => {
     setScenario("head-moved");
     const router = renderRoute("/");
     await analyze();
@@ -126,7 +252,7 @@ describe("Home (brief §4.1)", () => {
         body = await request.clone().json();
       }
     });
-    await userEvent.click(within(moved).getByRole("button", { name: "Re-analyze" }));
+    await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
     expect(body).toMatchObject({ head_sha: MOVED_HEAD, pr: { number: 482 } });
   });
@@ -169,6 +295,7 @@ describe("Home (brief §4.1)", () => {
     setScenario("existing-cancelled");
     const router = renderRoute("/");
     await analyze();
+    await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
   });
 
@@ -177,25 +304,26 @@ describe("Home (brief §4.1)", () => {
     const router = renderRoute("/");
     await analyze();
     const noApp = await banner("Commenting is not available for acme/node-client right now.", "alert");
+    expect(router.state.location.pathname).toBe("/");
     expect(noApp).not.toHaveTextContent(/App is not installed/);
     // Neither the cause nor what else is affected is known when the check failed.
     expect(noApp).not.toHaveTextContent(/works without the App|related work/i);
     expect(noApp).toHaveTextContent("The analysis still runs");
     expect(router.state.location.pathname).toBe("/");
-    await userEvent.click(within(noApp).getByRole("button", { name: "Analyze anyway" }));
+    await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis anyway" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
   });
 
   it("a PR given in the address (from a refused comment) fills the field without analysing it", async () => {
     const router = renderRoute(`/?pr=${encodeURIComponent(PR_URL)}`);
     expect(await screen.findByLabelText("GitHub pull request URL")).toHaveValue(PR_URL);
-    expect(screen.queryByText("Analysis cancelled — analyze again.")).toBeNull();
+    expect(screen.queryByText("Analysis cancelled. Check the PR to start again.")).toBeNull();
     expect(router.state.location.pathname).toBe("/");
   });
 
-  it("after a cancelled analysis: 'Analysis cancelled — analyze again' with the URL filled in", async () => {
+  it("after a cancelled analysis: 'Analysis cancelled. Check the PR to start again.' with the URL filled in", async () => {
     renderRoute({ pathname: "/", state: { cancelledPrUrl: PR_URL } });
-    await banner("Analysis cancelled — analyze again.", "status");
+    await banner("Analysis cancelled. Check the PR to start again.", "status");
     expect(screen.getByLabelText("GitHub pull request URL")).toHaveValue(PR_URL);
   });
 
@@ -203,6 +331,20 @@ describe("Home (brief §4.1)", () => {
     server.use(http.get("/api/v1/me", () => HttpResponse.error()));
     renderRoute("/");
     expect(await screen.findByRole("alert")).toHaveTextContent("Cannot reach the smart-review server.");
+  });
+
+  it("an edit of the field while the start is on its way does not lose the started analysis", async () => {
+    server.use(
+      http.post("/api/v1/analyses", async () => {
+        await delay(300);
+        return HttpResponse.json(analysis, { status: 201 });
+      }),
+    );
+    const router = renderRoute("/");
+    await analyze();
+    await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis" }));
+    await userEvent.type(screen.getByLabelText("GitHub pull request URL"), "9");
+    await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
   });
 
   it("the analysis cannot be started: plain error, stays on Home", async () => {
@@ -216,6 +358,7 @@ describe("Home (brief §4.1)", () => {
     );
     const router = renderRoute("/");
     await analyze();
+    await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis" }));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Cannot start the analysis.");
     expect(alert).toHaveTextContent("An analysis of this head is already running.");

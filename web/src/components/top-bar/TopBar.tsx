@@ -1,5 +1,6 @@
 import { ciText, ciTip } from "../section/ci";
-import type { CiStatus, PrSummary } from "../../api/generated/types";
+import type { CiStatus, LlmLanguage, PrSummary } from "../../api/generated/types";
+import { LanguageTag } from "../language-tag/LanguageTag";
 import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 
@@ -10,6 +11,8 @@ interface TopBarProps {
   pr?: PrSummary;
   /** CI status of the head commit. */
   ci?: CiStatus;
+  /** Language of the analysis's LLM texts; no tag when absent. */
+  language?: LlmLanguage;
   /** Signed-in GitHub login (links to Settings); null when signed out. */
   login: string | null;
   /** Review progress: flows with every step ticked, out of all flows. */
@@ -40,6 +43,7 @@ export function TopBar({
   onHideContextChanges,
   pr,
   ci,
+  language,
   login,
   progress,
   pendingCount,
@@ -73,6 +77,7 @@ export function TopBar({
               {pr.head_sha.slice(0, 7)}
             </code>
           </Tooltip>
+          <LanguageTag language={language} />
           {ci && (
             <Tooltip tip={ciTip(ci)}>
               <span
