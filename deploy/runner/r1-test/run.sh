@@ -130,6 +130,8 @@ docker rm -f "$preflight" > /dev/null 2>&1 || true
 # Start-up order (ADR-013 "Scratch volumes"; unit test startup_order_keeps_the_rotated_credential_and_empties_scratch):
 # the volumes of a runner that crashed during job j-1 after Codex rotated the token. The production runner, started
 # without a server, must bring the rotated auth.json back to the master and leave /tmp, /work and codex-homes empty.
+# Owners as production leaves them: /tmp, the checkout, staging and master by the runner (10001); the agent home and
+# its auth.json by the agent (10002; created by the runner, handed over, rewritten by Codex).
 so_mounts=(--mount "type=volume,source=${so_vols[0]},target=/var/lib/smart-review-runner"
   --mount "type=volume,source=${so_vols[1]},target=/work" --mount "type=volume,source=${so_vols[2]},target=/tmp"
   --mount "type=volume,source=${so_vols[3]},target=/var/lib/smart-review-runner/codex-homes")
@@ -145,7 +147,7 @@ docker run --rm --network none --user 0:0 --entrypoint /bin/sh "${so_mounts[@]}"
   -e "MASTER=$so_master" -e "ROTATED=$so_rotated" -e "DIGEST=$so_digest" "$skeleton" -c '
     set -e
     s=/var/lib/smart-review-runner
-    mkdir -p /tmp/left/deep && echo x > /tmp/left/deep/file
+    mkdir -p /tmp/left/deep && echo x > /tmp/left/deep/file && chown -R 10001:10001 /tmp/left
     mkdir -p /work/j-1/repo && echo x > /work/j-1/repo/README && chown -R 10001:10001 /work/j-1
     mkdir "$s/codex-homes/j-1" && printf %s "$ROTATED" > "$s/codex-homes/j-1/auth.json"
     chown -R 10002:10002 "$s/codex-homes/j-1" && chmod 0700 "$s/codex-homes/j-1" && chmod 0600 "$s/codex-homes/j-1/auth.json"
