@@ -1,5 +1,6 @@
 //! Review repro for migration 0010 (`language_ru`): a database built by the real migrator through 0009, seeded
 //! in every user/analysis child table, upgraded by `Db::open` (the production path).
+#![expect(clippy::expect_used, reason = "test helpers outside #[test] functions")]
 
 use std::path::Path;
 

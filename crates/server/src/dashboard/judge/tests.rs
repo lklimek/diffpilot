@@ -1289,9 +1289,16 @@ fn unasked_eligibility_answer_is_dropped() {
     let snap = snapshot(vec![pr(1, "fix: x")], vec![], vec![]);
     let mut item = candidates(&snap, LlmLanguage::En)[0].item.clone();
     assert!(!item.asks_eligibility, "premise");
-    assert_eq!(store::Body::of(answer.clone(), &item).eligibility, None);
+    assert_eq!(
+        store::Body::of(answer.clone(), &item, LlmLanguage::En).eligibility,
+        None
+    );
     item.asks_eligibility = true;
-    assert!(store::Body::of(answer, &item).eligibility.is_some());
+    assert!(
+        store::Body::of(answer, &item, LlmLanguage::En)
+            .eligibility
+            .is_some()
+    );
 }
 
 /// A Polish user's judge job asks for Polish texts; after a switch back to English the stored Polish judgement is
@@ -1326,6 +1333,57 @@ async fn ranking_texts_follow_the_users_language() {
         h.judgements("u1", &snap).await[&key(1)].judgement.freshness,
         Freshness::Inherited
     );
+}
+
+/// After a language switch the judge gets the previous judgement's points without its old-language texts, so it
+/// cannot copy them into the new judgement.
+#[tokio::test]
+async fn previous_texts_are_not_sent_after_a_language_switch() {
+    let h = harness().await;
+    h.db()
+        .settings()
+        .set_language("u1", LlmLanguage::Pl, Timestamp::now())
+        .await
+        .expect("language");
+    let snap = snapshot(prs(1), vec![], vec![]);
+    let first = h.rank("u1", &snap).await;
+    h.serve(|i| succeeded(neutral(i))).await;
+    h.ranked("u1", first).await;
+    h.db()
+        .settings()
+        .set_language("u1", LlmLanguage::En, Timestamp::now())
+        .await
+        .expect("language");
+    let second = h.rank("u1", &snap).await;
+    let (_, input) = h.serve(|i| succeeded(neutral(i))).await;
+    let previous = input.items[0].previous.clone().expect("previous judgement");
+    assert_eq!(
+        (
+            previous.why.as_str(),
+            previous.next.as_str(),
+            previous.alarm
+        ),
+        ("", "", None)
+    );
+    assert!(!previous.parts.is_empty());
+    assert!(
+        previous
+            .parts
+            .iter()
+            .all(|p| p.basis.is_empty() && p.points_tenths.is_some())
+    );
+    h.ranked("u1", second).await;
+    // Judged again in English: its own texts are sent next time.
+    let third = h
+        .rank(
+            "u1",
+            &snapshot(vec![pr(1, "fix: renamed title")], vec![], vec![]),
+        )
+        .await;
+    let (_, input) = h.serve(|i| succeeded(neutral(i))).await;
+    let previous = input.items[0].previous.clone().expect("previous judgement");
+    assert_eq!(previous.why, "Judged for the test.");
+    h.ranked("u1", third).await;
 }
 
 #[tokio::test]

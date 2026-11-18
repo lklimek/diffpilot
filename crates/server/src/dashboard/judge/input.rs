@@ -197,7 +197,11 @@ fn fingerprint(item: &JudgeItem, scored: &Scored, language: LlmLanguage) -> Stri
 }
 
 /// The previous judgement of a changed item, as the judge sees it.
-pub(super) fn previous(body: &Body) -> PreviousJudgement {
+/// The previous judgement as sent to the judge: its texts only when written in `language`, else its points alone
+/// (old-language texts must not be copied into the new judgement).
+pub(super) fn previous(body: &Body, language: LlmLanguage) -> PreviousJudgement {
+    let texts = body.language == Some(language);
+    let text = |value: &String| if texts { value.clone() } else { String::new() };
     PreviousJudgement {
         parts: body
             .parts
@@ -206,12 +210,12 @@ pub(super) fn previous(body: &Body) -> PreviousJudgement {
                 component: part.component,
                 points_tenths: Some(part.points * 10),
                 status: PartStatus::Judged,
-                basis: part.basis.clone(),
+                basis: text(&part.basis),
             })
             .collect(),
-        why: body.why.clone(),
-        next: body.next.clone(),
-        alarm: body.alarm.clone(),
+        why: text(&body.why),
+        next: text(&body.next),
+        alarm: body.alarm.clone().filter(|_| texts),
     }
 }
 

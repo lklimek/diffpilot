@@ -38,7 +38,10 @@ pub(super) fn agent_limitation(text: &str) -> bool {
             r"\b(?:cannot|could not|unable to|failed to)\s+(?:load|read|access|find|use)\b[^.!?\n]{0,30}\b(?:severity skill|required (?:review )?(?:skills?|tools?|instructions?))\b|",
             r"\bjako (?:ai|sztuczna inteligencja|model językowy)\b|",
             r"\b(?:skill severity|narzędzia agenta|wymagane instrukcje)[^.!?\n]{0,60}\b(?:niedostępn\w*|brak\w*)|",
-            r"\bnie mog(?:ę|łem|łam|liśmy|łyśmy) (?:wczytać|załadować|odczytać)[^.!?\n]{0,60}(?:skill|narzędzi|instrukcj)"
+            r"\bnie mog(?:ę|łem|łam|liśmy|łyśmy) (?:wczytać|załadować|odczytać)[^.!?\n]{0,60}(?:skill|narzędzi|instrukcj)|",
+            r"\bкак (?:ии|ai|искусственный интеллект|языковая модель)\b|",
+            r"\b(?:навык severity|skill severity|инструменты агента|требуемые инструкции)[^.!?\n]{0,60}(?:недоступ\w*|отсутству\w*)|",
+            r"\bне (?:могу|смог|смогла|смогли) (?:загрузить|прочитать|открыть)[^.!?\n]{0,60}(?:навык|skill|инструмент|инструкц)"
         )).ok()
     });
     PATTERN
@@ -219,6 +222,30 @@ mod tests {
             .iter()
             .map(|w| (w.phrase.as_str(), w.location.as_str()))
             .collect()
+    }
+
+    /// Capability excuses are rejected in English, Polish and Russian; ordinary review text is not.
+    #[test]
+    fn capability_excuses_are_caught_in_every_language() {
+        for excuse in [
+            "As an AI I cannot judge this.",
+            "Jako model językowy nie oceniam tego.",
+            "Nie mogłem wczytać wymaganego skilla severity.",
+            "Как ИИ я не могу это оценить.",
+            "Как языковая модель, я не оцениваю это.",
+            "Я не смог загрузить навык severity.",
+            "Не могу прочитать инструкции агента.",
+            "Навык severity недоступен, поэтому оценки нет.",
+        ] {
+            assert!(agent_limitation(excuse), "{excuse}");
+        }
+        for text in [
+            "Не могу понять, зачем менять тайм-аут: вопрос к автору.",
+            "Функция загружает конфигурацию до проверки токена.",
+            "Nie mogę znaleźć testu dla tej ścieżki błędu.",
+        ] {
+            assert!(!agent_limitation(text), "{text}");
+        }
     }
 
     #[test]

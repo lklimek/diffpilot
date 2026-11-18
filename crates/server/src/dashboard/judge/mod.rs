@@ -59,7 +59,7 @@ use crate::state::AppState;
 
 /// Version of the judge prompt and output schema (`prompts/judge_work.md`, pinned by its golden); a bump
 /// re-judges every item within the caps.
-pub const JUDGE_PROMPT_VERSION: u32 = 5;
+pub const JUDGE_PROMPT_VERSION: u32 = 6;
 /// Items sent to the judge per refresh at most, across its attempts and retries (plan §B.4).
 pub const REFRESH_CAP: u32 = 48;
 /// Items sent to the judge per user and local day at most, retries included (plan §B.4).
@@ -388,7 +388,9 @@ impl<'a> Ranking<'a> {
                 .score(&rules, inherited.as_ref(), snapshot.scanned_at)
                 .map_or(candidate.scored.points, |scored| scored.points);
             let mut item = candidate.item.clone();
-            item.previous = body.as_ref().map(input::previous);
+            item.previous = body
+                .as_ref()
+                .map(|body| input::previous(body, self.language));
             queue.push(Queued {
                 item,
                 fingerprint: candidate.fingerprint.clone(),
@@ -650,7 +652,7 @@ impl<'a> Ranking<'a> {
                     input_fingerprint: queued.fingerprint.clone(),
                     input_version: JUDGE_INPUT_VERSION,
                     prompt_version: JUDGE_PROMPT_VERSION,
-                    body: serde_json::to_value(Body::of(answer, &queued.item))?,
+                    body: serde_json::to_value(Body::of(answer, &queued.item, self.language))?,
                     refresh_id: Some(self.run.refresh_id),
                     job_id: Some(job),
                     model: model.clone(),

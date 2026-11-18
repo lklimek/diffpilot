@@ -3,6 +3,7 @@
 
 use contracts::agent::judge_work::{JudgeItem, ValidAnswer};
 use contracts::api::dashboard::{ItemKey, ItemText, PartStatus, ScoreComponent};
+use contracts::common::LlmLanguage;
 use contracts::time::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,9 @@ pub(super) struct Body {
     pub why: String,
     /// Next action.
     pub next: String,
+    /// Language of the texts; absent in judgements stored before it was recorded.
+    #[serde(default)]
+    pub language: Option<LlmLanguage>,
 }
 
 /// One judged part.
@@ -44,7 +48,7 @@ impl Body {
     /// The stored form of a validated answer to `item`. The judge sets only asked parts and estimated defaults
     /// sent for confirmation: an answer for a part computed from facts is dropped (AR-9). An eligibility answer
     /// counts only when the scorer asked for it: an unasked flip could hide an item.
-    pub fn of(answer: ValidAnswer, item: &JudgeItem) -> Self {
+    pub fn of(answer: ValidAnswer, item: &JudgeItem, language: LlmLanguage) -> Self {
         let settable = |component: ScoreComponent| {
             item.asks.contains(&component)
                 || item
@@ -81,6 +85,7 @@ impl Body {
             alarm: answer.alarm,
             why: answer.why,
             next: answer.next,
+            language: Some(language),
         }
     }
 
