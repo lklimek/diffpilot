@@ -957,6 +957,15 @@ async fn prompt_version_bump_marks_older_judgements_inherited() {
     assert!(!h.judgements("u1", &snap).await[&key(1)].older_prompt);
 }
 
+/// The ranking step's detail (what the dashboard banner shows for items left provisional).
+fn ranking_detail(status: &RefreshStatus) -> Option<&str> {
+    status
+        .steps
+        .iter()
+        .find(|s| s.key == contracts::api::dashboard::ScanStepKey::Ranking)
+        .and_then(|s| s.detail.as_deref())
+}
+
 /// A finished refresh of `user` started now that sent `sent` items to the judge (the daily cap counts it).
 async fn sent_earlier(h: &Harness, user: &str, sent: u32) {
     let id = h.stored(user, &snapshot(vec![], vec![], vec![])).await;
@@ -1010,13 +1019,9 @@ async fn daily_cap_leaves_rest_provisional_with_note() {
         done.ranking.as_ref().map(|r| r.state),
         Some(RankingState::Finished)
     );
-    assert!(
-        done.log
-            .iter()
-            .any(|l| l.ends_with("2 items left provisional: daily ranking limit")),
-        "{:?}",
-        done.log
-    );
+    let note = "2 items left provisional: today's ranking limit (120)";
+    assert!(done.log.iter().any(|l| l.ends_with(note)), "{:?}", done.log);
+    assert_eq!(ranking_detail(&done), Some(note));
     // The two left provisional are the lowest in queue order and stay listed, unjudged.
     assert_eq!(h.judgements("u1", &snap).await.len(), 3);
 }
@@ -1027,11 +1032,10 @@ async fn refresh_cap_judges_at_most_48() {
     let snap = snapshot(prs(REFRESH_CAP + 2), vec![], vec![]);
     let (id, done) = h.rank_all("u1", &snap).await;
     assert_eq!((done.judged, done.left_provisional), (REFRESH_CAP, 2));
-    assert!(
-        done.log
-            .iter()
-            .any(|l| l.ends_with("ranking limit per refresh"))
-    );
+    // The day's count (48 of 120) has room: the refresh's limit is the one named.
+    let note = "2 items left provisional: this refresh's ranking limit (48)";
+    assert!(done.log.iter().any(|l| l.ends_with(note)), "{:?}", done.log);
+    assert_eq!(ranking_detail(&done), Some(note));
     assert_eq!(h.jobs(id).await.len(), 6, "48 items in batches of 8");
 }
 
@@ -1292,6 +1296,7 @@ async fn unclaimed_judge_job_ends_the_ranking() {
         zone: Tz::UTC,
         day: now(),
         unclaimed_since: Some(long_ago),
+        provisional: None,
     };
     let input = JudgeWorkInput {
         items: vec![candidates(&snap)[0].item.clone()],
@@ -1428,6 +1433,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
         zone: Tz::UTC,
         day: now(),
         unclaimed_since: None,
+        provisional: None,
     };
     let dashboard = h.db().dashboard();
     let cancelled = dashboard

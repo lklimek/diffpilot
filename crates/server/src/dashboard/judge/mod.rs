@@ -154,7 +154,7 @@ enum BatchEnd {
     /// These display ids stayed unjudged after the last run.
     Unjudged(Vec<String>),
     /// A further run of these items exceeded a cap (named) and was not sent.
-    Capped(Vec<String>, &'static str),
+    Capped(Vec<String>, String),
 }
 
 /// An item queued for judgement.
@@ -184,6 +184,7 @@ async fn rank(state: AppState, run: RankRun) {
         zone: Tz::UTC,
         day: DateTime::<Utc>::MIN_UTC,
         unclaimed_since: None,
+        provisional: None,
     };
     let end = match ranking.run().await {
         Ok(end) => Some(end),
@@ -222,6 +223,8 @@ struct Ranking<'a> {
     day: DateTime<Utc>,
     /// Since when the followed job waits for a runner (queued, credential usable, no analysis job running).
     unclaimed_since: Option<tokio::time::Instant>,
+    /// Which cap left items provisional, as the ranking step's detail shows it while no other detail is given.
+    provisional: Option<String>,
 }
 
 impl<'a> Ranking<'a> {
@@ -271,8 +274,13 @@ impl<'a> Ranking<'a> {
             "ranking: {take} items to judge, {reused} judgements reused"
         )];
         if left > 0 {
-            let limit = limit(per_refresh, per_day);
-            lines.push(format!("{left} items left provisional: {limit}"));
+            let note = format!(
+                "{} left provisional: {}",
+                items(left),
+                limit(per_refresh, per_day)
+            );
+            lines.push(note.clone());
+            self.provisional = Some(note);
         }
         let total = self.counts.judged + count(take);
         self.note(Some(total), None, &lines).await?;
@@ -288,7 +296,7 @@ impl<'a> Ranking<'a> {
                 BatchEnd::Judged => continue,
                 BatchEnd::Unjudged(ids) => {
                     not_ranked = ids;
-                    "a batch could not be judged"
+                    "a batch could not be judged".to_owned()
                 }
                 BatchEnd::Capped(ids, limit) => {
                     not_ranked = ids;
@@ -307,7 +315,7 @@ impl<'a> Ranking<'a> {
             self.note(
                 None,
                 None,
-                &[format!("{unsent} items left provisional: {reason}")],
+                &[format!("{} left provisional: {reason}", items(unsent))],
             )
             .await?;
         }
@@ -400,7 +408,7 @@ impl<'a> Ranking<'a> {
                 items: pending.iter().map(|q| q.item.clone()).collect(),
             };
             if let Some(limit) = self.reserve(count(pending.len())).await? {
-                tracing::info!(refresh = %self.run.refresh_id, batch, generation, items = pending.len(), limit,
+                tracing::info!(refresh = %self.run.refresh_id, batch, generation, items = pending.len(), %limit,
                     "dashboard judge batch not sent: the ranking cap is reached");
                 return Ok(BatchEnd::Capped(ids(&pending), limit));
             }
@@ -421,7 +429,7 @@ impl<'a> Ranking<'a> {
     }
 
     /// Counts `items` as sent against both caps; the limit reached when they do not fit (nothing counted).
-    async fn reserve(&self, items: u32) -> Result<Option<&'static str>, RankError> {
+    async fn reserve(&self, items: u32) -> Result<Option<String>, RankError> {
         let (tenant, user) = self.scope();
         let reserved = self
             .state
@@ -689,7 +697,7 @@ impl<'a> Ranking<'a> {
         }
     }
 
-    /// Writes the ranking step's total (when given) and detail, and appends log lines.
+    /// Writes the ranking step's total (when given) and detail (else the provisional note), and appends log lines.
     async fn note(
         &self,
         total: Option<u32>,
@@ -717,7 +725,9 @@ impl<'a> Ranking<'a> {
             if total.is_some() {
                 step.total = total;
             }
-            step.detail = detail.map(str::to_owned);
+            step.detail = detail
+                .map(str::to_owned)
+                .or_else(|| self.provisional.clone());
         }
         let at = self.state.dashboard.now().with_timezone(&self.zone);
         let mut log = record.log;
@@ -775,12 +785,21 @@ impl<'a> Ranking<'a> {
     }
 }
 
-/// The cap that leaves items provisional: the daily one when less of it is left.
-fn limit(per_refresh: u32, per_day: u32) -> &'static str {
+/// The cap that leaves items provisional, as the dashboard names it: the daily one when less of it is left.
+fn limit(per_refresh: u32, per_day: u32) -> String {
     if per_day < per_refresh {
-        "daily ranking limit"
+        format!("today's ranking limit ({DAILY_CAP})")
     } else {
-        "ranking limit per refresh"
+        format!("this refresh's ranking limit ({REFRESH_CAP})")
+    }
+}
+
+/// `n item(s)`.
+fn items(n: usize) -> String {
+    if n == 1 {
+        "1 item".to_owned()
+    } else {
+        format!("{n} items")
     }
 }
 

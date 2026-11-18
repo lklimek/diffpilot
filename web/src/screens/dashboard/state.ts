@@ -65,14 +65,22 @@ function timeZoneNotes(summary: DashboardSummary, saveFailed: boolean): Dashboar
   ];
 }
 
+/**
+ * Items left provisional: the server names the ranking limit that applied in the ranking step's detail (this
+ * refresh's or today's); a failed ranking's detail is its failure, so no limit is named then.
+ */
 function limitNotes(summary: DashboardSummary, holder: RefreshStatus | undefined): DashboardNote[] {
   const notes: DashboardNote[] = [];
   const left = holder?.left_provisional ?? 0;
   if (left > 0) {
+    const named =
+      holder?.ranking?.state === "failed"
+        ? null
+        : holder?.steps.find((step) => step.key === "ranking")?.detail;
     notes.push({
       id: "left_provisional",
       tone: "info",
-      title: `${plural(left, "item", "items")} left provisional: daily ranking limit.`,
+      title: named ? `${named}.` : `${plural(left, "item", "items")} left provisional.`,
       text: "They keep approximate scores until a later refresh ranks them.",
     });
   }
