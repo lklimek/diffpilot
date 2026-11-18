@@ -107,6 +107,15 @@ macro_rules! columns {
     };
 }
 
+/// The latest pause end (after `?1`, now) among the credentials of the analysis's waiting pipeline jobs.
+macro_rules! credential_pause {
+    () => {
+        "(SELECT MAX(c.paused_until) FROM jobs j JOIN llm_credentials c ON c.id=j.credential_id
+          WHERE j.analysis_id=analyses.id AND j.round=analyses.round AND j.kind<>'ask' AND j.state='queued'
+            AND julianday(c.paused_until)>julianday(?1))"
+    };
+}
+
 /// `AnalysisState` spread over its columns.
 struct StateColumns {
     state: &'static str,
@@ -547,15 +556,19 @@ impl Analyses<'_> {
             .bind(login).bind(ts(now)).bind(id.to_string()).execute(self.pool).await?.rows_affected() > 0)
     }
 
-    /// Clears only the user pause; a job's provider-limit gate remains in force.
+    /// Clears only the user pause; the provider-limit gate remains in force: a paused job of the analysis, or a
+    /// waiting pipeline job whose credential is paused (by any job), keeps the analysis `paused` until that time.
     pub async fn resume_by_user(
         &self,
         id: AnalysisId,
         now: DateTime<Utc>,
     ) -> Result<bool, DbError> {
-        Ok(sqlx::query("UPDATE analyses SET user_paused_at=NULL, user_paused_by=NULL,
-            state=CASE WHEN EXISTS (SELECT 1 FROM jobs j WHERE j.analysis_id=analyses.id AND j.round=analyses.round AND j.state='paused' AND (j.resumes_at IS NULL OR julianday(j.resumes_at)>julianday(?))) THEN 'paused' WHEN flows_total IS NULL THEN 'planning' ELSE 'running' END
-            WHERE id=? AND user_paused_at IS NOT NULL AND state='paused'")
+        Ok(sqlx::query(concat!(
+            "UPDATE analyses SET user_paused_at=NULL, user_paused_by=NULL,
+            paused_until=COALESCE(", credential_pause!(), ", paused_until),
+            state=CASE WHEN EXISTS (SELECT 1 FROM jobs j WHERE j.analysis_id=analyses.id AND j.round=analyses.round AND j.state='paused' AND (j.resumes_at IS NULL OR julianday(j.resumes_at)>julianday(?1)))
+                OR ", credential_pause!(), " IS NOT NULL THEN 'paused' WHEN flows_total IS NULL THEN 'planning' ELSE 'running' END
+            WHERE id=?2 AND user_paused_at IS NOT NULL AND state='paused'"))
             .bind(ts(now)).bind(id.to_string()).execute(self.pool).await?.rows_affected() > 0)
     }
 
@@ -1423,6 +1436,73 @@ mod tests {
             db.analyses().summary(AnalysisId::new_random()).await,
             Err(DbError::NotFound)
         ));
+    }
+
+    /// Resume keeps the usage-limit pause of the shared credential: the analysis shows it with its reset time
+    /// instead of an active state in which nothing can run.
+    #[tokio::test]
+    async fn resume_keeps_the_usage_limit_pause_of_the_shared_credential() {
+        let db = db().await;
+        let id = seed_analysis(&db).await.expect("seed");
+        enqueue(&db, id, JobStage::Plan { batch: 1 }, JobKind::Plan, 0).await;
+        db.llm_credentials()
+            .register(
+                "default",
+                &testing::job_spec(id, JobKind::Plan).credential,
+                true,
+                at(0),
+            )
+            .await
+            .expect("credential");
+        // Another analysis's job hit the limit of the credential both use.
+        db.llm_credentials()
+            .pause(testing::CREDENTIAL, at(50))
+            .await
+            .expect("pause");
+        assert!(
+            db.analyses()
+                .pause_by_user(id, "alice", at(1))
+                .await
+                .expect("pause")
+        );
+        assert!(
+            db.analyses()
+                .resume_by_user(id, at(2))
+                .await
+                .expect("resume")
+        );
+        let summary = db.analyses().summary(id).await.expect("summary");
+        assert!(
+            matches!(
+                summary.state,
+                AnalysisState::Paused {
+                    reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+                    resumes_at: Some(until),
+                    ..
+                } if until == at(50)
+            ),
+            "{:?}",
+            summary.state
+        );
+        // Once the limit has reset, Resume shows the active state.
+        assert!(
+            db.analyses()
+                .pause_by_user(id, "alice", at(51))
+                .await
+                .expect("pause")
+        );
+        assert!(
+            db.analyses()
+                .resume_by_user(id, at(52))
+                .await
+                .expect("resume")
+        );
+        let summary = db.analyses().summary(id).await.expect("summary");
+        assert!(
+            matches!(summary.state, AnalysisState::Planning { .. }),
+            "{:?}",
+            summary.state
+        );
     }
 }
 
