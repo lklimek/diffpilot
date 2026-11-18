@@ -14,6 +14,12 @@ use sqlx::Row;
 /// Automatic retries of a failed flow; after them it stays failed until a user requests it.
 pub const AUTO_FLOW_RETRIES: u32 = 2;
 
+/// Last sentence of the stored message of a failed flow that a retry can help.
+pub const RETRY_BY_USER: &str = "Retry this flow.";
+
+/// Shown in place of [`RETRY_BY_USER`] while an automatic retry of the flow is left and background analysis on.
+const RETRY_AUTOMATICALLY: &str = "It will be tried again automatically.";
+
 /// What the driver does next for the flows of an analysis ([`FlowWork::next`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NextFlow {
@@ -115,21 +121,28 @@ impl FlowWork<'_> {
         Ok(())
     }
     /// The flow the driver works on next: the one a runner holds, else the newest demand, else by plan rank the
-    /// flows not analysed yet and then failed ones with an automatic retry left ([`AUTO_FLOW_RETRIES`]). Picking a
-    /// failed flow starts a new job round and, without a request, uses one of its automatic retries.
+    /// flows not analysed yet and then failed ones with an automatic retry left ([`AUTO_FLOW_RETRIES`]; never a
+    /// flow too large to send). Picking a failed flow starts a new job round and, without a request, uses one of
+    /// its automatic retries; the choice and these writes are one transaction.
     pub async fn next(&self, id: AnalysisId) -> Result<NextFlow, DbError> {
-        let Some(due) = self.due(id).await? else {
+        let mut tx = super::write_tx(&self.db.pool).await?;
+        let Some(due) = due(&mut tx, id).await? else {
             return Ok(NextFlow::Idle);
         };
         if due.failed {
             // Wait for outstanding Ask too: changing round must not strand a queued question. A new round separates successful
             // but rejected repair outputs from the retry, preserving all accepted documents.
-            let mut tx = super::write_tx(&self.db.pool).await?;
             let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs WHERE analysis_id=? AND state IN ('queued','claimed','running','paused'))")
                 .bind(id.to_string()).fetch_one(&mut *tx).await?;
             if live {
                 return Ok(NextFlow::Wait);
             }
+            // Another flow's output waiting for its postponed repair moves to the new round with the analysis.
+            sqlx::query("UPDATE jobs SET round=round+1 WHERE analysis_id=?1 AND kind='analyse_flow' AND state='succeeded' AND flow_id<>?2 AND round=(SELECT round FROM analyses WHERE id=?1) AND NOT EXISTS(SELECT 1 FROM documents d WHERE d.analysis_id=jobs.analysis_id AND d.kind='flow' AND d.key=jobs.flow_id) AND NOT EXISTS(SELECT 1 FROM flow_work w WHERE w.analysis_id=jobs.analysis_id AND w.flow_id=jobs.flow_id AND w.error IS NOT NULL)")
+                .bind(id.to_string())
+                .bind(&due.flow.0)
+                .execute(&mut *tx)
+                .await?;
             sqlx::query("UPDATE analyses SET round=round+1 WHERE id=?")
                 .bind(id.to_string())
                 .execute(&mut *tx)
@@ -146,21 +159,8 @@ impl FlowWork<'_> {
     }
     /// Whether [`FlowWork::next`] has a flow to give (now or once the live jobs ended); changes nothing.
     pub async fn has_work(&self, id: AnalysisId) -> Result<bool, DbError> {
-        Ok(self.due(id).await?.is_some())
-    }
-    async fn due(&self, id: AnalysisId) -> Result<Option<Due>, DbError> {
-        if let Some(flow) = sqlx::query_scalar::<_, String>("SELECT flow_id FROM jobs WHERE analysis_id=? AND kind='analyse_flow' AND state IN ('claimed','running','paused') ORDER BY created_at LIMIT 1")
-            .bind(id.to_string()).fetch_optional(&self.db.pool).await? {
-            return Ok(Some(Due { flow: FlowId(flow), failed: false, requested: false }));
-        }
-        let row=sqlx::query("SELECT json_extract(f.value,'$.id') AS flow, w.error IS NOT NULL AS failed, w.requested_at IS NOT NULL AS requested FROM documents d, json_each(d.body,'$.flows') f JOIN analyses a ON a.id=d.analysis_id LEFT JOIN flow_work w ON w.analysis_id=a.id AND w.flow_id=json_extract(f.value,'$.id') WHERE d.analysis_id=? AND d.kind='plan' AND d.key='' AND NOT EXISTS(SELECT 1 FROM documents done WHERE done.analysis_id=a.id AND done.kind='flow' AND done.key=json_extract(f.value,'$.id')) AND (w.requested_at IS NOT NULL OR (a.background_analysis=1 AND (w.error IS NULL OR w.auto_retries < ?))) ORDER BY w.requested_at IS NOT NULL DESC, w.requested_at DESC, w.error IS NOT NULL, CAST(json_extract(f.value,'$.importance_rank') AS INTEGER) LIMIT 1")
-            .bind(id.to_string()).bind(AUTO_FLOW_RETRIES).fetch_optional(&self.db.pool).await?;
-        let Some(row) = row else { return Ok(None) };
-        Ok(Some(Due {
-            flow: FlowId(row.try_get("flow")?),
-            failed: row.try_get("failed")?,
-            requested: row.try_get("requested")?,
-        }))
+        let mut connection = self.db.pool.acquire().await?;
+        Ok(due(&mut connection, id).await?.is_some())
     }
     /// Whether the open review has flows left but nothing for a driver to do: no flow admitted
     /// ([`FlowWork::has_work`]) and no result to replay ([`FlowWork::unstored`]).
@@ -173,13 +173,14 @@ impl FlowWork<'_> {
             && self.unstored(id).await?.is_empty())
     }
     /// Flows with a succeeded job of the current round but neither a document nor a failure, oldest job first:
-    /// results a restart interrupted before they were verified and stored.
+    /// results a restart interrupted before they were verified and stored, or whose repair was postponed.
     pub async fn unstored(&self, id: AnalysisId) -> Result<Vec<FlowId>, DbError> {
         let flows: Vec<String> = sqlx::query_scalar("SELECT j.flow_id FROM jobs j JOIN analyses a ON a.id=j.analysis_id AND a.round=j.round WHERE j.analysis_id=? AND j.kind='analyse_flow' AND j.state='succeeded' AND NOT EXISTS(SELECT 1 FROM documents d WHERE d.analysis_id=j.analysis_id AND d.kind='flow' AND d.key=j.flow_id) AND NOT EXISTS(SELECT 1 FROM flow_work w WHERE w.analysis_id=j.analysis_id AND w.flow_id=j.flow_id AND w.error IS NOT NULL) GROUP BY j.flow_id ORDER BY MIN(j.created_at), MIN(j.rowid)")
             .bind(id.to_string()).fetch_all(&self.db.pool).await?;
         Ok(flows.into_iter().map(FlowId).collect())
     }
-    /// Mark a flow failed, retaining the accepted plan and other flow outputs.
+    /// Mark a flow failed, retaining the accepted plan and other flow outputs. A `message` that ends with
+    /// [`RETRY_BY_USER`] is shown with the automatic retry instead while one is left ([`FlowWork::status`]).
     pub async fn fail(&self, id: AnalysisId, flow: &FlowId, message: &str) -> Result<(), DbError> {
         sqlx::query("INSERT INTO flow_work(tenant_id,analysis_id,flow_id,error) SELECT tenant_id,id,?,? FROM analyses WHERE id=? ON CONFLICT(analysis_id,flow_id) DO UPDATE SET error=excluded.error, requested_at=NULL")
             .bind(&flow.0).bind(message).bind(id.to_string()).execute(&self.db.pool).await?;
@@ -210,8 +211,10 @@ impl FlowWork<'_> {
             message: None,
         };
         if let Some(row) = sqlx::query(
-            "SELECT requested_at,error FROM flow_work WHERE analysis_id=? AND flow_id=?",
+            "SELECT w.requested_at, w.error, a.background_analysis=1 AND w.auto_retries < ? AS retried
+             FROM flow_work w JOIN analyses a ON a.id=w.analysis_id WHERE w.analysis_id=? AND w.flow_id=?",
         )
+        .bind(AUTO_FLOW_RETRIES)
         .bind(id.to_string())
         .bind(&flow.0)
         .fetch_optional(&self.db.pool)
@@ -220,7 +223,13 @@ impl FlowWork<'_> {
             status.message = row.try_get("error")?;
             status.state = if row.try_get::<Option<String>, _>("requested_at")?.is_some() {
                 FlowAnalysisState::Queued
-            } else if status.message.is_some() {
+            } else if let Some(message) = &mut status.message {
+                // The stored message names the user's Retry; while the server retries by itself it says that.
+                if row.try_get::<bool, _>("retried")?
+                    && let Some(failure) = message.strip_suffix(RETRY_BY_USER)
+                {
+                    *message = format!("{failure}{RETRY_AUTOMATICALLY}");
+                }
                 FlowAnalysisState::Failed
             } else {
                 FlowAnalysisState::NotAnalysed
@@ -233,6 +242,26 @@ impl FlowWork<'_> {
         }
         Ok(status)
     }
+}
+
+/// The flow [`FlowWork::next`] picks, read on `connection` (its transaction, when it writes).
+async fn due(
+    connection: &mut sqlx::SqliteConnection,
+    id: AnalysisId,
+) -> Result<Option<Due>, DbError> {
+    if let Some(flow) = sqlx::query_scalar::<_, String>("SELECT flow_id FROM jobs WHERE analysis_id=? AND kind='analyse_flow' AND state IN ('claimed','running','paused') ORDER BY created_at LIMIT 1")
+        .bind(id.to_string()).fetch_optional(&mut *connection).await? {
+        return Ok(Some(Due { flow: FlowId(flow), failed: false, requested: false }));
+    }
+    // A flow too large to send (its `unsent` document) fails the same way again: only a request runs it.
+    let row=sqlx::query("SELECT json_extract(f.value,'$.id') AS flow, w.error IS NOT NULL AS failed, w.requested_at IS NOT NULL AS requested FROM documents d, json_each(d.body,'$.flows') f JOIN analyses a ON a.id=d.analysis_id LEFT JOIN flow_work w ON w.analysis_id=a.id AND w.flow_id=json_extract(f.value,'$.id') WHERE d.analysis_id=? AND d.kind='plan' AND d.key='' AND NOT EXISTS(SELECT 1 FROM documents done WHERE done.analysis_id=a.id AND done.kind='flow' AND done.key=json_extract(f.value,'$.id')) AND (w.requested_at IS NOT NULL OR (a.background_analysis=1 AND (w.error IS NULL OR (w.auto_retries < ? AND NOT EXISTS(SELECT 1 FROM documents u WHERE u.analysis_id=a.id AND u.kind='unsent' AND u.key=json_extract(f.value,'$.id')))))) ORDER BY w.requested_at IS NOT NULL DESC, w.requested_at DESC, w.error IS NOT NULL, CAST(json_extract(f.value,'$.importance_rank') AS INTEGER) LIMIT 1")
+        .bind(id.to_string()).bind(AUTO_FLOW_RETRIES).fetch_optional(&mut *connection).await?;
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(Due {
+        flow: FlowId(row.try_get("flow")?),
+        failed: row.try_get("failed")?,
+        requested: row.try_get("requested")?,
+    }))
 }
 
 /// Withdraw only unclaimed work inside the same write transaction as the demand change.
@@ -253,6 +282,24 @@ async fn withdraw(
             .bind(serde_json::to_string(&result)?).bind(ts(now)).bind(id).execute(&mut *tx).await?;
     }
     Ok(())
+}
+
+/// Test helpers shared by dependent crates.
+#[cfg(any(test, feature = "test-util"))]
+pub mod testing {
+    use super::{AnalysisId, Db, DbError, FlowId};
+
+    /// The analysis's job round and the automatic retries `flow` has used.
+    pub async fn retries(db: &Db, id: AnalysisId, flow: &FlowId) -> Result<(u32, u32), DbError> {
+        Ok(sqlx::query_as(
+            "SELECT a.round, COALESCE((SELECT auto_retries FROM flow_work w WHERE w.analysis_id=a.id AND w.flow_id=?), 0)
+             FROM analyses a WHERE a.id=?",
+        )
+        .bind(&flow.0)
+        .bind(id.to_string())
+        .fetch_one(&db.pool)
+        .await?)
+    }
 }
 
 #[cfg(test)]
@@ -507,6 +554,143 @@ mod tests {
         assert!(
             !db.flow_work().parked(id).await.unwrap(),
             "every flow analysed: the driver finishes the analysis"
+        );
+    }
+
+    /// A succeeded job of `flow` (its output not stored), as left by a rejected output whose repair waits.
+    async fn succeeded_job(db: &Db, id: AnalysisId, flow: &FlowId) -> contracts::ids::JobId {
+        let job = db
+            .jobs()
+            .enqueue(
+                super::super::jobs::NewJob {
+                    spec: crate::repo::analyses::testing::job_spec(
+                        id,
+                        contracts::agent::JobKind::AnalyseFlow,
+                    ),
+                    priority: contracts::job::spec::JobPriority::Batch,
+                    stage: super::super::jobs::JobStage::Flow(flow.clone()),
+                    generation: 0,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE jobs SET state='succeeded' WHERE id=?")
+            .bind(job.id.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        job.id
+    }
+
+    #[tokio::test]
+    async fn flow_too_large_to_send_is_not_retried_automatically() {
+        let db = Db::in_memory().await.unwrap();
+        let id = planned(&db, 2).await;
+        let (f1, f2) = (FlowId("f1".into()), FlowId("f2".into()));
+        let now = Utc::now();
+        db.documents()
+            .put(id, DocumentKind::Unsent, "f2", &serde_json::json!({}), now)
+            .await
+            .unwrap();
+        db.flow_work()
+            .fail(id, &f2, "This flow is too large for the agent request.")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.flow_work().next(id).await.unwrap(),
+            NextFlow::Run(f1.clone())
+        );
+        db.documents()
+            .put(id, DocumentKind::Flow, "f1", &serde_json::json!({}), now)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.flow_work().next(id).await.unwrap(),
+            NextFlow::Idle,
+            "the same plan and diff give the same prompt: no automatic retry"
+        );
+        assert!(db.flow_work().parked(id).await.unwrap());
+        assert_eq!(testing::retries(&db, id, &f2).await.unwrap(), (0, 0));
+        // The user's Retry still tries it (the model's budget may have changed).
+        db.flow_work().request(id, &f2, now).await.unwrap();
+        assert_eq!(db.flow_work().next(id).await.unwrap(), NextFlow::Run(f2));
+    }
+
+    #[tokio::test]
+    async fn result_kept_for_a_postponed_repair_moves_to_the_round_of_another_flows_retry() {
+        let db = Db::in_memory().await.unwrap();
+        let id = planned(&db, 2).await;
+        let (f1, f2) = (FlowId("f1".into()), FlowId("f2".into()));
+        // f1: output rejected, its repair postponed. f2: failed after its repairs.
+        let kept = succeeded_job(&db, id, &f1).await;
+        succeeded_job(&db, id, &f2).await;
+        db.flow_work().fail(id, &f2, "Failed").await.unwrap();
+        db.flow_work().request(id, &f2, Utc::now()).await.unwrap();
+        assert_eq!(
+            db.flow_work().next(id).await.unwrap(),
+            NextFlow::Run(f2.clone())
+        );
+        assert_eq!(testing::retries(&db, id, &f2).await.unwrap().0, 1);
+        let stage = super::super::jobs::JobStage::Flow;
+        assert_eq!(
+            db.jobs()
+                .current_for_stage(id, &stage(f1.clone()), 0)
+                .await
+                .unwrap()
+                .map(|job| job.id),
+            Some(kept),
+            "the postponed repair still starts from the stored output"
+        );
+        assert_eq!(db.flow_work().unstored(id).await.unwrap(), [f1]);
+        assert!(
+            db.jobs()
+                .current_for_stage(id, &stage(f2), 0)
+                .await
+                .unwrap()
+                .is_none(),
+            "the retried flow starts with a new first run"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_flow_says_whether_it_is_tried_again_automatically() {
+        let db = Db::in_memory().await.unwrap();
+        let id = planned(&db, 2).await;
+        let f1 = FlowId("f1".into());
+        let message = |status: FlowAnalysisStatus| {
+            assert_eq!(status.state, FlowAnalysisState::Failed);
+            status.message.unwrap()
+        };
+        let failure = "The flow analysis failed. The LLM call took too long and was stopped.";
+        let by_user = format!("{failure} Retry this flow.");
+        db.flow_work().fail(id, &f1, &by_user).await.unwrap();
+        assert_eq!(
+            message(db.flow_work().status(id, &f1).await.unwrap()),
+            format!("{failure} It will be tried again automatically.")
+        );
+        db.flow_work()
+            .set_background(id, false, Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            message(db.flow_work().status(id, &f1).await.unwrap()),
+            by_user,
+            "nothing is retried while background analysis is off"
+        );
+        db.flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE flow_work SET auto_retries=?")
+            .bind(AUTO_FLOW_RETRIES)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            message(db.flow_work().status(id, &f1).await.unwrap()),
+            by_user,
+            "no automatic retry is left"
         );
     }
 }

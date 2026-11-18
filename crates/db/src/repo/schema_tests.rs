@@ -91,6 +91,23 @@ async fn migrations_apply_to_an_empty_file_and_reopen() {
     assert_eq!(applied, i64::try_from(MIGRATIONS.len()).expect("count"));
 }
 
+/// A binary that knows fewer migrations than the database has applied does not open it.
+#[tokio::test]
+async fn older_binary_refuses_a_newer_database() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new().in_memory(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    migrate(&pool, MIGRATIONS.len()).await.expect("current");
+    let older = migrate(&pool, MIGRATIONS.len() - 1).await;
+    assert!(matches!(older, Err(DbError::Storage(_))), "{older:?}");
+}
+
 /// Migration 0002 upgrades a database made by 0001 in place: analyses, jobs, flow work and questions keep
 /// their rows, and the new counter starts at 0 with its constraint.
 #[tokio::test]

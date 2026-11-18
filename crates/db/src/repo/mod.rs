@@ -63,6 +63,15 @@ pub mod testing {
         Db::open_with(&dir.join("smart-review.sqlite"), busy_timeout).await
     }
 
+    /// Makes every later write of an in-memory `db` fail while reads still work, as on a full disk
+    /// ([`Db::in_memory`] has one connection, which keeps the setting).
+    pub async fn refuse_writes(db: &Db) -> Result<(), DbError> {
+        sqlx::query("PRAGMA query_only = ON")
+            .execute(&db.pool)
+            .await?;
+        Ok(())
+    }
+
     /// The write lock held on its own connection until dropped (rolled back), as by a concurrent writer.
     #[derive(Debug)]
     pub struct WriteLock(

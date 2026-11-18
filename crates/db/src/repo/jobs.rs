@@ -236,10 +236,11 @@ const EVENTS_KEPT: i64 = 500;
 /// How long a usage-limited job waits when the provider gave no reset time (ADR-003).
 pub const PAUSE_WITHOUT_RESET: TimeDelta = TimeDelta::minutes(30);
 
-/// Message of the server-built result of a job whose leases expired on every attempt.
 /// Result text of a job that failed because no claim could prepare its context.
 const CONTEXT_UNPREPARED_MESSAGE: &str =
     "the job's session or context pack could not be prepared at any claim";
+
+/// Message of the server-built result of a job whose leases expired on every attempt.
 const RUNNER_LOST_MESSAGE: &str =
     "The runner stopped reporting progress on every attempt, so the job was given up.";
 
@@ -1562,6 +1563,38 @@ mod tests {
             Some(JobOutcome::Cancelled)
         );
         assert_eq!(claim(&db, 100).await, None, "never re-claimed");
+    }
+
+    #[tokio::test]
+    async fn released_claim_of_a_job_flagged_for_cancel_ends_cancelled() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        claim(&db, 0).await.expect("claim");
+        assert_eq!(
+            db.jobs().request_cancel(job, at(1)).await.expect("cancel"),
+            JobState::Claimed,
+            "a claimed job is only flagged"
+        );
+        assert_eq!(
+            db.jobs()
+                .release_claim(job, 1, at(2))
+                .await
+                .expect("release"),
+            Some(JobState::Cancelled)
+        );
+        let record = db.jobs().get(job).await.expect("get");
+        assert_eq!(record.state, JobState::Cancelled);
+        assert_eq!(
+            record.result.map(|r| r.outcome),
+            Some(JobOutcome::Cancelled)
+        );
+        assert_eq!(claim(&db, 100).await, None, "never re-claimed");
+        assert_eq!(
+            db.jobs().release_claim(job, 1, at(3)).await.expect("again"),
+            None,
+            "no longer claimed: nothing changes"
+        );
     }
 
     #[tokio::test]
