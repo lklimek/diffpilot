@@ -185,7 +185,12 @@ async fn current_view(
         &judgements,
         state.config.memcan_ui_url.as_deref(),
     );
-    Ok(Some((snapshot::revision(&record), snapshot, view, record)))
+    Ok(Some((
+        snapshot::revision(&record, &snapshot),
+        snapshot,
+        view,
+        record,
+    )))
 }
 
 async fn summary(
@@ -295,51 +300,46 @@ async fn items(
     Ok(response)
 }
 
-/// Fills `review` of the pull requests on the page from the tenant's analyses, read now (plan §F.1): the analysis
-/// a reader is shown (`latest_for_pr`), whether the PR head moved since (snapshot head vs analysed head) and
-/// whether the reader saved review state.
+/// Fills `review` of the pull requests on the page from the tenant's analyses, read now in one statement (plan
+/// §F.1): the analysis a reader is shown, whether the PR head moved since (snapshot head vs analysed head) and
+/// whether the reader saved review state. Part of the page's `ETag`, so a new analysis is never hidden by a 304.
 async fn review_links(
     state: &AppState,
     session: &Session,
     items: &mut [WorkItem],
     heads: &[Option<String>],
 ) -> Result<(), DbError> {
-    if !items.iter().any(|item| item.kind == ItemKind::Pr) {
+    let rows: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| {
+            item.kind == ItemKind::Pr && item.repo.is_some() && item.number.is_some()
+        })
+        .map(|(row, _)| row)
+        .collect();
+    if rows.is_empty() {
         return Ok(());
     }
+    let wanted: Vec<_> = rows
+        .iter()
+        .filter_map(|row| Some((items[*row].repo.clone()?, items[*row].number?)))
+        .collect();
     let language = state.db.users().get(&session.user_id).await?.language;
-    for (item, head) in items.iter_mut().zip(heads) {
-        let (ItemKind::Pr, Some(repo), Some(number)) = (item.kind, &item.repo, item.number) else {
+    let links = state
+        .db
+        .pull_requests()
+        .review_links(&session.tenant_id, &session.user_id, language, &wanted)
+        .await?;
+    for link in links {
+        let Some(&row) = rows.get(link.index) else {
             continue;
         };
-        let Some(pr_id) = state
-            .db
-            .pull_requests()
-            .find(&session.tenant_id, repo, number)
-            .await?
-        else {
-            continue;
-        };
-        let Some(analysis) = state
-            .db
-            .analyses()
-            .latest_for_pr(pr_id, language)
-            .await?
-            .filter(|record| record.tenant_id == session.tenant_id)
-        else {
-            continue;
-        };
-        item.review = Some(ReviewLink {
-            analysis_id: analysis.id,
-            head_moved: head
-                .as_deref()
-                .is_some_and(|head| head != analysis.head_sha.0),
-            has_my_state: state
-                .db
-                .review_states()
-                .exists(&session.user_id, analysis.id)
-                .await?,
-            analysed_head: analysis.head_sha,
+        let head = heads.get(row).and_then(Option::as_deref);
+        items[row].review = Some(ReviewLink {
+            analysis_id: link.analysis_id,
+            head_moved: head.is_some_and(|head| head != link.head_sha.0),
+            has_my_state: link.has_review_state,
+            analysed_head: link.head_sha,
         });
     }
     Ok(())

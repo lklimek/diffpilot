@@ -10,6 +10,9 @@ mod progress;
 pub mod rank;
 mod scan;
 
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use contracts::api::dashboard::{
@@ -20,6 +23,7 @@ use contracts::api::settings::MemcanState;
 use contracts::ids::RefreshId;
 use db::error::DbError;
 use db::repo::dashboard::{RefreshRecord, RestartOutcome, ScanEnd, StartOutcome};
+use futures::FutureExt;
 
 use self::progress::Progress;
 use self::rank::RankRun;
@@ -29,6 +33,13 @@ use super::{settings, snapshot};
 use crate::auth::UserTokenError;
 use crate::github::work::{UserTokens, WorkClient, WorkError};
 use crate::state::AppState;
+
+/// Message of an `internal` failure.
+const INTERNAL_MESSAGE: &str = "The refresh failed on the server. Try again later.";
+/// Writes of a failed refresh's end before giving up to startup recovery.
+const END_ATTEMPTS: u32 = 3;
+/// Pause between them.
+const END_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The user a refresh belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,15 +81,21 @@ pub enum ControlError {
     Db(#[from] DbError),
 }
 
-/// Why the refresh task failed before storing its snapshot.
+/// Why the refresh task stopped before storing its snapshot.
 #[derive(Debug, thiserror::Error)]
 enum RunError {
     #[error(transparent)]
     Github(#[from] WorkError),
+    /// No candidate search was answered: GitHub search is down, the scan read nothing.
+    #[error("GitHub answered none of the scan's searches")]
+    SearchUnavailable,
     #[error("the user's dashboard data could not be read")]
     Db(#[from] DbError),
     #[error("the scan took longer than its limit")]
     TimedOut,
+    /// The refresh ended (cancelled) meanwhile; not a failure.
+    #[error(transparent)]
+    Ended(#[from] progress::Ended),
 }
 
 /// Starts a refresh of the user (R2, the schedule): supersedes a ranking one, refuses while one scans or while
@@ -120,9 +137,10 @@ pub async fn start(
     // Before the task runs, so this first status never follows the task's own events.
     state.dashboard.publish(status.clone());
     let id = refresh.id;
+    let task = run(state.clone(), scope.clone(), id, trigger);
     state
         .dashboard
-        .spawn(id, run(state.clone(), scope.clone(), id, trigger));
+        .spawn(id, guarded(state.clone(), scope.clone(), id, task));
     Ok(status)
 }
 
@@ -152,13 +170,11 @@ pub async fn cancel(
                 .await
                 .map(|()| true),
             RefreshState::Ranking => dashboard
-                .finish_ranking(
+                .cancel_ranking(
                     &scope.tenant_id,
                     &scope.user_id,
                     id,
                     record.ranking_attempt,
-                    RankingState::Cancelled,
-                    record.counts,
                     now,
                 )
                 .await
@@ -210,8 +226,10 @@ pub async fn rank_again(
     };
     let status = status_of(&record);
     state.dashboard.publish(status.clone());
-    let ranker = state.dashboard.ranker();
-    state.dashboard.spawn(id, ranker.rank(state.clone(), run));
+    let task = state.dashboard.ranker().rank(state.clone(), run);
+    state
+        .dashboard
+        .spawn(id, guarded(state.clone(), scope.clone(), id, task));
     Ok(status)
 }
 
@@ -298,6 +316,89 @@ pub fn status_of(record: &RefreshRecord) -> RefreshStatus {
     }
 }
 
+/// Runs a refresh's task; a panic is logged and ends the refresh `failed` (`internal`) or its ranking `failed`,
+/// so the user is never left with a refresh that runs only in the database.
+async fn guarded(
+    state: AppState,
+    scope: Scope,
+    id: RefreshId,
+    task: impl Future<Output = ()> + Send,
+) {
+    if AssertUnwindSafe(task).catch_unwind().await.is_ok() {
+        return;
+    }
+    tracing::error!(user_id = %scope.user_id, refresh = %id,
+        "dashboard refresh task panicked; the refresh is ended as failed");
+    let dashboard = state.db.dashboard();
+    let now = state.dashboard.now();
+    let ended = match dashboard
+        .refresh(&scope.tenant_id, &scope.user_id, id)
+        .await
+    {
+        Ok(record) if record.state == RefreshState::Scanning => {
+            end_failed_scan(&state, &scope, id, internal_failure()).await;
+            return;
+        }
+        Ok(record) if record.state == RefreshState::Ranking => dashboard
+            .finish_ranking(
+                &scope.tenant_id,
+                &scope.user_id,
+                id,
+                record.ranking_attempt,
+                RankingState::Failed,
+                record.counts,
+                now,
+            )
+            .await
+            .map(drop),
+        Ok(_) => Ok(()),
+        Err(error) => Err(error),
+    };
+    match ended {
+        Ok(()) | Err(DbError::Conflict) => publish(&state, &scope, id).await,
+        Err(error) => tracing::error!(%error, refresh = %id,
+            "a panicked dashboard ranking could not be ended; startup recovery ends it"),
+    }
+}
+
+fn internal_failure() -> RefreshFailure {
+    RefreshFailure {
+        code: RefreshFailureCode::Internal,
+        message: INTERNAL_MESSAGE.to_owned(),
+        retry_at: None,
+    }
+}
+
+/// Ends a scanning refresh `failed`, retrying a failed write (a refresh left `scanning` blocks every new one);
+/// a refresh that already ended is left as it is.
+async fn end_failed_scan(state: &AppState, scope: &Scope, id: RefreshId, failure: RefreshFailure) {
+    for attempt in 1..=END_ATTEMPTS {
+        let ended = state
+            .db
+            .dashboard()
+            .end_scan(
+                &scope.tenant_id,
+                &scope.user_id,
+                id,
+                &ScanEnd::Failed(failure.clone()),
+                state.dashboard.now(),
+            )
+            .await;
+        match ended {
+            Ok(()) | Err(DbError::Conflict) => {
+                publish(state, scope, id).await;
+                return;
+            }
+            Err(error) if attempt < END_ATTEMPTS => {
+                tracing::warn!(%error, refresh = %id, attempt, "a failed dashboard refresh could not be stored; retrying");
+                tokio::time::sleep(END_RETRY).await;
+            }
+            Err(error) => tracing::error!(%error, refresh = %id,
+                "a failed dashboard refresh could not be stored; startup recovery ends it"),
+        }
+    }
+}
+
 /// The refresh task: scan and store the snapshot, then rank it. A failed scan ends the refresh `failed`.
 async fn run(state: AppState, scope: Scope, id: RefreshId, trigger: RefreshTrigger) {
     match scan_and_store(&state, &scope, id, trigger).await {
@@ -315,22 +416,7 @@ async fn run(state: AppState, scope: Scope, id: RefreshId, trigger: RefreshTrigg
         Err(failure) => {
             tracing::info!(user_id = %scope.user_id, refresh = %id, code = ?failure.code,
                 "dashboard refresh failed; the previous snapshot stays");
-            let ended = state
-                .db
-                .dashboard()
-                .end_scan(
-                    &scope.tenant_id,
-                    &scope.user_id,
-                    id,
-                    &ScanEnd::Failed(failure),
-                    state.dashboard.now(),
-                )
-                .await;
-            match ended {
-                Ok(()) | Err(DbError::Conflict) => publish(&state, &scope, id).await,
-                Err(error) => tracing::warn!(%error, refresh = %id,
-                    "a failed dashboard refresh could not be stored; startup recovery ends it"),
-            }
+            end_failed_scan(&state, &scope, id, failure).await;
         }
     }
 }
@@ -393,13 +479,14 @@ async fn scan_and_store(
     .await;
     let snapshot = match scanned {
         Ok(Ok(snapshot)) => snapshot,
-        Ok(Err(error)) => {
-            return Err(failed(&mut progress, RunError::Github(error), state, zone).await);
-        }
+        Ok(Err(RunError::Ended(_))) => return Ok(false),
+        Ok(Err(error)) => return Err(failed(&mut progress, error, state, zone).await),
         Err(_) => return Err(failed(&mut progress, RunError::TimedOut, state, zone).await),
     };
     progress.log("scan complete");
-    progress.record().await;
+    if progress.record().await.is_err() {
+        return Ok(false);
+    }
     let stored = state
         .db
         .dashboard()
@@ -447,7 +534,8 @@ fn failure_of(error: &RunError, state: &AppState, zone: Option<Tz>) -> RefreshFa
             (RefreshFailureCode::GithubUnavailable, None)
         }
         RunError::Github(WorkError::Token(_) | WorkError::Interrupted | WorkError::Client(_))
-        | RunError::Db(_) => (RefreshFailureCode::Internal, None),
+        | RunError::Db(_)
+        | RunError::Ended(_) => (RefreshFailureCode::Internal, None),
         RunError::Github(WorkError::PrimaryRateLimit { reset }) => {
             (RefreshFailureCode::GithubRateLimited, *reset)
         }
@@ -457,7 +545,9 @@ fn failure_of(error: &RunError, state: &AppState, zone: Option<Tz>) -> RefreshFa
                 .and_then(|wait| chrono::TimeDelta::from_std(wait).ok())
                 .map(|wait| now + wait),
         ),
-        RunError::Github(_) => (RefreshFailureCode::GithubUnavailable, None),
+        RunError::Github(_) | RunError::SearchUnavailable => {
+            (RefreshFailureCode::GithubUnavailable, None)
+        }
         RunError::TimedOut => (RefreshFailureCode::TimedOut, None),
     };
     let message = match code {
@@ -481,9 +571,7 @@ fn failure_of(error: &RunError, state: &AppState, zone: Option<Tz>) -> RefreshFa
             "The refresh took longer than 5 minutes and was stopped.".to_owned()
         }
         RefreshFailureCode::Interrupted => "A server restart interrupted the scan.".to_owned(),
-        RefreshFailureCode::Internal => {
-            "The refresh failed on the server. Try again later.".to_owned()
-        }
+        RefreshFailureCode::Internal => INTERNAL_MESSAGE.to_owned(),
     };
     RefreshFailure {
         code,

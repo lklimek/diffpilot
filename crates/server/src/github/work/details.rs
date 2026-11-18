@@ -350,6 +350,8 @@ pub struct Reach {
     pub invisible_repositories: Vec<RepoRef>,
     /// Owners the token cannot see.
     pub invisible_owners: Vec<String>,
+    /// Visible repositories that are private.
+    pub private_repositories: Vec<RepoRef>,
     /// One note per invisible repository or owner, and per lookup that failed.
     pub notes: Vec<ScanNote>,
 }
@@ -510,8 +512,8 @@ impl<T: TokenSource> WorkClient<T> {
         Ok(fetched)
     }
 
-    /// Looks up each repository and owner of the user's settings with the user token (Q15); the invisible ones
-    /// get the note "Not visible to your GitHub token: …".
+    /// Looks up each repository and owner of the user's settings with the user token (Q15), with each visible
+    /// repository's privacy; the invisible ones get the note "Not visible to your GitHub token: …".
     pub async fn reach(&self, repos: &[RepoRef], owners: &[String]) -> Result<Reach, WorkError> {
         let keys: Vec<ReachKey> = repos
             .iter()
@@ -521,7 +523,7 @@ impl<T: TokenSource> WorkClient<T> {
             .collect();
         let answers = self
             .batched(&keys, REACH_BATCH, "", |key| match key {
-                ReachKey::Repo(repo) => repository(repo, "id"),
+                ReachKey::Repo(repo) => repository(repo, "id isPrivate"),
                 ReachKey::Owner(login) => {
                     format!("repositoryOwner(login: {}) {{ id }}", literal(login))
                 }
@@ -530,6 +532,11 @@ impl<T: TokenSource> WorkClient<T> {
         let mut reach = Reach::default();
         for (key, value) in answers.resolved {
             if !value.is_null() {
+                if let ReachKey::Repo(repo) = key
+                    && value["isPrivate"].as_bool() == Some(true)
+                {
+                    reach.private_repositories.push(repo);
+                }
                 continue;
             }
             let name = match key {

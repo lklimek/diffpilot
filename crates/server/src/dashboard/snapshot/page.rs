@@ -7,7 +7,7 @@ use contracts::api::dashboard::{GithubKind, ItemKind, ItemQuery};
 use db::repo::dashboard::RefreshRecord;
 use sha2::{Digest, Sha256};
 
-use super::ViewItem;
+use super::{Snapshot, ViewItem};
 
 /// Revision of a user without a readable snapshot.
 pub const NO_SNAPSHOT: &str = "none";
@@ -31,11 +31,11 @@ fn short_hash(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Opaque revision of the snapshot held by `record`: changes when the snapshot or its ranking changes (state,
-/// attempt and judgement counts; WP11-JUDGE records the counts as judgements land).
-pub fn revision(record: &RefreshRecord) -> String {
+/// Opaque revision of `snapshot`, held by `record`: changes when the snapshot or its ranking changes (state,
+/// attempt and judgement counts; WP11-JUDGE records the counts as judgements land) and when TODOs are hidden.
+pub fn revision(record: &RefreshRecord, snapshot: &Snapshot) -> String {
     let source = format!(
-        "{}|{:?}|{:?}|{}|{}|{}|{}|{:?}|{:?}",
+        "{}|{:?}|{:?}|{}|{}|{}|{}|{:?}|{:?}|{}",
         record.id,
         record.state,
         record.ranking_state,
@@ -45,6 +45,7 @@ pub fn revision(record: &RefreshRecord) -> String {
         record.counts.left_provisional,
         record.scanned_at,
         record.finished_at,
+        snapshot.todos_hidden,
     );
     format!("r-{}", short_hash(source.as_bytes()))
 }

@@ -367,6 +367,26 @@ impl Ranker for StallingRanker {
     }
 }
 
+/// Panics in its ranking (a bug in the ranking step).
+#[derive(Debug)]
+struct PanickingRanker;
+
+impl Ranker for PanickingRanker {
+    fn rank(&self, _state: AppState, _run: RankRun) -> BoxFuture<'static, ()> {
+        Box::pin(async { panic!("ranking bug") })
+    }
+
+    fn judgements<'a>(
+        &'a self,
+        _state: &'a AppState,
+        _scope: &'a Scope,
+        _snapshot: &'a crate::dashboard::snapshot::Snapshot,
+    ) -> BoxFuture<'a, Result<HashMap<contracts::api::dashboard::ItemKey, ItemJudgement>, DbError>>
+    {
+        Box::pin(async { Ok(HashMap::new()) })
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // World
 
@@ -460,6 +480,13 @@ async fn world_with(ranker: Arc<dyn Ranker>, scan_limit: Duration) -> World {
     }
 }
 
+fn alice() -> Scope {
+    Scope {
+        tenant_id: DEFAULT_TENANT.to_owned(),
+        user_id: "u1".to_owned(),
+    }
+}
+
 async fn world() -> World {
     world_with(Arc::new(NoopRanker), Duration::from_secs(24 * 3600)).await
 }
@@ -514,15 +541,14 @@ impl World {
         serde_json::from_value(answer.body).expect("status")
     }
 
+    /// The stored status of refresh `id` of either user.
     async fn status(&self, id: RefreshId) -> RefreshStatus {
-        let record = self
-            .state
-            .db
-            .dashboard()
-            .refresh(DEFAULT_TENANT, "u1", id)
-            .await
-            .expect("refresh");
-        status_of(&record)
+        let dashboard = self.state.db.dashboard();
+        let record = match dashboard.refresh(DEFAULT_TENANT, "u1", id).await {
+            Err(DbError::NotFound) => dashboard.refresh(DEFAULT_TENANT, "u2", id).await,
+            other => other,
+        };
+        status_of(&record.expect("refresh"))
     }
 
     /// Waits until the refresh's status satisfies `done`.
@@ -552,6 +578,7 @@ impl World {
 
     /// Waits until the refresh ended and its task too (no database work left behind).
     async fn settle(&self, id: RefreshId) -> RefreshStatus {
+        let mut stopped = self.state.dashboard.stopped();
         self.wait_until(id, |s| {
             matches!(
                 s.state,
@@ -559,13 +586,9 @@ impl World {
             )
         })
         .await;
-        let ended = tokio::time::timeout(WAIT, async {
-            while self.state.dashboard.is_running(id) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-        assert!(ended.is_ok(), "the refresh's task never ended");
+        if self.state.dashboard.is_running(id) {
+            task_stopped(&mut stopped, id).await;
+        }
         self.status(id).await
     }
 
@@ -603,6 +626,15 @@ impl World {
             .status();
         assert_eq!(status, 204);
     }
+}
+
+/// Waits until the task of refresh `id` ended (completed or aborted).
+async fn task_stopped(stopped: &mut tokio::sync::broadcast::Receiver<RefreshId>, id: RefreshId) {
+    let ended = tokio::time::timeout(WAIT, async {
+        while stopped.recv().await.expect("stop signals") != id {}
+    })
+    .await;
+    assert!(ended.is_ok(), "the task of refresh {id} never ended");
 }
 
 fn path(id: RefreshId, action: &str) -> String {
@@ -814,20 +846,24 @@ async fn cancel_keeps_previous_snapshot() {
     let first = w.refreshed().await;
     let running = w.start_held().await;
     assert_eq!(running.state, RefreshState::Scanning);
+    let mut stopped = w.state.dashboard.stopped();
+    let calls = w.gate.requests();
     let answer = w
         .send("POST", &path(running.id, "/cancel"), ALICE, &[])
         .await;
     assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
     let cancelled: RefreshStatus = serde_json::from_value(answer.body).expect("status");
     assert_eq!(cancelled.state, RefreshState::Cancelled);
-    assert!(
-        !w.state.dashboard.is_running(running.id),
-        "the scan task is stopped"
-    );
-    let calls = w.gate.requests();
+    // The scan's task is dropped while its GitHub call is held: it can make no further call.
+    task_stopped(&mut stopped, running.id).await;
     w.gate.open();
-    tokio::task::yield_now().await;
     assert_eq!(w.gate.requests(), calls, "no GitHub call after the cancel");
+    let cancel_line = cancelled.log.len();
+    assert_eq!(
+        w.status(running.id).await.log.len(),
+        cancel_line,
+        "no progress written after the cancel"
+    );
     assert_eq!(w.status(running.id).await.state, RefreshState::Cancelled);
     let summary = w.summary(ALICE).await;
     assert_eq!(summary.snapshot.expect("snapshot").refresh_id, first.id);
@@ -836,6 +872,106 @@ async fn cancel_keeps_previous_snapshot() {
         .error_code("POST", &path(running.id, "/cancel"), ALICE)
         .await;
     assert_eq!((status, code), (StatusCode::CONFLICT, json!("conflict")));
+}
+
+/// A cancel that lands after the refresh is stored but before its task runs (no task to abort yet) still stops
+/// the scan before its first GitHub call.
+#[tokio::test]
+async fn cancel_before_the_task_runs_stops_the_scan() {
+    let w = world().await;
+    let mut stopped = w.state.dashboard.stopped();
+    let started = start(&w.state, &alice(), RefreshTrigger::Manual)
+        .await
+        .expect("start");
+    // The spawned task has not run yet (current-thread runtime): end the scan as R3 does in that window.
+    w.state
+        .db
+        .dashboard()
+        .end_scan(
+            DEFAULT_TENANT,
+            "u1",
+            started.id,
+            &db::repo::dashboard::ScanEnd::Cancelled,
+            now(),
+        )
+        .await
+        .expect("cancel");
+    task_stopped(&mut stopped, started.id).await;
+    assert_eq!(w.gate.requests(), 0, "no GitHub call");
+    let status = w.status(started.id).await;
+    assert_eq!(status.state, RefreshState::Cancelled);
+    assert_eq!(w.summary(ALICE).await.snapshot, None);
+    assert_eq!(
+        w.refreshed().await.state,
+        RefreshState::Finished,
+        "a new refresh may start"
+    );
+}
+
+/// Cancelling a ranking keeps the judgement counts stored meanwhile.
+#[tokio::test]
+async fn cancel_of_a_ranking_keeps_its_stored_counts() {
+    let w = world_with(Arc::new(StallingRanker), Duration::from_secs(24 * 3600)).await;
+    let started = w.start().await;
+    w.wait_until(started.id, |s| s.state == RefreshState::Ranking)
+        .await;
+    let counts = db::repo::dashboard::JudgeCounts {
+        judged: 4,
+        reused: 2,
+        left_provisional: 1,
+    };
+    let reported = w
+        .state
+        .db
+        .dashboard()
+        .set_ranking(
+            DEFAULT_TENANT,
+            "u1",
+            started.id,
+            0,
+            RankingState::Running,
+            counts,
+        )
+        .await
+        .expect("report");
+    assert_eq!(reported, db::repo::dashboard::RankingUpdate::Applied);
+    let answer = w
+        .send("POST", &path(started.id, "/cancel"), ALICE, &[])
+        .await;
+    assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
+    let cancelled: RefreshStatus = serde_json::from_value(answer.body).expect("status");
+    assert_eq!(
+        (cancelled.state, cancelled.ranking.map(|r| r.state)),
+        (RefreshState::Finished, Some(RankingState::Cancelled))
+    );
+    assert_eq!(
+        (
+            cancelled.judged,
+            cancelled.reused,
+            cancelled.left_provisional
+        ),
+        (4, 2, 1)
+    );
+}
+
+/// A panicking refresh task ends its refresh instead of leaving it live in the database.
+#[tokio::test]
+async fn a_panicking_ranking_ends_failed_and_a_new_refresh_may_start() {
+    let w = world_with(Arc::new(PanickingRanker), Duration::from_secs(24 * 3600)).await;
+    let started = w.start().await;
+    let ended = w
+        .wait_until(started.id, |s| {
+            s.ranking.as_ref().map(|r| r.state) == Some(RankingState::Failed)
+        })
+        .await;
+    assert_eq!(ended.state, RefreshState::Finished);
+    let mut stopped = w.state.dashboard.stopped();
+    if w.state.dashboard.is_running(started.id) {
+        task_stopped(&mut stopped, started.id).await;
+    }
+    assert!(!w.state.dashboard.is_running(started.id));
+    let again = w.start().await;
+    assert_ne!(again.id, started.id);
 }
 
 #[tokio::test]
@@ -1128,10 +1264,13 @@ async fn sse_sends_the_status_then_each_change_until_finished() {
                     .lines()
                     .find_map(|l| l.strip_prefix("data: "))
                     .expect("data");
-                assert_eq!(name, "refresh", "{frame}");
                 match serde_json::from_str::<DashboardEvent>(data).expect("event") {
-                    DashboardEvent::Refresh { status } => events.push(status),
-                    DashboardEvent::Heartbeat { .. } => panic!("no heartbeat within 15 s"),
+                    DashboardEvent::Refresh { status } => {
+                        assert_eq!(name, "refresh", "{frame}");
+                        events.push(status);
+                    }
+                    // A slow host may reach the 15 s heartbeat; it carries no status.
+                    DashboardEvent::Heartbeat { .. } => assert_eq!(name, "heartbeat"),
                 }
             }
         }
@@ -1159,13 +1298,23 @@ async fn sse_sends_the_status_then_each_change_until_finished() {
         "progress events while scanning: {}",
         events.len()
     );
+    let current_item = events.iter().find_map(|s| {
+        s.steps
+            .iter()
+            .find(|step| step.key == ScanStepKey::PrDetails && step.state == StepState::Running)
+            .and_then(|step| step.detail.clone())
+    });
+    assert!(
+        current_item.is_some_and(|item| item.starts_with("acme/") && item.contains('#')),
+        "pr_details names the current item"
+    );
     let last = events.last().expect("last");
     assert_eq!(last.percent, 100);
     assert_eq!(last, &w.status(running.id).await);
 }
 
 #[tokio::test]
-async fn another_user_sees_nothing() {
+async fn dashboard_of_another_user_is_never_served() {
     let w = world().await;
     let done = w.refreshed().await;
     let summary = w.summary(COLLEAGUE).await;
@@ -1190,6 +1339,84 @@ async fn another_user_sees_nothing() {
     }
     let (status, _) = w.error_code("GET", "/api/v1/dashboard", "").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// The refresh statuses of an R5 stream until one is ended.
+async fn statuses_until_ended(w: &World, cookie: &str, id: RefreshId) -> Vec<RefreshStatus> {
+    let request = Request::builder()
+        .uri(path(id, "/events"))
+        .header("cookie", cookie)
+        .body(Body::empty())
+        .expect("request");
+    let response = api::router(w.state.clone())
+        .oneshot(request)
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body().into_data_stream();
+    let mut statuses: Vec<RefreshStatus> = Vec::new();
+    let mut text = String::new();
+    let ended = |s: &RefreshStatus| {
+        matches!(s.state, RefreshState::Failed | RefreshState::Cancelled)
+            || s.ranking
+                .as_ref()
+                .is_some_and(|r| r.state == RankingState::Finished)
+    };
+    let read = tokio::time::timeout(WAIT, async {
+        while !statuses.last().is_some_and(ended) {
+            let chunk = body.next().await.expect("stream open").expect("chunk");
+            text.push_str(std::str::from_utf8(&chunk).expect("utf-8"));
+            while let Some(end) = text.find("\n\n") {
+                let frame: String = text.drain(..end + 2).collect();
+                let data = frame
+                    .lines()
+                    .find_map(|l| l.strip_prefix("data: "))
+                    .expect("data");
+                if let DashboardEvent::Refresh { status } =
+                    serde_json::from_str::<DashboardEvent>(data).expect("event")
+                {
+                    statuses.push(status);
+                }
+            }
+        }
+    })
+    .await;
+    assert!(read.is_ok(), "{statuses:?}");
+    statuses
+}
+
+/// T16: each stream carries only its own user's refresh, while both users' refreshes run at once.
+#[tokio::test]
+async fn dashboard_events_are_per_user() {
+    let w = world().await;
+    let alices = w.start_held().await;
+    let (status, _) = w
+        .error_code("GET", &path(alices.id, "/events"), COLLEAGUE)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "another user's stream");
+    let answer = w
+        .send("POST", "/api/v1/dashboard/refreshes", COLLEAGUE, &[])
+        .await;
+    assert_eq!(answer.status, StatusCode::CREATED, "{}", answer.body);
+    let colleagues: RefreshStatus = serde_json::from_value(answer.body).expect("status");
+    let alice_stream = statuses_until_ended(&w, ALICE, alices.id);
+    let colleague_stream = statuses_until_ended(&w, COLLEAGUE, colleagues.id);
+    w.gate.open();
+    let (alice_events, colleague_events) = tokio::join!(alice_stream, colleague_stream);
+    assert!(
+        alice_events.iter().all(|s| s.id == alices.id),
+        "{alice_events:?}"
+    );
+    assert!(
+        colleague_events.iter().all(|s| s.id == colleagues.id),
+        "{colleague_events:?}"
+    );
+    assert!(alice_events.len() > 2 && !colleague_events.is_empty());
+    assert_eq!(
+        colleague_events.last().map(|s| s.state),
+        Some(RefreshState::Failed),
+        "the colleague has no GitHub sign-in (which also ends their session)"
+    );
 }
 
 #[tokio::test]
@@ -1261,21 +1488,93 @@ async fn refresh_without_a_github_sign_in_fails_with_sign_in_required() {
         .await;
     assert_eq!(answer.status, StatusCode::CREATED, "{}", answer.body);
     let started: RefreshStatus = serde_json::from_value(answer.body).expect("status");
-    let mut events = w.state.dashboard.subscribe();
-    let failed = tokio::time::timeout(WAIT, async {
-        loop {
-            let status = events.recv().await.expect("event");
-            if status.id == started.id && status.state == RefreshState::Failed {
-                break status;
-            }
-        }
-    })
-    .await
-    .expect("fails");
+    let failed = w.settle(started.id).await;
+    assert_eq!(failed.state, RefreshState::Failed);
     assert_eq!(
         failed.failure.map(|f| f.code),
         Some(RefreshFailureCode::SignInRequired)
     );
+}
+
+/// A GitHub search outage (every search 502) does not replace the previous snapshot with an empty one (Refresh
+/// states: a failed scan keeps the previous snapshot; `github_unavailable`).
+#[tokio::test]
+async fn search_outage_keeps_previous_snapshot() {
+    let w = world().await;
+    let first = w.refreshed().await;
+    w.faults(json!([{"on": "search", "times": 1000, "answer": {"kind": "server_error"}}]))
+        .await;
+    let second = w.refreshed().await;
+    let summary = w.summary(ALICE).await;
+    let meta = summary.snapshot.expect("snapshot");
+    assert_eq!(
+        (second.state, meta.refresh_id, meta.item_counts.pr),
+        (RefreshState::Failed, first.id, 10),
+        "outage refresh: {:?}; current snapshot items {:?}",
+        second.failure,
+        meta.item_counts
+    );
+    assert_eq!(
+        second.failure.map(|f| f.code),
+        Some(RefreshFailureCode::GithubUnavailable)
+    );
+}
+
+/// Some searches failing is a partial scan: the snapshot is stored with a note per missing search.
+#[tokio::test]
+async fn partial_search_failure_stores_a_snapshot_with_notes() {
+    let w = world().await;
+    w.faults(
+        json!([{"on": "search", "matching": "mentions:alice", "times": 10,
+        "answer": {"kind": "server_error"}}]),
+    )
+    .await;
+    let done = w.refreshed().await;
+    assert_eq!(done.state, RefreshState::Finished, "{:?}", done.failure);
+    let meta = w.summary(ALICE).await.snapshot.expect("snapshot");
+    assert_eq!(meta.refresh_id, done.id);
+    assert!(
+        meta.notes
+            .iter()
+            .any(|n| n.text.contains("issues mentioning alice")),
+        "{:?}",
+        meta.notes
+    );
+}
+
+/// T19: TODOs are shown only while the user's current settings include them, whatever the snapshot holds.
+#[tokio::test]
+async fn todos_hidden_when_switched_off() {
+    let w = world().await;
+    w.refreshed().await;
+    let before = w.summary(ALICE).await;
+    let mut off = settings();
+    off.include_todos = false;
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &off, Utc::now())
+        .await
+        .expect("settings");
+    let page = w.items("").await;
+    let todos = page
+        .items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Todo)
+        .count();
+    assert_eq!(
+        todos, 0,
+        "TODOs still served after include_todos was switched off"
+    );
+    let after = w.summary(ALICE).await;
+    let meta = after.snapshot.expect("snapshot");
+    assert_eq!((meta.item_counts.todo, meta.checked.todo), (0, 0));
+    assert_eq!(meta.todos.status, TodosStatus::Off);
+    assert_ne!(
+        after.revision, before.revision,
+        "hiding TODOs is a new revision"
+    );
+    assert_eq!(page.revision, after.revision);
 }
 
 #[tokio::test]
