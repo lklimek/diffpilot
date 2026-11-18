@@ -100,6 +100,20 @@ describe("DiagramPane", () => {
       expect(onHeight).toHaveBeenLastCalledWith(null);
     });
 
+    it("fits a height stored on a taller screen into this window and reports the height shown", () => {
+      const { handle } = pane(5000);
+      expect(handle).toHaveAttribute("aria-valuenow", String(diagramMaxPx()));
+      expect(screen.getByRole("region", { name: "Flow diagram" }).querySelector("[data-diagram-body]")).toHaveStyle({
+        height: `${diagramMaxPx()}px`,
+      });
+    });
+
+    it("at the default height it does not claim the minimum", () => {
+      const { handle } = pane(null);
+      expect(handle).not.toHaveAttribute("aria-valuenow", String(DIAGRAM_MIN_PX));
+      expect(handle).toHaveAttribute("aria-valuetext", "default height");
+    });
+
     it("double-click resets; the collapsed pane has no handle", async () => {
       const { handle, onHeight } = pane(300);
       await userEvent.dblClick(handle);

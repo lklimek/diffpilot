@@ -2,6 +2,7 @@ import {
   Component,
   Suspense,
   lazy,
+  useLayoutEffect,
   useRef,
   useState,
   type ComponentType,
@@ -94,7 +95,20 @@ export function DiagramPane({
 }: DiagramPaneProps) {
   const body = useRef<HTMLDivElement>(null);
   const drag = useRef<{ y: number; from: number } | null>(null);
-  const current = () => height ?? body.current?.getBoundingClientRect().height ?? DIAGRAM_MIN_PX;
+  // A height stored on a taller screen fits this window.
+  const shown = height === null ? null : clampHeight(height);
+  // The default height as drawn, for the separator's value.
+  const [measured, setMeasured] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const element = body.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) =>
+      setMeasured(entry ? Math.round(entry.target.getBoundingClientRect().height) : null),
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [open]);
+  const current = () => shown ?? body.current?.getBoundingClientRect().height ?? DIAGRAM_MIN_PX;
   const resize = (px: number | null) => onHeight?.(px === null ? null : clampHeight(px));
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
     const next = {
@@ -155,8 +169,8 @@ export function DiagramPane({
         <div
           ref={body}
           data-diagram-body
-          style={height === null ? undefined : { height: `${height}px` }}
-          className={`${height === null ? "max-h-[45vh]" : ""} overflow-auto border-t border-border px-3 py-2`}
+          style={shown === null ? undefined : { height: `${shown}px` }}
+          className={`${shown === null ? "max-h-[45vh]" : ""} overflow-auto border-t border-border px-3 py-2`}
         >
           <LoadBoundary key={diagram.attempt} fallback={failed}>
             <Suspense fallback={<StatusMessage kind="loading">Loading the diagram…</StatusMessage>}>
@@ -182,7 +196,8 @@ export function DiagramPane({
             aria-orientation="horizontal"
             aria-label="Resize the flow diagram"
             tabIndex={0}
-            aria-valuenow={Math.round(height ?? DIAGRAM_MIN_PX)}
+            aria-valuenow={shown ?? (measured || undefined)}
+            aria-valuetext={shown === null && !measured ? "default height" : undefined}
             aria-valuemin={DIAGRAM_MIN_PX}
             aria-valuemax={diagramMaxPx()}
             onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
