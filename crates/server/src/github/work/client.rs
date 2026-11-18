@@ -163,6 +163,8 @@ pub struct WorkClient<T> {
     last_search: Mutex<Option<Instant>>,
     calls: Semaphore,
     pub(crate) page_size: u32,
+    /// Page cap per repository of Q16 ([`super::AUTHORED_PAGES`]).
+    pub(crate) authored_pages: usize,
     /// Gap between the starts of two searches ([`SEARCH_INTERVAL`]; tests on real time shorten it).
     pub(crate) search_interval: Duration,
 }
@@ -268,6 +270,7 @@ impl<T: TokenSource> WorkClient<T> {
             last_search: Mutex::new(None),
             calls: Semaphore::new(MAX_CONCURRENT_CALLS),
             page_size: PAGE_SIZE,
+            authored_pages: super::AUTHORED_PAGES,
             search_interval: SEARCH_INTERVAL,
         })
     }
