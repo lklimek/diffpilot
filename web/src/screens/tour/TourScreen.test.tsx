@@ -76,6 +76,61 @@ describe("Tour screen (brief §4.3)", () => {
     expect(within(main()).queryByText("// changed comment")).toBeNull();
   });
 
+  it("c comments on the first visible changed line, never on a hidden comment line", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/lines", () =>
+        HttpResponse.json({
+          path: "src/rpc/client.rs",
+          side: "head",
+          from: 88,
+          to: 94,
+          total_lines: 100,
+          lines: ["fn send() {", "// changed comment", "send_request();", "}", "", "", ""],
+          changed: [89, 90],
+          context_only: [89],
+          deleted: [],
+          moved: [],
+          comments: { scope: "in_diff", line_thread_ranges: [] },
+        }),
+      ),
+    );
+    await open();
+    await openStep("1", "2");
+    await within(main()).findByText("1 comment/import line hidden — in the classic diff");
+    await user().keyboard("c");
+    expect(
+      within(inspector()).getByRole("textbox", { name: "Comment on src/rpc/client.rs:90" }),
+    ).toHaveFocus();
+  });
+
+  it("Show in Inspector on a pinned remark scrolls the Inspector to it and highlights it", async () => {
+    await open();
+    await openStep("1", "5");
+    const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
+    await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
+    await user().click(screen.getByRole("button", { name: /^Show in Inspector: Question to check/ }));
+    const questions = within(inspector()).getByRole("region", { name: /^Questions to check/ });
+    const item = questions.querySelector('[data-annotation-id="f1.5.a3"]');
+    await waitFor(() => expect(item).toHaveAttribute("data-flash"));
+  });
+
+  it("Show in Inspector on a pinned GitHub thread highlights the thread in the Inspector", async () => {
+    await open();
+    await openStep("1", "5");
+    const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
+    await user().click(within(code).getByRole("button", { name: "GitHub thread by bob at line 99" }));
+    await user().click(screen.getByRole("button", { name: /^Show in Inspector: GitHub thread by bob/ }));
+    const item = inspector().querySelector('[data-thread-id="PRRT_fixture482_t1"]');
+    await waitFor(() => expect(item).toHaveAttribute("data-flash"));
+  });
+
+  it("an evidence link highlights the line it jumps to", async () => {
+    renderRoute(`/analyses/${ID}#lines?file=src%2Frpc%2Fclient.rs&side=head&line=99`);
+    const code = await screen.findByRole("region", { name: /^src\/rpc\/client\.rs, lines/ });
+    const row = await waitFor(() => code.querySelector('[data-line="99"][data-side="head"]')!);
+    await waitFor(() => expect(row).toHaveAttribute("data-flash"));
+  });
+
   it("walks beyond the last step into quiet rows and pending review", async () => {
     setScenario("real-small");
     await open();

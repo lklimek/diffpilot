@@ -12,6 +12,7 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
+import { useFlashTarget } from "../flash/useFlashTarget";
 import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
 import { rangeText } from "../section/format";
 import { EvidenceLinks } from "../section/EvidenceLinks";
@@ -60,9 +61,12 @@ export interface InspectorProps {
   /** Opens a step (from the flow summary). */
   onSelectStep?: (step: StepId) => void;
   onEvidence?: (evidence: Evidence) => void;
+  /** Scroll to and briefly highlight a remark or GitHub thread of the step ("Show in Inspector"); new `nonce`, again. */
+  flash?: { kind: "annotation" | "thread"; id: string; nonce: number } | null;
 }
 
-const ANNOTATION: Record<AnnotationType, string> = {
+/** Reader-facing name of each annotation type. */
+export const ANNOTATION: Record<AnnotationType, string> = {
   behaviour: "Behaviour",
   consequence: "Consequence",
   question: "Question to check",
@@ -70,6 +74,14 @@ const ANNOTATION: Record<AnnotationType, string> = {
 };
 
 const LLM_LINE = "LLM analysis unless marked otherwise.";
+
+// The section listing each annotation type.
+const SECTION_OF: Record<AnnotationType, string> = {
+  behaviour: "behaviour",
+  note: "why",
+  consequence: "consequences",
+  question: "questions",
+};
 
 const linesWord = (r: Annotation["range"]) =>
   `${r.start_line === r.end_line ? "line" : "lines"} ${rangeText(r)}`;
@@ -271,11 +283,27 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
 
 /** Right-hand inspector (brief §4.3): never empty; the current block, or the selected annotation of a step. */
 export function Inspector(props: InspectorProps) {
-  const { answers, dock, onBackToStep } = props;
+  const { answers, dock, onBackToStep, flash } = props;
   const sections = useSectionState();
   const panel = panelFor(props, sections);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useRef(false);
+  const scroller = useRef<HTMLDivElement>(null);
+  const opened = useRef<number | null>(null);
+  const attribute = flash?.kind === "thread" ? "data-thread-id" : "data-annotation-id";
+  useFlashTarget(
+    scroller,
+    flash && { selector: `[${attribute}="${flash.id.replace(/["\\]/g, "\\$&")}"]`, nonce: flash.nonce },
+  );
+
+  // A flashed item in a collapsed section: open that section once per request.
+  useEffect(() => {
+    if (!flash || opened.current === flash.nonce) return;
+    opened.current = flash.nonce;
+    const type = panel.step?.llm.annotations.find((a) => a.id === flash.id)?.type;
+    const key = flash.kind === "thread" ? "threads" : type && SECTION_OF[type];
+    if (key && !sections.isOpen(key)) sections.toggle(key);
+  });
 
   // After "Back to step" the button is gone; the heading takes the focus.
   useEffect(() => {
@@ -287,7 +315,7 @@ export function Inspector(props: InspectorProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface">
-      <div tabIndex={0} className="min-h-0 flex-1 overflow-auto overscroll-contain">
+      <div ref={scroller} tabIndex={0} className="min-h-0 flex-1 overflow-auto overscroll-contain">
         <div className="px-3 pt-2.5 pb-1.5">
           {panel.backTo && onBackToStep && (
             <p className="mb-1 flex flex-wrap items-baseline gap-2 text-[12px]">

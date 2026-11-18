@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -204,7 +204,7 @@ describe("CodeView", () => {
     render(<CodeView {...stepProps("f1.2")} />);
     const remarks = document.querySelectorAll("[data-mark=remark]");
     expect([...remarks].map(rowOf)).toEqual([91]);
-    expect(remarks[0]).toHaveTextContent("LLM remark");
+    expect(remarks[0]).toHaveAccessibleName(/LLM remarks? at line 91/);
   });
 
   it("shows ≠ on moved lines that differ from the moved original, inside a moved block", () => {
@@ -220,9 +220,8 @@ describe("CodeView", () => {
     const { unmount } = render(<CodeView {...stepProps("f1.5")} />);
     const threads = document.querySelectorAll("[data-mark=thread]");
     expect([...threads].map(rowOf)).toEqual([99]);
-    expect(threads[0]).toHaveTextContent(
-      "GitHub thread by bob: Should we retry non-idempotent calls at all?",
-    );
+    expect(threads[0]).toHaveAccessibleName("GitHub thread by bob at line 99");
+    expect(threads[0]).toHaveAccessibleDescription(/Should we retry non-idempotent calls at all\?/);
     unmount();
     render(<CodeView {...stepProps("f1.2", "missed")} />);
     const own = document.querySelectorAll("[data-mark=comment]");
@@ -540,10 +539,21 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     expect(rowOf(marker)).toBe(2);
     expect(marker.querySelector("svg")).not.toBeNull();
     expect(marker).toHaveAccessibleDescription(
-      "Your comment in your GitHub pending review; nothing is published. Opens its text here.",
+      "Is the retry bounded? Your comment in your GitHub pending review; nothing is published. Opens its text here.",
     );
     expect(marker).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+    expect(screen.queryByText("Is the retry bounded?")).not.toBeVisible();
+  });
+
+  it("shows the comment's own text on hover, on a target of at least 24 px", async () => {
+    const user = userEvent.setup();
+    view([mine(), mine({ id: "c2", body: "And the backoff?" })]);
+    const marker = screen.getByRole("button", { name: "Your 2 pending comments at line 2" });
+    expect(marker.className).toMatch(/(^|\s)size-6(\s|$)/);
+    await user.hover(marker);
+    const tip = screen.getByRole("tooltip");
+    expect(tip).toHaveTextContent("Is the retry bounded?");
+    expect(tip).toHaveTextContent("And the backoff?");
   });
 
   it("opens the comment's text right at the line by click, and closes it again", async () => {
@@ -560,7 +570,7 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     expect(within(panel).queryByRole("button")).toBeNull();
     expectTrustWording(panel.textContent ?? "");
     await user.click(marker);
-    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Your pending comments/ })).toBeNull();
   });
 
   it("opens by keyboard: Enter and Space", async () => {
@@ -569,9 +579,10 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const marker = screen.getByRole("button", { name: "Your pending comment at line 2" });
     marker.focus();
     await user.keyboard("{Enter}");
-    expect(screen.getByText("Is the retry bounded?")).toBeVisible();
+    const panel = () => screen.queryByRole("list", { name: "Your pending comments at line 2" });
+    expect(within(panel()!).getByText("Is the retry bounded?")).toBeVisible();
     await user.keyboard(" ");
-    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+    expect(panel()).toBeNull();
   });
 
   it("shows every comment of a line, with Edit and Delete acting on GitHub", async () => {
@@ -615,8 +626,9 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
       "aria-expanded",
       "true",
     );
-    expect(screen.getByText("Other")).toBeVisible();
-    expect(screen.queryByText("Is the retry bounded?")).toBeNull();
+    const panel = screen.getByRole("list", { name: "Your pending comments at line 3" });
+    expect(within(panel).getByText("Other")).toBeVisible();
+    expect(screen.queryByRole("list", { name: "Your pending comments at line 2" })).toBeNull();
   });
 
   it("puts a file comment on its linked line, or at the top of the file's code when that line is not shown", async () => {
@@ -632,8 +644,9 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const top = screen.getByRole("button", { name: "Your 2 pending file comments on src/a.rs" });
     expect(top.closest("[data-line]")).toBeNull();
     await user.click(top);
-    expect(screen.getByText("File-level note.")).toBeVisible();
-    expect(screen.getByText("No link.")).toBeVisible();
+    const panel = screen.getByRole("list", { name: "Your pending file comments on src/a.rs" });
+    expect(within(panel).getByText("File-level note.")).toBeVisible();
+    expect(within(panel).getByText("No link.")).toBeVisible();
   });
 });
 
@@ -687,4 +700,181 @@ it("hides rule-covered removed comments as well as head lines", () => {
   render(<CodeView lines={lines} />);
   expect(screen.queryByText("// old note")).toBeNull();
   expect(screen.getByText("1 comment/import line hidden — in the classic diff")).toBeVisible();
+});
+
+describe("CodeView: gutter markers (owner: explained, large enough, the icon's own tip first)", () => {
+  const tour = seedFor("default", "tour") as Tour;
+  const thread = { ...tour.threads[0]!, path: "src/a.rs", line: 2 };
+  const own: PendingComment = {
+    id: "c1",
+    thread_id: "t1",
+    path: "src/a.rs",
+    kind: "line",
+    side: "head",
+    start_line: null,
+    line: 2,
+    body: "Is the retry bounded?",
+  };
+
+  it("an LLM remark marker is a 24 px button whose hover shows the full remark with an LLM tag, before was → is", async () => {
+    const user = userEvent.setup();
+    render(
+      <CodeView
+        lines={plain(1, ["a", "b"])}
+        annotations={[
+          note("n1", 1, 2, { type: "behaviour", was: "retries once", is: "retries all", text: null }),
+          note("n2", 1, 1, { text: "Is a retry of a broadcast safe?" }),
+        ]}
+        band="medium"
+      />,
+    );
+    const marker = screen.getByRole("button", { name: "2 LLM remarks at line 1" });
+    expect(marker.className).toMatch(/(^|\s)size-6(\s|$)/);
+    await user.hover(document.querySelector("[data-highlight] [data-line='2']")!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Was: retries once → Is: retries all");
+    await user.hover(marker);
+    const popover = screen.getByRole("dialog", { name: "LLM remarks at line 1" });
+    expect(popover).toHaveTextContent("Behaviour · lines 1–2");
+    expect(popover).toHaveTextContent("Was: retries once");
+    expect(popover).toHaveTextContent("Is: retries all");
+    expect(popover).toHaveTextContent("Question to check · line 1");
+    expect(popover).toHaveTextContent("Is a retry of a broadcast safe?");
+    expect(within(popover).getByText("LLM")).toHaveAccessibleDescription(/LLM analysis/);
+    // The marker's own popover wins over the row's was → is tooltip while the pointer is on the marker.
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(within(popover).queryByRole("button", { name: /Show in Inspector/ })).toBeNull();
+    expectTrustWording(popover.textContent ?? "");
+  });
+
+  it("a pinned remark offers Show in Inspector for each remark; clicking it does not select the highlight", async () => {
+    const user = userEvent.setup();
+    const onShowInInspector = vi.fn();
+    const onSelectAnnotation = vi.fn();
+    render(
+      <CodeView
+        lines={plain(1, ["a"])}
+        annotations={[note("n1", 1, 1)]}
+        onShowInInspector={onShowInInspector}
+        onSelectAnnotation={onSelectAnnotation}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "LLM remark at line 1" }));
+    const popover = screen.getByRole("dialog", { name: "LLM remarks at line 1" });
+    await user.click(within(popover).getByRole("button", { name: /^Show in Inspector/ }));
+    expect(onShowInInspector).toHaveBeenCalledWith({ kind: "annotation", id: "n1" });
+    expect(onSelectAnnotation).not.toHaveBeenCalled();
+  });
+
+  it("a GitHub thread marker is a slate speech bubble whose popover shows author, excerpt and links", async () => {
+    const user = userEvent.setup();
+    const onShowInInspector = vi.fn();
+    render(
+      <CodeView lines={plain(1, ["a", "b"])} threads={[thread]} onShowInInspector={onShowInInspector} />,
+    );
+    const marker = screen.getByRole("button", { name: "GitHub thread by bob at line 2" });
+    expect(marker.className).toMatch(/(^|\s)size-6(\s|$)/);
+    expect(marker.className).toMatch(/(^|\s)text-thread(\s|$)/);
+    expect(marker.querySelector("svg")).not.toBeNull();
+    await user.hover(marker);
+    const popover = screen.getByRole("dialog", { name: "GitHub thread at line 2" });
+    expect(within(popover).getByText("GitHub")).toHaveAccessibleDescription(/From GitHub/);
+    expect(popover).toHaveTextContent("@bob");
+    expect(popover).toHaveTextContent("Should we retry non-idempotent calls at all?");
+    expect(within(popover).queryByRole("link")).toBeNull();
+    await user.click(marker);
+    expect(within(popover).getByRole("link", { name: /Open on GitHub/ })).toHaveAttribute("href", thread.url);
+    await user.click(within(popover).getByRole("button", { name: /^Show in Inspector/ }));
+    expect(onShowInInspector).toHaveBeenCalledWith({ kind: "thread", id: thread.id });
+  });
+
+  it("omits Open on GitHub without a thread URL and Show in Inspector for a thread outside the steps", async () => {
+    const user = userEvent.setup();
+    render(
+      <CodeView
+        lines={plain(1, ["a", "b"])}
+        threads={[{ ...thread, url: "", step_id: null }]}
+        onShowInInspector={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "GitHub thread by bob at line 2" }));
+    const popover = screen.getByRole("dialog", { name: "GitHub thread at line 2" });
+    expect(within(popover).queryByRole("link")).toBeNull();
+    expect(within(popover).queryByRole("button", { name: /^Show in Inspector/ })).toBeNull();
+    expect(within(popover).getByRole("button", { name: "Close" })).toBeVisible();
+  });
+
+  it("≠ and − keep no action but show project tooltips instead of a native title", async () => {
+    const user = userEvent.setup();
+    const props = stepProps("f5.1");
+    const { unmount } = render(<CodeView {...props} />);
+    const differs = document.querySelector("[data-mark=differs]")!;
+    expect(differs).not.toHaveAttribute("title");
+    expect(differs.closest("button")).toBeNull();
+    await user.hover(differs);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/differs from the moved original/i);
+    unmount();
+    render(
+      <CodeView
+        lines={plain(1, ["a"], {
+          deleted: [{ after_line: 1, base_start: 5, lines: ["old"], total_lines: 1 }],
+        })}
+      />,
+    );
+    const removed = document.querySelector("[data-mark=removed]")!;
+    expect(removed).not.toHaveAttribute("title");
+    await user.hover(removed);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/removed line/i);
+  });
+
+  it("makes room in the gutter for every marker of a line", () => {
+    render(
+      <CodeView
+        lines={plain(1, ["a", "b"])}
+        annotations={[note("n1", 2, 2)]}
+        threads={[thread]}
+        comments={[own]}
+      />,
+    );
+    const region = screen.getByRole("region");
+    expect(parseInt(region.style.getPropertyValue("--gutter"))).toBeGreaterThanOrEqual(12 + 3 * 24);
+  });
+
+  it("keeps lines with a marker visible when comment and import changes are hidden", () => {
+    const lines = plain(1, ["// a", "// b", "use c;", "// d", "e();"], {
+      changed: [1, 2, 3, 4, 5],
+      context_only: [1, 2, 3, 4],
+      deleted: [
+        { after_line: 5, base_start: 9, lines: ["// old"], total_lines: 1, context_only: [9] },
+        { after_line: 5, base_start: 20, lines: ["// gone"], total_lines: 1, context_only: [20] },
+      ],
+    });
+    const { container } = render(
+      <CodeView
+        lines={lines}
+        hideContextChanges
+        annotations={[note("n1", 3, 3)]}
+        threads={[{ ...thread, line: 2 }]}
+        comments={[
+          { ...own, line: 1 },
+          { ...own, id: "c2", side: "base", line: 9 },
+        ]}
+      />,
+    );
+    expect(lineNumbers(container, "[data-line][data-side=head]")).toEqual([1, 2, 3, 5]);
+    expect(lineNumbers(container, "[data-line][data-side=base]")).toEqual([9]);
+    expect(screen.getByText("2 comment/import lines hidden — in the classic diff")).toBeVisible();
+  });
+
+  it("flashes the line an evidence link jumps to, even a hidden comment line", async () => {
+    const { container } = render(
+      <CodeView
+        lines={plain(1, ["// a", "b"], { changed: [1], context_only: [1] })}
+        hideContextChanges
+        flashLine={1}
+      />,
+    );
+    const row = container.querySelector('[data-line="1"][data-side="head"]');
+    expect(row).not.toBeNull();
+    await waitFor(() => expect(row).toHaveAttribute("data-flash"));
+  });
 });

@@ -13,6 +13,18 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
       "Line numbers: one per displayed line (hundreds); each has an aria-label and a native title naming the action.",
   },
   {
+    file: "components/code-view/markers.tsx",
+    match: 'data-mark="remark"',
+    reason:
+      "LLM remark marker: hover and focus show its popover with the remark text, which serves as its tooltip.",
+  },
+  {
+    file: "components/code-view/markers.tsx",
+    match: 'data-mark="thread"',
+    reason:
+      "GitHub thread marker: hover and focus show its popover with the thread excerpt, which serves as its tooltip.",
+  },
+  {
     file: "components/inspector/Collapsible.tsx",
     match: "aria-expanded",
     reason: "Section disclosure header: named by its section title, its expanded state is announced.",
