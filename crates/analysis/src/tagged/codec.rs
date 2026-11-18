@@ -10,6 +10,15 @@ use serde_json::{Map, Value, json};
 
 use super::{Anchor, Catalog, MAX_BYTES, Problem};
 
+/// Longest flow id, step id, file id or thread alias, in bytes.
+const MAX_ID_BYTES: usize = 64;
+/// Longest word of a section heading, in bytes (an id, or a location with its range).
+const MAX_WORD_BYTES: usize = 128;
+/// Longest field name, in bytes (`file <id>` is the longest known one).
+const MAX_KEY_BYTES: usize = 80;
+/// Most sections in one document.
+const MAX_SECTIONS: usize = 2000;
+
 #[derive(Debug)]
 struct Section {
     depth: usize,
@@ -78,6 +87,18 @@ fn sections(text: &str) -> Result<Vec<Section>, Problem> {
             if words.is_empty() {
                 return Err(Problem::new(number, "empty section heading"));
             }
+            if words.iter().any(|word| word.len() > MAX_WORD_BYTES) {
+                return Err(Problem::new(
+                    number,
+                    format!("a heading word is longer than {MAX_WORD_BYTES} bytes"),
+                ));
+            }
+            if out.len() == MAX_SECTIONS {
+                return Err(Problem::new(
+                    number,
+                    format!("more than {MAX_SECTIONS} sections"),
+                ));
+            }
             out.push(Section {
                 depth,
                 words,
@@ -89,6 +110,12 @@ fn sections(text: &str) -> Result<Vec<Section>, Problem> {
         let (key, raw) = line
             .split_once(':')
             .ok_or_else(|| Problem::new(number, "expected `key: value`"))?;
+        if key.len() > MAX_KEY_BYTES {
+            return Err(Problem::new(
+                number,
+                format!("a field name is longer than {MAX_KEY_BYTES} bytes"),
+            ));
+        }
         let value = raw.strip_prefix(' ').unwrap_or(raw);
         let value = if let Some(end) = value.strip_prefix("<<") {
             if end.is_empty() || !end.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
@@ -124,6 +151,18 @@ fn sections(text: &str) -> Result<Vec<Section>, Problem> {
         }
     }
     Ok(out)
+}
+
+/// Ids are short and plain, so the diagnostics and field paths that repeat them stay small.
+fn plain_id(what: &str, text: &str, line: usize) -> Result<(), Problem> {
+    let plain = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'-';
+    if text.is_empty() || text.len() > MAX_ID_BYTES || !text.bytes().all(plain) {
+        return Err(Problem::new(
+            line,
+            format!("{what} must be 1 to {MAX_ID_BYTES} characters of A-Z, a-z, 0-9, `_` or `-`"),
+        ));
+    }
+    Ok(())
 }
 
 fn range(text: &str, line: usize) -> Result<(u32, u32), Problem> {
@@ -201,6 +240,7 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
     if header.depth != 1 || header.words[0] != "flow" {
         return Err(Problem::new(header.line, "expected `# flow <id>`"));
     }
+    plain_id("flow id", &header.words[1], header.line)?;
     let mut files = catalog.files.clone();
     for (key, (line, value)) in std::mem::take(&mut header.fields) {
         let Some(id) = key.strip_prefix("file ") else {
@@ -210,6 +250,7 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
             ));
         };
         if id.is_empty()
+            || id.len() > MAX_ID_BYTES
             || !id.bytes().all(|b| b.is_ascii_alphanumeric())
             || value.is_empty()
             || value.starts_with('/')
@@ -253,6 +294,7 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
                         "expected `## step <id> <hunk-id>` or `## step <id> <file-id>:<side>:<range> <kind>`",
                     ));
                 }
+                plain_id("step id", &section.words[1], line)?;
                 let mut value = if section.words.len() == 3 {
                     let anchor = catalog.hunks.get(&section.words[2]).ok_or_else(|| {
                         Problem::new(line, format!("unknown planned hunk `{}`", section.words[2]))
@@ -347,6 +389,8 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
             }
             (2, "edge") => {
                 section.args(3)?;
+                plain_id("step id", &section.words[1], line)?;
+                plain_id("step id", &section.words[2], line)?;
                 let mut value = strings(&mut section, &[], &["label"])?;
                 value["from_step_id"] = json!(section.words[1]);
                 value["to_step_id"] = json!(section.words[2]);
@@ -354,6 +398,7 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
             }
             (2, "impact") => {
                 section.args(3)?;
+                plain_id("step id", &section.words[1], line)?;
                 let mut value = location(&section.words[2], &files, line)?;
                 if value["side"] != "head" {
                     return Err(Problem::new(line, "impact must refer to head"));
@@ -370,6 +415,7 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
             }
             (2, "repetition") => {
                 section.args(2)?;
+                plain_id("step id", &section.words[1], line)?;
                 let description = section.required("description")?;
                 let mut sites = Vec::new();
                 for site in section.required("sites")?.split_whitespace() {
@@ -379,6 +425,7 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
             }
             (2, "thread") => {
                 section.args(3)?;
+                plain_id("thread alias", &section.words[1], line)?;
                 enum_value::<ThreadLlmStatus>(&section.words[2], line)?;
                 let reason = section.required("reason")?;
                 array_mut(&mut root,"thread_statuses")?.push(json!({"thread_alias":section.words[1],"status":section.words[2],"reason":reason}));

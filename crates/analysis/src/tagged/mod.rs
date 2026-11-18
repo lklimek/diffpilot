@@ -183,6 +183,8 @@ impl Context {
         })?;
         let diff = DiffIndex::new(&self.files).map_err(|e| fail(e.to_string()))?;
         let source_lines = codec::source_lines(text).map_err(|problem| vec![problem])?;
+        // A field path is never longer than the longest key: longer message prefixes are not tried.
+        let longest = source_lines.keys().map(String::len).max().unwrap_or(0);
         verify::flow(
             &output,
             FlowContext {
@@ -203,6 +205,7 @@ impl Context {
                         .char_indices()
                         .map(|(i, _)| i)
                         .chain(std::iter::once(issue.message.len()))
+                        .filter(|end| *end <= longest)
                         .rev()
                         .find_map(|end| source_lines.get(&issue.message[..end]))
                         .copied()
