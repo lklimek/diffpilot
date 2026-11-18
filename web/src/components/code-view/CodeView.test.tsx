@@ -662,7 +662,7 @@ it("pairs replacement code and hides rule-covered changes only in the main view"
   const { container, rerender } = render(<CodeView lines={lines} hideContextChanges />);
   expect(screen.getByText("Changed: 1 line replaced")).toBeVisible();
   expect(screen.queryByText(/Removed here/)).toBeNull();
-  expect(screen.getByText("1 comment/import line hidden — in the classic diff")).toBeVisible();
+  expect(screen.getByText("1 comment, import or whitespace line hidden — in the classic diff")).toBeVisible();
   expect(container.querySelector('[data-line="1"]')).toBeNull();
   expect(
     container.querySelector('[data-line="2"][data-side="head"] [data-mark="changed"]'),
@@ -686,5 +686,5 @@ it("hides rule-covered removed comments as well as head lines", () => {
   };
   render(<CodeView lines={lines} />);
   expect(screen.queryByText("// old note")).toBeNull();
-  expect(screen.getByText("1 comment/import line hidden — in the classic diff")).toBeVisible();
+  expect(screen.getByText("1 comment, import or whitespace line hidden — in the classic diff")).toBeVisible();
 });

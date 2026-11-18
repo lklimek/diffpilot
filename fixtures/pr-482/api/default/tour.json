@@ -184,6 +184,10 @@
               },
               {
                 "start_line": 91,
+                "end_line": 94
+              },
+              {
+                "start_line": 96,
                 "end_line": 109
               }
             ]
@@ -227,7 +231,7 @@
                 "end_line": 41
               },
               {
-                "start_line": 101,
+                "start_line": 102,
                 "end_line": 103
               }
             ]
@@ -2486,6 +2490,20 @@
             "renderable": true,
             "rule_kind": "lexer",
             "file": "src/rpc/client.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 101,
+                "end_line": 101
+              }
+            ],
+            "badge": "classified_by_line_rule",
+            "rule": "whitespace-only changes (Rust, by the compiler's lexer)"
+          },
+          {
+            "renderable": true,
+            "rule_kind": "lexer",
+            "file": "src/rpc/client.rs",
             "side": "head",
             "ranges": [
               {
@@ -2503,6 +2521,20 @@
             ],
             "badge": "classified_by_line_rule",
             "rule": "comment-only lines (Rust, by the compiler's lexer)"
+          },
+          {
+            "renderable": true,
+            "rule_kind": "lexer",
+            "file": "src/rpc/client.rs",
+            "side": "head",
+            "ranges": [
+              {
+                "start_line": 95,
+                "end_line": 95
+              }
+            ],
+            "badge": "classified_by_line_rule",
+            "rule": "whitespace-only changes (Rust, by the compiler's lexer)"
           },
           {
             "renderable": true,

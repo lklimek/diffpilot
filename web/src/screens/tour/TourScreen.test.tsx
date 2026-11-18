@@ -71,7 +71,7 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     await openStep("1", "2");
     expect(
-      await within(main()).findByText("1 comment/import line hidden — in the classic diff"),
+      await within(main()).findByText("1 comment, import or whitespace line hidden — in the classic diff"),
     ).toBeVisible();
     expect(within(main()).queryByText("// changed comment")).toBeNull();
   });

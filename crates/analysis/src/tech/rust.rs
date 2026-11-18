@@ -130,6 +130,8 @@ pub(super) struct Covered {
     pub comments: Vec<u32>,
     /// Plain private `use` declarations.
     pub imports: Vec<u32>,
+    /// Lines that differ from their paired line on the other side only in whitespace.
+    pub whitespace: Vec<u32>,
 }
 
 /// The covered changed lines of `file`, whose text is `text`.
@@ -137,6 +139,7 @@ pub(super) fn covered<'a>(file: &FileSource<'a>, text: &'a str) -> Covered {
     let nothing = || Covered {
         comments: Vec::new(),
         imports: Vec::new(),
+        whitespace: Vec::new(),
     };
     let Some(this) = lex(text) else {
         return nothing();
@@ -150,9 +153,18 @@ pub(super) fn covered<'a>(file: &FileSource<'a>, text: &'a str) -> Covered {
         },
         OtherSide::Unknown => return nothing(),
     };
+    let comments = comment_lines(file, &this, &other);
+    let imports = import_lines(file, &this, &other);
+    let whitespace = whitespace_lines(file, &this, &other)
+        .into_iter()
+        .filter(|line| {
+            comments.binary_search(line).is_err() && imports.binary_search(line).is_err()
+        })
+        .collect();
     Covered {
-        comments: comment_lines(file, &this, &other),
-        imports: import_lines(file, &this, &other),
+        comments,
+        imports,
+        whitespace,
     }
 }
 
@@ -166,6 +178,8 @@ enum Other<'a> {
 struct Token<'a> {
     kind: TokenKind,
     text: &'a str,
+    /// Byte offset after the BOM and shebang.
+    start: usize,
     /// First and last line (0-based) the token touches.
     first: usize,
     last: usize,
@@ -207,7 +221,7 @@ fn lex(text: &str) -> Option<Lexed<'_>> {
     let body = text.strip_prefix('\u{feff}').unwrap_or(text);
     let shebang = strip_shebang(body).unwrap_or(0);
     let mut rest = body.get(shebang..)?;
-    let (mut line, mut depth) = (0usize, 0usize);
+    let (mut line, mut depth, mut offset) = (0usize, 0usize, 0usize);
     let mut tokens = Vec::new();
     let mut in_macro = vec![false; lines];
     let mut state = Macro::None;
@@ -215,6 +229,8 @@ fn lex(text: &str) -> Option<Lexed<'_>> {
         let len = usize::try_from(token.len).ok()?;
         let (lexeme, tail) = (rest.get(..len)?, rest.get(len..)?);
         rest = tail;
+        let start = offset;
+        offset += len;
         if invalid(token.kind) {
             return None;
         }
@@ -262,6 +278,7 @@ fn lex(text: &str) -> Option<Lexed<'_>> {
         tokens.push(Token {
             kind: token.kind,
             text: lexeme,
+            start,
             first,
             last,
             depth: at,
@@ -449,6 +466,137 @@ fn comment_lines(file: &FileSource<'_>, this: &Lexed<'_>, other: &Other<'_>) -> 
                 .copied()
                 .filter(|&line| at(&facts.only, line) && (!at(&facts.block, line) || whole)),
         );
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// One token of a line as the whitespace rule compares it: kind, text (a line comment without trailing whitespace) and
+/// whether it is punctuation touching the previous punctuation (`&&` is not `& &`).
+type LineToken<'a> = (std::mem::Discriminant<TokenKind>, &'a str, bool);
+
+/// A line in the whitespace pairing; an opaque line equals no other line.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum LineKey<'r, 'a> {
+    Tokens(&'r [LineToken<'a>]),
+    Opaque(LineSide, u32),
+}
+
+/// Pairing work of one file side, in `(removed + added lines)²` per hunk (an upper bound of Myers); hunks beyond it
+/// are not paired.
+const WHITESPACE_WORK_BUDGET: u64 = 64_000_000;
+
+fn is_punct(kind: TokenKind) -> bool {
+    !matches!(
+        kind,
+        TokenKind::Ident
+            | TokenKind::RawIdent
+            | TokenKind::Literal { .. }
+            | TokenKind::Lifetime { .. }
+            | TokenKind::LineComment { .. }
+            | TokenKind::BlockComment { .. }
+            | TokenKind::Whitespace
+    )
+}
+
+impl<'a> Lexed<'a> {
+    /// Per line (index = line - 1): its tokens; `None` for a line a multi-line token (string, block comment) or the
+    /// shebang touches: whitespace there may be content.
+    fn line_tokens(&self) -> Vec<Option<Vec<LineToken<'a>>>> {
+        let mut out: Vec<Option<Vec<LineToken<'a>>>> = vec![Some(Vec::new()); self.lines];
+        if self.shebang
+            && let Some(first) = out.first_mut()
+        {
+            *first = None;
+        }
+        let mut previous: Option<&Token<'a>> = None;
+        for token in &self.tokens {
+            if token.first != token.last {
+                for line in out.iter_mut().take(token.last + 1).skip(token.first) {
+                    *line = None;
+                }
+            } else if let Some(Some(line)) = out.get_mut(token.first) {
+                let joint = previous.is_some_and(|before| {
+                    is_punct(before.kind)
+                        && is_punct(token.kind)
+                        && before.start + before.text.len() == token.start
+                });
+                let text = match token.kind {
+                    TokenKind::LineComment { .. } => token.text.trim_end(),
+                    _ => token.text,
+                };
+                line.push((std::mem::discriminant(&token.kind), text, joint));
+            }
+            previous = Some(token);
+        }
+        out
+    }
+}
+
+/// The pairing keys of `lines` (blank lines left out: they pair with nothing and stay visible).
+fn line_keys<'r, 'a>(
+    side: LineSide,
+    lines: &[u32],
+    tokens: &'r [Option<Vec<LineToken<'a>>>],
+) -> Vec<(u32, LineKey<'r, 'a>)> {
+    let mut out = Vec::new();
+    for &line in lines {
+        let found = usize::try_from(line)
+            .ok()
+            .and_then(|line| line.checked_sub(1))
+            .and_then(|index| tokens.get(index));
+        match found {
+            Some(Some(tokens)) if tokens.is_empty() => {}
+            Some(Some(tokens)) => out.push((line, LineKey::Tokens(tokens))),
+            _ => out.push((line, LineKey::Opaque(side, line))),
+        }
+    }
+    out
+}
+
+/// Changed lines whose tokens equal those of a paired changed line of the same hunk on the other side (comments
+/// included, literals as written): only indentation, trailing whitespace, line endings or spacing between tokens
+/// differ. Lines are paired by an exact diff of their token sequences, so re-indented code inside a new `if` pairs
+/// with its original while the wrapper lines stay changed.
+fn whitespace_lines(file: &FileSource<'_>, this: &Lexed<'_>, other: &Other<'_>) -> Vec<u32> {
+    let Other::Lexed(other) = other else {
+        return Vec::new();
+    };
+    let (this_tokens, other_tokens) = (this.line_tokens(), other.line_tokens());
+    let (base_tokens, head_tokens) = match file.side {
+        LineSide::Head => (&other_tokens, &this_tokens),
+        LineSide::Base => (&this_tokens, &other_tokens),
+    };
+    let mut budget = WHITESPACE_WORK_BUDGET;
+    let mut out = Vec::new();
+    for hunk in file.hunks {
+        if hunk.added.is_empty() || hunk.removed.is_empty() {
+            continue;
+        }
+        let size = u64::try_from(hunk.added.len() + hunk.removed.len()).unwrap_or(u64::MAX);
+        let Some(left) = budget.checked_sub(size.saturating_mul(size)) else {
+            continue;
+        };
+        budget = left;
+        let base = line_keys(LineSide::Base, &hunk.removed, base_tokens);
+        let head = line_keys(LineSide::Head, &hunk.added, head_tokens);
+        let base_keys: Vec<LineKey<'_, '_>> = base.iter().map(|(_, key)| *key).collect();
+        let head_keys: Vec<LineKey<'_, '_>> = head.iter().map(|(_, key)| *key).collect();
+        for op in similar::capture_diff_slices(similar::Algorithm::Myers, &base_keys, &head_keys) {
+            if let similar::DiffOp::Equal {
+                old_index,
+                new_index,
+                len,
+            } = op
+            {
+                let (lines, from) = match file.side {
+                    LineSide::Head => (&head, new_index),
+                    LineSide::Base => (&base, old_index),
+                };
+                out.extend(lines.iter().skip(from).take(len).map(|(line, _)| *line));
+            }
+        }
     }
     out.sort_unstable();
     out.dedup();
@@ -1099,6 +1247,53 @@ mod tests {
         assert_eq!(head(&base_file, &head_file), [1, 2, 3]);
         assert_eq!(
             covered_with(LineSide::Head, Some(&base_file), Some(&head_file), true),
+            NONE
+        );
+    }
+
+    #[test]
+    fn whitespace_only_changes_are_covered_on_both_sides() {
+        // Wrapping code in `if`: the wrapper lines stay visible, the re-indented body is covered.
+        let flat = ["fn f(ok: bool) {", "    a();", "    b(1, 2);", "}"];
+        let wrapped = [
+            "fn f(ok: bool) {",
+            "    if ok {",
+            "        a();",
+            "        b(1, 2);",
+            "    }",
+            "}",
+        ];
+        assert_eq!(head(&flat, &wrapped), [3, 4]);
+        assert_eq!(base(&flat, &wrapped), [2, 3]);
+        // Trailing whitespace, spacing between tokens, CRLF.
+        assert_eq!(
+            head(&["let x = 1;", "f();"], &["let x = 1;   ", "f();"]),
+            [1]
+        );
+        assert_eq!(head(&["g(a, b);"], &["g( a,b );"]), [1]);
+        assert_eq!(
+            head(
+                &["let x = 1;\r", "y(); // note\r"],
+                &["let x = 1;", "y(); // note"]
+            ),
+            [1, 2]
+        );
+        // A literal is compared as written: its inner whitespace is content.
+        assert_eq!(head(&["f(\"a  b\");"], &["    f(\"a  b\");"]), [1]);
+        assert_eq!(head(&["f(\"a b\");"], &["f(\"a  b\");"]), NONE);
+        // A multi-line string whose indentation changed is a changed value.
+        let string = ["let s = \"first", "    second\";"];
+        assert_eq!(
+            head(&string, &["let s = \"first", "        second\";"]),
+            NONE
+        );
+        // Spacing between punctuation decides the tokens the parser sees (`&&` vs `& &`, `--` vs `- -`).
+        assert_eq!(head(&["let c = a && b;"], &["let c = a & & b;"]), NONE);
+        assert_eq!(head(&["let c = a - -b;"], &["let c = a--b;"]), NONE);
+        assert_eq!(head(&["let c = a + b;"], &["let c = a + c;"]), NONE);
+        // An unread other side covers nothing.
+        assert_eq!(
+            covered_with(LineSide::Head, Some(&flat), Some(&wrapped), true),
             NONE
         );
     }

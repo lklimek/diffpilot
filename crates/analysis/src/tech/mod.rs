@@ -135,15 +135,17 @@ impl TechPlugin for Generic {
             return Ok(Vec::new());
         }
         let covered = rust::covered(file, text);
+        let docs = NotAnalysedCategory::DocsComments;
         Ok([
-            (LINE_COMMENT_RULE, covered.comments),
-            (IMPORT_RULE, covered.imports),
+            (LINE_COMMENT_RULE, docs, covered.comments),
+            (IMPORT_RULE, docs, covered.imports),
+            (WHITESPACE_RULE, docs, covered.whitespace),
         ]
         .into_iter()
-        .filter(|(_, lines)| !lines.is_empty())
-        .map(|(rule, lines)| {
+        .filter(|(_, _, lines)| !lines.is_empty())
+        .map(|(rule, category, lines)| {
             item(
-                NotAnalysedCategory::DocsComments,
+                category,
                 ProvenanceBadge::ClassifiedByLineRule,
                 rule,
                 Some(ranges(&lines)),
@@ -160,6 +162,8 @@ impl TechPlugin for Generic {
 
 /// Plain private single-line Rust `use` declarations (brief amendment 2026-11-18).
 pub const IMPORT_RULE: &str = "plain private use declarations (Rust, by the compiler's lexer)";
+/// Changed lines whose tokens equal their paired line on the other side: only whitespace differs (Rust).
+pub const WHITESPACE_RULE: &str = "whitespace-only changes (Rust, by the compiler's lexer)";
 /// Comment-only lines, including block and doc comments.
 pub const LINE_COMMENT_RULE: &str = "comment-only lines (Rust, by the compiler's lexer)";
 /// Rule of a generated-file header in the first lines.
@@ -255,6 +259,11 @@ pub fn rules() -> Vec<NotAnalysedRule> {
         (
             RuleKind::Lexer,
             LINE_COMMENT_RULE,
+            NotAnalysedCategory::DocsComments,
+        ),
+        (
+            RuleKind::Lexer,
+            WHITESPACE_RULE,
             NotAnalysedCategory::DocsComments,
         ),
         (
@@ -366,7 +375,7 @@ pub fn is_line_rule(item: &Classified) -> bool {
 
 /// Whether `rule` names a line rule: its lines are context for the agent without coverage duty.
 pub fn is_line_rule_name(rule: &str) -> bool {
-    rule == LINE_COMMENT_RULE || rule == IMPORT_RULE
+    rule == LINE_COMMENT_RULE || rule == IMPORT_RULE || rule == WHITESPACE_RULE
 }
 
 /// Whether the item marks a generated file: never rendered, never given to the agent (brief §7).
@@ -843,7 +852,7 @@ mod tests {
                 .iter()
                 .any(|rule| rule.kind == RuleKind::Lexer && rule.pattern == LINE_COMMENT_RULE)
         );
-        assert_eq!(listed.len(), PATH_RULES.len() + 4);
+        assert_eq!(listed.len(), PATH_RULES.len() + 5);
         assert!(!is_line_rule(&item("*.md")));
     }
 
