@@ -244,8 +244,17 @@ pub(super) async fn scan<T: TokenSource>(
         .step(ScanStepKey::History, StepState::Running, None, None)
         .await?;
     let (first, start) = history::window_start(progress.now(), input.zone);
+    let configured: Vec<RepoRef> = settings
+        .repositories
+        .iter()
+        .map(|row| row.repo.clone())
+        .collect();
+    let refused_from = history::Refused {
+        repos: &configured,
+        owners: &settings.enumerate_owners,
+    };
     let (history, history_notes) =
-        history::collect(client, input.rules, &logins, first, start).await?;
+        history::collect(client, input.rules, &logins, &refused_from, first, start).await?;
     notes.extend(history_notes);
     progress.log(format!("history: {} events since {first}", history.len()));
     let events = count(history.len());
