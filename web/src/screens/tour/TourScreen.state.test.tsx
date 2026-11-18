@@ -6,7 +6,7 @@ import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
 import type { AnalysisSummary } from "../../api/generated/types";
-import { seedFor } from "../../mocks/fixtures";
+import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { setScenario } from "../../mocks/scenarios";
 
 startMockServer();
@@ -90,5 +90,24 @@ describe("Tour: unsent comment drafts survive navigation", () => {
     expect(await commentOn95()).toHaveValue("Is the deadline respected?");
     expect(within(inspector()).getByText("Draft")).toBeVisible();
     expect(JSON.stringify(window.sessionStorage)).toContain("Is the deadline respected?");
+  });
+});
+
+describe("Tour: the user's questions", () => {
+  it("steps with questions are marked in the menu; one entry opens every question with its answer and step", async () => {
+    setFixtureState("resume");
+    await open(null, "#f1.5");
+    const marker = await within(nav()).findByText("?1");
+    expect(marker).toHaveAccessibleDescription("1 question asked on this step");
+    await user().click(within(nav()).getByRole("button", { name: "Your questions and answers: 1" }));
+    const page = await within(main()).findByRole("article", { name: "Your questions and answers (1)" });
+    expect(page).toHaveTextContent("Does the node deduplicate broadcast_tx by transaction id?");
+    expect(page).toHaveTextContent("LLM answer");
+    await user().click(within(page).getByRole("button", { name: /^Flow 1 · step 5/ }));
+    expect(within(main()).queryByRole("article", { name: /Your questions/ })).toBeNull();
+    expect(within(nav()).getByRole("button", { name: /^Step 5: .*1 question asked/ })).toHaveAttribute(
+      "aria-current",
+      "step",
+    );
   });
 });

@@ -16,6 +16,7 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import {
+  useAskQuestion,
   useCommentActions,
   useLines,
   useMe,
@@ -23,6 +24,7 @@ import {
   useTour,
   useFlowWork,
   useQuestionEvents,
+  useQuestions,
 } from "../../api/queries";
 import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
@@ -34,6 +36,7 @@ import { quietTitle } from "../../components/inspector/summaries";
 import { shortcutAction } from "../../components/help/shortcuts";
 import { NavList } from "../../components/nav/NavList";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
+import { QuestionsBlock } from "../../components/questions/QuestionsBlock";
 import { MovesBlock } from "../../components/quiet/MovesBlock";
 import { NotAnalysedBlock } from "../../components/quiet/NotAnalysedBlock";
 import { PendingReviewBlock } from "../../components/quiet/PendingReviewBlock";
@@ -160,6 +163,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const { state, change: save, loadError, saveError } = review;
   const work = useFlowWork(analysisId);
   const stream = useQuestionEvents(analysisId);
+  const questions = useQuestions(analysisId);
+  const ask = useAskQuestion(analysisId);
   const now = useNow();
   const requested = useRef<string | null>(null);
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
@@ -185,6 +190,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   );
   const evidence = useMemo(() => evidenceFromHash(location.hash), [location.hash]);
   const lineView = location.hash.startsWith("#lines?") ? evidence : undefined;
+  // The user's questions page: a view of its own, not a block of the stored review state.
+  const questionsView = location.hash === "#questions";
   // A review opened elsewhere than at its start says once where it resumed (mockup "returning to a review").
   const [resumed, setResumed] = useState<BlockRef | null>(() =>
     location.hash || current.block === "pr_context" ? null : current,
@@ -225,15 +232,18 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const offersOldCode =
     step !== undefined && (step.facts.changed_lines.length > 0 || step.facts.side === "base");
 
-  const go = (block: BlockRef | undefined) => {
-    if (!block) return;
-    void navigate({ ...location, hash: blockFragment(block) }, { flushSync: true });
+  const openFragment = (hash: string) => {
+    void navigate({ ...location, hash }, { flushSync: true });
     setResumed(null);
     setAnnotationId(null);
     setOldCode(false);
     setCommentLine(null);
     setRevealComment(null);
     mainRef.current?.scrollTo?.({ top: 0 });
+  };
+  const go = (block: BlockRef | undefined) => {
+    if (!block) return;
+    openFragment(blockFragment(block));
   };
 
   useEffect(() => {
@@ -298,8 +308,9 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   // The last viewed block is part of the stored review state (resume).
   const lastViewed = state.last_viewed;
   useEffect(() => {
+    if (questionsView) return;
     if (!lastViewed || !sameBlock(lastViewed, current)) save((s) => ({ ...s, last_viewed: current }));
-  }, [current, lastViewed, save]);
+  }, [current, lastViewed, save, questionsView]);
 
   useEffect(() => {
     const field = focusNext === "ask" ? askRef.current : focusNext === "comment" ? commentRef.current : null;
@@ -406,6 +417,23 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     };
   };
   const selectStep = (id: StepId) => go({ block: "step", step_id: id });
+  // The user's own questions in tour order (GET …/questions lists only the signed-in user's).
+  const stepOrder = tour.flows.flatMap((f) => f.steps.map((s) => s.id));
+  const rank = (id: StepId) => (stepOrder.includes(id) ? stepOrder.indexOf(id) : stepOrder.length);
+  const myQuestions = (questions.data ?? [])
+    .filter((q) => q.mine !== false)
+    .sort((a, b) => rank(a.step_id) - rank(b.step_id));
+  const questionCounts: Record<StepId, number> = {};
+  for (const q of myQuestions) questionCounts[q.step_id] = (questionCounts[q.step_id] ?? 0) + 1;
+  const questionPlace = (id: StepId) => {
+    const at = findStep(tour, id);
+    return at
+      ? {
+          label: `Flow ${at.flow.position} · step ${at.step.number}: ${at.step.llm.title}`,
+          open: () => selectStep(id),
+        }
+      : null;
+  };
 
   let block: ReactNode;
   if (lineView) {
@@ -422,6 +450,19 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
           ranges={[{ start_line: Math.max(1, lineView.line - 3), end_line: lineView.line + 6 }]}
         />
       </section>
+    );
+  } else if (questionsView) {
+    block = questions.isError ? (
+      <StatusMessage kind="error">Cannot read your questions: {errorText(questions.error)}</StatusMessage>
+    ) : questions.isPending ? (
+      <StatusMessage kind="loading">Loading your questions…</StatusMessage>
+    ) : (
+      <QuestionsBlock
+        questions={myQuestions}
+        placeOf={questionPlace}
+        onEvidence={showEvidence}
+        onAskAgain={(step, text) => ask.mutateAsync({ step, text })}
+      />
     );
   } else if (current.block === "flow_intro" && flow) {
     block = (
@@ -671,6 +712,12 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
             pendingCount={pendingCount}
             current={current}
             onSelect={go}
+            questionCounts={questionCounts}
+            questions={{
+              count: myQuestions.length,
+              open: questionsView,
+              onOpen: () => openFragment("questions"),
+            }}
           />
         }
         main={centre}
