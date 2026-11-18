@@ -163,6 +163,7 @@ export function DashboardScreen() {
           onHelp={() => setHelpOpen(true)}
           keysEnabled={!helpOpen}
           stale={stale ? { at: stale, note: "It is replaced when a scan finishes." } : null}
+          todos={snapshot.todos}
           now={now}
         />
       )}

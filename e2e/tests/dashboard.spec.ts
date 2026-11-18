@@ -161,11 +161,8 @@ test("MemCan down: the refresh finishes, TODO rows are kept and a note says they
   }
 });
 
-// TODO(WP11-E2E): product gap. Plan §G "Failures" marks TODO rows kept from an earlier scan "not refreshed
-// (MemCan unreachable at HH:MM)"; the dashboard says so only in the side panel's scan notes
-// (web/src/components/dashboard/scan-notes/ScanNotes.tsx:22), the rows themselves carry no mark
-// (web/src/components/dashboard/work-item/WorkItemRow.tsx).
-test.fixme("MemCan down: each kept TODO row says it was not refreshed", async ({ page, stack }) => {
+// Plan §G "Failures": TODO rows kept from an earlier scan say "not refreshed (MemCan unreachable at HH:MM)".
+test("MemCan down: each kept TODO row says it was not refreshed", async ({ page, stack }) => {
   await signIn(page);
   await memcan(page, stack).mode({ mode: "unavailable" });
   try {

@@ -1,5 +1,6 @@
 import type { Ref } from "react";
-import type { WorkItem } from "../../../api/generated/types";
+import type { TodosState, WorkItem } from "../../../api/generated/types";
+import { clockText } from "../../format/time";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { dayText, scoreText } from "../common/format";
 import { KIND_LABEL, KindIcon } from "../common/icons";
@@ -22,6 +23,8 @@ interface WorkItemRowProps {
   onNavigate?: Navigate;
   /** Ref of the expander button (the row's focus target for `j`/`k`). */
   expanderRef?: Ref<HTMLButtonElement>;
+  /** State of the MemCan TODOs in the snapshot: a TODO row kept from an earlier scan says so (plan §G). */
+  todos?: TodosState;
   now: Date;
 }
 
@@ -50,6 +53,19 @@ export function provisionalPill(item: WorkItem) {
   return null;
 }
 
+/** The mark of a TODO row MemCan could not refresh in this scan, or null. */
+function notRefreshedPill(item: WorkItem, todos: TodosState | undefined, now: Date) {
+  if (item.kind !== "todo" || todos?.status !== "not_refreshed") return null;
+  const at = todos.failed_at ? ` at ${clockText(todos.failed_at, now)}` : "";
+  const read = todos.read_at ? `, read at ${clockText(todos.read_at, now)}` : "";
+  return (
+    <ProvisionalPill
+      text={`not refreshed (MemCan unreachable${at})`}
+      tip={`MemCan could not be reached in this scan; this TODO is from an earlier scan${read}.`}
+    />
+  );
+}
+
 /** One ranked item (mockup `rowHTML`): id, title, scan-fact tags, LLM why / next, score, action, detail. */
 export function WorkItemRow({
   item,
@@ -59,6 +75,7 @@ export function WorkItemRow({
   reviewHref,
   onNavigate,
   expanderRef,
+  todos,
   now,
 }: WorkItemRowProps) {
   const detailId = `detail-${item.key}`;
@@ -124,6 +141,7 @@ export function WorkItemRow({
             )}
             <FactTags tags={item.tags} />
             {provisionalPill(item)}
+            {notRefreshedPill(item, todos, now)}
           </div>
         </div>
         {llm ? (

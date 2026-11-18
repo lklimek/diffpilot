@@ -87,6 +87,22 @@ test.describe("My work (msw)", () => {
     await settle(page, (quick) => quick(page.getByText("Ranking finished: 14 items judged.")).toBeVisible());
   });
 
+  test("MemCan unreachable: each kept TODO row says it was not refreshed, with a tooltip", async ({
+    page,
+  }) => {
+    await open(page, "memcan-down");
+    const todoRows = main(page).locator("li[data-item]").filter({ hasText: "MemCan" });
+    await expect(todoRows.first()).toBeVisible();
+    const count = await todoRows.count();
+    expect(count).toBeGreaterThan(0);
+    for (let i = 0; i < count; i++) {
+      await expect(todoRows.nth(i)).toContainText(/not refreshed \(MemCan unreachable at \d\d:\d\d\)/);
+    }
+    const mark = todoRows.first().getByText(/^~ not refreshed/);
+    await mark.focus();
+    await expect(page.getByRole("tooltip")).toContainText("MemCan could not be reached in this scan");
+  });
+
   test("error: the rate limit stops the refresh; the 08:12 snapshot stays and Refresh waits", async ({
     page,
   }) => {
