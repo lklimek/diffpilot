@@ -15,8 +15,7 @@ import { expect, test } from "../support/fixtures";
 
 test.describe.configure({ mode: "serial" });
 
-const answers = (page: Page) =>
-  inspector(page).getByRole("list", { name: "Ask conversation" });
+const answers = (page: Page) => inspector(page).getByRole("list", { name: "Ask conversation" });
 /** The entry of `question` in the analysis's one conversation thread (questions of earlier tests stay in it). */
 const entry = (page: Page, question: string) =>
   answers(page).getByRole("listitem").filter({ hasText: question });

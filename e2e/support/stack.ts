@@ -15,7 +15,7 @@ const STOP_TIMEOUT_MS = 20_000;
 /** One rule of the fake provider's script (crates/runner/src/provider/fake.rs). */
 export interface ScriptRule {
   id: string;
-  job: "plan" | "pr_context" | "analyse_flow" | "ask";
+  job: "plan" | "pr_context" | "analyse_flow" | "ask" | "judge_work";
   flow?: number;
   prompt_contains?: string;
   times?: number;
@@ -32,6 +32,8 @@ export interface Stack {
   url: string;
   /** Local state dir (logs, stack.env, database); null for a stack started elsewhere. */
   stateDir: string | null;
+  /** Fake GitHub base URL (test controls `/_fake/*`); null for a stack started elsewhere. */
+  github: string | null;
   /** Fake MemCan base URL and bearer token, when reachable. */
   memcan: { url: string; token: string } | null;
   /** Replaces the fake provider's script; null when the runner's files are out of reach. */
@@ -62,6 +64,7 @@ function localStack(url: string, stateDir: string): Stack {
   return {
     url,
     stateDir,
+    github: env.SR_GITHUB_API_URL ?? null,
     memcan: memcan ? { url: memcan, token: env.SR_MEMCAN_TOKEN } : null,
     script: env.SR_RUNNER_FAKE_SCRIPT
       ? (rules) => writeFileSync(env.SR_RUNNER_FAKE_SCRIPT, JSON.stringify({ rules }))
@@ -114,6 +117,7 @@ function externalStack(url: string): Stack {
   return {
     url,
     stateDir: null,
+    github: null,
     memcan: memcan && token ? { url: memcan, token } : null,
     script: null,
     moveHead: null,
