@@ -149,7 +149,7 @@ describe("CodeView", () => {
   it.each<[FlagLevel, RiskBand | null, string, string]>([
     ["red", "medium", "border-high-bd", "border-dashed"],
     ["yellow", "high", "border-med-bd", "border-solid"],
-    ["unknown", null, "border-mark", "border-solid"],
+    ["red", "high", "border-high-bd", "border-solid"],
   ])(
     "draws a range with a %s flag in the flag's colour, keeping the rating's pattern (%s), and names the flag",
     (level, band, colour, pattern) => {
@@ -165,6 +165,26 @@ describe("CodeView", () => {
       expect(highlight.className).toContain(pattern);
       const name = { red: "⚑ Red flag", yellow: "⚑ Yellow flag", unknown: "⚑ Flag" }[level];
       expect(within(highlight as HTMLElement).getByText(new RegExp(`^${name} · `))).toBeInTheDocument();
+    },
+  );
+
+  it.each<[FlagLevel, string]>([
+    ["red", "--color-high-bd"],
+    ["unknown", "--color-mark"],
+  ])(
+    "draws a %s flag on an unrated step as the thin line in the flag's colour, not a full bar",
+    (level, colour) => {
+      const flag = note("x.a2", 1, 2, {
+        type: "flag",
+        text: "Potential double send:",
+        flag: { level, scenario: ["A sends twice.", "B pays twice."], not_checked: "Not run." },
+      });
+      render(<CodeView lines={plain(1, ["a", "b"])} annotations={[flag]} band={null} />);
+      const highlight = document.querySelector("[data-highlight]")!;
+      expect(highlight).toHaveAttribute("data-flag", level);
+      expect(highlight).toHaveAttribute("data-bar", "thin");
+      expect(highlight.className).toContain("border-transparent");
+      expect(highlight.className).toContain(`var(${colour})`);
     },
   );
 

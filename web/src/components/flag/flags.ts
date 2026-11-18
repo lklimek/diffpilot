@@ -6,7 +6,7 @@ import type { Annotation, FlagLevel } from "../../api/generated/types";
  */
 export const FLAG_LOOK: Record<
   FlagLevel,
-  { name: string; label: string; tip: string; text: string; bg: string; border: string }
+  { name: string; label: string; tip: string; text: string; bg: string; border: string; line: string }
 > = {
   red: {
     name: "Red flag",
@@ -15,6 +15,7 @@ export const FLAG_LOOK: Record<
     text: "text-high",
     bg: "bg-high-bg",
     border: "border-high-bd",
+    line: "bg-[linear-gradient(var(--color-high-bd),var(--color-high-bd))]",
   },
   yellow: {
     name: "Yellow flag",
@@ -23,6 +24,7 @@ export const FLAG_LOOK: Record<
     text: "text-med",
     bg: "bg-med-bg",
     border: "border-med-bd",
+    line: "bg-[linear-gradient(var(--color-med-bd),var(--color-med-bd))]",
   },
   unknown: {
     name: "Flag",
@@ -31,6 +33,7 @@ export const FLAG_LOOK: Record<
     text: "text-llm",
     bg: "bg-llm-bg",
     border: "border-mark",
+    line: "bg-[linear-gradient(var(--color-mark),var(--color-mark))]",
   },
 };
 

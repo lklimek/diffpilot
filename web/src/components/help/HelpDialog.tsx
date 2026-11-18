@@ -56,8 +56,8 @@ const LEGEND: ReactNode[] = [
     <Swatch look={`border-l-4 ${flagBar("yellow", "high")}`} />
     <b className={FLAG_LOOK.yellow.text}>{FLAG_LOOK.yellow.label}</b>: a bar with an LLM flag takes the
     flag&apos;s colour (grey for a flag stored without a level, &quot;{FLAG_LOOK.unknown.label}&quot;) and
-    keeps the pattern of the step&apos;s rating; its label names the flag. A flag is the LLM&apos;s statement
-    of a risk scenario, not checked
+    keeps the pattern of the step&apos;s rating (the thin line on an unrated step); its label names the flag.
+    A flag is the LLM&apos;s statement of a risk scenario, not checked
   </>,
   <>A changed line without a bar has no LLM remark. An unchanged line inside a bar is unchanged.</>,
   <>

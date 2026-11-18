@@ -22,14 +22,23 @@ export function FlagMark({ level }: { level: FlagLevel }) {
   );
 }
 
-/** Whether the element's content is taller than its box, re-measured when its size changes. */
-function useOverflow<T extends HTMLElement>() {
+/**
+ * Whether the element's content is taller than its box, re-measured when its size changes. Measured only while
+ * `clamped`: an expanded list always fits, and re-measuring it would hide the toggle (and drop its focus).
+ */
+function useOverflow<T extends HTMLElement>(clamped: boolean) {
   const ref = useRef<T>(null);
   const [overflow, setOverflow] = useState(false);
+  const measuring = useRef(clamped);
+  useLayoutEffect(() => {
+    measuring.current = clamped;
+  }, [clamped]);
   useLayoutEffect(() => {
     const element = ref.current;
     if (!element) return;
-    const measure = () => setOverflow(element.scrollHeight > element.clientHeight + 1);
+    const measure = () => {
+      if (measuring.current) setOverflow(element.scrollHeight > element.clientHeight + 1);
+    };
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
@@ -60,7 +69,7 @@ export function FlagCard({ annotation, currentFile, onEvidence, onOpen }: FlagCa
   const notChecked = flag?.not_checked.trim() ?? "";
   const listId = useId();
   const [expanded, setExpanded] = useState(false);
-  const [list, overflow] = useOverflow<HTMLOListElement>();
+  const [list, overflow] = useOverflow<HTMLOListElement>(!expanded);
   const title = <CodeText text={annotation.text ?? ""} />;
   return (
     <li

@@ -46,13 +46,13 @@ export const REMARK_LOOK: Record<
   },
 };
 
-const PATTERN = {
-  solid: "border-solid",
-  dashed: "border-dashed",
-  dotted: "border-dotted",
-  thin: "border-solid",
-};
+const PATTERN = { solid: "border-solid", dashed: "border-dashed", dotted: "border-dotted" };
 
-/** The bar of a range with an LLM flag: the flag's level colour, the step rating's pattern (solid when unrated). */
+/**
+ * The bar of a range with an LLM flag: the flag's level colour in the step rating's pattern; on an unrated step the
+ * thin line of an unrated remark, in the flag's colour (never a full bar that would read as a rating).
+ */
 export const flagBar = (level: FlagLevel, band: RiskBand | null) =>
-  `${PATTERN[REMARK_LOOK[band ?? "none"].pattern as keyof typeof PATTERN]} ${FLAG_LOOK[level].border}`;
+  band === null
+    ? `border-solid border-transparent ${FLAG_LOOK[level].line} bg-size-[2px_auto] bg-origin-border bg-no-repeat`
+    : `${PATTERN[REMARK_LOOK[band].pattern as keyof typeof PATTERN]} ${FLAG_LOOK[level].border}`;
