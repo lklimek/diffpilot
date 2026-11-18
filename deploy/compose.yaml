@@ -117,6 +117,8 @@ services:
     tmpfs:
       # TODO: move /work to a bounded disk filesystem (a second host-prepared ext4 image like codex-homes): a
       # full-history checkout of a large repository holds about 1.5 GB of RAM here; needs ADR-013's layout updated.
+      # It keeps the agent's full git view and adds a size bound; a shallow fetch would break merge-base,
+      # the base...head diff and blame.
       - "/work:size=${SR_RUNNER_WORK_SIZE:-4g},uid=10001,gid=10001,mode=0711,nosuid,nodev"
       - "/tmp:size=256m,uid=10001,gid=10001,mode=0700,nosuid,nodev"
     volumes:

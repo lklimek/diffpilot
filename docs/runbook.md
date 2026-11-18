@@ -25,7 +25,9 @@ ignore the option, and the runner's preflight then refuses to start with exit 78
 disk for images and build cache, plus the codex-homes image. Check: `docker version -f '{{.Server.Version}}'`.
 Memory: the runner's job checkout lives in the RAM-backed `/work` (`SR_RUNNER_WORK_SIZE`, charged to
 `SR_RUNNER_MEM_LIMIT`); a full-history checkout of a large repository (for example `dashpay/platform`) takes about
-1.5 GB of it; raise `SR_RUNNER_WORK_SIZE` and `SR_RUNNER_MEM_LIMIT` together.
+1.5 GB of it; raise `SR_RUNNER_WORK_SIZE` and `SR_RUNNER_MEM_LIMIT` together. Planned: a bounded disk filesystem
+for `/work` (a second host-prepared ext4 image), which keeps the agent's full git view and adds a size bound; a
+shallow fetch would save the same memory but break merge-base, the `base...head` diff and blame.
 
 1. Checkout (any user with access to `/srv/smart-review`):
 
