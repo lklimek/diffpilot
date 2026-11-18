@@ -17,15 +17,13 @@ pub const BUILTIN_BRANCH_PATTERNS: [&str; 6] = [
     "vX.Y-dev",
 ];
 
-/// Review bots without the `[bot]` suffix, with their own severity vocabulary (K11, single-owner simplification).
-pub const PSEUDO_BOTS: [&str; 3] = ["thepastaclaw", "claudius-maginificent", "dcg-claude"];
-
 /// Rules of one user's ranking, from the dashboard settings and the signed-in login.
 #[derive(Clone, Debug)]
 pub struct ScoreRules {
     scanned: Vec<String>,
     ready_label: String,
     skip_authors: Vec<String>,
+    known_bots: Vec<String>,
     repos: Vec<RepoRule>,
     builtin_branches: Vec<BranchPattern>,
 }
@@ -47,6 +45,7 @@ impl ScoreRules {
                 .collect(),
             ready_label: settings.ready_label.to_lowercase(),
             skip_authors: settings.skip_authors.iter().map(lower).collect(),
+            known_bots: settings.known_bots.iter().map(lower).collect(),
             repos: settings
                 .repositories
                 .iter()
@@ -77,18 +76,15 @@ impl ScoreRules {
         label.to_lowercase() == self.ready_label
     }
 
-    /// Items by this author are left out of the ranking (K7).
+    /// Items this author wrote are left out of the ranking unless directed at the user (K7).
     pub fn is_skipped_author(&self, login: &str) -> bool {
         self.skip_authors.contains(&login.to_lowercase())
     }
 
-    /// Not a human: GitHub `Bot`, a `[bot]` login, a review pseudo-bot (K11) or a skipped bot author (K7).
+    /// Not a human: GitHub `Bot`, a `[bot]` login or one of the user's known bots (K11).
     pub fn is_bot(&self, login: &str, typename_bot: bool) -> bool {
         let low = login.to_lowercase();
-        typename_bot
-            || low.ends_with("[bot]")
-            || PSEUDO_BOTS.contains(&low.as_str())
-            || self.is_skipped_author(&low)
+        typename_bot || low.ends_with("[bot]") || self.known_bots.contains(&low)
     }
 
     fn row(&self, repo: &RepoRef) -> Option<&RepoRule> {

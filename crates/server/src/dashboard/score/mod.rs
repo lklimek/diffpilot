@@ -30,7 +30,7 @@ pub use facts::{
     TodoStatus,
 };
 pub use parts::{ESTIMATE, change_size_points, recency_points, unblocks_points, waiting_points};
-pub use rules::{BUILTIN_BRANCH_PATTERNS, PSEUDO_BOTS, ScoreRules, todo_display_ids};
+pub use rules::{BUILTIN_BRANCH_PATTERNS, ScoreRules, todo_display_ids};
 
 use parts::{Eligibility, Part};
 
