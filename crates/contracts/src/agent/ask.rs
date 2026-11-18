@@ -9,7 +9,7 @@ use crate::common::Evidence;
 /// An LLM answer to a question about a step.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct AskOutput {
-    /// The answer; suspicions phrased as questions to check.
+    /// The answer; a suspected defect is stated as a risk scenario saying what was not checked.
     pub answer: String,
     /// Lines read that support the answer.
     pub evidence: Vec<Evidence>,

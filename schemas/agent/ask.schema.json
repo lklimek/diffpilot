@@ -3,7 +3,7 @@
   "properties": {
     "answer": {
       "type": "string",
-      "description": "The answer; suspicions phrased as questions to check."
+      "description": "The answer; a suspected defect is stated as a risk scenario saying what was not checked."
     },
     "evidence": {
       "type": "array",

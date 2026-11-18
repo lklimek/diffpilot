@@ -345,7 +345,7 @@ all_repositories: boolean, };
  */
 export type AskOutput = {
 /**
- * The answer; suspicions phrased as questions to check.
+ * The answer; a suspected defect is stated as a risk scenario saying what was not checked.
  */
 answer: string,
 /**
