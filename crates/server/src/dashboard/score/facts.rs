@@ -7,8 +7,8 @@ use contracts::common::RepoRef;
 use uuid::Uuid;
 
 /// How an item reached the scan (skill `relations`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Relation {
     /// Authored by a scanned login.
     Authored,
@@ -23,8 +23,8 @@ pub enum Relation {
 }
 
 /// Effective CI state (skill `ciEffective`): policy gates excluded, latest run per check.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CiEffective {
     /// Every build, test and lint check passed.
     Green,
@@ -39,8 +39,8 @@ pub enum CiEffective {
 }
 
 /// GitHub `mergeable`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Mergeable {
     /// Merges cleanly.
     Mergeable,
@@ -51,8 +51,8 @@ pub enum Mergeable {
 }
 
 /// GitHub `reviewDecision`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ReviewDecision {
     /// Changes requested.
     ChangesRequested,
@@ -63,8 +63,8 @@ pub enum ReviewDecision {
 }
 
 /// Milestone assignment of a pull request or issue.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Milestone {
     /// The assignment could not be read.
     Unknown,
@@ -75,8 +75,7 @@ pub enum Milestone {
 }
 
 /// Release catalogue of a repository; `None` = the fetch failed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MilestoneContext {
     /// Tags of published stable releases (drafts and prereleases left out).
     pub release_tags: Option<Vec<String>>,
@@ -85,8 +84,8 @@ pub struct MilestoneContext {
 }
 
 /// Ownership-policy verdict of a pull request's change (skill `ownedChange.verdict`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum OwnedChange {
     /// The repository has no ownership policy.
     NoPolicy,
@@ -101,8 +100,7 @@ pub enum OwnedChange {
 }
 
 /// Facts of one open pull request.
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PrFacts {
     /// Repository.
     pub repo: RepoRef,
@@ -179,8 +177,7 @@ pub struct PrFacts {
 }
 
 /// Facts of one open issue.
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IssueFacts {
     /// Repository.
     pub repo: RepoRef,
@@ -205,8 +202,8 @@ pub struct IssueFacts {
 }
 
 /// Open MemCan TODO status.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(test, derive(serde::Deserialize), serde(rename_all = "snake_case"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TodoStatus {
     /// Not started.
     Pending,
@@ -219,8 +216,7 @@ pub enum TodoStatus {
 }
 
 /// Facts of one open MemCan TODO.
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(test, derive(serde::Deserialize))]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TodoFacts {
     /// MemCan id.
     pub id: Uuid,
