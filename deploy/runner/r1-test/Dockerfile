@@ -5,7 +5,9 @@ ARG RUNNER_IMAGE=smart-review-runner:base
 FROM ${RUNNER_IMAGE}
 
 # A deliberate setuid-root binary: the test proves no-new-privileges keeps it from raising the agent's euid.
-RUN apt-get update \
+# apt's sandbox user _apt cannot use the base image's /tmp (runner-only, 0700), so this step uses /var/tmp.
+RUN export TMPDIR=/var/tmp \
+    && apt-get update \
     && apt-get install -y --no-install-recommends python3 \
     && rm -rf /var/lib/apt/lists/* \
     && install -o root -g root -m 4755 /usr/bin/id /usr/local/bin/setuid-id \
