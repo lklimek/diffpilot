@@ -10,6 +10,7 @@ import type {
   FeedbackMemory,
   PendingReview,
   AskQuestion,
+  LinesResponse,
   MeResponse,
   RepoSettings,
   ResolvePrResponse,
@@ -85,6 +86,8 @@ interface Scenario {
   repoSettings?: RepoSettings | null;
   /** Changes to the `tour` answer. */
   tour?: (seed: Tour) => Tour;
+  /** Changes to a `lines` answer. */
+  lines?: (answer: LinesResponse) => LinesResponse;
   /** Changes to the stored questions. */
   questions?: (seed: AskQuestion[]) => AskQuestion[];
   /** Outcome of the MemCan write of feedback (default `written`). */
@@ -93,6 +96,57 @@ interface Scenario {
   pendingReview?: (seed: PendingReview) => PendingReview;
   /** Comment writes answer 409 `comment_published` (the review was published meanwhile). */
   commentPublished?: true;
+}
+
+/** Step f1.2 with one behaviour remark over lines 90–95 (see `remarkLayoutLines`), rated LOW. */
+function remarkLayoutTour(seed: Tour): Tour {
+  const tour = structuredClone(seed);
+  const step = tour.flows.flatMap((f) => f.steps).find((s) => s.id === "f1.2")!;
+  const [first] = step.llm.annotations;
+  step.llm.annotations = [
+    {
+      ...first!,
+      type: "behaviour",
+      range: { start_line: 90, end_line: 95 },
+      was: "checks the wallet",
+      is: "checks the core transaction",
+      text: null,
+    },
+  ];
+  if (step.llm.assessment) step.llm.assessment.risk = "low";
+  return tour;
+}
+
+/** Lines 88–96 of src/rpc/client.rs: base line 99 replaced by 90, unchanged 91–92, added comments 93–94. */
+function remarkLayoutLines(answer: LinesResponse): LinesResponse {
+  if (answer.path !== "src/rpc/client.rs" || answer.side !== "head" || answer.from !== 88) return answer;
+  return {
+    ...answer,
+    to: 96,
+    lines: [
+      "fn check(&self) -> Result<()> {",
+      "    let result = self",
+      "        .core_wallet",
+      "        .check_core_transaction(tx)",
+      "        .await;",
+      "    // retry once on a timeout",
+      "    // then give up",
+      "    result?",
+      "}",
+    ],
+    changed: [90, 93, 94, 95],
+    context_only: [93, 94],
+    deleted: [
+      {
+        after_line: 89,
+        base_start: 99,
+        lines: ["        .wallet"],
+        total_lines: 1,
+        replacement: { start_line: 90, end_line: 90 },
+      },
+    ],
+    moved: [],
+  };
 }
 
 /** The seed tour with review threads read partly, or not at all (no threads listed then). */
@@ -240,6 +294,8 @@ const REPORTED_USAGE: UsageTotals = {
 
 const SCENARIOS = {
   "show-less": { showLess: true },
+  // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.
+  "remark-layout": { tour: remarkLayoutTour, lines: remarkLayoutLines },
   "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5 } },
   "lazy-background": {
     lazy: true,

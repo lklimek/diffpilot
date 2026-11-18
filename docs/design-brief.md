@@ -663,3 +663,24 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
 - **Sign-out.** Settings has "Sign out": it ends the session in this browser (`POST /auth/logout`; a session
   that had already ended counts as signed out), removes that login's comment drafts and unconfirmed posts from
   the tab, clears cached data and shows the signed-out Home.
+
+### Owner-approved amendment — 2026-11-18: code-view colours, remark bars, folds, collapsible Ask
+
+- **Change colours.** The code view draws changes exactly like the classic diff, in both themes and from one
+  shared definition: an added line has the classic diff's green fill and `+`, a removed line its red fill and
+  `−` (deterministic, from the diff). Supersedes "neutral mark on every changed line" (§3 and §4.3 Code view)
+  and the legend row "Neutral gutter bar = changed line".
+- **Remark bars.** An LLM remark never fills code lines and draws no box: its range is a thin bar in the
+  reserved gutter column (solid / dashed / dotted by the LLM's rating, not checked; a thin neutral line when
+  unrated) with one label at its top and one `◆` marker. Unchanged lines inside the range look exactly like
+  unchanged lines outside it; changed lines inside keep their green/red look. A range that crosses a replaced
+  or removed block is one range: the label sits above the block, so the removed and replacing lines stay
+  together. "A changed line without a bar has no LLM remark." Supersedes "LLM colouring is laid on top" (§3)
+  and "No colour on a changed line" in the §4.3 legend. The `?` legend describes exactly these drawings.
+- **Folds.** Hidden comment and import lines leave a fold row where they were ("3 comment lines hidden ·
+  Show"; removed ones "2 removed comment lines hidden"); Show opens just that run in place with its signs and
+  offers Hide; the top-bar switch still shows or hides all; the total note stays. Only the first line of a
+  remark range is never hidden (it carries the marker); the rest may fold inside the bar.
+- **Ask** is a collapsible Inspector section like the others (remembered with them; the header keeps the
+  step's question count); `a` opens it and focuses the field. Its caption says answers appear below the field,
+  newest first.

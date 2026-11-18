@@ -24,7 +24,8 @@ export interface HiddenLines {
 
 /**
  * Rule-covered (`context_only`) lines hidden by "hide comment and import changes": none when `hide` is off, and
- * never a line carrying a marker (own comment, GitHub thread, inside an LLM remark), so no marker disappears.
+ * never a line carrying a marker (own comment, GitHub thread, first line of an LLM remark), so no marker
+ * disappears; the code view folds hidden runs in place.
  */
 export function hiddenLines(lines: LinesResponse, hide: boolean, markers: LineMarkers): HiddenLines {
   if (!hide) return { rows: new Set(), removed: new Set() };
@@ -32,12 +33,9 @@ export function hiddenLines(lines: LinesResponse, hide: boolean, markers: LineMa
   for (const t of markers.threads ?? []) {
     if (t.path === lines.path && t.side !== null && t.line !== null) marked.add(lineKey(t.side, t.line));
   }
-  for (const a of markers.annotations ?? []) {
-    const last = Math.min(a.range.end_line, lines.to);
-    for (let line = Math.max(a.range.start_line, lines.from); line <= last; line++) {
-      marked.add(lineKey(lines.side, line));
-    }
-  }
+  // A remark's first line carries its marker and label; the rest of its range may fold like any other line.
+  for (const a of markers.annotations ?? [])
+    marked.add(lineKey(lines.side, Math.max(a.range.start_line, lines.from)));
   const unmarked = (side: LineSide, list: readonly number[] = []) =>
     list.filter((line) => !marked.has(lineKey(side, line)));
   return {

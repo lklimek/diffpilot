@@ -2,6 +2,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
+import { CHANGE_LOOK } from "../code-view/changeLook";
 import { HelpDialog } from "./HelpDialog";
 import { SHORTCUTS, shortcutAction } from "./shortcuts";
 
@@ -38,23 +39,32 @@ describe("HelpDialog", () => {
     const legend = screen.getByRole("list", { name: "How code is drawn" });
     const text = legend.textContent ?? "";
     for (const part of [
-      "changed line: neutral bar in the gutter (deterministic, from the diff)",
+      "+ added line: green, as in the classic diff (deterministic, from the diff)",
+      "− removed line: red, as in the classic diff (deterministic, from the diff)",
       "HIGH: solid bar",
       "MEDIUM: dashed bar",
       "LOW or affected: dotted bar",
       "LLM remark without a risk rating: thin neutral line",
-      "A changed line without colour has no LLM remark.",
+      "A changed line without a bar has no LLM remark.",
       "moved, text identical: double bar",
       "≠ line differs from the moved original",
       "outside the diff, unchanged",
-      "removed code shown at the deletion marker",
       "◆ LLM remark",
       "your pending comment (accent bubble)",
       "GitHub review thread (slate bubble)",
-      "− removed line (from the diff)",
+      "N comment lines hidden · Show",
+      "fading frame: the line an evidence link jumped to",
     ]) {
       expect(text).toContain(part);
     }
+    // Change swatches come from the definition the code view and the classic diff use.
+    expect(legend.querySelector(`.${CHANGE_LOOK.added.fill}`)).not.toBeNull();
+    expect(legend.querySelector(`.${CHANGE_LOOK.removed.fill}`)).not.toBeNull();
+    // The bar is the LLM's rating, never a fill: no remark colour fills a swatch of code.
+    expect(
+      legend.querySelector('[class*="bg-high-bg"],[class*="bg-low-bg"],[class*="bg-med-bg"]'),
+    ).toBeNull();
+    expect(text).toContain("not checked");
     expect(text).not.toContain("▣");
     // Both bubbles are drawn as in the code, in their colours, next to their words.
     const bubbles = [...legend.querySelectorAll("svg")].map((svg) => svg.parentElement!.className);
