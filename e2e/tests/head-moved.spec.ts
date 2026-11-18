@@ -55,7 +55,7 @@ test("head moved: comment refused with pr_head_changed, Start analysis, the supe
   expect(await pending(page, old)).toEqual([]);
   await checkScreen(page);
 
-  await page.goto("/");
+  await page.goto("/review");
   await checkPr(page);
   const banner = page.getByRole("alert").filter({ hasText: "The PR has moved." });
   await expect(banner).toContainText(`This analysis is for 52d2da1; the PR is now at ${moved.slice(0, 7)}.`);
