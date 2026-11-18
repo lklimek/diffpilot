@@ -28,7 +28,7 @@ test("cancel while planning: Home says the analysis was cancelled, with the URL 
   await page.getByRole("button", { name: "Confirm cancel", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
-    page.getByRole("status").filter({ hasText: "Analysis cancelled — analyze again." }),
+    page.getByRole("status").filter({ hasText: "Analysis cancelled. Check the PR to start again." }),
   ).toBeVisible();
   await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
   await waitForState(page, id, "cancelled", 20_000);

@@ -18,7 +18,7 @@ hash). A leak fails the run.
 | `check-screen.spec.ts`            | self-test of `checkScreen` on static pages (no stack): it fails on each kind of violation                             |
 | `secrets.spec.ts`                 | self-test of the leak check's token shape (no stack): any 43-character base64url run, known non-secrets excluded      |
 | `slice.spec.ts`                   | sign in, analyse PR 482, flow 1 step 1; a read-only installation token per job, revoked; no secret in the logs so far |
-| `analysis-cancel.spec.ts`         | planning, cancel → "analyze again"; failure before any flow → Retry → `k of n` → finished                             |
+| `analysis-cancel.spec.ts`         | planning, cancel → "Check the PR to start again"; failure before any flow → Retry → `k of n` → finished                             |
 | `analysis-cancel-running.spec.ts` | cancel while a flow job runs: the job stops, stored flows and session discarded, a clean new analysis                 |
 | `analysis-pause.spec.ts`          | usage limit → "Paused until HH:MM" of `resumes_at`, no attempt before it, one after; failed flow → Retry this flow    |
 | `tour.spec.ts`                    | PR context facts, flow order, quiet rows, no LLM questions (hard case 3), classic diff, resume, columns               |

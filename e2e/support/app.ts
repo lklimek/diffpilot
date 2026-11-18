@@ -58,18 +58,16 @@ export async function analyze(page: Page): Promise<string> {
 }
 
 /**
- * On the progress screen: once the plan is ready, opts in to analysing every remaining flow (flows otherwise
- * run on request only). Already on (an older server's default) or already finished: nothing to do.
+ * On the progress screen: once the plan is ready, opts in to analysing every remaining flow. Flows run on request
+ * only, so the switch must read off first; a server that starts it on fails here.
  */
 export async function analyseAllRemainingFlows(page: Page): Promise<void> {
   const off = page.getByRole("button", { name: "Analyse all remaining flows" });
   const on = page.getByRole("button", { name: "Analysing all remaining flows — Stop" });
-  const finished = page.getByText(/^(\d+) of \1 flows analysed/);
-  await expect(off.or(on).or(finished).first()).toBeVisible({ timeout: 180_000 });
-  if (await off.isVisible()) {
-    await off.click();
-    await expect(on.or(finished).first()).toBeVisible();
-  }
+  await expect(off.or(on).first()).toBeVisible({ timeout: 180_000 });
+  await expect(on, "a new analysis must not analyse all flows before it is asked to").toHaveCount(0);
+  await off.click();
+  await expect(on.or(page.getByText(/^(\d+) of \1 flows analysed/)).first()).toBeVisible();
 }
 
 /** The analysis state as the API reports it. */
