@@ -1,8 +1,9 @@
 // Leak check of a local stack's component logs, run for every stack when it stops (support/fixtures.ts): no
 // generated secret, no line of the App private key, no App JWT or installation token fake GitHub issued, no
 // fixture credential, no session secret a test registered, and nothing shaped like the server's random tokens
-// (job tokens, session tokens: 32 random bytes in base64url). Job tokens are checked by shape only: the server keeps
-// just their hash and clears it when the job ends.
+// (job tokens, session tokens: 32 random bytes in base64url), nor a personal access token (`srp_<id>_<secret>`,
+// ADR-019; the ones a test created are registered as session secrets too). Job tokens are checked by shape only:
+// the server keeps just their hash and clears it when the job ends.
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Stack } from "./stack";
@@ -19,6 +20,8 @@ const FIXTURE_SECRETS: [string, string][] = [
 const LOGS = ["server.log", "runner.log", "fake-github.log", "fake-memcan.log"];
 /** 43 base64url characters on their own: the shape of a random 32-byte token, whatever characters it drew. */
 const RANDOM_TOKEN = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g;
+/** A whole personal access token: `srp_`, an 8-character base62 id, `_`, a 32-byte secret in base64url. */
+const ACCESS_TOKEN = /srp_[A-Za-z0-9]{8}_[A-Za-z0-9_-]{43}/g;
 /**
  * Known non-secrets of that shape, excluded explicitly: hex digests (hex only; a random token is all hex with
  * probability (22/64)^43). Other long ids in the logs cannot match the shape: commit SHAs (40 hex), UUIDs (36,
@@ -31,6 +34,11 @@ export function randomTokens(text: string): string[] {
   return [...text.matchAll(RANDOM_TOKEN)]
     .map((match) => match[0])
     .filter((run) => !NOT_SECRETS.some((known) => known.test(run)));
+}
+
+/** Personal access tokens in `text` (the secret's shape; the `srp_<id>` prefix alone is not secret). */
+export function accessTokens(text: string): string[] {
+  return [...text.matchAll(ACCESS_TOKEN)].map((match) => match[0]);
 }
 
 /** What fake GitHub issued (`GET /_fake/app-credentials`). */
@@ -76,6 +84,9 @@ export function logLeaks(stack: Stack, secrets: [string, string][]): string[] {
     if (text.length === 0) leaks.push(`${log}: empty`);
     for (const [name, value] of [...secrets, ...stack.secrets]) {
       if (value.length >= 8 && text.includes(value)) leaks.push(`${log}: the value of ${name}`);
+    }
+    for (const token of accessTokens(text)) {
+      leaks.push(`${log}: a personal access token "${token.slice(0, 12)}…"`);
     }
     for (const token of randomTokens(text)) {
       leaks.push(`${log}: a random token (job or session token shape) "${token.slice(0, 6)}…"`);
