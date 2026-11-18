@@ -1,9 +1,9 @@
 # ADR-016: GitHub work dashboard as the start page; review module boundary; trust-rule boundary
 
-- Status: proposed (architect, 2026-11-18), on the owner decisions OD1, OD2, OD5 of 2026-11-18;
+- Status: accepted (owner, 2026-11-18; brief amendment approved), on owner decisions OD1, OD2, OD5, OD15, OD16;
   plan `docs/v1.1-dashboard-plan.md` §0, §F.
 - Supersedes: brief §2 v1 "Input … No dashboard, no recent-reviews list" (dashboard part) and §2 Later
-  "v3+: LLM-curated dashboard of PRs to review" (needs the brief amendment below).
+  "v3+: LLM-curated dashboard of PRs to review" (brief amendment below, inserted by WP11-DOCS).
 
 ## Context
 The owner replaces the `daily-priorities` skill with a page in smart-review: the PRs and issues the user authored,
@@ -37,10 +37,10 @@ to every screen.
 5. **Read-only.** The dashboard never writes to GitHub (no labels, comments, assignments) or MemCan (no TODO
    updates) (OD4).
 
-## Brief amendment to approve (text for the coordinator)
+## Brief amendment (approved; WP11-DOCS inserts it into `docs/design-brief.md`)
 > Owner-approved amendment — 2026-11-18: GitHub work dashboard. The start page `/` is "My work": PRs and issues
 > the user authored, is assigned or is asked to review, and optionally the user's MemCan TODOs, ranked P0–P3 by a
-> computed score with visible components, plus throughput charts. It refreshes only on request and is read-only
+> computed score with visible components, plus pull-request throughput charts. It refreshes only on request and is read-only
 > towards GitHub and MemCan. The review start page moves to `/review`. §1 trust rules apply to the review module;
 > on the dashboard LLM text carries the "LLM" tag and every score part names its source. Supersedes "No
 > dashboard" in §2 v1 and the v3+ dashboard item in §2 Later. Plan: `docs/v1.1-dashboard-plan.md`.
@@ -55,4 +55,5 @@ to every screen.
 - Web tests that open `/` for Home move to `/review` (plan §F.1 lists them); `ProgressScreen` cancel navigates to
   `/review`.
 - `check-wording` gains a path exclusion; a dashboard-specific test asserts the "LLM" tag on every LLM text.
-- The Settings screen gains a per-user "Dashboard scope" card.
+- The Settings screen gains a per-user "Dashboard" section (plan §F.6) and an installation-wide dashboard ranking
+  effort next to the model choice.
