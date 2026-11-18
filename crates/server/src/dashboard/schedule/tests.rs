@@ -1335,6 +1335,22 @@ mod ranked {
             )
             .await
             .expect("snapshot");
+        let reserved = dashboard
+            .reserve_sends(
+                DEFAULT_TENANT,
+                "u1",
+                refresh.id,
+                0,
+                DAILY_CAP,
+                db::repo::dashboard::SendCaps {
+                    per_refresh: DAILY_CAP,
+                    per_day: DAILY_CAP,
+                },
+                utc(2026, 11, 18, 4, 1),
+            )
+            .await
+            .expect("reserve");
+        assert_eq!(reserved, db::repo::dashboard::SendReservation::Reserved);
         let _ = dashboard
             .finish_ranking(
                 DEFAULT_TENANT,

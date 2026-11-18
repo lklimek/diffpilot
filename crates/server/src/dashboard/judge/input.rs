@@ -6,9 +6,11 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use contracts::agent::judge_work::{
-    Eligibility, JudgeFacts, JudgeItem, KnownPart, PreviousJudgement, TodoJudgeFacts,
+    Eligibility, JudgeFacts, JudgeItem, KnownPart, LinkedIssue, PreviousJudgement, TodoJudgeFacts,
 };
-use contracts::api::dashboard::{ItemKey, ItemKind, PartStatus, ScoreComponent};
+use contracts::api::dashboard::{
+    ItemKey, ItemKind, PartSource, PartStatus, ScoreComponent, ScorePart,
+};
 use contracts::common::RepoRef;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -21,13 +23,19 @@ use crate::dashboard::score::{
 use crate::dashboard::snapshot::{Snapshot, StoredIssue, StoredPr, StoredTodo};
 
 /// Version of the judged inputs and their fingerprint; a bump re-judges every item within the caps.
-pub const JUDGE_INPUT_VERSION: u32 = 1;
+pub const JUDGE_INPUT_VERSION: u32 = 2;
 /// Body excerpt sent per pull request or issue, in characters.
 const EXCERPT_CHARS: usize = 300;
 /// Release tags or milestone titles listed in `release_context`, at most each.
 const RELEASE_CONTEXT_ENTRIES: usize = 20;
-/// Basis sent for a computed human-waiting part: its own basis names the request's age.
-const WAITING_BASIS: &str = "computed from the outstanding human request and its age";
+/// Basis sent for a computed human-waiting part of a pull request (its own basis names the request's age), before
+/// the age class.
+const WAITING_BASIS: &str = "computed from the outstanding human request";
+/// Unsure cases of a pull request's human-waiting default (the scorer's hints name ages).
+const WAITING_UNSURE: &str =
+    "unsure: a team review request, an approximate request date or an unanswered comment";
+/// Prefix of a computed default the judge confirms or replaces (replacing the scorer's estimate prefix).
+const DEFAULT_PREFIX: &str = "default to confirm: ";
 
 /// A snapshot item as scored without a judgement.
 #[derive(Clone, Copy, Debug)]
@@ -136,18 +144,26 @@ pub(super) fn candidates(snapshot: &Snapshot) -> Vec<Candidate<'_>> {
         .collect()
 }
 
-/// Judged inputs as hashed: the item as sent without its display id and previous judgement, plus the signals.
+/// Judged inputs as hashed: the item as sent without its display id and previous judgement, and the known parts
+/// without their basis (it may name release tags or a failed lookup, which are no judged inputs), plus the signals.
 #[derive(Serialize)]
 struct Fingerprinted<'a> {
     key: &'a ItemKey,
     kind: ItemKind,
     facts: &'a JudgeFacts,
-    known: &'a [KnownPart],
+    known: Vec<KnownValue>,
     asks: &'a [ScoreComponent],
     asks_eligibility: bool,
     eligibility: &'a Eligibility,
     suggested_merges: &'a [ItemKey],
     signals: &'a score::FingerprintSignals,
+}
+
+/// A known part as fingerprinted: component and points only.
+#[derive(Serialize)]
+struct KnownValue {
+    component: ScoreComponent,
+    points_tenths: Option<i32>,
 }
 
 /// `SHA-256(JUDGE_INPUT_VERSION ‖ JUDGE_PROMPT_VERSION ‖ canonical JSON)` in hex (plan §B.4).
@@ -156,7 +172,14 @@ fn fingerprint(item: &JudgeItem, scored: &Scored) -> String {
         key: &item.key,
         kind: item.kind,
         facts: &item.facts,
-        known: &item.known,
+        known: item
+            .known
+            .iter()
+            .map(|part| KnownValue {
+                component: part.component,
+                points_tenths: part.points_tenths,
+            })
+            .collect(),
         asks: &item.asks,
         asks_eligibility: item.asks_eligibility,
         eligibility: &item.eligibility,
@@ -189,31 +212,73 @@ pub(super) fn previous(body: &Body) -> PreviousJudgement {
     }
 }
 
-/// Computed parts sent as known: never an asked one, recency or change size, and no basis naming an age.
+/// Computed parts sent as known, and the computed defaults of asked components (status `estimated`) the judge
+/// confirms or replaces (plan §B.1 J6, J8, J13); never recency or change size, and no basis naming an age.
 fn known(scored: &Scored) -> Vec<KnownPart> {
+    let pr_waiting = |part: &ScorePart| {
+        part.component == ScoreComponent::HumanWaiting && scored.kind == ItemKind::Pr
+    };
     scored
         .score
         .parts
         .iter()
         .filter(|part| {
-            !scored.asks.contains(&part.component)
-                && !matches!(
-                    part.component,
-                    ScoreComponent::Recency | ScoreComponent::ChangeSize
-                )
+            !matches!(
+                part.component,
+                ScoreComponent::Recency | ScoreComponent::ChangeSize
+            )
         })
-        .map(|part| KnownPart {
-            component: part.component,
-            points_tenths: part.points_tenths,
-            status: part.status,
-            basis: if part.component == ScoreComponent::HumanWaiting && scored.kind == ItemKind::Pr
-            {
-                WAITING_BASIS.to_owned()
+        .filter_map(|part| {
+            let asked = scored.asks.contains(&part.component);
+            let basis = if asked {
+                if part.source != PartSource::Computed || part.status != PartStatus::Estimated {
+                    return None;
+                }
+                if pr_waiting(part) {
+                    format!(
+                        "{DEFAULT_PREFIX}{} → {}; {WAITING_UNSURE}",
+                        waiting_class(scored),
+                        points(part.points_tenths)
+                    )
+                } else {
+                    let rule = part
+                        .basis
+                        .strip_prefix(score::ESTIMATE)
+                        .unwrap_or(&part.basis);
+                    format!("{DEFAULT_PREFIX}{rule}")
+                }
+            } else if pr_waiting(part) {
+                format!("{WAITING_BASIS}: {}", waiting_class(scored))
             } else {
                 part.basis.clone()
-            },
+            };
+            Some(KnownPart {
+                component: part.component,
+                points_tenths: part.points_tenths,
+                status: part.status,
+                basis,
+            })
         })
         .collect()
+}
+
+/// The scorer's human-waiting bucket as an age class (ages are no judged inputs, plan §B.4).
+fn waiting_class(scored: &Scored) -> &'static str {
+    match scored.signals.human_waiting {
+        Some(150) => "a request within 2 days",
+        Some(100) => "a request within a week",
+        Some(50) => "a request older than a week",
+        Some(_) => "no definite outstanding request",
+        None => "request unknown",
+    }
+}
+
+/// Points in tenths as shown in a basis.
+fn points(tenths: Option<i32>) -> String {
+    tenths.map_or_else(
+        || "pending".to_owned(),
+        |t| format!("{}", f64::from(t) / 10.0),
+    )
 }
 
 fn eligibility(scored: &Scored) -> Eligibility {
@@ -348,7 +413,14 @@ fn facts(rules: &ScoreRules, source: Source<'_>, scored: &Scored) -> JudgeFacts 
                 stacked_on: ids(&pr.stacked_on),
                 milestone: milestone_title(&pr.milestone),
                 release_context: release_context(scored, &pr.milestone_context),
-                linked_issues: Vec::new(),
+                linked_issues: stored
+                    .linked_issues
+                    .iter()
+                    .map(|issue| LinkedIssue {
+                        reference: format!("{}#{}", place(&pr.repo), issue.number),
+                        title: issue.title.clone(),
+                    })
+                    .collect(),
                 owned_change: Some(wire(pr.owned_change)),
                 change_size: size_class(pr),
                 todo: None,

@@ -17,7 +17,7 @@ Significance (defect, change_impact, urgency_bonus) rates the problem and its va
 
 Answer rules:
 - One entry per item; copy `key` exactly. Answer every asked component: `defect` for `defect_severity`, the others in `parts`.
-- `known` lists computed values; replace one in `parts` only with evidence from the data, else leave it out.
+- `known` lists computed values; replace one in `parts` only with evidence from the data, else leave it out. A `known` entry with status `estimated` is the computed default of an asked component: answer that component with its value unless the data supports another.
 - `previous` is the judgement made before the item changed: keep its values unless the changed facts move them.
 - `eligibility`: when asked, true to rank the item or false to leave it out, with the reason; else null.
 - `also_keys`: only keys from the item's `suggested_merges` that describe the same outcome; usually empty.
@@ -82,7 +82,7 @@ Answer rules:
           "component": "human_waiting",
           "points_tenths": 0,
           "status": "computed",
-          "basis": "computed from the outstanding human request and its age"
+          "basis": "computed from the outstanding human request: no definite outstanding request"
         },
         {
           "component": "blocked_penalty",
@@ -156,6 +156,18 @@ Answer rules:
           "points_tenths": 0,
           "status": "computed",
           "basis": "standalone issue: unstarted work"
+        },
+        {
+          "component": "unblocks",
+          "points_tenths": 0,
+          "status": "estimated",
+          "basis": "default to confirm: no known dependents → 0"
+        },
+        {
+          "component": "human_waiting",
+          "points_tenths": 0,
+          "status": "estimated",
+          "basis": "default to confirm: no outstanding human request known → 0"
         },
         {
           "component": "blocked_penalty",
@@ -236,10 +248,22 @@ Answer rules:
           "basis": "TODO status pending"
         },
         {
+          "component": "unblocks",
+          "points_tenths": 0,
+          "status": "estimated",
+          "basis": "default to confirm: no verified dependents → 0"
+        },
+        {
           "component": "human_waiting",
           "points_tenths": 0,
           "status": "computed",
           "basis": "no outstanding human request on a TODO"
+        },
+        {
+          "component": "blocked_penalty",
+          "points_tenths": 0,
+          "status": "estimated",
+          "basis": "default to confirm: no verified open blocker → 0"
         },
         {
           "component": "default_branch_bonus",

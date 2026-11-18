@@ -9,7 +9,7 @@ use crate::dashboard::score::{
     CheckContext, CheckRollup, IssueFacts, Mergeable, Milestone, MilestoneContext, OwnedChange,
     PrFacts, Relation, ReviewDecision, ScoreRules, classify_ci,
 };
-use crate::dashboard::snapshot::{StoredIssue, StoredPr};
+use crate::dashboard::snapshot::{StoredIssue, StoredLinkedIssue, StoredPr};
 use crate::github::work::{
     Actor, Blockers, IssueCandidate, IssueRelation, ItemRef, PrCandidate, PrRelation, PullDetail,
     StatusRollup,
@@ -311,6 +311,15 @@ pub(super) fn pr(
         created_at: detail.created_at,
         ci_red: ci.red.iter().map(|c| name(c)).collect(),
         ci_pending: ci.pending.iter().map(|c| name(c)).collect(),
+        linked_issues: detail
+            .closing_issues_references
+            .nodes
+            .iter()
+            .map(|issue| StoredLinkedIssue {
+                number: issue.number,
+                title: capped(&issue.title, TITLE_CHARS),
+            })
+            .collect(),
     }
 }
 

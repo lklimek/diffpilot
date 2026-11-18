@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 
 use contracts::agent::judge_work::{JudgeItem, JudgeWorkInput, part_values};
-use contracts::api::dashboard::{ItemKey, ScoreComponent};
+use contracts::api::dashboard::{ItemKey, PartStatus, ScoreComponent};
 use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{CredentialKind, LlmCredentialRef};
 use db::repo::jobs::ClaimParams;
@@ -12,7 +12,7 @@ use db::repo::jobs::ClaimParams;
 use super::*;
 use crate::dashboard::judge::JudgeRanker;
 use crate::dashboard::score::{EligibilityJudgement, Freshness, JudgedPart, Judgement};
-use crate::dashboard::snapshot;
+use crate::dashboard::snapshot::{self, StoredLinkedIssue};
 use crate::pipeline::CREDENTIAL_ID;
 
 /// The runner's fake-provider answer: every asked part 0 (defect 0 and 0), eligibility as computed.
@@ -69,8 +69,20 @@ fn expected(item: &JudgeItem) -> ItemJudgement {
     }
 }
 
+/// An answer the test runner gives to a judge job's input.
+type Answer = Arc<dyn Fn(&JudgeWorkInput) -> Value + Send + Sync>;
+
 /// Plays the runner until aborted: claims judge jobs and answers each neutrally; records the items it judged.
 fn serve(state: AppState, judged: Arc<Mutex<Vec<JudgeItem>>>) -> tokio::task::JoinHandle<()> {
+    serve_with(state, judged, Arc::new(neutral))
+}
+
+/// Plays the runner until aborted, answering each judge job with `answer`; records the items it judged.
+fn serve_with(
+    state: AppState,
+    judged: Arc<Mutex<Vec<JudgeItem>>>,
+    answer: Answer,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let now = Utc::now();
@@ -98,7 +110,7 @@ fn serve(state: AppState, judged: Arc<Mutex<Vec<JudgeItem>>>) -> tokio::task::Jo
                 job_id: job.id,
                 attempt: job.attempt,
                 outcome: JobOutcome::Succeeded {
-                    output: neutral(&input),
+                    output: answer(&input),
                 },
                 session: None,
                 usage: None,
@@ -115,8 +127,8 @@ fn serve(state: AppState, judged: Arc<Mutex<Vec<JudgeItem>>>) -> tokio::task::Jo
     })
 }
 
-#[tokio::test]
-async fn judged_refresh_ranks_the_fixture_world_as_the_scorer_expects() {
+/// The fixture world ranked by the judge ranker, with the runner's credential.
+async fn judged_world() -> World {
     let w = world_with(Arc::new(JudgeRanker), Duration::from_secs(24 * 3600)).await;
     w.state
         .db
@@ -132,6 +144,143 @@ async fn judged_refresh_ranks_the_fixture_world_as_the_scorer_expects() {
         )
         .await
         .expect("credential");
+    w
+}
+
+/// One refresh of the fixture world judged with `answer`: its status and the ranked page.
+async fn ranked_with(answer: Answer) -> (RefreshStatus, ItemPage) {
+    let w = judged_world().await;
+    let runner = serve_with(w.state.clone(), Arc::new(Mutex::new(Vec::new())), answer);
+    let done = w.refreshed().await;
+    runner.abort();
+    (done, w.items("?limit=500").await)
+}
+
+/// Neutral answers, with `edit` applied to the answer of the item `key` when it is in the batch.
+fn neutral_but(key: &'static str, edit: fn(&mut Value)) -> Answer {
+    Arc::new(move |input: &JudgeWorkInput| {
+        let mut answer = neutral(input);
+        if let Some(item) = answer["items"]
+            .as_array_mut()
+            .and_then(|items| items.iter_mut().find(|i| i["key"] == key))
+        {
+            edit(item);
+        }
+        answer
+    })
+}
+
+fn order(page: &ItemPage) -> Vec<(&str, Tier, i32)> {
+    page.items
+        .iter()
+        .map(|i| (i.id.as_str(), i.score.tier, i.score.total_tenths))
+        .collect()
+}
+
+/// A judged urgency bonus of 30 lifts acme/docs-site#77 from P2 (63.1) to P1 (93.1), to the top.
+#[tokio::test]
+async fn an_answer_raises_an_items_tier() {
+    let (done, page) = ranked_with(neutral_but("acme~docs-site~pr~77", |item| {
+        for part in item["parts"].as_array_mut().into_iter().flatten() {
+            if part["component"] == "urgency_bonus" {
+                part["points"] = json!(30);
+                part["basis"] = json!("Production outage reported in the description.");
+            }
+        }
+    }))
+    .await;
+    assert_eq!(done.ranking.map(|r| r.state), Some(RankingState::Finished));
+    assert_eq!(
+        order(&page)[..5],
+        [
+            ("DOC-77", Tier::P1, 931),
+            ("WUI-320", Tier::P1, 674),
+            ("NC-482", Tier::P1, 660),
+            ("WUI-311", Tier::P1, 651),
+            ("CON-1534", Tier::P2, 604),
+        ]
+    );
+}
+
+/// Replacing the known human-waiting part of acme/node-client#482 (10 → 15, an allowed value) moves it above
+/// acme/wallet-ui#320; the part shows as overridden with the judge's basis.
+#[tokio::test]
+async fn an_override_of_a_known_part_changes_the_order() {
+    let (_, page) = ranked_with(neutral_but("acme~node-client~pr~482", |item| {
+        item["parts"].as_array_mut().expect("parts").push(json!({
+            "component": "human_waiting",
+            "points": 15,
+            "basis": "The author asked for this review again yesterday."
+        }));
+    }))
+    .await;
+    assert_eq!(
+        order(&page)[..3],
+        [
+            ("NC-482", Tier::P1, 710),
+            ("WUI-320", Tier::P1, 674),
+            ("WUI-311", Tier::P1, 651),
+        ]
+    );
+    let waiting = page.items[0]
+        .score
+        .parts
+        .iter()
+        .find(|p| p.component == ScoreComponent::HumanWaiting)
+        .expect("part");
+    assert_eq!(
+        (waiting.points_tenths, waiting.status),
+        (Some(150), PartStatus::Overridden)
+    );
+    assert_eq!(
+        waiting.basis,
+        "The author asked for this review again yesterday."
+    );
+}
+
+/// Answers that are never valid leave the ranking failed and every item in its provisional order: the scorer's
+/// estimates stand for the LLM parts (e.g. acme/wallet-ui#320 at 90.4 instead of 67.4 with neutral answers).
+#[tokio::test]
+async fn invalid_output_leaves_the_provisional_order() {
+    let (done, page) = ranked_with(Arc::new(
+        |_: &JudgeWorkInput| json!({"items": "not a list"}),
+    ))
+    .await;
+    assert_eq!(done.state, RefreshState::Finished);
+    assert_eq!(done.ranking.map(|r| r.state), Some(RankingState::Failed));
+    assert!(
+        page.items
+            .iter()
+            .all(|i| i.score.state == ScoreState::Unjudged && i.llm.is_none())
+    );
+    assert_eq!(
+        order(&page),
+        [
+            ("WUI-320", Tier::P1, 904),
+            ("NC-482", Tier::P1, 760),
+            ("WUI-311", Tier::P1, 751),
+            ("DOC-77", Tier::P1, 681),
+            ("NC-476", Tier::P1, 678),
+            ("CON-1534", Tier::P1, 654),
+            ("OPS-14", Tier::P2, 550),
+            ("PLAT-1187", Tier::P2, 429),
+            ("WUI-298", Tier::P2, 376),
+            ("NC-490", Tier::P2, 356),
+            ("PLAT-1210", Tier::P3, 333),
+            ("CON-1541", Tier::P3, 302),
+            ("TODO-3fa91c2e", Tier::P3, 263),
+            ("CON-1520", Tier::P3, 243),
+            ("CON-1525", Tier::P3, 191),
+            ("PLAT-1215", Tier::P3, 177),
+            ("WUI-305", Tier::P3, 111),
+            ("TODO-91bd0a44", Tier::P3, -10),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn judged_refresh_ranks_the_fixture_world_as_the_scorer_expects() {
+    let w = judged_world().await;
     let judged = Arc::new(Mutex::new(Vec::new()));
     let runner = serve(w.state.clone(), Arc::clone(&judged));
     let done = w.refreshed().await;
@@ -155,6 +304,19 @@ async fn judged_refresh_ranks_the_fixture_world_as_the_scorer_expects() {
         .await
         .expect("load")
         .expect("snapshot");
+    // Plan §B.2: the scan keeps the issues a pull request closes (the judge input maps them, `judge::tests`).
+    let fix = stored
+        .pull_requests
+        .iter()
+        .find(|p| p.facts.repo.name == "platform" && p.facts.number == 1203)
+        .expect("acme/platform#1203 scanned");
+    assert_eq!(
+        fix.linked_issues,
+        vec![StoredLinkedIssue {
+            number: 1187,
+            title: "Block sync stalls after the 2.4 upgrade on three nodes".to_owned(),
+        }]
+    );
     let applied: HashMap<ItemKey, ItemJudgement> =
         items.iter().map(|i| (i.key.clone(), expected(i))).collect();
     let view = snapshot::build(&stored, &applied, None);
