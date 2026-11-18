@@ -45,4 +45,14 @@ describe("TopBar", () => {
     render(<TopBar login={null} />);
     expect(screen.getByRole("link", { name: "smart-review" })).toHaveAttribute("href", "/");
   });
+
+  it("links the CI summary to the checks page it is given, in a new tab, with its tooltip", () => {
+    const href = "https://github.com/acme/node-client/pull/482/checks";
+    render(<TopBar pr={tour.analysis.pr} ci={tour.pr_context.facts.ci} checksHref={href} login="alice" />);
+    const link = screen.getByRole("link", { name: /^Check runs: .*↗$/ });
+    expect(link).toHaveAttribute("href", href);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(link).toHaveAccessibleDescription(/^Open the checks on GitHub \(new tab\)/);
+  });
 });

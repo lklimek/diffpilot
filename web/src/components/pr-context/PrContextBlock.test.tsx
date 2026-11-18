@@ -207,3 +207,14 @@ it("shows usage in the facts footer and omits it without a report", () => {
   rerender(<PrContextBlock pr={tour.analysis.pr} context={tour.pr_context} threadCount={0} usage={null} />);
   expect(screen.queryByText(/LLM usage so far/)).toBeNull();
 });
+
+it("links the CI summary to the checks page it is given", () => {
+  const href = "https://github.com/acme/node-client/pull/482/checks";
+  render(
+    <PrContextBlock pr={tour.analysis.pr} context={tour.pr_context} threadCount={0} checksHref={href} />,
+  );
+  const link = screen.getByRole("link", { name: /^Check runs: .*↗$/ });
+  expect(link).toHaveAttribute("href", href);
+  expect(link).toHaveAttribute("target", "_blank");
+  expect(link).toHaveAccessibleDescription(/^Open the checks on GitHub \(new tab\)/);
+});

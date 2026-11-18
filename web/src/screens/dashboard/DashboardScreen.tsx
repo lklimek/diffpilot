@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { useDashboardTabStatus } from "../../app/tabStatus";
 import { ApiError } from "../../api/client";
 import { Banner } from "../../components/banner/Banner";
 import { RefreshControl } from "../../components/dashboard/refresh-control/RefreshControl";
@@ -46,6 +47,7 @@ export function DashboardScreen() {
   const { me, user, view, now } = page;
   const summary = page.summary.data;
   const snapshot = summary?.snapshot ?? null;
+  useDashboardTabStatus(summary?.latest_refresh);
 
   // Charts are bucketed by the browser's local day and week (plan §C.1).
   const charts = useMemo(() => {

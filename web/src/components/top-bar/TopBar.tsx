@@ -1,4 +1,4 @@
-import { ciText, ciTip } from "../section/ci";
+import { CHECKS_LINK_TIP, ciText, ciTip } from "../section/ci";
 import type { CiStatus, LlmLanguage, PrSummary } from "../../api/generated/types";
 import { LanguageTag } from "../language-tag/LanguageTag";
 import { PENDING_INCOMPLETE } from "../section/format";
@@ -11,6 +11,8 @@ interface TopBarProps {
   pr?: PrSummary;
   /** CI status of the head commit. */
   ci?: CiStatus;
+  /** The PR's checks page on GitHub; the CI summary links to it (new tab) when given. */
+  checksHref?: string;
   /** Language of the analysis's LLM texts; no tag when absent. */
   language?: LlmLanguage;
   /** Signed-in GitHub login (links to Settings); null when signed out. */
@@ -43,6 +45,7 @@ export function TopBar({
   onHideContextChanges,
   pr,
   ci,
+  checksHref,
   language,
   login,
   progress,
@@ -78,7 +81,21 @@ export function TopBar({
             </code>
           </Tooltip>
           <LanguageTag language={language} />
-          {ci && (
+          {ci && checksHref && (
+            <Tooltip tip={`${CHECKS_LINK_TIP} ${ciTip(ci)}`}>
+              <a
+                href={checksHref}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`rounded border px-1.5 text-[11px] leading-[18px] font-semibold no-underline ${
+                  ci.state === "failing" ? "border-high-bd bg-high-bg text-high" : "border-border text-text"
+                }`}
+              >
+                {ciText(ci)} ↗
+              </a>
+            </Tooltip>
+          )}
+          {ci && !checksHref && (
             <Tooltip tip={ciTip(ci)}>
               <span
                 tabIndex={0}
