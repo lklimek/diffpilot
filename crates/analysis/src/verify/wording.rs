@@ -248,6 +248,25 @@ mod tests {
         }
     }
 
+    /// Review repro: ordinary Russian review text (a component failing, an AI feature) is no capability excuse,
+    /// as its English equivalents are not.
+    #[test]
+    fn ordinary_russian_technical_text_is_no_capability_excuse() {
+        let rejected: Vec<&str> = [
+            "Парсер не смог открыть файл, и инструмент завершился с ошибкой.",
+            "Функция не смогла прочитать конфигурацию инструмента, если путь пустой.",
+            "После обновления клиенты не смогли загрузить инструкции по установке.",
+            "Сервис работает как AI-прокси между клиентом и моделью.",
+            "Модуль кэширует ответы так же, как ИИ-ассистент в редакторе.",
+            "Тест проверяет, что CLI не смог прочитать файл без прав.",
+            "The parser could not open the file and the tool crashed.",
+        ]
+        .into_iter()
+        .filter(|text| agent_limitation(text))
+        .collect();
+        assert!(rejected.is_empty(), "{rejected:#?}");
+    }
+
     #[test]
     fn banned_phrases_and_percentages_in_llm_text_are_warnings() {
         let output = pr_context_with(

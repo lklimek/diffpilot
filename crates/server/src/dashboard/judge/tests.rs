@@ -1276,6 +1276,39 @@ async fn eligibility_answer_hides_an_item_only_when_asked() {
     assert_eq!(ids, ["wallet-ui#2"]);
 }
 
+/// D19 review repro: a stored "not eligible" answer, given while the pull request was not directed at the user,
+/// must not hide it once a review is requested from the user directly (shown as soon as the scan lands, before
+/// the judge runs again).
+#[tokio::test]
+async fn stored_not_eligible_answer_never_hides_a_pull_request_directed_at_the_user() {
+    let h = harness().await;
+    let mut unchecked = pr(1, "fix: owned paths unknown");
+    unchecked.facts.owned_change = OwnedChange::Unknown;
+    unchecked.facts.author = Some("bob".into());
+    unchecked.facts.relations = vec![Relation::Mentioned];
+    let mut snap = snapshot(vec![unchecked, pr(2, "fix: y")], vec![], vec![]);
+    let id = h.rank("u1", &snap).await;
+    h.serve(|i| {
+        let mut answer = neutral(i);
+        for item in answer["items"].as_array_mut().expect("items") {
+            item["eligibility"] = json!({"eligible": false, "reason": "Generated code only."});
+        }
+        succeeded(answer)
+    })
+    .await;
+    h.ranked("u1", id).await;
+    let directed = &mut snap.pull_requests[0].facts;
+    directed.relations = vec![Relation::ReviewRequested];
+    directed.review_pending_for_us = true;
+    let view = snapshot::build(&snap, &h.judgements("u1", &snap).await, None);
+    let ids: Vec<&str> = view.items.iter().map(|i| i.item.id.as_str()).collect();
+    assert!(
+        ids.contains(&"wallet-ui#1"),
+        "directed PR hidden by an inherited eligibility flip: {ids:?}, excluded {:?}",
+        view.exclusions
+    );
+}
+
 #[test]
 fn unasked_eligibility_answer_is_dropped() {
     let answer = contracts::agent::judge_work::ValidAnswer {
@@ -1504,6 +1537,48 @@ fn pull_requests_carry_their_size_mark() {
         .map(|a| (a.id.as_str(), a.change_size.map(|m| m.size)))
         .collect();
     assert_eq!(awaiting, [("wallet-ui#7", Some(SizeMark::Huge))]);
+}
+
+/// B10: a waiting PR whose state changes so that something is the user's move (a human approves; changes are
+/// requested) is back in Needs you on the next scan and is judged then; it leaves Waiting on others.
+#[test]
+fn a_waiting_pull_request_returns_to_needs_you_when_it_becomes_the_users_move() {
+    use crate::dashboard::score::ReviewDecision as D;
+    let mut waiting = pr(5949, "feat(sdk): waits for reviews");
+    let f = &mut waiting.facts;
+    f.labels = vec!["ready-for-human".to_owned()];
+    f.review_decision = Some(D::ReviewRequired);
+    f.approved_by = vec!["thepastaclaw".to_owned()];
+    f.review_requested_from_others = vec!["ana".to_owned()];
+    let moved = |change: &dyn Fn(&mut PrFacts)| {
+        let mut item = waiting.clone();
+        change(&mut item.facts);
+        let snap = snapshot(vec![item], vec![], vec![]);
+        let view = snapshot::build(&snap, &HashMap::new(), None);
+        let judged = candidates(&snap, LlmLanguage::En)
+            .iter()
+            .filter(|c| c.asked())
+            .count();
+        (view.items.len(), view.awaiting.len(), judged)
+    };
+    assert_eq!(moved(&|_| {}), (0, 1, 0), "waiting");
+    assert_eq!(
+        moved(&|f| {
+            f.review_decision = Some(D::Approved);
+            f.approved_by.push("ana".to_owned());
+        }),
+        (1, 0, 1),
+        "a human approved"
+    );
+    assert_eq!(
+        moved(&|f| {
+            f.review_decision = Some(D::ChangesRequested);
+            f.changes_requested_by = vec!["ana".to_owned()];
+            f.changes_requested_by_human = true;
+        }),
+        (1, 0, 1),
+        "changes requested"
+    );
 }
 
 #[tokio::test]
