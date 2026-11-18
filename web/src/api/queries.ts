@@ -27,6 +27,10 @@ import { reviewStates } from "./review-state";
 /** The signed-in user and CSRF token. */
 export const useMe = () => useQuery({ queryKey: ["me"], queryFn: api.getMe });
 
+/** The reader's own analyses, the latest per PR, newest first (Recent reviews); disabled while signed out. */
+export const useMyAnalyses = (enabled: boolean) =>
+  useQuery({ queryKey: ["my-analyses"], queryFn: () => api.listMyAnalyses(), enabled });
+
 /** The review-ready analysis's tour, including pending flow placeholders. */
 export const useTour = (id: AnalysisId) =>
   useQuery({ queryKey: ["tour", id], queryFn: () => api.getTour(id) });

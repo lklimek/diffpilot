@@ -210,6 +210,11 @@ message: string, } | { "state": "finished",
 total: number, } | { "state": "cancelled" };
 
 /**
+ * The stored status of an analysis (the `state` of [`AnalysisState`] without its details).
+ */
+export type AnalysisStatus = "planning" | "running" | "paused" | "failed" | "finished" | "cancelled";
+
+/**
  * An analysis and its state.
  */
 export type AnalysisSummary = {
@@ -1996,6 +2001,50 @@ range: LineRange,
  * Lines that differ from the original (`≠`).
  */
 differing: Array<number>, };
+
+/**
+ * Response of `GET /api/v1/analyses`: the reader's own analyses (requested by them), the latest per pull
+ * request, newest first.
+ */
+export type MyAnalyses = {
+/**
+ * The analyses, newest first.
+ */
+analyses: Array<MyAnalysis>, };
+
+/**
+ * Query of `GET /api/v1/analyses`.
+ */
+export type MyAnalysesQuery = {
+/**
+ * Most rows returned, 1 to 100; 20 when absent.
+ */
+limit?: number, };
+
+/**
+ * One analysis of the reader's list, as stored.
+ */
+export type MyAnalysis = {
+/**
+ * Analysis id.
+ */
+id: AnalysisId,
+/**
+ * The pull request.
+ */
+pr: PrRef,
+/**
+ * The pull request title as last fetched (untrusted text).
+ */
+title: string,
+/**
+ * The stored status.
+ */
+status: AnalysisStatus,
+/**
+ * When the analysis was requested.
+ */
+created_at: string, };
 
 /**
  * Kind of a flow-graph node, derived from the step kind.

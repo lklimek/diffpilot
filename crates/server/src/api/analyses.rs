@@ -1,5 +1,5 @@
-//! Analyses: create, read, cancel and retry (request parsing and the tenant check; the work lives in
-//! `pipeline`). Also the error type and helpers shared by the pull-request, tour and lines routes.
+//! Analyses: create, list the reader's own, read, cancel and retry (request parsing and the tenant check; the
+//! work lives in `pipeline`). Also the error type and helpers shared by the pull-request, tour and lines routes.
 //!
 //! An analysis is created with the pull request's base tip; the pipeline then stores the merge base of base tip
 //! and head (GitHub's three-dot comparison) before any job runs. The diff, `side=base` reads, prompts and
@@ -10,15 +10,18 @@ use std::borrow::Cow;
 
 use analysis::diff::DiffError;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use contracts::api::analyses::{AnalysisSummary, CreateAnalysisRequest};
+use contracts::api::analyses::{
+    AnalysisSummary, CreateAnalysisRequest, MyAnalyses, MyAnalysesQuery,
+};
 use contracts::api::error::ApiErrorCode;
 use contracts::ids::AnalysisId;
 use contracts::routes::{
-    CANCEL_ANALYSIS, CREATE_ANALYSIS, GET_ANALYSIS, PAUSE_ANALYSIS, RESUME_ANALYSIS, RETRY_ANALYSIS,
+    CANCEL_ANALYSIS, CREATE_ANALYSIS, GET_ANALYSIS, LIST_MY_ANALYSES, PAUSE_ANALYSIS,
+    RESUME_ANALYSIS, RETRY_ANALYSIS,
 };
 use db::error::DbError;
 
@@ -65,6 +68,9 @@ pub enum AnalysisApiError {
     /// The Tour exists only for finished analyses; the diff only once the analysis base is stored.
     #[error("the analysis has not finished")]
     NotFinished,
+    /// `limit` outside 1 to [`MyAnalysesQuery::MAX_LIMIT`].
+    #[error("the limit is not valid")]
+    InvalidLimit,
     /// A line range is malformed (`from` 0 or after `to`).
     #[error("the line range is not valid")]
     InvalidRange,
@@ -202,9 +208,10 @@ impl ApiErrorSource for AnalysisApiError {
             }
             Self::NotRendered => ApiErrorCode::NotRendered,
             Self::NotFinished => ApiErrorCode::AnalysisNotFinished,
-            Self::InvalidRange | Self::InvalidPath | Self::InvalidRepository => {
-                ApiErrorCode::InvalidRequest
-            }
+            Self::InvalidRange
+            | Self::InvalidPath
+            | Self::InvalidRepository
+            | Self::InvalidLimit => ApiErrorCode::InvalidRequest,
             Self::RangeTooLarge => ApiErrorCode::RangeTooLarge,
             Self::FileNotFound | Self::Github(GithubError::NotFound) => ApiErrorCode::NotFound,
             Self::Github(GithubError::Unauthorized) => ApiErrorCode::Unauthenticated,
@@ -239,6 +246,7 @@ impl ApiErrorSource for AnalysisApiError {
             }
             Self::NotFinished => "The analysis has not finished yet.",
             Self::InvalidRange => "The line range is not valid.",
+            Self::InvalidLimit => "The limit must be between 1 and 100.",
             Self::RangeTooLarge => "The line range is too large; ask for at most 2000 lines.",
             Self::InvalidPath => "The file path is not valid.",
             Self::InvalidRepository => "The repository or pull request number is not valid.",
@@ -284,6 +292,7 @@ pub(crate) fn failure(error: impl Into<AnalysisApiError>) -> ApiFailure<Analysis
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route(CREATE_ANALYSIS.path, post(create))
+        .route(LIST_MY_ANALYSES.path, get(list_mine))
         .route(GET_ANALYSIS.path, get(read))
         .route(CANCEL_ANALYSIS.path, post(cancel))
         .route(RETRY_ANALYSIS.path, post(retry))
@@ -319,6 +328,27 @@ async fn create(
         .await
         .map_err(failure)?;
     Ok((StatusCode::CREATED, Json(summary)))
+}
+
+/// The reader's own analyses: those this user requested (`created_by`), in the session's tenant. Nothing of
+/// another user's analyses is listed, whatever their repository.
+async fn list_mine(
+    State(state): State<AppState>,
+    session: Session,
+    query: Result<Query<MyAnalysesQuery>, QueryRejection>,
+) -> ApiResult<Json<MyAnalyses>> {
+    let Query(query) = query.map_err(failure)?;
+    let limit = query.limit.unwrap_or(MyAnalysesQuery::DEFAULT_LIMIT);
+    if !(1..=MyAnalysesQuery::MAX_LIMIT).contains(&limit) {
+        return Err(failure(AnalysisApiError::InvalidLimit));
+    }
+    let analyses = state
+        .db
+        .analyses()
+        .mine(&session.tenant_id, &session.user_id, limit)
+        .await
+        .map_err(failure)?;
+    Ok(Json(MyAnalyses { analyses }))
 }
 
 async fn read(
@@ -384,3 +414,6 @@ async fn resume(
     control::resume(&state, id).await.map_err(failure)?;
     Ok(Json(visible_analysis(&state, &session, id).await?))
 }
+
+#[cfg(test)]
+mod tests;

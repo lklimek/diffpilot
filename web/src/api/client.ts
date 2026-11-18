@@ -5,6 +5,8 @@ import type {
   AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
+  MyAnalyses,
+  MyAnalysesQuery,
   ApiErrorCode,
   AskQuestion,
   AskRequest,
@@ -236,6 +238,8 @@ export function createApiClient(baseUrl = "") {
     },
     resolvePr: (body: ResolvePrRequest) => call<ResolvePrResponse>("resolvePr", { body }),
     createAnalysis: (body: CreateAnalysisRequest) => call<AnalysisSummary>("createAnalysis", { body }),
+    listMyAnalyses: (query: MyAnalysesQuery = {}) =>
+      call<MyAnalyses>("listMyAnalyses", { query: { ...query } }),
     getAnalysis: (id: AnalysisId) => call<AnalysisSummary>("getAnalysis", { params: { id } }),
     getTour: (id: AnalysisId) => call<Tour>("getTour", { params: { id } }),
     getLines: (id: AnalysisId, query: RangeQuery) =>

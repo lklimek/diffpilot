@@ -32,6 +32,7 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | GET | `/api/v1/me` | public | – | `MeResponse` |
 | POST | `/api/v1/pr/resolve` | session_csrf | `ResolvePrRequest` | `ResolvePrResponse` |
 | POST | `/api/v1/analyses` | session_csrf | `CreateAnalysisRequest` | 201 `AnalysisSummary` |
+| GET | `/api/v1/analyses` | read | `MyAnalysesQuery` (`limit` 1–100, default 20) | `MyAnalyses`: the reader's own analyses (requested by them, this tenant), the latest per pull request, newest first; title, stored status and request time only (Recent reviews) |
 | GET | `/api/v1/analyses/{id}` | read | – | `AnalysisSummary` |
 | GET | `/api/v1/analyses/{id}/events` | read | – | SSE (`sse-events.md`) |
 | PUT | `/api/v1/settings/llm` | session_csrf | `ModelChoice` | `LlmSelection` |

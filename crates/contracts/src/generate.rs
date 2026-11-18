@@ -11,7 +11,7 @@ use ts_rs::{Config, TS, TypeVisitor};
 
 use crate::agent::{JobKind, StrictSchemaError, output_schema};
 use crate::api::access_tokens::{AccessToken, CreateAccessToken, CreatedAccessToken};
-use crate::api::analyses::{AnalysisSummary, CreateAnalysisRequest};
+use crate::api::analyses::{AnalysisSummary, CreateAnalysisRequest, MyAnalyses, MyAnalysesQuery};
 use crate::api::auth::{LogoutRequest, MeResponse};
 use crate::api::code::{DiffResponse, LinesResponse, RangeQuery};
 use crate::api::comments::{
@@ -77,6 +77,8 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
         &[routes::GET_DASHBOARD_SETTINGS],
     ),
     api_schema::<AnalysisSummary>("analysis_summary", &[routes::GET_ANALYSIS]),
+    api_schema::<MyAnalysesQuery>("my_analyses_query", &[]),
+    api_schema::<MyAnalyses>("my_analyses", &[routes::LIST_MY_ANALYSES]),
     api_schema::<AnalysisEvent>("analysis_event", &[routes::ANALYSIS_EVENTS]),
     api_schema::<Tour>("tour", &[routes::GET_TOUR]),
     api_schema::<LinesResponse>("lines_response", &[routes::GET_LINES]),
@@ -196,6 +198,8 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<ResolvePrResponse>();
     collector.visit::<CreateAnalysisRequest>();
     collector.visit::<AnalysisSummary>();
+    collector.visit::<MyAnalysesQuery>();
+    collector.visit::<MyAnalyses>();
     collector.visit::<crate::api::analyses::BackgroundAnalysisRequest>();
     collector.visit::<AnalysisEvent>();
     collector.visit::<Tour>();

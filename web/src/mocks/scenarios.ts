@@ -13,6 +13,7 @@ import type {
   AskQuestion,
   LinesResponse,
   MeResponse,
+  MyAnalyses,
   RepoSettings,
   ResolvePrResponse,
   Settings,
@@ -71,6 +72,8 @@ interface Scenario {
   manyRepos?: boolean;
   /** `me` answer. */
   me?: () => MeResponse;
+  /** `GET /api/v1/analyses` answer (Recent reviews). */
+  myAnalyses?: () => MyAnalyses;
   /** Changes to the `pr/resolve` answer of the fixture PR. */
   resolve?: (seed: ResolvePrResponse) => ResolvePrResponse;
   /** The analysis stays in this state (no scripted run after Start analysis). */
@@ -505,6 +508,7 @@ const SCENARIOS = {
     progress: (state) => waitingProgress("this_analysis", state),
   },
   "signed-out": { me: () => ({ user: null, csrf_token: null }) },
+  "no-reviews": { myAnalyses: () => ({ analyses: [] }) },
   "head-moved": {
     resolve: (seed: ResolvePrResponse) => ({
       ...seed,

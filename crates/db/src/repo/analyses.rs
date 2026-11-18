@@ -1,10 +1,10 @@
 //! Repository for `analyses`. Frozen signatures (cross-WP); bodies are filled in by WP2-JOBS / WP2-INGEST.
 
 use contracts::api::analyses::{
-    AnalysisStage, AnalysisState, AnalysisSummary, FlowRef, StageFlow, StageKind,
+    AnalysisStage, AnalysisState, AnalysisSummary, FlowRef, MyAnalysis, StageFlow, StageKind,
 };
 use contracts::api::pr::PrSummary;
-use contracts::common::{LlmLanguage, RepoRef};
+use contracts::common::{LlmLanguage, PrRef, RepoRef};
 use contracts::ids::{AnalysisId, CommitSha, FlowId};
 use contracts::job::result::JobOutcome;
 use contracts::time::Timestamp;
@@ -329,6 +329,51 @@ impl Analyses<'_> {
         let mut summary = self.summary(id).await?;
         summary.has_my_state = Some(super::review_state::exists(self.pool, user, id).await?);
         Ok(summary)
+    }
+
+    /// The analyses `user` requested in `tenant_id`, the latest per pull request, newest first, at most `limit`.
+    /// Read-only.
+    pub async fn mine(
+        &self,
+        tenant_id: &str,
+        user: &str,
+        limit: u32,
+    ) -> Result<Vec<MyAnalysis>, DbError> {
+        let rows = sqlx::query(
+            "SELECT a.id, a.state, a.created_at, r.owner, r.name, p.number, p.title
+             FROM (SELECT id, pull_request_id, state, created_at,
+                       ROW_NUMBER() OVER (PARTITION BY pull_request_id ORDER BY created_at DESC, id DESC) AS n
+                   FROM analyses WHERE tenant_id = ? AND created_by = ?) a
+             JOIN pull_requests p ON p.id = a.pull_request_id JOIN repos r ON r.id = p.repo_id
+             WHERE a.n = 1
+             ORDER BY a.created_at DESC, a.id DESC
+             LIMIT ?",
+        )
+        .bind(tenant_id)
+        .bind(user)
+        .bind(limit)
+        .fetch_all(self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let id: String = row.try_get("id")?;
+                let state: String = row.try_get("state")?;
+                let created_at: String = row.try_get("created_at")?;
+                Ok(MyAnalysis {
+                    id: parse_wire(&id, "analyses.id")?,
+                    pr: PrRef {
+                        repo: RepoRef {
+                            owner: row.try_get("owner")?,
+                            name: row.try_get("name")?,
+                        },
+                        number: row.try_get("number")?,
+                    },
+                    title: row.try_get("title")?,
+                    status: parse_wire(&state, "analyses.state")?,
+                    created_at: parse_ts(&created_at, "analyses.created_at")?,
+                })
+            })
+            .collect()
     }
 
     /// The analysis as the API shows it: state plus the pull request at the analysed head.
@@ -1777,5 +1822,159 @@ mod usage_tests {
                 .await
                 .unwrap()
         );
+    }
+}
+
+#[cfg(test)]
+mod mine_tests {
+    use contracts::api::analyses::AnalysisStatus;
+
+    use super::testing::{seed_analysis, seed_tenant};
+    use super::*;
+    use crate::repo::Db;
+
+    /// Seeds users u1 (via `seed_analysis`) and u2, tenant `other` with its own PR #7, and PR #483; returns
+    /// `(pr_482, pr_483, other_tenant_pr)` row ids.
+    async fn seed(db: &Db) -> (i64, i64, i64) {
+        seed_analysis(db).await.unwrap();
+        sqlx::query("DELETE FROM analyses")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        seed_tenant(db, "other").await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, github_id, login, created_at, updated_at)
+                 VALUES ('u2', 2, 'colleague', '2026-11-16T00:00:00.000000Z', '2026-11-16T00:00:00.000000Z');
+             INSERT INTO pull_requests (id, tenant_id, repo_id, number, title, author, html_url, base_sha, head_sha,
+                 fetched_at)
+               VALUES (2, 'default', 1, 483, 'Private: rotate keys', 'alice',
+                 'https://github.com/acme/node-client/pull/483', 'b', 'h', '2026-11-16T00:00:00.000000Z');
+             INSERT INTO repos (id, tenant_id, owner, name) VALUES (2, 'other', 'acme', 'secret');
+             INSERT INTO pull_requests (id, tenant_id, repo_id, number, title, author, html_url, base_sha, head_sha,
+                 fetched_at)
+               VALUES (3, 'other', 2, 7, 'Other tenant', 'alice',
+                 'https://github.com/acme/secret/pull/7', 'b', 'h', '2026-11-16T00:00:00.000000Z');",
+        )
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        (1, 2, 3)
+    }
+
+    async fn insert(
+        db: &Db,
+        tenant: &str,
+        pr: i64,
+        user: &str,
+        state: &str,
+        minute: u32,
+    ) -> AnalysisId {
+        let id = AnalysisId::new_random();
+        sqlx::query(
+            "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, flows_total,
+                 created_by, created_at)
+             VALUES (?, ?, ?, ?, ?, 'en', ?, CASE WHEN ? IN ('planning', 'cancelled') THEN NULL ELSE 3 END, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(tenant)
+        .bind(pr)
+        .bind("1".repeat(40))
+        .bind(format!("{}00000000", id.0.simple()))
+        .bind(state)
+        .bind(state)
+        .bind(user)
+        .bind(format!("2026-11-16T12:{minute:02}:00.000000Z"))
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn lists_only_the_users_own_analyses_latest_per_pr_newest_first() {
+        let db = Db::in_memory().await.unwrap();
+        let (pr_482, pr_483, other_pr) = seed(&db).await;
+        let older = insert(&db, "default", pr_482, "u1", "cancelled", 1).await;
+        let latest = insert(&db, "default", pr_482, "u1", "finished", 5).await;
+        let second = insert(&db, "default", pr_483, "u1", "running", 3).await;
+        // u2's analyses: a newer one of the same PR and one of a PR u1 never analysed.
+        insert(&db, "default", pr_482, "u2", "running", 9).await;
+        let theirs = insert(&db, "default", pr_483, "u2", "failed", 8).await;
+        // u1 in another tenant.
+        insert(&db, "other", other_pr, "u1", "finished", 7).await;
+
+        let mine = db.analyses().mine("default", "u1", 20).await.unwrap();
+        let ids: Vec<_> = mine.iter().map(|row| row.id).collect();
+        assert_eq!(ids, [latest, second]);
+        assert!(!ids.contains(&older));
+        assert_eq!(
+            mine[0].pr,
+            PrRef {
+                repo: RepoRef {
+                    owner: "acme".into(),
+                    name: "node-client".into()
+                },
+                number: 482
+            }
+        );
+        assert_eq!(mine[0].title, "Retry RPC calls");
+        assert_eq!(mine[0].status, AnalysisStatus::Finished);
+        assert_eq!(mine[1].status, AnalysisStatus::Running);
+        assert_eq!(
+            mine[0].created_at,
+            "2026-11-16T12:05:00Z".parse::<Timestamp>().unwrap()
+        );
+
+        let colleague = db.analyses().mine("default", "u2", 20).await.unwrap();
+        let ids: Vec<_> = colleague.iter().map(|row| row.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[1], theirs);
+        assert!(!ids.contains(&latest) && !ids.contains(&second));
+
+        assert_eq!(
+            db.analyses().mine("default", "u1", 1).await.unwrap().len(),
+            1
+        );
+        assert!(
+            db.analyses()
+                .mine("default", "nobody", 20)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let other = db.analyses().mine("other", "u1", 20).await.unwrap();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].title, "Other tenant");
+    }
+
+    #[tokio::test]
+    async fn every_stored_state_maps_to_a_status() {
+        let db = Db::in_memory().await.unwrap();
+        seed(&db).await;
+        let states = [
+            ("planning", AnalysisStatus::Planning),
+            ("running", AnalysisStatus::Running),
+            ("paused", AnalysisStatus::Paused),
+            ("failed", AnalysisStatus::Failed),
+            ("finished", AnalysisStatus::Finished),
+            ("cancelled", AnalysisStatus::Cancelled),
+        ];
+        for (index, (state, status)) in states.into_iter().enumerate() {
+            sqlx::query("DELETE FROM analyses")
+                .execute(&db.pool)
+                .await
+                .unwrap();
+            insert(
+                &db,
+                "default",
+                1,
+                "u1",
+                state,
+                u32::try_from(index).unwrap(),
+            )
+            .await;
+            let mine = db.analyses().mine("default", "u1", 20).await.unwrap();
+            assert_eq!(mine[0].status, status, "{state}");
+        }
     }
 }

@@ -132,6 +132,8 @@ pub const GET_ME: Route = route("getMe", Get, "/api/v1/me", Public);
 pub const RESOLVE_PR: Route = route("resolvePr", Post, "/api/v1/pr/resolve", SessionCsrf);
 /// Starts (or returns) an analysis.
 pub const CREATE_ANALYSIS: Route = route("createAnalysis", Post, "/api/v1/analyses", SessionCsrf);
+/// The reader's own analyses, the latest per pull request, newest first.
+pub const LIST_MY_ANALYSES: Route = route("listMyAnalyses", Get, "/api/v1/analyses", READ);
 /// An analysis.
 pub const GET_ANALYSIS: Route = route("getAnalysis", Get, "/api/v1/analyses/{id}", READ);
 /// SSE stream of an analysis.
@@ -391,6 +393,7 @@ pub const ROUTES: &[Route] = &[
     GET_ME,
     RESOLVE_PR,
     CREATE_ANALYSIS,
+    LIST_MY_ANALYSES,
     GET_ANALYSIS,
     ANALYSIS_EVENTS,
     CANCEL_ANALYSIS,
