@@ -1,5 +1,5 @@
 import type { UseQueryResult } from "@tanstack/react-query";
-import type { RefObject } from "react";
+import { useState, type RefObject } from "react";
 import type {
   AnalysisId,
   AnnotationId,
@@ -21,14 +21,15 @@ import {
   useQuestions,
   type useCommentActions,
 } from "../../api/queries";
-import { AskAnswers } from "../../components/ask/AskAnswers";
 import { AskForm } from "../../components/ask/AskForm";
+import { AskThread, type AskScope } from "../../components/ask/AskThread";
 import {
   CommentComposer,
   type CommentDrafts,
   type UnresolvedPosts,
 } from "../../components/comment/CommentComposer";
 import { commentPlacement, isChangedLine } from "../../components/comment/placement";
+import type { QuestionPlace } from "../../components/questions/QuestionsBlock";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
 import { Inspector, type InspectorProps } from "../../components/inspector/Inspector";
 import type { SectionControl } from "../../components/inspector/sectionState";
@@ -55,6 +56,8 @@ interface InspectorPaneProps {
   onFlashed?: () => void;
   onBackToStep: () => void;
   onSelectStep: (step: StepId) => void;
+  /** The step of the tour a question was asked on (its link in the Ask conversation). */
+  placeOf: (step: StepId) => QuestionPlace | null;
   onEvidence: (evidence: Evidence) => void;
   codeShown: boolean;
   pending: UseQueryResult<PendingReview>;
@@ -89,6 +92,7 @@ export function InspectorPane(props: InspectorPaneProps) {
   const postFeedback = usePostFeedback(analysisId);
   const deleteFeedback = useDeleteFeedback(analysisId);
   const annotation = step?.llm.annotations.find((a) => a.id === annotationId);
+  const [askScope, setAskScope] = useState<AskScope>("conversation");
 
   const onAsk = (stepId: StepId, text: string) => ask.mutateAsync({ step: stepId, text });
   // Feedback on a plain line only where the server takes it: a changed line of the diff on its side.
@@ -123,11 +127,15 @@ export function InspectorPane(props: InspectorPaneProps) {
       <StatusMessage kind="error">Cannot read the questions: {errorText(questions.error)}</StatusMessage>
     ) : questions.isPending ? (
       <StatusMessage kind="loading">Loading the questions…</StatusMessage>
-    ) : !questions.data.some((q) => q.step_id === step.id) ? null : (
-      <AskAnswers
+    ) : questions.data.length === 0 ? null : (
+      <AskThread
+        questions={questions.data}
+        stepId={step.id}
+        scope={askScope}
+        onScope={setAskScope}
+        placeOf={props.placeOf}
         onEvidence={props.onEvidence}
         currentFile={step.facts.file}
-        questions={questions.data.filter((q) => q.step_id === step.id)}
         onAskAgain={onAsk}
       />
     ));

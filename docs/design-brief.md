@@ -718,3 +718,14 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
 - Amends §1 "badges only for deterministic facts": these pills are LLM judgements and are allowed in navigation
   because they are styled as LLM content (the LLM tint, the remark bar's colour and pattern, a word label) and say
   "LLM" and "not checked" in their accessible name.
+
+### Owner-approved amendment — 2026-11-18: Ask as a conversation
+
+- **Ask as a chat.** The Ask area shows the user's conversation of the analysis as one thread, oldest at the top
+  and newest at the bottom, the field below it. Each entry is the question with the step it was asked on (a small
+  link that opens that step) and its answer; questions asked on other steps belong to the same thread (the agent's
+  working session is per PR and user, so this is what the LLM remembers). "Whole conversation" (default) and
+  "This step" filter it. The thread follows the newest entry unless the reader scrolled up; a new question always
+  shows. Pending answers keep their progress line, failed ones Ask again. Answers keep their line breaks; list
+  lines are shown as typed with a hanging indent. Supersedes "Answers render below the question field, newest
+  first" above.

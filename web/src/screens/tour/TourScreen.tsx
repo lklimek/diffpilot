@@ -907,6 +907,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             onFlashed={() => setInspectorFlash(null)}
             onBackToStep={() => setAnnotationId(null)}
             onSelectStep={selectStep}
+            placeOf={questionPlace}
             onEvidence={showEvidence}
             codeShown={
               !!step || !!lineView || (current.block === "quiet" && current.row.row !== "not_analysed")

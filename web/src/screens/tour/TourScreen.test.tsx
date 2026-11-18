@@ -428,7 +428,7 @@ describe("Tour screen (brief §4.3)", () => {
     const field = within(inspector()).getByRole("textbox", { name: /Ask the LLM about Step 5/ });
     expect(field).toHaveFocus();
     await user().type(field, "Is the retry idempotent?{Enter}");
-    const answers = await within(inspector()).findByRole("list", { name: "Questions asked about this step" });
+    const answers = await within(inspector()).findByRole("list", { name: "Ask conversation" });
     expect(answers).toHaveTextContent("Is the retry idempotent?");
     const asked = readStore("questions").at(-1)!;
     const answered: AskQuestion = {

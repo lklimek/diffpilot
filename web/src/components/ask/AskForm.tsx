@@ -13,7 +13,7 @@ export interface AskFormProps {
   onAsk: (step: StepId, text: string) => Promise<unknown> | void;
   /** The text field, for the `a` shortcut. */
   inputRef?: Ref<HTMLTextAreaElement>;
-  /** Questions and answers of the step (e.g. `AskAnswers`), shown below the field. */
+  /** The conversation (e.g. `AskThread`), shown above the field, which stays at the bottom. */
   answers?: ReactNode;
   /** The Inspector's section state: with it, Ask collapses like the other sections (key `ask`). */
   sections?: SectionControl;
@@ -61,7 +61,6 @@ function AskDraft({
   const subject = step.label;
   const id = useId();
   const field = useRef<HTMLTextAreaElement | null>(null);
-  const answersBox = useRef<HTMLDivElement>(null);
   const [text, setText] = useState("");
   const [empty, setEmpty] = useState(false);
   const action = useAction();
@@ -76,8 +75,6 @@ function AskDraft({
     setEmpty(false);
     if (await action.run(() => onAsk(step.id, question))) {
       setText("");
-      // Newest first: the new question is at the top of the answers.
-      if (answersBox.current) answersBox.current.scrollTop = 0;
       requestAnimationFrame(() => growField(field.current));
     }
   };
@@ -108,7 +105,8 @@ function AskDraft({
           <AskCaption subject={subject} count={count} />
         )}
       </h3>
-      <div id={`${id}-b`} hidden={!open}>
+      <div id={`${id}-b`} hidden={!open} className="flex min-h-0 flex-1 flex-col">
+        {answers && <div className="mt-1 flex min-h-0 flex-1 flex-col">{answers}</div>}
         <form
           className="mt-1 flex items-start gap-2"
           onSubmit={(event) => {
@@ -143,7 +141,7 @@ function AskDraft({
           />
           <Tooltip
             tip={busyTip(
-              "Asks the LLM about this step (a). The answer arrives whole, below the field.",
+              "Asks the LLM about this step (a). The answer arrives whole, above the field.",
               action.busy,
             )}
           >
@@ -166,18 +164,6 @@ function AskDraft({
             {notice}
           </p>
         )}
-        {answers && (
-          // Bounded, with its own scroll: Feedback and Comment below stay in view in the dock.
-          <div
-            ref={answersBox}
-            role="region"
-            aria-label="Answers"
-            tabIndex={0}
-            className="mt-2 max-h-[24vh] overflow-y-auto overscroll-contain"
-          >
-            {answers}
-          </div>
-        )}
       </div>
     </section>
   );
@@ -188,7 +174,7 @@ function AskCaption({ subject, count }: { subject: string; count?: number }) {
     <span>
       Ask{" "}
       <span className="text-[12px] font-normal tracking-normal normal-case">
-        about {subject}; answers appear below the field, newest first
+        about {subject}; one conversation per analysis, newest at the bottom
         {count !== undefined &&
           count > 0 &&
           ` · ${count} ${count === 1 ? "question" : "questions"} on this step`}
