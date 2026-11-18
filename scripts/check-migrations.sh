@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Migrations are append-only: a database already holds every applied migration's checksum and the server refuses to
 # start when a file it applied has changed. Fails when a migration in crates/db/migrations differs from the SHA-256
-# recorded in scripts/migrations.sha256, a recorded one is missing, or one is not recorded yet.
+# recorded in scripts/migrations.sha256, a recorded one is missing, one is not recorded yet, or versions (the NNNN_
+# prefix) are not unique and increasing in the order recorded.
 #
 # Usage:
 #   scripts/check-migrations.sh              check
@@ -13,11 +14,26 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIST=scripts/migrations.sha256
 DIR=crates/db/migrations
 
+# version FILE: the numeric prefix of NNNN_name.sql, or nothing.
+version() {
+  [[ "${1##*/}" =~ ^([0-9]+)_ ]] && echo "$((10#${BASH_REMATCH[1]}))"
+}
+
 # check ROOT: prints one line per problem to stderr; returns 1 if there is one.
 check() {
-  local root="$1" status=0 sum file rel
+  local root="$1" status=0 sum file rel number last=-1
   while read -r sum file; do
     [[ -n "$sum" ]] || continue
+    number="$(version "$file")" || true
+    if [[ -z "$number" ]]; then
+      echo "check-migrations: $file has no version prefix (NNNN_name.sql)" >&2
+      status=1
+    elif ((number <= last)); then
+      echo "check-migrations: $file: version $number is not above the previous migration's; versions are unique and increasing" >&2
+      status=1
+    else
+      last="$number"
+    fi
     if [[ ! -f "$root/$file" ]]; then
       echo "check-migrations: $file is recorded but missing; never remove an applied migration" >&2
       status=1
@@ -32,6 +48,10 @@ check() {
     if ! cut -d ' ' -f 3 "$root/$LIST" | grep -qxF -- "$rel"; then
       echo "check-migrations: $rel is not recorded; run scripts/check-migrations.sh --add-new and commit $LIST" >&2
       status=1
+      number="$(version "$rel")" || true
+      if [[ -z "$number" ]] || ((number <= last)); then
+        echo "check-migrations: $rel needs a version prefix above $last (NNNN_name.sql)" >&2
+      fi
     fi
   done
   return "$status"
@@ -71,6 +91,12 @@ self_test() {
   fresh; rm "$tmp/root/$DIR/0001_init.sql"; expect "removed migration" fail
   fresh; echo "SELECT 1;" > "$tmp/root/$DIR/9999_new.sql"; expect "unrecorded new migration" fail
   add_new "$tmp/root" > /dev/null; expect "new migration recorded with --add-new" pass
+  fresh; echo "SELECT 1;" > "$tmp/root/$DIR/0002_a.sql"; echo "SELECT 2;" > "$tmp/root/$DIR/0002_b.sql"
+  add_new "$tmp/root" > /dev/null; expect "two migrations with the same version" fail
+  fresh; echo "SELECT 1;" > "$tmp/root/$DIR/0000_early.sql"
+  add_new "$tmp/root" > /dev/null; expect "new migration numbered below a recorded one" fail
+  fresh; echo "SELECT 1;" > "$tmp/root/$DIR/later.sql"
+  add_new "$tmp/root" > /dev/null; expect "migration without a version prefix" fail
   if ((failures)); then echo "self-test failed: $failures case(s)" >&2; return 1; fi
   echo "check-migrations: self-test passed"
 }
