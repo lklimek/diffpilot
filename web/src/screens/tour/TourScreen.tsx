@@ -3,7 +3,7 @@ import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
 import { RemarkPill } from "../../components/remark-pills/RemarkPills";
 import { lineReference } from "../../components/ask/AskForm";
-import { REVIEW_START_PATH } from "../dashboard/paths";
+import { REVIEW_START_PATH } from "../shell/paths";
 import { answerComment, flagComment } from "../../components/comment/prefill";
 import { remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
@@ -435,8 +435,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           draftComment(stepLines.data ? { target, lines: stepLines.data } : null, flagComment(flag));
         }
       : undefined;
+  // Offered only with a line to anchor on (the open comment's, else the step's shown lines), like the flag.
   const onAnswerAsComment =
-    commenting && step
+    commenting && step && (commentLine || stepLines.data)
       ? (question: AskQuestion) => draftComment(currentLine(), answerComment(question.answer?.answer ?? ""))
       : undefined;
   // LLM remark pills and `r`: the remark's code line and its Inspector entry flash.
