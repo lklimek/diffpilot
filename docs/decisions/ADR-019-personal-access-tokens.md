@@ -57,11 +57,11 @@ secrets (runner secret, per-job token; `docs/contracts/http-api.md` "Listeners a
 v1 has no list of analyses; agents reach analyses through dashboard items' `review` links. A list route is a later
 additive change.
 
-## Threat model (T20, AR-7)
+## Threat model (T20, AR-10)
 A token is as powerful as a read-only session of its user — private-repository titles, Tour text, Q&A, pending
 comments — and lives outside the browser, in the user's agents' environments and files; it has no CSRF exposure
 (no ambient credential). Mitigations: expiry, revocation, allow-list check, rate limits, audit, hash at rest.
-Accepted by the owner (AR-7): his agents already hold his GitHub access.
+Accepted by the owner (AR-10): his agents already hold his GitHub access.
 
 ## Alternatives considered
 | Alternative | Why not |

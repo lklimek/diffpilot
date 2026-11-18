@@ -551,8 +551,8 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 | R1b | GET | `/api/v1/dashboard/items` | read | `ItemQuery` | `ItemPage`; weak `ETag`, `If-None-Match` → 304; 409 `cursor_expired` |
 | R2 | POST | `/api/v1/dashboard/refreshes` | session_csrf | – | 201 `RefreshStatus`; 409 `refresh_running`; 429 `github_rate_limited` |
 | R2b | GET | `/api/v1/dashboard/refreshes/{id}` | read | – | `RefreshStatus` |
-| R3 | POST | `/api/v1/dashboard/refreshes/{id}/cancel` | session_csrf | – | `RefreshStatus` |
-| R4 | POST | `/api/v1/dashboard/refreshes/{id}/rank` | session_csrf | – | 202 `RefreshStatus` (Retry ranking of that snapshot) |
+| R3 | POST | `/api/v1/dashboard/refreshes/{id}/cancel` | session_csrf | – | `RefreshStatus`; 409 `conflict` once the refresh ended |
+| R4 | POST | `/api/v1/dashboard/refreshes/{id}/rank` | session_csrf | – | 202 `RefreshStatus` (Retry ranking of that snapshot); 409 `conflict` or `refresh_running` (Refresh states) |
 | R5 | GET | `/api/v1/dashboard/refreshes/{id}/events` | read | – | SSE `DashboardEvent` (`sse-events.md`) |
 | R6 | GET / PUT | `/api/v1/settings/dashboard` | read / session_csrf | – / `DashboardSettings` | `DashboardSettingsView` (PUT: 422 `invalid_dashboard_settings`) |
 | R6b | PUT | `/api/v1/settings/dashboard/time-zone` | session_csrf | `SetTimeZoneRequest` | 204 (422 `invalid_dashboard_settings` for a zone `chrono-tz` does not know) |
@@ -572,13 +572,25 @@ not change). Until the token middleware exists, `read` routes accept the session
   ranking changes; `ItemPage.revision` names the revision a page belongs to. Agents poll R1 and read R1b only when
   `revision` changed. R1b also sends a weak `ETag` (hash of the body) and answers `If-None-Match` with 304.
   `Cache-Control: no-store` stays on every API response.
-- **Items (R1b).** Rank order of the latest snapshot. Filters `tier`, `kind`, `repo` (`owner/name`), `state` (score
-  state), `updated_since` (TODOs: their change time); all optional. `limit` defaults to 100, at most 500
+- **Items (R1b).** Rank order of the current snapshot. Filters, all optional: `tier`; `kind` = `pr` | `issue`
+  (absent = pull requests and issues together; TODO items, plan §G, are listed whatever `kind` says while the user
+  shows MemCan TODOs); `repo` (`owner/name`); `state` (score state); `updated_since` (compared with
+  `WorkItem.updated_at`). The web UI opens the list with `kind=pr` and offers PRs / issues / both (owner decision);
+  the statistics (`SnapshotMeta.history`, headline, charts) count pull requests and reviews given only, with no
+  switch (OD16). `limit` defaults to 100, at most 500
   (`ItemQuery::DEFAULT_LIMIT`, `MAX_LIMIT`; larger values are clamped); `cursor` is opaque, encodes the revision and
   position, and from an older revision answers 409 `cursor_expired` (the order changes when judgements land). No
   snapshot yet: an empty page.
-- **Item shape.** `key` is stable across refreshes, opaque and URL-safe (`/dashboard/items/{key}` may be added
-  later). `url` is built by the server only: GitHub `https://github.com/<owner>/<name>/pull|issues/<number>`, a TODO
+- **Item keys** (normative; `ItemKey` in `api/dashboard.rs` is the only constructor and parser, and rejects any
+  other form on deserialisation): `<owner>~<repo>~pr~<number>`, `<owner>~<repo>~issue~<number>` (GitHub owner
+  `[A-Za-z0-9-]{1,39}`, repository `[A-Za-z0-9._-]{1,100}`, number without leading zeros, > 0) and
+  `memcan~<uuid>` (lowercase hyphenated). URL-safe and stable across refreshes (`/dashboard/items/{key}` may be added
+  later); stored judgements, `ScanNote.item` and `ItemText.also_keys` use it. The display alias `WorkItem.id` is
+  not unique and never a reference.
+- **Item shape.** `updated_at`: pull requests and issues = GitHub `updatedAt`; TODOs = when the dashboard first saw
+  the current values of the fields of plan §G (MemCan has no `updated_at`). `llm` holds everything the LLM wrote:
+  `why`, `next`, `alarm` and `also_keys` (items merged into this one, only from server-suggested pairs). `url` is
+  built by the server only: GitHub `https://github.com/<owner>/<name>/pull|issues/<number>`, a TODO
   `<SR_MEMCAN_UI_URL>/tasks/<uuid>`, null without `SR_MEMCAN_UI_URL`. `review` is read from `analyses` at request
   time (newest analysis of the PR, head moved, the reader's saved state), never stored in the snapshot. `tags` and
   `facts` come from scan facts only; `llm` text is shown with the "LLM" tag.
@@ -589,12 +601,11 @@ not change). Until the token middleware exists, `read` routes accept the session
   tenths. `state`: `final`; `provisional` (an LLM part `inherited` after the item changed, or a computed default
   awaiting confirmation; shown `~N`, keeps its tier group); `unjudged` (new item, group "Not judged yet").
 - **Refreshes.** One per user is `scanning` or `ranking` at a time (R2 answers 409 `refresh_running`; a scheduled
-  start finding a live refresh counts as done). A refresh ends `finished`, `failed` (with `failure`; the previous
-  snapshot stays) or `cancelled` (R3; the previous snapshot stays). `failure.retry_at` is GitHub's rate-limit
-  reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3 (`waiting_for_analysis`
-  while a review analysis holds the LLM credential). R4 re-queues the ranking of a snapshot whose ranking `failed`
-  or was `interrupted` (otherwise 409 `conflict`). `log` holds at most 200 plain lines without tokens or query
-  strings. The newest 10 refreshes per user are kept, plus the one holding the latest snapshot.
+  start finding a live refresh counts as done). Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
+  rate-limit reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3
+  (`waiting_for_analysis` while a review analysis holds the LLM credential). `log` holds at most 200 plain lines
+  without tokens or query strings. The newest 10 refreshes per user are kept, plus the one holding the current
+  snapshot.
 - **Schedule.** `ScheduleStatus.time` is the local `HH:MM`; `next_run_at` is null when off or without a time zone;
   `last_run.at` is the scheduled instant of that local date; `needs_sign_in` and `failed` are shown until a later
   refresh succeeds.
@@ -616,5 +627,26 @@ not change). Until the token middleware exists, `read` routes accept the session
   rate limits → 429 `rate_limited` with `Retry-After`. `GET /api/v1/me` answers a token with its user and
   `csrf_token: null`. Runner bearers sent to the public API are unknown tokens; `srp_` tokens are rejected on the
   runner listener.
+- **Refresh states** (the one state table; `RefreshState`, `RankingState` and `db::repo::dashboard` follow it).
+  The current snapshot is that of the user's newest refresh in `ranking` or `finished`; `failed` and `cancelled`
+  refreshes never hold one, so the previous snapshot stays. A stored snapshot stays current whatever happens to
+  its ranking: the scan result remains visible with estimates for the items not judged.
+
+  | From | Event | To | Ranking state |
+  |---|---|---|---|
+  | – | R2 or the schedule (none live) | `scanning` | – |
+  | `scanning` | snapshot stored | `ranking` | `running` (then `waiting_for_analysis` / `running` / `paused`) |
+  | `scanning` | scan fails | `failed` (`failure`) | – |
+  | `scanning` | R3 cancel | `cancelled` | – |
+  | `scanning` | server restart | `failed` (`interrupted`) | – |
+  | `ranking` | ranking done (or nothing to judge) | `finished` | `finished` |
+  | `ranking` | ranking fails | `finished` | `failed` (`message`) |
+  | `ranking` | R3 cancel | `finished` | `cancelled` |
+  | `ranking` | server restart | `finished` | `interrupted` |
+  | `finished` with ranking `failed`, `interrupted` or `cancelled`, holding the current snapshot | R4 | `ranking` | `running` |
+
+  R3 on an ended refresh (`finished`, `failed`, `cancelled`) answers 409 `conflict`. R4 answers 409 `conflict` for
+  any other refresh or ranking outcome and 409 `refresh_running` while another refresh of the user is live. After a
+  restart no refresh is live, so neither R2 nor the schedule is blocked.
 - **Tolerant readers** (plan §E.5 E5-3): clients ignore unknown fields and treat unknown values of `kind`,
   `component`, `status`, `tier`, `TokenScope` and history `kind` as opaque. Changes stay additive (ADR-011).
