@@ -208,3 +208,19 @@ test("paused run shows the resume time instead of an ETA", async ({ page }) => {
   await expect(page.getByText(/About .* left|No estimate yet/)).toHaveCount(0);
   await expect(page.getByRole("list", { name: "Analysis stages" })).toBeVisible();
 });
+
+test("plan ready, nothing analysed by itself: says so, Open review and Analyse all remaining flows", async ({
+  page,
+}) => {
+  await open(page, "lazy-flows");
+  await expect(
+    page.getByText(
+      "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows.",
+    ),
+  ).toBeVisible();
+  await expect(openReview(page)).toBeVisible();
+  await expectTooltips(page);
+  await page.getByRole("button", { name: "Analyse all remaining flows" }).click();
+  await expect(page.getByRole("button", { name: "Analysing all remaining flows — Stop" })).toBeVisible();
+  await expectAccessible(page);
+});

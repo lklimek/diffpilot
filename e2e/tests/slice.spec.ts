@@ -1,6 +1,13 @@
 import { join } from "node:path";
 import { type Page } from "@playwright/test";
-import { analyze, checkScreen, heading, signIn, waitForState } from "../support/app";
+import {
+  analyseAllRemainingFlows,
+  analyze,
+  checkScreen,
+  heading,
+  signIn,
+  waitForState,
+} from "../support/app";
 import { logLeaks, stackSecrets } from "../support/secrets";
 import { expect, test } from "../support/fixtures";
 
@@ -36,6 +43,7 @@ test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, conte
   await checkScreen(page);
   await shoot(page, "progress");
 
+  await analyseAllRemainingFlows(page);
   await waitForState(page, id, "finished");
   await checkScreen(page);
   const openReview = page.getByRole("link", { name: "Open review" });

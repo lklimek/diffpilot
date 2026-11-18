@@ -9,7 +9,7 @@ export type HomeOutcome =
   | { kind: "failed"; analysis: AnalysisSummary; message: string }
   | { kind: "head_moved"; analysis: AnalysisSummary };
 
-/** No analysis (or a cancelled one): analyze; head moved: offer Re-analyze; else resume the analysis. */
+/** No analysis (or a cancelled one): offer Start analysis; head moved: offer a fresh one; else resume the analysis. */
 export function homeOutcome(resolved: ResolvePrResponse): HomeOutcome {
   const { analysis } = resolved;
   if (!analysis || analysis.state.state === "cancelled") return { kind: "analyze" };

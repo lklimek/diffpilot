@@ -1,6 +1,7 @@
 // Journey (a), part 2: the usage limit pauses the analysis with its resume time and it resumes on its own; a
 // failed flow is named in the Tour (after the server's automatic retries) and its Retry runs it again.
 import {
+  analyseAllRemainingFlows,
   analysisState,
   analyze,
   checkScreen,
@@ -31,6 +32,7 @@ test("usage limit → paused until a time → resumed; a failed flow is named �
   ]);
   await signIn(page);
   const id = await analyze(page);
+  await analyseAllRemainingFlows(page);
   // Flows run in order: flow 2 hits the usage limit, the analysis resumes on its own, then flow 3 fails.
   await waitForState(page, id, "paused");
   const paused = await analysisState(page, id);

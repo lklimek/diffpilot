@@ -1,6 +1,15 @@
 // Journey (a), cancel while a flow job runs: the job stops, the stored flows are discarded,
 // and a new analysis of the same head retains the PR sessions (http-api.md "Cancel and retry").
-import { analyze, checkScreen, PR_URL, runnerEvents, signIn, sql, waitForState } from "../support/app";
+import {
+  analyseAllRemainingFlows,
+  analyze,
+  checkScreen,
+  PR_URL,
+  runnerEvents,
+  signIn,
+  sql,
+  waitForState,
+} from "../support/app";
 import { expect, test } from "../support/fixtures";
 
 /** Claim interval of the runner: no new attempt may start within two of them after the cancel. */
@@ -22,6 +31,7 @@ test("cancel after a stored flow while the next flow runs: job stopped, results 
   ]);
   await signIn(page);
   const id = await analyze(page);
+  await analyseAllRemainingFlows(page);
   const documents = (kind: string) =>
     Number(sql(stack, `SELECT count(*) FROM documents WHERE analysis_id = '${id}' AND kind = '${kind}'`)[0]);
   // Flow 1 stored, the slow flow 2 job running.
@@ -74,6 +84,7 @@ test("cancel after a stored flow while the next flow runs: job stopped, results 
   await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
   const fresh = await analyze(page);
   expect(fresh).not.toBe(id);
+  await analyseAllRemainingFlows(page);
   await waitForState(page, fresh, "finished");
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();
   expect(
