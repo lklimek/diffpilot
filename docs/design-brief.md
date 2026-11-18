@@ -630,8 +630,10 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
 - **Resume.** The button that returns to a review the user has already started (saved review state) reads
   "Resume review" (as §4.1), on Home and on the progress screen; "Open review" remains for a review the user has
   not started. Supersedes "Open review" for a started review in §4.2.
-- **Comment drafts.** An unsent comment text is kept per line in the browser tab (sessionStorage, per user and
-  analysis) so navigation and a reload do not lose it; it is dropped when the comment is added or its text is
-  cleared, and all drafts are removed when nobody is signed in or the session ends. While a post's outcome is
-  unknown no draft is kept (it may already be in the pending review). The composer's Close and Escape keep the
-  draft. Supersedes "No local drafts" (§2 v1, Comments) and "Local comment drafts" (§2 Non-goals).
+- **Comment drafts.** An unsent comment text is kept per line in the browser tab (sessionStorage, per user login
+  and analysis) so navigation and a reload do not lose it. It is dropped only when the comment is added, when its
+  text is cleared, or on an explicit sign-out by that user (that login's drafts). An expired session or a 401
+  keeps it (also a comment refused as unauthenticated), and the same user signing in again on the tab gets it
+  back. A post whose outcome is unknown is kept the same way with its idempotency key and comes back locked
+  ("may already be in your pending review"): Retry sends it with the same key, so it cannot be added twice;
+  Discard makes the text editable again. The composer's Close and Escape keep the draft. Supersedes "No local drafts" (§2 v1, Comments) and "Local comment drafts" (§2 Non-goals).

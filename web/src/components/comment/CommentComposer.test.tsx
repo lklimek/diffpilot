@@ -197,12 +197,11 @@ describe("CommentComposer", () => {
     expect([...drafts.all.values()]).toEqual(["maybe added"]);
   });
 
-  it("keeps the stored draft after a definite refusal", async () => {
-    const onCreate = vi.fn().mockRejectedValue(
-      Object.assign(new Error("GitHub did not accept a comment on this line."), {
-        code: "position_rejected",
-      }),
-    );
+  it.each([
+    ["position_rejected", "GitHub did not accept a comment on this line."],
+    ["unauthenticated", "Sign in again to continue."],
+  ])("keeps the stored draft after a definite refusal (%s)", async (code, sentence) => {
+    const onCreate = vi.fn().mockRejectedValue(Object.assign(new Error(sentence), { code }));
     const { user, drafts } = setup({ onCreate });
     await user.type(field(), "kept text");
     await user.click(addButton());

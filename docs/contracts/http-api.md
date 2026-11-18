@@ -354,9 +354,10 @@ There is no precise agent-start event in the runner protocol; claim time include
 
 Private Ask history used for re-forking is scoped to `(pull_request_id, user_id)`, never another reader's
 questions or answers. Review-state and feedback routes also select by the authenticated user; removing a
-foreign feedback id answers 404. Draft comment text stays in the browser (sessionStorage of the tab, keyed by
-user login and analysis, removed when nobody is signed in or a request answers 401) until explicitly sent to
-the user's GitHub pending review; the server never stores it. Published GitHub review comments are public PR data.
+foreign feedback id answers 404. Draft comment text, and a create request whose outcome is unknown (with its
+idempotency key), stay in the browser (sessionStorage of the tab, keyed by user login and analysis) until the
+comment is added, its text is cleared, or that user explicitly signs out; an expired session or a 401 keeps
+them for the same user. The server never stores drafts. Published GitHub review comments are public PR data.
 
 ### Provider-reported usage
 

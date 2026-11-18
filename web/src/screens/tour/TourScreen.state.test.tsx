@@ -1,12 +1,12 @@
 // Tour screen: analysis state, drafts, background refresh failures and the user's questions.
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HttpResponse, delay, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisSummary, MeResponse } from "../../api/generated/types";
+import type { AnalysisSummary, CreateCommentRequest, MeResponse } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { setScenario } from "../../mocks/scenarios";
 
@@ -98,20 +98,50 @@ describe("Tour: unsent comment drafts survive navigation", () => {
     );
   });
 
-  it.each([
-    ["the session ended (401)", 401, "unauthenticated"],
-    ["nobody is signed in", 0, ""],
-  ])("removes every stored draft when %s", async (_, status, code) => {
-    window.sessionStorage.setItem("smart-review.comment-drafts.someone.a9", JSON.stringify({ k: "secret" }));
+  it("keeps the drafts when the session ended (401); the same user gets them back after signing in", async () => {
+    const login = (seedFor("default", "me") as MeResponse).user!.login;
+    const key = `smart-review.comment-drafts.${login}.${ID}`;
+    await open(null, "#f1.2");
+    await user().type(await commentOn95(), "kept over a timeout");
+    await waitFor(() => expect(window.sessionStorage.getItem(key)).toContain("kept over a timeout"));
     server.use(
-      status
-        ? http.get("/api/v1/analyses/:id/pending-review", () =>
-            HttpResponse.json({ code, message: "Sign in again." }, { status }),
-          )
-        : http.get("/api/v1/me", () => HttpResponse.json({ user: null, csrf_token: null })),
+      http.get("/api/v1/analyses/:id/tour", () =>
+        HttpResponse.json(
+          { code: "unauthenticated", message: "Sign in again to continue." },
+          { status: 401 },
+        ),
+      ),
     );
-    renderRoute(`/analyses/${ID}#f1.2`);
-    await waitFor(() => expect(JSON.stringify({ ...window.sessionStorage })).not.toContain("secret"));
+    act(() => FakeEventSource.latest().fail());
+    expect(await screen.findByText("Sign in again to continue.")).toBeVisible();
+    expect(window.sessionStorage.getItem(key)).toContain("kept over a timeout");
+    cleanup();
+    server.resetHandlers();
+    await open(null, "#f1.2");
+    expect(await commentOn95()).toHaveValue("kept over a timeout");
+  });
+
+  it("after an unknown outcome and a reload, the post comes back locked; Retry sends the same key", async () => {
+    const posted: CreateCommentRequest[] = [];
+    server.use(
+      http.post("/api/v1/analyses/:id/pending-review/comments", async ({ request }) => {
+        posted.push((await request.json()) as CreateCommentRequest);
+        return HttpResponse.json({ code: "internal", message: "GitHub did not answer." }, { status: 500 });
+      }),
+    );
+    await open(null, "#f1.2");
+    await user().type(await commentOn95(), "maybe added");
+    await user().click(within(inspector()).getByRole("button", { name: "Add to GitHub pending review" }));
+    await within(inspector()).findByRole("button", { name: "Retry" });
+    cleanup();
+    await open(null, "#f1.2");
+    const field = await commentOn95();
+    expect(field).toHaveValue("maybe added");
+    expect(field).toHaveAttribute("readonly");
+    expect(inspector()).toHaveTextContent("The comment may already be in your GitHub pending review");
+    await user().click(within(inspector()).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(posted).toHaveLength(2));
+    expect(posted[1]!.idempotency_key).toBe(posted[0]!.idempotency_key);
   });
 });
 

@@ -1,6 +1,5 @@
 import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
-import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
 import { ApiError } from "../../api/client";
@@ -31,7 +30,6 @@ import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
 import type { MarkerTarget } from "../../components/code-view/markers";
 import { hiddenLines } from "../../components/code-view/visibility";
-import type { UnresolvedPosts } from "../../components/comment/CommentComposer";
 import { FlowIntroBlock } from "../../components/flow-intro/FlowIntroBlock";
 import { isFlowReviewed } from "../../components/flow-intro/progress";
 import { HelpDialog } from "../../components/help/HelpDialog";
@@ -51,7 +49,7 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import { busyTip } from "../../components/button/button";
 import { ChunkedCode, DiffCode, FileDiffCode, LinesCode, errorText, type CodeContext } from "./code";
 import { DiagramPane } from "./DiagramPane";
-import { clearCommentDrafts, useCommentDrafts } from "./drafts";
+import { useCommentDrafts, useUnresolvedPosts } from "./drafts";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
 import {
@@ -85,28 +83,6 @@ function isTyping(event: KeyboardEvent): boolean {
 // A failure the next try may not have: the server or the network, not an answer about this request.
 const transient = (error: unknown) =>
   !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
-const sessionEnded = (error: unknown) => error instanceof ApiError && error.status === 401;
-
-/** Removes the tab's comment drafts when nobody is signed in or any request says the session ended. */
-function useDraftsEndWithSession(signedOut: boolean): void {
-  const client = useQueryClient();
-  useEffect(() => {
-    if (signedOut) clearCommentDrafts();
-  }, [signedOut]);
-  useEffect(() => {
-    const ended = (event: { type: string; action?: { type: string; error?: unknown } }) => {
-      if (event.type === "updated" && event.action?.type === "error" && sessionEnded(event.action.error)) {
-        clearCommentDrafts();
-      }
-    };
-    const queries = client.getQueryCache().subscribe(ended);
-    const mutations = client.getMutationCache().subscribe(ended);
-    return () => {
-      queries();
-      mutations();
-    };
-  }, [client]);
-}
 
 const onStep = (c: PendingComment, step: Step) =>
   c.path === step.facts.file &&
@@ -122,7 +98,6 @@ export function TourScreen() {
   const tour = useTour(analysisId);
   const review = useReviewStateStore(analysisId);
   const login = me.data?.user?.login ?? null;
-  useDraftsEndWithSession(me.isSuccess && !me.data.user);
 
   if (tour.error instanceof ApiError && tour.error.code === "analysis_not_finished") {
     return <Navigate to={`/analyses/${encodeURIComponent(analysisId)}/progress`} replace />;
@@ -252,7 +227,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const [commentLine, setCommentLine] = useState<CommentLineState | null>(null);
   // A pending comment opened from the pending-review list, shown open at its line.
   const [revealComment, setRevealComment] = useState<string | null>(null);
-  const [unresolved, setUnresolved] = useState<UnresolvedPosts>({});
+  const [unresolved, setUnresolved] = useUnresolvedPosts(analysisId, login);
   const drafts = useCommentDrafts(analysisId, login);
   const [helpOpen, setHelpOpen] = useState(false);
   const [layout, setLayoutState] = useState(loadLayout);

@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { clearCommentDrafts, DRAFT_WRITE_MS, useCommentDrafts } from "./drafts";
+import type { CreateCommentRequest } from "../../api/generated/types";
+import { clearCommentDrafts, DRAFT_WRITE_MS, useCommentDrafts, useUnresolvedPosts } from "./drafts";
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
@@ -51,15 +52,46 @@ it("without a signed-in user keeps drafts in memory only", () => {
   expect(stored()).not.toContain("anonymous");
 });
 
-it("clearing removes every user's drafts; a store from before the clear does not write them back", () => {
+it("sign-out clears that login's drafts and posts only; a store from before does not write them back", () => {
   window.sessionStorage.setItem("smart-review.comment-drafts.bob.a2", JSON.stringify({ k: "bob's" }));
+  window.sessionStorage.setItem("smart-review.comment-posts.alice.a3", JSON.stringify({}));
   window.sessionStorage.setItem("smart-review.layout", "kept");
   const { result, unmount } = renderHook(() => useCommentDrafts("a1", "alice"));
   act(() => result.current.set("k", "alice's"));
-  clearCommentDrafts();
+  clearCommentDrafts("alice");
   unmount();
-  expect(stored()).not.toContain("comment-drafts");
+  expect(stored()).not.toContain("alice");
+  expect(stored()).toContain("bob's");
   expect(window.sessionStorage.getItem("smart-review.layout")).toBe("kept");
+});
+
+const request: CreateCommentRequest = {
+  idempotency_key: "0b0e7d5c-5c2a-4c55-9a0e-2a7b8f7d1c11",
+  target: { path: "src/a.rs", side: "head", start_line: null, line: 5 },
+  body: "Is it bounded?",
+};
+
+it("keeps unconfirmed posts per user and analysis; one still in flight comes back as not confirmed", () => {
+  const first = renderHook(() => useUnresolvedPosts("a1", "alice"));
+  act(() => first.result.current[1]((all) => ({ ...all, k: { request, error: null } })));
+  first.unmount();
+  const [posts] = renderHook(() => useUnresolvedPosts("a1", "alice")).result.current;
+  expect(posts.k?.request).toEqual(request);
+  expect(posts.k?.error).toMatch(/left before GitHub answered/);
+  expect(renderHook(() => useUnresolvedPosts("a1", "bob")).result.current[0]).toEqual({});
+  const again = renderHook(() => useUnresolvedPosts("a1", "alice"));
+  act(() => again.result.current[1](() => ({})));
+  again.unmount();
+  expect(renderHook(() => useUnresolvedPosts("a1", "alice")).result.current[0]).toEqual({});
+});
+
+it("ignores damaged stored posts", () => {
+  window.sessionStorage.setItem(
+    "smart-review.comment-posts.alice.a1",
+    JSON.stringify({ a: { request: { body: 1 } }, b: "x", c: { request, error: "GitHub did not answer." } }),
+  );
+  const [posts] = renderHook(() => useUnresolvedPosts("a1", "alice")).result.current;
+  expect(Object.keys(posts)).toEqual(["c"]);
 });
 
 it("without storage (or with damaged data) the drafts still live in memory", () => {
