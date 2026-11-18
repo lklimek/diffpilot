@@ -158,6 +158,7 @@ impl Fake {
         client()
             .post(format!("{}/graphql", self.base))
             .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .header(USER_AGENT, "smart-review")
             .json(&json!({"query": query, "variables": variables}))
             .send()
             .await
@@ -190,6 +191,20 @@ impl Fake {
             .await
             .unwrap()
     }
+}
+
+/// GitHub's answer to a document it refuses before execution: `errors` only, no `data`; returns the messages.
+fn refused(body: &Value) -> Vec<String> {
+    assert!(
+        body.get("data").is_none(),
+        "no data for a refused document: {body}"
+    );
+    body["errors"]
+        .as_array()
+        .unwrap_or_else(|| panic!("errors expected: {body}"))
+        .iter()
+        .map(|e| e["message"].as_str().unwrap().to_owned())
+        .collect()
 }
 
 fn set(items: &[&str]) -> BTreeSet<String> {
@@ -758,15 +773,27 @@ async fn connections_follow_github_pagination_limits() {
         .graphql("{ r: repository(owner: \"acme\", name: \"platform\") { pullRequests(states: OPEN) { nodes { number } } } }")
         .await;
     assert_eq!(body["errors"][0]["type"], "MISSING_PAGINATION_BOUNDARIES");
-    assert!(body["data"]["r"]["pullRequests"].is_null());
+    refused(&body);
     let body = fake
         .graphql("{ r: repository(owner: \"acme\", name: \"platform\") { pullRequests(first: 101) { nodes { number } } } }")
         .await;
     assert_eq!(body["errors"][0]["type"], "EXCESSIVE_PAGE_SIZE");
+    refused(&body);
     let body = fake
         .graphql("{ r: repository(owner: \"acme\", name: \"platform\") { pullRequests(first: 5, after: \"bogus\") { nodes { number } } } }")
         .await;
     assert_eq!(body["errors"][0]["type"], "INVALID_CURSOR_ARGUMENTS");
+    refused(&body);
+    let end = STANDARD.encode(format!("cursor:{}", u64::MAX));
+    let body = fake
+        .graphql(&format!(
+            "{{ r: repository(owner: \"acme\", name: \"platform\") {{ pullRequests(first: 5, after: \"{end}\") {{ nodes {{ number }} }} }} }}"
+        ))
+        .await;
+    assert_eq!(
+        body["errors"][0]["type"], "INVALID_CURSOR_ARGUMENTS",
+        "a cursor at the end of the range"
+    );
     let body = fake
         .graphql("{ r: repository(owner: \"acme\", name: \"platform\") { pullRequests(states: OPEN) { totalCount } } }")
         .await;
@@ -788,12 +815,10 @@ async fn issue_milestone_batches_answer_q9() {
                i2: repository(owner: $o, name: \"platform\") { issue(number: 4040) { milestone { title } } } }",
         )
         .await;
-    assert!(
-        body["errors"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("Repository"),
-        "no variables: owner is null"
+    assert_eq!(
+        refused(&body),
+        vec!["Variable $o of type String! was provided invalid value"],
+        "a required variable without a value refuses the document"
     );
     let response = fake
         .graphql_raw(
@@ -882,9 +907,9 @@ async fn owner_enumeration_lists_repositories_and_open_items_for_q11() {
                  nodes { nameWithOwner pullRequests(states: OPEN) { totalCount } issues(states: OPEN) { totalCount } } } } }",
         )
         .await;
-    assert!(
-        body["data"]["repositoryOwner"].is_null(),
-        "no login variable"
+    assert_eq!(
+        refused(&body),
+        vec!["Variable $login of type String! was provided invalid value"]
     );
     let response = fake
         .graphql_raw(
@@ -1173,6 +1198,7 @@ async fn credentials_and_user_agent_are_checked() {
     assert_eq!(no_agent.status(), StatusCode::FORBIDDEN);
     let anonymous = client()
         .post(format!("{}/graphql", fake.base))
+        .header(USER_AGENT, "smart-review")
         .json(&json!({"query": pull_batch(1)}))
         .send()
         .await
@@ -1261,4 +1287,162 @@ async fn a_missing_or_inconsistent_world_refuses_to_start() {
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn invalid_documents_are_refused_as_a_whole() {
+    let fake = spawn().await;
+    let pull = |selection: &str| {
+        format!(
+            "{{ rateLimit {{ cost }} p: repository(owner: \"acme\", name: \"platform\") {{ {selection} }} }}"
+        )
+    };
+    let typo = fake
+        .graphql(&pull("pullRequest(number: 1203) { titel }"))
+        .await;
+    assert_eq!(
+        refused(&typo),
+        vec!["Field 'titel' doesn't exist on type 'PullRequest'"]
+    );
+    let misnamed = fake
+        .graphql_raw(
+            "query($o: String!) { a0: repository(owner: $o, name: \"platform\") { id } }",
+            json!({"owner": "acme"}),
+        )
+        .await;
+    assert_eq!(
+        refused(&misnamed.json().await.unwrap()),
+        vec!["Variable $o of type String! was provided invalid value"]
+    );
+    let text_number = fake
+        .graphql(&pull("pullRequest(number: \"1203\") { title }"))
+        .await;
+    assert_eq!(
+        refused(&text_number),
+        vec![
+            "Argument 'number' on Field 'pullRequest' has an invalid value (\"1203\"). Expected type 'Int!'."
+        ]
+    );
+    let missing = fake.graphql(&pull("pullRequest { title }")).await;
+    assert_eq!(
+        refused(&missing),
+        vec!["Field 'pullRequest' is missing required arguments: number"]
+    );
+    let ordered = fake
+        .graphql(&pull("pullRequests(first: 5, orderBy: {field: CREATED_AT, direction: DESC}) { nodes { number } }"))
+        .await;
+    assert!(
+        refused(&ordered)[0].starts_with("Field 'pullRequests' doesn't accept argument 'orderBy'")
+    );
+    let page_info = fake
+        .graphql(&pull("pullRequests(first: 5) { pageInfo { endcursor } }"))
+        .await;
+    assert_eq!(
+        refused(&page_info),
+        vec!["Field 'endcursor' doesn't exist on type 'PageInfo'"]
+    );
+    let scalar_args = fake
+        .graphql(&pull("pullRequest(number: 1203) { title(first: 1) }"))
+        .await;
+    assert!(refused(&scalar_args)[0].starts_with("Field 'title' doesn't accept argument 'first'"));
+    let timeline = fake
+        .graphql(&pull(
+            "pullRequest(number: 1203) { a: timelineItems(last: 50, itemTypes: [REVIEW_REQUESTED_EVENT]) { totalCount }
+               b: timelineItems(last: 50, itemTypes: [PULL_REQUEST_COMMIT]) { totalCount } }",
+        ))
+        .await;
+    assert_eq!(timeline["data"]["p"]["pullRequest"]["a"]["totalCount"], 2);
+    assert_eq!(
+        timeline["data"]["p"]["pullRequest"]["b"]["totalCount"], 0,
+        "itemTypes filters"
+    );
+}
+
+#[tokio::test]
+async fn only_v1_documents_reach_the_recordings() {
+    let fake = spawn().await;
+    let single = fake
+        .graphql(
+            "query { repository(owner: \"acme\", name: \"platform\") { pullRequest(number: 1203) {
+               title reviewThreads(first: 100) { nodes { isResolved } } } } }",
+        )
+        .await;
+    let pull = &single["data"]["repository"]["pullRequest"];
+    assert_eq!(
+        pull["title"],
+        "fix(sync): retry header fetch after peer timeout"
+    );
+    assert_eq!(
+        pull["reviewThreads"]["nodes"],
+        json!([]),
+        "not the recorded pull request's threads"
+    );
+    let unparsable = fake
+        .graphql("{ rateLimit { cost } a: repository(owner: \"acme\" ")
+        .await;
+    assert!(refused(&unparsable)[0].starts_with("Parse error"));
+    let log = fake.requests().await;
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0]["rate_limit_selected"], false);
+    assert_eq!(log[1]["rate_limit_selected"], false);
+    fake.graphql(&pull_batch(1)).await;
+    assert_eq!(fake.requests().await[2]["rate_limit_selected"], true);
+}
+
+#[tokio::test]
+async fn deep_nesting_fragment_loops_and_fan_out_are_refused() {
+    let fake = spawn().await;
+    let deep = format!(
+        "{{ r: repository(owner: \"acme\", name: \"platform\") {}{} }}",
+        "{ a ".repeat(50_000),
+        "}".repeat(50_000)
+    );
+    let body = fake.graphql(&deep).await;
+    assert!(refused(&body)[0].starts_with("Parse error"));
+    let looped = fake
+        .graphql(
+            "{ ...A } fragment A on Query { rateLimit { cost } ...B } fragment B on Query { ...A }",
+        )
+        .await;
+    assert_eq!(
+        refused(&looped),
+        vec!["Fragment A contains an infinite loop"]
+    );
+    let mut fan_out = String::from("{ ...F0 } fragment F15 on Query { rateLimit { cost } }");
+    for level in 0..15 {
+        fan_out.push_str(&format!(
+            " fragment F{level} on Query {{ {} }}",
+            format!("...F{} ", level + 1).repeat(8)
+        ));
+    }
+    let body = fake.graphql(&fan_out).await;
+    assert!(refused(&body)[0].contains("more than"));
+}
+
+#[tokio::test]
+async fn primary_limit_status_is_configurable_and_graphql_needs_a_user_agent() {
+    let fake = spawn().await;
+    fake.faults(json!([
+        {"on": "rest", "answer": {"kind": "primary_rate_limit", "reset": 1_795_000_000, "status": 429}},
+        {"on": "graphql", "answer": {"kind": "primary_rate_limit", "reset": 1_795_000_000, "status": 403}},
+    ]))
+    .await;
+    let rest = fake.get("/repos/acme/platform/milestones", &[]).await;
+    assert_eq!(rest.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(rest.headers()["x-ratelimit-remaining"], "0");
+    let graphql = fake.graphql_raw(&pull_batch(1), Value::Null).await;
+    assert_eq!(graphql.status(), StatusCode::FORBIDDEN);
+    assert_eq!(graphql.headers()["x-ratelimit-remaining"], "0");
+    let bad = fake
+        .faults(json!([{"on": "rest", "answer": {"kind": "primary_rate_limit", "reset": 1, "status": 500}}]))
+        .await;
+    assert_eq!(bad, StatusCode::BAD_REQUEST);
+    let anonymous_agent = client()
+        .post(format!("{}/graphql", fake.base))
+        .header(AUTHORIZATION, format!("Bearer {}", fake.token))
+        .json(&json!({"query": pull_batch(1)}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(anonymous_agent.status(), StatusCode::FORBIDDEN);
 }

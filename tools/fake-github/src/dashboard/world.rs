@@ -2,8 +2,10 @@
 //! as GraphQL nodes (camelCase, connections as `{nodes: [...]}`), plus the REST-only data (releases,
 //! milestones, file contents, pull request files, user events). Loading fills the derived fields
 //! (`__typename`, `id`, `url`, `repository`, `baseRepository`, empty connections), so fixtures stay short.
+//! The fields a type has are the keys its nodes carry anywhere in the world plus the resolver fields
+//! (`World::fields`); a query selecting any other field is refused.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -29,6 +31,26 @@ const PULL_CONNECTIONS: &[&str] = &[
     "timelineItems",
     "closingIssuesReferences",
     "commits",
+];
+/// Fields answered by resolvers or built by the executor, per type.
+const BUILT_FIELDS: &[(&str, &[&str])] = &[
+    ("Query", &["repository", "repositoryOwner", "rateLimit"]),
+    (
+        "Repository",
+        &["pullRequest", "issue", "pullRequests", "issues"],
+    ),
+    ("Organization", &["id", "login", "repositories"]),
+    ("User", &["id", "login", "repositories"]),
+    (
+        "RateLimit",
+        &["cost", "limit", "remaining", "used", "resetAt", "nodeCount"],
+    ),
+    ("Connection", &["totalCount", "nodes", "edges", "pageInfo"]),
+    ("Edge", &["cursor", "node"]),
+    (
+        "PageInfo",
+        &["hasNextPage", "hasPreviousPage", "startCursor", "endCursor"],
+    ),
 ];
 /// Connections every issue answers.
 const ISSUE_CONNECTIONS: &[&str] = &["labels", "assignees", "comments"];
@@ -88,6 +110,27 @@ pub(crate) struct World {
     pub(crate) pull_requests: Vec<Value>,
     pub(crate) issues: Vec<Value>,
     pub(crate) rest: RestData,
+    /// Known fields per `__typename`.
+    pub(crate) fields: HashMap<String, HashSet<String>>,
+}
+
+/// Adds the keys of every object with a `__typename` in `value` to `fields`.
+fn collect_fields(value: &Value, fields: &mut HashMap<String, HashSet<String>>) {
+    match value {
+        Value::Object(object) => {
+            if let Some(typename) = object.get("__typename").and_then(Value::as_str) {
+                fields
+                    .entry(typename.to_owned())
+                    .or_default()
+                    .extend(object.keys().cloned());
+            }
+            object
+                .values()
+                .for_each(|item| collect_fields(item, fields));
+        }
+        Value::Array(items) => items.iter().for_each(|item| collect_fields(item, fields)),
+        _ => {}
+    }
 }
 
 /// `owner/name` of a repository, pull request or issue node.
@@ -149,12 +192,23 @@ impl World {
                 normalise(node, repository, typename, path, connections);
             }
         }
+        let mut fields: HashMap<String, HashSet<String>> = HashMap::new();
+        for node in repositories.iter().chain(&pull_requests).chain(&issues) {
+            collect_fields(node, &mut fields);
+        }
+        for (typename, built) in BUILT_FIELDS {
+            fields
+                .entry((*typename).to_owned())
+                .or_default()
+                .extend(built.iter().map(|f| (*f).to_owned()));
+        }
         Ok(Self {
             accounts: accounts.accounts,
             repositories,
             pull_requests,
             issues,
             rest,
+            fields,
         })
     }
 

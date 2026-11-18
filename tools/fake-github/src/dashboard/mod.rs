@@ -11,6 +11,7 @@ mod search;
 mod world;
 
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::body::Bytes;
@@ -69,9 +70,13 @@ enum FaultAnswer {
         #[serde(default = "forbidden")]
         status: u16,
     },
-    /// `x-ratelimit-remaining: 0` with `x-ratelimit-reset: reset` (epoch seconds): REST 403, GraphQL 200 with a
-    /// `RATE_LIMITED` error.
-    PrimaryRateLimit { reset: i64 },
+    /// `x-ratelimit-remaining: 0` with `x-ratelimit-reset: reset` (epoch seconds). `status` 403 or 429 (REST
+    /// default 403); GraphQL defaults to 200 with a `RATE_LIMITED` error.
+    PrimaryRateLimit {
+        reset: i64,
+        #[serde(default)]
+        status: Option<u16>,
+    },
     /// `status` (default 502) with GitHub's HTML error page, or a JSON message when `html` is false.
     ServerError {
         #[serde(default = "bad_gateway")]
@@ -150,6 +155,9 @@ struct RequestRecord {
     /// GraphQL: points charged.
     #[serde(skip_serializing_if = "Option::is_none")]
     cost: Option<u32>,
+    /// GraphQL: whether the document selects `rateLimit` (plan §A.2: every query does).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rate_limit_selected: Option<bool>,
     status: u16,
     /// The injected or simulated failure served, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -262,6 +270,8 @@ pub(crate) struct Dashboard {
     recorded_pull: Option<(String, u64)>,
     started: Instant,
     started_epoch: i64,
+    /// Arrival counter of `RequestRecord::seq`.
+    arrivals: AtomicUsize,
     live: Mutex<Live>,
 }
 
@@ -293,6 +303,7 @@ impl Dashboard {
             recorded_pull,
             started: Instant::now(),
             started_epoch: Utc::now().timestamp(),
+            arrivals: AtomicUsize::new(0),
             live: Mutex::default(),
         })
     }
@@ -303,14 +314,20 @@ impl Dashboard {
 
     fn record(&self, mut record: RequestRecord, status: StatusCode) {
         record.status = status.as_u16();
-        let mut live = self.live();
-        record.seq = live.requests.len() + 1;
-        live.requests.push(record);
+        self.live().requests.push(record);
     }
 
+    /// Every request served so far, in order of arrival.
+    fn request_log(&self) -> Json<Vec<RequestRecord>> {
+        let mut log = self.live().requests.clone();
+        log.sort_by_key(|record| record.seq);
+        Json(log)
+    }
+
+    /// A record of a request arriving now.
     fn new_record(&self, on: Target, method: &'static str, path: &str) -> RequestRecord {
         RequestRecord {
-            seq: 0,
+            seq: self.arrivals.fetch_add(1, Ordering::Relaxed) + 1,
             at_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
             on,
             method,
@@ -320,6 +337,7 @@ impl Dashboard {
             lookups: None,
             pull_requests: None,
             cost: None,
+            rate_limit_selected: None,
             status: 0,
             fault: None,
         }
@@ -506,17 +524,23 @@ impl Dashboard {
         }
     }
 
+    /// Answers a dashboard document, or GitHub's refusal of an invalid one (`errors` only, HTTP 200).
     fn graphql(
         &self,
-        doc: &query::Document,
+        doc: Result<&query::Document, &query::DocumentError>,
         request: &GraphqlRequest,
         headers: &HeaderMap,
         oauth: &Oauth,
     ) -> Response {
-        let (lookups, pulls) = execute::batch_size(doc);
         let mut record = self.new_record(Target::Graphql, "POST", "/graphql");
-        record.lookups = Some(lookups);
-        record.pull_requests = Some(pulls);
+        if let Ok(doc) = doc {
+            let (lookups, pulls, rate_limit) = execute::batch_size(doc);
+            record.lookups = Some(lookups);
+            record.pull_requests = Some(pulls);
+            record.rate_limit_selected = Some(rate_limit);
+        } else {
+            record.rate_limit_selected = Some(false);
+        }
         let response = self.graphql_answer(doc, request, headers, oauth, &mut record);
         self.record(record, response.status());
         response
@@ -524,12 +548,15 @@ impl Dashboard {
 
     fn graphql_answer(
         &self,
-        doc: &query::Document,
+        doc: Result<&query::Document, &query::DocumentError>,
         request: &GraphqlRequest,
         headers: &HeaderMap,
         oauth: &Oauth,
         record: &mut RequestRecord,
     ) -> Response {
+        if let Some(rejection) = require_user_agent(headers) {
+            return rejection;
+        }
         if oauth.credentials(headers) != Credentials::Valid {
             return (
                 StatusCode::UNAUTHORIZED,
@@ -539,13 +566,24 @@ impl Dashboard {
         }
         let pulls = record.pull_requests.unwrap_or_default();
         let text = format!("{} {}", request.query, request.variables);
-        let (rate, cost) = {
+        let (rate, cost, doc) = {
             let mut live = self.live();
             if let Some(fault) = live.take_fault(Target::Graphql, &text) {
                 record.fault = Some(fault.name());
                 let rate = self.charge(&mut live, Resource::Graphql, 0);
                 return fault_response(&fault, Target::Graphql, rate);
             }
+            let doc = match doc {
+                Ok(doc) => doc,
+                Err(error) => {
+                    tracing::debug!(%error, "fake-github refused an invalid dashboard GraphQL document");
+                    return (
+                        StatusCode::OK,
+                        Json(json!({"errors": [{"message": error.to_string(), "locations": []}]})),
+                    )
+                        .into_response();
+                }
+            };
             if pulls >= HTML_ERROR_FROM {
                 record.fault = Some("oversized_batch");
                 tracing::info!(
@@ -563,7 +601,7 @@ impl Dashboard {
                 };
             }
             let cost = u32::try_from((pulls + pulls / 5).max(1)).unwrap_or(u32::MAX);
-            (self.charge(&mut live, Resource::Graphql, cost), cost)
+            (self.charge(&mut live, Resource::Graphql, cost), cost, doc)
         };
         record.cost = Some(cost);
         let rate_limit = json!({"__typename": "RateLimit", "cost": cost, "limit": rate.limit,
@@ -637,21 +675,23 @@ fn fault_response(fault: &FaultAnswer, on: Target, rate: Rate) -> Response {
             }
             response
         }
-        FaultAnswer::PrimaryRateLimit { reset } => {
-            let mut response = if on == Target::Graphql {
-                (
-                    StatusCode::OK,
-                    Json(json!({"data": null, "errors": [{"type": "RATE_LIMITED",
+        FaultAnswer::PrimaryRateLimit { reset, status } => {
+            let status = status.and_then(|s| StatusCode::from_u16(s).ok());
+            let mut response =
+                if on == Target::Graphql && status.is_none_or(|s| s == StatusCode::OK) {
+                    (
+                        StatusCode::OK,
+                        Json(json!({"data": null, "errors": [{"type": "RATE_LIMITED",
                     "message": "API rate limit already exceeded for user ID 4820300."}]})),
-                )
-                    .into_response()
-            } else {
-                (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({"message": PRIMARY_MESSAGE, "documentation_url": docs})),
-                )
-                    .into_response()
-            };
+                    )
+                        .into_response()
+                } else {
+                    (
+                        status.unwrap_or(StatusCode::FORBIDDEN),
+                        Json(json!({"message": PRIMARY_MESSAGE, "documentation_url": docs})),
+                    )
+                        .into_response()
+                };
             rate.exhausted(*reset).apply(response.headers_mut());
             response
         }
@@ -709,8 +749,9 @@ pub(crate) struct GraphqlState {
     pub(crate) dashboard: Option<Arc<Dashboard>>,
 }
 
-/// `POST /graphql`: dashboard documents (alias batches, `rateLimit`, owner or listing lookups) go to the
-/// dashboard world, everything else to the v1 review endpoint.
+/// `POST /graphql`: with the dashboard world loaded, only what v1 sends (mutations, `node` lookups, one
+/// unaliased lookup of the recorded pull request) reaches the v1 review endpoint; every other document,
+/// including an unparsable or invalid one, is answered by the dashboard world.
 pub(crate) async fn serve_graphql(
     State(state): State<GraphqlState>,
     headers: HeaderMap,
@@ -718,10 +759,20 @@ pub(crate) async fn serve_graphql(
 ) -> Response {
     if let Some(dashboard) = &state.dashboard
         && let Ok(request) = serde_json::from_slice::<GraphqlRequest>(&body)
-        && let Ok(doc) = query::parse(&request.query, &request.variables)
-        && execute::is_dashboard(&doc)
     {
-        return dashboard.graphql(&doc, &request, &headers, &state.oauth);
+        let doc = query::parse(&request.query)
+            .map_err(query::DocumentError::from)
+            .and_then(|mut doc| {
+                if doc.kind == query::Kind::Query {
+                    doc.resolve(&request.variables)?;
+                }
+                Ok(doc)
+            });
+        match doc {
+            Ok(doc) if execute::routes_to_v1(&doc, dashboard.recorded_pull.as_ref()) => {}
+            Ok(doc) => return dashboard.graphql(Ok(&doc), &request, &headers, &state.oauth),
+            Err(error) => return dashboard.graphql(Err(&error), &request, &headers, &state.oauth),
+        }
     }
     crate::graphql::serve(State(state.graphql), headers, body).await
 }
@@ -736,7 +787,7 @@ pub(crate) fn control_routes(dashboard: Arc<Dashboard>) -> Router {
 
 /// `GET /_fake/dashboard/requests`: every dashboard request served so far, in order.
 async fn requests(State(dashboard): State<Arc<Dashboard>>) -> Response {
-    Json(dashboard.live().requests.clone()).into_response()
+    dashboard.request_log().into_response()
 }
 
 /// `POST /_fake/dashboard/faults`: queues faults (`{"faults": [{on, matching?, times?, answer}]}`).
@@ -744,13 +795,14 @@ async fn add_faults(
     State(dashboard): State<Arc<Dashboard>>,
     Json(request): Json<Faults>,
 ) -> StatusCode {
-    let valid = request.faults.iter().all(|fault| match &fault.answer {
-        FaultAnswer::SecondaryRateLimit { status, .. }
-        | FaultAnswer::ServerError { status, .. } => {
-            StatusCode::from_u16(*status).is_ok_and(|s| s.is_client_error() || s.is_server_error())
-        }
-        FaultAnswer::PrimaryRateLimit { .. } => true,
-    });
+    let valid =
+        request.faults.iter().all(|fault| match &fault.answer {
+            FaultAnswer::SecondaryRateLimit { status, .. }
+            | FaultAnswer::ServerError { status, .. } => StatusCode::from_u16(*status)
+                .is_ok_and(|s| s.is_client_error() || s.is_server_error()),
+            FaultAnswer::PrimaryRateLimit { status, .. } => status
+                .is_none_or(|s| matches!((fault.on, s), (_, 403 | 429) | (Target::Graphql, 200))),
+        });
     if !valid {
         return StatusCode::BAD_REQUEST;
     }
@@ -760,4 +812,47 @@ async fn add_faults(
     );
     dashboard.live().faults.extend(request.faults);
     StatusCode::NO_CONTENT
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    fn dashboard() -> Dashboard {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let config = crate::Config {
+            fixture_dir: root.join("fixtures/pr-482/github"),
+            app_url: url::Url::parse("http://app.test:3000").unwrap(),
+            user_login: None,
+            user_id: None,
+            app_id: None,
+            app_public_key_file: None,
+            dashboard_fixture_dir: None,
+        };
+        let oauth = Arc::new(Oauth::load(&config).unwrap());
+        let graphql = Arc::new(Graphql::load(&config, oauth).unwrap());
+        Dashboard::load(
+            &root.join("fixtures/dashboard/github"),
+            graphql,
+            "/repos/acme/node-client/pulls/482",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn seq_is_the_order_of_arrival() {
+        let dashboard = dashboard();
+        let first = dashboard.new_record(Target::Rest, "GET", "/first");
+        let second = dashboard.new_record(Target::Rest, "GET", "/second");
+        dashboard.record(second, StatusCode::OK);
+        dashboard.record(first, StatusCode::OK);
+        let Json(log) = dashboard.request_log();
+        let order: Vec<(String, usize)> = log.iter().map(|r| (r.path.clone(), r.seq)).collect();
+        assert_eq!(
+            order,
+            vec![("/first".to_owned(), 1), ("/second".to_owned(), 2)]
+        );
+    }
 }
