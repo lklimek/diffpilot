@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlockRef, PendingReview, Step, Tour } from "../../api/generated/types";
@@ -47,14 +47,16 @@ describe("Inspector at a step", () => {
     STEP_SECTIONS.forEach((pattern, i) => expect(names[i]).toMatch(pattern));
   });
 
-  it("names the step, links its lines on GitHub and says once that it is LLM analysis", () => {
+  it("names the step, links its lines on GitHub and tags LLM sections instead of a caption", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("Step 5 · Retry allowed?");
     const link = screen.getByRole("link", { name: /src\/rpc\/client\.rs:99/ });
     expect(link).toHaveAttribute("href", step(tour, "f1.5").facts.github_url);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
-    expect(screen.getAllByText("LLM analysis unless marked otherwise.")).toHaveLength(1);
+    expect(screen.queryByText(/unless marked otherwise/)).toBeNull();
+    expect(within(region(/^Why/)).getByText("LLM")).toHaveAccessibleDescription(/written by the LLM/);
+    expect(within(region(/^Classic diff/)).queryByText("LLM")).toBeNull();
   });
 
   it("keeps Questions and Assessment collapsed and the others open by default", () => {
@@ -101,9 +103,10 @@ describe("Inspector at a step", () => {
     expect(region(/^Why/)).toBeInTheDocument();
   });
 
-  it("hides unavailable call hierarchy", () => {
+  it("states an unavailable call hierarchy in one line, without a section", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     expect(screen.queryByRole("region", { name: /Call hierarchy/ })).toBeNull();
+    expect(screen.getByText("Call hierarchy: not available for this language yet.")).toBeVisible();
   });
 
   it("lists callers and callees with GitHub links when the plugin returns them", () => {
@@ -139,7 +142,7 @@ describe("Inspector at a step", () => {
     );
   });
 
-  it("says that no questions is not evidence of no defects (noq)", () => {
+  it("hides Questions and Assessment when the LLM gave none (noq)", () => {
     const noq = seedFor("noq", "tour") as Tour;
     render(<Inspector tour={noq} block={atStep("f1.5")} />);
     expect(screen.queryByRole("region", { name: /Questions to check/ })).toBeNull();
@@ -159,11 +162,13 @@ describe("Inspector at a step", () => {
   it("lists the GitHub threads of the step with their LLM status as LLM analysis", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     const threads = region(/^GitHub threads/);
+    expect(within(threads).getByText("GitHub")).toHaveAccessibleDescription(/from GitHub/);
     expect(threads).toHaveTextContent("@bob");
     expect(threads).toHaveTextContent("Should we retry non-idempotent calls at all?");
     expect(threads).toHaveTextContent("2 comments");
     const status = within(threads).getByText("still valid");
     expect(status).toHaveAccessibleDescription(/LLM/);
+    expect(status.closest("div")).toContainElement(within(threads).getByText("LLM"));
     expect(threads).toHaveTextContent("should_retry still retries every method");
     expect(within(threads).getByRole("link", { name: /Open the thread on GitHub/ })).toHaveAttribute(
       "target",
@@ -188,9 +193,8 @@ describe("Inspector at a step", () => {
     expect(why).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("renders the pinned answers and the dock slots", () => {
-    render(<Inspector tour={tour} block={atStep("f1.5")} answers={<p>pinned</p>} dock={<p>dock slot</p>} />);
-    expect(within(region(/^Ask: pinned answers/)).getByText("pinned")).toBeVisible();
+  it("renders the dock slot", () => {
+    render(<Inspector tour={tour} block={atStep("f1.5")} dock={<p>dock slot</p>} />);
     expect(screen.getByRole("group", { name: "Ask, feedback and comment" })).toHaveTextContent("dock slot");
   });
 });
@@ -337,11 +341,21 @@ describe("Inspector summaries", () => {
     );
   });
 
-  it("says related work was not checked without the GitHub App", () => {
+  it("says related work was not checked, without claiming why", () => {
     const t = structuredClone(tour);
     t.pr_context.facts.related_work_checked = false;
     render(<Inspector tour={t} block={{ block: "pr_context" }} />);
-    expect(region(/^LLM analysis at a glance/)).toHaveTextContent("Related work: not checked");
+    // The cause is not known (a failed check or a missing App), so none is claimed.
+    expect(region(/^LLM analysis at a glance/)).toHaveTextContent(/Related work: not checked\.?$/);
+    expect(region(/^LLM analysis at a glance/)).not.toHaveTextContent(/App/);
+  });
+
+  it("counts an unexplained file with base and head entries once", () => {
+    const t = structuredClone(tour);
+    const [first] = t.quiet.unexplained;
+    t.quiet.unexplained = [first!, { ...first!, side: "base" }];
+    render(<Inspector tour={t} block={{ block: "pr_context" }} />);
+    expect(region(/^Coverage/)).toHaveTextContent(/changed lines in 1 file/);
   });
 
   it.each([
@@ -352,7 +366,8 @@ describe("Inspector summaries", () => {
     render(<Inspector tour={tour} block={{ block: "quiet", row }} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(title);
     expect(document.body).toHaveTextContent(text);
-    expect(document.body).not.toHaveTextContent("LLM analysis unless marked otherwise.");
+    // Deterministic panels carry no LLM provenance tag.
+    expect(document.querySelector('[data-provenance="llm"]')).toBeNull();
   });
 
   it("summarises the pending review from GitHub", () => {
@@ -368,7 +383,7 @@ describe("Inspector summaries", () => {
         pendingReview={{ commenting_available: false, comments: [], incomplete: false }}
       />,
     );
-    expect(document.body).toHaveTextContent("GitHub App is not installed");
+    expect(document.body).toHaveTextContent("Commenting is not available for this repository right now.");
   });
 
   it("is never empty, also for a block outside the analysis", () => {
@@ -461,5 +476,51 @@ describe("Inspector trust rules", () => {
       expectTrustWording(container.textContent ?? "");
       unmount();
     }
+  });
+});
+
+describe("Inspector: Show in Inspector from a code marker", () => {
+  it("opens a collapsed section, scrolls to the remark and highlights it briefly", async () => {
+    const { rerender } = render(<Inspector tour={tour} block={atStep("f1.5")} />);
+    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "false");
+    rerender(
+      <Inspector
+        tour={tour}
+        block={atStep("f1.5")}
+        flash={{ kind: "annotation", id: "f1.5.a3", nonce: 1 }}
+      />,
+    );
+    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "true");
+    const item = region(/^Questions to check/).querySelector('[data-annotation-id="f1.5.a3"]');
+    expect(item).not.toBeNull();
+    await waitFor(() => expect(item).toHaveAttribute("data-flash"));
+  });
+
+  it("opens the section for the flash only: the stored preference is unchanged, the next step shows it", () => {
+    const { rerender } = render(
+      <Inspector
+        tour={tour}
+        block={atStep("f1.5")}
+        flash={{ kind: "annotation", id: "f1.5.a3", nonce: 1 }}
+      />,
+    );
+    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "true");
+    expect(window.localStorage.getItem(SECTION_STORAGE_KEY) ?? "{}").not.toContain("questions");
+    rerender(<Inspector tour={tour} block={atStep("f1.4")} flash={null} />);
+    rerender(<Inspector tour={tour} block={atStep("f1.5")} flash={null} />);
+    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("highlights a GitHub thread of the step", async () => {
+    render(
+      <Inspector
+        tour={tour}
+        block={atStep("f1.5")}
+        flash={{ kind: "thread", id: "PRRT_fixture482_t1", nonce: 1 }}
+      />,
+    );
+    const item = region(/^GitHub threads/).querySelector('[data-thread-id="PRRT_fixture482_t1"]');
+    expect(item).not.toBeNull();
+    await waitFor(() => expect(item).toHaveAttribute("data-flash"));
   });
 });

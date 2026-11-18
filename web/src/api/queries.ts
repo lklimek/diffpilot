@@ -137,9 +137,14 @@ export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
             );
           }
         },
+        // The stream ended and could not reopen: re-read the tour too, so a refusal (session over, analysis
+        // gone) leads to its normal page instead of stale data.
         onClosed: () => {
           setLost(true);
-          return client.refetchQueries({ queryKey: ["questions", id] }).catch(() => {});
+          return client
+            .refetchQueries({ queryKey: ["questions", id] })
+            .then(() => client.refetchQueries({ queryKey: ["tour", id] }))
+            .catch(() => {});
         },
       }),
     [client, id],
@@ -429,7 +434,7 @@ export const usePauseAnalysis = () => useMutation({ mutationFn: api.pauseAnalysi
 /** Continue a user-paused analysis. */
 export const useResumeAnalysis = () => useMutation({ mutationFn: api.resumeAnalysis });
 
-/** Durable flow demand and background preference, with immediate local cache refresh. */
+/** Durable flow demand, background preference, resume and retry from the Tour, each refreshing the tour. */
 export function useFlowWork(id: AnalysisId) {
   const client = useQueryClient();
   const refresh = () => client.invalidateQueries({ queryKey: ["tour", id] });
@@ -439,5 +444,7 @@ export function useFlowWork(id: AnalysisId) {
       mutationFn: (enabled: boolean) => api.setBackgroundAnalysis(id, enabled),
       onSuccess: refresh,
     }),
+    resume: useMutation({ mutationFn: () => api.resumeAnalysis(id), onSuccess: refresh }),
+    retry: useMutation({ mutationFn: () => api.retryAnalysis(id), onSuccess: refresh }),
   };
 }

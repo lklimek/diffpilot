@@ -59,6 +59,14 @@ describe("homeOutcome (brief §4.1)", () => {
       `/analyses/${analysis.id}/progress`,
     );
   });
+
+  it("a failed analysis with a readable review opens the Tour, which shows the failure and Retry", () => {
+    const failed = { state: "failed", flow: null, message: "Boom." } as const;
+    expect(analysisHref({ ...analysis, review_ready: true, state: failed })).toBe(`/analyses/${analysis.id}`);
+    expect(analysisHref({ ...analysis, review_ready: false, state: failed })).toBe(
+      `/analyses/${analysis.id}/progress`,
+    );
+  });
 });
 
 it("shows the large-PR note before starting, without an extra dialog", () => {

@@ -13,6 +13,7 @@ import type {
 } from "../../api/generated/types";
 import { RiskLabel } from "../badge/LlmLabel";
 import { threadsNote } from "../section/format";
+import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Collapsible } from "./Collapsible";
 import type { SectionControl } from "./sectionState";
@@ -48,7 +49,7 @@ export function BehaviourSection({
     <Collapsible sectionKey="behaviour" title="Behaviour: was → is" tone="llm" sections={sections}>
       <ul className="m-0 grid list-none gap-2 p-0">
         {behaviour.map((a) => (
-          <li key={a.id}>
+          <li key={a.id} data-annotation-id={a.id}>
             <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-2">
               <dt className="font-bold text-muted">Was</dt>
               <dd className="m-0">
@@ -84,7 +85,7 @@ function TextList({
   return (
     <ul className="m-0 list-disc pl-5">
       {annotations.map((a) => (
-        <li key={a.id}>
+        <li key={a.id} data-annotation-id={a.id}>
           <CodeText text={a.text ?? ""} />{" "}
           <BasisNote
             currentFile={currentFile}
@@ -155,12 +156,16 @@ function Sites({ title, sites }: { title: string; sites: readonly CallSite[] }) 
   );
 }
 
-/** Section 5: callers and callees from the tech plugin; n/a in v1 (brief §3). */
+/** Section 5: callers and callees from the tech plugin; one factual line while no plugin provides them (v1). */
 export function CallHierarchySection({
   hierarchy,
   sections,
 }: { hierarchy: CallHierarchy | null } & Sections) {
-  if (!hierarchy || hierarchy.callers.length + hierarchy.callees.length === 0) return null;
+  if (!hierarchy)
+    return (
+      <p className="px-3 py-1 text-[12px] text-muted">Call hierarchy: not available for this language yet.</p>
+    );
+  if (hierarchy.callers.length + hierarchy.callees.length === 0) return null;
   return (
     <Collapsible
       sectionKey="calls"
@@ -194,7 +199,7 @@ export function QuestionsSection({
     >
       <ul className="m-0 grid list-none gap-2 p-0">
         {questions.map((a) => (
-          <li key={a.id}>
+          <li key={a.id} data-annotation-id={a.id}>
             <Tooltip tip="Open the step and source lines this question concerns.">
               <button
                 type="button"
@@ -295,7 +300,10 @@ function Thread({ thread }: { thread: GithubThread }) {
     thread.is_outdated && "outdated",
   ].filter(Boolean);
   return (
-    <li className="grid gap-0.5 rounded-md border border-border bg-surface-2 px-2.5 py-1.5">
+    <li
+      data-thread-id={thread.id}
+      className="grid gap-0.5 rounded-md border border-border bg-surface-2 px-2.5 py-1.5"
+    >
       <p>
         <strong>@{thread.author}</strong> on{" "}
         <code>
@@ -306,6 +314,7 @@ function Thread({ thread }: { thread: GithubThread }) {
       <p className="whitespace-pre-wrap">{thread.excerpt}</p>
       {thread.llm_status && (
         <div>
+          <ProvenanceTag source="llm" />{" "}
           <Tooltip tip="LLM status from the analysis of this flow: whether the thread still applies to the final code. LLM analysis, not a GitHub state.">
             <span
               data-llm-label
@@ -340,7 +349,7 @@ export function ThreadsSection({
       sectionKey="threads"
       title="GitHub threads at this location"
       tone="facts"
-      source="From GitHub; a status label is LLM analysis."
+      tag="github"
       sections={sections}
     >
       {note && <p>{note}.</p>}

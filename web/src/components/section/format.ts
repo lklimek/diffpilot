@@ -1,7 +1,15 @@
-import type { Counters, Evidence, LineRange, ThreadsStatus } from "../../api/generated/types";
+import type { AnnotationType, Counters, Evidence, LineRange, ThreadsStatus } from "../../api/generated/types";
 
 /** `file:line` of an evidence reference; base-side lines are marked. */
 export const evidenceText = (e: Evidence) => `${e.file}:${e.line}${e.side === "base" ? " (base)" : ""}`;
+
+/** Reader-facing name of each annotation type. */
+export const ANNOTATION: Record<AnnotationType, string> = {
+  behaviour: "Behaviour",
+  consequence: "Consequence",
+  question: "Question to check",
+  note: "Note",
+};
 
 /** `a–b`, or `a` for a one-line range. */
 export const rangeText = (r: LineRange) =>

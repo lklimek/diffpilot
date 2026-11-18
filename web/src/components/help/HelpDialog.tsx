@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { SpeechBubble } from "../comment/LineComments";
 import { SHORTCUTS } from "./shortcuts";
 
 interface HelpDialogProps {
@@ -12,6 +13,14 @@ const SWATCH = "mr-1.5 inline-block h-3.5 w-4 align-middle";
 
 function Swatch({ look }: { look: string }) {
   return <i aria-hidden className={`${SWATCH} ${look}`} />;
+}
+
+function Bubble({ look }: { look: string }) {
+  return (
+    <span aria-hidden className={`mr-1 inline-flex align-middle ${look}`}>
+      <SpeechBubble />
+    </span>
+  );
 }
 
 const LEGEND: ReactNode[] = [
@@ -40,7 +49,14 @@ const LEGEND: ReactNode[] = [
     removed code shown at the deletion marker
   </>,
   <>
-    <b>◆</b> LLM remark · <b>▣</b> your comment
+    <b className="text-llm">◆</b> LLM remark
+  </>,
+  <>
+    <Bubble look="text-accent" /> your pending comment (accent bubble) · <Bubble look="text-thread" /> GitHub
+    review thread (slate bubble)
+  </>,
+  <>
+    <b className="text-high">−</b> removed line (from the diff)
   </>,
 ];
 

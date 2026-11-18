@@ -89,7 +89,7 @@ describe("Home (brief §4.1)", () => {
     renderRoute("/");
     await analyze();
     const message = await banner("Analysis found.", "status");
-    expect(message).toHaveTextContent("This PR head is already analysed. Open review.");
+    expect(message).toHaveTextContent("This PR head is already analysed.");
     expect(message).not.toHaveTextContent("Your ticks, answers");
   });
 
@@ -98,7 +98,9 @@ describe("Home (brief §4.1)", () => {
     const router = renderRoute("/");
     await analyze();
     const found = await banner("Analysis found.", "status");
-    expect(found).toHaveTextContent("This PR head is already analysed. Open review.");
+    expect(found).toHaveTextContent("This PR head is already analysed.");
+    // Not started by this user: nothing to resume.
+    expect(within(found).queryByRole("link", { name: "Resume review" })).toBeNull();
     expect(within(found).getByRole("link", { name: "Open review" })).toHaveAttribute(
       "href",
       `/analyses/${analysis.id}`,
@@ -174,10 +176,21 @@ describe("Home (brief §4.1)", () => {
     setScenario("no-app");
     const router = renderRoute("/");
     await analyze();
-    const noApp = await banner("The GitHub App is not installed on acme/node-client.", "alert");
+    const noApp = await banner("Commenting is not available for acme/node-client right now.", "alert");
+    expect(noApp).not.toHaveTextContent(/App is not installed/);
+    // Neither the cause nor what else is affected is known when the check failed.
+    expect(noApp).not.toHaveTextContent(/works without the App|related work/i);
+    expect(noApp).toHaveTextContent("The analysis still runs");
     expect(router.state.location.pathname).toBe("/");
-    await userEvent.click(within(noApp).getByRole("button", { name: "Analyze without it" }));
+    await userEvent.click(within(noApp).getByRole("button", { name: "Analyze anyway" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
+  });
+
+  it("a PR given in the address (from a refused comment) fills the field without analysing it", async () => {
+    const router = renderRoute(`/?pr=${encodeURIComponent(PR_URL)}`);
+    expect(await screen.findByLabelText("GitHub pull request URL")).toHaveValue(PR_URL);
+    expect(screen.queryByText("Analysis cancelled — analyze again.")).toBeNull();
+    expect(router.state.location.pathname).toBe("/");
   });
 
   it("after a cancelled analysis: 'Analysis cancelled — analyze again' with the URL filled in", async () => {
@@ -223,7 +236,38 @@ it("only promises personal state when the server confirms it exists", async () =
   );
   renderRoute("/");
   await analyze();
-  expect(await banner("Analysis found.", "status")).toHaveTextContent(
-    "Your ticks, answers and last viewed block are kept",
+  const found = await banner("Analysis found.", "status");
+  expect(found).toHaveTextContent("Your ticks, answers and last viewed block are kept");
+  expect(within(found).getByRole("link", { name: "Resume review" })).toHaveAttribute(
+    "href",
+    `/analyses/${analysis.id}`,
+  );
+});
+
+it.each([
+  [true, "Resume review"],
+  [false, "Open review"],
+])("a review-ready analysis in progress (started: %s) offers %s", async (started, label) => {
+  server.use(
+    http.post("/api/v1/pr/resolve", () =>
+      HttpResponse.json({
+        pr: analysis.pr,
+        commenting_available: true,
+        head_moved: false,
+        analysis: {
+          ...analysis,
+          state: { state: "running", done: 2, total: 5 },
+          review_ready: true,
+          has_my_state: started,
+        },
+      }),
+    ),
+  );
+  renderRoute("/");
+  await analyze();
+  const found = await banner("An analysis of this PR is in progress.", "status");
+  expect(within(found).getByRole("link", { name: label })).toHaveAttribute(
+    "href",
+    `/analyses/${analysis.id}`,
   );
 });

@@ -28,8 +28,11 @@ function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
   } catch {
     /* Browser storage can be unavailable. */
   }
-  const wanted = params.get("repo") ?? remembered;
-  const selected = repos.find((r) => `${r.owner}/${r.name}` === wanted) ?? repos[0];
+  const asked = params.get("repo");
+  const wanted = asked ?? remembered;
+  // An unknown repository named in the URL is said, never replaced by another one; a stale memory is.
+  const unknown = asked !== null && !repos.some((r) => `${r.owner}/${r.name}` === asked);
+  const selected = unknown ? undefined : (repos.find((r) => `${r.owner}/${r.name}` === wanted) ?? repos[0]);
   const selectedName = selected && `${selected.owner}/${selected.name}`;
   useEffect(() => {
     if (!selectedName) return;
@@ -55,6 +58,14 @@ function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
       return next;
     });
   const settings = useRepoSettings(selected);
+  if (unknown && repos.length > 0) {
+    return (
+      <div className="grid content-start gap-2">
+        <RepoList key={asked} repos={repos} selected={null} onSelect={setChosen} />
+        <StatusMessage kind="empty">Repository {asked} not found in this installation.</StatusMessage>
+      </div>
+    );
+  }
   if (!selected) {
     return (
       <StatusMessage kind="empty">

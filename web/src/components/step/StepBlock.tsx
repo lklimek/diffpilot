@@ -1,10 +1,11 @@
 import { CodeText } from "../section/CodeText";
-import { useId, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import type { ImpactRef, PatternRepetition, Step, StepId, ThreadsStatus } from "../../api/generated/types";
 import { KindLabel } from "../badge/LlmLabel";
 import { GithubLink } from "../inspector/text";
 import { rangeText, threadsNote } from "../section/format";
-import { LlmLine, Section } from "../section/Section";
+import { ProvenanceTag } from "../section/ProvenanceTag";
+import { Section } from "../section/Section";
 import { Tooltip } from "../tooltip/Tooltip";
 import { ReviewToggle } from "./ReviewToggle";
 
@@ -113,6 +114,47 @@ function CodeSlot({ step, changed, children }: { step: Step; changed: number; ch
   );
 }
 
+/** One impact: file header, its explanation, and its code collapsed until the header is clicked. */
+function ImpactItem({
+  impact,
+  impactCode,
+}: {
+  impact: ImpactRef;
+  impactCode?: StepBlockProps["impactCode"];
+}) {
+  const [open, setOpen] = useState(false);
+  const where = `${impact.file} lines ${rangeText(impact.range)}`;
+  return (
+    <li>
+      <p className="flex flex-wrap items-center gap-2">
+        {impactCode ? (
+          <Tooltip tip="Show or hide the code of these lines.">
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-label={where}
+              onClick={() => setOpen(!open)}
+              className={`min-h-6 cursor-pointer rounded font-mono font-semibold before:mr-1 before:inline-block before:w-3 before:text-muted ${open ? "before:content-['▾']" : "before:content-['▸']"}`}
+            >
+              {impact.file}
+            </button>
+          </Tooltip>
+        ) : (
+          <code className="font-semibold">{impact.file}</code>
+        )}
+        {impact.symbol && <span className="text-muted">{impact.symbol}</span>}
+        <GithubLink url={impact.github_url} tip="Open these lines on GitHub at the head commit (new tab)">
+          L{rangeText(impact.range)}
+        </GithubLink>
+      </p>
+      <div>
+        <CodeText text={impact.reason} /> <span className="text-muted">({impact.basis})</span>
+      </div>
+      {open && impactCode?.(impact)}
+    </li>
+  );
+}
+
 function Impact({
   impacts,
   impactCode,
@@ -122,25 +164,13 @@ function Impact({
 }) {
   return (
     <Section title="Impact outside the diff" tone="llm">
-      <LlmLine />
       <ul className="m-0 grid list-none gap-2.5 p-0 text-[12.5px]">
         {impacts.map((impact) => (
-          <li key={`${impact.file}:${impact.range.start_line}`}>
-            <p className="flex flex-wrap items-center gap-2">
-              <code className="font-semibold">{impact.file}</code>
-              {impact.symbol && <span className="text-muted">{impact.symbol}</span>}
-              <GithubLink
-                url={impact.github_url}
-                tip="Open these lines on GitHub at the head commit (new tab)"
-              >
-                L{rangeText(impact.range)}
-              </GithubLink>
-            </p>
-            <div>
-              <CodeText text={impact.reason} /> <span className="text-muted">({impact.basis})</span>
-            </div>
-            {impactCode?.(impact)}
-          </li>
+          <ImpactItem
+            key={`${impact.file}:${impact.range.start_line}`}
+            impact={impact}
+            impactCode={impactCode}
+          />
         ))}
       </ul>
     </Section>
@@ -157,9 +187,8 @@ function Pattern({
   return (
     <details className="rounded-lg border border-border bg-surface px-4 py-2 text-[12.5px]">
       <summary className="cursor-pointer font-semibold">Same pattern × {pattern.sites.length}</summary>
-      <p className="mt-1.5 text-[11.5px] text-llm">LLM analysis unless marked otherwise.</p>
-      <div className="mt-1">
-        <CodeText text={pattern.description} />
+      <div className="mt-1.5">
+        <ProvenanceTag source="llm" /> <CodeText text={pattern.description} />
       </div>
       <ul className="m-0 mt-1 list-disc pl-5">
         {pattern.sites.map((site) => {
@@ -228,8 +257,8 @@ export function StepBlock({
         <Markers step={step} ownComments={ownComments} threadsStatus={threadsStatus} />
         <div className="flex w-full min-w-0 items-start gap-2">
           {llm.decides.trim() && (
-            <div className="min-w-0 flex-1 text-sm">
-              <CodeText text={llm.decides} />
+            <div data-decides className="min-w-0 flex-1 text-sm">
+              <CodeText text={llm.decides} /> <ProvenanceTag source="llm" />
             </div>
           )}
           {(oldCode || onSetReviewed) && (
@@ -264,7 +293,7 @@ export function StepBlock({
         </CodeSlot>
         {(llm.impact.length > 0 || repeated.length > 0) && (
           <div className="grid min-w-0 gap-3">
-            {llm.impact.length > 0 && <Impact impacts={llm.impact} impactCode={impactCode} />}
+            {llm.impact.length > 0 && <Impact key={step.id} impacts={llm.impact} impactCode={impactCode} />}
             {repeated.map((p) => (
               <Pattern key={p.description} pattern={p} onSelectStep={onSelectStep} />
             ))}

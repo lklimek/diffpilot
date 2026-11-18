@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisSummary, AskQuestion, ReviewState } from "../../api/generated/types";
+import type { AnalysisSummary, AskQuestion, ReviewState, Tour } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { readStore } from "../../mocks/review-store";
 import { setScenario } from "../../mocks/scenarios";
+import { FLASH_MS } from "../../components/flash/useFlashTarget";
 import { LAYOUT_STORAGE_KEY } from "./layout";
 
 const server = startMockServer();
@@ -74,6 +75,96 @@ describe("Tour screen (brief §4.3)", () => {
       await within(main()).findByText("1 comment/import line hidden — in the classic diff"),
     ).toBeVisible();
     expect(within(main()).queryByText("// changed comment")).toBeNull();
+  });
+
+  it("c comments on the first visible changed line, never on a hidden comment line", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/lines", () =>
+        HttpResponse.json({
+          path: "src/rpc/client.rs",
+          side: "head",
+          from: 88,
+          to: 94,
+          total_lines: 100,
+          lines: ["fn send() {", "// changed comment", "send_request();", "}", "", "", ""],
+          changed: [89, 90],
+          context_only: [89],
+          deleted: [],
+          moved: [],
+          comments: { scope: "in_diff", line_thread_ranges: [] },
+        }),
+      ),
+    );
+    await open();
+    await openStep("1", "2");
+    await within(main()).findByText("1 comment/import line hidden — in the classic diff");
+    await user().keyboard("c");
+    expect(
+      within(inspector()).getByRole("textbox", { name: "Comment on src/rpc/client.rs:90" }),
+    ).toHaveFocus();
+  });
+
+  it("Show in Inspector on a pinned remark scrolls the Inspector to it and highlights it", async () => {
+    await open();
+    await openStep("1", "5");
+    const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
+    await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
+    await user().click(screen.getByRole("button", { name: /^Show in Inspector: Question to check/ }));
+    const questions = within(inspector()).getByRole("region", { name: /^Questions to check/ });
+    const item = questions.querySelector('[data-annotation-id="f1.5.a3"]');
+    await waitFor(() => expect(item).toHaveAttribute("data-flash"));
+  });
+
+  it("Show in Inspector on a pinned GitHub thread highlights the thread in the Inspector", async () => {
+    await open();
+    await openStep("1", "5");
+    const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
+    await user().click(within(code).getByRole("button", { name: "GitHub thread by bob at line 99" }));
+    await user().click(screen.getByRole("button", { name: /^Show in Inspector: GitHub thread by bob/ }));
+    const item = inspector().querySelector('[data-thread-id="PRRT_fixture482_t1"]');
+    await waitFor(() => expect(item).toHaveAttribute("data-flash"));
+  });
+
+  it("Show in Inspector flashes once: hiding and showing the Inspector afterwards does not flash again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await open();
+      await openStep("1", "5");
+      const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
+      await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
+      await user().click(screen.getByRole("button", { name: /^Show in Inspector: Question to check/ }));
+      const flashed = () => inspector().querySelector('[data-annotation-id="f1.5.a3"]');
+      await waitFor(() => expect(flashed()).toHaveAttribute("data-flash"));
+      act(() => vi.advanceTimersByTime(FLASH_MS));
+      expect(flashed()).not.toHaveAttribute("data-flash");
+      await user().click(screen.getByRole("button", { name: "Hide Inspector column" }));
+      await user().click(within(inspector()).getByRole("button", { name: "Show Inspector column" }));
+      await waitFor(() => expect(flashed()).not.toBeNull());
+      act(() => vi.advanceTimersByTime(1000));
+      expect(flashed()).not.toHaveAttribute("data-flash");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a GitHub thread of another step offers Show in step N.M, which switches to that step", async () => {
+    const tour = structuredClone(seedFor("default", "tour") as Tour);
+    tour.threads = tour.threads.map((t) => (t.id === "PRRT_fixture482_t1" ? { ...t, step_id: "f1.4" } : t));
+    server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(tour)));
+    await open();
+    await openStep("1", "5");
+    const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
+    await user().click(within(code).getByRole("button", { name: "GitHub thread by bob at line 99" }));
+    expect(screen.queryByRole("button", { name: /^Show in Inspector: GitHub thread by bob/ })).toBeNull();
+    await user().click(screen.getByRole("button", { name: "Show in step 1.4: GitHub thread by bob" }));
+    await waitFor(() => expect(blockHeading()).toHaveTextContent(/^4 Return the response/));
+  });
+
+  it("an evidence link highlights the line it jumps to", async () => {
+    renderRoute(`/analyses/${ID}#lines?file=src%2Frpc%2Fclient.rs&side=head&line=99`);
+    const code = await screen.findByRole("region", { name: /^src\/rpc\/client\.rs, lines/ });
+    const row = await waitFor(() => code.querySelector('[data-line="99"][data-side="head"]')!);
+    await waitFor(() => expect(row).toHaveAttribute("data-flash"));
   });
 
   it("walks beyond the last step into quiet rows and pending review", async () => {

@@ -604,3 +604,36 @@ Empty explanatory sections are hidden, without implying safety. Unavailable dete
 Test files, fixtures, mocks, benches and test helpers recognised by deterministic path rules are outside LLM planning, flow analysis and coverage. They appear in Tests once with file and added/removed-line counts and access to the diff. Test code may be read as evidence for a production step and mentioned in one clause; never create a test-subject flow. Inline Rust test modules/functions are not yet delimited by the generic plugin; a Rust syntax plugin is required before excluding these ranges deterministically.
 
 Rust comment-only lines (including block/doc comments) and complete single-line `use`, `mod` and `extern crate` declarations remain available to the agent as context, but require no explanation, annotation, assessment or flow. They are covered by a deterministic rule. Main code views hide them by default with a per-user browser preference and a hidden-line count; the classic diff always retains them. Other languages have no such rule. A contradiction between a comment and production code may be cited on the code's step. This supersedes the earlier test-flow and comment-omission rules above.
+
+### Owner-approved amendment — 2026-11-18: provenance tags, Ask below the field, collapsed context code
+
+- **No-questions sentence.** "The LLM raised no questions. That is not evidence of no defects." is no longer
+  rendered; an empty Questions section is hidden like every other empty explanatory section. Supersedes that
+  sentence in §1 (Silence is not safety) and §4.3 (Inspector, section 6).
+- **Provenance tags.** The caption "LLM analysis unless marked otherwise" is removed everywhere. Explanatory
+  text written by the LLM (sections, the decision sentence, pattern descriptions, thread status, marker
+  popovers) carries a small "LLM" tag (tooltip: written by the LLM, not checked); LLM-written titles and labels
+  carry no tag and keep their own labels and tooltips (§3: no badge means LLM analysis). Content taken from
+  GitHub review threads carries a "GitHub" tag. A tag names the source, never correctness; deterministic facts keep
+  their fact badges. The step's decision sentence under its title carries the "LLM" tag. Supersedes the
+  one-line-per-panel rule in §1 (A badge names exactly what was checked) and the caption in the flow
+  introduction block of §4.3.
+- **Ask.** Answers render below the question field, newest first, with pending and failed states in the same
+  place; each keeps its LLM answer label and its author label ("Asked by you"). Its tooltip says the agent was told
+  not to run code, never that nothing was executed. The answers block has its own scroll in the dock, so
+  Feedback and Comment stay in view. Supersedes "answers stay pinned to the step" (§4.3 Dock, Ask) as to their
+  place.
+- **Context code.** In the context part of a step (impact outside the diff), each code block starts collapsed
+  behind a one-line header naming its file and lines; its explanation stays visible. The expanded state is not
+  carried to another step. Supersedes "impact outside the diff inline under the step as real code" (§4.3 Step
+  block).
+- **Resume.** The button that returns to a review the user has already started (saved review state) reads
+  "Resume review" (as §4.1), on Home and on the progress screen; "Open review" remains for a review the user has
+  not started. Supersedes "Open review" for a started review in §4.2.
+- **Comment drafts.** An unsent comment text is kept per line in the browser tab (sessionStorage, per user login
+  and analysis) so navigation and a reload do not lose it. It is dropped only when the comment is added, when its
+  text is cleared, or on an explicit sign-out by that user (that login's drafts). An expired session or a 401
+  keeps it (also a comment refused as unauthenticated), and the same user signing in again on the tab gets it
+  back. A post whose outcome is unknown is kept the same way with its idempotency key and comes back locked
+  ("may already be in your pending review"): Retry sends it with the same key, so it cannot be added twice;
+  Discard makes the text editable again. The composer's Close and Escape keep the draft. Supersedes "No local drafts" (§2 v1, Comments) and "Local comment drafts" (§2 Non-goals).

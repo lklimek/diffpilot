@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type Ref } from "react";
+import { useId, useRef, useState, type ReactNode, type Ref } from "react";
 import type { StepId } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { assignRef, growField, useAction } from "../inspector/action";
@@ -12,10 +12,12 @@ export interface AskFormProps {
   onAsk: (step: StepId, text: string) => Promise<unknown> | void;
   /** The text field, for the `a` shortcut. */
   inputRef?: Ref<HTMLTextAreaElement>;
+  /** Questions and answers of the step (e.g. `AskAnswers`), shown below the field. */
+  answers?: ReactNode;
 }
 
 /** One-line question field that grows while typing; Enter sends, Shift+Enter adds a line. */
-export function AskForm({ step, onAsk, inputRef }: AskFormProps) {
+export function AskForm({ step, onAsk, inputRef, answers }: AskFormProps) {
   if (step === null) {
     return (
       <section aria-label="Ask">
@@ -25,13 +27,19 @@ export function AskForm({ step, onAsk, inputRef }: AskFormProps) {
     );
   }
   // Draft, error and pending state belong to one step: another step starts afresh, an old outcome is dropped.
-  return <AskDraft key={step.id} step={step} onAsk={onAsk} inputRef={inputRef} />;
+  return <AskDraft key={step.id} step={step} onAsk={onAsk} inputRef={inputRef} answers={answers} />;
 }
 
-function AskDraft({ step, onAsk, inputRef }: AskFormProps & { step: { id: StepId; label: string } }) {
+function AskDraft({
+  step,
+  onAsk,
+  inputRef,
+  answers,
+}: AskFormProps & { step: { id: StepId; label: string } }) {
   const subject = step.label;
   const id = useId();
   const field = useRef<HTMLTextAreaElement | null>(null);
+  const answersBox = useRef<HTMLDivElement>(null);
   const [text, setText] = useState("");
   const [empty, setEmpty] = useState(false);
   const action = useAction();
@@ -46,6 +54,8 @@ function AskDraft({ step, onAsk, inputRef }: AskFormProps & { step: { id: StepId
     setEmpty(false);
     if (await action.run(() => onAsk(step.id, question))) {
       setText("");
+      // Newest first: the new question is at the top of the answers.
+      if (answersBox.current) answersBox.current.scrollTop = 0;
       requestAnimationFrame(() => growField(field.current));
     }
   };
@@ -58,7 +68,7 @@ function AskDraft({ step, onAsk, inputRef }: AskFormProps & { step: { id: StepId
       <h3 id={`${id}-h`} className="text-[10.5px] font-bold tracking-wide text-muted uppercase">
         Ask{" "}
         <span className="text-[12px] font-normal tracking-normal normal-case">
-          about {subject}; answers stay pinned above
+          about {subject}; answers appear below and stay pinned to the step
         </span>
       </h3>
       <form
@@ -112,6 +122,18 @@ function AskDraft({ step, onAsk, inputRef }: AskFormProps & { step: { id: StepId
         <p id={`${id}-e`} role="alert" className="mt-1 text-[12px] text-high">
           {error}
         </p>
+      )}
+      {answers && (
+        // Bounded, with its own scroll: Feedback and Comment below stay in view in the dock.
+        <div
+          ref={answersBox}
+          role="region"
+          aria-label="Answers"
+          tabIndex={0}
+          className="mt-2 max-h-[24vh] overflow-y-auto overscroll-contain"
+        >
+          {answers}
+        </div>
       )}
     </section>
   );

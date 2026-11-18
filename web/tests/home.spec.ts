@@ -4,7 +4,7 @@ import { ANALYSIS_ID, expectTrustWording } from "./support";
 
 const PROGRESS = new RegExp(`/analyses/${ANALYSIS_ID}/progress$`);
 
-test("sign in → analyze → progress → open review", async ({ page }) => {
+test("sign in → analyze → progress → resume review", async ({ page }) => {
   await page.goto("/?scenario=signed-out");
   const signIn = page.getByRole("link", { name: "Sign in with GitHub" });
   await expect(signIn).toHaveAttribute("href", "/auth/github/login");
@@ -69,11 +69,11 @@ for (const [url, message] of [
   });
 }
 
-test("existing analysis: Open review opens the review", async ({ page }) => {
+test("existing analysis: Open review (Resume review once started) opens the review", async ({ page }) => {
   await page.goto("/?state=resume");
   await analyze(page);
   const banner = page.getByRole("status").filter({ hasText: "Analysis found." });
-  await expect(banner).toContainText("This PR head is already analysed. Open review.");
+  await expect(banner).toContainText("This PR head is already analysed.");
   await expectTooltips(page);
   await banner.getByRole("link", { name: "Open review" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#f1\\.5$`));
@@ -110,14 +110,14 @@ test("analysis in progress and failed analysis lead to the progress screen", asy
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
 });
 
-test("without the GitHub App: warning, Analyze without it", async ({ page }) => {
+test("without the GitHub App: warning, Analyze anyway", async ({ page }) => {
   await page.goto("/?scenario=no-app");
   await analyze(page);
   const banner = page
     .getByRole("alert")
-    .filter({ hasText: "The GitHub App is not installed on acme/node-client." });
+    .filter({ hasText: "Commenting is not available for acme/node-client right now." });
   await expect(banner).toContainText("comments cannot be written");
-  await banner.getByRole("button", { name: "Analyze without it" }).click();
+  await banner.getByRole("button", { name: "Analyze anyway" }).click();
   await expect(page).toHaveURL(PROGRESS);
 });
 

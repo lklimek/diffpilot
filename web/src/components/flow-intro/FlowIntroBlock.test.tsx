@@ -10,11 +10,12 @@ const tour = seedFor("default", "tour") as Tour;
 const [f1, f2, f3, , f5] = tour.flows as [Tour["flows"][number], ...Tour["flows"]];
 
 describe("FlowIntroBlock", () => {
-  it("shows title, LLM risk, the three introduction fields and the LLM line", () => {
+  it("shows title, LLM risk, the three introduction fields and the LLM tag", () => {
     render(<FlowIntroBlock flow={f1} dependencies={[f3!, f5!]} ticked={[]} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("1 Send an RPC request with retry");
     const llm = screen.getByRole("region", { name: "LLM analysis" });
-    expect(within(llm).getByText("LLM analysis unless marked otherwise.")).toBeInTheDocument();
+    expect(within(llm).getByText("LLM")).toHaveAccessibleDescription(/written by the LLM/);
+    expect(llm).not.toHaveTextContent(/unless marked otherwise/);
     expect(within(llm).getByText("Problem (before this PR)")).toBeInTheDocument();
     expect(within(llm).getByText("Change (what this PR does)")).toBeInTheDocument();
     expect(within(llm).getByText("Before / After example")).toBeInTheDocument();
@@ -103,4 +104,41 @@ it("shows pending planned ranges without an assessment or review tick", () => {
   expect(screen.getByText(/src\/client.rs/)).toBeVisible();
   expect(screen.queryByRole("button", { name: /Mark flow reviewed/ })).not.toBeInTheDocument();
   expect(screen.queryByText("▲ HIGH")).not.toBeInTheDocument();
+});
+
+it("a pending flow says what it waits for in a paused or failed analysis, never Queued forever", () => {
+  const queued = {
+    ...f1,
+    steps: [],
+    analysis_status: { state: "queued", started_at: null, message: null },
+    planned: {
+      intent: "Bound RPC retries",
+      importance_rank: 1,
+      ranges: [{ file: "src/client.rs", side: "base", ranges: [{ start_line: 4, end_line: 8 }] }],
+    },
+  } as Tour["flows"][number];
+  const { rerender } = render(
+    <FlowIntroBlock
+      flow={queued}
+      analysis={{ state: "paused", reason: "user", resumes_at: null, done: 1, total: 5 }}
+      dependencies={[]}
+      ticked={[]}
+    />,
+  );
+  expect(screen.getByRole("status")).toHaveTextContent("Queued — analysis paused");
+  // The planned range names its side in words, not the API's side value.
+  expect(screen.getByText("src/client.rs").closest("li")).toHaveTextContent(
+    "src/client.rs: removed lines 4–8",
+  );
+  rerender(
+    <FlowIntroBlock
+      flow={queued}
+      analysis={{ state: "failed", flow: null, message: "Boom." }}
+      dependencies={[]}
+      ticked={[]}
+      onRequest={() => {}}
+    />,
+  );
+  expect(screen.getByRole("status")).toHaveTextContent("Not analysed — the analysis failed");
+  expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("1 Send an RPC request with retry");
 });

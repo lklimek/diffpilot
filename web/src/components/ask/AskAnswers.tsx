@@ -11,6 +11,8 @@ export interface AskAnswersProps {
   /** Questions of the current step, any order (`GET …/questions` and `question` SSE events). */
   questions: readonly AskQuestion[];
   onEvidence?: (evidence: Evidence) => void;
+  /** File of the step asked about; its evidence links are shown in bold. */
+  currentFile?: string;
   /** Asks a failed question again on its step; no button without it. One request at a time per question. */
   onAskAgain?: (step: StepId, text: string) => Promise<unknown> | void;
 }
@@ -50,7 +52,8 @@ function Answer({
   question,
   onAskAgain,
   onEvidence,
-}: { question: AskQuestion } & Pick<AskAnswersProps, "onAskAgain" | "onEvidence">) {
+  currentFile,
+}: { question: AskQuestion } & Pick<AskAnswersProps, "onAskAgain" | "onEvidence" | "currentFile">) {
   switch (question.state) {
     case "pending":
       return (
@@ -78,7 +81,7 @@ function Answer({
       if (!answer) return <p className="text-muted">The answer is not available.</p>;
       return (
         <div className="rounded-md border-l-4 border-l-llm bg-llm-bg px-2.5 py-1.5">
-          <Tooltip tip="Answer written by the LLM after reading the code; nothing was executed. LLM analysis.">
+          <Tooltip tip="Answer written by the LLM after reading the code; the agent was told not to run code. LLM analysis.">
             <span
               data-llm-label
               tabIndex={0}
@@ -92,7 +95,7 @@ function Answer({
           </div>
           {answer.evidence.length > 0 && (
             <div className="mt-1 text-[11.5px] text-muted">
-              <EvidenceLinks evidence={answer.evidence} onEvidence={onEvidence} />
+              <EvidenceLinks evidence={answer.evidence} onEvidence={onEvidence} currentFile={currentFile} />
             </div>
           )}
         </div>
@@ -102,7 +105,7 @@ function Answer({
 }
 
 /** Questions asked about a step, newest first, each with its state or its whole LLM answer (ADR-004). */
-export function AskAnswers({ questions, onAskAgain, onEvidence }: AskAnswersProps) {
+export function AskAnswers({ questions, onAskAgain, onEvidence, currentFile }: AskAnswersProps) {
   if (questions.length === 0) return null;
   const newestFirst = [...questions].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   return (
@@ -113,7 +116,7 @@ export function AskAnswers({ questions, onAskAgain, onEvidence }: AskAnswersProp
             <span className="text-muted">Asked by {q.mine ? "you" : (q.asked_by ?? "unknown author")}: </span>
             {q.text}
           </p>
-          <Answer question={q} onAskAgain={onAskAgain} onEvidence={onEvidence} />
+          <Answer question={q} onAskAgain={onAskAgain} onEvidence={onEvidence} currentFile={currentFile} />
         </li>
       ))}
     </ol>

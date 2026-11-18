@@ -36,6 +36,7 @@
   --color-llm: #5d2f94;
   --color-llm-bg: #f0e8fa;
   --color-mark: #5b6472;
+  --color-thread: #4a6380;
   --color-rm-bg: #fdecec;
   --color-ad-bg: #e6f6ea;
 
@@ -85,6 +86,7 @@
     --color-llm: #d0b3f5;
     --color-llm-bg: #2a2039;
     --color-mark: #9aa5b6;
+    --color-thread: #a3b8d0;
     --color-rm-bg: #3a1b19;
     --color-ad-bg: #13301f;
     --shadow-tip: 0 4px 18px rgb(0 0 0 / 0.6);
@@ -111,5 +113,23 @@
   :focus-visible {
     outline: 3px solid var(--color-focus);
     outline-offset: 2px;
+  }
+}
+
+/* Scroll-to-and-highlight target (useFlashTarget): a frame for 3 s and an amber tint fading to the element's own
+   background; with reduced motion only the frame. */
+[data-flash] {
+  outline: 2px solid var(--color-med-bd);
+  outline-offset: -2px;
+  animation: flash-fade 3s ease-out;
+}
+@keyframes flash-fade {
+  from {
+    background-color: var(--color-med-bg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-flash] {
+    animation: none;
   }
 }

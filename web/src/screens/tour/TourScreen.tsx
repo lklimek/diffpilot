@@ -1,3 +1,4 @@
+import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
@@ -15,6 +16,7 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import {
+  useAskQuestion,
   useCommentActions,
   useLines,
   useMe,
@@ -22,10 +24,12 @@ import {
   useTour,
   useFlowWork,
   useQuestionEvents,
+  useQuestions,
 } from "../../api/queries";
 import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
-import type { UnresolvedPosts } from "../../components/comment/CommentComposer";
+import type { MarkerTarget } from "../../components/code-view/markers";
+import { hiddenLines } from "../../components/code-view/visibility";
 import { FlowIntroBlock } from "../../components/flow-intro/FlowIntroBlock";
 import { isFlowReviewed } from "../../components/flow-intro/progress";
 import { HelpDialog } from "../../components/help/HelpDialog";
@@ -33,6 +37,7 @@ import { quietTitle } from "../../components/inspector/summaries";
 import { shortcutAction } from "../../components/help/shortcuts";
 import { NavList } from "../../components/nav/NavList";
 import { PrContextBlock } from "../../components/pr-context/PrContextBlock";
+import { QuestionsBlock } from "../../components/questions/QuestionsBlock";
 import { MovesBlock } from "../../components/quiet/MovesBlock";
 import { NotAnalysedBlock } from "../../components/quiet/NotAnalysedBlock";
 import { PendingReviewBlock } from "../../components/quiet/PendingReviewBlock";
@@ -41,8 +46,10 @@ import { StatusMessage } from "../../components/status/StatusMessage";
 import { StepBlock } from "../../components/step/StepBlock";
 import { TopBar } from "../../components/top-bar/TopBar";
 import { Tooltip } from "../../components/tooltip/Tooltip";
+import { busyTip } from "../../components/button/button";
 import { ChunkedCode, DiffCode, FileDiffCode, LinesCode, errorText, type CodeContext } from "./code";
 import { DiagramPane } from "./DiagramPane";
+import { useCommentDrafts, useUnresolvedPosts } from "./drafts";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
 import {
@@ -73,6 +80,10 @@ function isTyping(event: KeyboardEvent): boolean {
   );
 }
 
+// A failure the next try may not have: the server or the network, not an answer about this request.
+const transient = (error: unknown) =>
+  !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
+
 const onStep = (c: PendingComment, step: Step) =>
   c.path === step.facts.file &&
   c.line !== null &&
@@ -91,7 +102,9 @@ export function TourScreen() {
   if (tour.error instanceof ApiError && tour.error.code === "analysis_not_finished") {
     return <Navigate to={`/analyses/${encodeURIComponent(analysisId)}/progress`} replace />;
   }
-  if (tour.isError) {
+  // A transient failure of a background refetch keeps the last good tour (and the drafts and state of the open
+  // review); an answer such as 401 or 404 does not change on retry.
+  if (tour.isError && (!tour.data || !transient(tour.error))) {
     return (
       <Shell login={login}>
         <StatusMessage kind="error">{errorText(tour.error)}</StatusMessage>
@@ -107,7 +120,20 @@ export function TourScreen() {
     );
   }
   // Session state (block, comment line, unconfirmed posts) belongs to one analysis.
-  return <TourView key={analysisId} analysisId={analysisId} tour={tour.data} review={review} login={login} />;
+  return (
+    <TourView
+      key={analysisId}
+      analysisId={analysisId}
+      tour={tour.data}
+      review={review}
+      login={login}
+      refresh={
+        tour.isError
+          ? { error: errorText(tour.error), busy: tour.isFetching, retry: () => void tour.refetch() }
+          : undefined
+      }
+    />
+  );
 }
 
 interface TourViewProps {
@@ -116,6 +142,8 @@ interface TourViewProps {
   /** Ticks and last viewed block of this analysis. */
   review: ReturnType<typeof useReviewStateStore>;
   login: string | null;
+  /** The last background refresh of the tour failed; the data shown is the last good one. */
+  refresh?: { error: string; busy: boolean; retry: () => void };
 }
 
 /** Where a resumed review opens, e.g. "flow 1, step 5". */
@@ -138,7 +166,7 @@ function resumedAt(tour: Tour, block: BlockRef): string {
   }
 }
 
-function TourView({ analysisId, tour, review, login }: TourViewProps) {
+function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const contextKey = `smart-review.hide-context-changes.${login ?? "anonymous"}`;
   const [hideContextChanges, setHideContextChanges] = useState(() => {
     try {
@@ -158,6 +186,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const { state, change: save, loadError, saveError } = review;
   const work = useFlowWork(analysisId);
   const stream = useQuestionEvents(analysisId);
+  const questions = useQuestions(analysisId);
+  const ask = useAskQuestion(analysisId);
   const now = useNow();
   const requested = useRef<string | null>(null);
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
@@ -170,16 +200,18 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   const navigate = useNavigate();
   const navigationType = useNavigationType();
   const [locationKey, setLocationKey] = useState(location.key);
-  const [resumeBlock] = useState<BlockRef>(() => {
-    const last = state.last_viewed;
-    const known =
-      last &&
-      (sequence.some((b) => sameBlock(b, last)) || last.block === "quiet" || last.block === "pending_review");
-    return known ? last : PR_CONTEXT;
-  });
+  const known = (last: BlockRef | null | undefined): last is BlockRef =>
+    !!last &&
+    (sequence.some((b) => sameBlock(b, last)) || last.block === "quiet" || last.block === "pending_review");
+  const [resumeBlock] = useState<BlockRef>(() => (known(state.last_viewed) ? state.last_viewed : PR_CONTEXT));
+  // The user's questions page: a view of its own, not a block of the stored review state; the block the user
+  // came from stays current (Inspector, Previous/Next, j/k).
+  const questionsView = location.hash === "#questions";
+  const lastViewed = state.last_viewed;
+  const cameFrom = questionsView && known(lastViewed) ? lastViewed : null;
   const current = useMemo(
-    () => blockFromHash(tour, location.hash) ?? (location.hash ? PR_CONTEXT : resumeBlock),
-    [tour, location.hash, resumeBlock],
+    () => blockFromHash(tour, location.hash) ?? cameFrom ?? (location.hash ? PR_CONTEXT : resumeBlock),
+    [tour, location.hash, resumeBlock, cameFrom],
   );
   const evidence = useMemo(() => evidenceFromHash(location.hash), [location.hash]);
   const lineView = location.hash.startsWith("#lines?") ? evidence : undefined;
@@ -188,11 +220,15 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     location.hash || current.block === "pr_context" ? null : current,
   );
   const [annotationId, setAnnotationId] = useState<AnnotationId | null>(null);
+  // "Show in Inspector": the remark or thread the Inspector scrolls to and highlights, until it was shown once.
+  const [inspectorFlash, setInspectorFlash] = useState<(MarkerTarget & { nonce: number }) | null>(null);
+  const flashNonce = useRef(0);
   const [oldCode, setOldCode] = useState(false);
   const [commentLine, setCommentLine] = useState<CommentLineState | null>(null);
   // A pending comment opened from the pending-review list, shown open at its line.
   const [revealComment, setRevealComment] = useState<string | null>(null);
-  const [unresolved, setUnresolved] = useState<UnresolvedPosts>({});
+  const [unresolved, setUnresolved] = useUnresolvedPosts(analysisId, login);
+  const drafts = useCommentDrafts(analysisId, login);
   const [helpOpen, setHelpOpen] = useState(false);
   const [layout, setLayoutState] = useState(loadLayout);
   const [focusNext, setFocusNext] = useState<"ask" | "comment" | null>(null);
@@ -219,18 +255,31 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     found?.flow ??
     (current.block === "flow_intro" ? tour.flows.find((f) => f.id === current.flow_id) : undefined);
   const stepLines = useLines(analysisId, step && stepQuery(step));
+  // Lines of the step the code view hides ("hide comment and import changes"); `c` and the reveal skip them.
+  const stepHidden =
+    step && stepLines.data
+      ? hiddenLines(stepLines.data, hideContextChanges, {
+          annotations: step.llm.annotations,
+          threads: tour.threads,
+          comments: pending.data?.comments,
+        }).rows
+      : new Set<number>();
+  const firstShownChange = stepLines.data?.changed.find((line) => !stepHidden.has(line));
   const offersOldCode =
     step !== undefined && (step.facts.changed_lines.length > 0 || step.facts.side === "base");
 
-  const go = (block: BlockRef | undefined) => {
-    if (!block) return;
-    void navigate({ ...location, hash: blockFragment(block) }, { flushSync: true });
+  const openFragment = (hash: string) => {
+    void navigate({ ...location, hash }, { flushSync: true });
     setResumed(null);
     setAnnotationId(null);
     setOldCode(false);
     setCommentLine(null);
     setRevealComment(null);
     mainRef.current?.scrollTo?.({ top: 0 });
+  };
+  const go = (block: BlockRef | undefined) => {
+    if (!block) return;
+    openFragment(blockFragment(block));
   };
 
   useEffect(() => {
@@ -293,10 +342,10 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
   }, [current, location, navigate]);
 
   // The last viewed block is part of the stored review state (resume).
-  const lastViewed = state.last_viewed;
   useEffect(() => {
+    if (questionsView) return;
     if (!lastViewed || !sameBlock(lastViewed, current)) save((s) => ({ ...s, last_viewed: current }));
-  }, [current, lastViewed, save]);
+  }, [current, lastViewed, save, questionsView]);
 
   useEffect(() => {
     const field = focusNext === "ask" ? askRef.current : focusNext === "comment" ? commentRef.current : null;
@@ -323,9 +372,19 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
       openInspector();
       setFocusNext("comment");
     } else if (step && stepLines.data) {
-      const line = step.facts.changed_lines[0]?.start_line ?? step.facts.range.start_line;
+      const { from, lines } = stepLines.data;
+      const line = firstShownChange ?? lines.map((_, i) => from + i).find((l) => !stepHidden.has(l));
+      if (line === undefined) return;
       comment({ path: step.facts.file, side: step.facts.side, start_line: null, line }, stepLines.data);
     }
+  };
+  const showInInspector = (target: MarkerTarget) => {
+    const owner = target.kind === "thread" ? tour.threads.find((t) => t.id === target.id)?.step_id : null;
+    if (owner && owner !== step?.id) go({ block: "step", step_id: owner });
+    else if (!(target.kind === "annotation" && target.id === annotationId)) setAnnotationId(null);
+    flashNonce.current += 1;
+    setInspectorFlash({ ...target, nonce: flashNonce.current });
+    openInspector();
   };
 
   useEffect(() => {
@@ -386,6 +445,12 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     revealComment,
     onEditComment: comments.edit,
     onDeleteComment: comments.remove,
+    flash: evidence ?? null,
+    onShowInInspector: showInInspector,
+    otherThreadStep: (t) => {
+      const owner = t.step_id && t.step_id !== step?.id ? findStep(tour, t.step_id) : undefined;
+      return owner ? `${owner.flow.position}.${owner.step.number}` : null;
+    },
   };
   // The step that shows a pending comment's line; a file comment without a shown line: the first step of its file.
   const placeOf = (c: PendingComment) => {
@@ -403,6 +468,23 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     };
   };
   const selectStep = (id: StepId) => go({ block: "step", step_id: id });
+  // The user's own questions in tour order (GET …/questions lists only the signed-in user's).
+  const stepOrder = tour.flows.flatMap((f) => f.steps.map((s) => s.id));
+  const rank = (id: StepId) => (stepOrder.includes(id) ? stepOrder.indexOf(id) : stepOrder.length);
+  const myQuestions = (questions.data ?? [])
+    .filter((q) => q.mine !== false)
+    .sort((a, b) => rank(a.step_id) - rank(b.step_id));
+  const questionCounts: Record<StepId, number> = {};
+  for (const q of myQuestions) questionCounts[q.step_id] = (questionCounts[q.step_id] ?? 0) + 1;
+  const questionPlace = (id: StepId) => {
+    const at = findStep(tour, id);
+    return at
+      ? {
+          label: `Flow ${at.flow.position} · step ${at.step.number}: ${at.step.llm.title}`,
+          open: () => selectStep(id),
+        }
+      : null;
+  };
 
   let block: ReactNode;
   if (lineView) {
@@ -420,10 +502,24 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         />
       </section>
     );
+  } else if (questionsView) {
+    block = questions.isError ? (
+      <StatusMessage kind="error">Cannot read your questions: {errorText(questions.error)}</StatusMessage>
+    ) : questions.isPending ? (
+      <StatusMessage kind="loading">Loading your questions…</StatusMessage>
+    ) : (
+      <QuestionsBlock
+        questions={myQuestions}
+        placeOf={questionPlace}
+        onEvidence={showEvidence}
+        onAskAgain={(step, text) => ask.mutateAsync({ step, text })}
+      />
+    );
   } else if (current.block === "flow_intro" && flow) {
     block = (
       <FlowIntroBlock
         flow={flow}
+        analysis={tour.analysis.state}
         now={now}
         onRequest={workAllowed ? () => work.request.mutate(flow.id) : undefined}
         busy={work.request.isPending}
@@ -450,12 +546,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
             <LinesCode
               key={location.key}
               ctx={ctx}
-              revealLine={
-                evidence?.line ??
-                stepLines.data?.changed.find(
-                  (line) => !hideContextChanges || !stepLines.data?.context_only?.includes(line),
-                )
-              }
+              revealLine={evidence?.line ?? firstShownChange}
               lines={stepLines}
               annotations={step.llm.annotations}
               band={step.llm.assessment?.risk ?? null}
@@ -555,6 +646,16 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         : null;
   const centre = (
     <>
+      <AnalysisStateBanner
+        state={tour.analysis.state}
+        busy={work.resume.isPending || work.retry.isPending}
+        onResume={() => work.resume.mutate()}
+        onRetry={() => work.retry.mutate()}
+        progressHref={`/analyses/${analysisId}/progress`}
+        error={
+          work.resume.error || work.retry.error ? errorText(work.resume.error || work.retry.error) : undefined
+        }
+      />
       {tour.analysis.review_ready && workAllowed && (
         <FlowWork
           done={tour.flows.filter((f) => f.analysis_status?.state === "analysed").length}
@@ -586,6 +687,28 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
           </Tooltip>
         </div>
       )}
+      {refresh && (
+        <div
+          role="alert"
+          className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-l-4 border-border border-l-med-bd bg-surface px-3 py-1 text-[12.5px]"
+        >
+          <p className="m-0 flex-1">
+            Could not refresh the review: {refresh.error} This page shows the last version read.
+          </p>
+          <Tooltip
+            tip={busyTip("Reads the review again; nothing you entered on this page is lost.", refresh.busy)}
+          >
+            <button
+              type="button"
+              aria-disabled={refresh.busy || undefined}
+              onClick={() => !refresh.busy && refresh.retry()}
+              className="min-h-6 cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] hover:border-accent"
+            >
+              Retry
+            </button>
+          </Tooltip>
+        </div>
+      )}
       {progressAlert && (
         <p
           role="alert"
@@ -612,7 +735,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         onNext={() => go(next)}
       />
       <p className="sr-only" aria-live="polite">
-        {blockTitle(tour, current)}
+        {questionsView ? "Your questions and answers" : blockTitle(tour, current)}
       </p>
     </>
   );
@@ -651,11 +774,18 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
         nav={
           <NavList
             flows={tour.flows}
+            analysis={tour.analysis.state}
             quiet={tour.quiet}
             ticked={ticked}
             pendingCount={pendingCount}
             current={current}
             onSelect={go}
+            questionCounts={questionCounts}
+            questions={{
+              count: questions.isSuccess ? myQuestions.length : questions.isError ? "error" : "loading",
+              open: questionsView,
+              onOpen: () => openFragment("questions"),
+            }}
           />
         }
         main={centre}
@@ -667,6 +797,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
             block={current}
             step={step}
             annotationId={annotationId}
+            flash={inspectorFlash}
+            onFlashed={() => setInspectorFlash(null)}
             onBackToStep={() => setAnnotationId(null)}
             onSelectStep={selectStep}
             onEvidence={showEvidence}
@@ -679,6 +811,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
             onCancelComment={() => setCommentLine(null)}
             unresolved={unresolved}
             onUnresolvedChange={setUnresolved}
+            drafts={drafts}
+            reanalyseHref={`/?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
             askRef={askRef}
             commentRef={commentRef}
           />

@@ -1,4 +1,4 @@
-import type { MouseEvent } from "react";
+import { Fragment, type MouseEvent } from "react";
 import type { LineSide, PendingComment } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
 import { PendingCommentItem, type PendingCommentItemProps } from "./PendingCommentItem";
@@ -32,14 +32,19 @@ export function lineName(comments: readonly PendingComment[], removed: boolean):
   return `${removed ? "removed line" : "line"} ${first?.line ?? ""}`;
 }
 
-const BUBBLE = (
-  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" focusable="false">
+/** Speech-bubble glyph of comment markers, in the current text colour. */
+export const SpeechBubble = () => (
+  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
     <path
       d="M2.5 2h11A1.5 1.5 0 0 1 15 3.5v7a1.5 1.5 0 0 1-1.5 1.5H7.2L4 14.8V12H2.5A1.5 1.5 0 0 1 1 10.5v-7A1.5 1.5 0 0 1 2.5 2z"
       fill="currentColor"
     />
   </svg>
 );
+
+/** Classes of a gutter marker button: a 24 px target (WCAG 2.5.8) around a larger glyph. */
+export const MARKER =
+  "relative inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 font-sans leading-none";
 
 interface CommentMarkerProps {
   comments: readonly PendingComment[];
@@ -65,10 +70,20 @@ export function CommentMarker({
   const n = comments.length;
   const what = `${file ? "file " : ""}${n === 1 ? "comment" : "comments"}`;
   const name = `Your ${n === 1 ? "" : `${n} `}pending ${what} ${file ? "on" : "at"} ${subject}`;
-  const tip =
+  const about =
     n === 1
       ? "Your comment in your GitHub pending review; nothing is published. Opens its text here."
       : "Your comments in your GitHub pending review; nothing is published. Opens their text here.";
+  const tip = (
+    <>
+      {comments.map((c) => (
+        <Fragment key={c.id}>
+          <span className="mb-1 line-clamp-6 whitespace-pre-wrap">{c.body}</span>{" "}
+        </Fragment>
+      ))}
+      <span className="block opacity-80">{about}</span>
+    </>
+  );
   return (
     <Tooltip tip={tip} className="inline-flex">
       <button
@@ -82,10 +97,14 @@ export function CommentMarker({
           event.stopPropagation();
           onToggle();
         }}
-        className="inline-flex cursor-pointer items-center gap-0.5 rounded-sm border-0 bg-transparent p-0 font-sans text-[10.5px] leading-none text-accent hover:text-text"
+        className={`${MARKER} text-[10px] font-bold text-accent hover:text-text`}
       >
-        {BUBBLE}
-        {n > 1 && <span aria-hidden>{n}</span>}
+        <SpeechBubble />
+        {n > 1 && (
+          <span aria-hidden className="absolute right-0 bottom-0 rounded-sm bg-surface px-px">
+            {n}
+          </span>
+        )}
       </button>
     </Tooltip>
   );

@@ -574,9 +574,9 @@ WP3-APPTOKEN, WP3-REVIEW, WP3-RUN, WP3-OPS; audit at the end (WP4-SEC).
   banned words, so they are not grepped).
 - **Agent output**: prompts forbid the banned phrases and numeric likelihoods; WP3-VERIFY logs a warning when
   LLM text contains them (no hard rejection); schema forbids confidence fields; facts need evidence.
-- **Components**: "LLM analysis unless marked otherwise" once per LLM panel; Assessment collapsed by default;
-  highlight tooltip = was → is only; no questions → "The LLM raised no questions. That is not evidence of no
-  defects."; LLM-classified refactors as normal flows with the label; green tick only on deterministic badges;
+- **Components**: provenance tags per brief amendment 2026-11-18 ("LLM" on LLM-written explanatory text,
+  "GitHub" on thread content; no panel caption); Assessment collapsed by default; highlight tooltip = was → is
+  only; an empty Questions section is hidden like any empty explanatory section; LLM-classified refactors as normal flows with the label; green tick only on deterministic badges;
   every badge, status, button and column header has a tooltip (Playwright sweep); inspector never empty.
 - **Ordering**: behavioural flows, then LLM-classified refactors, then LLM-classified tests, then quiet rows;
   quiet rows never above a rated flow; Unexplained first among quiet rows.
@@ -619,7 +619,8 @@ in the runner image, caching) and the host allowlist — later configuration of 
 versioning, changelog and schema migrations (before deployment); Groups workspace, overview, files tree;
 partial review while running; re-review with carried ticks; recent-reviews list; dashboard; LLM auto-comment;
 PR-description-vs-code check; static-analysis actions; GitHub "Viewed" sync; custom "not analysed" rules;
-tenant UI, real tenants, billing; automatic approve/reject; local comment drafts; PR-level risk or size
+tenant UI, real tenants, billing; automatic approve/reject; comment drafts beyond the browser tab (brief
+amendment 2026-11-18 keeps them per tab); PR-level risk or size
 statistics; numeric confidence.
 
 ## 14. Risks and mitigations

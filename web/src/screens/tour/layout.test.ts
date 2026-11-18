@@ -107,12 +107,20 @@ describe("Tour layout (brief §4.3 columns)", () => {
   });
 
   it("uses the default widths when nothing is stored", () => {
-    expect(sideWidths(DEFAULT_LAYOUT, 1440)).toEqual({ nav: 245, inspector: 400 });
+    expect(sideWidths(DEFAULT_LAYOUT, 1440)).toEqual({ nav: 245, inspector: 389 });
     expect(sideWidths(DEFAULT_LAYOUT, 3440)).toEqual({ nav: 400, inspector: 620 });
   });
 });
 
-it("reserves readable code space and a wider inspector at 1280px", () => {
-  expect(sideWidths(DEFAULT_LAYOUT, 1280)).toEqual({ nav: 240, inspector: 400 });
+it("gives the code column at least 700px at 1280px with the mockup proportions (17 % and 27 %)", () => {
+  const drawn = sideWidths(DEFAULT_LAYOUT, 1280);
+  expect(drawn).toEqual({ nav: 218, inspector: 346 });
+  expect(1280 - 12 - drawn.nav - drawn.inspector).toBeGreaterThanOrEqual(700);
+  expect(sideWidths(DEFAULT_LAYOUT, 1100)).toEqual({ nav: 200, inspector: 320 });
+  // A width the user dragged still wins.
+  expect(sideWidths({ ...DEFAULT_LAYOUT, widths: { nav: 300, inspector: 450 } }, 1280)).toEqual({
+    nav: 300,
+    inspector: 450,
+  });
   expect(clampWidth("nav", 1200, 1280, 400)).toBe(1280 - 400 - 12 - 480);
 });

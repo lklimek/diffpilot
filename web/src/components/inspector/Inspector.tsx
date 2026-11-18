@@ -12,8 +12,10 @@ import type {
   Tour,
 } from "../../api/generated/types";
 import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
+import { useFlashTarget } from "../flash/useFlashTarget";
 import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
-import { rangeText } from "../section/format";
+import { FlowWorkLabel } from "../flow-intro/status";
+import { ANNOTATION, rangeText } from "../section/format";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Collapsible } from "./Collapsible";
 import { useSectionState, type SectionControl } from "./sectionState";
@@ -49,8 +51,6 @@ export interface InspectorProps {
   annotationId?: AnnotationId | null;
   /** Classic diff of the step or of the selected annotation's range (section 1), e.g. code-view `ClassicDiff`. */
   diff?: ReactNode;
-  /** Ask answers pinned to the current step (e.g. `AskAnswers`); shown for steps. */
-  answers?: ReactNode;
   /** Dock under the sections: Ask, feedback, comment (e.g. `AskForm`, `FeedbackButtons`, `CommentComposer`). */
   dock?: ReactNode;
   /** The user's pending review, for the pending-review summary. */
@@ -60,16 +60,19 @@ export interface InspectorProps {
   /** Opens a step (from the flow summary). */
   onSelectStep?: (step: StepId) => void;
   onEvidence?: (evidence: Evidence) => void;
+  /** Scroll to and briefly highlight a remark or GitHub thread of the step ("Show in Inspector"); new `nonce`, again. */
+  flash?: { kind: "annotation" | "thread"; id: string; nonce: number } | null;
+  /** The `flash` request was handled (its highlight ended); it is not to be shown again. */
+  onFlashed?: () => void;
 }
 
-const ANNOTATION: Record<AnnotationType, string> = {
-  behaviour: "Behaviour",
-  consequence: "Consequence",
-  question: "Question to check",
-  note: "Note",
+// The section listing each annotation type.
+const SECTION_OF: Record<AnnotationType, string> = {
+  behaviour: "behaviour",
+  note: "why",
+  consequence: "consequences",
+  question: "questions",
 };
-
-const LLM_LINE = "LLM analysis unless marked otherwise.";
 
 const linesWord = (r: Annotation["range"]) =>
   `${r.start_line === r.end_line ? "line" : "lines"} ${rangeText(r)}`;
@@ -85,11 +88,9 @@ interface Panel {
   title: string;
   /** Under the title: labels and links. */
   meta?: ReactNode;
-  /** "LLM analysis unless marked otherwise.", or where deterministic content comes from. */
-  provenance: string;
+  /** Where deterministic content comes from; LLM panels carry tags on their sections instead. */
+  provenance?: string;
   body: ReactNode;
-  /** Set for a step: Ask answers apply. */
-  step?: Step;
   /** Set when an annotation is selected: context line for Back to step. */
   backTo?: string;
 }
@@ -109,8 +110,6 @@ function stepPanel(
   return {
     title: annotation ? `${ANNOTATION[annotation.type]} · ${linesWord(annotation.range)}` : stepTitle,
     backTo: annotation ? stepTitle : undefined,
-    step,
-    provenance: LLM_LINE,
     meta: (
       <>
         <KindLabel kind={step.llm.kind} />
@@ -211,10 +210,13 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
       if (!flow) break;
       return {
         title: flowTitle(flow),
-        provenance: LLM_LINE,
         meta: (
           <>
-            <RiskLabel risk={flow.llm.risk} />
+            {flow.analysis_status && flow.analysis_status.state !== "analysed" ? (
+              <FlowWorkLabel status={flow.analysis_status} analysis={tour.analysis.state} />
+            ) : (
+              <RiskLabel risk={flow.llm.risk} />
+            )}
             <GroupLabel group={flow.group} />
           </>
         ),
@@ -232,7 +234,6 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
     case "pr_context":
       return {
         title: "PR context",
-        provenance: LLM_LINE,
         meta: (
           <span className="text-muted">
             #{tour.analysis.pr.number} {tour.analysis.pr.title}
@@ -271,11 +272,29 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
 
 /** Right-hand inspector (brief §4.3): never empty; the current block, or the selected annotation of a step. */
 export function Inspector(props: InspectorProps) {
-  const { answers, dock, onBackToStep } = props;
-  const sections = useSectionState();
+  const { dock, onBackToStep, flash, onFlashed } = props;
+  const sections = useSectionState(JSON.stringify(props.block));
   const panel = panelFor(props, sections);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useRef(false);
+  const scroller = useRef<HTMLDivElement>(null);
+  const opened = useRef<number | null>(null);
+  const attribute = flash?.kind === "thread" ? "data-thread-id" : "data-annotation-id";
+  useFlashTarget(
+    scroller,
+    flash && { selector: `[${attribute}="${flash.id.replace(/["\\]/g, "\\$&")}"]`, nonce: flash.nonce },
+    onFlashed,
+  );
+
+  // A flashed item in a collapsed section: open that section once per request.
+  useEffect(() => {
+    if (!flash || opened.current === flash.nonce) return;
+    opened.current = flash.nonce;
+    const step = props.block.block === "step" ? findStep(props.tour, props.block.step_id)?.step : undefined;
+    const type = step?.llm.annotations.find((a) => a.id === flash.id)?.type;
+    const key = flash.kind === "thread" ? "threads" : type && SECTION_OF[type];
+    if (key && !sections.isOpen(key)) sections.reveal(key);
+  });
 
   // After "Back to step" the button is gone; the heading takes the focus.
   useEffect(() => {
@@ -287,7 +306,7 @@ export function Inspector(props: InspectorProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-surface">
-      <div tabIndex={0} className="min-h-0 flex-1 overflow-auto overscroll-contain">
+      <div ref={scroller} tabIndex={0} className="min-h-0 flex-1 overflow-auto overscroll-contain">
         <div className="px-3 pt-2.5 pb-1.5">
           {panel.backTo && onBackToStep && (
             <p className="mb-1 flex flex-wrap items-baseline gap-2 text-[12px]">
@@ -310,19 +329,12 @@ export function Inspector(props: InspectorProps) {
             {panel.title}
           </h2>
           {panel.meta && <p className="mt-1 flex flex-wrap items-center gap-2">{panel.meta}</p>}
-          <p className={`mt-1 text-[11.5px] ${panel.provenance === LLM_LINE ? "text-llm" : "text-muted"}`}>
-            {panel.provenance}
-          </p>
+          {panel.provenance && <p className="mt-1 text-[11.5px] text-muted">{panel.provenance}</p>}
           <p className="sr-only" aria-live="polite">
             {panel.title}
           </p>
         </div>
         {panel.body}
-        {panel.step && answers && (
-          <Collapsible sectionKey="ask" title="Ask: pinned answers" tone="llm" sections={sections}>
-            {answers}
-          </Collapsible>
-        )}
       </div>
       {dock && (
         <div
