@@ -13,6 +13,7 @@ import type {
 } from "../../api/generated/types";
 import { RiskLabel } from "../badge/LlmLabel";
 import { threadsNote } from "../section/format";
+import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Collapsible } from "./Collapsible";
 import type { SectionControl } from "./sectionState";
@@ -155,12 +156,16 @@ function Sites({ title, sites }: { title: string; sites: readonly CallSite[] }) 
   );
 }
 
-/** Section 5: callers and callees from the tech plugin; n/a in v1 (brief §3). */
+/** Section 5: callers and callees from the tech plugin; one factual line while no plugin provides them (v1). */
 export function CallHierarchySection({
   hierarchy,
   sections,
 }: { hierarchy: CallHierarchy | null } & Sections) {
-  if (!hierarchy || hierarchy.callers.length + hierarchy.callees.length === 0) return null;
+  if (!hierarchy)
+    return (
+      <p className="px-3 py-1 text-[12px] text-muted">Call hierarchy: not available for this language yet.</p>
+    );
+  if (hierarchy.callers.length + hierarchy.callees.length === 0) return null;
   return (
     <Collapsible
       sectionKey="calls"
@@ -306,6 +311,7 @@ function Thread({ thread }: { thread: GithubThread }) {
       <p className="whitespace-pre-wrap">{thread.excerpt}</p>
       {thread.llm_status && (
         <div>
+          <ProvenanceTag source="llm" />{" "}
           <Tooltip tip="LLM status from the analysis of this flow: whether the thread still applies to the final code. LLM analysis, not a GitHub state.">
             <span
               data-llm-label
@@ -340,7 +346,7 @@ export function ThreadsSection({
       sectionKey="threads"
       title="GitHub threads at this location"
       tone="facts"
-      source="From GitHub; a status label is LLM analysis."
+      tag="github"
       sections={sections}
     >
       {note && <p>{note}.</p>}

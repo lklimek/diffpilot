@@ -1,10 +1,11 @@
 import { useId, type ReactNode } from "react";
+import { ProvenanceTag } from "./ProvenanceTag";
 
 interface SectionProps {
   /** Heading; also the accessible name of the region ("LLM analysis" or "Facts"). */
   title: string;
   subtitle?: string;
-  /** `llm` for LLM content, `facts` for deterministic facts: they never share a section (brief §1). */
+  /** `llm` for LLM content (tagged "LLM"), `facts` for deterministic facts: they never share a section (brief §1). */
   tone?: "llm" | "facts";
   children: ReactNode;
 }
@@ -22,16 +23,12 @@ export function Section({ title, subtitle, tone = "facts", children }: SectionPr
         <h3 id={id} className={`text-[13px] font-bold ${tone === "llm" ? "text-llm" : "text-text"}`}>
           {title}
         </h3>
+        {tone === "llm" && <ProvenanceTag source="llm" />}
         {subtitle && <p className="text-[12px] text-muted">{subtitle}</p>}
       </div>
       {children}
     </section>
   );
-}
-
-/** The one line per LLM panel required by brief §1. */
-export function LlmLine() {
-  return <p className="mb-1.5 text-[11.5px] text-llm">LLM analysis unless marked otherwise.</p>;
 }
 
 /** Small uppercase heading inside a section. */

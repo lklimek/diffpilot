@@ -151,6 +151,27 @@ describe("AskForm", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByText(/Ask works on a step/)).toBeInTheDocument();
   });
+
+  it("shows the answers below the question field, newest first, pending and failed in the same place", () => {
+    const questions = [
+      question({ id: "old", text: "Old question?", state: "failed", failure: "the job failed." }),
+      question({ id: "new", text: "New question?", created_at: "2026-11-16T10:30:00Z" }),
+    ];
+    render(<AskForm step={step5} onAsk={() => {}} answers={<AskAnswers questions={questions} />} />);
+    const field = screen.getByRole("textbox");
+    const items = within(screen.getByRole("list", { name: "Questions asked about this step" })).getAllByRole(
+      "listitem",
+    );
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining("Asked by you: New question?"),
+      expect.stringContaining("Asked by you: Old question?"),
+    ]);
+    for (const item of items)
+      expect(field.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(items[0]).toHaveTextContent("Waiting for the LLM");
+    expect(items[1]).toHaveTextContent("No answer: the job failed.");
+    expect(screen.getByRole("heading", { name: /Ask/ })).toHaveTextContent(/answers appear below/);
+  });
 });
 
 describe("AskAnswers", () => {
@@ -176,6 +197,8 @@ describe("AskAnswers", () => {
     expect(item).toHaveTextContent("Does the node deduplicate broadcast_tx by transaction id?");
     expect(item).toHaveTextContent(questions[0]!.answer!.answer);
     expect(within(item).getByText("LLM answer")).toHaveAccessibleDescription(/LLM/);
+    expect(within(item).getByText("LLM answer")).toHaveAccessibleDescription(/told not to run/);
+    expect(within(item).getByText("LLM answer")).not.toHaveAccessibleDescription(/nothing was executed/i);
     expect(item).toHaveTextContent("Evidence · 2 places");
     expect(within(item).queryByRole("link")).toBeNull();
   });

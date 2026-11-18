@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { ReviewState, Step, Tour } from "../../api/generated/types";
+import type { ImpactRef, ReviewState, Step, Tour } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
 import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import { findStep } from "../../screens/tour/sequence";
@@ -199,15 +199,61 @@ describe("StepBlock", () => {
     expect(screen.queryByText(/Same pattern/)).not.toBeInTheDocument();
   });
 
-  it("shows impact outside the diff under the step, with its code from the slot", () => {
+  it("shows impact outside the diff with its explanation, its code collapsed behind a file and lines header", async () => {
     const step = stepOf(tour, "f2.1");
-    render(<StepBlock step={step} code={null} impactCode={(impact) => <p>code of {impact.file}</p>} />);
+    const impactCode = vi.fn((impact: ImpactRef) => <p>code of {impact.file}</p>);
+    render(<StepBlock step={step} code={null} impactCode={impactCode} />);
     const impact = screen.getByRole("region", { name: "Impact outside the diff" });
-    expect(impact).toHaveTextContent("tests/sync_headers.rs");
+    expect(within(impact).getByText("LLM")).toHaveAccessibleDescription(/written by the LLM/);
     expect(impact).toHaveTextContent(step.llm.impact[0]!.reason);
     expect(impact).toHaveTextContent("fact");
-    expect(within(impact).getByText("code of tests/sync_headers.rs")).toBeInTheDocument();
     expect(within(impact).getByRole("link", { name: /L8–14/ })).toHaveAttribute("target", "_blank");
+    const toggle = within(impact).getByRole("button", { name: /tests\/sync_headers\.rs.*8–14/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveAccessibleDescription(/code/);
+    expect(within(impact).queryByText("code of tests/sync_headers.rs")).toBeNull();
+    expect(impactCode).not.toHaveBeenCalled();
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(impact).getByText("code of tests/sync_headers.rs")).toBeVisible();
+    await userEvent.click(toggle);
+    expect(within(impact).queryByText("code of tests/sync_headers.rs")).toBeNull();
+  });
+
+  it("starts every step with its impact code collapsed, also when the next step cites the same lines", async () => {
+    const step = stepOf(tour, "f2.1");
+    const impactCode = (impact: ImpactRef) => <p>code of {impact.file}</p>;
+    const { rerender } = render(<StepBlock step={step} code={null} impactCode={impactCode} />);
+    await userEvent.click(screen.getByRole("button", { name: /tests\/sync_headers\.rs/ }));
+    expect(screen.getByText("code of tests/sync_headers.rs")).toBeVisible();
+    rerender(<StepBlock step={{ ...step, id: "f2.9" }} code={null} impactCode={impactCode} />);
+    expect(screen.getByRole("button", { name: /tests\/sync_headers\.rs/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.queryByText("code of tests/sync_headers.rs")).toBeNull();
+  });
+
+  it("names an impact's file and lines without a toggle when no code is supplied", () => {
+    render(<StepBlock step={stepOf(tour, "f2.1")} code={null} />);
+    const impact = screen.getByRole("region", { name: "Impact outside the diff" });
+    expect(impact).toHaveTextContent("tests/sync_headers.rs");
+    expect(within(impact).queryByRole("button")).toBeNull();
+  });
+
+  it("tags the decision sentence under the title as LLM text", () => {
+    const step = stepOf(tour, "f1.5");
+    render(<StepBlock step={step} code={null} />);
+    const decision = screen.getByText(step.llm.decides).closest<HTMLElement>("[data-decides]")!;
+    expect(within(decision).getByText("LLM")).toHaveAccessibleDescription(/written by the LLM.*not checked/);
+  });
+
+  it("tags a pattern repetition as LLM text", async () => {
+    const f3 = tour.flows[2]!;
+    render(<StepBlock step={stepOf(tour, "f3.2")} code={null} patterns={f3.llm.pattern_repetitions} />);
+    const summary = screen.getByText(/Same pattern/);
+    await userEvent.click(summary);
+    expect(within(summary.closest("details")!).getByText("LLM")).toBeVisible();
   });
 
   it("never links a GitHub URL that does not point to github.com (T12)", () => {
@@ -247,6 +293,7 @@ describe("StepBlock", () => {
           String(ticked_steps.includes(step.id)),
         );
         expectTrustWording(container.textContent ?? "");
+        expect(container).not.toHaveTextContent(/unless marked otherwise/);
         unmount();
       }
     }

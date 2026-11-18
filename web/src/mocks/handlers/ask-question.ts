@@ -4,7 +4,7 @@ import { ANSWER_MS, publishQuestion, updateStore } from "../review-store";
 import { forAnalysis, route } from "./common";
 
 const ANSWER =
-  "Mock answer: I read the lines of this step and their callers; nothing was executed. Does any caller rely on the earlier behaviour?";
+  "Mock answer: I read the lines of this step and their callers. Does any caller rely on the earlier behaviour?";
 
 /** `POST /api/v1/analyses/{id}/steps/{step_id}/questions`: 202 pending; the answer follows on the event stream. */
 export const askQuestion = route(

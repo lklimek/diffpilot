@@ -67,7 +67,7 @@ function permalink(tour: Tour, target: CommentTarget): string {
   return `https://github.com/${repo.owner}/${repo.name}/blob/${sha}/${path}#L${target.line}`;
 }
 
-/** The inspector with its data: classic diff, pinned answers, and the dock (Ask, feedback, comment). */
+/** The inspector with its data: classic diff and the dock (Ask with its pinned answers, feedback, comment). */
 export function InspectorPane(props: InspectorPaneProps) {
   const { analysisId, tour, block, step, annotationId, pending, comments, commentLine } = props;
   const questions = useQuestions(analysisId);
@@ -158,7 +158,6 @@ export function InspectorPane(props: InspectorPaneProps) {
       block={block}
       annotationId={annotationId}
       diff={diff}
-      answers={answers}
       pendingReview={pending.data ?? null}
       onBackToStep={props.onBackToStep}
       onSelectStep={props.onSelectStep}
@@ -171,6 +170,7 @@ export function InspectorPane(props: InspectorPaneProps) {
             step={step ? { id: step.id, label: `Step ${step.number} · ${step.llm.title}` } : null}
             onAsk={onAsk}
             inputRef={props.askRef}
+            answers={answers}
           />
           <FeedbackButtons
             target={target}

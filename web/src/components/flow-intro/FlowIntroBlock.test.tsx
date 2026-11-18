@@ -10,11 +10,12 @@ const tour = seedFor("default", "tour") as Tour;
 const [f1, f2, f3, , f5] = tour.flows as [Tour["flows"][number], ...Tour["flows"]];
 
 describe("FlowIntroBlock", () => {
-  it("shows title, LLM risk, the three introduction fields and the LLM line", () => {
+  it("shows title, LLM risk, the three introduction fields and the LLM tag", () => {
     render(<FlowIntroBlock flow={f1} dependencies={[f3!, f5!]} ticked={[]} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("1 Send an RPC request with retry");
     const llm = screen.getByRole("region", { name: "LLM analysis" });
-    expect(within(llm).getByText("LLM analysis unless marked otherwise.")).toBeInTheDocument();
+    expect(within(llm).getByText("LLM")).toHaveAccessibleDescription(/written by the LLM/);
+    expect(llm).not.toHaveTextContent(/unless marked otherwise/);
     expect(within(llm).getByText("Problem (before this PR)")).toBeInTheDocument();
     expect(within(llm).getByText("Change (what this PR does)")).toBeInTheDocument();
     expect(within(llm).getByText("Before / After example")).toBeInTheDocument();

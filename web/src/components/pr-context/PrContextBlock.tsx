@@ -20,7 +20,7 @@ import type {
   ThreadsStatus,
 } from "../../api/generated/types";
 import { dependencyFacts, threadsNote } from "../section/format";
-import { LlmLine, Section, Subhead } from "../section/Section";
+import { Section, Subhead } from "../section/Section";
 
 /** The PR context as rendered. */
 export type PrContextView = PrContext;
@@ -134,7 +134,6 @@ export function PrContextBlock({
       )}
       <div className="grid grid-cols-1 items-start gap-3.5 @[1250px]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <Section title="LLM analysis" tone="llm">
-          <LlmLine />
           <div>
             <strong>Problem:</strong> <CodeText text={llm.problem} />
           </div>

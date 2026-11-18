@@ -123,6 +123,11 @@ self_test() {
   expect_fail "named entity"       a.tsx '<p>No&ensp;risk</p>'                        "a.tsx:1: \"No risk\""
   expect_fail "named entity in attribute" a.tsx '<p title="No&ensp;risk">x</p>'      "a.tsx:1: \"No risk\""
   expect_fail "property value"     a.ts  'const o = { label: "verified" };'          "a.ts:1: \"verified\""
+  # The UI must not claim what only the agent's instructions say (brief §1); agent output in .json may.
+  expect_fail "execution claim"    a.tsx '<span title="Read the code; nothing was executed.">x</span>' "a.tsx:1: \"nothing was executed\""
+  expect_fail "short execution claim" a.ts "const s = 'Nothing executed';"          "a.ts:1: \"Nothing executed\""
+  expect_pass "agent output data"  mocks/a.json '{"answer": "Nothing was executed."}'
+  expect_pass "told not to run"    a.tsx '<span title="The agent was told not to run code.">x</span>'
 
   # Allow marker: only in a comment, only with a reason, only for the percentage rule.
   expect_pass "allow marker"        a.tsx "<p><div style={{ width: '50%' }} /> {/* wording-check: allow CSS width */}</p>"

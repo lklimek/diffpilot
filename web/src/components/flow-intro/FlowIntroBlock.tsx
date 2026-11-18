@@ -4,7 +4,7 @@ import { buttonClass } from "../button/button";
 import { useId } from "react";
 import type { Flow, StepId } from "../../api/generated/types";
 import { ClassificationLabel, GroupLabel, RiskLabel } from "../badge/LlmLabel";
-import { LlmLine, Section } from "../section/Section";
+import { Section } from "../section/Section";
 import { ReviewToggle } from "../step/ReviewToggle";
 import { reviewedSteps } from "./progress";
 
@@ -129,7 +129,6 @@ export function FlowIntroBlock({
         </div>
       </header>
       <Section title="LLM analysis" tone="llm">
-        <LlmLine />
         <dl className="m-0 grid grid-cols-1 gap-x-3 gap-y-1.5 text-[13px] sm:grid-cols-[minmax(10rem,auto)_1fr]">
           {rows
             .filter(([, value]) => value.trim())

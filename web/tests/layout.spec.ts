@@ -197,7 +197,7 @@ test("deep links survive reload and browser history, and evidence opens the cite
 
 test("Ask evidence opens code on its cited step or in the standalone range", async ({ page }) => {
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=real-small#f1.5`);
-  const answers = page.getByRole("region", { name: /Ask: pinned answers/ });
+  const answers = page.getByRole("list", { name: "Questions asked about this step" });
   await answers.getByText(/Evidence ·/).click();
   await answers.getByRole("button", { name: "Show internal/statesync/reactor.go:1171" }).click();
   await expect(page).toHaveURL(/#f1\.3\?file=/);
@@ -212,7 +212,7 @@ test("Ask evidence opens code on its cited step or in the standalone range", asy
 test("long Ask prose and fenced code wrap inside the inspector", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=long-answer#f1.5`);
-  const answers = page.getByRole("region", { name: /Ask: pinned answers/ });
+  const answers = page.getByRole("list", { name: "Questions asked about this step" });
   const prose = answers.getByText("longword".repeat(100));
   await expect(prose).toBeVisible();
   await expect(prose).toHaveCSS("overflow-wrap", "anywhere");
