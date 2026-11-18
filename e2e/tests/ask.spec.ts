@@ -15,8 +15,10 @@ import { expect, test } from "../support/fixtures";
 
 test.describe.configure({ mode: "serial" });
 
-const answers = (page: Page) =>
-  inspector(page).getByRole("list", { name: "Ask conversation" });
+const answers = (page: Page) => inspector(page).getByRole("list", { name: "Ask conversation" });
+/** The entry of `question` in the analysis's one conversation thread (questions of earlier tests stay in it). */
+const entry = (page: Page, question: string) =>
+  answers(page).getByRole("listitem").filter({ hasText: question });
 
 async function ask(page: Page, question: string): Promise<void> {
   await page.keyboard.press("a");
@@ -122,11 +124,12 @@ test("a failed answer reads as a plain sentence and offers Ask again", async ({ 
   ]);
   await finishedReview(page);
   await openStep(page, 1, 7);
-  await ask(page, "Scripted invalid answer: why give up here?");
-  const failed = answers(page).getByText(/^No answer: /);
+  const question = "Scripted invalid answer: why give up here?";
+  await ask(page, question);
+  const failed = entry(page, question).getByText(/^No answer: /);
   await expect(failed).toBeVisible({ timeout: 60_000 });
   await expect(failed).not.toContainText(/[{}<>]|Error|error:|panicked|schema/);
-  await expect(answers(page).getByRole("button", { name: "Ask again" })).toBeVisible();
+  await expect(entry(page, question).getByRole("button", { name: "Ask again" })).toBeVisible();
   await checkScreen(page);
 });
 
@@ -152,13 +155,18 @@ test("Ask again after a failed answer runs the question again and shows its answ
   ]);
   await finishedReview(page);
   await openStep(page, 2, 1);
-  await ask(page, "On the second try: does the timeout apply per attempt?");
-  await expect(answers(page).getByText(/^No answer: /)).toBeVisible({ timeout: 60_000 });
+  const question = "On the second try: does the timeout apply per attempt?";
+  await ask(page, question);
+  await expect(entry(page, question).getByText(/^No answer: /)).toBeVisible({ timeout: 60_000 });
   const asked = runnerEvents(stack).filter(
     (event) => event.event === "claimed" && event.kind === "ask",
   ).length;
-  await answers(page).getByRole("button", { name: "Ask again" }).click();
-  await expect(answers(page)).toContainText("Answered on the second try.", { timeout: 60_000 });
+  await entry(page, question).getByRole("button", { name: "Ask again" }).click();
+  // Asked again, the question is a new entry at the end of the thread.
+  await expect(entry(page, question)).toHaveCount(2);
+  await expect(entry(page, question).last()).toContainText("Answered on the second try.", {
+    timeout: 60_000,
+  });
   expect(
     runnerEvents(stack).filter((event) => event.event === "claimed" && event.kind === "ask").length,
     "Ask again ran a new job",

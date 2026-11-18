@@ -16,14 +16,17 @@ export const heading = (page: Page) => page.locator("main h2:not([data-column-ti
 export const nav = (page: Page) => page.getByRole("navigation", { name: "Flows and steps" });
 export const inspector = (page: Page) => page.getByRole("complementary", { name: "Inspector" });
 
-/** Signs in as the fake user `alice` through fake GitHub and waits for the first screen, My work at `/`. */
-export async function signIn(page: Page): Promise<void> {
+/**
+ * Signs in through fake GitHub (as `alice`, or the `login` fake GitHub was switched to) and waits for the first
+ * screen, My work at `/`.
+ */
+export async function signIn(page: Page, login = "alice"): Promise<void> {
   await page.goto("/");
   await page.getByRole("link", { name: "Sign in with GitHub" }).click();
   await expect(
     page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /^My work/ }),
   ).toHaveAttribute("aria-current", "page");
-  await expect(page.getByRole("banner")).toContainText("alice");
+  await expect(page.getByRole("banner")).toContainText(login);
 }
 
 /**
@@ -166,7 +169,7 @@ export async function expectTrustWording(page: Page): Promise<void> {
   if (new URL(page.url()).pathname === "/") return;
   // Text nodes joined by spaces (hidden text too; block boundaries keep word boundaries) and the rendered text
   // (inline markup inside a word); the second pair leaves the progress section out.
-  const [text, withoutProgress] = await page.locator("body").evaluate((body, progress) => {
+  const [text, withoutProgress] = await page.locator("body").evaluate((body: HTMLElement, progress) => {
     const collect = (root: HTMLElement, skip: boolean) => {
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (node) =>
         node.parentElement?.closest("script, style") || (skip && node.parentElement?.closest(progress))
@@ -350,6 +353,8 @@ export async function sweepTooltips(
 
     const focusable = "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])";
     for (const trigger of document.querySelectorAll<HTMLElement>("[aria-describedby]")) {
+      // Re-rendered while earlier triggers were swept (live data): its replacement is not this sweep's to judge.
+      if (!trigger.isConnected) continue;
       const name = nameOf(trigger).slice(0, 60);
       for (const { id, element } of described(trigger))
         if (!element) problems.push(`aria-describedby names no element: "${id}" on "${name}"`);

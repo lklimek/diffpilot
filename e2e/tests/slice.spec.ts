@@ -1,5 +1,3 @@
-import { join } from "node:path";
-import { type Page } from "@playwright/test";
 import {
   analyseAllRemainingFlows,
   analysisState,
@@ -11,38 +9,20 @@ import {
 } from "../support/app";
 import { logLeaks, stackSecrets } from "../support/secrets";
 import { expect, test } from "../support/fixtures";
+import { screens } from "../support/screens";
 
-// Light and dark at both widths when set, e.g. SCREENSHOT_DIR=/data/artifacts/smart-review/<date>/wp2-e2e.
-const SCREENSHOT_DIR = process.env.SCREENSHOT_DIR;
-const VIEWS = [
-  { width: 1440, height: 900 },
-  { width: 3440, height: 1440 },
-] as const;
 test.describe.configure({ mode: "serial" });
-
-async function shoot(page: Page, name: string): Promise<void> {
-  if (!SCREENSHOT_DIR) return;
-  for (const colorScheme of ["light", "dark"] as const) {
-    await page.emulateMedia({ colorScheme });
-    for (const view of VIEWS) {
-      await page.setViewportSize(view);
-      await page.screenshot({ path: join(SCREENSHOT_DIR, `${name}-${colorScheme}-${view.width}.png`) });
-    }
-  }
-  await page.emulateMedia({ colorScheme: "light" });
-  await page.setViewportSize(VIEWS[0]);
-}
 
 test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, context, stack }) => {
   await page.goto("/");
   await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
   await checkScreen(page);
-  await shoot(page, "sign-in");
+  await screens(page, "sign-in");
   await signIn(page);
   await checkScreen(page);
   const id = await analyze(page);
   await checkScreen(page);
-  await shoot(page, "progress");
+  await screens(page, "progress");
 
   // Flows run on request only: after the plan and the PR context nothing is analysed until asked.
   await expect(
@@ -63,12 +43,12 @@ test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, conte
   await expect(page).toHaveURL(new RegExp(`/analyses/${id}$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
   await checkScreen(page);
-  await shoot(page, "pr-context");
+  await screens(page, "pr-context");
 
   await page.keyboard.press("j");
   await expect(heading(page)).toHaveText("1 Send an RPC request with retry");
   await checkScreen(page);
-  await shoot(page, "flow-intro");
+  await screens(page, "flow-intro");
 
   await page.keyboard.press("j");
   await expect(heading(page)).toHaveText("1 Trigger: callers of send");
@@ -76,7 +56,7 @@ test("sign in, analyse the fixture PR, open flow 1 step 1", async ({ page, conte
   await expect(code).toContainText("pub async fn broadcast_tx(client: &RpcClient, tx: &Transaction)");
   await expect(code).toContainText("let resp = client.send(req).await?;");
   await checkScreen(page);
-  await shoot(page, "step1");
+  await screens(page, "step1");
 
   const me = (await (await page.request.get("/api/v1/me")).json()) as { csrf_token: string };
   stack.secrets.push(

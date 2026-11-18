@@ -409,6 +409,47 @@ async fn configured_user_overrides_login_and_id() {
     );
 }
 
+#[tokio::test]
+async fn fake_user_control_switches_the_user_of_later_sign_ins() {
+    let base = spawn(config()).await;
+    let first = sign_in(&base).await;
+    let answer = client()
+        .post(format!("{base}/_fake/user"))
+        .json(&serde_json::json!({"login": "bob", "id": 77}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), StatusCode::NO_CONTENT);
+    let second = sign_in(&base).await;
+    let user: Value = get_user(&base, &token(&second, "access_token"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (user["login"].clone(), user["id"].clone()),
+        ("bob".into(), 77.into())
+    );
+    assert_eq!(
+        user["name"],
+        recording("rest/user.json")["response"]["name"]
+    );
+    // The earlier sign-in stays the recorded user; a refreshed pair keeps its user.
+    let alice = get_user(&base, &token(&first, "access_token")).await;
+    assert_eq!(
+        alice.text().await.unwrap(),
+        recorded_response_text("rest/user.json")
+    );
+    let (status, rotated) = refresh(&base, &token(&second, "refresh_token")).await;
+    assert_eq!(status, StatusCode::OK);
+    let user: Value = get_user(&base, &token(&rotated, "access_token"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(user["login"], "bob");
+}
+
 const RECORDED_REST: [&str; 5] = [
     "rest/pull.json",
     "rest/pull-commits.json",

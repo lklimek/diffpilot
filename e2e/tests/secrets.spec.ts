@@ -1,6 +1,7 @@
 // Self-test of the leak check's token shape (support/secrets.ts), no stack: any 43-character base64url run is a
-// random 32-byte token whatever characters it drew; known non-secrets are not.
-import { randomTokens } from "../support/secrets";
+// random 32-byte token whatever characters it drew; known non-secrets are not. A whole personal access token is
+// found, its `srp_<id>` prefix alone is not.
+import { accessTokens, randomTokens } from "../support/secrets";
 import { expect, test } from "@playwright/test";
 
 const line = (value: string) => `2026-11-17T09:02:44Z INFO server::jobs: claimed token=${value} job=7`;
@@ -35,3 +36,18 @@ for (const [name, value] of notSecrets) {
     expect(randomTokens(line(value))).toEqual([]);
   });
 }
+
+// Synthetic: the id and the first 43-character sample above.
+const ACCESS_TOKEN = `srp_Ab3dE6gH_${tokens[0]![1]}`;
+
+test("a personal access token is found, also inside a longer run", () => {
+  expect(accessTokens(line(ACCESS_TOKEN))).toEqual([ACCESS_TOKEN]);
+  expect(accessTokens(`Authorization: Bearer ${ACCESS_TOKEN}`)).toEqual([ACCESS_TOKEN]);
+  // The 43-character secret is not on its own there, so the random-token shape alone would miss it.
+  expect(randomTokens(line(ACCESS_TOKEN))).toEqual([]);
+});
+
+test("a token's prefix alone is not a token", () => {
+  expect(accessTokens(line("srp_Ab3dE6gH…"))).toEqual([]);
+  expect(accessTokens("token srp_Ab3dE6gH revoked")).toEqual([]);
+});

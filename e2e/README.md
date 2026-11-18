@@ -9,9 +9,10 @@ when focus leaves (its text checked too), the controls each screen must give a t
 quiet rows, risk and provenance labels, Previous/Next, feedback values, Ask, Check, Cancel/Retry) present with a
 non-empty tip, no `aria-describedby` naming a missing element, and axe (serious or critical = failure). When a local stack stops, its component logs are checked for leaked secrets
 (`support/secrets.ts`): generated secrets, the App private key lines, every App JWT and installation token fake
-GitHub issued, fixture credentials, session secrets the tests registered, and anything shaped like the server's
-random tokens (any 43-character base64url run; job tokens are known only by that shape: the server keeps just their
-hash). A leak fails the run.
+GitHub issued, fixture credentials, session secrets the tests registered (personal access tokens they created, the
+judge job's input and output text), anything shaped like the server's random tokens (any 43-character base64url run;
+job tokens are known only by that shape: the server keeps just their hash) and any whole personal access token
+(`srp_<id>_<secret>`). A leak fails the run.
 
 | Spec                              | Journey                                                                                                               |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
@@ -29,6 +30,11 @@ hash). A leak fails the run.
 | `ask.spec.ts`                     | answered and pinned, usage-limit wait until `resumes_at`, failed answer, Ask again, markup as text                    |
 | `settings.spec.ts`                | signed-out screens, LLM status after a failed and a working call, language, Sign out                                  |
 | `security.spec.ts`                | CSP header; an inline script does not run; LLM analysis text with markup renders as text                              |
+| `dashboard.spec.ts`               | My work: Refresh → scan steps → provisional → ranked, tab title busy → ready; TODOs off; Review link, `/?pr=`; cancel scan; MemCan down |
+| `dashboard-ranking.spec.ts`       | the ranking waits for a running review analysis; a cancelled ranking → Retry ranking                                  |
+| `dashboard-failures.spec.ts`      | GitHub rate limit: failed with "Retry at HH:MM", 429 until then; GitHub down: a plain message; the previous list stays |
+| `dashboard-text.spec.ts`          | hostile TODO and LLM text (markup, markdown and `javascript:` links) renders as text (`dashboard_llm_text_renders_as_text`) |
+| `dashboard-settings.spec.ts`      | Dashboard settings validation and save, ranking effort; access token: bearer reads, writes 403, revoked 401; second user |
 
 ## Run
 
@@ -41,6 +47,7 @@ npm ci
 npx playwright install chromium     # once per machine
 npx playwright test                 # one run at a time; at most 2 workers
 npx playwright test tests/ask.spec.ts
+npx tsc --noEmit                    # type-check the suite
 ```
 
 The global setup builds once (`npm run build` in `web/`, then `cargo build` of server with `embed-ui`, runner with
@@ -54,7 +61,7 @@ through a wrapper: set all four of `SR_DEV_SERVER_BIN`, `SR_DEV_RUNNER_BIN`, `SR
 | `SR_E2E_STACK_ARGS`       | Extra launcher arguments, e.g. `--without runner` (analyses then never finish).           |
 | `SR_E2E_START_TIMEOUT_MS` | Bound for one stack start (default 2 min).                                                |
 | `SR_E2E_BUILD_TIMEOUT_MS` | Bound for the global setup's build (default 30 min); the build's process group is killed. |
-| `SCREENSHOT_DIR`          | `slice.spec.ts` saves its screens at 1440 and 3440 px, light and dark.                    |
+| `SCREENSHOT_DIR`          | `slice.spec.ts` and the dashboard specs save their screens at 1440 and 3440 px, light and dark. |
 | `RUST_LOG`                | Log level of the components (default `info`).                                             |
 
 ## How the stack is started
@@ -77,6 +84,11 @@ What a test can reach of a local stack (`Stack` in `support/stack.ts`):
 - `runnerEvents(stack)`, `sql(stack, query)` (`support/app.ts`): the runner's job attempts from its log, read-only
   queries on the server database.
 - The stack's launcher is tied to its worker: a guard process stops it when the worker dies, also on SIGKILL.
+- `stack.github`: fake GitHub's URL for its test controls: dashboard faults (`githubFaults`) and the user of later
+  sign-ins (`nextGithubUser`, with `allowLogin` for the server's allow-list) in `support/dashboard.ts`, which also
+  holds the dashboard world's settings (`worldSettings`) and fake MemCan's TODOs (`seedTodos`). The world's dates
+  are fixed around 2026-11-18 and the server reads the real clock, so the ranked order the specs expect holds near
+  that day only.
 - `stack.moveHead()` pushes a commit onto the PR head in the clone base and moves fake GitHub's head
   (`POST /_fake/head`).
 
