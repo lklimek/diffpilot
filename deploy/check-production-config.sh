@@ -10,7 +10,7 @@
 # value left from .env.example, secrets set (runner secret at least 32 characters), an https public URL, no
 # development override, no `$` interpolation (the effective value would be unknown; variables of the invoking
 # shell also override FILE in compose, so run it from a clean shell). An unpinned SR_RUNNER_CLAUDIUS_REF (not a
-# commit id or refs/tags/...) is a warning only.
+# commit id or refs/tags/...) and an empty SR_TRUSTED_PROXIES are warnings only.
 #
 # Usage: deploy/check-production-config.sh [--env-file FILE [--local | --secret-files]] [--no-render]
 #        deploy/check-production-config.sh --self-test [--no-render]
@@ -152,6 +152,11 @@ check_env() {
   if [[ ! "${values[SR_PUBLIC_URL]:-}" =~ ^https://[^/?#]+ ]]; then
     say "SR_PUBLIC_URL must be an https:// URL (the reverse proxy's public name; Secure cookies)"
   fi
+  if [[ -z "${values[SR_TRUSTED_PROXIES]:-}" ]]; then
+    echo "check-production-config: warning: SR_TRUSTED_PROXIES is empty: behind the reverse proxy every client" \
+      "then shares one address, so failed access-token attempts of all clients count against one limit;" \
+      "set the proxy's address (the Docker gateway) and let the proxy append X-Forwarded-For" >&2
+  fi
   value="${values[SR_RUNNER_CLAUDIUS_REF]:-}"
   if [[ ! "$value" =~ ^([0-9a-f]{40}|[0-9a-f]{64}|refs/tags/[A-Za-z0-9._/-]+)$ ]]; then
     echo "check-production-config: warning: SR_RUNNER_CLAUDIUS_REF is not pinned (unset means main): the agent's" \
@@ -278,7 +283,10 @@ if ((self_test)); then
     -e 's|^SR_RUNNER_CLAUDIUS_REF=.*|SR_RUNNER_CLAUDIUS_REF=main|'
   want_text="warning: SR_RUNNER_CLAUDIUS_REF" env_case "skills ref unset (warning only)" pass 0 \
     -e '/^SR_RUNNER_CLAUDIUS_REF=/d'
-  env_case "no trusted proxy (ignored with https)" pass 0 -e 's|^SR_TRUSTED_PROXIES=.*|SR_TRUSTED_PROXIES=|'
+  want_text="warning: SR_TRUSTED_PROXIES" env_case "no trusted proxy (warning only)" pass 0 \
+    -e 's|^SR_TRUSTED_PROXIES=.*|SR_TRUSTED_PROXIES=|'
+  want_text="warning: SR_TRUSTED_PROXIES" env_case "trusted proxy unset (warning only)" pass 0 \
+    -e '/^SR_TRUSTED_PROXIES=/d'
   env_case "quoted value with a comment" pass 0 \
     -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL="https://review.test.invalid" # public name|'
   env_case "single-quoted value is literal" pass 0 -e "s|^SR_MEMCAN_TOKEN=.*|SR_MEMCAN_TOKEN='CANARY-\\\${literal}'|"

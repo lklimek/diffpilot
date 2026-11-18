@@ -134,6 +134,9 @@ export function validateSettings(settings: DashboardSettings, ownLogin: string):
           `repositories.${i}.policy`,
           `${label}: the policy path is relative, ends with .json and has no "..".`,
         );
+      } else if (/[%\\]/.test(policy.path)) {
+        // As the server: the path becomes part of a GitHub contents URL.
+        put(`repositories.${i}.policy`, `${label}: the policy path may not contain "%" or "\\".`);
       }
     }
     if (row.branch_patterns.length > 10) {

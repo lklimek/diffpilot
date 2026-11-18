@@ -284,8 +284,8 @@ async fn complete_login(
     Ok(Cookie::Session.set(&session_token, SESSION_TTL, transport.https))
 }
 
-/// `POST /auth/logout`: ends this session, or with `everywhere` every session of the user; the stored GitHub
-/// tokens end with the user's last live session.
+/// `POST /auth/logout`: ends this session, or with `everywhere` every session and personal access token of the
+/// user; the stored GitHub tokens end with the user's last live session.
 async fn logout(
     State(state): State<AppState>,
     SessionCsrf(session): SessionCsrf,
@@ -296,7 +296,10 @@ async fn logout(
         Err(rejection) => return ApiFailure(rejection).into_response(),
     };
     let ended = if request.everywhere {
-        end_sign_in(&state, &session.user_id).await
+        match revoke_access_tokens(&state, &session).await {
+            Ok(()) => end_sign_in(&state, &session.user_id).await,
+            Err(error) => Err(error),
+        }
     } else {
         end_session(&state, &session).await
     };
@@ -307,6 +310,17 @@ async fn logout(
     no_content(Cookie::Session.clear(session.transport().https))
 }
 
+/// Revokes every personal access token of the session's user (ADR-019 §3), before the sessions end.
+async fn revoke_access_tokens(state: &AppState, session: &Session) -> Result<(), DbError> {
+    let revoked = state
+        .db
+        .access_tokens()
+        .revoke_all(&session.tenant_id, &session.user_id, Utc::now())
+        .await?;
+    tracing::info!(target: "audit", user_id = %session.user_id, revoked, "access tokens revoked by sign-out everywhere");
+    Ok(())
+}
+
 fn no_content(cookie: Option<HeaderValue>) -> Response {
     let mut response = StatusCode::NO_CONTENT.into_response();
     if let Some(cookie) = cookie {
@@ -315,7 +329,7 @@ fn no_content(cookie: Option<HeaderValue>) -> Response {
     response
 }
 
-/// `GET /api/v1/me`: the signed-in user and CSRF token, or nulls when signed out.
+/// `GET /api/v1/me`: the signed-in user and CSRF token (null for an access token), or nulls when signed out.
 async fn me(
     State(state): State<AppState>,
     session: Option<Session>,
@@ -334,7 +348,7 @@ async fn me(
                     avatar_url: user.profile.avatar_url,
                     language: user.language,
                 }),
-                csrf_token: Some(session.csrf_token().to_owned()),
+                csrf_token: session.csrf_token().map(str::to_owned),
             },
             Err(DbError::NotFound) => signed_out,
             Err(error) => return Err(error.into()),

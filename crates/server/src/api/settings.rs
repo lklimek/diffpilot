@@ -21,6 +21,7 @@ use db::error::DbError;
 use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
+use crate::auth::access_tokens::github_read;
 use crate::auth::{Session, SessionCsrf, user_access_token, user_token_rejected};
 use crate::github::rest::{self, GithubError, is_valid_repo};
 use crate::memcan::profile;
@@ -224,7 +225,11 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
         memcan_status: Some(state.config.memcan.status()),
         llm_status: llm_status(last_call, unusable_since),
         language: user.language,
-        app_installations: installations(state, session).await,
+        app_installations: github_read(session, "installations".to_owned(), async {
+            installations(state, session).await.ok_or(())
+        })
+        .await
+        .ok(),
         repos: state
             .db
             .settings()
@@ -932,21 +937,23 @@ mod tests {
     async fn route_auth_table() {
         let h = harness().await;
         let analysis = "00000000-0000-4000-8000-000000000000";
+        const READ: RouteAuth =
+            RouteAuth::SessionOrToken(contracts::api::access_tokens::TokenScope::Read);
         let table: [(Route, RouteAuth, Option<Value>); 6] = [
-            (GET_SETTINGS, RouteAuth::Session, None),
+            (GET_SETTINGS, READ, None),
             (
                 SET_LANGUAGE,
                 RouteAuth::SessionCsrf,
                 Some(json!({ "language": "pl" })),
             ),
-            (GET_REPO_SETTINGS, RouteAuth::Session, None),
-            (GET_REVIEW_STATE, RouteAuth::Session, None),
+            (GET_REPO_SETTINGS, READ, None),
+            (GET_REVIEW_STATE, READ, None),
             (
                 PUT_REVIEW_STATE,
                 RouteAuth::SessionCsrf,
                 Some(json!({ "ticked_steps": [], "last_viewed": null })),
             ),
-            (GET_DIFF, RouteAuth::Session, None),
+            (GET_DIFF, READ, None),
         ];
         for (route, auth, body) in table {
             assert_eq!(route.auth, auth, "{}", route.path);

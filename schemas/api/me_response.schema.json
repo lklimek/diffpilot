@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MeResponse",
+  "description": "Response of `GET /api/v1/me`; `user` is null when signed out.",
+  "type": "object",
+  "properties": {
+    "user": {
+      "description": "The signed-in user.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Me"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "csrf_token": {
+      "description": "Token for the `X-CSRF-Token` header of mutating requests; null when signed out.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "Me": {
+      "description": "A signed-in user.",
+      "type": "object",
+      "properties": {
+        "login": {
+          "description": "GitHub login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "avatar_url": {
+          "description": "Avatar URL.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "language": {
+          "description": "Language of LLM texts.",
+          "$ref": "#/$defs/LlmLanguage"
+        }
+      },
+      "required": [
+        "login",
+        "language"
+      ]
+    },
+    "LlmLanguage": {
+      "description": "Language of LLM-written texts.",
+      "oneOf": [
+        {
+          "description": "English (default).",
+          "type": "string",
+          "const": "en"
+        },
+        {
+          "description": "Polish.",
+          "type": "string",
+          "const": "pl"
+        }
+      ]
+    }
+  }
+}

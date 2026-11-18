@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LinesResponse",
+  "description": "Lines of a file with the deterministic gutter facts for them.",
+  "type": "object",
+  "properties": {
+    "path": {
+      "description": "Repository-relative path.",
+      "type": "string"
+    },
+    "side": {
+      "description": "Side of the returned lines.",
+      "$ref": "#/$defs/LineSide"
+    },
+    "from": {
+      "description": "First returned line.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "to": {
+      "description": "Last returned line (clamped to the file).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "total_lines": {
+      "description": "Lines in the file on that side (0 for an emptied file).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "lines": {
+      "description": "Text of lines `from..=to`.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "changed": {
+      "description": "Changed lines in the range (neutral gutter mark): added lines on the head side, removed lines on the\nbase side; Rust lines whose only change is whitespace are left out (they read as unchanged code).",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0
+      }
+    },
+    "context_only": {
+      "description": "Changed Rust comment and plain import lines a deterministic line rule covers: the main view may hide them,\nthe classic diff always shows them.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "integer",
+        "format": "uint32",
+        "minimum": 0
+      }
+    },
+    "deleted": {
+      "description": "Code removed by the pull request at markers in the range (head side only).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DeletedBlock"
+      }
+    },
+    "moved": {
+      "description": "Moved blocks in the range (head side only).",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/MovedLines"
+      }
+    },
+    "comments": {
+      "description": "Whether and how these lines can be commented on (deterministic, ADR-006).",
+      "$ref": "#/$defs/CommentScope"
+    }
+  },
+  "required": [
+    "path",
+    "side",
+    "from",
+    "to",
+    "total_lines",
+    "lines",
+    "changed",
+    "deleted",
+    "moved",
+    "comments"
+  ],
+  "$defs": {
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    },
+    "DeletedBlock": {
+      "description": "Removed code shown at its deletion marker.",
+      "type": "object",
+      "properties": {
+        "after_line": {
+          "description": "Head line after which the code was removed; 0 = before the first line.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "base_start": {
+          "description": "First removed line at the base commit.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "lines": {
+          "description": "Removed lines, from `base_start` on; fewer than `total_lines` when the response's line budget ran out\n(read the rest with `side=base`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "total_lines": {
+          "description": "Number of removed lines in the block.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "replacement": {
+          "description": "Head range paired with these old lines; absent for pure deletions.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "context_only": {
+          "description": "Removed Rust comment and plain import lines of the block a deterministic line rule covers: the main view may\nhide them.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "required": [
+        "after_line",
+        "base_start",
+        "lines",
+        "total_lines"
+      ]
+    },
+    "LineRange": {
+      "description": "Lines `start_line..=end_line`, 1-based, on the side given by the enclosing type.",
+      "type": "object",
+      "properties": {
+        "start_line": {
+          "description": "First line, 1-based.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "description": "Last line, inclusive.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start_line",
+        "end_line"
+      ]
+    },
+    "MovedLines": {
+      "description": "A moved block in the range.",
+      "type": "object",
+      "properties": {
+        "range": {
+          "description": "Lines of the moved block.",
+          "$ref": "#/$defs/LineRange"
+        },
+        "differing": {
+          "description": "Lines that differ from the original (`≠`).",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        }
+      },
+      "required": [
+        "range",
+        "differing"
+      ]
+    },
+    "CommentScope": {
+      "description": "Commenting on displayed lines, decided by the server from the pull request diff (ADR-006).",
+      "oneOf": [
+        {
+          "description": "The file is in the pull request diff. Lines inside `line_thread_ranges` (and removed lines at markers)\nget a line thread; other lines get a file-level thread whose body ends with the permalink.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string",
+              "const": "in_diff"
+            },
+            "line_thread_ranges": {
+              "description": "Ranges, on the response's side, whose lines get a line thread.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/LineRange"
+              }
+            }
+          },
+          "required": [
+            "scope",
+            "line_thread_ranges"
+          ]
+        },
+        {
+          "description": "The file is not in the pull request diff: commenting is not available in v1; the UI offers the\npermalink to copy.",
+          "type": "object",
+          "properties": {
+            "scope": {
+              "type": "string",
+              "const": "not_in_diff"
+            }
+          },
+          "required": [
+            "scope"
+          ]
+        }
+      ]
+    }
+  }
+}

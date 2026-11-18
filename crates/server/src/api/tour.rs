@@ -1,5 +1,7 @@
 //! The Tour of a review-ready analysis: the tenant check; loading lives in `pipeline::tour`.
 
+use std::convert::Infallible;
+
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::routing::get;
@@ -10,6 +12,7 @@ use contracts::routes::GET_TOUR;
 
 use crate::api::analyses::{ApiResult, failure, visible_analysis};
 use crate::auth::Session;
+use crate::auth::access_tokens::github_read;
 use crate::pipeline::tour;
 use crate::state::AppState;
 
@@ -28,9 +31,16 @@ async fn read(
     let mut tour = tour::load(&state, &summary).await.map_err(failure)?;
     if let Some(links) = &mut tour.pr_context.facts.related_work_links
         && !links.is_empty()
-        && let Ok(token) = crate::auth::user_access_token(&state, &session.user_id).await
     {
-        crate::github::related::verify(&state.config.github, &token, links).await;
+        let mut checked = links.clone();
+        let Ok(verified) = github_read(&session, format!("tour-links:{id}"), async {
+            if let Ok(token) = crate::auth::user_access_token(&state, &session.user_id).await {
+                crate::github::related::verify(&state.config.github, &token, &mut checked).await;
+            }
+            Ok::<_, Infallible>(checked)
+        })
+        .await;
+        *links = verified;
     }
     tour.pr_context.facts.memcan_status = Some(state.config.memcan.status());
     Ok(Json(tour))
