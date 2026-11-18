@@ -8,14 +8,15 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get};
 use axum::{Json, Router};
-use chrono::{TimeDelta, Utc};
 use contracts::api::access_tokens::{
     AccessToken, AccessTokenId, CreateAccessToken, CreatedAccessToken, TokenScope,
 };
 use contracts::api::error::ApiErrorCode;
 use contracts::routes::{CREATE_ACCESS_TOKEN, LIST_ACCESS_TOKENS, REVOKE_ACCESS_TOKEN};
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::access_tokens::{AccessTokenRecord, CreateOutcome, NewAccessToken};
+use jiff::SignedDuration;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::access_tokens::{TOKEN_PREFIX, is_token_id, issue};
@@ -163,8 +164,8 @@ async fn create(
 ) -> TokensResult<(StatusCode, Json<CreatedAccessToken>)> {
     let Json(request) = body.map_err(failure)?;
     validate(&request).map_err(failure)?;
-    let now = Utc::now();
-    let expires_at = now + TimeDelta::days(i64::from(request.expires_in_days));
+    let now = Timestamp::now();
+    let expires_at = now + SignedDuration::from_hours(24 * i64::from(request.expires_in_days));
     let mut attempt = 1;
     let (issued, record) = loop {
         let issued = issue().map_err(failure)?;
@@ -224,7 +225,7 @@ async fn revoke(
     state
         .db
         .access_tokens()
-        .revoke(&session.tenant_id, &session.user_id, &id, Utc::now())
+        .revoke(&session.tenant_id, &session.user_id, &id, Timestamp::now())
         .await
         .map_err(failure)?;
     tracing::info!(target: "audit", token_id = %id, user_id = %session.user_id, "access token revoked");

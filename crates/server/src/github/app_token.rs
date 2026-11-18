@@ -1,10 +1,6 @@
 //! GitHub App JWT and per-job read-only installation tokens (ADR-005, threat model T3a). The App private key is
 //! read only here; neither it nor a token appears in a log, an error or `Debug` output.
 
-use std::collections::BTreeMap;
-use std::time::Duration;
-
-use chrono::{DateTime, TimeDelta, Utc};
 use contracts::common::RepoRef;
 use contracts::job::access::{InstallationToken, Secret};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -12,6 +8,11 @@ use reqwest::header::{ACCEPT, HeaderMap, RETRY_AFTER, USER_AGENT};
 use reqwest::{Client, Method, RequestBuilder, StatusCode, redirect};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 use crate::config::GithubConfig;
 use crate::github::oauth::endpoint;
@@ -35,9 +36,9 @@ const JWT_BACKDATE_SECS: i64 = 60;
 /// JWT lifetime from `iat`; GitHub allows at most 10 minutes.
 const JWT_LIFETIME_SECS: i64 = 540;
 /// Installation token lifetime fixed by GitHub.
-const TOKEN_LIFETIME: TimeDelta = TimeDelta::hours(1);
+const TOKEN_LIFETIME: SignedDuration = SignedDuration::from_hours(1);
 /// Clock skew and latency allowed beyond [`TOKEN_LIFETIME`] in a mint answer.
-const EXPIRY_TOLERANCE: TimeDelta = TimeDelta::minutes(5);
+const EXPIRY_TOLERANCE: SignedDuration = SignedDuration::from_mins(5);
 
 /// The GitHub App could not provide or revoke an installation token.
 #[derive(Debug, thiserror::Error)]
@@ -159,7 +160,7 @@ struct MintRequest<'a> {
 /// The parts of a mint answer that are checked against the request; the token is read separately.
 #[derive(Deserialize)]
 struct MintFacts {
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
     permissions: BTreeMap<String, String>,
     repository_selection: String,
     #[serde(default)]
@@ -202,14 +203,14 @@ fn request(
 }
 
 /// An App JWT (RS256) signed with the key file, valid from 60 s before `now` for 9 minutes.
-async fn app_jwt(config: &GithubConfig, now: DateTime<Utc>) -> Result<Secret, AppTokenError> {
+async fn app_jwt(config: &GithubConfig, now: Timestamp) -> Result<Secret, AppTokenError> {
     let pem = secrecy::zeroize::Zeroizing::new(
         tokio::fs::read(&config.private_key_file)
             .await
             .map_err(AppTokenError::KeyFile)?,
     );
     let key = EncodingKey::from_rsa_pem(&pem).map_err(AppTokenError::Key)?;
-    let iat = now.timestamp() - JWT_BACKDATE_SECS;
+    let iat = now.as_second() - JWT_BACKDATE_SECS;
     let claims = JwtClaims {
         iat,
         exp: iat + JWT_LIFETIME_SECS,
@@ -225,7 +226,7 @@ async fn app_jwt(config: &GithubConfig, now: DateTime<Utc>) -> Result<Secret, Ap
 pub async fn installation(
     config: &GithubConfig,
     repo: &RepoRef,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Installation, AppTokenError> {
     let jwt = app_jwt(config, now).await?;
     lookup(&client()?, config, repo, &jwt).await
@@ -266,8 +267,8 @@ async fn lookup(
 pub async fn mint_for_job(
     config: &GithubConfig,
     repo: &RepoRef,
-    now: DateTime<Utc>,
-    runtime: TimeDelta,
+    now: Timestamp,
+    runtime: SignedDuration,
 ) -> Result<Minted, AppTokenError> {
     let jwt = app_jwt(config, now).await?;
     let client = client()?;
@@ -306,8 +307,7 @@ pub async fn mint_for_job(
             let claimed = answer
                 .get("expires_at")
                 .and_then(Value::as_str)
-                .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
-                .map(|at| at.with_timezone(&Utc));
+                .and_then(|at| at.parse::<Timestamp>().ok());
             Minted::Rejected {
                 token: InstallationToken {
                     token,
@@ -325,9 +325,9 @@ pub async fn mint_for_job(
 fn check_minted(
     answer: &Value,
     repo: &RepoRef,
-    now: DateTime<Utc>,
-    runtime: TimeDelta,
-) -> Result<DateTime<Utc>, Rejection> {
+    now: Timestamp,
+    runtime: SignedDuration,
+) -> Result<Timestamp, Rejection> {
     let facts = MintFacts::deserialize(answer).map_err(|_| Rejection::Shape)?;
     let requested: BTreeMap<String, String> = READ_ONLY_PERMISSIONS
         .iter()
@@ -371,7 +371,7 @@ pub async fn revoke(config: &GithubConfig, token: &str) -> Result<(), AppTokenEr
     .map_err(AppTokenError::Http)?;
     match response.status() {
         StatusCode::NO_CONTENT | StatusCode::UNAUTHORIZED => Ok(()),
-        StatusCode::TOO_MANY_REQUESTS => Err(rate_limited(response.headers(), Utc::now())),
+        StatusCode::TOO_MANY_REQUESTS => Err(rate_limited(response.headers(), Timestamp::now())),
         StatusCode::FORBIDDEN
             if response.headers().contains_key(RETRY_AFTER)
                 || response
@@ -379,14 +379,14 @@ pub async fn revoke(config: &GithubConfig, token: &str) -> Result<(), AppTokenEr
                     .get("x-ratelimit-remaining")
                     .is_some_and(|remaining| remaining == "0") =>
         {
-            Err(rate_limited(response.headers(), Utc::now()))
+            Err(rate_limited(response.headers(), Timestamp::now()))
         }
         status => Err(AppTokenError::Status(status)),
     }
 }
 
 /// The wait GitHub asks for: `retry-after` seconds, else until `x-ratelimit-reset` (epoch seconds).
-fn rate_limited(headers: &HeaderMap, now: DateTime<Utc>) -> AppTokenError {
+fn rate_limited(headers: &HeaderMap, now: Timestamp) -> AppTokenError {
     let number = |name: &str| {
         headers
             .get(name)
@@ -394,7 +394,7 @@ fn rate_limited(headers: &HeaderMap, now: DateTime<Utc>) -> AppTokenError {
             .and_then(|value| value.trim().parse::<i64>().ok())
     };
     let seconds = number(RETRY_AFTER.as_str())
-        .or_else(|| number("x-ratelimit-reset").map(|reset| reset - now.timestamp()));
+        .or_else(|| number("x-ratelimit-reset").map(|reset| reset - now.as_second()));
     AppTokenError::RateLimited {
         retry_after: seconds
             .and_then(|seconds| u64::try_from(seconds).ok())
@@ -475,15 +475,15 @@ pub(crate) mod tests {
         }
     }
 
-    fn runtime() -> TimeDelta {
-        TimeDelta::minutes(45)
+    fn runtime() -> SignedDuration {
+        SignedDuration::from_mins(45)
     }
 
     /// GitHub's mint answer for `acme/node-client`, valid one hour from `now`.
-    pub(crate) fn minted(now: DateTime<Utc>) -> Value {
+    pub(crate) fn minted(now: Timestamp) -> Value {
         json!({
             "token": MINTED_TOKEN,
-            "expires_at": (now + TimeDelta::hours(1)).to_rfc3339(),
+            "expires_at": (now + SignedDuration::from_hours(1)).to_rfc3339_offset(),
             "permissions": {"contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read"},
             "repository_selection": "selected",
             "repositories": [{
@@ -598,7 +598,7 @@ pub(crate) mod tests {
     async fn app_jwt_is_rs256_signed_by_the_key_file() {
         let f = fixture().await;
         mount_installation(&f.server).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         installation(&f.config, &repo(), now).await.expect("lookup");
         let requests = f.server.received_requests().await.expect("recorded");
         let jwt = bearer(&requests[0]);
@@ -610,7 +610,7 @@ pub(crate) mod tests {
                 .expect("JWT signed by the App key")
                 .claims;
         assert_eq!(claims.iss, "123456", "issuer is the App id");
-        assert_eq!(claims.iat, now.timestamp() - 60, "issued 60 s back");
+        assert_eq!(claims.iat, now.as_second() - 60, "issued 60 s back");
         assert_eq!(claims.exp - claims.iat, 540, "below GitHub's 10 minutes");
     }
 
@@ -630,7 +630,7 @@ pub(crate) mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&f.server)
             .await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let of = |name: &str| RepoRef {
             owner: "acme".to_owned(),
             name: name.to_owned(),
@@ -663,7 +663,7 @@ pub(crate) mod tests {
     async fn installation_token_read_only_permissions() {
         let f = fixture().await;
         mount_installation(&f.server).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         Mock::given(method("POST"))
             .and(path(format!(
                 "/api/app/installations/{INSTALLATION_ID}/access_tokens"
@@ -696,7 +696,7 @@ pub(crate) mod tests {
     async fn installation_token_repositories_scoped() {
         let f = fixture().await;
         mount_installation(&f.server).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         mount_mint(&f.server, minted(now), 1).await;
         let token = mint_for_job(&f.config, &repo(), now, runtime())
             .await
@@ -717,7 +717,7 @@ pub(crate) mod tests {
     /// A response covering more or other repositories, or all of them, is rejected and revoked.
     #[tokio::test]
     async fn installation_token_repositories_pr_repo_only() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut extra = minted(now);
         extra["repositories"]
             .as_array_mut()
@@ -747,27 +747,26 @@ pub(crate) mod tests {
     async fn installation_token_expiry_one_hour() {
         let f = fixture().await;
         mount_installation(&f.server).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         mount_mint(&f.server, minted(now), 1).await;
         let token = mint_for_job(&f.config, &repo(), now, runtime())
             .await
             .map(accepted)
             .expect("mint");
-        let expected: DateTime<Utc> = minted(now)["expires_at"]
+        let expected: Timestamp = minted(now)["expires_at"]
             .as_str()
-            .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
-            .expect("expiry")
-            .with_timezone(&Utc);
+            .and_then(|at| at.parse().ok())
+            .expect("expiry");
         assert_eq!(
             token.expires_at, expected,
             "GitHub's expiry, not a local guess"
         );
-        assert_eq!(token.expires_at - now, TimeDelta::hours(1));
+        assert_eq!(token.expires_at - now, SignedDuration::from_hours(1));
 
         let f = fixture().await;
         mount_installation(&f.server).await;
         let mut short = minted(now);
-        short["expires_at"] = json!((now + TimeDelta::minutes(30)).to_rfc3339());
+        short["expires_at"] = json!((now + SignedDuration::from_mins(30)).to_rfc3339_offset());
         mount_mint(&f.server, short, 1).await;
         assert_eq!(
             rejection(
@@ -783,11 +782,11 @@ pub(crate) mod tests {
     /// An expiry later than GitHub's hour (plus tolerance) is rejected; the revocation deadline keeps it.
     #[tokio::test]
     async fn installation_token_expiry_beyond_one_hour_rejected() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let f = fixture().await;
         mount_installation(&f.server).await;
         let mut skewed = minted(now);
-        skewed["expires_at"] = json!((now + TimeDelta::minutes(64)).to_rfc3339());
+        skewed["expires_at"] = json!((now + SignedDuration::from_mins(64)).to_rfc3339_offset());
         mount_mint(&f.server, skewed, 1).await;
         mint_for_job(&f.config, &repo(), now, runtime())
             .await
@@ -796,9 +795,9 @@ pub(crate) mod tests {
 
         let f = fixture().await;
         mount_installation(&f.server).await;
-        let late = now + TimeDelta::days(1);
+        let late = now + SignedDuration::from_hours(24);
         let mut long = minted(now);
-        long["expires_at"] = json!(late.to_rfc3339());
+        long["expires_at"] = json!(late.to_rfc3339_offset());
         mount_mint(&f.server, long, 1).await;
         match mint_for_job(&f.config, &repo(), now, runtime())
             .await
@@ -807,8 +806,8 @@ pub(crate) mod tests {
             Minted::Rejected { token, rejection } => {
                 assert_eq!(rejection, Rejection::Expiry);
                 assert_eq!(
-                    token.expires_at.timestamp(),
-                    late.timestamp(),
+                    token.expires_at.as_second(),
+                    late.as_second(),
                     "revoked until its claimed expiry"
                 );
             }
@@ -818,7 +817,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn mint_response_with_write_permission_rejected() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut write = minted(now);
         write["permissions"]["issues"] = json!("write");
         let mut extra = minted(now);
@@ -844,7 +843,7 @@ pub(crate) mod tests {
     async fn mint_rejects_private_repo() {
         let f = fixture().await;
         mount_installation(&f.server).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut private = minted(now);
         private["repositories"][0]["private"] = json!(true);
         mount_mint(&f.server, private, 1).await;
@@ -866,9 +865,9 @@ pub(crate) mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&f.server)
             .await;
-        mount_mint(&f.server, minted(Utc::now()), 0).await;
+        mount_mint(&f.server, minted(Timestamp::now()), 0).await;
         assert_eq!(
-            mint_for_job(&f.config, &repo(), Utc::now(), runtime())
+            mint_for_job(&f.config, &repo(), Timestamp::now(), runtime())
                 .await
                 .expect("not installed is not an error"),
             Minted::NotInstalled
@@ -887,7 +886,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn revoke_reports_rate_limits() {
-        let reset = Utc::now().timestamp() + 90;
+        let reset = Timestamp::now().as_second() + 90;
         for (status, headers, expected) in [
             (429, vec![("retry-after", "30".to_owned())], Some(30)),
             (
@@ -936,7 +935,7 @@ pub(crate) mod tests {
         std::fs::write(&placeholder, "placeholder, not a key").expect("write");
         for file in [dir.path().join("missing.pem"), placeholder] {
             let config = github_config(&server, file);
-            let error = installation(&config, &repo(), Utc::now())
+            let error = installation(&config, &repo(), Timestamp::now())
                 .await
                 .expect_err("no usable key");
             assert!(error.is_configuration(), "{error:?}");
@@ -954,7 +953,7 @@ pub(crate) mod tests {
             .respond_with(ResponseTemplate::new(401))
             .mount(&f.server)
             .await;
-        let error = installation(&f.config, &repo(), Utc::now())
+        let error = installation(&f.config, &repo(), Timestamp::now())
             .await
             .expect_err("JWT rejected");
         assert!(error.is_configuration(), "{error:?}");
@@ -965,7 +964,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn key_and_tokens_absent_from_logs_and_errors() {
         let capture = LogCapture::start();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut rejected = minted(now);
         rejected["permissions"]["issues"] = json!("write");
         let mut rendered = String::new();

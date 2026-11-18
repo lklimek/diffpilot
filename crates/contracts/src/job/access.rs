@@ -1,8 +1,8 @@
 //! Credentials the agent may hold for one job, filled in at claim (ADR-005).
 
+use crate::time::Timestamp;
 use std::fmt;
 
-use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +47,7 @@ pub struct InstallationToken {
     /// The token.
     pub token: Secret,
     /// Expiry set by GitHub.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// The repository the token covers: the PR repository.
     pub repository: RepoRef,
 }

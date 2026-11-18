@@ -1,8 +1,8 @@
 //! Repository for `review_state`: each user's ticks and last viewed block per analysis.
 
-use chrono::{DateTime, Utc};
 use contracts::api::review::ReviewState;
 use contracts::ids::AnalysisId;
+use contracts::time::Timestamp;
 use sqlx::SqlitePool;
 
 use super::Db;
@@ -70,7 +70,7 @@ impl ReviewStates<'_> {
         user_id: &str,
         analysis: AnalysisId,
         state: &ReviewState,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let last_viewed = state
             .last_viewed
@@ -143,7 +143,7 @@ mod tests {
         let states = db.review_states();
         for _ in 0..2 {
             states
-                .put("u1", analysis, &first, Utc::now())
+                .put("u1", analysis, &first, Timestamp::now())
                 .await
                 .expect("put");
             assert_eq!(states.get("u1", analysis).await.expect("get"), first);
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(rows(&db).await, 1);
         let second = state(&[], None);
         states
-            .put("u1", analysis, &second, Utc::now())
+            .put("u1", analysis, &second, Timestamp::now())
             .await
             .expect("put");
         assert_eq!(states.get("u1", analysis).await.expect("get"), second);
@@ -171,7 +171,7 @@ mod tests {
         .expect("user");
         let ticked = state(&["f1.1"], Some(BlockRef::PrContext));
         db.review_states()
-            .put("u1", analysis, &ticked, Utc::now())
+            .put("u1", analysis, &ticked, Timestamp::now())
             .await
             .expect("put");
         assert_eq!(
@@ -195,7 +195,7 @@ mod tests {
                 "u1",
                 AnalysisId::new_random(),
                 &state(&[], None),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await;
         assert!(matches!(result, Err(DbError::NotFound)), "{result:?}");

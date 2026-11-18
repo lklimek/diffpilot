@@ -7,7 +7,9 @@ use contracts::agent::judge_work::{JudgeItem, JudgeWorkInput, part_values};
 use contracts::api::dashboard::{ItemKey, PartStatus, ScoreComponent};
 use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{CredentialKind, LlmCredentialRef};
+use contracts::time::Timestamp;
 use db::repo::jobs::ClaimParams;
+use jiff::SignedDuration;
 
 use super::*;
 use crate::dashboard::judge::JudgeRanker;
@@ -85,14 +87,14 @@ fn serve_with(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            let now = Utc::now();
+            let now = Timestamp::now();
             let job = state
                 .db
                 .jobs()
                 .claim(ClaimParams {
                     credential_ids: &[CREDENTIAL_ID.to_owned()],
                     job_token_hash: b"hash",
-                    lease_until: now + TimeDelta::hours(1),
+                    lease_until: now + SignedDuration::from_hours(1),
                     now,
                 })
                 .await
@@ -120,7 +122,7 @@ fn serve_with(
             state
                 .db
                 .jobs()
-                .complete(&result, Utc::now())
+                .complete(&result, Timestamp::now())
                 .await
                 .expect("complete");
         }
@@ -140,7 +142,7 @@ async fn judged_world() -> World {
                 kind: CredentialKind::CodexChatgpt,
             },
             true,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("credential");

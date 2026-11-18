@@ -9,11 +9,11 @@ use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::routing::{get, put};
 use axum::{Json, Router};
-use chrono::Utc;
 use contracts::api::dashboard::{DashboardSettings, DashboardSettingsView, SetTimeZoneRequest};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::settings::MemcanState;
 use contracts::routes::{GET_DASHBOARD_SETTINGS, SET_DASHBOARD_SETTINGS, SET_DASHBOARD_TIME_ZONE};
+use contracts::time::Timestamp;
 use db::error::DbError;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
@@ -90,7 +90,12 @@ async fn save(
     state
         .db
         .dashboard()
-        .save_settings(&session.tenant_id, &session.user_id, &settings, Utc::now())
+        .save_settings(
+            &session.tenant_id,
+            &session.user_id,
+            &settings,
+            Timestamp::now(),
+        )
         .await
         .map_err(failure)?;
     tracing::info!(user_id = %session.user_id, "dashboard settings saved");
@@ -111,7 +116,7 @@ async fn set_time_zone(
             &session.tenant_id,
             &session.user_id,
             &request.time_zone,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .map_err(failure)?;

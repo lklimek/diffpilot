@@ -556,7 +556,7 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 | R4 | POST | `/api/v1/dashboard/refreshes/{id}/rank` | session_csrf | – | 202 `RefreshStatus` (Retry ranking of that snapshot); 409 `conflict` or `refresh_running` (Refresh states) |
 | R5 | GET | `/api/v1/dashboard/refreshes/{id}/events` | read | – | SSE `DashboardEvent` (`sse-events.md`) |
 | R6 | GET / PUT | `/api/v1/settings/dashboard` | read / session_csrf | – / `DashboardSettings` | `DashboardSettingsView` (PUT: 422 `invalid_dashboard_settings`) |
-| R6b | PUT | `/api/v1/settings/dashboard/time-zone` | session_csrf | `SetTimeZoneRequest` | 204 (422 `invalid_dashboard_settings` for a zone `chrono-tz` does not know) |
+| R6b | PUT | `/api/v1/settings/dashboard/time-zone` | session_csrf | `SetTimeZoneRequest` | 204 (422 `invalid_dashboard_settings` for a name that is not an exact IANA name of the bundled tz database) |
 | R7 | PUT | `/api/v1/settings/llm/judge-effort` | session_csrf | `SetJudgeEffortRequest` | `LlmSelection` |
 | R8 | GET | `/api/v1/settings/access-tokens` | session | – | `AccessToken[]` |
 | R9 | POST | `/api/v1/settings/access-tokens` | session_csrf | `CreateAccessToken` | 201 `CreatedAccessToken`; 409 `token_limit_reached` |

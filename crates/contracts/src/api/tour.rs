@@ -1,5 +1,6 @@
 //! The Tour: PR context, flows with steps, quiet rows and GitHub threads of a finished analysis.
 
+use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -641,7 +642,7 @@ pub struct FlowAnalysisStatus {
     /// Where the work stands.
     pub state: FlowAnalysisState,
     /// Runner claim time for the current attempt, if any.
-    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub started_at: Option<Timestamp>,
     /// Plain failure description; never provider output.
     pub message: Option<String>,
 }

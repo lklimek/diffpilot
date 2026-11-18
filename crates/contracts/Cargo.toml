@@ -6,13 +6,13 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-chrono.workspace = true
+jiff.workspace = true
 # preserve_order: schema property order = field order = the order the model generates (ADR-009).
-schemars = { workspace = true, features = ["preserve_order", "chrono04", "uuid1"] }
+schemars = { workspace = true, features = ["preserve_order", "jiff02", "uuid1"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-ts-rs = { workspace = true, features = ["chrono-impl", "uuid-impl"] }
+ts-rs = { workspace = true, features = ["uuid-impl"] }
 uuid.workspace = true
 
 [dev-dependencies]

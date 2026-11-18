@@ -1,7 +1,8 @@
 //! Repository for cookie `sessions` (only the hash of the session token is stored) and the OAuth logins in
 //! progress (`oauth_logins`: state and encrypted PKCE verifier).
 
-use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 use sqlx::{Row, SqlitePool};
 
 use super::Db;
@@ -32,7 +33,7 @@ pub struct NewSession<'a> {
     /// CSRF token for mutating requests.
     pub csrf_token: &'a str,
     /// End of the session.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
 }
 
 /// A live session.
@@ -45,9 +46,9 @@ pub struct SessionRecord {
     /// CSRF token for mutating requests.
     pub csrf_token: String,
     /// End of the session.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// Last recorded use (see [`Sessions::touch`]).
-    pub last_seen_at: DateTime<Utc>,
+    pub last_seen_at: Timestamp,
 }
 
 /// When a session counts as live: unexpired at `now`, seen after `seen_after` (idle timeout), and its user's
@@ -55,9 +56,9 @@ pub struct SessionRecord {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Liveness {
     /// Current time.
-    pub now: DateTime<Utc>,
+    pub now: Timestamp,
     /// Sessions last seen at or before this time are idle.
-    pub seen_after: DateTime<Utc>,
+    pub seen_after: Timestamp,
 }
 
 /// An OAuth login taken by its callback.
@@ -70,8 +71,8 @@ pub struct OauthLoginRecord {
 }
 
 /// Fixed-width RFC 3339 UTC text, so stored timestamps compare correctly as text in SQL.
-pub(super) fn timestamp(at: DateTime<Utc>) -> String {
-    at.to_rfc3339_opts(SecondsFormat::Micros, true)
+pub(super) fn timestamp(at: Timestamp) -> String {
+    format!("{:.6}", at.get())
 }
 
 /// SQL condition on a `sessions` row for [`Liveness`]; binds `?1` = now and `?2` = seen after.
@@ -109,14 +110,14 @@ macro_rules! pair_kept_by_schedule {
 pub(super) use pair_kept_by_schedule;
 
 /// The sign-in bound of [`pair_kept_by_schedule`] at `now`.
-pub(super) fn schedule_keep_bound(now: DateTime<Utc>) -> String {
-    timestamp(now - TimeDelta::days(SCHEDULE_PAIR_KEEP_DAYS))
+pub(super) fn schedule_keep_bound(now: Timestamp) -> String {
+    timestamp(now - SignedDuration::from_hours(24 * SCHEDULE_PAIR_KEEP_DAYS))
 }
 
 /// Insert of a new session (also used by the sign-in transaction of `tokens`).
 pub(super) fn insert_session<'q>(
     session: &'q NewSession<'q>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
     let now = timestamp(now);
     sqlx::query(
@@ -133,19 +134,14 @@ pub(super) fn insert_session<'q>(
 }
 
 /// Parses a stored timestamp of `column`.
-pub(super) fn parse_timestamp(text: &str, column: &'static str) -> Result<DateTime<Utc>, DbError> {
-    DateTime::parse_from_rfc3339(text)
-        .map(|at| at.with_timezone(&Utc))
+pub(super) fn parse_timestamp(text: &str, column: &'static str) -> Result<Timestamp, DbError> {
+    text.parse::<Timestamp>()
         .map_err(|_| DbError::Corrupt { column })
 }
 
 impl Sessions<'_> {
     /// Stores a new session.
-    pub async fn create(
-        &self,
-        session: &NewSession<'_>,
-        now: DateTime<Utc>,
-    ) -> Result<(), DbError> {
+    pub async fn create(&self, session: &NewSession<'_>, now: Timestamp) -> Result<(), DbError> {
         insert_session(session, now).execute(self.pool).await?;
         Ok(())
     }
@@ -185,7 +181,7 @@ impl Sessions<'_> {
         &self,
         token_hash: &[u8],
         live: Liveness,
-        seen_before: DateTime<Utc>,
+        seen_before: Timestamp,
     ) -> Result<bool, DbError> {
         let touched = sqlx::query(concat!(
             "UPDATE sessions SET last_seen_at = ?1 WHERE token_hash = ?3 AND last_seen_at < ?4 AND ",
@@ -238,8 +234,8 @@ impl Sessions<'_> {
         state: &str,
         tenant_id: &str,
         code_verifier_ct: &[u8],
-        now: DateTime<Utc>,
-        expires_at: DateTime<Utc>,
+        now: Timestamp,
+        expires_at: Timestamp,
     ) -> Result<(), DbError> {
         sqlx::query(
             "INSERT INTO oauth_logins (state, tenant_id, code_verifier_ct, created_at, expires_at)
@@ -259,7 +255,7 @@ impl Sessions<'_> {
     pub async fn take_oauth_login(
         &self,
         state: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Option<OauthLoginRecord>, DbError> {
         let row = sqlx::query(
             "DELETE FROM oauth_logins WHERE state = ? RETURNING tenant_id, code_verifier_ct, expires_at",
@@ -310,7 +306,7 @@ impl Sessions<'_> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeDelta;
+    use jiff::SignedDuration;
 
     use super::*;
     use crate::repo::DEFAULT_TENANT;
@@ -328,7 +324,7 @@ mod tests {
             avatar_url: None,
         };
         db.users()
-            .upsert_member(DEFAULT_TENANT, "u-1", &profile, Utc::now())
+            .upsert_member(DEFAULT_TENANT, "u-1", &profile, Timestamp::now())
             .await
             .expect("user");
         crate::repo::tenants::testing::allow_login(&db, DEFAULT_TENANT, "lklimek", 42)
@@ -337,7 +333,7 @@ mod tests {
         db
     }
 
-    fn session(hash: &[u8], expires_at: DateTime<Utc>) -> NewSession<'_> {
+    fn session(hash: &[u8], expires_at: Timestamp) -> NewSession<'_> {
         NewSession {
             token_hash: hash,
             tenant_id: DEFAULT_TENANT,
@@ -347,10 +343,10 @@ mod tests {
         }
     }
 
-    fn live_at(now: DateTime<Utc>) -> Liveness {
+    fn live_at(now: Timestamp) -> Liveness {
         Liveness {
             now,
-            seen_after: now - TimeDelta::hours(1),
+            seen_after: now - SignedDuration::from_hours(1),
         }
     }
 
@@ -358,13 +354,13 @@ mod tests {
     async fn sessions_are_found_by_hash_until_they_expire_or_are_deleted() {
         let db = db_with_user().await;
         let sessions = db.sessions();
-        let now = Utc::now();
+        let now = Timestamp::now();
         sessions
-            .create(&session(b"live", now + TimeDelta::hours(1)), now)
+            .create(&session(b"live", now + SignedDuration::from_hours(1)), now)
             .await
             .expect("create");
         sessions
-            .create(&session(b"old", now - TimeDelta::seconds(1)), now)
+            .create(&session(b"old", now - SignedDuration::from_secs(1)), now)
             .await
             .expect("create");
         let live = sessions
@@ -401,12 +397,15 @@ mod tests {
     async fn idle_session_is_not_live() {
         let db = db_with_user().await;
         let sessions = db.sessions();
-        let created = Utc::now();
+        let created = Timestamp::now();
         sessions
-            .create(&session(b"s", created + TimeDelta::days(7)), created)
+            .create(
+                &session(b"s", created + SignedDuration::from_hours(24 * 7)),
+                created,
+            )
             .await
             .expect("create");
-        let later = created + TimeDelta::minutes(30);
+        let later = created + SignedDuration::from_mins(30);
         assert!(
             sessions
                 .live(b"s", live_at(later))
@@ -415,7 +414,7 @@ mod tests {
                 .is_some(),
             "seen within the idle window"
         );
-        let idle = later + TimeDelta::hours(2);
+        let idle = later + SignedDuration::from_hours(2);
         assert_eq!(
             sessions.live(b"s", live_at(idle)).await.expect("read"),
             None,
@@ -435,9 +434,9 @@ mod tests {
     async fn session_of_a_removed_or_rebound_login_is_not_live() {
         let db = db_with_user().await;
         let sessions = db.sessions();
-        let now = Utc::now();
+        let now = Timestamp::now();
         sessions
-            .create(&session(b"s", now + TimeDelta::hours(1)), now)
+            .create(&session(b"s", now + SignedDuration::from_hours(1)), now)
             .await
             .expect("create");
         let live = |db: &Db| {
@@ -479,12 +478,12 @@ mod tests {
         crate::repo::analyses::testing::seed_tenant(&db, "other")
             .await
             .expect("tenant");
-        let now = Utc::now();
+        let now = Timestamp::now();
         db.sessions()
             .create(
                 &NewSession {
                     tenant_id: "other",
-                    ..session(b"other", now + TimeDelta::hours(1))
+                    ..session(b"other", now + SignedDuration::from_hours(1))
                 },
                 now,
             )
@@ -504,8 +503,9 @@ mod tests {
         let db = db_with_user().await;
         let sessions = db.sessions();
         // Stored timestamps keep microseconds.
-        let created = chrono::SubsecRound::trunc_subsecs(Utc::now(), 6) - TimeDelta::minutes(10);
-        let expires = created + TimeDelta::minutes(20);
+        let created = parse_timestamp(&timestamp(Timestamp::now()), "created").expect("micros")
+            - SignedDuration::from_mins(10);
+        let expires = created + SignedDuration::from_mins(20);
         sessions
             .create(&session(b"s", expires), created)
             .await
@@ -520,7 +520,7 @@ mod tests {
                     .map(|record| record.last_seen_at)
             }
         };
-        let now = created + TimeDelta::minutes(5);
+        let now = created + SignedDuration::from_mins(5);
         assert!(
             !sessions
                 .touch(b"s", live_at(now), created)
@@ -531,12 +531,12 @@ mod tests {
         assert_eq!(seen(now).await, Some(created));
         assert!(
             sessions
-                .touch(b"s", live_at(now), now - TimeDelta::minutes(1))
+                .touch(b"s", live_at(now), now - SignedDuration::from_mins(1))
                 .await
                 .expect("touch")
         );
         assert_eq!(seen(now).await, Some(now));
-        let ended = expires + TimeDelta::seconds(1);
+        let ended = expires + SignedDuration::from_secs(1);
         assert!(
             !sessions
                 .touch(b"s", live_at(ended), ended)
@@ -544,7 +544,7 @@ mod tests {
                 .expect("touch"),
             "past its expiry"
         );
-        let idle = now + TimeDelta::hours(1);
+        let idle = now + SignedDuration::from_hours(1);
         assert!(
             !sessions
                 .touch(
@@ -564,7 +564,7 @@ mod tests {
             .expect("remove");
         assert!(
             !sessions
-                .touch(b"s", live_at(now), now + TimeDelta::minutes(1))
+                .touch(b"s", live_at(now), now + SignedDuration::from_mins(1))
                 .await
                 .expect("touch"),
             "login removed from the allowlist"
@@ -572,7 +572,7 @@ mod tests {
         assert!(sessions.delete(b"s").await.expect("delete"));
         assert!(
             !sessions
-                .touch(b"s", live_at(now), now + TimeDelta::minutes(1))
+                .touch(b"s", live_at(now), now + SignedDuration::from_mins(1))
                 .await
                 .expect("touch"),
             "signed out"
@@ -588,16 +588,16 @@ mod tests {
             .await
             .expect("db");
         let db = with_user(db).await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let sessions = db.sessions();
         sessions
-            .create(&session(b"s", now + TimeDelta::hours(1)), now)
+            .create(&session(b"s", now + SignedDuration::from_hours(1)), now)
             .await
             .expect("create");
         let _lock = crate::repo::testing::hold_write_lock(&db)
             .await
             .expect("write lock");
-        let later = now + TimeDelta::minutes(5);
+        let later = now + SignedDuration::from_mins(5);
         assert!(
             sessions
                 .live(b"s", live_at(later))
@@ -617,19 +617,19 @@ mod tests {
     #[tokio::test]
     async fn cleanup_deletes_token_pairs_left_without_sessions() {
         let db = db_with_user().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let pair = crate::repo::tokens::EncryptedTokens {
             access_ct: vec![1],
-            access_expires_at: now + TimeDelta::hours(8),
+            access_expires_at: now + SignedDuration::from_hours(8),
             refresh_ct: vec![2],
-            refresh_expires_at: now + TimeDelta::days(180),
+            refresh_expires_at: now + SignedDuration::from_hours(24 * 180),
         };
         db.user_tokens()
             .put("u-1", DEFAULT_TENANT, &pair, now)
             .await
             .expect("pair");
         db.sessions()
-            .create(&session(b"s", now + TimeDelta::hours(1)), now)
+            .create(&session(b"s", now + SignedDuration::from_hours(1)), now)
             .await
             .expect("create");
         db.sessions()
@@ -640,7 +640,7 @@ mod tests {
             db.user_tokens().get("u-1").await.expect("get").is_some(),
             "a live session keeps its pair"
         );
-        let later = now + TimeDelta::hours(2);
+        let later = now + SignedDuration::from_hours(2);
         db.sessions()
             .delete_expired(live_at(later))
             .await
@@ -660,17 +660,17 @@ mod tests {
             ..Default::default()
         };
         db.dashboard()
-            .save_settings(DEFAULT_TENANT, "u-1", &settings, Utc::now())
+            .save_settings(DEFAULT_TENANT, "u-1", &settings, Timestamp::now())
             .await
             .expect("settings");
     }
 
-    async fn pair_after_sweep(db: &Db, now: DateTime<Utc>) -> bool {
+    async fn pair_after_sweep(db: &Db, now: Timestamp) -> bool {
         let pair = crate::repo::tokens::EncryptedTokens {
             access_ct: vec![1],
-            access_expires_at: now + TimeDelta::hours(8),
+            access_expires_at: now + SignedDuration::from_hours(8),
             refresh_ct: vec![2],
-            refresh_expires_at: now + TimeDelta::days(180),
+            refresh_expires_at: now + SignedDuration::from_hours(24 * 180),
         };
         db.user_tokens()
             .put("u-1", DEFAULT_TENANT, &pair, now)
@@ -686,7 +686,7 @@ mod tests {
     /// ADR-020: without any session, the pair stays exactly while the schedule can run for an allowed user.
     #[tokio::test]
     async fn pair_kept_without_session_while_schedule_on() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let db = db_with_user().await;
         schedule(&db, true, Some("Europe/Warsaw")).await;
         assert!(pair_after_sweep(&db, now).await, "schedule on: kept");
@@ -719,33 +719,40 @@ mod tests {
     #[tokio::test]
     async fn pair_kept_by_schedule_lapses_after_thirty_days_without_sign_in() {
         let db = db_with_user().await;
-        let signed_in = Utc::now();
+        let signed_in = Timestamp::now();
         schedule(&db, true, Some("Europe/Warsaw")).await;
         assert!(
-            pair_after_sweep(&db, signed_in + TimeDelta::days(29)).await,
+            pair_after_sweep(&db, signed_in + SignedDuration::from_hours(24 * 29)).await,
             "29 days after the last sign-in: kept"
         );
         assert!(
-            !pair_after_sweep(&db, signed_in + TimeDelta::days(31)).await,
+            !pair_after_sweep(&db, signed_in + SignedDuration::from_hours(24 * 31)).await,
             "31 days: deleted by the sweep"
         );
         let pair = crate::repo::tokens::EncryptedTokens {
             access_ct: vec![1],
             access_expires_at: signed_in,
             refresh_ct: vec![2],
-            refresh_expires_at: signed_in + TimeDelta::days(180),
+            refresh_expires_at: signed_in + SignedDuration::from_hours(24 * 180),
         };
         db.user_tokens()
             .put("u-1", DEFAULT_TENANT, &pair, signed_in)
             .await
             .expect("pair");
         db.sessions()
-            .create(&session(b"s", signed_in + TimeDelta::days(40)), signed_in)
+            .create(
+                &session(b"s", signed_in + SignedDuration::from_hours(24 * 40)),
+                signed_in,
+            )
             .await
             .expect("session");
         assert!(
             db.user_tokens()
-                .end_session("u-1", b"s", live_at(signed_in + TimeDelta::days(31)))
+                .end_session(
+                    "u-1",
+                    b"s",
+                    live_at(signed_in + SignedDuration::from_hours(24 * 31))
+                )
                 .await
                 .expect("sign out"),
             "the last sign-out past the limit deletes the pair"
@@ -796,10 +803,10 @@ mod tests {
     #[tokio::test]
     async fn delete_for_user_ends_every_session() {
         let db = db_with_user().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         for hash in [b"a", b"b"] {
             db.sessions()
-                .create(&session(hash, now + TimeDelta::hours(1)), now)
+                .create(&session(hash, now + SignedDuration::from_hours(1)), now)
                 .await
                 .expect("create");
         }
@@ -813,14 +820,14 @@ mod tests {
     async fn oauth_login_is_single_use_and_expires() {
         let db = Db::in_memory().await.expect("db");
         let sessions = db.sessions();
-        let now = Utc::now();
+        let now = Timestamp::now();
         sessions
             .create_oauth_login(
                 "s1",
                 DEFAULT_TENANT,
                 b"ct",
                 now,
-                now + TimeDelta::minutes(10),
+                now + SignedDuration::from_mins(10),
             )
             .await
             .expect("create");
@@ -830,7 +837,7 @@ mod tests {
                 DEFAULT_TENANT,
                 b"ct",
                 now,
-                now - TimeDelta::seconds(1),
+                now - SignedDuration::from_secs(1),
             )
             .await
             .expect("create");
@@ -854,9 +861,7 @@ mod tests {
 
     #[test]
     fn timestamps_are_fixed_width() {
-        let whole = DateTime::parse_from_rfc3339("2026-11-16T10:00:00Z")
-            .expect("time")
-            .with_timezone(&Utc);
+        let whole = "2026-11-16T10:00:00Z".parse::<Timestamp>().expect("time");
         assert_eq!(timestamp(whole), "2026-11-16T10:00:00.000000Z");
         assert_eq!(
             parse_timestamp(&timestamp(whole), "t").expect("parse"),

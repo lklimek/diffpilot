@@ -10,8 +10,8 @@ use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::{TimeDelta, Utc};
 use contracts::routes::{HttpMethod, Listener, ROUTES, RouteAuth};
+use contracts::time::Timestamp;
 use db::repo::DEFAULT_TENANT;
 use db::repo::Db;
 use db::repo::sessions::NewSession;
@@ -20,6 +20,7 @@ use db::repo::testing::{file_backed_with_busy_timeout, hold_write_lock};
 use db::repo::tokens::testing::{allow_token_writes, fail_token_writes};
 use db::repo::users::GithubProfile;
 use http_body_util::BodyExt;
+use jiff::SignedDuration;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -364,7 +365,7 @@ async fn oauth_state_single_use_and_bound_to_browser() {
     let started = h.start_login().await;
     let other = h.start_login().await;
     let expired_state = "expired-state-value";
-    let now = Utc::now();
+    let now = Timestamp::now();
     h.state
         .db
         .sessions()
@@ -372,8 +373,8 @@ async fn oauth_state_single_use_and_bound_to_browser() {
             expired_state,
             DEFAULT_TENANT,
             b"ct",
-            now - TimeDelta::minutes(20),
-            now - TimeDelta::minutes(10),
+            now - SignedDuration::from_mins(20),
+            now - SignedDuration::from_mins(10),
         )
         .await
         .expect("expired login");
@@ -473,7 +474,7 @@ async fn pkce_verifier_required() {
         .state
         .db
         .sessions()
-        .take_oauth_login(&started.state, Utc::now())
+        .take_oauth_login(&started.state, Timestamp::now())
         .await
         .expect("take")
         .expect("pending login");
@@ -502,8 +503,8 @@ async fn pkce_verifier_required() {
             &started.state,
             DEFAULT_TENANT,
             &pending.code_verifier_ct[1..],
-            Utc::now(),
-            Utc::now() + TimeDelta::minutes(5),
+            Timestamp::now(),
+            Timestamp::now() + SignedDuration::from_mins(5),
         )
         .await
         .expect("damaged login");
@@ -773,14 +774,14 @@ async fn session_id_stored_hashed() {
     let sessions = h.state.db.sessions();
     assert_eq!(
         sessions
-            .live(token.as_bytes(), super::liveness(Utc::now()))
+            .live(token.as_bytes(), super::liveness(Timestamp::now()))
             .await
             .expect("lookup"),
         None,
         "the raw token is not stored"
     );
     let stored = sessions
-        .live(&sha256(token.as_bytes()), super::liveness(Utc::now()))
+        .live(&sha256(token.as_bytes()), super::liveness(Timestamp::now()))
         .await
         .expect("lookup")
         .expect("session found by hash");
@@ -846,9 +847,9 @@ async fn backdated_session(
     h: &Harness,
     user_id: &str,
     name: &str,
-    created_ago: TimeDelta,
+    created_ago: SignedDuration,
 ) -> String {
-    let created = Utc::now() - created_ago;
+    let created = Timestamp::now() - created_ago;
     let token = format!("{name}-session-token");
     h.state
         .db
@@ -872,8 +873,20 @@ async fn backdated_session(
 async fn idle_session_ends() {
     let h = harness().await;
     let signed_in = h.sign_in("lklimek", 1001).await;
-    let recent = backdated_session(&h, &signed_in.user_id, "recent", TimeDelta::hours(23)).await;
-    let idle = backdated_session(&h, &signed_in.user_id, "idle", TimeDelta::hours(25)).await;
+    let recent = backdated_session(
+        &h,
+        &signed_in.user_id,
+        "recent",
+        SignedDuration::from_hours(23),
+    )
+    .await;
+    let idle = backdated_session(
+        &h,
+        &signed_in.user_id,
+        "idle",
+        SignedDuration::from_hours(25),
+    )
+    .await;
     assert_eq!(me_login(&h, &recent).await.as_deref(), Some("lklimek"));
     assert_eq!(
         me_login(&h, &recent).await.as_deref(),
@@ -893,7 +906,13 @@ async fn busy_database_keeps_a_validated_session_signed_in() {
         .expect("db");
     let h = harness_on(db, "https://review.example.test", &[]).await;
     let signed_in = h.sign_in("lklimek", 1001).await;
-    let stale = backdated_session(&h, &signed_in.user_id, "stale", TimeDelta::minutes(5)).await;
+    let stale = backdated_session(
+        &h,
+        &signed_in.user_id,
+        "stale",
+        SignedDuration::from_mins(5),
+    )
+    .await;
     let capture = LogCapture::start();
     let lock = hold_write_lock(&h.state.db).await.expect("write lock");
     assert_eq!(
@@ -914,11 +933,11 @@ async fn busy_database_keeps_a_validated_session_signed_in() {
     );
     assert!(!logs.contains("stale-session-token"), "{logs}");
     let before = last_seen(&h, "stale").await;
-    assert!(Utc::now() - before > super::SESSION_TOUCH_INTERVAL);
+    assert!(Timestamp::now() - before > super::SESSION_TOUCH_INTERVAL);
     assert!(me_login(&h, &stale).await.is_some());
     let recorded = last_seen(&h, "stale").await;
     assert!(
-        Utc::now() - recorded < super::SESSION_TOUCH_INTERVAL,
+        Timestamp::now() - recorded < super::SESSION_TOUCH_INTERVAL,
         "the next use records it"
     );
     assert!(me_login(&h, &stale).await.is_some());
@@ -930,13 +949,13 @@ async fn busy_database_keeps_a_validated_session_signed_in() {
 }
 
 /// The recorded last use of the session `backdated_session` created under `name`.
-async fn last_seen(h: &Harness, name: &str) -> chrono::DateTime<Utc> {
+async fn last_seen(h: &Harness, name: &str) -> Timestamp {
     h.state
         .db
         .sessions()
         .live(
             &sha256(format!("{name}-session-token").as_bytes()),
-            super::liveness(Utc::now()),
+            super::liveness(Timestamp::now()),
         )
         .await
         .expect("read")
@@ -984,7 +1003,7 @@ async fn session_is_bound_to_its_tenant() {
     db::repo::analyses::testing::seed_tenant(&h.state.db, "other")
         .await
         .expect("tenant");
-    let now = Utc::now();
+    let now = Timestamp::now();
     h.state
         .db
         .sessions()
@@ -994,7 +1013,7 @@ async fn session_is_bound_to_its_tenant() {
                 tenant_id: "other",
                 user_id: &signed_in.user_id,
                 csrf_token: "csrf",
-                expires_at: now + TimeDelta::hours(1),
+                expires_at: now + SignedDuration::from_hours(1),
             },
             now,
         )
@@ -1053,7 +1072,7 @@ async fn last_sign_out_keeps_tokens_while_the_schedule_runs() {
     h.state
         .db
         .dashboard()
-        .save_settings(DEFAULT_TENANT, &first.user_id, &settings, Utc::now())
+        .save_settings(DEFAULT_TENANT, &first.user_id, &settings, Timestamp::now())
         .await
         .expect("schedule on");
     let stored = || async { h.state.db.user_tokens().get(&first.user_id).await };
@@ -1178,7 +1197,7 @@ async fn token_ciphertext_bound_to_row() {
 
 async fn store_pair(h: &Harness, user_id: &str, grant: TokenGrant) {
     let lock = lock_user(user_id).await;
-    store_sign_in_tokens(&h.state, &lock, DEFAULT_TENANT, &grant, Utc::now())
+    store_sign_in_tokens(&h.state, &lock, DEFAULT_TENANT, &grant, Timestamp::now())
         .await
         .expect("store pair");
 }
@@ -1254,7 +1273,7 @@ async fn refresh_is_serialised_and_atomic() {
         "ghr_rotated",
         "the rotated refresh token replaced the old one together with the access token"
     );
-    assert!(after.tokens.access_expires_at > Utc::now() + TimeDelta::hours(7));
+    assert!(after.tokens.access_expires_at > Timestamp::now() + SignedDuration::from_hours(7));
 }
 
 /// GitHub rotates the pair as soon as it answers; a request dropped meanwhile (browser gone) must still store it.
@@ -1495,7 +1514,7 @@ async fn github_401_on_the_pull_request_marks_the_token_expired() {
         .expect("lookup")
         .expect("pair kept for the refresh");
     assert!(
-        stored.tokens.access_expires_at <= Utc::now(),
+        stored.tokens.access_expires_at <= Timestamp::now(),
         "the rejected access token is refreshed on next use"
     );
 }
@@ -1685,7 +1704,7 @@ async fn refresh_logout_login_interleaving_keeps_latest_sign_in() {
 #[tokio::test]
 async fn missing_token_row_ends_sessions() {
     let h = harness().await;
-    let now = Utc::now();
+    let now = Timestamp::now();
     let profile = GithubProfile {
         github_id: 77,
         login: "Claudius-Maginificent".to_owned(),
@@ -1711,7 +1730,7 @@ async fn missing_token_row_ends_sessions() {
                 tenant_id: DEFAULT_TENANT,
                 user_id: "u-orphan",
                 csrf_token: "csrf",
-                expires_at: now + TimeDelta::hours(1),
+                expires_at: now + SignedDuration::from_hours(1),
             },
             now,
         )

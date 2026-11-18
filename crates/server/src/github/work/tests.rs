@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::{DateTime, NaiveDate};
 use contracts::common::RepoRef;
+use jiff::civil::Date;
 use reqwest::header::{ACCEPT, LOCATION};
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
@@ -292,7 +292,7 @@ async fn primary_limit_fails_with_retry_at() {
     let search = client.search_pull_requests(&logins(&["alice"])).await;
     let details = client.pull_requests(&[item("acme/platform#1203")]).await;
 
-    let expected = DateTime::from_timestamp(reset, 0);
+    let expected = Timestamp::from_second(reset);
     for error in [search.unwrap_err(), details.unwrap_err()] {
         assert!(
             matches!(error, WorkError::PrimaryRateLimit { reset } if reset == expected),
@@ -726,7 +726,7 @@ async fn rest_reads_answer_q3_q4_q7_q8_q14() {
 async fn history_searches_and_details_answer_q9_q12_q13() {
     let fake = Fake::start().await;
     let client = fake.client();
-    let since = NaiveDate::from_ymd_opt(2026, 8, 26).unwrap();
+    let since = Date::new(2026, 8, 26).unwrap();
 
     let history = client.search_history("alice", since).await.unwrap();
     let details = client
@@ -884,7 +884,7 @@ async fn invalid_logins_and_repositories_never_reach_a_search() {
         owner: "acme".to_owned(),
         name: "platform is:closed".to_owned(),
     };
-    let since = NaiveDate::from_ymd_opt(2026, 8, 26).unwrap();
+    let since = Date::new(2026, 8, 26).unwrap();
 
     let prs = client
         .search_pull_requests(&logins(&["alice repo:acme/secret", "alice"]))

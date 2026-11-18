@@ -8,10 +8,10 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use chrono::{DateTime, Utc};
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::events::AnalysisEvent;
 use contracts::ids::AnalysisId;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::Db;
 use tokio::sync::broadcast;
@@ -78,7 +78,7 @@ impl ProgressHub {
         db: &Db,
         analysis: AnalysisId,
         state: &AnalysisState,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<AnalysisSummary, DbError> {
         let event = self
             .update(analysis, || async {
@@ -128,17 +128,15 @@ impl ProgressHub {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use chrono::TimeZone;
     use db::repo::analyses::testing::seed_analysis;
+    use std::time::Duration;
 
     use super::*;
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 16, 12, minute, 0)
-            .single()
-            .unwrap_or_default()
+    fn at(minute: u32) -> Timestamp {
+        format!("2026-11-16T12:{minute:02}:00Z")
+            .parse::<Timestamp>()
+            .expect("time")
     }
 
     fn state_of(event: &AnalysisEvent) -> Option<AnalysisState> {

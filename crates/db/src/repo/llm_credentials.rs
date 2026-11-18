@@ -1,9 +1,9 @@
 //! Repository for `llm_credentials`: credentials runners hold, their pause and usability, and the last LLM
 //! call outcome shown in Settings. Frozen signatures (cross-WP).
 
-use chrono::{DateTime, Utc};
 use contracts::job::result::{LlmCallOutcome, LlmCallStatus};
 use contracts::job::spec::LlmCredentialRef;
+use contracts::time::Timestamp;
 use sqlx::sqlite::{SqliteQueryResult, SqliteRow};
 use sqlx::{Row, SqlitePool};
 
@@ -22,14 +22,14 @@ pub struct CredentialRecord {
     /// The credential.
     pub credential: LlmCredentialRef,
     /// Paused by a usage limit until then.
-    pub paused_until: Option<DateTime<Utc>>,
+    pub paused_until: Option<Timestamp>,
     /// Unusable since then (refresh failed; the owner must sign in again).
-    pub unusable_since: Option<DateTime<Utc>>,
+    pub unusable_since: Option<Timestamp>,
     /// Outcome of the last call made with it.
     pub last_call: Option<LlmCallOutcome>,
 }
 
-fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<DateTime<Utc>>, DbError> {
+fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<Timestamp>, DbError> {
     row.try_get::<Option<String>, _>(column)?
         .map(|at| parse_ts(&at, column))
         .transpose()
@@ -66,7 +66,7 @@ impl LlmCredentials<'_> {
         tenant_id: &str,
         credential: &LlmCredentialRef,
         usable: bool,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         sqlx::query(
             "INSERT INTO llm_credentials (id, tenant_id, kind, unusable_since) VALUES (?1, ?2, ?3, ?4)
@@ -139,7 +139,7 @@ impl LlmCredentials<'_> {
     }
 
     /// Pauses the credential until the usage limit resets.
-    pub async fn pause(&self, id: &str, until: DateTime<Utc>) -> Result<(), DbError> {
+    pub async fn pause(&self, id: &str, until: Timestamp) -> Result<(), DbError> {
         updated(
             sqlx::query("UPDATE llm_credentials SET paused_until = ? WHERE id = ?")
                 .bind(ts(until))
@@ -150,7 +150,7 @@ impl LlmCredentials<'_> {
     }
 
     /// Marks the credential unusable.
-    pub async fn mark_unusable(&self, id: &str, now: DateTime<Utc>) -> Result<(), DbError> {
+    pub async fn mark_unusable(&self, id: &str, now: Timestamp) -> Result<(), DbError> {
         updated(
             sqlx::query(
                 "UPDATE llm_credentials SET unusable_since = COALESCE(unusable_since, ?) WHERE id = ?",
@@ -165,16 +165,15 @@ impl LlmCredentials<'_> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
     use contracts::job::spec::CredentialKind;
 
     use super::*;
     use crate::repo::Db;
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 16, 12, minute, 0)
-            .single()
-            .unwrap_or_default()
+    fn at(minute: u32) -> Timestamp {
+        format!("2026-11-16T12:{minute:02}:00Z")
+            .parse::<Timestamp>()
+            .expect("time")
     }
 
     fn credential(id: &str) -> LlmCredentialRef {

@@ -1,9 +1,9 @@
 //! Repository for `questions`: Ask questions on steps of an analysis and their LLM answers.
 
-use chrono::{DateTime, Utc};
 use contracts::agent::ask::AskOutput;
 use contracts::api::questions::{AskQuestion, AskState};
 use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
+use contracts::time::Timestamp;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
@@ -47,7 +47,7 @@ pub struct QuestionLimits {
     /// Questions one user may ask from `user_window_start` on.
     pub per_user: u32,
     /// Start of the per-user window.
-    pub user_window_start: DateTime<Utc>,
+    pub user_window_start: Timestamp,
 }
 
 /// Outcome of [`Questions::create`].
@@ -73,7 +73,7 @@ pub struct QuestionRecord {
     /// The `ask` job, once submitted.
     pub job_id: Option<JobId>,
     /// When the job's result confirmed the answer; `None` while an `answered` question shows a ready output.
-    pub answered_at: Option<DateTime<Utc>>,
+    pub answered_at: Option<Timestamp>,
 }
 
 /// A state change of a question.
@@ -108,7 +108,7 @@ macro_rules! question_select {
     };
 }
 
-fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<DateTime<Utc>>, DbError> {
+fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<Timestamp>, DbError> {
     row.try_get::<Option<String>, _>(column)?
         .map(|at| parse_ts(&at, column))
         .transpose()
@@ -149,7 +149,7 @@ impl Questions<'_> {
         &self,
         question: NewQuestion,
         limits: QuestionLimits,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Asked, DbError> {
         let inserted = sqlx::query(
             "INSERT INTO questions (id, tenant_id, analysis_id, step_id, user_id, text, state, created_at)
@@ -186,7 +186,7 @@ impl Questions<'_> {
     }
 
     /// One question; `resumes_at` as of `now`.
-    pub async fn get(&self, id: QuestionId, now: DateTime<Utc>) -> Result<QuestionRecord, DbError> {
+    pub async fn get(&self, id: QuestionId, now: Timestamp) -> Result<QuestionRecord, DbError> {
         let row = sqlx::query(concat!(question_select!(), " WHERE q.id = ?2"))
             .bind(ts(now))
             .bind(id.to_string())
@@ -199,7 +199,7 @@ impl Questions<'_> {
     pub async fn list(
         &self,
         analysis: AnalysisId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Vec<AskQuestion>, DbError> {
         let rows = sqlx::query(concat!(
             question_select!(),
@@ -219,7 +219,7 @@ impl Questions<'_> {
         &self,
         analysis: AnalysisId,
         user: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<Vec<AskQuestion>, DbError> {
         let rows = sqlx::query(concat!(
             question_select!(),
@@ -242,7 +242,7 @@ impl Questions<'_> {
 
     /// Questions of every tenant whose end is not stored yet, oldest first: `pending`, `answering`, or answered
     /// provisionally (the job's result, possibly already recorded, decides).
-    pub async fn unanswered(&self, now: DateTime<Utc>) -> Result<Vec<QuestionRecord>, DbError> {
+    pub async fn unanswered(&self, now: Timestamp) -> Result<Vec<QuestionRecord>, DbError> {
         let rows = sqlx::query(concat!(
             question_select!(),
             " WHERE q.state IN ('pending', 'answering')
@@ -315,7 +315,7 @@ impl Questions<'_> {
         &self,
         id: QuestionId,
         update: &QuestionUpdate,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let (state, answer, failure, answered_at) = match update {
             QuestionUpdate::Pending => (AskState::Pending, None, None, None),
@@ -355,28 +355,28 @@ impl Questions<'_> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeDelta, TimeZone};
     use contracts::agent::JobKind;
     use contracts::common::{Evidence, LineSide};
     use contracts::job::result::{JobOutcome, JobResult};
     use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
+    use jiff::SignedDuration;
 
     use super::*;
     use crate::repo::DEFAULT_TENANT;
     use crate::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
     use crate::repo::jobs::{ClaimParams, JobStage, NewJob};
 
-    fn at(minute: i64) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0)
-            .single()
+    fn at(minute: i64) -> Timestamp {
+        "2026-11-17T12:00:00Z"
+            .parse::<Timestamp>()
             .unwrap_or_default()
-            + TimeDelta::minutes(minute)
+            + SignedDuration::from_mins(minute)
     }
 
     const LIMITS: QuestionLimits = QuestionLimits {
         per_analysis: 3,
         per_user: 2,
-        user_window_start: DateTime::UNIX_EPOCH,
+        user_window_start: Timestamp::UNIX_EPOCH,
     };
 
     fn new_question(analysis: AnalysisId, step: &str, text: &str) -> NewQuestion {
@@ -394,7 +394,7 @@ mod tests {
         analysis: AnalysisId,
         step: &str,
         text: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> QuestionId {
         match db
             .questions()

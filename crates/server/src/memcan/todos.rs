@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use contracts::time::Timestamp;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -64,7 +64,7 @@ pub struct Todo {
     /// Ids (UUIDs) of the TODOs blocking it, at most 50.
     pub blocked_by: Vec<String>,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// SHA-256 hex of status, priority, title, owner, `blocked_by` and the whole description (MemCan has no
     /// `updated_at`); stored with the snapshot to find the change time in the next refresh.
     pub change_key: String,
@@ -76,9 +76,9 @@ impl Todo {
     /// change time in the previous snapshot.
     pub fn changed_at(
         &self,
-        previous: Option<(&str, DateTime<Utc>)>,
-        scanned_at: DateTime<Utc>,
-    ) -> DateTime<Utc> {
+        previous: Option<(&str, Timestamp)>,
+        scanned_at: Timestamp,
+    ) -> Timestamp {
         match previous {
             None => self.created_at,
             Some((key, at)) if key == self.change_key => at,
@@ -178,7 +178,7 @@ struct Raw {
     owner: Option<String>,
     #[serde(default)]
     blocked_by: Vec<String>,
-    created_at: DateTime<Utc>,
+    created_at: Timestamp,
 }
 
 /// The open TODOs of one project. `Err` only when MemCan is unavailable; other problems are added to `notes`.
@@ -481,10 +481,8 @@ mod tests {
         }
     }
 
-    fn at(time: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(time)
-            .expect("time")
-            .with_timezone(&Utc)
+    fn at(time: &str) -> Timestamp {
+        time.parse::<Timestamp>().expect("time")
     }
 
     #[tokio::test]

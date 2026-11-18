@@ -1,6 +1,6 @@
 //! Runner ↔ server messages: claim, events, result (`docs/contracts/runner-protocol.md`).
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,7 +44,7 @@ pub struct Claim {
     /// Bearer token for this job's events and result; never given to the agent.
     pub job_token: Secret,
     /// Server-side lease end, informational: the runner fences by [`LeaseTiming`] from its own send times.
-    pub lease_expires_at: DateTime<Utc>,
+    pub lease_expires_at: Timestamp,
     /// The job, with `access` filled in.
     pub spec: JobSpec,
 }
@@ -64,7 +64,7 @@ pub struct EventsAck {
     /// The job should be cancelled: stop the agent and post a `cancelled` result.
     pub cancel_requested: bool,
     /// The renewed server-side lease end, informational (the runner fences by [`LeaseTiming`]).
-    pub lease_expires_at: DateTime<Utc>,
+    pub lease_expires_at: Timestamp,
 }
 
 /// Body of `POST /runner/v1/jobs/{id}/output`: the final output as soon as the model turn ends, before

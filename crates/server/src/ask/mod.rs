@@ -11,10 +11,6 @@ mod job;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashSet;
-use std::sync::{LazyLock, Mutex, PoisonError};
-
-use chrono::{TimeDelta, Utc};
 use contracts::agent::ask::AskOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::events::AnalysisEvent;
@@ -23,6 +19,11 @@ use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
 use db::error::DbError;
 use db::repo::analyses::{AnalysisRecord, SessionState};
 use db::repo::questions::{Asked, NewQuestion, QuestionLimits, QuestionUpdate};
+use std::collections::HashSet;
+use std::sync::{LazyLock, Mutex, PoisonError};
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 pub use job::context_pack;
 
@@ -99,7 +100,7 @@ pub async fn ask(
     {
         return Err(AskError::UnknownStep);
     }
-    let now = Utc::now();
+    let now = Timestamp::now();
     let question = NewQuestion {
         id: QuestionId::new_random(),
         analysis_id: analysis.id,
@@ -110,7 +111,7 @@ pub async fn ask(
     let limits = QuestionLimits {
         per_analysis: MAX_QUESTIONS_PER_ANALYSIS,
         per_user: MAX_QUESTIONS_PER_USER_PER_HOUR,
-        user_window_start: now - TimeDelta::hours(1),
+        user_window_start: now - SignedDuration::from_hours(1),
     };
     let db = &state.db;
     let event = state
@@ -158,7 +159,7 @@ pub fn start(state: &AppState, question: QuestionId) {
 /// Starts a follower for every question left pending or answering (server start): each follows its job again,
 /// or submits it if the server stopped before that, so no question stays open forever.
 pub async fn resume_unanswered(state: &AppState) -> Result<usize, DbError> {
-    let open = state.db.questions().unanswered(Utc::now()).await?;
+    let open = state.db.questions().unanswered(Timestamp::now()).await?;
     for record in &open {
         start(state, record.question.id);
     }
@@ -203,7 +204,7 @@ async fn publish_provisional(
             {
                 return Err(None);
             }
-            let now = Utc::now();
+            let now = Timestamp::now();
             db.questions()
                 .update(question, &QuestionUpdate::Provisional(answer), now)
                 .await?;
@@ -236,7 +237,7 @@ async fn set(
     let event = state
         .progress
         .update(analysis, || async {
-            let now = Utc::now();
+            let now = Timestamp::now();
             db.questions().update(question, update, now).await?;
             let record = db.questions().get(question, now).await?;
             Ok::<_, DbError>(AnalysisEvent::Question {

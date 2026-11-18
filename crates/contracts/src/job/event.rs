@@ -1,6 +1,6 @@
 //! Normalised job events posted by the runner (activity log and liveness; not shown as a feed).
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -10,7 +10,7 @@ pub struct JobEvent {
     /// Sequence number within the attempt, from 1.
     pub seq: u32,
     /// When the runner saw it.
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     /// What kind of activity.
     pub activity: ActivityKind,
     /// Short plain summary, at most 200 characters; never raw command output; known secret values scrubbed.

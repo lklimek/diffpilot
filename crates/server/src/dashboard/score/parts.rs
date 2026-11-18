@@ -1,8 +1,8 @@
 //! Score components of pull requests, issues and TODOs from scan facts (skill `scoring.py`, `todos.py`
 //! `score_row`, `score.py` `heuristic_part`).
 
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::{PartSource, PartStatus, ScoreComponent as C};
+use contracts::time::Timestamp;
 
 use super::facts::{
     CiEffective, IssueFacts, Mergeable, Milestone, MilestoneContext, OwnedChange, PrFacts,
@@ -95,11 +95,10 @@ fn show(points: f64) -> String {
 }
 
 /// Days from `then` to `now` the way the skill computes them (seconds, then days).
-pub(super) fn days_between(then: DateTime<Utc>, now: DateTime<Utc>) -> f64 {
-    let delta = now - then;
-    let seconds = delta
-        .num_microseconds()
-        .map_or(delta.num_seconds() as f64, |us| us as f64 / 1e6);
+pub(super) fn days_between(then: Timestamp, now: Timestamp) -> f64 {
+    // Whole microseconds, rounded down.
+    let micros = (now - then).as_nanos().div_euclid(1_000);
+    let seconds = micros as f64 / 1e6;
     seconds / 86_400.0
 }
 
@@ -129,7 +128,7 @@ pub fn unblocks_points(dependents: usize) -> f64 {
     dependents.min(3) as f64 * 5.0
 }
 
-fn recency(updated_at: DateTime<Utc>, now: DateTime<Utc>, what: &str) -> Part {
+fn recency(updated_at: Timestamp, now: Timestamp, what: &str) -> Part {
     let days = days_between(updated_at, now).max(0.0);
     Part::computed(
         C::Recency,
@@ -321,11 +320,11 @@ fn unblocks(dependents: Option<&[u32]>) -> Part {
 }
 
 /// Skill `_human_waiting`: the freshest outstanding human request; unsure cases are defaults to confirm.
-fn human_waiting(rules: &ScoreRules, pr: &PrFacts, now: DateTime<Utc>) -> Part {
+fn human_waiting(rules: &ScoreRules, pr: &PrFacts, now: Timestamp) -> Part {
     let author = pr.author.as_deref().unwrap_or_default();
     let author_human =
         !author.is_empty() && !rules.is_scanned(author) && !rules.is_bot(author, pr.author_is_bot);
-    let age = |at: Option<DateTime<Utc>>| at.map(|t| days_between(t, now));
+    let age = |at: Option<Timestamp>| at.map(|t| days_between(t, now));
     let authored = pr.relations.contains(&Relation::Authored);
     let mut definite: Vec<(f64, String)> = Vec::new();
     let mut hints: Vec<String> = Vec::new();
@@ -477,7 +476,7 @@ fn default_branch(pr: &PrFacts) -> Part {
 }
 
 /// The twelve parts of a pull request before judgement (skill `pr_score_parts` + K13 estimates).
-pub(super) fn pr_parts(rules: &ScoreRules, pr: &PrFacts, now: DateTime<Utc>) -> Vec<Part> {
+pub(super) fn pr_parts(rules: &ScoreRules, pr: &PrFacts, now: Timestamp) -> Vec<Part> {
     let kind = text::conventional_type(&pr.title).map(|(kind, _)| kind);
     let bug =
         kind.as_deref() == Some("fix") || pr.labels.iter().any(|l| l.eq_ignore_ascii_case("bug"));
@@ -503,7 +502,7 @@ pub(super) fn pr_parts(rules: &ScoreRules, pr: &PrFacts, now: DateTime<Utc>) -> 
 }
 
 /// The twelve parts of an issue before judgement (skill `issue_score_parts`; J6 defaults to confirm).
-pub(super) fn issue_parts(issue: &IssueFacts, now: DateTime<Utc>) -> Vec<Part> {
+pub(super) fn issue_parts(issue: &IssueFacts, now: Timestamp) -> Vec<Part> {
     let bug = issue.labels.iter().any(|l| l.eq_ignore_ascii_case("bug"));
     let blocked = if blocker_wording(&issue.labels, &issue.body) {
         Part::pending(C::BlockedPenalty, PartSource::Llm, BLOCKER_TEXT)
@@ -531,7 +530,7 @@ pub(super) fn issue_parts(issue: &IssueFacts, now: DateTime<Utc>) -> Vec<Part> {
 }
 
 /// The twelve parts of a MemCan TODO before judgement (skill `todos.py` `score_row`, J13).
-pub(super) fn todo_parts(todo: &TodoFacts, now: DateTime<Utc>) -> Vec<Part> {
+pub(super) fn todo_parts(todo: &TodoFacts, now: Timestamp) -> Vec<Part> {
     let (advancement, status) = match todo.status {
         TodoStatus::InProgress => (10.0, "in_progress"),
         TodoStatus::Pending => (0.0, "pending"),

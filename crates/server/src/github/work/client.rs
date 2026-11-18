@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use contracts::time::Timestamp;
 use reqwest::header::{ACCEPT, HeaderMap, LINK, RETRY_AFTER, USER_AGENT};
 use reqwest::{Client, RequestBuilder, Response, StatusCode, redirect};
 use secrecy::{ExposeSecret, SecretString};
@@ -57,7 +57,7 @@ pub enum WorkError {
     #[error("the GitHub rate limit is exhausted")]
     PrimaryRateLimit {
         /// When the limit resets (`x-ratelimit-reset`), if GitHub said.
-        reset: Option<DateTime<Utc>>,
+        reset: Option<Timestamp>,
     },
     /// GitHub's secondary rate limit was hit a third time, or asked for a wait beyond the retry ladder.
     #[error("GitHub's secondary rate limit persists")]
@@ -177,7 +177,7 @@ impl<T> std::fmt::Debug for WorkClient<T> {
 
 /// How a 403/429 answer limits the caller.
 enum Limit {
-    Primary(Option<DateTime<Utc>>),
+    Primary(Option<Timestamp>),
     Secondary(Option<Duration>),
     None,
 }
@@ -186,10 +186,10 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|value| value.to_str().ok())
 }
 
-fn reset_at(headers: &HeaderMap) -> Option<DateTime<Utc>> {
+fn reset_at(headers: &HeaderMap) -> Option<Timestamp> {
     header(headers, "x-ratelimit-reset")
         .and_then(|value| value.trim().parse::<i64>().ok())
-        .and_then(|epoch| DateTime::from_timestamp(epoch, 0))
+        .and_then(Timestamp::from_second)
 }
 
 /// Classifies a 403/429 answer, reading the body only when the headers do not tell.

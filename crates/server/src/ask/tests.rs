@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use chrono::{DateTime, TimeDelta};
 use contracts::api::analyses::AnalysisState;
 use contracts::api::events::AnalysisEvent;
 use contracts::api::pr::PrSummary;
@@ -20,6 +19,7 @@ use contracts::job::result::{JobFailureKind, JobOutcome, JobResult};
 use contracts::job::spec::{JobPriority, JobSpec};
 use contracts::job::state::JobState;
 use contracts::routes::{ASK_QUESTION, LIST_QUESTIONS, RUNNER_CLAIM, RUNNER_RESULT};
+use contracts::time::Timestamp;
 use db::repo::analyses::NewAnalysis;
 use db::repo::analyses::testing::{job_spec, seed_analysis};
 use db::repo::documents::DocumentKind;
@@ -29,6 +29,7 @@ use futures::channel::mpsc;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use http_body_util::BodyExt;
+use jiff::SignedDuration;
 use secrecy::ExposeSecret;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -185,13 +186,13 @@ async fn fixture_with(queue: bool, github: Option<crate::config::GithubConfig>) 
                 language: Default::default(),
                 created_by: "u1".to_owned(),
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("analysis")
         .id;
     let documents = state.db.documents();
-    let now = Utc::now();
+    let now = Timestamp::now();
     documents
         .put(
             analysis,
@@ -232,7 +233,11 @@ async fn fixture_with(queue: bool, github: Option<crate::config::GithubConfig>) 
     state
         .db
         .analyses()
-        .set_state(analysis, &AnalysisState::Finished { total: 5 }, Utc::now())
+        .set_state(
+            analysis,
+            &AnalysisState::Finished { total: 5 },
+            Timestamp::now(),
+        )
         .await
         .expect("finished");
     let cookie = session_cookie(&state, DEFAULT_TENANT).await;
@@ -325,7 +330,7 @@ impl Fixture {
         self.state
             .db
             .questions()
-            .get(id, Utc::now())
+            .get(id, Timestamp::now())
             .await
             .expect("question")
             .question
@@ -371,7 +376,7 @@ impl Fixture {
                 .state
                 .db
                 .questions()
-                .get(question, Utc::now())
+                .get(question, Timestamp::now())
                 .await
                 .expect("question");
             if let Some(job) = record.job_id {
@@ -453,7 +458,7 @@ impl Fixture {
                     stage: JobStage::Flow(FlowId(flow.to_owned())),
                     generation: 0,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("enqueue")
@@ -505,7 +510,7 @@ fn finished(job: JobId, outcome: JobOutcome) -> JobUpdate {
 fn event(seq: u32) -> JobUpdate {
     JobUpdate::Event(contracts::job::event::JobEvent {
         seq,
-        at: Utc::now(),
+        at: Timestamp::now(),
         activity: contracts::job::event::ActivityKind::AgentMessage,
         summary: "reading".to_owned(),
     })
@@ -532,7 +537,7 @@ async fn ask_question_is_accepted_pending_and_listed_after_reload() {
         .state
         .db
         .questions()
-        .get(id, Utc::now())
+        .get(id, Timestamp::now())
         .await
         .expect("stored");
     assert_eq!(record.user_id, "u1");
@@ -622,9 +627,9 @@ async fn ask_limits_questions_per_user_and_hour() {
                 QuestionLimits {
                     per_analysis: u32::MAX,
                     per_user: u32::MAX,
-                    user_window_start: Utc::now(),
+                    user_window_start: Timestamp::now(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("create");
@@ -666,7 +671,7 @@ async fn ask_job_goes_through_the_executor_as_an_interactive_ask_job() {
         f.state
             .db
             .questions()
-            .get(id, Utc::now())
+            .get(id, Timestamp::now())
             .await
             .expect("q")
             .job_id,
@@ -760,7 +765,7 @@ async fn failed_ask_shows_a_plain_sentence_and_logs_no_secret_or_question() {
     let keys = tempfile::tempdir().expect("temp dir");
     let github = wiremock::MockServer::start().await;
     mount_installation(&github).await;
-    mount_mint(&github, minted(Utc::now()), 1).await;
+    mount_mint(&github, minted(Timestamp::now()), 1).await;
     let f = fixture_with(true, Some(github_config(&github, write_key(keys.path())))).await;
     let mut events = f.state.progress.subscribe(f.analysis);
     let marker = "question-text-marker-7f3a";
@@ -787,7 +792,7 @@ async fn failed_ask_shows_a_plain_sentence_and_logs_no_secret_or_question() {
             usage: None,
             skills_commit: None,
             llm_call: Some(LlmCallOutcome {
-                at: Utc::now(),
+                at: Timestamp::now(),
                 status: LlmCallStatus::NotWorking {
                     message: provider_text.clone(),
                 },
@@ -806,7 +811,12 @@ async fn failed_ask_shows_a_plain_sentence_and_logs_no_secret_or_question() {
 
     let stored = format!(
         "{:?}",
-        f.state.db.questions().get(id, Utc::now()).await.expect("q")
+        f.state
+            .db
+            .questions()
+            .get(id, Timestamp::now())
+            .await
+            .expect("q")
     );
     let (_, listed) = f.list().await;
     let mut streamed = String::new();
@@ -870,7 +880,7 @@ async fn usage_limit_pauses_the_question_with_its_reset_time() {
     let id = f.asked("f1.5", QUESTION).await;
     f.queued_job(id).await;
     let claim = f.claim().await.expect("the ask job");
-    let resets_at = DateTime::from_timestamp(Utc::now().timestamp() + 3600, 0).expect("time");
+    let resets_at = Timestamp::from_second(Timestamp::now().as_second() + 3600).expect("time");
     f.post_result(
         &claim,
         JobOutcome::UsageLimited {
@@ -937,9 +947,9 @@ async fn restart_follows_open_questions_to_their_end() {
             QuestionLimits {
                 per_analysis: 10,
                 per_user: 10,
-                user_window_start: Utc::now(),
+                user_window_start: Timestamp::now(),
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("create")
@@ -982,9 +992,9 @@ impl Fixture {
                 QuestionLimits {
                     per_analysis: 10,
                     per_user: 10,
-                    user_window_start: Utc::now(),
+                    user_window_start: Timestamp::now(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("create")
@@ -1026,7 +1036,7 @@ impl Fixture {
         self.state
             .db
             .questions()
-            .update(id, &QuestionUpdate::Provisional(output), Utc::now())
+            .update(id, &QuestionUpdate::Provisional(output), Timestamp::now())
             .await
             .expect("provisional answer");
     }
@@ -1079,7 +1089,13 @@ async fn restart_after_the_job_result_replaces_a_provisional_answer_with_the_fin
         .wait_for(id, |q| q.answer.as_ref() == Some(&expected))
         .await;
     assert_eq!(done.state, AskState::Answered);
-    let record = f.state.db.questions().get(id, Utc::now()).await.expect("q");
+    let record = f
+        .state
+        .db
+        .questions()
+        .get(id, Timestamp::now())
+        .await
+        .expect("q");
     assert!(record.answered_at.is_some(), "final");
 }
 
@@ -1103,9 +1119,12 @@ async fn restart_after_the_lease_expired_withdraws_the_provisional_answer_of_the
     let (id, claim) = f.stopped_on_a_claimed_job().await;
     f.provisionally_answered(id, good_answer()).await;
     // While the server was down the attempt's lease passed: the job is queued again, its ready output dropped.
-    crate::jobs::queue::expire_leases(&f.state.db, Utc::now() + TimeDelta::hours(1))
-        .await
-        .expect("expire");
+    crate::jobs::queue::expire_leases(
+        &f.state.db,
+        Timestamp::now() + SignedDuration::from_hours(1),
+    )
+    .await
+    .expect("expire");
     assert_eq!(
         f.state
             .db
@@ -1129,7 +1148,13 @@ async fn restart_after_the_lease_expired_withdraws_the_provisional_answer_of_the
     )
     .await;
     f.wait_for(id, |q| q.state == AskState::Answered).await;
-    let record = f.state.db.questions().get(id, Utc::now()).await.expect("q");
+    let record = f
+        .state
+        .db
+        .questions()
+        .get(id, Timestamp::now())
+        .await
+        .expect("q");
     assert!(record.answered_at.is_some(), "final");
 }
 
@@ -1159,7 +1184,13 @@ async fn restart_shows_again_a_provisional_answer_whose_attempt_still_runs() {
         shown.answer,
         Some(serde_json::from_value(good_answer()).expect("output"))
     );
-    let record = f.state.db.questions().get(id, Utc::now()).await.expect("q");
+    let record = f
+        .state
+        .db
+        .questions()
+        .get(id, Timestamp::now())
+        .await
+        .expect("q");
     assert_eq!(
         record.answered_at, None,
         "still provisional before the result"
@@ -1176,7 +1207,7 @@ async fn restart_shows_again_a_provisional_answer_whose_attempt_still_runs() {
         .state
         .db
         .questions()
-        .get(id, Utc::now())
+        .get(id, Timestamp::now())
         .await
         .expect("q")
         .answered_at
@@ -1267,7 +1298,7 @@ async fn ask_after_a_lost_session_still_has_the_project_profile() {
             DocumentKind::MemcanProfile,
             "",
             &json!({"memcan": "checked", "text": marker}),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("profile lookup");
@@ -1304,7 +1335,7 @@ async fn ask_on_an_older_analysis_resumes_the_pr_session_from_a_new_head() {
                 language: contracts::common::LlmLanguage::Pl,
                 created_by: previous.created_by,
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .unwrap();
@@ -1406,7 +1437,7 @@ async fn private_questions_never_expose_another_asker() {
                 name: None,
                 avatar_url: None,
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("second user");
@@ -1427,9 +1458,9 @@ async fn private_questions_never_expose_another_asker() {
             QuestionLimits {
                 per_analysis: 100,
                 per_user: 100,
-                user_window_start: Utc::now(),
+                user_window_start: Timestamp::now(),
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("question");
@@ -1483,7 +1514,7 @@ async fn analysis_reports_only_the_current_users_stored_state() {
                 name: None,
                 avatar_url: None,
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("second user");
@@ -1494,7 +1525,7 @@ async fn analysis_reports_only_the_current_users_stored_state() {
             "u2",
             f.analysis,
             &contracts::api::review::ReviewState::default(),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("colleague state");
@@ -1506,7 +1537,7 @@ async fn analysis_reports_only_the_current_users_stored_state() {
             "u1",
             f.analysis,
             &contracts::api::review::ReviewState::default(),
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("state");
@@ -1712,7 +1743,7 @@ async fn ready_answer_checked_after_a_cancel_is_not_published() {
     f.state
         .db
         .analyses()
-        .set_state(f.analysis, &running, Utc::now())
+        .set_state(f.analysis, &running, Timestamp::now())
         .await
         .expect("running");
     db::repo::analyses::testing::never_finished(&f.state.db, f.analysis)
@@ -1756,14 +1787,14 @@ async fn pipeline_failure_and_retry_keep_open_questions() {
     f.state
         .db
         .analyses()
-        .set_state(f.analysis, &failed, Utc::now())
+        .set_state(f.analysis, &failed, Timestamp::now())
         .await
         .expect("failed");
     assert!(
         f.state
             .db
             .analyses()
-            .retry(f.analysis, Utc::now())
+            .retry(f.analysis, Timestamp::now())
             .await
             .expect("retry")
     );
@@ -1788,14 +1819,14 @@ async fn ready_answer_of_a_job_flagged_for_cancel_is_not_published() {
     f.state
         .db
         .questions()
-        .update(id, &QuestionUpdate::Answering, Utc::now())
+        .update(id, &QuestionUpdate::Answering, Timestamp::now())
         .await
         .expect("withdrawn");
     assert_eq!(
         f.state
             .db
             .jobs()
-            .request_cancel(job, Utc::now())
+            .request_cancel(job, Timestamp::now())
             .await
             .expect("cancel"),
         JobState::Claimed,
@@ -1823,7 +1854,7 @@ async fn question_cancelled_with_its_analysis_says_what_happened() {
     f.state
         .db
         .analyses()
-        .set_state(f.analysis, &running, Utc::now())
+        .set_state(f.analysis, &running, Timestamp::now())
         .await
         .expect("running");
     db::repo::analyses::testing::never_finished(&f.state.db, f.analysis)

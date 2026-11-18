@@ -9,11 +9,6 @@ mod store;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
-use std::time::Duration;
-
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use chrono_tz::Tz;
 use contracts::agent::JobKind;
 use contracts::agent::judge_work::{
     InputError, JudgeItem, JudgeWorkInput, JudgeWorkOutput, MAX_ITEMS,
@@ -38,9 +33,16 @@ use db::repo::dashboard::{
 use db::repo::jobs::{JobStage, MAX_REPAIR_RUNS};
 use futures::StreamExt;
 use futures::future::BoxFuture;
+use std::collections::HashMap;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 use tokio::time::MissedTickBehavior;
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
+use jiff::civil::Time;
+use jiff::tz::TimeZone;
 
 use self::input::Candidate;
 pub use self::input::JUDGE_INPUT_VERSION;
@@ -56,7 +58,7 @@ use crate::state::AppState;
 
 /// Version of the judge prompt and output schema (`prompts/judge_work.md`, pinned by its golden); a bump
 /// re-judges every item within the caps.
-pub const JUDGE_PROMPT_VERSION: u32 = 3;
+pub const JUDGE_PROMPT_VERSION: u32 = 4;
 /// Items sent to the judge per refresh at most, across its attempts and retries (plan §B.4).
 pub const REFRESH_CAP: u32 = 48;
 /// Items sent to the judge per user and local day at most, retries included (plan §B.4).
@@ -181,8 +183,8 @@ async fn rank(state: AppState, run: RankRun) {
         run: &run,
         counts: JudgeCounts::default(),
         live: RankingState::Running,
-        zone: Tz::UTC,
-        day: DateTime::<Utc>::MIN_UTC,
+        zone: TimeZone::UTC,
+        day: Timestamp::UNIX_EPOCH,
         unclaimed_since: None,
         provisional: None,
     };
@@ -218,9 +220,9 @@ struct Ranking<'a> {
     run: &'a RankRun,
     counts: JudgeCounts,
     live: RankingState,
-    zone: Tz,
+    zone: TimeZone,
     /// Start of the user's local day the ranking began in (the daily cap counts from it).
-    day: DateTime<Utc>,
+    day: Timestamp,
     /// Since when the followed job waits for a runner (queued, credential usable, no analysis job running).
     unclaimed_since: Option<tokio::time::Instant>,
     /// Which cap left items provisional, as the ranking step's detail shows it while no other detail is given.
@@ -259,7 +261,7 @@ impl<'a> Ranking<'a> {
             .collect();
         dashboard.mark_seen(tenant, user, &keys, now).await?;
         let (queue, reused) = self.queue(&snapshot, &candidates, &stored);
-        self.day = day_start(now, self.zone);
+        self.day = day_start(now, &self.zone);
         let sent = dashboard
             .sent_totals(tenant, user, self.run.refresh_id, self.day)
             .await?;
@@ -549,7 +551,7 @@ impl<'a> Ranking<'a> {
                 if credential
                     .as_ref()
                     .and_then(|c| c.paused_until)
-                    .is_some_and(|until| until > Utc::now())
+                    .is_some_and(|until| until > Timestamp::now())
                 {
                     RankingState::Paused
                 } else if credential.is_some_and(|c| c.unusable_since.is_some()) {
@@ -729,12 +731,12 @@ impl<'a> Ranking<'a> {
                 .map(str::to_owned)
                 .or_else(|| self.provisional.clone());
         }
-        let at = self.state.dashboard.now().with_timezone(&self.zone);
+        let at = self.state.dashboard.now().to_zoned(self.zone.clone());
         let mut log = record.log;
         log.extend(
             lines
                 .iter()
-                .map(|line| format!("{} {line}", at.format("%H:%M:%S"))),
+                .map(|line| format!("{} {line}", at.strftime("%H:%M:%S"))),
         );
         self.write(self.live, self.counts, &[], Some((&progress, &log)))
             .await
@@ -868,29 +870,29 @@ fn count(n: usize) -> u32 {
 }
 
 /// The user's time zone from the snapshot's settings; UTC while none is stored.
-fn zone(snapshot: &Snapshot) -> Tz {
+fn zone(snapshot: &Snapshot) -> TimeZone {
     snapshot
         .settings
         .time_zone
         .as_deref()
-        .and_then(|zone| zone.parse().ok())
-        .unwrap_or(Tz::UTC)
+        .and_then(super::zone::parse)
+        .unwrap_or(TimeZone::UTC)
 }
 
 /// Start of the local day of `now` (the daily cap counts from it).
-fn day_start(now: DateTime<Utc>, zone: Tz) -> DateTime<Utc> {
-    now.with_timezone(&zone)
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .and_then(|midnight| zone.from_local_datetime(&midnight).earliest())
-        .map_or(now - TimeDelta::days(1), |start| start.with_timezone(&Utc))
+fn day_start(now: Timestamp, zone: &TimeZone) -> Timestamp {
+    let midnight = now
+        .to_zoned(zone.clone())
+        .date()
+        .to_datetime(Time::midnight());
+    super::zone::earliest(midnight, zone).unwrap_or(now - SignedDuration::from_hours(24))
 }
 
 /// Deletes judgements not seen for [`JUDGEMENT_RETENTION_DAYS`]; a failure only delays it to the next ranking.
-async fn retention(db: &Db, now: DateTime<Utc>) {
+async fn retention(db: &Db, now: Timestamp) {
     match db
         .dashboard()
-        .delete_unseen_judgements(now - TimeDelta::days(JUDGEMENT_RETENTION_DAYS))
+        .delete_unseen_judgements(now - SignedDuration::from_hours(24 * JUDGEMENT_RETENTION_DAYS))
         .await
     {
         Ok(0) => {}
@@ -992,7 +994,9 @@ pub async fn status(state: &AppState, record: &RefreshRecord) -> RefreshStatus {
         .filter(|ranking| ranking.state == RankingState::Paused)
     {
         ranking.resumes_at = match state.db.llm_credentials().get(CREDENTIAL_ID).await {
-            Ok(credential) => credential.paused_until.filter(|until| *until > Utc::now()),
+            Ok(credential) => credential
+                .paused_until
+                .filter(|until| *until > Timestamp::now()),
             Err(error) => {
                 tracing::debug!(%error, "LLM credential pause not read for the ranking status");
                 None

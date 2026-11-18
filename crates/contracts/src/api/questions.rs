@@ -1,6 +1,6 @@
 //! Ask: private questions about a step, answered in the asker's working session for this PR.
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -44,12 +44,12 @@ pub struct AskQuestion {
     /// Plain description when failed.
     pub failure: Option<String>,
     /// When it was asked.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// While `pending` and waiting for the LLM usage limit to reset: when its job is queued again; absent
     /// otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub resumes_at: Option<DateTime<Utc>>,
+    pub resumes_at: Option<Timestamp>,
 }
 
 /// State of a question.

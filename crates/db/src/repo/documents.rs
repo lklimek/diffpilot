@@ -1,8 +1,8 @@
 //! Repository for `documents`: validated agent output and pre-pass results as JSON per analysis.
 //! Frozen signatures (cross-WP).
 
-use chrono::{DateTime, Utc};
 use contracts::ids::AnalysisId;
+use contracts::time::Timestamp;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sqlx::SqlitePool;
@@ -59,7 +59,7 @@ impl Documents<'_> {
         kind: DocumentKind,
         key: &str,
         body: &T,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         self.store(analysis, kind, key, body, None, now).await
     }
@@ -72,7 +72,7 @@ impl Documents<'_> {
         key: &str,
         body: &T,
         github_access: bool,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         self.store(analysis, kind, key, body, Some(github_access), now)
             .await
@@ -104,7 +104,7 @@ impl Documents<'_> {
         key: &str,
         body: &T,
         github_access: Option<bool>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let body = serde_json::to_string(body)?;
         let stored = sqlx::query(
@@ -206,17 +206,16 @@ impl Documents<'_> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
     use serde_json::{Value, json};
 
     use super::*;
     use crate::repo::Db;
     use crate::repo::analyses::testing::seed_analysis;
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 16, 12, minute, 0)
-            .single()
-            .unwrap_or_default()
+    fn at(minute: u32) -> Timestamp {
+        format!("2026-11-16T12:{minute:02}:00Z")
+            .parse::<Timestamp>()
+            .expect("time")
     }
 
     #[tokio::test]

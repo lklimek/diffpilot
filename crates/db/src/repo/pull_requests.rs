@@ -1,8 +1,8 @@
 //! Repository for `pull_requests`: the latest snapshot of each resolved pull request.
 
-use chrono::{DateTime, Utc};
 use contracts::api::pr::PrSummary;
 use contracts::common::{LlmLanguage, RepoRef};
+use contracts::time::Timestamp;
 use sqlx::SqlitePool;
 
 use contracts::ids::{AnalysisId, CommitSha};
@@ -31,7 +31,7 @@ impl PullRequests<'_> {
         tenant_id: &str,
         repo_id: i64,
         pr: &PrSummary,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<i64, DbError> {
         Ok(sqlx::query_scalar(
             "INSERT INTO pull_requests (tenant_id, repo_id, number, title, author, html_url, base_sha, head_sha,
@@ -147,7 +147,6 @@ pub struct PrReviewLink {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
 
     use super::*;
     use crate::repo::DEFAULT_TENANT;
@@ -170,9 +169,8 @@ mod tests {
     #[tokio::test]
     async fn upsert_keeps_one_row_per_number_with_the_latest_head() {
         let db = Db::in_memory().await.expect("db");
-        let now = Utc
-            .with_ymd_and_hms(2026, 11, 16, 12, 0, 0)
-            .single()
+        let now = "2026-11-16T12:00:00Z"
+            .parse::<Timestamp>()
             .unwrap_or_default();
         let repo = db
             .repos()
@@ -262,9 +260,8 @@ mod tests {
         crate::repo::analyses::testing::seed_tenant(&db, "other")
             .await
             .expect("tenant");
-        let now = Utc
-            .with_ymd_and_hms(2026, 11, 16, 12, 0, 0)
-            .single()
+        let now = "2026-11-16T12:00:00Z"
+            .parse::<Timestamp>()
             .unwrap_or_default();
         let repo = db
             .repos()

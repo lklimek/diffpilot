@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
+use contracts::time::Timestamp;
 
 use crate::dashboard::score::{
     CheckContext, CheckRollup, IssueFacts, Mergeable, Milestone, MilestoneContext, OwnedChange,
@@ -77,7 +77,7 @@ fn rollup(found: Option<&StatusRollup>) -> Option<CheckRollup> {
 }
 
 /// The newest time of `times`.
-fn newest(times: impl Iterator<Item = DateTime<Utc>>) -> Option<DateTime<Utc>> {
+fn newest(times: impl Iterator<Item = Timestamp>) -> Option<Timestamp> {
     times.max()
 }
 
@@ -151,7 +151,7 @@ pub(super) fn pr(
         .filter_map(|login| request_time(login))
         .min();
 
-    let mut latest: Vec<(String, String, Option<DateTime<Utc>>, bool)> = Vec::new();
+    let mut latest: Vec<(String, String, Option<Timestamp>, bool)> = Vec::new();
     for review in &detail.reviews.nodes {
         let Some(author) = &review.author else {
             continue;

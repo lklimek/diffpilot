@@ -2,10 +2,6 @@
 //! stale attempts, cancel and recovery, user isolation and the prompt golden. Rankings run on real time with the
 //! injected dashboard clock; the test plays the runner by claiming judge jobs from the queue and completing them.
 
-use std::sync::Arc;
-use std::time::Duration;
-
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use contracts::agent::judge_work::{JudgeWorkInput, LinkedIssue, part_values};
 use contracts::api::dashboard::{
     DashboardSettings, ItemKey, ItemTarget, KindCounts, PartStatus, RankingState, RefreshState,
@@ -22,7 +18,12 @@ use db::repo::users::GithubProfile;
 use db::repo::{DEFAULT_TENANT, Db};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
+use std::time::Duration;
 use uuid::Uuid;
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 use super::input::candidates;
 use super::*;
@@ -39,10 +40,8 @@ use crate::dashboard::snapshot::{
 /// Bound of every wait (real time; a judge job round trip takes well under a second).
 const WAIT: Duration = Duration::from_secs(20);
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 18, 9, 0, 0)
-        .single()
-        .expect("now")
+fn now() -> Timestamp {
+    "2026-11-18T09:00:00Z".parse::<Timestamp>().expect("now")
 }
 
 fn repo(name: &str) -> RepoRef {
@@ -64,7 +63,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
             relations: vec![Relation::Authored],
             is_draft: false,
             labels: vec!["sync".to_owned()],
-            updated_at: now() - TimeDelta::hours(5),
+            updated_at: now() - SignedDuration::from_hours(5),
             additions: Some(30),
             deletions: Some(5),
             base_ref: Some("main".to_owned()),
@@ -94,7 +93,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
         },
         private: false,
         head_sha: "a".repeat(40),
-        created_at: now() - TimeDelta::days(3),
+        created_at: now() - SignedDuration::from_hours(24 * 3),
         ci_red: Vec::new(),
         ci_pending: Vec::new(),
         linked_issues: Vec::new(),
@@ -111,7 +110,7 @@ fn issue(number: u32, title: &str) -> StoredIssue {
             author: Some("bob".to_owned()),
             relations: vec![Relation::Assigned],
             labels: Vec::new(),
-            updated_at: now() - TimeDelta::days(1),
+            updated_at: now() - SignedDuration::from_hours(24),
             milestone: crate::dashboard::score::Milestone::Unassigned,
             milestone_context: MilestoneContext::default(),
         },
@@ -127,7 +126,7 @@ fn todo(title: &str) -> StoredTodo {
             title: title.to_owned(),
             status: TodoStatus::Pending,
             priority: Some("medium".to_owned()),
-            changed_at: now() - TimeDelta::days(2),
+            changed_at: now() - SignedDuration::from_hours(24 * 2),
         },
         project: "wallet-ui".to_owned(),
         description: Some("Check the retry path.".to_owned()),
@@ -208,7 +207,7 @@ async fn add_user(db: &Db, user_id: &str, login: &str, github_id: i64) {
                 name: None,
                 avatar_url: None,
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("user");
@@ -233,7 +232,7 @@ async fn harness() -> Harness {
                 kind: CredentialKind::CodexChatgpt,
             },
             true,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("credential");
@@ -379,14 +378,14 @@ impl Harness {
     async fn claim(&self) -> JobRecord {
         let claimed = tokio::time::timeout(WAIT, async {
             loop {
-                let now = Utc::now();
+                let now = Timestamp::now();
                 let job = self
                     .db()
                     .jobs()
                     .claim(ClaimParams {
                         credential_ids: &[CREDENTIAL_ID.to_owned()],
                         job_token_hash: b"hash",
-                        lease_until: now + TimeDelta::hours(1),
+                        lease_until: now + SignedDuration::from_hours(1),
                         now,
                     })
                     .await
@@ -414,7 +413,7 @@ impl Harness {
                     skills_commit: None,
                     llm_call: None,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("complete");
@@ -461,14 +460,14 @@ impl Harness {
         let served = tokio::time::timeout(WAIT, async {
             let (mut sent, mut jobs) = (0, 0);
             loop {
-                let now = Utc::now();
+                let now = Timestamp::now();
                 let job = self
                     .db()
                     .jobs()
                     .claim(ClaimParams {
                         credential_ids: &[CREDENTIAL_ID.to_owned()],
                         job_token_hash: b"hash",
-                        lease_until: now + TimeDelta::hours(1),
+                        lease_until: now + SignedDuration::from_hours(1),
                         now,
                     })
                     .await
@@ -527,15 +526,15 @@ fn volatile_fact_change_reuses_judgement() {
         vec![],
     );
     let mut after = before.clone();
-    after.scanned_at = now() + TimeDelta::hours(20);
+    after.scanned_at = now() + SignedDuration::from_hours(20);
     let changed = &mut after.pull_requests[0];
-    changed.facts.updated_at = now() + TimeDelta::hours(19);
+    changed.facts.updated_at = now() + SignedDuration::from_hours(19);
     changed.head_sha = "b".repeat(40);
     changed.facts.additions = Some(31);
     changed.facts.last_comment_at = Some(now());
-    changed.created_at = now() - TimeDelta::days(4);
+    changed.created_at = now() - SignedDuration::from_hours(24 * 4);
     after.issues[0].comments = 9;
-    after.issues[0].facts.updated_at = now() + TimeDelta::hours(2);
+    after.issues[0].facts.updated_at = now() + SignedDuration::from_hours(2);
     assert_eq!(fingerprints(&before), fingerprints(&after));
 }
 
@@ -560,7 +559,7 @@ fn judged_input_change_changes_the_fingerprint() {
             Box::new(|p| {
                 p.facts.author = Some("mira".into());
                 p.facts.review_pending_for_us = true;
-                p.facts.review_requested_at = Some(now() - TimeDelta::days(1));
+                p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(24));
             }),
         ),
     ];
@@ -579,7 +578,7 @@ fn fingerprint_follows_the_human_waiting_bucket_not_the_age() {
         p.facts.author = Some("mira".into());
         p.facts.relations = vec![Relation::ReviewRequested];
         p.facts.review_pending_for_us = true;
-        p.facts.review_requested_at = Some(now() - TimeDelta::hours(days));
+        p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(days));
         fingerprints(&snapshot(vec![p], vec![], vec![]))
     };
     assert_eq!(at(3), at(30), "same bucket (≤ 2 days)");
@@ -591,7 +590,7 @@ fn judge_input_shows_no_age_and_only_plan_facts() {
     let mut p = pr(1, "fix: x");
     p.facts.author = Some("mira".into());
     p.facts.review_pending_for_us = true;
-    p.facts.review_requested_at = Some(now() - TimeDelta::days(1));
+    p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(24));
     p.facts.body = format!("{}  tail", "word ".repeat(100));
     let snap = snapshot(vec![p], vec![], vec![]);
     let items = candidates(&snap);
@@ -618,7 +617,7 @@ fn unsure_human_waiting_default_is_sent_with_its_age_class() {
     p.facts.relations = vec![Relation::ReviewRequested];
     p.facts.review_pending_for_us = true;
     p.facts.review_request_age_is_approx = true;
-    p.facts.review_requested_at = Some(now() - TimeDelta::days(1));
+    p.facts.review_requested_at = Some(now() - SignedDuration::from_hours(24));
     let snap = snapshot(vec![p], vec![], vec![]);
     let items = candidates(&snap);
     let item = &items[0].item;
@@ -903,8 +902,8 @@ async fn unchanged_judged_inputs_create_no_job() {
     let (_, first) = h.rank_all("u1", &snap).await;
     assert_eq!((first.judged, first.reused), (4, 0));
     let mut later = snap.clone();
-    later.scanned_at = now() + TimeDelta::hours(3);
-    later.pull_requests[0].facts.updated_at = now() + TimeDelta::hours(2);
+    later.scanned_at = now() + SignedDuration::from_hours(3);
+    later.pull_requests[0].facts.updated_at = now() + SignedDuration::from_hours(2);
     let id = h.rank("u1", &later).await;
     let done = h.ranked("u1", id).await;
     assert_eq!(done.ranking.map(|r| r.state), Some(RankingState::Finished));
@@ -1267,7 +1266,7 @@ async fn usage_limit_pauses_ranking() {
     let h = harness().await;
     let snap = snapshot(prs(1), vec![], vec![]);
     let id = h.rank("u1", &snap).await;
-    let resets = Utc::now() + TimeDelta::hours(1);
+    let resets = Timestamp::now() + SignedDuration::from_hours(1);
     h.serve(|_| JobOutcome::UsageLimited {
         resets_at: Some(resets),
     })
@@ -1281,8 +1280,8 @@ async fn usage_limit_pauses_ranking() {
         .await;
     let ranking = paused.ranking.expect("ranking");
     assert_eq!(
-        ranking.resumes_at.map(|t| t.timestamp()),
-        Some(resets.timestamp())
+        ranking.resumes_at.map(|t| t.as_second()),
+        Some(resets.as_second())
     );
     assert_eq!((ranking.judged, ranking.total), (0, 1));
     refresh::cancel(&h.state, &scope("u1"), id)
@@ -1312,7 +1311,7 @@ async fn unclaimed_judge_job_ends_the_ranking() {
         run: &run,
         counts: JudgeCounts::default(),
         live: RankingState::Running,
-        zone: Tz::UTC,
+        zone: jiff::tz::TimeZone::UTC,
         day: now(),
         unclaimed_since: Some(long_ago),
         provisional: None,
@@ -1324,7 +1323,10 @@ async fn unclaimed_judge_job_ends_the_ranking() {
     // Paused for the usage limit: the wait does not count, and starts again after the pause.
     h.db()
         .llm_credentials()
-        .pause(CREDENTIAL_ID, Utc::now() + TimeDelta::hours(1))
+        .pause(
+            CREDENTIAL_ID,
+            Timestamp::now() + SignedDuration::from_hours(1),
+        )
         .await
         .expect("pause");
     ranking.observe(job).await.expect("paused, not timed out");
@@ -1332,7 +1334,10 @@ async fn unclaimed_judge_job_ends_the_ranking() {
     assert_eq!(ranking.unclaimed_since, None);
     h.db()
         .llm_credentials()
-        .pause(CREDENTIAL_ID, Utc::now() - TimeDelta::hours(1))
+        .pause(
+            CREDENTIAL_ID,
+            Timestamp::now() - SignedDuration::from_hours(1),
+        )
         .await
         .expect("resume");
     ranking
@@ -1363,7 +1368,7 @@ async fn ranking_waits_for_running_analysis_job() {
                 stage: JobStage::Plan { batch: 1 },
                 generation: 0,
             },
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("enqueue");
@@ -1449,7 +1454,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
         run: &run,
         counts: JudgeCounts::default(),
         live: RankingState::Running,
-        zone: Tz::UTC,
+        zone: jiff::tz::TimeZone::UTC,
         day: now(),
         unclaimed_since: None,
         provisional: None,
@@ -1679,12 +1684,10 @@ async fn private_repository_items_are_judged() {
 
 #[test]
 fn day_start_is_local_midnight() {
-    let zone: Tz = "Europe/Warsaw".parse().expect("zone");
+    let zone = crate::dashboard::zone::parse("Europe/Warsaw").expect("zone");
     assert_eq!(
-        day_start(now(), zone),
-        Utc.with_ymd_and_hms(2026, 11, 17, 23, 0, 0)
-            .single()
-            .expect("t")
+        day_start(now(), &zone),
+        "2026-11-17T23:00:00Z".parse::<Timestamp>().expect("t")
     );
 }
 

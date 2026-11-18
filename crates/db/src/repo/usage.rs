@@ -1,8 +1,9 @@
 //! Read-only sums of retained terminal job results; no separate counters.
 
+use contracts::time::Timestamp;
+
 use super::jobs::Jobs;
 use crate::error::DbError;
-use chrono::{DateTime, Utc};
 use contracts::api::usage::{UsageTotals, UsageWindows};
 use contracts::ids::AnalysisId;
 use sqlx::{Row, sqlite::SqliteRow};
@@ -59,7 +60,7 @@ impl Jobs<'_> {
     pub async fn usage_windows(
         &self,
         tenant: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<UsageWindows, DbError> {
         let rows = sqlx::query("WITH windows(label, since) AS (
                 VALUES ('today', datetime(?2, 'localtime', 'start of day', 'utc')),
@@ -72,7 +73,7 @@ impl Jobs<'_> {
                 COALESCE(SUM(json_extract(r.result, '$.usage.output_tokens')), 0) AS output
             FROM windows w LEFT JOIN reported r ON julianday(r.finished_at) >= julianday(w.since)
                 AND julianday(r.finished_at) <= julianday(?2) GROUP BY w.label")
-            .bind(tenant).bind(now.to_rfc3339()).fetch_all(self.pool).await?;
+            .bind(tenant).bind(now.to_rfc3339_offset()).fetch_all(self.pool).await?;
         let mut usage = UsageWindows::default();
         for row in rows {
             match row.try_get::<String, _>("label")?.as_str() {
@@ -136,13 +137,14 @@ impl Jobs<'_> {
 
 #[cfg(test)]
 mod tests {
+    use jiff::SignedDuration;
+
     use super::*;
     use crate::repo::{
         Db,
         analyses::testing,
         jobs::{JobStage, NewJob},
     };
-    use chrono::{Local, TimeDelta, TimeZone};
     use contracts::agent::JobKind;
     use contracts::job::spec::JobPriority;
 
@@ -160,7 +162,7 @@ mod tests {
             model: "gpt-6-astra".into(),
             reasoning_effort: ReasoningEffort::Low,
         };
-        let now = Utc::now();
+        let now = Timestamp::now();
         for (i, kind, choice, claimed) in [
             (0, JobKind::Plan, sol.clone(), true),
             (1, JobKind::Ask, astra.clone(), true),
@@ -197,7 +199,11 @@ mod tests {
                 .unwrap();
             sqlx::query("UPDATE jobs SET round=?, claimed_at=? WHERE id=?")
                 .bind(i)
-                .bind(claimed.then(|| (now + TimeDelta::seconds(i64::from(i))).to_rfc3339()))
+                .bind(
+                    claimed.then(|| {
+                        (now + SignedDuration::from_secs(i64::from(i))).to_rfc3339_offset()
+                    }),
+                )
                 .bind(job.id.to_string())
                 .execute(&db.pool)
                 .await
@@ -210,12 +216,16 @@ mod tests {
     async fn calendar_windows_are_tenant_scoped_and_exclude_old_future_and_unreported_jobs() {
         let db = Db::in_memory().await.unwrap();
         let id = testing::seed_analysis(&db).await.unwrap();
-        let local = Local::now().date_naive().and_hms_opt(12, 0, 0).unwrap();
-        let now = Local
-            .from_local_datetime(&local)
-            .earliest()
-            .unwrap()
-            .with_timezone(&Utc);
+        // SQLite's `localtime` is the host's zone: noon of its current date.
+        let local = jiff::Zoned::now();
+        let now = Timestamp::from(
+            local
+                .date()
+                .at(12, 0, 0, 0)
+                .to_zoned(local.time_zone().clone())
+                .unwrap()
+                .timestamp(),
+        );
         for (index, days, reported) in [
             (1, 0, true),
             (2, 3, true),
@@ -244,7 +254,7 @@ mod tests {
             sqlx::query(
                 "UPDATE jobs SET state = 'succeeded', finished_at = ?, result = ? WHERE id = ?",
             )
-            .bind((now - TimeDelta::days(days)).to_rfc3339())
+            .bind((now - SignedDuration::from_hours(24 * days)).to_rfc3339_offset())
             .bind(result.to_string())
             .bind(job.id.to_string())
             .execute(&db.pool)
@@ -286,7 +296,7 @@ mod tests {
             ),
             (JobStage::Plan { batch: 2 }, 0, 1, None),
         ] {
-            let now = Utc::now();
+            let now = Timestamp::now();
             let job = db
                 .jobs()
                 .enqueue(
@@ -302,8 +312,8 @@ mod tests {
                 .unwrap();
             sqlx::query("UPDATE jobs SET round = ?, claimed_at = ?, finished_at = ? WHERE id = ?")
                 .bind(round)
-                .bind(now.to_rfc3339())
-                .bind(seconds.map(|s| (now + TimeDelta::seconds(s)).to_rfc3339()))
+                .bind(now.to_rfc3339_offset())
+                .bind(seconds.map(|s| (now + SignedDuration::from_secs(s)).to_rfc3339_offset()))
                 .bind(job.id.to_string())
                 .execute(&db.pool)
                 .await

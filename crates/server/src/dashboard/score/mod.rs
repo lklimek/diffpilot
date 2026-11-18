@@ -17,11 +17,11 @@ mod tests;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::{
     ItemKey, ItemKeyError, ItemKind, ItemScore, ItemTarget, PartSource, PartStatus, ScoreComponent,
     ScorePart, ScoreState, Tier,
 };
+use contracts::time::Timestamp;
 
 pub use ci::{CheckContext, CheckRollup, CiSummary, classify_ci};
 pub use facts::{
@@ -154,7 +154,7 @@ pub fn score_pr(
     rules: &ScoreRules,
     pr: &PrFacts,
     judgement: Option<&Judgement>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Scored, ScoreError> {
     let key = key_of(ItemTarget::PullRequest {
         repo: pr.repo.clone(),
@@ -178,7 +178,7 @@ pub fn score_issue(
     rules: &ScoreRules,
     issue: &IssueFacts,
     judgement: Option<&Judgement>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Scored, ScoreError> {
     let key = key_of(ItemTarget::Issue {
         repo: issue.repo.clone(),
@@ -202,7 +202,7 @@ pub fn score_todo(
     todo: &TodoFacts,
     id: String,
     judgement: Option<&Judgement>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<Scored, ScoreError> {
     let key = key_of(ItemTarget::Todo(todo.id))?;
     let eligibility = Eligibility {
@@ -328,7 +328,7 @@ fn apply(
     let inherited = judgement.freshness == Freshness::Inherited;
     let label = format!(
         "[judged {}, item changed since] ",
-        judgement.judged_at.format("%-d %b")
+        judgement.judged_at.get().strftime("%-d %b")
     );
     for judged in &judgement.parts {
         let allowed =

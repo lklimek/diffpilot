@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 
-use chrono::Utc;
 use contracts::agent::analyse_flow::AgentAnnotation;
 use contracts::agent::analyse_flow::{Assessment, FlowIntroduction};
 use contracts::agent::ask::AskOutput;
@@ -41,6 +40,7 @@ use contracts::common::{
 };
 use contracts::ids::{AnalysisId, AnnotationId, CommitSha, FlowId, QuestionId, StepId};
 use contracts::routes::{HttpMethod, Listener, ROUTES, RouteAuth};
+use contracts::time::Timestamp;
 use schemars::JsonSchema;
 use serde_json::{Value, json};
 
@@ -67,8 +67,8 @@ fn summary() -> AnalysisSummary {
         },
         language: LlmLanguage::En,
         state: AnalysisState::Finished { total: 1 },
-        created_at: Utc::now(),
-        finished_at: Some(Utc::now()),
+        created_at: Timestamp::now(),
+        finished_at: Some(Timestamp::now()),
     }
 }
 
@@ -373,9 +373,9 @@ fn node_kinds_follow_step_kinds() {
     }
 }
 
-fn stage_started() -> chrono::DateTime<Utc> {
-    chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 11, 17, 9, 30, 0)
-        .single()
+fn stage_started() -> Timestamp {
+    "2026-11-17T09:30:00Z"
+        .parse::<Timestamp>()
         .unwrap_or_default()
 }
 
@@ -490,7 +490,7 @@ fn sse_event_name_is_the_tag() {
             evidence: vec![],
         }),
         failure: None,
-        created_at: Utc::now(),
+        created_at: Timestamp::now(),
         resumes_at: None,
     };
     for event in [
@@ -509,7 +509,7 @@ fn sse_event_name_is_the_tag() {
 /// (every stored fixture) keeps its JSON.
 #[test]
 fn ask_question_resumes_at_only_while_waiting_for_the_usage_limit() {
-    let at = Utc::now();
+    let at = Timestamp::now();
     let mut question = AskQuestion {
         asked_by: None,
         mine: None,

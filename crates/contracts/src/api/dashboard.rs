@@ -1,9 +1,9 @@
 //! GitHub work dashboard ("My work", ADR-016, plan `docs/v1.1-dashboard-plan.md` §E): summary, ranked items,
 //! refreshes and their events, per-user settings. Integers only on the wire: scores in tenths of a point.
 
+use crate::time::Timestamp;
 use std::fmt;
 
-use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -74,9 +74,9 @@ pub struct RefreshStatus {
     /// Scan progress, 0–100.
     pub percent: u32,
     /// Start time.
-    pub started_at: DateTime<Utc>,
+    pub started_at: Timestamp,
     /// When the scan finished and the snapshot was stored; null while scanning or when it failed.
-    pub scanned_at: Option<DateTime<Utc>>,
+    pub scanned_at: Option<Timestamp>,
     /// The LLM ranking of the snapshot; null before the scan finished.
     pub ranking: Option<RankingStatus>,
     /// Why the scan failed; null unless `failed`.
@@ -146,7 +146,7 @@ pub struct RankingStatus {
     /// Items queued for judgement in this refresh.
     pub total: u32,
     /// When a usage-limit pause ends; null unless `paused`.
-    pub resumes_at: Option<DateTime<Utc>>,
+    pub resumes_at: Option<Timestamp>,
     /// Plain text of a failure; null unless `failed` or `interrupted`.
     pub message: Option<String>,
 }
@@ -179,7 +179,7 @@ pub struct RefreshFailure {
     /// Plain message for the user.
     pub message: String,
     /// Earliest time a new refresh can succeed (GitHub rate-limit reset); null when not limited.
-    pub retry_at: Option<DateTime<Utc>>,
+    pub retry_at: Option<Timestamp>,
 }
 
 /// Cause of a failed refresh.
@@ -210,7 +210,7 @@ pub struct ScheduleStatus {
     /// IANA time zone; null until known (the schedule does not run without it).
     pub time_zone: Option<String>,
     /// Next scheduled instant; null when off or without a time zone.
-    pub next_run_at: Option<DateTime<Utc>>,
+    pub next_run_at: Option<Timestamp>,
     /// The most recent scheduled run; null before the first.
     pub last_run: Option<ScheduledRun>,
 }
@@ -219,7 +219,7 @@ pub struct ScheduleStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct ScheduledRun {
     /// Its scheduled instant (the configured local time on that local date).
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     /// What happened.
     pub outcome: ScheduledOutcome,
     /// Plain reason for `skipped`, `needs_sign_in` and `failed`.
@@ -246,9 +246,9 @@ pub struct SnapshotMeta {
     /// The refresh that produced it.
     pub refresh_id: RefreshId,
     /// When its scan finished.
-    pub scanned_at: DateTime<Utc>,
+    pub scanned_at: Timestamp,
     /// When its ranking finished; null while ranking or when it did not finish.
-    pub ranked_at: Option<DateTime<Utc>>,
+    pub ranked_at: Option<Timestamp>,
     /// Ranked items by kind and tier.
     pub item_counts: ItemCounts,
     /// Items left out of the ranking (drafts of others, skipped bot authors, no owned change).
@@ -317,7 +317,7 @@ pub struct AwaitingItem {
     /// Logins and teams (`team:<slug>`) whose review is requested.
     pub waiting_on: Vec<String>,
     /// Since when it waits (the oldest open request).
-    pub waiting_since: DateTime<Utc>,
+    pub waiting_since: Timestamp,
     /// Deterministic tags from scan facts (e.g. CI passing).
     pub tags: Vec<FactTag>,
     /// Its score in tenths, when it is also ranked.
@@ -330,7 +330,7 @@ pub struct HistoryEvent {
     /// What happened.
     pub kind: HistoryKind,
     /// When.
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     /// The pull request, `owner/name#number`; one event per pull request and kind.
     pub item_id: String,
 }
@@ -355,9 +355,9 @@ pub struct TodosState {
     /// State.
     pub status: TodosStatus,
     /// When the TODO rows shown were read; null when none were read.
-    pub read_at: Option<DateTime<Utc>>,
+    pub read_at: Option<Timestamp>,
     /// When MemCan could not be reached; null unless `not_refreshed`.
-    pub failed_at: Option<DateTime<Utc>>,
+    pub failed_at: Option<Timestamp>,
 }
 
 /// Whether the TODO rows are current.
@@ -410,7 +410,7 @@ pub struct ItemQuery {
     /// Only items changed at or after this time (TODOs: their change time).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub updated_since: Option<DateTime<Utc>>,
+    pub updated_since: Option<Timestamp>,
     /// Page size, [`ItemQuery::DEFAULT_LIMIT`] when absent, at most [`ItemQuery::MAX_LIMIT`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -484,7 +484,7 @@ pub struct WorkItem {
     pub private: bool,
     /// Pull requests and issues: GitHub `updatedAt`. TODOs: when the dashboard first saw the current values of the
     /// fields of plan §G (MemCan has no `updated_at`).
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
     /// Deterministic tags from scan facts.
     pub tags: Vec<FactTag>,
     /// Deterministic facts from the scan.
@@ -659,7 +659,7 @@ pub struct ItemText {
     /// Reason of a P0 alarm; null when none.
     pub alarm: Option<String>,
     /// When it was judged.
-    pub judged_at: DateTime<Utc>,
+    pub judged_at: Timestamp,
     /// Carried over from before the item changed.
     pub inherited: bool,
     /// Keys of items the LLM merged into this one (chosen only from server-suggested pairs).
@@ -682,6 +682,10 @@ pub struct ReviewLink {
 /// Server-sent event of `GET /api/v1/dashboard/refreshes/{id}/events`; the SSE `event` field is the tag.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "event", rename_all = "snake_case")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "built once per send and serialised at once; boxing the status buys nothing"
+)]
 pub enum DashboardEvent {
     /// Full status of the refresh; sent on connect and on every change, including its ranking.
     Refresh {
@@ -691,7 +695,7 @@ pub enum DashboardEvent {
     /// Sent every 15 s while the stream is open; each one re-checks the session or token.
     Heartbeat {
         /// Server time of sending.
-        at: DateTime<Utc>,
+        at: Timestamp,
     },
 }
 

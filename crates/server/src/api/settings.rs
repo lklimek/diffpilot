@@ -10,7 +10,6 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, put};
 use axum::{Json, Router};
-use chrono::{DateTime, Utc};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::settings::AppInstallation;
 use contracts::api::settings::{
@@ -21,6 +20,7 @@ use contracts::job::result::{JobFailureKind, LlmCallOutcome, LlmCallStatus};
 use contracts::routes::{
     GET_REPO_SETTINGS, GET_SETTINGS, SET_ASK_EFFORT, SET_JUDGE_EFFORT, SET_LANGUAGE, SET_LLM,
 };
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 
@@ -121,7 +121,7 @@ async fn set_language(
     state
         .db
         .settings()
-        .set_language(&session.user_id, request.language, Utc::now())
+        .set_language(&session.user_id, request.language, Timestamp::now())
         .await
         .map_err(failure)?;
     tracing::info!(user_id = %session.user_id, language = ?request.language, "LLM text language set");
@@ -146,7 +146,7 @@ async fn set_llm(
     let (old, saved) = state
         .db
         .settings()
-        .set_llm_selection(&choice, &user.profile.login, Utc::now())
+        .set_llm_selection(&choice, &user.profile.login, Timestamp::now())
         .await
         .map_err(failure)?;
     let old = crate::model::selection(old).current;
@@ -174,7 +174,7 @@ async fn set_ask_effort(
             request.reasoning_effort,
             &default_choice,
             &user.profile.login,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .map_err(failure)?;
@@ -204,7 +204,7 @@ async fn set_judge_effort(
             request.reasoning_effort,
             &default_choice,
             &user.profile.login,
-            Utc::now(),
+            Timestamp::now(),
         )
         .await
         .map_err(failure)?;
@@ -254,7 +254,7 @@ async fn settings(state: &AppState, session: &Session) -> Result<Settings, Setti
             state
                 .db
                 .jobs()
-                .usage_windows(&session.tenant_id, Utc::now())
+                .usage_windows(&session.tenant_id, Timestamp::now())
                 .await?,
         ),
         memcan_status: Some(state.config.memcan.status()),
@@ -302,7 +302,7 @@ async fn installations(state: &AppState, session: &Session) -> Option<Vec<AppIns
 /// carries the plain sentence of its typed cause, never the provider's text.
 fn llm_status(
     last_call: Option<LastCall>,
-    unusable_since: Option<DateTime<Utc>>,
+    unusable_since: Option<Timestamp>,
 ) -> Option<LlmCallOutcome> {
     let not_working = |at, message: &str| LlmCallOutcome {
         at,
@@ -364,7 +364,6 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use chrono::{DateTime, Utc};
     use contracts::agent::JobKind;
     use contracts::api::tour::SourceCheck;
     use contracts::common::LlmLanguage;
@@ -412,10 +411,8 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("JSON")
     }
 
-    fn at(time: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(time)
-            .expect("time")
-            .with_timezone(&Utc)
+    fn at(time: &str) -> Timestamp {
+        time.parse::<Timestamp>().expect("time")
     }
 
     /// User `u1` signed in to the default tenant with GitHub tokens, one analysis of `acme/node-client`, and a
@@ -434,7 +431,7 @@ mod tests {
             refresh_token: SecretString::from("ghr_settings_refresh_canary"),
             refresh_token_expires_in: 180 * 86_400,
         };
-        store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, Utc::now())
+        store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, Timestamp::now())
             .await
             .expect("tokens");
         drop(lock);
@@ -529,7 +526,12 @@ mod tests {
         let h = harness().await;
         let credentials = h.state.db.llm_credentials();
         credentials
-            .register(DEFAULT_TENANT, &credential("codex-1"), true, Utc::now())
+            .register(
+                DEFAULT_TENANT,
+                &credential("codex-1"),
+                true,
+                Timestamp::now(),
+            )
             .await
             .expect("credential");
         credentials
@@ -553,7 +555,12 @@ mod tests {
         assert_eq!(h.llm_status().await, Value::Null, "nothing checked yet");
         let credentials = h.state.db.llm_credentials();
         credentials
-            .register(DEFAULT_TENANT, &credential("codex-1"), true, Utc::now())
+            .register(
+                DEFAULT_TENANT,
+                &credential("codex-1"),
+                true,
+                Timestamp::now(),
+            )
             .await
             .expect("credential");
         assert_eq!(
@@ -606,7 +613,12 @@ mod tests {
         let message = status["status"]["message"].as_str().expect("message");
         assert!(message.contains("sign in to Codex again"), "{message}");
         credentials
-            .register(DEFAULT_TENANT, &credential("codex-1"), true, Utc::now())
+            .register(
+                DEFAULT_TENANT,
+                &credential("codex-1"),
+                true,
+                Timestamp::now(),
+            )
             .await
             .expect("usable again");
         assert_eq!(h.llm_status().await, failed);
@@ -656,7 +668,7 @@ mod tests {
                     stage: JobStage::Plan { batch: 1 },
                     generation: 0,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("enqueue");
@@ -700,7 +712,7 @@ mod tests {
             usage: None,
             skills_commit: None,
             llm_call: Some(LlmCallOutcome {
-                at: Utc::now(),
+                at: Timestamp::now(),
                 status: LlmCallStatus::NotWorking {
                     message: raw.to_owned(),
                 },
@@ -829,7 +841,7 @@ mod tests {
         h.state
             .db
             .documents()
-            .put(id, DocumentKind::Prepass, "", &prepass, Utc::now())
+            .put(id, DocumentKind::Prepass, "", &prepass, Timestamp::now())
             .await
             .expect("stored");
         let (status, settings) = h.get("/api/v1/repos/Acme/Node-Client/settings").await;
@@ -853,7 +865,7 @@ mod tests {
         let prepass = analysis::prepass::prepass(&repo, &[], &[], &|_, _| None).expect("prepass");
         let documents = h.state.db.documents();
         documents
-            .put(id, DocumentKind::Prepass, "", &prepass, Utc::now())
+            .put(id, DocumentKind::Prepass, "", &prepass, Timestamp::now())
             .await
             .expect("stored");
         for (lookup, found) in [
@@ -865,7 +877,13 @@ mod tests {
             (json!({"memcan": "not_checked"}), None),
         ] {
             documents
-                .put(id, DocumentKind::MemcanProfile, "", &lookup, Utc::now())
+                .put(
+                    id,
+                    DocumentKind::MemcanProfile,
+                    "",
+                    &lookup,
+                    Timestamp::now(),
+                )
                 .await
                 .expect("lookup stored");
             let (status, settings) = h.get("/api/v1/repos/acme/node-client/settings").await;
@@ -884,14 +902,19 @@ mod tests {
         let h = harness().await;
         let credentials = h.state.db.llm_credentials();
         credentials
-            .register(DEFAULT_TENANT, &credential("codex-1"), true, Utc::now())
+            .register(
+                DEFAULT_TENANT,
+                &credential("codex-1"),
+                true,
+                Timestamp::now(),
+            )
             .await
             .expect("credential");
         credentials
             .record_call(
                 "codex-1",
                 &LlmCallOutcome {
-                    at: Utc::now(),
+                    at: Timestamp::now(),
                     status: LlmCallStatus::Working,
                 },
             )

@@ -5,12 +5,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use chrono::Utc;
 use contracts::agent::JobKind;
 use contracts::job::event::ActivityKind;
 use contracts::job::protocol::ClaimResponse;
 use contracts::job::result::Usage;
 use contracts::job::spec::JobSpec;
+use contracts::time::Timestamp;
 use futures::future::BoxFuture;
 use serde_json::json;
 use tempfile::TempDir;
@@ -109,7 +109,7 @@ impl LlmProvider for Scripted {
                 }
                 let event = JobEvent {
                     seq: 0,
-                    at: Utc::now(),
+                    at: Timestamp::now(),
                     activity: ActivityKind::Command,
                     summary: self.summary.clone(),
                 };
@@ -176,7 +176,7 @@ struct Setup {
 fn ack(cancel_requested: bool) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(EventsAck {
         cancel_requested,
-        lease_expires_at: Utc::now(),
+        lease_expires_at: Timestamp::now(),
     })
 }
 
@@ -191,7 +191,7 @@ async fn setup_with(provider: Scripted, claim_delay: Duration, detached: bool) -
     let claim = ClaimResponse {
         claim: Some(Claim {
             job_token: Secret::new(JOB_TOKEN),
-            lease_expires_at: Utc::now(),
+            lease_expires_at: Timestamp::now(),
             spec: spec.clone(),
         }),
         drop_sessions: Vec::new(),

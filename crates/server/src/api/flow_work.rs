@@ -1,4 +1,6 @@
 //! Lazy flow controls: tenant/CSRF/head checks and serialised durable scheduling requests.
+use contracts::time::Timestamp;
+
 use crate::{
     api::analyses::{AnalysisApiError, ApiResult, failure, visible_analysis},
     auth::SessionCsrf,
@@ -56,7 +58,7 @@ async fn request(
     state
         .progress
         .update(id, || async {
-            let now = chrono::Utc::now();
+            let now = Timestamp::now();
             let work = state.db.flow_work();
             let discarded = match &rejected {
                 Some(verified) => work.request_again(id, &flow, verified, now).await?,
@@ -110,7 +112,7 @@ async fn background(
     state
         .progress
         .update(id, || async {
-            let now = chrono::Utc::now();
+            let now = Timestamp::now();
             let work = state.db.flow_work();
             if body.enabled {
                 work.analyse_remaining(id, &rejected, now).await?;

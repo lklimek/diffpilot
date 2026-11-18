@@ -1,24 +1,25 @@
 //! Contract tests: the skill's test vectors (`test_scoring.py`, `test_score.py`, `test_milestones.py`,
 //! `test_todos.py`, `test_digest.py`) and the plan §I.2 acceptance tests of WP11-SCORE.
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use contracts::api::dashboard::{
     DashboardSettings, ItemKey, ItemTarget, PartSource, PartStatus, PolicyRef, RepositoryRule,
     ScoreComponent as C, ScorePart, ScoreState, Tier,
 };
 use contracts::common::RepoRef;
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 use uuid::Uuid;
 
 use super::*;
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 18, 8, 0, 0)
-        .single()
+fn now() -> Timestamp {
+    "2026-11-18T08:00:00Z"
+        .parse::<Timestamp>()
         .expect("valid time")
 }
 
-fn ago(days: f64) -> DateTime<Utc> {
-    now() - Duration::microseconds((days * 86_400e6) as i64)
+fn ago(days: f64) -> Timestamp {
+    now() - SignedDuration::from_micros((days * 86_400e6) as i64)
 }
 
 fn repo(owner: &str, name: &str) -> RepoRef {
@@ -501,7 +502,7 @@ fn requested_by(author: &str, settings: &DashboardSettings) -> Scored {
             author: Some(author.into()),
             relations: vec![Relation::ReviewRequested],
             review_pending_for_us: true,
-            review_requested_at: Some(now() - Duration::days(1)),
+            review_requested_at: Some(now() - SignedDuration::from_hours(24)),
             ..pr()
         },
         None,
@@ -1813,7 +1814,8 @@ fn scoring_has_no_io_imports() {
             "crate::github",
             "crate::memcan",
             "tokio",
-            "Utc::now",
+            "Timestamp::now",
+            "Zoned::now",
             "SystemTime",
         ] {
             assert!(!source.contains(banned), "{file} uses {banned}");

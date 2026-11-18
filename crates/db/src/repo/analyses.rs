@@ -1,6 +1,5 @@
 //! Repository for `analyses`. Frozen signatures (cross-WP); bodies are filled in by WP2-JOBS / WP2-INGEST.
 
-use chrono::{DateTime, Utc};
 use contracts::api::analyses::{
     AnalysisStage, AnalysisState, AnalysisSummary, FlowRef, StageFlow, StageKind,
 };
@@ -8,6 +7,7 @@ use contracts::api::pr::PrSummary;
 use contracts::common::{LlmLanguage, RepoRef};
 use contracts::ids::{AnalysisId, CommitSha, FlowId};
 use contracts::job::result::JobOutcome;
+use contracts::time::Timestamp;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 
@@ -65,9 +65,9 @@ pub struct AnalysisRecord {
     /// User who requested it.
     pub created_by: String,
     /// When it was requested.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// When it finished, failed or was cancelled.
-    pub finished_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<Timestamp>,
 }
 
 /// Lifecycle of a pull request's agent-session files on the runner (ADR-004).
@@ -287,7 +287,7 @@ impl Analyses<'_> {
     pub async fn create(
         &self,
         analysis: NewAnalysis,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<AnalysisRecord, DbError> {
         sqlx::query(
             "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by,
@@ -505,7 +505,7 @@ impl Analyses<'_> {
     /// alone (a question does not depend on the failed work); a `not_checked` MemCan profile
     /// lookup is deleted too, so the new round looks the profile up again. `false` when the analysis is not failed
     /// (nothing changed).
-    pub async fn retry(&self, id: AnalysisId, now: DateTime<Utc>) -> Result<bool, DbError> {
+    pub async fn retry(&self, id: AnalysisId, now: Timestamp) -> Result<bool, DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         let updated = sqlx::query(
             "UPDATE analyses SET state = 'planning', flows_total = NULL, flows_done = 0, paused_until = NULL,
@@ -576,7 +576,7 @@ impl Analyses<'_> {
         &self,
         id: AnalysisId,
         login: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, DbError> {
         Ok(sqlx::query("UPDATE analyses SET state='paused', user_paused_by=COALESCE(user_paused_by, ?), user_paused_at=COALESCE(user_paused_at, ?) WHERE id=? AND state IN ('planning','running','paused')")
             .bind(login).bind(ts(now)).bind(id.to_string()).execute(self.pool).await?.rows_affected() > 0)
@@ -584,11 +584,7 @@ impl Analyses<'_> {
 
     /// Clears only the user pause; the provider-limit gate remains in force: a paused job of the analysis, or a
     /// waiting pipeline job whose credential is paused (by any job), keeps the analysis `paused` until that time.
-    pub async fn resume_by_user(
-        &self,
-        id: AnalysisId,
-        now: DateTime<Utc>,
-    ) -> Result<bool, DbError> {
+    pub async fn resume_by_user(&self, id: AnalysisId, now: Timestamp) -> Result<bool, DbError> {
         Ok(sqlx::query(concat!(
             "UPDATE analyses SET user_paused_at=NULL, user_paused_by=NULL,
             paused_until=COALESCE(", credential_pause!(), ", paused_until),
@@ -604,7 +600,7 @@ impl Analyses<'_> {
         &self,
         id: AnalysisId,
         state: &AnalysisState,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let columns = StateColumns::of(state);
         let updated = sqlx::query(
@@ -882,7 +878,6 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
 
     use contracts::agent::JobKind;
     use contracts::job::spec::JobPriority;
@@ -893,10 +888,10 @@ mod tests {
     use crate::repo::documents::DocumentKind;
     use crate::repo::jobs::{JobStage, NewJob};
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 16, 12, minute, 0)
-            .single()
-            .unwrap_or_default()
+    fn at(minute: u32) -> Timestamp {
+        format!("2026-11-16T12:{minute:02}:00Z")
+            .parse::<Timestamp>()
+            .expect("time")
     }
 
     async fn db() -> Db {
@@ -1667,6 +1662,8 @@ mod tests {
 
 #[cfg(test)]
 mod usage_tests {
+    use jiff::SignedDuration;
+
     use super::*;
     use crate::repo::{
         Db,
@@ -1699,7 +1696,7 @@ mod usage_tests {
                         generation: 0,
                         priority: JobPriority::Batch,
                     },
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .unwrap();
@@ -1717,7 +1714,7 @@ mod usage_tests {
                     "UPDATE jobs SET state = 'succeeded', result = ?, finished_at = ? WHERE id = ?",
                 )
                 .bind(result.to_string())
-                .bind(Utc::now().to_rfc3339())
+                .bind(Timestamp::now().to_rfc3339_offset())
                 .bind(job.id.to_string())
                 .execute(&db.pool)
                 .await
@@ -1740,10 +1737,10 @@ mod usage_tests {
         let db = Db::open(&path).await.unwrap();
         let id = testing::seed_analysis(&db).await.unwrap();
         db.analyses()
-            .pause_by_user(id, "alice", Utc::now())
+            .pause_by_user(id, "alice", Timestamp::now())
             .await
             .unwrap();
-        let reset = Utc::now() + chrono::TimeDelta::hours(3);
+        let reset = Timestamp::now() + SignedDuration::from_hours(3);
         db.analyses()
             .set_state(
                 id,
@@ -1756,7 +1753,7 @@ mod usage_tests {
                     total: Some(5),
                     stage: None,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -1768,7 +1765,17 @@ mod usage_tests {
         assert_eq!(wire["state"]["paused_by"], "alice");
         assert_eq!(wire["state"]["resumes_at"], serde_json::Value::Null);
         assert_eq!(wire["state"]["done"], 1);
-        assert!(db.analyses().resume_by_user(id, Utc::now()).await.unwrap());
-        assert!(!db.analyses().resume_by_user(id, Utc::now()).await.unwrap());
+        assert!(
+            db.analyses()
+                .resume_by_user(id, Timestamp::now())
+                .await
+                .unwrap()
+        );
+        assert!(
+            !db.analyses()
+                .resume_by_user(id, Timestamp::now())
+                .await
+                .unwrap()
+        );
     }
 }

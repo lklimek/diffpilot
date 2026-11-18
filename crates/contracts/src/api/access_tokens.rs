@@ -1,8 +1,8 @@
 //! Personal access tokens (ADR-019): read-only API access for the user's agents, managed in Settings.
 
+use crate::time::Timestamp;
 use std::fmt;
 
-use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -48,11 +48,11 @@ pub struct AccessToken {
     /// What the token may do.
     pub scopes: Vec<TokenScope>,
     /// Creation time.
-    pub created_at: DateTime<Utc>,
+    pub created_at: Timestamp,
     /// The token stops working at this time.
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Timestamp,
     /// Last accepted use (recorded at most once a minute); null before the first.
-    pub last_used_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<Timestamp>,
 }
 
 /// Body of `POST /api/v1/settings/access-tokens`.

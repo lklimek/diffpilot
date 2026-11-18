@@ -19,9 +19,9 @@ mod tests;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::{ItemKey, ItemTarget, ScanNote};
 use contracts::common::RepoRef;
+use contracts::time::Timestamp;
 use serde::Deserialize;
 
 use crate::github::rest::is_valid_repo;
@@ -145,9 +145,8 @@ fn note(text: String, item: Option<ItemKey>) -> ScanNote {
 }
 
 /// An RFC 3339 timestamp GitHub sent.
-fn timestamp(value: &serde_json::Value) -> Option<DateTime<Utc>> {
+fn timestamp(value: &serde_json::Value) -> Option<Timestamp> {
     value
         .as_str()
-        .and_then(|text| DateTime::parse_from_rfc3339(text).ok())
-        .map(|time| time.with_timezone(&Utc))
+        .and_then(|text| text.parse::<Timestamp>().ok())
 }

@@ -12,12 +12,6 @@
 //! line), `usage_limit`, `fail` (`message`) and `answer` (`output`: a JSON object for JSON jobs,
 //! a tagged-text string for file jobs). File jobs write `out/flow.md` before using the real bounded collector.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
-
-use chrono::{TimeDelta, Utc};
 use contracts::agent::judge_work::{JudgeWorkInput, part_values};
 use contracts::agent::{JobKind, output_schema};
 use contracts::api::dashboard::ScoreComponent;
@@ -27,7 +21,14 @@ use contracts::job::result::Usage;
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 use tokio::sync::{Notify, mpsc};
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 use crate::provider::codex::{CodexStream, Exit, usage_delta};
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
@@ -228,7 +229,7 @@ impl FakeProvider {
                     Action::UsageLimit { resets_in_secs } => {
                         return Err(ProviderError::UsageLimit {
                             resets_at: resets_in_secs
-                                .map(|secs| Utc::now() + TimeDelta::seconds(secs)),
+                                .map(|secs| Timestamp::now() + SignedDuration::from_secs(secs)),
                         });
                     }
                     Action::Fail { message } => return Err(ProviderError::Failed { message }),
@@ -252,7 +253,7 @@ impl FakeProvider {
             if let Some((activity, summary)) = stream.line(line) {
                 let event = JobEvent {
                     seq: 0,
-                    at: Utc::now(),
+                    at: Timestamp::now(),
                     activity,
                     summary,
                 };
@@ -543,12 +544,13 @@ mod tests {
             &json!({"rules": [{"id": "pause", "job": "analyse_flow", "flow": 2, "times": 1,
                 "action": {"usage_limit": {"resets_in_secs": 5}}}]}),
         );
-        let before = Utc::now();
+        let before = Timestamp::now();
         match run(&provider, JobKind::AnalyseFlow, "Job: analyse_flow f2.").await {
             Err(ProviderError::UsageLimit {
                 resets_at: Some(at),
             }) => assert!(
-                at >= before + TimeDelta::seconds(5) && at <= Utc::now() + TimeDelta::seconds(5)
+                at >= before + SignedDuration::from_secs(5)
+                    && at <= Timestamp::now() + SignedDuration::from_secs(5)
             ),
             other => panic!("expected a usage limit with a reset time, got {other:?}"),
         }

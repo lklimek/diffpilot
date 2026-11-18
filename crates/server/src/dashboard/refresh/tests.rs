@@ -20,7 +20,6 @@ use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use contracts::api::dashboard::{
     DashboardEvent, DashboardSettings, DashboardSummary, HistoryKind, ItemCounts, ItemKind,
     ItemPage, KindCounts, PolicyRef, RankingState, RefreshFailureCode, RefreshState, RefreshStatus,
@@ -28,11 +27,13 @@ use contracts::api::dashboard::{
 };
 use contracts::common::RepoRef;
 use contracts::ids::RefreshId;
+use contracts::time::Timestamp;
 use db::repo::users::GithubProfile;
 use db::repo::{DEFAULT_TENANT, Db};
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use http_body_util::BodyExt;
+use jiff::SignedDuration;
 use reqwest::header::{ACCEPT, LOCATION};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ServerCapabilities,
@@ -64,10 +65,8 @@ const MEMCAN_TOKEN: &str = "memcan-token-of-the-refresh-tests";
 /// Bound of every wait on a refresh (real time; a refresh against the in-process fakes takes well under a second).
 const WAIT: Duration = Duration::from_secs(20);
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 18, 9, 0, 0)
-        .single()
-        .expect("now")
+fn now() -> Timestamp {
+    "2026-11-18T09:00:00Z".parse::<Timestamp>().expect("now")
 }
 
 fn repo_root() -> PathBuf {
@@ -401,7 +400,7 @@ const ALICE: &str = "__Host-sr_session=alice-session";
 const COLLEAGUE: &str = "__Host-sr_session=colleague-session";
 
 async fn add_user(state: &AppState, user_id: &str, login: &str, github_id: i64, token: &str) {
-    let real_now = Utc::now();
+    let real_now = Timestamp::now();
     db::repo::tenants::testing::allow_login(&state.db, DEFAULT_TENANT, login, github_id)
         .await
         .expect("allow");
@@ -430,7 +429,7 @@ async fn add_user(state: &AppState, user_id: &str, login: &str, github_id: i64, 
                 tenant_id: DEFAULT_TENANT,
                 user_id,
                 csrf_token: "csrf",
-                expires_at: real_now + chrono::TimeDelta::hours(1),
+                expires_at: real_now + SignedDuration::from_hours(1),
             },
             real_now,
         )
@@ -456,14 +455,14 @@ async fn world_with(ranker: Arc<dyn Ranker>, scan_limit: Duration) -> World {
     add_user(&state, "u2", "colleague", 77, "colleague-session").await;
     let grant = sign_in(&github).await;
     let lock = lock_user("u1").await;
-    store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, Utc::now())
+    store_sign_in_tokens(&state, &lock, DEFAULT_TENANT, &grant, Timestamp::now())
         .await
         .expect("token pair");
     drop(lock);
     state
         .db
         .dashboard()
-        .save_settings(DEFAULT_TENANT, "u1", &settings(), Utc::now())
+        .save_settings(DEFAULT_TENANT, "u1", &settings(), Timestamp::now())
         .await
         .expect("settings");
     state.dashboard = DashboardHub::testing(
@@ -650,7 +649,7 @@ impl World {
     async fn restarted(&self, ranker: Arc<dyn Ranker>) -> Self {
         let mut state = self.state.clone();
         state.dashboard = DashboardHub::testing(
-            Clock::starting_at(now() + TimeDelta::minutes(5)),
+            Clock::starting_at(now() + SignedDuration::from_mins(5)),
             Duration::from_secs(24 * 3600),
             ranker,
             Duration::ZERO,
@@ -836,7 +835,7 @@ async fn full_refresh_stores_the_expected_snapshot() {
     );
 }
 
-fn at(text: &str) -> DateTime<Utc> {
+fn at(text: &str) -> Timestamp {
     text.parse().expect("time")
 }
 
@@ -980,7 +979,7 @@ async fn failed_scan_keeps_previous_snapshot_and_rate_limit_blocks_a_new_start()
     let first = w.refreshed().await;
     let reset = at("2026-11-18T10:41:00Z");
     w.faults(json!([{"on": "search", "times": 100,
-        "answer": {"kind": "primary_rate_limit", "reset": reset.timestamp()}}]))
+        "answer": {"kind": "primary_rate_limit", "reset": reset.as_second()}}]))
         .await;
     let failed = w.refreshed().await;
     assert_eq!(failed.state, RefreshState::Failed);
@@ -1215,12 +1214,7 @@ async fn items_filters() {
     );
     let all = w.items("").await;
     let since = all.items.iter().map(|i| i.updated_at).max().expect("items");
-    let recent = w
-        .items(&format!(
-            "?updated_since={}",
-            since.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        ))
-        .await;
+    let recent = w.items(&format!("?updated_since={:.0}", since.get())).await;
     assert!(!recent.items.is_empty());
     assert!(recent.items.iter().all(|i| i.updated_at >= since));
     let (status, _) = w
@@ -1551,7 +1545,7 @@ async fn refused_search_without_owners_says_where_to_add_them() {
     w.state
         .db
         .dashboard()
-        .save_settings(DEFAULT_TENANT, "u1", &none, Utc::now())
+        .save_settings(DEFAULT_TENANT, "u1", &none, Timestamp::now())
         .await
         .expect("settings");
     let done = w.refreshed().await;
@@ -1578,7 +1572,7 @@ async fn todos_hidden_when_switched_off() {
     w.state
         .db
         .dashboard()
-        .save_settings(DEFAULT_TENANT, "u1", &off, Utc::now())
+        .save_settings(DEFAULT_TENANT, "u1", &off, Timestamp::now())
         .await
         .expect("settings");
     let page = w.items("").await;

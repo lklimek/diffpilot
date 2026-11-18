@@ -4,8 +4,8 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::ScanNote;
+use contracts::time::Timestamp;
 use futures::future::join_all;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -54,8 +54,8 @@ struct OpenIssue {
     url: String,
     #[serde(default)]
     body: String,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    created_at: Timestamp,
+    updated_at: Timestamp,
     author_association: Option<String>,
     author: Option<Login>,
     assignees: Nodes<Login>,

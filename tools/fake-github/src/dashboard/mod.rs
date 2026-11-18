@@ -22,7 +22,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use chrono::{DateTime, SecondsFormat, Utc};
+use contracts::time::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::Instant;
@@ -303,7 +303,7 @@ impl Dashboard {
             graphql,
             recorded_pull,
             started: Instant::now(),
-            started_epoch: Utc::now().timestamp(),
+            started_epoch: Timestamp::now().as_second(),
             arrivals: AtomicUsize::new(0),
             live: Mutex::default(),
         })
@@ -618,7 +618,7 @@ impl Dashboard {
         record.cost = Some(cost);
         let rate_limit = json!({"__typename": "RateLimit", "cost": cost, "limit": rate.limit,
             "remaining": rate.remaining, "used": rate.used, "nodeCount": record.lookups,
-            "resetAt": DateTime::<Utc>::from_timestamp(rate.reset, 0).map(|t| t.to_rfc3339_opts(SecondsFormat::Secs, true))});
+            "resetAt": Timestamp::from_second(rate.reset).map(|t| format!("{:.0}", t.get()))});
         let body = execute::execute(doc, &self.world, rate_limit, &self.moved_head());
         let mut response = (StatusCode::OK, Json(body)).into_response();
         rate.apply(response.headers_mut());

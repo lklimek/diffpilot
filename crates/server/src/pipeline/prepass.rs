@@ -7,10 +7,10 @@ use std::path::Path;
 use analysis::blob::{Blob, Limits};
 use analysis::diff::FileDiff;
 use analysis::prepass::{self, Prepass, PrepassError};
-use chrono::Utc;
 use contracts::api::analyses::AnalysisSummary;
 use contracts::common::LineSide;
 use contracts::ids::AnalysisId;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
 
@@ -96,7 +96,13 @@ async fn store(state: &AppState, analysis: AnalysisId, prepass: &Prepass) -> Res
     state
         .db
         .documents()
-        .put(analysis, DocumentKind::Prepass, "", prepass, Utc::now())
+        .put(
+            analysis,
+            DocumentKind::Prepass,
+            "",
+            prepass,
+            Timestamp::now(),
+        )
         .await?;
     tracing::debug!(%analysis, hunks = prepass.hunks.len(), "pre-pass stored");
     Ok(())

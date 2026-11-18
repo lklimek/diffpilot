@@ -8,12 +8,12 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use chrono::Utc;
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::error::ApiErrorCode;
 use contracts::api::feedback::{Feedback, FeedbackRequest};
 use contracts::ids::{AnalysisId, FeedbackId};
 use contracts::routes::{DELETE_FEEDBACK, LIST_FEEDBACK, POST_FEEDBACK};
+use contracts::time::Timestamp;
 use db::error::DbError;
 
 use crate::api::analyses::{AnalysisApiError, visible_analysis};
@@ -135,9 +135,15 @@ async fn create(
     let Path(id) = id.map_err(failure)?;
     let Json(request) = body.map_err(failure)?;
     let analysis = visible(&state, &session, id).await?;
-    let stored = feedback::record(&state, &session.user_id, &analysis, request, Utc::now())
-        .await
-        .map_err(failure)?;
+    let stored = feedback::record(
+        &state,
+        &session.user_id,
+        &analysis,
+        request,
+        Timestamp::now(),
+    )
+    .await
+    .map_err(failure)?;
     Ok(Json(stored))
 }
 
@@ -153,7 +159,7 @@ async fn remove(
         &session.user_id,
         analysis.id,
         feedback_id,
-        Utc::now(),
+        Timestamp::now(),
     )
     .await
     .map_err(failure)?;
@@ -196,7 +202,7 @@ mod tests {
         state
             .db
             .documents()
-            .put(analysis, DocumentKind::Flow, "f3", &flow, Utc::now())
+            .put(analysis, DocumentKind::Flow, "f3", &flow, Timestamp::now())
             .await
             .expect("flow");
         let cookie = session_cookie(&state, DEFAULT_TENANT).await;
@@ -342,7 +348,7 @@ mod tests {
             .state
             .db
             .feedback()
-            .pending_memcan(Utc::now(), 10)
+            .pending_memcan(Timestamp::now(), 10)
             .await
             .expect("queue");
         assert_eq!(pending.len(), 2, "queued for MemCan");

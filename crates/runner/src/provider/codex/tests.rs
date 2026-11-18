@@ -7,11 +7,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use chrono::Utc;
 use contracts::common::RepoRef;
 use contracts::ids::JobId;
 use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::spec::{JobLimits, ModelChoice, ReasoningEffort};
+use contracts::time::Timestamp;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
@@ -150,7 +150,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
         access: AgentAccess {
             github: Some(InstallationToken {
                 token: Secret::new(GITHUB_CANARY),
-                expires_at: Utc::now(),
+                expires_at: Timestamp::now(),
                 repository: RepoRef {
                     owner: "acme".to_owned(),
                     name: "node-client".to_owned(),
@@ -955,10 +955,7 @@ async fn usage_limit_carries_resets_at_from_the_rollout() {
     let (result, _) = resume(&h).await;
     match result {
         Err(ProviderError::UsageLimit { resets_at }) => {
-            assert_eq!(
-                resets_at,
-                chrono::DateTime::from_timestamp(1_794_990_905, 0)
-            );
+            assert_eq!(resets_at, Timestamp::from_second(1_794_990_905));
         }
         other => panic!("{other:?}"),
     }

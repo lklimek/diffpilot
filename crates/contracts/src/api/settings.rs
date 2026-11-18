@@ -1,6 +1,6 @@
 //! Settings (brief §4.4).
 
-use chrono::{DateTime, Utc};
+use crate::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -97,7 +97,7 @@ pub struct MemcanStatus {
     /// Outcome observed by the server's client.
     pub state: MemcanState,
     /// Last successful tool call in this server process, retained after a later failure.
-    pub last_success_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_success_at: Option<Timestamp>,
 }
 
 /// What the server knows about MemCan connectivity.
@@ -136,7 +136,7 @@ pub struct LlmSelection {
     /// Login of the last editor of the model, effort, ranking effort or Ask effort; null for the default.
     pub changed_by: Option<String>,
     /// Time of the last save; null for the default.
-    pub changed_at: Option<DateTime<Utc>>,
+    pub changed_at: Option<Timestamp>,
 }
 
 /// One model available in this deployment.

@@ -13,17 +13,18 @@ mod scan;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 
-use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
 use contracts::api::dashboard::{
     RankingState, RankingStatus, RefreshFailure, RefreshFailureCode, RefreshState, RefreshStatus,
     RefreshTrigger, ScanStepKey, StepState,
 };
 use contracts::api::settings::MemcanState;
 use contracts::ids::RefreshId;
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::dashboard::{RefreshRecord, RestartOutcome, ScanEnd, StartOutcome};
 use futures::FutureExt;
+use jiff::SignedDuration;
+use jiff::tz::TimeZone;
 
 use self::progress::Progress;
 use self::rank::RankRun;
@@ -60,7 +61,7 @@ pub enum StartError {
     #[error("the user's GitHub rate limit is exhausted")]
     RateLimited {
         /// When the limit resets.
-        retry_at: DateTime<Utc>,
+        retry_at: Timestamp,
     },
     /// The database failed.
     #[error("the refresh could not be stored")]
@@ -440,12 +441,12 @@ async fn scan_and_store(
     let settings = settings::effective(&state.db, &scope.tenant_id, &scope.user_id)
         .await
         .map_err(|error| failure_of(&RunError::Db(error), state, None))?;
-    let zone: Tz = settings
+    let zone = settings
         .time_zone
         .as_deref()
-        .and_then(|zone| zone.parse().ok())
-        .unwrap_or(Tz::UTC);
-    let db_failure = |error| failure_of(&RunError::Db(error), state, Some(zone));
+        .and_then(super::zone::parse)
+        .unwrap_or(TimeZone::UTC);
+    let db_failure = |error| failure_of(&RunError::Db(error), state, Some(&zone));
     let own_login = state
         .db
         .users()
@@ -460,7 +461,7 @@ async fn scan_and_store(
         .map(|(_, snapshot)| snapshot);
     let rules = ScoreRules::new(&own_login, &settings);
     let memcan = state.config.memcan.status().state != MemcanState::NotConfigured;
-    let mut progress = Progress::new(state.clone(), scope.clone(), id, zone);
+    let mut progress = Progress::new(state.clone(), scope.clone(), id, zone.clone());
     let trigger_text = match trigger {
         RefreshTrigger::Manual => "manual",
         RefreshTrigger::Scheduled => "scheduled",
@@ -471,13 +472,13 @@ async fn scan_and_store(
         user_id: scope.user_id.clone(),
     };
     let mut client = WorkClient::new(state.config.github.api_url.clone(), tokens)
-        .map_err(|error| failure_of(&RunError::Github(error), state, Some(zone)))?;
+        .map_err(|error| failure_of(&RunError::Github(error), state, Some(&zone)))?;
     client.search_interval = state.dashboard.search_interval();
     let input = ScanInput {
         rules: &rules,
         own_login: &own_login,
         settings: &settings,
-        zone,
+        zone: &zone,
         previous: previous.as_ref(),
         memcan,
     };
@@ -489,8 +490,8 @@ async fn scan_and_store(
     let snapshot = match scanned {
         Ok(Ok(snapshot)) => snapshot,
         Ok(Err(RunError::Ended(_))) => return Ok(false),
-        Ok(Err(error)) => return Err(failed(&mut progress, error, state, zone).await),
-        Err(_) => return Err(failed(&mut progress, RunError::TimedOut, state, zone).await),
+        Ok(Err(error)) => return Err(failed(&mut progress, error, state, &zone).await),
+        Err(_) => return Err(failed(&mut progress, RunError::TimedOut, state, &zone).await),
     };
     progress.log("scan complete");
     if progress.record().await.is_err() {
@@ -515,7 +516,7 @@ async fn scan_and_store(
             Ok(true)
         }
         Err(DbError::Conflict) => Ok(false),
-        Err(error) => Err(failure_of(&RunError::Db(error), state, Some(zone))),
+        Err(error) => Err(failure_of(&RunError::Db(error), state, Some(&zone))),
     }
 }
 
@@ -523,7 +524,7 @@ async fn failed(
     progress: &mut Progress,
     error: RunError,
     state: &AppState,
-    zone: Tz,
+    zone: &TimeZone,
 ) -> RefreshFailure {
     let failure = failure_of(&error, state, Some(zone));
     tracing::debug!(error = ?error, "dashboard scan failed");
@@ -533,7 +534,7 @@ async fn failed(
 }
 
 /// The documented failure of a refresh: code, plain message (no internal error text) and the retry time.
-fn failure_of(error: &RunError, state: &AppState, zone: Option<Tz>) -> RefreshFailure {
+fn failure_of(error: &RunError, state: &AppState, zone: Option<&TimeZone>) -> RefreshFailure {
     let now = state.dashboard.now();
     let (code, retry_at) = match error {
         RunError::Github(
@@ -551,7 +552,7 @@ fn failure_of(error: &RunError, state: &AppState, zone: Option<Tz>) -> RefreshFa
         RunError::Github(WorkError::SecondaryRateLimit { retry_after }) => (
             RefreshFailureCode::GithubRateLimited,
             retry_after
-                .and_then(|wait| chrono::TimeDelta::from_std(wait).ok())
+                .and_then(|wait| SignedDuration::try_from(wait).ok())
                 .map(|wait| now + wait),
         ),
         RunError::Github(_) | RunError::SearchUnavailable => {
@@ -565,10 +566,10 @@ fn failure_of(error: &RunError, state: &AppState, zone: Option<Tz>) -> RefreshFa
         }
         RefreshFailureCode::GithubRateLimited => match retry_at {
             Some(at) => {
-                let local = at.with_timezone(&zone.unwrap_or(Tz::UTC));
+                let local = at.to_zoned(zone.cloned().unwrap_or(TimeZone::UTC));
                 format!(
                     "GitHub's rate limit is used up. Retry at {}.",
-                    local.format("%H:%M")
+                    local.strftime("%H:%M")
                 )
             }
             None => "GitHub's rate limit is used up. Try again later.".to_owned(),

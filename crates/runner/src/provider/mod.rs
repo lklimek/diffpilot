@@ -8,12 +8,12 @@ pub mod fake;
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, Utc};
 use contracts::ids::JobId;
 use contracts::job::access::AgentAccess;
 use contracts::job::event::JobEvent;
 use contracts::job::result::Usage;
 use contracts::job::spec::{JobLimits, ModelChoice};
+use contracts::time::Timestamp;
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -117,7 +117,7 @@ pub enum ProviderError {
     #[error("the Codex usage limit was reached")]
     UsageLimit {
         /// When the limit resets, if known.
-        resets_at: Option<DateTime<Utc>>,
+        resets_at: Option<Timestamp>,
     },
     /// The credential can no longer be refreshed; the owner must sign in again.
     #[error("the Codex login is no longer valid; sign in again in the runner container")]

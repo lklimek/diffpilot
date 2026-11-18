@@ -1,10 +1,10 @@
 //! Repository for `feedback`. Frozen signatures (cross-WP: WP3-REVIEW records `missed_by_llm` through
 //! [`FeedbackRepo::upsert`], WP3-MEMCAN the rest). One entry per (user, analysis, target, value) (CCR-F1).
 
-use chrono::{DateTime, Utc};
 use contracts::api::feedback::{Feedback, FeedbackMemory, FeedbackTarget, FeedbackValue};
 use contracts::common::LineSide;
 use contracts::ids::{AnalysisId, AnnotationId, FeedbackId, StepId};
+use contracts::time::Timestamp;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
@@ -66,14 +66,14 @@ pub enum MemcanOutcome {
     /// MemCan answered with a refusal; nothing was done. Retried at `retry_at`.
     Failed {
         /// Next attempt.
-        retry_at: DateTime<Utc>,
+        retry_at: Timestamp,
     },
     /// No usable answer: the operation may still take effect until `settles_at`. Retried at `retry_at`.
     Unknown {
         /// Next attempt.
-        retry_at: DateTime<Utc>,
+        retry_at: Timestamp,
         /// Time after which the operation can no longer land.
-        settles_at: DateTime<Utc>,
+        settles_at: Timestamp,
     },
 }
 
@@ -170,11 +170,7 @@ impl FeedbackRepo<'_> {
     /// the revision, revives a removed entry and resets the MemCan state to pending. `overrated` and
     /// `underrated` exclude each other: recording one removes the other in the same transaction.
     /// `NotFound` if the analysis does not exist.
-    pub async fn upsert(
-        &self,
-        feedback: NewFeedback,
-        now: DateTime<Utc>,
-    ) -> Result<Feedback, DbError> {
+    pub async fn upsert(&self, feedback: NewFeedback, now: Timestamp) -> Result<Feedback, DbError> {
         let (kind, key) = target_key(&feedback.target)?;
         let now = ts(now);
         let mut tx = super::write_tx(self.pool).await?;
@@ -252,7 +248,7 @@ impl FeedbackRepo<'_> {
         analysis: AnalysisId,
         user_id: &str,
         id: FeedbackId,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let now = ts(now);
         let removed = sqlx::query(
@@ -277,7 +273,7 @@ impl FeedbackRepo<'_> {
     /// fewest failed attempts first, then oldest.
     pub async fn pending_memcan(
         &self,
-        now: DateTime<Utc>,
+        now: Timestamp,
         limit: u32,
     ) -> Result<Vec<PendingFeedback>, DbError> {
         let rows = sqlx::query(concat!(
@@ -306,7 +302,7 @@ impl FeedbackRepo<'_> {
         id: FeedbackId,
         revision: u32,
         outcome: MemcanOutcome,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<MemcanAck, DbError> {
         let id = id.to_string();
         let now = ts(now);
@@ -362,19 +358,18 @@ impl FeedbackRepo<'_> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
 
     use super::*;
     use crate::repo::Db;
     use crate::repo::analyses::testing::seed_analysis;
 
-    fn at(minute: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 17, 12, minute, 0)
-            .single()
-            .unwrap_or_default()
+    fn at(minute: u32) -> Timestamp {
+        format!("2026-11-17T12:{minute:02}:00Z")
+            .parse::<Timestamp>()
+            .expect("time")
     }
 
-    fn failed(retry_at: DateTime<Utc>) -> MemcanOutcome {
+    fn failed(retry_at: Timestamp) -> MemcanOutcome {
         MemcanOutcome::Failed { retry_at }
     }
 

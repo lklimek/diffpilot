@@ -1,22 +1,23 @@
 //! Properties (plan §C tests): parts sum to the total and stay in bounds, tiers are monotonic in the score,
 //! provisional is never final, scoring and ranking are deterministic, and no input panics.
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
 use contracts::api::dashboard::{DashboardSettings, PartStatus, ScoreComponent as C, ScoreState};
 use contracts::common::RepoRef;
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 use proptest::prelude::*;
 
 use super::rules::BranchPattern;
 use super::*;
 
-fn now() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 18, 8, 0, 0)
-        .single()
+fn now() -> Timestamp {
+    "2026-11-18T08:00:00Z"
+        .parse::<Timestamp>()
         .expect("valid time")
 }
 
-fn ago(days: f64) -> DateTime<Utc> {
-    now() - Duration::seconds((days * 86_400.0) as i64)
+fn ago(days: f64) -> Timestamp {
+    now() - SignedDuration::from_secs((days * 86_400.0) as i64)
 }
 
 fn rules() -> ScoreRules {

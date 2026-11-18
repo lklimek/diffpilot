@@ -3,7 +3,7 @@
 //! every new row and grows by one per write, so a version read before the row was deleted and re-created does
 //! not match the new row.
 
-use chrono::{DateTime, Utc};
+use contracts::time::Timestamp;
 use sqlx::{Row, SqlitePool};
 
 use super::Db;
@@ -32,11 +32,11 @@ pub struct EncryptedTokens {
     /// Ciphertext of the access token.
     pub access_ct: Vec<u8>,
     /// Expiry of the access token.
-    pub access_expires_at: DateTime<Utc>,
+    pub access_expires_at: Timestamp,
     /// Ciphertext of the refresh token.
     pub refresh_ct: Vec<u8>,
     /// Expiry of the refresh token.
-    pub refresh_expires_at: DateTime<Utc>,
+    pub refresh_expires_at: Timestamp,
 }
 
 /// A stored pair and its version.
@@ -64,7 +64,7 @@ fn put_query<'q>(
     user_id: &'q str,
     tenant_id: &'q str,
     tokens: &'q EncryptedTokens,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
     sqlx::query(
         "INSERT INTO user_tokens
@@ -93,7 +93,7 @@ impl UserTokens<'_> {
         user_id: &str,
         tenant_id: &str,
         tokens: &EncryptedTokens,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         put_query(user_id, tenant_id, tokens, now)
             .execute(self.pool)
@@ -108,7 +108,7 @@ impl UserTokens<'_> {
         tenant_id: &str,
         tokens: &EncryptedTokens,
         session: &NewSession<'_>,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let mut tx = super::write_tx(self.pool).await?;
         insert_session(session, now).execute(&mut *tx).await?;
@@ -157,7 +157,7 @@ impl UserTokens<'_> {
         user_id: &str,
         expected_version: i64,
         tokens: &EncryptedTokens,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, DbError> {
         let updated = sqlx::query(
             "UPDATE user_tokens SET access_ct = ?, access_expires_at = ?, refresh_ct = ?,
@@ -266,7 +266,7 @@ impl UserTokens<'_> {
         &self,
         user_id: &str,
         version: i64,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, DbError> {
         let now = timestamp(now);
         let updated = sqlx::query(
@@ -314,21 +314,19 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeDelta;
+    use jiff::SignedDuration;
 
     use super::*;
     use crate::repo::DEFAULT_TENANT;
     use crate::repo::users::GithubProfile;
 
     fn pair(tag: u8) -> EncryptedTokens {
-        let at = DateTime::parse_from_rfc3339("2026-11-16T10:00:00Z")
-            .expect("time")
-            .with_timezone(&Utc);
+        let at = "2026-11-16T10:00:00Z".parse::<Timestamp>().expect("time");
         EncryptedTokens {
             access_ct: vec![tag; 4],
-            access_expires_at: at + TimeDelta::hours(8),
+            access_expires_at: at + SignedDuration::from_hours(8),
             refresh_ct: vec![tag; 8],
-            refresh_expires_at: at + TimeDelta::days(180),
+            refresh_expires_at: at + SignedDuration::from_hours(24 * 180),
         }
     }
 
@@ -342,26 +340,26 @@ mod tests {
             avatar_url: None,
         };
         db.users()
-            .upsert_member(DEFAULT_TENANT, "u-1", &profile, Utc::now())
+            .upsert_member(DEFAULT_TENANT, "u-1", &profile, Timestamp::now())
             .await
             .expect("user");
         let tokens = db.user_tokens();
         assert_eq!(tokens.get("u-1").await.expect("get"), None);
         tokens
-            .put("u-1", DEFAULT_TENANT, &pair(1), Utc::now())
+            .put("u-1", DEFAULT_TENANT, &pair(1), Timestamp::now())
             .await
             .expect("put");
         let stored = tokens.get("u-1").await.expect("get").expect("stored");
         assert_eq!(stored.tokens, pair(1));
         assert!(
             tokens
-                .replace("u-1", stored.version, &pair(2), Utc::now())
+                .replace("u-1", stored.version, &pair(2), Timestamp::now())
                 .await
                 .expect("replace")
         );
         assert!(
             !tokens
-                .replace("u-1", stored.version, &pair(3), Utc::now())
+                .replace("u-1", stored.version, &pair(3), Timestamp::now())
                 .await
                 .expect("stale replace"),
             "a stale version must not overwrite the newer pair"
@@ -370,7 +368,7 @@ mod tests {
         assert_eq!(current.tokens, pair(2));
         assert_eq!(current.version, stored.version + 1);
         tokens
-            .put("u-1", DEFAULT_TENANT, &pair(4), Utc::now())
+            .put("u-1", DEFAULT_TENANT, &pair(4), Timestamp::now())
             .await
             .expect("put again");
         assert_eq!(
@@ -400,11 +398,11 @@ mod tests {
             avatar_url: None,
         };
         db.users()
-            .upsert_member(DEFAULT_TENANT, "u-1", &profile, Utc::now())
+            .upsert_member(DEFAULT_TENANT, "u-1", &profile, Timestamp::now())
             .await
             .expect("user");
         db.user_tokens()
-            .put("u-1", DEFAULT_TENANT, &pair(1), Utc::now())
+            .put("u-1", DEFAULT_TENANT, &pair(1), Timestamp::now())
             .await
             .expect("put");
         db.sessions()
@@ -414,9 +412,9 @@ mod tests {
                     tenant_id: DEFAULT_TENANT,
                     user_id: "u-1",
                     csrf_token: "c",
-                    expires_at: Utc::now() + TimeDelta::hours(1),
+                    expires_at: Timestamp::now() + SignedDuration::from_hours(1),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .expect("session");
@@ -447,12 +445,12 @@ mod tests {
                 .expect("end")
         );
         tokens
-            .put("u-1", DEFAULT_TENANT, &pair(5), Utc::now())
+            .put("u-1", DEFAULT_TENANT, &pair(5), Timestamp::now())
             .await
             .expect("new sign-in");
         assert!(
             !tokens
-                .replace("u-1", stale, &pair(6), Utc::now())
+                .replace("u-1", stale, &pair(6), Timestamp::now())
                 .await
                 .expect("stale replace"),
             "a version read before the row was re-created must not match"
@@ -518,10 +516,10 @@ mod tests {
         assert_eq!(session_count(&db).await, 0);
     }
 
-    fn live_at(now: DateTime<Utc>) -> Liveness {
+    fn live_at(now: Timestamp) -> Liveness {
         Liveness {
             now,
-            seen_after: now - TimeDelta::hours(1),
+            seen_after: now - SignedDuration::from_hours(1),
         }
     }
 
@@ -529,13 +527,13 @@ mod tests {
     async fn end_session_deletes_the_pair_with_the_last_live_session() {
         let db = db_with_signed_in_user().await;
         let tokens = db.user_tokens();
-        let now = Utc::now();
+        let now = Timestamp::now();
         crate::repo::tenants::testing::allow_login(&db, DEFAULT_TENANT, "lklimek", 42)
             .await
             .expect("allowed");
         for (hash, expires_at) in [
-            (&b"second"[..], now + TimeDelta::hours(1)),
-            (&b"expired"[..], now - TimeDelta::seconds(1)),
+            (&b"second"[..], now + SignedDuration::from_hours(1)),
+            (&b"expired"[..], now - SignedDuration::from_secs(1)),
         ] {
             db.sessions()
                 .create(
@@ -583,7 +581,7 @@ mod tests {
     async fn last_sign_out_keeps_the_pair_while_schedule_on() {
         let db = db_with_signed_in_user().await;
         let tokens = db.user_tokens();
-        let now = Utc::now();
+        let now = Timestamp::now();
         crate::repo::tenants::testing::allow_login(&db, DEFAULT_TENANT, "lklimek", 42)
             .await
             .expect("allowed");
@@ -623,7 +621,7 @@ mod tests {
         let db = db_with_signed_in_user().await;
         let tokens = db.user_tokens();
         let stored = tokens.get("u-1").await.expect("get").expect("stored");
-        let now = pair(1).access_expires_at - TimeDelta::hours(1);
+        let now = pair(1).access_expires_at - SignedDuration::from_hours(1);
         assert!(
             !tokens
                 .expire_access("u-1", stored.version + 1, now)
@@ -645,13 +643,13 @@ mod tests {
     #[tokio::test]
     async fn sign_in_writes_session_and_pair_in_one_transaction() {
         let db = db_with_signed_in_user().await;
-        let now = Utc::now();
+        let now = Timestamp::now();
         let session = crate::repo::sessions::NewSession {
             token_hash: b"new",
             tenant_id: DEFAULT_TENANT,
             user_id: "u-1",
             csrf_token: "c",
-            expires_at: now + TimeDelta::hours(1),
+            expires_at: now + SignedDuration::from_hours(1),
         };
         testing::fail_token_writes(&db)
             .await

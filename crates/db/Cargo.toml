@@ -11,13 +11,15 @@ test-util = []
 
 [dependencies]
 contracts.workspace = true
-chrono.workspace = true
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# The host's zone, as SQLite's `localtime` uses it.
+jiff = { workspace = true, features = ["tz-system"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }
 uuid.workspace = true

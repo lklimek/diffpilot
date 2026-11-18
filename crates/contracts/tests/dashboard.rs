@@ -2,11 +2,6 @@
 //! wire formats, the one-time token secret, settings defaults and the fixtures of `fixtures/dashboard/`.
 #![expect(clippy::expect_used, reason = "test helpers outside #[test] functions")]
 
-use std::collections::{BTreeSet, HashSet};
-use std::fs;
-use std::path::{Path, PathBuf};
-
-use chrono::{TimeZone, Utc};
 use contracts::api::access_tokens::{
     AccessToken, AccessTokenId, AccessTokenSecret, CreateAccessToken, CreatedAccessToken,
     TokenScope,
@@ -26,6 +21,12 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use std::collections::{BTreeSet, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 const READ: RouteAuth = RouteAuth::SessionOrToken(TokenScope::Read);
 
@@ -147,10 +148,7 @@ fn tokens_are_accepted_only_on_public_safe_reads() {
 
 #[test]
 fn dashboard_event_name_is_the_tag() {
-    let at = Utc
-        .with_ymd_and_hms(2026, 11, 18, 10, 0, 0)
-        .single()
-        .expect("time");
+    let at = "2026-11-18T10:00:00Z".parse::<Timestamp>().expect("time");
     let heartbeat = DashboardEvent::Heartbeat { at };
     assert_eq!(
         serde_json::to_value(&heartbeat).expect("serialises"),
@@ -178,8 +176,8 @@ fn token_secret_is_only_in_the_creation_response() {
             name: "agent".to_owned(),
             prefix: "srp_Ab3dE5gH".to_owned(),
             scopes: vec![TokenScope::Read],
-            created_at: Utc::now(),
-            expires_at: Utc::now(),
+            created_at: Timestamp::now(),
+            expires_at: Timestamp::now(),
             last_used_at: None,
         },
     };
@@ -563,7 +561,7 @@ fn dashboard_fixtures_are_typed_and_consistent() {
             .map(str::to_owned)
             .into()
     );
-    let window_start = snapshot.scanned_at - chrono::Duration::weeks(12);
+    let window_start = snapshot.scanned_at - SignedDuration::from_hours(12 * 7 * 24);
     assert!(
         snapshot
             .history
@@ -640,10 +638,11 @@ fn dashboard_fixtures_are_typed_and_consistent() {
                     .expect("todos")
                     .iter()
                     .any(|todo| {
-                        let created = chrono::DateTime::parse_from_rfc3339(
-                            todo["created_at"].as_str().expect("created_at"),
-                        )
-                        .expect("RFC 3339");
+                        let created: Timestamp = todo["created_at"]
+                            .as_str()
+                            .expect("created_at")
+                            .parse()
+                            .expect("RFC 3339");
                         item.key.as_str() == format!("memcan~{}", todo["id"].as_str().expect("id"))
                             && todo["title"] == json!(item.title)
                             && item.updated_at >= created

@@ -1,7 +1,6 @@
 //! Job contract: wire format, secrets, state machine, no floats (plan §5.3; runner protocol).
 #![expect(clippy::expect_used, reason = "test helpers outside #[test] functions")]
 
-use chrono::{TimeZone, Utc};
 use contracts::agent::JobKind;
 use contracts::common::RepoRef;
 use contracts::ids::{AnalysisId, CommitSha, JobId, RefreshId};
@@ -20,6 +19,7 @@ use contracts::job::spec::{
     PullRequestTarget, ReasoningEffort, RepoCheckout, SessionRef,
 };
 use contracts::job::state::{JobState, JobTransition};
+use contracts::time::Timestamp;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -31,9 +31,8 @@ const JOB_TOKEN: &str = "job-example-token";
 
 fn spec() -> JobSpec {
     let analysis_id = AnalysisId::new_random();
-    let at = Utc
-        .with_ymd_and_hms(2026, 11, 16, 18, 0, 0)
-        .single()
+    let at = "2026-11-16T18:00:00Z"
+        .parse::<Timestamp>()
         .expect("valid time");
     JobSpec {
         job_id: JobId::new_random(),
@@ -89,7 +88,7 @@ fn claim_response() -> ClaimResponse {
     ClaimResponse {
         claim: Some(Claim {
             job_token: Secret::new(JOB_TOKEN),
-            lease_expires_at: Utc::now(),
+            lease_expires_at: Timestamp::now(),
             spec: spec(),
         }),
         drop_sessions: vec![1],
@@ -114,7 +113,7 @@ fn result() -> JobResult {
         }),
         skills_commit: Some("d31993add8b8332ae03352c471be2931c72f7c24".to_owned()),
         llm_call: Some(LlmCallOutcome {
-            at: Utc::now(),
+            at: Timestamp::now(),
             status: LlmCallStatus::Working,
         }),
     }
@@ -147,14 +146,14 @@ fn job_messages_round_trip() {
         attempt: 1,
         events: vec![JobEvent {
             seq: 1,
-            at: Utc::now(),
+            at: Timestamp::now(),
             activity: ActivityKind::McpToolCall,
             summary: "github.pull_request_read".to_owned(),
         }],
     });
     round_trip(&EventsAck {
         cancel_requested: true,
-        lease_expires_at: Utc::now(),
+        lease_expires_at: Timestamp::now(),
     });
 }
 

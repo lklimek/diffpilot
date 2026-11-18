@@ -1,10 +1,5 @@
 //! MemCan writer, calibration read and client behaviour against the fake MemCan.
 
-use std::path::Path;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::api::analyses::AnalysisSummary;
 use contracts::api::feedback::{
@@ -17,6 +12,12 @@ use db::repo::analyses::testing::seed_analysis;
 use db::repo::documents::DocumentKind;
 use db::repo::feedback::NewFeedback;
 use serde_json::json;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
 
 use super::calibration::{
     CalibrationDirection, MAX_EXAMPLE_CHARS, MAX_EXAMPLES, calibration_examples,
@@ -34,16 +35,16 @@ use crate::state::AppState;
 use crate::state::tests::test_state;
 use crate::test_support::logs::LogCapture;
 
-fn at(minute: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, 17, 12, minute, 0)
-        .single()
-        .unwrap_or_default()
+fn at(minute: u32) -> Timestamp {
+    format!("2026-11-17T12:{minute:02}:00Z")
+        .parse::<Timestamp>()
+        .expect("time")
 }
 
 /// Far after every scheduled retry and settle period of the tests.
-fn later() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0)
-        .single()
+fn later() -> Timestamp {
+    "2100-01-01T00:00:00Z"
+        .parse::<Timestamp>()
         .unwrap_or_default()
 }
 
@@ -409,7 +410,7 @@ async fn a_late_import_after_the_delete_is_deleted_again_once_settled() {
         .await
         .expect("remove");
     fake.set_mode(Mode::Normal);
-    let deleted_at = t0 + TimeDelta::seconds(10);
+    let deleted_at = t0 + SignedDuration::from_secs(10);
     assert_eq!(
         sweep(db, &fake.config(), deleted_at).await.expect("sweep"),
         swept(1, 0, false),
@@ -429,9 +430,13 @@ async fn a_late_import_after_the_delete_is_deleted_again_once_settled() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(
-        sweep(db, &fake.config(), deleted_at + TimeDelta::seconds(1))
-            .await
-            .expect("sweep"),
+        sweep(
+            db,
+            &fake.config(),
+            deleted_at + SignedDuration::from_secs(1)
+        )
+        .await
+        .expect("sweep"),
         Sweep::default(),
         "not due before the settle period ends"
     );
@@ -554,14 +559,14 @@ async fn rejected_entries_retry_on_their_own_schedule_without_starving_others() 
         .iter()
         .find(|id| !left_out.contains(id))
         .expect("tried at t0");
-    let second = sweep(db, &fake.config(), t0 + TimeDelta::seconds(1))
+    let second = sweep(db, &fake.config(), t0 + SignedDuration::from_secs(1))
         .await
         .expect("sweep");
     assert_eq!(second, swept(1, 1, false), "the good entry is not starved");
     assert!(fake.memories().contains_key(&good.id.to_string()));
     let calls = fake.calls().len();
     assert_eq!(
-        sweep(db, &fake.config(), t0 + TimeDelta::seconds(2))
+        sweep(db, &fake.config(), t0 + SignedDuration::from_secs(2))
             .await
             .expect("sweep"),
         Sweep::default(),
@@ -747,7 +752,7 @@ fn entry_retries_back_off_and_the_settle_period_is_ten_call_timeouts() {
     assert_eq!(retry_delay(u32::MAX), MAX_RETRY);
     assert_eq!(
         SETTLE_PERIOD,
-        TimeDelta::seconds(30),
+        SignedDuration::from_secs(30),
         "10 x the 3 s test call timeout"
     );
 }

@@ -1,10 +1,11 @@
 //! Scan progress of a live refresh: the steps of plan §A.4 and plain log lines, written to the refresh before
 //! each `refresh` event is published.
 
-use chrono_tz::Tz;
 use contracts::api::dashboard::{ScanStep, ScanStepKey, StepState};
 use contracts::ids::RefreshId;
+use contracts::time::Timestamp;
 use db::repo::dashboard::RefreshProgress;
+use jiff::tz::TimeZone;
 
 use super::Scope;
 use crate::state::AppState;
@@ -30,13 +31,13 @@ pub(super) struct Progress {
     state: AppState,
     scope: Scope,
     id: RefreshId,
-    zone: Tz,
+    zone: TimeZone,
     steps: Vec<ScanStep>,
     log: Vec<String>,
 }
 
 impl Progress {
-    pub(super) fn new(state: AppState, scope: Scope, id: RefreshId, zone: Tz) -> Self {
+    pub(super) fn new(state: AppState, scope: Scope, id: RefreshId, zone: TimeZone) -> Self {
         Self {
             state,
             scope,
@@ -75,9 +76,9 @@ impl Progress {
 
     /// A log line, prefixed with the local time.
     pub(super) fn log(&mut self, line: impl AsRef<str>) {
-        let at = self.state.dashboard.now().with_timezone(&self.zone);
+        let at = self.state.dashboard.now().to_zoned(self.zone.clone());
         self.log
-            .push(format!("{} {}", at.format("%H:%M:%S"), line.as_ref()));
+            .push(format!("{} {}", at.strftime("%H:%M:%S"), line.as_ref()));
     }
 
     /// Sets a step (a step that is not running loses its detail) and records the progress; [`Ended`] once the
@@ -142,7 +143,7 @@ impl Progress {
     }
 
     /// The current time.
-    pub(super) fn now(&self) -> chrono::DateTime<chrono::Utc> {
+    pub(super) fn now(&self) -> Timestamp {
         self.state.dashboard.now()
     }
 

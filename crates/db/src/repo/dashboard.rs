@@ -8,12 +8,14 @@
 //! Ranking results carry the ranking attempt (`ranking_attempt`, server-internal): a late result of a superseded
 //! or restarted ranking is [`RankingUpdate::Stale`] and only records its LLM calls (`judged`, for the daily cap).
 
-use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use contracts::api::dashboard::{
     DashboardSettings, ItemKey, RankingState, RefreshFailure, RefreshState, RefreshTrigger,
     ScanStep, ScheduledOutcome,
 };
 use contracts::ids::{JobId, RefreshId};
+use contracts::time::Timestamp;
+use jiff::SignedDuration;
+use jiff::civil::Date;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,7 +30,7 @@ use crate::error::DbError;
 pub const REFRESHES_KEPT: u32 = 10;
 /// Refreshes started this recently that judged or sent something are always kept: their `sent` counts feed the daily
 /// ranking cap (a local day spans up to 25 hours, and a ranking may end after the day it started).
-const RECENT_REFRESHES_KEPT: TimeDelta = TimeDelta::hours(48);
+const RECENT_REFRESHES_KEPT: SignedDuration = SignedDuration::from_hours(48);
 /// Log lines kept per refresh (the newest).
 pub const LOG_LINES_KEPT: usize = 200;
 /// Days a judgement is kept after its item was last seen.
@@ -91,14 +93,14 @@ pub struct StoredDashboardSettings {
     /// The most recent scheduled run; none before the first.
     pub last_scheduled: Option<ScheduledRunRecord>,
     /// Last change of the row.
-    pub updated_at: DateTime<Utc>,
+    pub updated_at: Timestamp,
 }
 
 /// A scheduled run as recorded per user (one per local date).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScheduledRunRecord {
     /// The user's local date of the run.
-    pub on: NaiveDate,
+    pub on: Date,
     /// What happened.
     pub outcome: ScheduledOutcome,
     /// Plain reason, if any.
@@ -173,11 +175,11 @@ pub struct RefreshRecord {
     /// A snapshot is stored.
     pub has_snapshot: bool,
     /// Start time.
-    pub started_at: DateTime<Utc>,
+    pub started_at: Timestamp,
     /// When the snapshot was stored.
-    pub scanned_at: Option<DateTime<Utc>>,
+    pub scanned_at: Option<Timestamp>,
     /// When it ended (finished, failed or cancelled).
-    pub finished_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<Timestamp>,
 }
 
 /// Result of [`Dashboard::set_ranking`] and [`Dashboard::finish_ranking`].
@@ -305,9 +307,9 @@ pub struct StoredJudgement {
     /// Model that judged it.
     pub model: String,
     /// Judgement time (counts toward the daily cap).
-    pub judged_at: DateTime<Utc>,
+    pub judged_at: Timestamp,
     /// Last refresh that saw the item.
-    pub last_seen_at: DateTime<Utc>,
+    pub last_seen_at: Timestamp,
 }
 
 impl Dashboard<'_> {
@@ -333,7 +335,7 @@ impl Dashboard<'_> {
         tenant_id: &str,
         user_id: &str,
         settings: &DashboardSettings,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let saved = sqlx::query(
             "INSERT INTO dashboard_settings (user_id, tenant_id, linked_logins, enumerate_owners, repositories,
@@ -378,7 +380,7 @@ impl Dashboard<'_> {
         tenant_id: &str,
         user_id: &str,
         time_zone: &str,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<bool, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let saved = sqlx::query(
@@ -426,10 +428,10 @@ impl Dashboard<'_> {
         )
         .bind(user_id)
         .bind(tenant_id)
-        .bind(run.on.format(LOCAL_DATE).to_string())
+        .bind(run.on.strftime(LOCAL_DATE).to_string())
         .bind(wire_name(run.outcome)?)
         .bind(&run.reason)
-        .bind(ts(Utc::now()))
+        .bind(ts(Timestamp::now()))
         .execute(self.pool)
         .await
         .map_err(missing_owner)?;
@@ -477,7 +479,7 @@ impl Dashboard<'_> {
         tenant_id: &str,
         user_id: &str,
         trigger: RefreshTrigger,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<StartOutcome, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let live: Option<(String, String)> = sqlx::query_as(
@@ -607,7 +609,7 @@ impl Dashboard<'_> {
         user_id: &str,
         id: RefreshId,
         snapshot: &T,
-        scanned_at: DateTime<Utc>,
+        scanned_at: Timestamp,
     ) -> Result<(), DbError> {
         let document = serde_json::to_string(snapshot)?;
         let mut tx = write_tx(self.pool).await?;
@@ -697,7 +699,7 @@ impl Dashboard<'_> {
         user_id: &str,
         id: RefreshId,
         end: &ScanEnd,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         let (state, failure) = match end {
             ScanEnd::Failed(failure) => (RefreshState::Failed, Some(failure)),
@@ -741,7 +743,7 @@ impl Dashboard<'_> {
         attempt: u32,
         outcome: RankingState,
         counts: JudgeCounts,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<RankingUpdate, DbError> {
         let mut tx = write_tx(self.pool).await?;
         if !ends(outcome) {
@@ -779,7 +781,7 @@ impl Dashboard<'_> {
         user_id: &str,
         id: RefreshId,
         attempt: u32,
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<RankingUpdate, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let rows = sqlx::query(
@@ -861,10 +863,7 @@ impl Dashboard<'_> {
 
     /// Server-internal (startup), every tenant: `scanning` refreshes become `failed` (code `interrupted`, no
     /// snapshot); `ranking` ones become `finished` with ranking `interrupted`. Afterwards no refresh is live.
-    pub async fn interrupt_live(
-        &self,
-        now: DateTime<Utc>,
-    ) -> Result<Vec<InterruptedRefresh>, DbError> {
+    pub async fn interrupt_live(&self, now: Timestamp) -> Result<Vec<InterruptedRefresh>, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let rows: Vec<(String, String, String, String)> = sqlx::query_as(
             "SELECT tenant_id, user_id, id, state FROM dashboard_refreshes WHERE state IN ('scanning', 'ranking')
@@ -916,7 +915,7 @@ impl Dashboard<'_> {
         attempt: u32,
         items: u32,
         caps: SendCaps,
-        day_start: DateTime<Utc>,
+        day_start: Timestamp,
     ) -> Result<SendReservation, DbError> {
         let mut tx = write_tx(self.pool).await?;
         let current: Option<i64> = sqlx::query_scalar(
@@ -961,7 +960,7 @@ impl Dashboard<'_> {
         tenant_id: &str,
         user_id: &str,
         id: RefreshId,
-        day_start: DateTime<Utc>,
+        day_start: Timestamp,
     ) -> Result<SentTotals, DbError> {
         let mut tx = super::read_tx(self.pool).await?;
         let refresh: i64 = sqlx::query_scalar(
@@ -1085,7 +1084,7 @@ impl Dashboard<'_> {
         tenant_id: &str,
         user_id: &str,
         item_keys: &[ItemKey],
-        now: DateTime<Utc>,
+        now: Timestamp,
     ) -> Result<(), DbError> {
         if item_keys.is_empty() {
             return Ok(());
@@ -1110,7 +1109,7 @@ impl Dashboard<'_> {
         &self,
         tenant_id: &str,
         user_id: &str,
-        since: DateTime<Utc>,
+        since: Timestamp,
     ) -> Result<u32, DbError> {
         let count: i64 = sqlx::query_scalar(JUDGED_SINCE_SQL)
             .bind(tenant_id)
@@ -1124,7 +1123,7 @@ impl Dashboard<'_> {
     }
 
     /// Server-internal (retention): deletes judgements of every tenant not seen since `before`.
-    pub async fn delete_unseen_judgements(&self, before: DateTime<Utc>) -> Result<u64, DbError> {
+    pub async fn delete_unseen_judgements(&self, before: Timestamp) -> Result<u64, DbError> {
         Ok(sqlx::query(DELETE_UNSEEN_SQL)
             .bind(ts(before))
             .execute(self.pool)
@@ -1303,7 +1302,7 @@ fn json_column<T: DeserializeOwned>(row: &SqliteRow, column: &'static str) -> Re
     Ok(serde_json::from_str(&row.try_get::<String, _>(column)?)?)
 }
 
-fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<DateTime<Utc>>, DbError> {
+fn optional_ts(row: &SqliteRow, column: &'static str) -> Result<Option<Timestamp>, DbError> {
     row.try_get::<Option<String>, _>(column)?
         .map(|at| parse_ts(&at, column))
         .transpose()
@@ -1356,7 +1355,7 @@ fn settings_of(row: &SqliteRow) -> Result<StoredDashboardSettings, DbError> {
     let outcome: Option<String> = row.try_get("last_scheduled_outcome")?;
     let last_scheduled = match (on, outcome) {
         (Some(on), Some(outcome)) => Some(ScheduledRunRecord {
-            on: NaiveDate::parse_from_str(&on, LOCAL_DATE).map_err(|_| DbError::Corrupt {
+            on: Date::strptime(LOCAL_DATE, &on).map_err(|_| DbError::Corrupt {
                 column: "last_scheduled_on",
             })?,
             outcome: parse_wire(&outcome, "last_scheduled_outcome")?,
@@ -1414,7 +1413,6 @@ fn judgement_of(row: &SqliteRow) -> Result<StoredJudgement, DbError> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeDelta, TimeZone};
     use contracts::api::dashboard::{
         ItemTarget, PolicyRef, RefreshFailureCode, RepositoryRule, ScanStepKey, StepState,
     };
@@ -1427,11 +1425,11 @@ mod tests {
     use crate::repo::analyses::testing::seed_analysis;
     use crate::repo::testing::file_backed;
 
-    fn at(minute: i64) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 18, 6, 0, 0)
-            .single()
+    fn at(minute: i64) -> Timestamp {
+        "2026-11-18T06:00:00Z"
+            .parse::<Timestamp>()
             .unwrap_or_default()
-            + TimeDelta::minutes(minute)
+            + SignedDuration::from_mins(minute)
     }
 
     async fn seed_users(db: &Db) {
@@ -1605,8 +1603,8 @@ mod tests {
         }
     }
 
-    fn date(day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 11, day).expect("date")
+    fn date(day: i8) -> Date {
+        Date::new(2026, 11, day).expect("date")
     }
 
     fn assert_err<T: std::fmt::Debug>(result: Result<T, DbError>, conflict: bool) {
@@ -2776,7 +2774,7 @@ mod tests {
 
     /// Right after a start: besides the newest ten and the current snapshot, only refreshes started in the last 48
     /// hours that judged something are kept.
-    async fn assert_retention(db: &Db, user: &str, now: DateTime<Utc>) {
+    async fn assert_retention(db: &Db, user: &str, now: Timestamp) {
         let holder = current(db, user).await.map(|(id, _)| id);
         let ids = refresh_ids(db, user).await;
         let older = ids
@@ -3095,7 +3093,7 @@ mod tests {
         .expect("key")
     }
 
-    fn judgement(number: u32, fingerprint: &str, judged_at: DateTime<Utc>) -> StoredJudgement {
+    fn judgement(number: u32, fingerprint: &str, judged_at: Timestamp) -> StoredJudgement {
         StoredJudgement {
             item_key: key(number),
             input_fingerprint: fingerprint.to_owned(),
@@ -3264,7 +3262,7 @@ mod tests {
     async fn unseen_judgements_are_deleted_after_the_retention() {
         let db = db().await;
         let dash = db.dashboard();
-        let day = |n: i64| at(0) + TimeDelta::days(n);
+        let day = |n: i64| at(0) + SignedDuration::from_hours(24 * n);
         let seen = judgement(1, "a", day(0));
         dash.save_judgements(T, "u1", &[seen.clone(), judgement(2, "b", day(0))])
             .await
@@ -3282,7 +3280,9 @@ mod tests {
             .await
             .expect("another user marks nothing");
         let deleted = dash
-            .delete_unseen_judgements(day(91) - TimeDelta::days(JUDGEMENT_RETENTION_DAYS))
+            .delete_unseen_judgements(
+                day(91) - SignedDuration::from_hours(24 * JUDGEMENT_RETENTION_DAYS),
+            )
             .await
             .expect("delete");
         assert_eq!(deleted, 2);

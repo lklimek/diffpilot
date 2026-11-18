@@ -235,6 +235,7 @@ async fn remove(
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
+    use contracts::time::Timestamp;
     use db::repo::DEFAULT_TENANT;
     use db::repo::analyses::testing::seed_tenant;
     use http_body_util::BodyExt;
@@ -441,7 +442,7 @@ mod tests {
                 refresh_token: secrecy::SecretString::from("ghr_private_test_b"),
                 refresh_token_expires_in: 7200,
             },
-            chrono::Utc::now(),
+            Timestamp::now(),
         )
         .await
         .expect("tokens");
@@ -493,7 +494,7 @@ mod tests {
             let started = state
                 .db
                 .comment_requests()
-                .begin::<Value>(key, analysis, &hash, chrono::Utc::now())
+                .begin::<Value>(key, analysis, &hash, Timestamp::now())
                 .await
                 .expect("start");
             assert!(matches!(

@@ -7,6 +7,7 @@ use contracts::api::analyses::{
     AnalysisEstimate, AnalysisProgress, AnalysisState, AnalysisSummary, EstimateBasis, PlanPart,
     RunStage, RunStageState, StageKind,
 };
+use contracts::time::Timestamp;
 use sqlx::Row;
 
 use super::analyses::Analyses;
@@ -158,7 +159,7 @@ impl Analyses<'_> {
     ) -> Result<Option<AnalysisEstimate>, DbError> {
         let history = self.recent_timings(tenant, None).await?;
         let progress = AnalysisProgress {
-            started_at: chrono::Utc::now(),
+            started_at: Timestamp::now(),
             planning: stage(0, Some(1), true),
             pr_context: stage(0, Some(1), false),
             flows: stage(0, None, false),
@@ -272,7 +273,7 @@ impl Analyses<'_> {
             {
                 let seconds = (parse_ts(&end, "jobs.finished_at")?
                     - parse_ts(&start, "jobs.claimed_at")?)
-                .num_seconds();
+                .as_secs();
                 if (1..=10800).contains(&seconds) {
                     let timing = completed.entry(key).or_insert(Timing {
                         kind,
@@ -395,6 +396,8 @@ fn changed_lines(prepass: Option<&str>) -> Result<u64, DbError> {
 
 #[cfg(test)]
 mod tests {
+    use jiff::SignedDuration;
+
     use super::*;
     use crate::repo::{
         Db,
@@ -402,13 +405,12 @@ mod tests {
         documents::DocumentKind,
         jobs::{JobStage, NewJob, ts},
     };
-    use chrono::{TimeZone, Utc};
     use contracts::ids::AnalysisId;
     use contracts::job::spec::JobPriority;
 
     fn progress() -> AnalysisProgress {
         AnalysisProgress {
-            started_at: Utc.with_ymd_and_hms(2026, 11, 17, 10, 0, 0).unwrap(),
+            started_at: "2026-11-17T10:00:00Z".parse::<Timestamp>().unwrap(),
             planning: stage(5, Some(23), true),
             pr_context: stage(0, Some(1), false),
             flows: stage(0, None, false),
@@ -508,7 +510,7 @@ mod tests {
                         generation,
                         priority: JobPriority::Batch,
                     },
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .unwrap();
@@ -522,7 +524,7 @@ mod tests {
                 DocumentKind::Plan,
                 "1",
                 &serde_json::json!({"flows": []}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -556,11 +558,11 @@ mod tests {
                     flow: None,
                     message: "interrupted".into(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
-        assert!(db.analyses().retry(id, Utc::now()).await.unwrap());
+        assert!(db.analyses().retry(id, Timestamp::now()).await.unwrap());
         let retried = db.analyses().summary(id).await.unwrap().progress.unwrap();
         assert_eq!(
             retried.planning.total,
@@ -587,7 +589,7 @@ mod tests {
             (DocumentKind::Flow, "f1", serde_json::json!({})),
         ] {
             db.documents()
-                .put(old, kind, key, &body, Utc::now())
+                .put(old, kind, key, &body, Timestamp::now())
                 .await
                 .unwrap();
         }
@@ -608,7 +610,7 @@ mod tests {
                         generation: 0,
                         priority: JobPriority::Batch,
                     },
-                    Utc::now(),
+                    Timestamp::now(),
                 )
                 .await
                 .unwrap();
@@ -616,16 +618,16 @@ mod tests {
                 .bind(end).bind(job.id.to_string()).execute(&db.pool).await.unwrap();
         }
         db.analyses()
-            .set_state(old, &AnalysisState::Finished { total: 1 }, Utc::now())
+            .set_state(old, &AnalysisState::Finished { total: 1 }, Timestamp::now())
             .await
             .unwrap();
         let id = testing::seed_analysis(&db).await.unwrap();
         db.flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .unwrap();
         db.documents()
-            .put(id, DocumentKind::Prepass, "", &prepass, Utc::now())
+            .put(id, DocumentKind::Prepass, "", &prepass, Timestamp::now())
             .await
             .unwrap();
         let mut spec = testing::job_spec(id, JobKind::Plan);
@@ -638,7 +640,7 @@ mod tests {
                     generation: 0,
                     priority: JobPriority::Batch,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -664,14 +666,14 @@ mod tests {
             "600 s of planning and 120 s of PR context: {before_start:?}"
         );
         db.flow_work()
-            .set_background(id, false, Utc::now())
+            .set_background(id, false, Timestamp::now())
             .await
             .unwrap();
         let on_request = db.analyses().summary(id).await.unwrap().progress.unwrap();
         assert_eq!(on_request.estimate, Some(before_start));
         assert_eq!(on_request.percent, Some(0));
         db.flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .unwrap();
         assert_eq!(
@@ -705,7 +707,7 @@ mod tests {
                     generation: 1,
                     priority: JobPriority::Batch,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -717,7 +719,7 @@ mod tests {
                 DocumentKind::Plan,
                 "1",
                 &serde_json::json!({"flows": []}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -744,10 +746,10 @@ mod tests {
                     paused_at: None,
                     done: 0,
                     total: None,
-                    resumes_at: Some(Utc::now()),
+                    resumes_at: Some(Timestamp::now()),
                     stage: None,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -772,14 +774,14 @@ mod tests {
                     generation: 0,
                     priority: JobPriority::Batch,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
-        let start = Utc.with_ymd_and_hms(2026, 11, 17, 10, 0, 0).unwrap();
+        let start = "2026-11-17T10:00:00Z".parse::<Timestamp>().unwrap();
         sqlx::query("UPDATE jobs SET state='succeeded', claimed_at=?, finished_at=? WHERE id=?")
             .bind(ts(start))
-            .bind(ts(start + chrono::TimeDelta::seconds(i64::from(seconds))))
+            .bind(ts(start + SignedDuration::from_secs(i64::from(seconds))))
             .bind(job.id.to_string())
             .execute(&db.pool)
             .await
@@ -806,7 +808,7 @@ mod tests {
             (DocumentKind::Flow, "f1", serde_json::json!({})),
         ] {
             db.documents()
-                .put(old, kind, key, &body, Utc::now())
+                .put(old, kind, key, &body, Timestamp::now())
                 .await
                 .unwrap();
         }
@@ -834,7 +836,7 @@ mod tests {
             stage: None,
         };
         db.analyses()
-            .set_state(old, &parked, Utc::now())
+            .set_state(old, &parked, Timestamp::now())
             .await
             .unwrap();
         let before_start = db
@@ -850,11 +852,17 @@ mod tests {
 
         let planning = testing::seed_analysis(&db).await.unwrap();
         db.flow_work()
-            .set_background(planning, true, Utc::now())
+            .set_background(planning, true, Timestamp::now())
             .await
             .unwrap();
         db.documents()
-            .put(planning, DocumentKind::Prepass, "", &prepass, Utc::now())
+            .put(
+                planning,
+                DocumentKind::Prepass,
+                "",
+                &prepass,
+                Timestamp::now(),
+            )
             .await
             .unwrap();
         let mut spec = testing::job_spec(planning, JobKind::Plan);
@@ -867,7 +875,7 @@ mod tests {
                     generation: 0,
                     priority: JobPriority::Batch,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -891,7 +899,7 @@ mod tests {
 
         let flows = testing::seed_analysis(&db).await.unwrap();
         db.flow_work()
-            .set_background(flows, true, Utc::now())
+            .set_background(flows, true, Timestamp::now())
             .await
             .unwrap();
         for (kind, body) in [
@@ -902,7 +910,7 @@ mod tests {
             (DocumentKind::PrContext, serde_json::json!({})),
         ] {
             db.documents()
-                .put(flows, kind, "", &body, Utc::now())
+                .put(flows, kind, "", &body, Timestamp::now())
                 .await
                 .unwrap();
         }
@@ -913,7 +921,7 @@ mod tests {
             stage: None,
         };
         db.analyses()
-            .set_state(flows, &running, Utc::now())
+            .set_state(flows, &running, Timestamp::now())
             .await
             .unwrap();
         let each_flow = eta(flows).await.expect("mean of the analysed flow");
@@ -924,7 +932,7 @@ mod tests {
         );
 
         db.analyses()
-            .set_state(old, &AnalysisState::Finished { total: 2 }, Utc::now())
+            .set_state(old, &AnalysisState::Finished { total: 2 }, Timestamp::now())
             .await
             .unwrap();
         let whole = eta(planning).await.expect("a finished analysis");
@@ -933,7 +941,7 @@ mod tests {
             "600 s plan, 120 s PR context, 300 s of accepted flows per 1000 lines: {whole:?}"
         );
         db.analyses()
-            .set_state(old, &AnalysisState::Cancelled, Utc::now())
+            .set_state(old, &AnalysisState::Cancelled, Timestamp::now())
             .await
             .unwrap();
         assert_eq!(
@@ -956,7 +964,7 @@ mod tests {
                 DocumentKind::Plan,
                 "",
                 &serde_json::json!({"flows": [{"id": "f1"}, {"id": "f2"}]}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -966,7 +974,7 @@ mod tests {
                 DocumentKind::PrContext,
                 "",
                 &serde_json::json!({}),
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -982,7 +990,7 @@ mod tests {
                     }),
                     message: "interrupted".into(),
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -995,7 +1003,7 @@ mod tests {
         let db = Db::in_memory().await.unwrap();
         let id = testing::seed_analysis(&db).await.unwrap();
         db.flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .unwrap();
         for (kind, key, body) in [
@@ -1008,7 +1016,7 @@ mod tests {
             (DocumentKind::Flow, "f1", serde_json::json!({})),
         ] {
             db.documents()
-                .put(id, kind, key, &body, Utc::now())
+                .put(id, kind, key, &body, Timestamp::now())
                 .await
                 .unwrap();
         }
@@ -1021,7 +1029,7 @@ mod tests {
                     generation: 0,
                     priority: JobPriority::Batch,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -1036,7 +1044,7 @@ mod tests {
                     idle: false,
                     stage: None,
                 },
-                Utc::now(),
+                Timestamp::now(),
             )
             .await
             .unwrap();
@@ -1051,7 +1059,7 @@ mod tests {
                 .is_some()
         );
         db.flow_work()
-            .set_background(id, false, Utc::now())
+            .set_background(id, false, Timestamp::now())
             .await
             .unwrap();
         let on_request = db.analyses().summary(id).await.unwrap().progress.unwrap();
@@ -1061,7 +1069,7 @@ mod tests {
             "the review is open and flows run on request: no whole-run figure"
         );
         db.flow_work()
-            .set_background(id, true, Utc::now())
+            .set_background(id, true, Timestamp::now())
             .await
             .unwrap();
         db.flow_work()
@@ -1092,7 +1100,7 @@ mod tests {
                     generation: 0,
                     priority: JobPriority::Batch,
                 },
-                created + chrono::TimeDelta::hours(1),
+                created + SignedDuration::from_hours(1),
             )
             .await
             .unwrap();

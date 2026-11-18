@@ -9,12 +9,12 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::{Json, Router};
-use chrono::Utc;
 use contracts::api::error::ApiErrorCode;
 use contracts::api::review::{BlockRef, QuietRowRef, ReviewState};
 use contracts::api::tour::Tour;
 use contracts::ids::AnalysisId;
 use contracts::routes::GET_REVIEW_STATE;
+use contracts::time::Timestamp;
 
 use crate::api::analyses::{AnalysisApiError, visible_analysis};
 use crate::api::error::{ApiErrorSource, ApiFailure};
@@ -97,7 +97,7 @@ async fn replace(
     state
         .db
         .review_states()
-        .put(&session.user_id, id, &review, Utc::now())
+        .put(&session.user_id, id, &review, Timestamp::now())
         .await
         .map_err(failure)?;
     Ok(StatusCode::NO_CONTENT)

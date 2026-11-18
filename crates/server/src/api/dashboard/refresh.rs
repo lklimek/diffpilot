@@ -16,7 +16,6 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use chrono::{DateTime, Utc};
 use contracts::api::dashboard::{
     DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery, RefreshStatus,
     RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, WorkItem,
@@ -27,6 +26,7 @@ use contracts::routes::{
     CANCEL_DASHBOARD_REFRESH, DASHBOARD_REFRESH_EVENTS, GET_DASHBOARD, GET_DASHBOARD_REFRESH,
     LIST_DASHBOARD_ITEMS, RANK_DASHBOARD_REFRESH, START_DASHBOARD_REFRESH,
 };
+use contracts::time::Timestamp;
 use db::error::DbError;
 use db::repo::dashboard::StoredDashboardSettings;
 use futures::stream::{self, Stream, StreamExt};
@@ -65,7 +65,7 @@ pub enum DashboardError {
     #[error("the user's GitHub rate limit is exhausted")]
     RateLimited {
         /// Reset time.
-        retry_at: DateTime<Utc>,
+        retry_at: Timestamp,
     },
     /// Cancel of an ended refresh, or Retry ranking of one that cannot be retried.
     #[error("the refresh does not allow this now")]
@@ -118,7 +118,7 @@ impl ApiErrorSource for DashboardError {
             Self::Running => Cow::Borrowed("A refresh is already running. Wait for it to finish."),
             Self::RateLimited { retry_at } => Cow::Owned(format!(
                 "GitHub's rate limit is used up until {} UTC. Refresh after that.",
-                retry_at.format("%H:%M")
+                retry_at.get().strftime("%H:%M")
             )),
             Self::NotAllowed => Cow::Borrowed(
                 "The refresh does not allow this in its current state. Reload and try again.",
@@ -138,7 +138,7 @@ impl IntoResponse for DashboardError {
         };
         let mut response = ApiFailure(self).into_response();
         if let Some(retry_at) = retry_at {
-            let wait = (retry_at - Utc::now()).num_seconds().max(1);
+            let wait = (retry_at - Timestamp::now()).as_secs().max(1);
             if let Ok(value) = HeaderValue::from_str(&wait.to_string()) {
                 response.headers_mut().insert(RETRY_AFTER, value);
             }
@@ -244,8 +244,8 @@ async fn summary(
 /// run follows the due rule given the current snapshot's scan time (`last_success`).
 fn schedule_status(
     stored: Option<&StoredDashboardSettings>,
-    now: DateTime<Utc>,
-    last_success: Option<DateTime<Utc>>,
+    now: Timestamp,
+    last_success: Option<Timestamp>,
 ) -> ScheduleStatus {
     let settings = stored.map(|s| s.settings.clone()).unwrap_or_default();
     let configured = settings

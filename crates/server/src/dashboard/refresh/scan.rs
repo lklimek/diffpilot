@@ -4,14 +4,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
 use contracts::api::dashboard::{
     DashboardSettings, KindCounts, PolicyRef, ScanNote, ScanStepKey, StepState, TodosState,
     TodosStatus,
 };
 use contracts::common::RepoRef;
+use contracts::time::Timestamp;
 use futures::future::join_all;
+use jiff::tz::TimeZone;
 
 use super::RunError;
 use super::facts::{self, PrContext};
@@ -38,7 +38,7 @@ pub(super) struct ScanInput<'a> {
     /// The user's settings.
     pub settings: &'a DashboardSettings,
     /// The user's time zone (UTC until one is stored).
-    pub zone: Tz,
+    pub zone: &'a TimeZone,
     /// The current snapshot (TODO change times, TODOs kept when MemCan is unavailable).
     pub previous: Option<&'a Snapshot>,
     /// MemCan is configured.
@@ -546,7 +546,7 @@ async fn read_todos(
 }
 
 /// The previous snapshot's TODO rows and when they were read.
-fn kept_todos(previous: Option<&Snapshot>) -> (Vec<StoredTodo>, Option<DateTime<Utc>>) {
+fn kept_todos(previous: Option<&Snapshot>) -> (Vec<StoredTodo>, Option<Timestamp>) {
     previous.map_or((Vec::new(), None), |snapshot| {
         (snapshot.todos.clone(), snapshot.todos_state.read_at)
     })

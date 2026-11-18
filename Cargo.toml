@@ -24,9 +24,9 @@ dotenvy = "0.15.7"
 secrecy = "0.10.3"
 url = { version = "2.5.8", features = ["serde"] }
 ipnet = "2.12.2"
-chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
-# IANA time zones of the dashboard settings and schedule (plan §A.5).
-chrono-tz = "0.10.4"
+# Time: UTC instants and the IANA zones of the dashboard settings and schedule (plan §A.5, ADR-020). The bundled
+# tz database only, so zone rules never depend on the host's tzdata.
+jiff = { version = "0.2.46", default-features = false, features = ["std", "tzdb-bundle-always"] }
 uuid = { version = "1.29.2", features = ["v4", "serde"] }
 base64 = "0.23.1"
 # Runner: process-group signals and O_NOFOLLOW opens without unsafe code.
@@ -53,7 +53,7 @@ rust-embed = "8.14.0"
 mime_guess = "2.0.5"
 
 # Database: runtime queries only, no query macros (ADR-001)
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "derive"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "derive"] }
 
 # Secrets, diffs
 aes-gcm = "0.11.1"
