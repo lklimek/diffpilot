@@ -586,3 +586,6 @@ pub(crate) async fn stored_token(
     };
     (issued.token.0, principal)
 }
+
+#[cfg(test)]
+mod tests;

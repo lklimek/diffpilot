@@ -1,0 +1,1150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AnalysisEvent",
+  "description": "One SSE event; the SSE `event` field is the `event` tag, `data` is this JSON.",
+  "oneOf": [
+    {
+      "description": "Full analysis snapshot; sent on connect and on every change.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string",
+          "const": "analysis"
+        },
+        "summary": {
+          "description": "The analysis.",
+          "$ref": "#/$defs/AnalysisSummary"
+        }
+      },
+      "required": [
+        "event",
+        "summary"
+      ]
+    },
+    {
+      "description": "A question changed state or got its answer.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string",
+          "const": "question"
+        },
+        "question": {
+          "description": "The question.",
+          "$ref": "#/$defs/AskQuestion"
+        }
+      },
+      "required": [
+        "event",
+        "question"
+      ]
+    },
+    {
+      "description": "Sent every 15 s while the stream is open, so a silent but open stream is told from a dead one.",
+      "type": "object",
+      "properties": {
+        "event": {
+          "type": "string",
+          "const": "heartbeat"
+        },
+        "at": {
+          "description": "Server time of sending.",
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "event",
+        "at"
+      ]
+    }
+  ],
+  "$defs": {
+    "AnalysisSummary": {
+      "description": "An analysis and its state.",
+      "type": "object",
+      "properties": {
+        "review_ready": {
+          "description": "Plan and PR context are accepted; analysed flows can be reviewed while work continues.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "background_analysis": {
+          "description": "Whether unrequested flows are analysed in rank order.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "models_used": {
+          "description": "Distinct model choices of jobs actually claimed, in first-use order.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/ModelChoice"
+          }
+        },
+        "usage": {
+          "description": "Provider-reported totals of finished jobs; null without reports.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageTotals"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "progress": {
+          "description": "Whole-run progress derived from existing jobs and documents, absent on older servers.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalysisProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "has_my_state": {
+          "description": "Whether this reader has saved review state (including explicitly empty state).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Analysis id.",
+          "$ref": "#/$defs/AnalysisId"
+        },
+        "pr": {
+          "description": "The pull request as analysed (its head is the analysis head).",
+          "$ref": "#/$defs/PrSummary"
+        },
+        "language": {
+          "description": "Language of the LLM texts.",
+          "$ref": "#/$defs/LlmLanguage"
+        },
+        "state": {
+          "description": "State and progress.",
+          "$ref": "#/$defs/AnalysisState"
+        },
+        "created_at": {
+          "description": "When the analysis was requested.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "description": "When it finished, failed or was cancelled.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "pr",
+        "language",
+        "state",
+        "created_at"
+      ]
+    },
+    "ModelChoice": {
+      "description": "Model and reasoning effort (plan §5.2, ADR-002).",
+      "type": "object",
+      "properties": {
+        "model": {
+          "description": "Provider model id, e.g. `gpt-6.1-sol`.",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "description": "Reasoning effort.",
+          "$ref": "#/$defs/ReasoningEffort"
+        }
+      },
+      "required": [
+        "model",
+        "reasoning_effort"
+      ]
+    },
+    "ReasoningEffort": {
+      "description": "Reasoning effort of the model.",
+      "oneOf": [
+        {
+          "description": "Low effort.",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Medium effort.",
+          "type": "string",
+          "const": "medium"
+        },
+        {
+          "description": "High effort (v1 default for every job kind).",
+          "type": "string",
+          "const": "high"
+        }
+      ]
+    },
+    "UsageTotals": {
+      "description": "Token sums; cached input is included in input, not additional to it.",
+      "type": "object",
+      "properties": {
+        "input_tokens": {
+          "description": "Input tokens, including cached input.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cached_input_tokens": {
+          "description": "Cached input tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "description": "Output tokens.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "reasoning_output_tokens": {
+          "description": "Unknown: the retained job-result contract does not store reasoning tokens separately.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "jobs": {
+          "description": "Finished jobs with a provider usage report, including Ask and all analysis rounds.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "jobs"
+      ]
+    },
+    "AnalysisProgress": {
+      "description": "Whole-analysis waiting progress, never review completion or confidence.",
+      "type": "object",
+      "properties": {
+        "started_at": {
+          "description": "Start of this run, preserved across parts and server restarts.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "planning": {
+          "description": "Plan parts accepted.",
+          "$ref": "#/$defs/RunStage"
+        },
+        "pr_context": {
+          "description": "PR context accepted.",
+          "$ref": "#/$defs/RunStage"
+        },
+        "flows": {
+          "description": "Flows completed; total unknown until the plan is accepted.",
+          "$ref": "#/$defs/RunStage"
+        },
+        "finishing": {
+          "description": "Final verification and projection.",
+          "$ref": "#/$defs/RunStage"
+        },
+        "estimate": {
+          "description": "Estimated remaining time; null without sufficient observations, or while paused/terminal. With background\nanalysis off it covers plan and PR context only and is null once the review is ready.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnalysisEstimate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "percent": {
+          "description": "Overall waiting progress, 0..=100; null until a denominator can be estimated or counted. With background\nanalysis off it covers plan and PR context only and is null once the review is ready (until finished).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "minimum": 0,
+          "maximum": 255
+        }
+      },
+      "required": [
+        "started_at",
+        "planning",
+        "pr_context",
+        "flows",
+        "finishing"
+      ]
+    },
+    "RunStage": {
+      "description": "One stage in the short whole-run list.",
+      "type": "object",
+      "properties": {
+        "done": {
+          "description": "Accepted units, not attempts (repairs do not count twice).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "total": {
+          "description": "Unit count; null until known.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "state": {
+          "description": "Position relative to the currently executing stage.",
+          "$ref": "#/$defs/RunStageState"
+        }
+      },
+      "required": [
+        "done",
+        "state"
+      ]
+    },
+    "RunStageState": {
+      "description": "State of a whole-run stage; pause/failure remain on AnalysisState.",
+      "oneOf": [
+        {
+          "description": "Has not started.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "Current work (possibly paused or failed).",
+          "type": "string",
+          "const": "current"
+        },
+        {
+          "description": "Completed.",
+          "type": "string",
+          "const": "done"
+        }
+      ]
+    },
+    "AnalysisEstimate": {
+      "description": "A bounded estimate, not a deadline or a guarantee.",
+      "type": "object",
+      "properties": {
+        "remaining_seconds": {
+          "description": "Remaining seconds, never more than seven days.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "basis": {
+          "description": "Strongest observation used; before planning ends the flow component is only line-based.",
+          "$ref": "#/$defs/EstimateBasis"
+        },
+        "rough": {
+          "description": "True while the flow count is unknown and estimated from changed lines.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "remaining_seconds",
+        "basis",
+        "rough"
+      ]
+    },
+    "EstimateBasis": {
+      "description": "Where waiting-time estimates came from.",
+      "oneOf": [
+        {
+          "description": "Uses completed plan parts or flows of this run, with history for unstarted kinds.",
+          "type": "string",
+          "const": "this_analysis"
+        },
+        {
+          "description": "Uses recent completed runs with known unit counts.",
+          "type": "string",
+          "const": "recent_runs"
+        },
+        {
+          "description": "Only historical time per changed line; the flow count is not known yet.",
+          "type": "string",
+          "const": "lines_only"
+        }
+      ]
+    },
+    "AnalysisId": {
+      "description": "Identifier of an analysis (one per pull request, head commit and LLM language).",
+      "type": "string",
+      "format": "uuid"
+    },
+    "PrSummary": {
+      "description": "A pull request as GitHub reports it.",
+      "type": "object",
+      "properties": {
+        "repo": {
+          "description": "Repository.",
+          "$ref": "#/$defs/RepoRef"
+        },
+        "number": {
+          "description": "Number.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "description": "Title.",
+          "type": "string"
+        },
+        "author": {
+          "description": "Author login.",
+          "type": "string"
+        },
+        "html_url": {
+          "description": "Pull request page on GitHub.",
+          "type": "string"
+        },
+        "base_sha": {
+          "description": "Base commit.",
+          "$ref": "#/$defs/CommitSha"
+        },
+        "head_sha": {
+          "description": "Head commit.",
+          "$ref": "#/$defs/CommitSha"
+        }
+      },
+      "required": [
+        "repo",
+        "number",
+        "title",
+        "author",
+        "html_url",
+        "base_sha",
+        "head_sha"
+      ]
+    },
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "CommitSha": {
+      "description": "A full 40-character hexadecimal git commit id.",
+      "type": "string"
+    },
+    "LlmLanguage": {
+      "description": "Language of LLM-written texts.",
+      "oneOf": [
+        {
+          "description": "English (default).",
+          "type": "string",
+          "const": "en"
+        },
+        {
+          "description": "Polish.",
+          "type": "string",
+          "const": "pl"
+        }
+      ]
+    },
+    "AnalysisState": {
+      "description": "State of an analysis (brief §4.2).",
+      "oneOf": [
+        {
+          "description": "Planning flows; the number of flows is not known yet.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "planning"
+            },
+            "stage": {
+              "description": "The current stage; absent when no job of the analysis is queued, running or paused.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AnalysisStage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "state"
+          ]
+        },
+        {
+          "description": "Analysing flows.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "running"
+            },
+            "done": {
+              "description": "Flows analysed.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "total": {
+              "description": "Flows in total.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "idle": {
+              "description": "True when flows remain but none is admitted (none requested, background analysis off or the rest\nfailed for good): nothing is analysed until a flow is requested or background analysis is switched on.",
+              "type": "boolean",
+              "default": false
+            },
+            "stage": {
+              "description": "The current stage; absent when no job of the analysis is queued, running or paused.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AnalysisStage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "done",
+            "total"
+          ]
+        },
+        {
+          "description": "Waiting for the user or the provider usage limit.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "paused"
+            },
+            "reason": {
+              "description": "User pause takes precedence over a provider usage limit.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PauseReason"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "paused_by": {
+              "description": "Login that requested the pause.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "paused_at": {
+              "description": "When the user requested the pause.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "resumes_at": {
+              "description": "When it resumes, if known.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "done": {
+              "description": "Flows analysed before the pause.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "total": {
+              "description": "Flows in total; null while planning (the number of flows is not known yet).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "stage": {
+              "description": "The stage that resumes; absent when no job of the analysis is queued, running or paused.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/AnalysisStage"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "state",
+            "done"
+          ]
+        },
+        {
+          "description": "Failed; configuration problems require administrator action before another attempt.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "failed"
+            },
+            "reason": {
+              "description": "Typed cause when known; absent on older failures.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ApiErrorCode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "flow": {
+              "description": "The flow that failed, or null when it failed before any flow existed.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FlowRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "message": {
+              "description": "Plain description of what failed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "message"
+          ]
+        },
+        {
+          "description": "Every flow analysed; the review can open.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "finished"
+            },
+            "total": {
+              "description": "Flows in total.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "state",
+            "total"
+          ]
+        },
+        {
+          "description": "Cancelled; partial results discarded.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "cancelled"
+            }
+          },
+          "required": [
+            "state"
+          ]
+        }
+      ]
+    },
+    "AnalysisStage": {
+      "description": "The stage of the analysis's live job (the queued, running or paused job of its current round); only facts the\nserver knows, no estimate.",
+      "type": "object",
+      "properties": {
+        "part": {
+          "description": "Current planning part; present only for a multi-part plan.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlanPart"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "description": "What the job does.",
+          "$ref": "#/$defs/StageKind"
+        },
+        "flow": {
+          "description": "The flow analysed (`flow` only); absent when the stored plan does not list it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StageFlow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "started_at": {
+          "description": "When the server handed the job to the runner; null while the job waits for the runner.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "PlanPart": {
+      "description": "Position within the fixed plan batches of this run.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "description": "One-based current part.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "total": {
+          "description": "Total parts, fixed before the first plan job is submitted.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "index",
+        "total"
+      ]
+    },
+    "StageKind": {
+      "description": "Kind of an analysis stage.",
+      "oneOf": [
+        {
+          "description": "Planning the flows.",
+          "type": "string",
+          "const": "plan"
+        },
+        {
+          "description": "Describing the pull request context.",
+          "type": "string",
+          "const": "pr_context"
+        },
+        {
+          "description": "Analysing one flow.",
+          "type": "string",
+          "const": "flow"
+        }
+      ]
+    },
+    "StageFlow": {
+      "description": "The flow of a `flow` stage.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "description": "1-based position of the flow in the stored plan (the order flows are analysed in).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "title": {
+          "description": "Flow title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "title"
+      ]
+    },
+    "PauseReason": {
+      "description": "Why an analysis waits; absent reasons in older responses mean a usage limit.",
+      "oneOf": [
+        {
+          "description": "The user decides when to resume.",
+          "type": "string",
+          "const": "user"
+        },
+        {
+          "description": "The provider decides when a job may run again.",
+          "type": "string",
+          "const": "usage_limit"
+        }
+      ]
+    },
+    "ApiErrorCode": {
+      "description": "Machine-readable API error code.",
+      "oneOf": [
+        {
+          "description": "Server configuration requires administrator action.",
+          "type": "string",
+          "const": "configuration"
+        },
+        {
+          "description": "Not signed in.",
+          "type": "string",
+          "const": "unauthenticated"
+        },
+        {
+          "description": "The GitHub login is not allowed to sign in.",
+          "type": "string",
+          "const": "login_not_allowed"
+        },
+        {
+          "description": "Missing or wrong CSRF token.",
+          "type": "string",
+          "const": "csrf_rejected"
+        },
+        {
+          "description": "The resource does not exist or is not visible.",
+          "type": "string",
+          "const": "not_found"
+        },
+        {
+          "description": "Malformed request.",
+          "type": "string",
+          "const": "invalid_request"
+        },
+        {
+          "description": "The URL is not a GitHub pull request URL.",
+          "type": "string",
+          "const": "not_a_pr_url"
+        },
+        {
+          "description": "The repository is private (v1 supports public repositories only).",
+          "type": "string",
+          "const": "private_repository"
+        },
+        {
+          "description": "The GitHub App is not installed where it is needed.",
+          "type": "string",
+          "const": "app_not_installed"
+        },
+        {
+          "description": "The analysis has not finished yet.",
+          "type": "string",
+          "const": "analysis_not_finished"
+        },
+        {
+          "description": "The request conflicts with the current state.",
+          "type": "string",
+          "const": "conflict"
+        },
+        {
+          "description": "The pull request head moved since the analysis.",
+          "type": "string",
+          "const": "pr_head_changed"
+        },
+        {
+          "description": "GitHub rejected the comment position.",
+          "type": "string",
+          "const": "position_rejected"
+        },
+        {
+          "description": "The pending comment was published on GitHub meanwhile; the edit or deletion applied to the published one.",
+          "type": "string",
+          "const": "comment_published"
+        },
+        {
+          "description": "The requested line range is too large.",
+          "type": "string",
+          "const": "range_too_large"
+        },
+        {
+          "description": "The file is not rendered (generated material).",
+          "type": "string",
+          "const": "not_rendered"
+        },
+        {
+          "description": "GitHub did not answer as expected.",
+          "type": "string",
+          "const": "github_unavailable"
+        },
+        {
+          "description": "An internal error.",
+          "type": "string",
+          "const": "internal"
+        },
+        {
+          "description": "The server is busy (e.g. its database is locked); retry after `Retry-After`.",
+          "type": "string",
+          "const": "unavailable"
+        },
+        {
+          "description": "A dashboard refresh of the user is already scanning (R2), or live (R4).",
+          "type": "string",
+          "const": "refresh_running"
+        },
+        {
+          "description": "GitHub's rate limit for the user's token is reached; the message names the reset time.",
+          "type": "string",
+          "const": "github_rate_limited"
+        },
+        {
+          "description": "Dashboard settings break a rule; the message names the field and the rule.",
+          "type": "string",
+          "const": "invalid_dashboard_settings"
+        },
+        {
+          "description": "The list changed since the cursor was issued; read it again from the start.",
+          "type": "string",
+          "const": "cursor_expired"
+        },
+        {
+          "description": "The access token lacks the scope the route needs.",
+          "type": "string",
+          "const": "insufficient_scope"
+        },
+        {
+          "description": "The route does not accept access tokens.",
+          "type": "string",
+          "const": "token_not_accepted"
+        },
+        {
+          "description": "The user has the maximum number of live access tokens.",
+          "type": "string",
+          "const": "token_limit_reached"
+        },
+        {
+          "description": "Too many requests; retry after `Retry-After`.",
+          "type": "string",
+          "const": "rate_limited"
+        }
+      ]
+    },
+    "FlowRef": {
+      "description": "A flow named in a state message.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Flow id.",
+          "$ref": "#/$defs/FlowId"
+        },
+        "title": {
+          "description": "Flow title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ]
+    },
+    "FlowId": {
+      "description": "Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….",
+      "type": "string",
+      "pattern": "^f[0-9]+$"
+    },
+    "AskQuestion": {
+      "description": "A private question and its LLM answer, pinned to the step; returned only to its asker.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Question id.",
+          "$ref": "#/$defs/QuestionId"
+        },
+        "asked_by": {
+          "description": "GitHub login of the asker; absent only in older stored payloads.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mine": {
+          "description": "Always true in current HTTP/SSE responses; absent only in older payloads.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "step_id": {
+          "description": "The step.",
+          "$ref": "#/$defs/StepId"
+        },
+        "text": {
+          "description": "The question.",
+          "type": "string"
+        },
+        "state": {
+          "description": "State.",
+          "$ref": "#/$defs/AskState"
+        },
+        "answer": {
+          "description": "The LLM answer once answered.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AskOutput"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure": {
+          "description": "Plain description when failed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "description": "When it was asked.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "resumes_at": {
+          "description": "While `pending` and waiting for the LLM usage limit to reset: when its job is queued again; absent\notherwise.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "step_id",
+        "text",
+        "state",
+        "created_at"
+      ]
+    },
+    "QuestionId": {
+      "description": "Identifier of an Ask question.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "StepId": {
+      "description": "Identifier of a step, assigned by the server in step order: `\"<flow>.<n>\"`, e.g. `f2.3`.",
+      "type": "string"
+    },
+    "AskState": {
+      "description": "State of a question.",
+      "oneOf": [
+        {
+          "description": "Queued.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "The agent is working on it.",
+          "type": "string",
+          "const": "answering"
+        },
+        {
+          "description": "Answered.",
+          "type": "string",
+          "const": "answered"
+        },
+        {
+          "description": "Failed.",
+          "type": "string",
+          "const": "failed"
+        }
+      ]
+    },
+    "AskOutput": {
+      "description": "An LLM answer to a question about a step.",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "description": "The answer; suspicions phrased as questions to check.",
+          "type": "string"
+        },
+        "evidence": {
+          "description": "Lines read that support the answer.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          }
+        }
+      },
+      "required": [
+        "answer",
+        "evidence"
+      ]
+    },
+    "Evidence": {
+      "description": "A line the agent actually read and cites as evidence.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "description": "Repository-relative path on that side.",
+          "type": "string"
+        },
+        "side": {
+          "description": "head for the checked-out code; base only for removed code read from the base commit.",
+          "$ref": "#/$defs/LineSide"
+        },
+        "line": {
+          "description": "1-based line number on that side.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "file",
+        "side",
+        "line"
+      ]
+    },
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    }
+  }
+}

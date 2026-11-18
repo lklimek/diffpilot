@@ -1,10 +1,12 @@
-//! Generated, checked-in artefacts (ADR-009): agent-output schemas and the TypeScript API types and routes.
+//! Generated, checked-in artefacts (ADR-009): agent-output schemas, the TypeScript API types and routes, and the
+//! JSON Schemas of what a personal access token reads (plan v1.1 §E.5 E5-7).
 //! Built in memory; the drift test `generated_artifacts_are_current` compares or rewrites the files.
 
 use std::any::TypeId;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Write as _;
 
+use schemars::JsonSchema;
 use ts_rs::{Config, TS, TypeVisitor};
 
 use crate::agent::{JobKind, StrictSchemaError, output_schema};
@@ -27,12 +29,63 @@ use crate::api::questions::{AskQuestion, AskRequest};
 use crate::api::review::ReviewState;
 use crate::api::settings::{RepoSettings, SetJudgeEffortRequest, SetLanguageRequest, Settings};
 use crate::api::tour::Tour;
-use crate::routes::{Listener, ROUTES};
+use crate::routes::{self, Listener, ROUTES, Route};
 
 /// Directory of the agent-output schemas, relative to the repository root.
 pub const SCHEMA_DIR: &str = "schemas/agent";
 /// Directory of the generated TypeScript, relative to the repository root.
 pub const TS_DIR: &str = "web/src/api/generated";
+/// Directory of the JSON Schemas of what a token reads, relative to the repository root.
+pub const API_SCHEMA_DIR: &str = "schemas/api";
+
+/// One JSON Schema of [`API_SCHEMA_DIR`]: a response body (SSE: event data), a query or the error body.
+#[derive(Clone, Copy, Debug)]
+pub struct ApiSchema {
+    /// File stem: `schemas/api/<stem>.schema.json`.
+    pub stem: &'static str,
+    /// Routes whose response body the schema describes; empty for a query and the error body.
+    pub responses: &'static [Route],
+    schema: fn() -> schemars::Schema,
+}
+
+fn schema_of<T: JsonSchema>() -> schemars::Schema {
+    schemars::schema_for!(T)
+}
+
+const fn api_schema<T: JsonSchema>(stem: &'static str, responses: &'static [Route]) -> ApiSchema {
+    ApiSchema {
+        stem,
+        responses,
+        schema: schema_of::<T>,
+    }
+}
+
+/// Every schema of [`API_SCHEMA_DIR`]: each route a token may read (`read` and `GET /api/v1/me`) names its
+/// response here (contract test).
+pub const API_SCHEMAS: &[ApiSchema] = &[
+    api_schema::<ApiError>("api_error", &[]),
+    api_schema::<MeResponse>("me_response", &[routes::GET_ME]),
+    api_schema::<DashboardSummary>("dashboard_summary", &[routes::GET_DASHBOARD]),
+    api_schema::<ItemQuery>("item_query", &[]),
+    api_schema::<ItemPage>("item_page", &[routes::LIST_DASHBOARD_ITEMS]),
+    api_schema::<RefreshStatus>("refresh_status", &[routes::GET_DASHBOARD_REFRESH]),
+    api_schema::<DashboardEvent>("dashboard_event", &[routes::DASHBOARD_REFRESH_EVENTS]),
+    api_schema::<DashboardSettingsView>(
+        "dashboard_settings_view",
+        &[routes::GET_DASHBOARD_SETTINGS],
+    ),
+    api_schema::<AnalysisSummary>("analysis_summary", &[routes::GET_ANALYSIS]),
+    api_schema::<AnalysisEvent>("analysis_event", &[routes::ANALYSIS_EVENTS]),
+    api_schema::<Tour>("tour", &[routes::GET_TOUR]),
+    api_schema::<LinesResponse>("lines_response", &[routes::GET_LINES]),
+    api_schema::<DiffResponse>("diff_response", &[routes::GET_DIFF]),
+    api_schema::<ReviewState>("review_state", &[routes::GET_REVIEW_STATE]),
+    api_schema::<Vec<AskQuestion>>("ask_question_list", &[routes::LIST_QUESTIONS]),
+    api_schema::<Vec<Feedback>>("feedback_list", &[routes::LIST_FEEDBACK]),
+    api_schema::<PendingReview>("pending_review", &[routes::GET_PENDING_REVIEW]),
+    api_schema::<Settings>("settings", &[routes::GET_SETTINGS]),
+    api_schema::<RepoSettings>("repo_settings", &[routes::GET_REPO_SETTINGS]),
+];
 
 const NOTE: &str = "This file is generated from crates/contracts by the test generated_artifacts_are_current \
                     (UPDATE_GENERATED=1 rewrites it). Do not edit.";
@@ -59,7 +112,7 @@ pub enum GenerateError {
         source: StrictSchemaError,
     },
     /// A schema could not be rendered as JSON.
-    #[error("agent schema could not be rendered as JSON")]
+    #[error("a JSON Schema could not be rendered as JSON")]
     Json(#[from] serde_json::Error),
     /// Two Rust types map to one TypeScript name.
     #[error("two contract types are both named `{0}` in TypeScript")]
@@ -77,6 +130,12 @@ pub fn generated_files() -> Result<Vec<GeneratedFile>, GenerateError> {
         files.push(GeneratedFile {
             path: format!("{SCHEMA_DIR}/{}.schema.json", kind.as_str()),
             contents: serde_json::to_string_pretty(&schema)? + "\n",
+        });
+    }
+    for api in API_SCHEMAS {
+        files.push(GeneratedFile {
+            path: format!("{API_SCHEMA_DIR}/{}.schema.json", api.stem),
+            contents: serde_json::to_string_pretty(&(api.schema)())? + "\n",
         });
     }
     files.push(GeneratedFile {
