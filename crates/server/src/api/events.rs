@@ -21,7 +21,7 @@ use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
-use crate::auth::Session;
+use crate::auth::{Session, liveness};
 use crate::state::AppState;
 
 /// Interval of the `heartbeat` event, which also keeps proxies from closing an idle stream.
@@ -65,53 +65,87 @@ async fn analysis_events(
     path: Result<Path<AnalysisId>, PathRejection>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiFailure<EventsError>> {
     let Path(analysis) = path.map_err(EventsError::from)?;
+    let events = reader_events(state, session, analysis, HEARTBEAT).await?;
+    Ok(Sse::new(
+        events
+            .filter_map(|event| async move { sse_event(&event) })
+            .map(Ok),
+    ))
+}
+
+/// The events of `analysis` as the session's user sees them: the snapshot, then live events and a heartbeat
+/// every `heartbeat`. Each heartbeat tick checks the session again (sign-out, expiry, allow-list removal): the
+/// stream ends once it is gone, and when the server stops.
+async fn reader_events(
+    state: AppState,
+    session: Session,
+    analysis: AnalysisId,
+    heartbeat: Duration,
+) -> Result<impl Stream<Item = AnalysisEvent>, EventsError> {
     // Another tenant's analysis answers like an unknown one (no existence leak).
-    let record = state
-        .db
-        .analyses()
-        .get(analysis)
-        .await
-        .map_err(EventsError::from)?;
+    let record = state.db.analyses().get(analysis).await?;
     if record.tenant_id != session.tenant_id {
-        return Err(EventsError::Db(DbError::NotFound).into());
+        return Err(EventsError::Db(DbError::NotFound));
     }
     // Subscribe first: an update written after the snapshot read is then buffered, never lost.
     let live = state.progress.subscribe(analysis);
-    let summary = state
-        .db
-        .analyses()
-        .summary(analysis)
-        .await
-        .map_err(EventsError::from)?;
+    let summary = state.db.analyses().summary(analysis).await?;
     let mut snapshot = vec![AnalysisEvent::Analysis { summary }];
     snapshot.extend(
         question_snapshot(&state, analysis, &session.user_id)
-            .await
-            .map_err(EventsError::from)?
+            .await?
             .into_iter()
             .map(|question| AnalysisEvent::Question { question }),
     );
-    let events = analysis_stream(snapshot, live);
-    Ok(Sse::new(
-        events
-            .then(move |mut event| {
-                let state = state.clone();
-                let user = session.user_id.clone();
-                async move {
-                    match personalize_event(&state, &user, &mut event).await {
-                        Ok(true) => Ok(Some(event)),
-                        Ok(false) => Ok(None),
-                        Err(error) => {
-                            tracing::warn!(%error, "SSE ownership projection failed; closing stream");
-                            Err(())
-                        }
+    let mut stopping = state.stopping.subscribe();
+    let stopped = async move {
+        // An error means the sender is gone, which also ends the stream.
+        let _ = stopping.wait_for(|stop| *stop).await;
+    };
+    Ok(analysis_stream(snapshot, live, heartbeat)
+        .then(move |mut event| {
+            let state = state.clone();
+            let session = session.clone();
+            async move {
+                if matches!(event, AnalysisEvent::Heartbeat { .. })
+                    && !session_live(&state, &session).await
+                {
+                    return Err(());
+                }
+                let user = session.user_id;
+                match personalize_event(&state, &user, &mut event).await {
+                    Ok(true) => Ok(Some(event)),
+                    Ok(false) => Ok(None),
+                    Err(error) => {
+                        tracing::warn!(%error, "SSE ownership projection failed; closing stream");
+                        Err(())
                     }
                 }
-            })
-            .take_while(|event| std::future::ready(event.is_ok()))
-            .filter_map(|event| async move { event.ok().flatten().and_then(|event| sse_event(&event)) })
-            .map(Ok),
-    ))
+            }
+        })
+        .take_while(|event| std::future::ready(event.is_ok()))
+        .filter_map(|event| std::future::ready(event.ok().flatten()))
+        .take_until(stopped))
+}
+
+/// Whether the stream's session still passes the checks of a new request; a failed read ends the stream too
+/// (the browser reconnects through the session check).
+async fn session_live(state: &AppState, session: &Session) -> bool {
+    let sessions = state.db.sessions();
+    match sessions
+        .live(session.token_hash(), liveness(Utc::now()))
+        .await
+    {
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            tracing::debug!(user = %session.user_id, "SSE stream closed: its session ended");
+            false
+        }
+        Err(error) => {
+            tracing::warn!(%error, "SSE session check failed; closing stream");
+            false
+        }
+    }
 }
 
 /// Reader-specific fields are computed after the shared broadcast, never cached in that broadcast.
@@ -150,13 +184,14 @@ async fn question_snapshot(
         .await
 }
 
-/// The snapshot, then live events and a [`AnalysisEvent::Heartbeat`] every [`HEARTBEAT`] (no database read); ends
-/// when the live events end.
+/// The snapshot, then live events and a [`AnalysisEvent::Heartbeat`] every `heartbeat`; ends when the live events
+/// end.
 fn analysis_stream(
     snapshot: Vec<AnalysisEvent>,
     live: broadcast::Receiver<AnalysisEvent>,
+    heartbeat: Duration,
 ) -> impl Stream<Item = AnalysisEvent> {
-    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + HEARTBEAT, HEARTBEAT);
+    let mut ticks = tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
     ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let heartbeats = stream::unfold(ticks, |mut ticks| async move {
         ticks.tick().await;
@@ -540,7 +575,7 @@ mod tests {
     async fn heartbeat_every_15_s_until_the_live_channel_ends() {
         let (sender, receiver) = broadcast::channel(4);
         let start = tokio::time::Instant::now();
-        let mut events = Box::pin(analysis_stream(Vec::new(), receiver));
+        let mut events = Box::pin(analysis_stream(Vec::new(), receiver, HEARTBEAT));
         for n in 1..=2 {
             let event = tokio::time::timeout(Duration::from_secs(16), events.next())
                 .await
@@ -597,5 +632,86 @@ mod tests {
                 .expect("infallible");
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{cookie:?}");
         }
+    }
+
+    /// The session of `cookie`, as the extractor loads it.
+    async fn session_of(state: &AppState, cookie: &str) -> Session {
+        use axum::extract::FromRequestParts;
+        let (mut parts, ()) = Request::get("/")
+            .header("cookie", cookie)
+            .body(())
+            .expect("request")
+            .into_parts();
+        <Session as FromRequestParts<AppState>>::from_request_parts(&mut parts, state)
+            .await
+            .expect("session")
+    }
+
+    /// Drains `events` until the stream ends; panics when it is still open after [`WAIT`].
+    async fn until_end(events: impl Stream<Item = AnalysisEvent>) -> Vec<AnalysisEvent> {
+        tokio::time::timeout(WAIT, events.collect())
+            .await
+            .expect("the stream ends")
+    }
+
+    /// Sign-out, expiry or allow-list removal end an open stream at its next heartbeat tick.
+    #[tokio::test]
+    async fn stream_ends_at_the_next_heartbeat_once_the_session_is_gone() {
+        let state = test_state().await;
+        let analysis = seed_analysis(&state.db).await.expect("seed");
+        let cookie = session_cookie(&state, DEFAULT_TENANT).await;
+        let session = session_of(&state, &cookie).await;
+        let events = reader_events(
+            state.clone(),
+            session.clone(),
+            analysis,
+            Duration::from_millis(50),
+        )
+        .await
+        .expect("stream");
+        let mut events = Box::pin(events);
+        assert!(matches!(
+            events.next().await,
+            Some(AnalysisEvent::Analysis { .. })
+        ));
+        assert!(
+            matches!(
+                tokio::time::timeout(WAIT, events.next()).await,
+                Ok(Some(AnalysisEvent::Heartbeat { .. }))
+            ),
+            "a live session keeps its heartbeats"
+        );
+        assert!(
+            state
+                .db
+                .sessions()
+                .delete(session.token_hash())
+                .await
+                .expect("sign out")
+        );
+        let rest = until_end(events).await;
+        assert!(
+            rest.len() <= 1,
+            "at most the tick already under way: {rest:?}"
+        );
+    }
+
+    /// The stop signal ends open streams, so graceful shutdown does not wait for the browsers.
+    #[tokio::test]
+    async fn stream_ends_when_the_server_stops() {
+        let state = test_state().await;
+        let analysis = seed_analysis(&state.db).await.expect("seed");
+        let cookie = session_cookie(&state, DEFAULT_TENANT).await;
+        let session = session_of(&state, &cookie).await;
+        let events = reader_events(state.clone(), session, analysis, HEARTBEAT)
+            .await
+            .expect("stream");
+        let mut events = Box::pin(events);
+        assert!(matches!(
+            events.next().await,
+            Some(AnalysisEvent::Analysis { .. })
+        ));
+        state.stopping.send_replace(true);
+        assert!(until_end(events).await.is_empty());
     }
 }
