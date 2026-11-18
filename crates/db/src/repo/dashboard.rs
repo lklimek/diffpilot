@@ -26,8 +26,9 @@ use crate::error::DbError;
 
 /// Refreshes kept per user: the newest, plus the one holding the latest snapshot.
 pub const REFRESHES_KEPT: u32 = 10;
-/// Refreshes started this recently that judged something are always kept: their `judged` counts feed the daily cap.
-const RECENT_REFRESHES_KEPT: TimeDelta = TimeDelta::hours(24);
+/// Refreshes started this recently that judged or sent something are always kept: their `sent` counts feed the daily
+/// ranking cap (a local day spans up to 25 hours, and a ranking may end after the day it started).
+const RECENT_REFRESHES_KEPT: TimeDelta = TimeDelta::hours(48);
 /// Log lines kept per refresh (the newest).
 pub const LOG_LINES_KEPT: usize = 200;
 /// Days a judgement is kept after its item was last seen.
@@ -45,6 +46,11 @@ const JUDGEMENTS_SQL: &str = "SELECT * FROM dashboard_judgements
 /// LLM judgements a user's refreshes started since a time made (index `dashboard_refreshes_by_user`).
 const JUDGED_SINCE_SQL: &str = "SELECT COALESCE(SUM(judged), 0) FROM dashboard_refreshes
     WHERE tenant_id = ?1 AND user_id = ?2 AND started_at >= ?3";
+/// Items a user's refreshes sent to the judge that ranked on or after a time: started then, still live, or ended
+/// then (a ranking that spans midnight counts wholly on both days, erring towards the cap).
+const SENT_SINCE_SQL: &str = "SELECT COALESCE(SUM(sent), 0) FROM dashboard_refreshes
+    WHERE tenant_id = ?1 AND user_id = ?2 AND sent > 0
+      AND (started_at >= ?3 OR finished_at IS NULL OR finished_at >= ?3)";
 /// Judgements not seen since a time (index `dashboard_judgements_by_last_seen`).
 const DELETE_UNSEEN_SQL: &str = "DELETE FROM dashboard_judgements WHERE last_seen_at < ?1";
 
@@ -232,6 +238,51 @@ pub struct InterruptedRefresh {
     /// Its state before recovery: `scanning` (now `failed`, code `interrupted`) or `ranking` (now `finished`,
     /// ranking `interrupted`).
     pub was: RefreshState,
+}
+
+/// The ranking caps a send is checked against (plan §B.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SendCaps {
+    /// Items sent per refresh, across its ranking attempts.
+    pub per_refresh: u32,
+    /// Items sent per user and local day.
+    pub per_day: u32,
+}
+
+/// Result of [`Dashboard::reserve_sends`].
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendReservation {
+    /// Counted: the items may be sent.
+    Reserved,
+    /// The refresh's cap would be exceeded; nothing counted.
+    OverRefreshCap,
+    /// The user's daily cap would be exceeded; nothing counted.
+    OverDailyCap,
+    /// The refresh is no longer ranking in this attempt; nothing counted.
+    Stale,
+}
+
+/// Items already sent to the judge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SentTotals {
+    /// By this refresh, across its attempts.
+    pub refresh: u32,
+    /// By the user's refreshes that ranked since the day's start.
+    pub day: u32,
+}
+
+/// One write of a live ranking (see [`Dashboard::write_ranking`]).
+#[derive(Clone, Copy, Debug)]
+pub struct RankingWrite<'a> {
+    /// Live ranking state (`waiting_for_analysis`, `running`, `paused`).
+    pub state: RankingState,
+    /// Judgement counts.
+    pub counts: JudgeCounts,
+    /// Judgements to store (replacing the user's previous judgement of each item).
+    pub judgements: &'a [StoredJudgement],
+    /// New progress and log of the refresh (the log keeps its newest [`LOG_LINES_KEPT`] lines).
+    pub progress: Option<(&'a RefreshProgress, &'a [String])>,
 }
 
 /// A stored LLM judgement of one item.
@@ -469,7 +520,7 @@ impl Dashboard<'_> {
             "DELETE FROM dashboard_refreshes WHERE tenant_id = ?1 AND user_id = ?2
                AND id NOT IN (SELECT id FROM dashboard_refreshes WHERE tenant_id = ?1 AND user_id = ?2
                               ORDER BY started_at DESC, rowid DESC LIMIT ?3)
-               AND (started_at < ?4 OR judged = 0) AND id IS NOT (",
+               AND (started_at < ?4 OR (judged = 0 AND sent = 0)) AND id IS NOT (",
             current_snapshot_id!(),
             ")"
         ))
@@ -848,6 +899,150 @@ impl Dashboard<'_> {
             .collect()
     }
 
+    /// Counts `items` as sent to the judge by refresh `id` ranking in `attempt`, in one write transaction, when both
+    /// caps allow it: the refresh's sends across its attempts and the user's sends since `day_start` (see
+    /// [`Dashboard::sent_totals`]). Nothing is counted otherwise.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "scope, refresh and attempt plus the items, caps and day; a parameter struct would hide the fence"
+    )]
+    pub async fn reserve_sends(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+        attempt: u32,
+        items: u32,
+        caps: SendCaps,
+        day_start: DateTime<Utc>,
+    ) -> Result<SendReservation, DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let current: Option<i64> = sqlx::query_scalar(
+            "SELECT sent FROM dashboard_refreshes
+             WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'ranking' AND ranking_attempt = ?",
+        )
+        .bind(id.to_string())
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(i64::from(attempt))
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(sent) = current else {
+            return Ok(SendReservation::Stale);
+        };
+        let day: i64 = sqlx::query_scalar(SENT_SINCE_SQL)
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(ts(day_start))
+            .fetch_one(&mut *tx)
+            .await?;
+        let items = i64::from(items);
+        if sent + items > i64::from(caps.per_refresh) {
+            return Ok(SendReservation::OverRefreshCap);
+        }
+        if day + items > i64::from(caps.per_day) {
+            return Ok(SendReservation::OverDailyCap);
+        }
+        sqlx::query("UPDATE dashboard_refreshes SET sent = sent + ? WHERE id = ?")
+            .bind(items)
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(SendReservation::Reserved)
+    }
+
+    /// Items sent to the judge by refresh `id` and by the user's refreshes that ranked since `day_start` (started
+    /// then, still live, or ended then). `NotFound` for an unknown id or another user's refresh.
+    pub async fn sent_totals(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+        day_start: DateTime<Utc>,
+    ) -> Result<SentTotals, DbError> {
+        let mut tx = super::read_tx(self.pool).await?;
+        let refresh: i64 = sqlx::query_scalar(
+            "SELECT sent FROM dashboard_refreshes WHERE id = ? AND tenant_id = ? AND user_id = ?",
+        )
+        .bind(id.to_string())
+        .bind(tenant_id)
+        .bind(user_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(DbError::NotFound)?;
+        let day: i64 = sqlx::query_scalar(SENT_SINCE_SQL)
+            .bind(tenant_id)
+            .bind(user_id)
+            .bind(ts(day_start))
+            .fetch_one(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        let total = |n: i64| {
+            u32::try_from(n).map_err(|_| DbError::Corrupt {
+                column: "dashboard_refreshes.sent",
+            })
+        };
+        Ok(SentTotals {
+            refresh: total(refresh)?,
+            day: total(day)?,
+        })
+    }
+
+    /// Records a live ranking state and counts, stores judgements and optionally replaces progress and log, in one
+    /// write transaction, only while the refresh is ranking in `attempt`. [`RankingUpdate::Stale`] for an earlier
+    /// attempt or an ended ranking (nothing stored; `judged` raised as in [`Dashboard::set_ranking`]); `Conflict` for
+    /// a newer attempt, a refresh that never ranked, or an ending ranking state.
+    pub async fn write_ranking(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+        attempt: u32,
+        write: &RankingWrite<'_>,
+    ) -> Result<RankingUpdate, DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        if ends(write.state) {
+            return Err(refused(&mut tx, tenant_id, user_id, id).await?);
+        }
+        let (progress, log) = match write.progress {
+            Some((progress, log)) => (
+                Some(serde_json::to_string(progress)?),
+                Some(serde_json::to_string(
+                    &log[log.len().saturating_sub(LOG_LINES_KEPT)..],
+                )?),
+            ),
+            None => (None, None),
+        };
+        let rows = sqlx::query(
+            "UPDATE dashboard_refreshes SET ranking_state = ?, judged = ?, reused = ?, left_provisional = ?,
+                 progress = COALESCE(?, progress), log = COALESCE(?, log)
+             WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'ranking' AND ranking_attempt = ?",
+        )
+        .bind(wire_name(write.state)?)
+        .bind(i64::from(write.counts.judged))
+        .bind(i64::from(write.counts.reused))
+        .bind(i64::from(write.counts.left_provisional))
+        .bind(progress)
+        .bind(log)
+        .bind(id.to_string())
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(i64::from(attempt))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let update =
+            ranking_update(&mut tx, tenant_id, user_id, id, attempt, write.counts, rows).await?;
+        if update == RankingUpdate::Applied {
+            for judgement in write.judgements {
+                upsert_judgement(&mut tx, tenant_id, user_id, judgement).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(update)
+    }
+
     /// The user's stored judgements of these items (missing ones are absent).
     pub async fn judgements(
         &self,
@@ -876,32 +1071,7 @@ impl Dashboard<'_> {
     ) -> Result<(), DbError> {
         let mut tx = write_tx(self.pool).await?;
         for judgement in judgements {
-            let saved = sqlx::query(
-                "INSERT INTO dashboard_judgements (tenant_id, user_id, item_key, input_fingerprint, input_version,
-                     prompt_version, body, refresh_id, job_id, model, judged_at, last_seen_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT (user_id, item_key) DO UPDATE SET input_fingerprint = excluded.input_fingerprint,
-                     input_version = excluded.input_version, prompt_version = excluded.prompt_version,
-                     body = excluded.body, refresh_id = excluded.refresh_id, job_id = excluded.job_id,
-                     model = excluded.model, judged_at = excluded.judged_at, last_seen_at = excluded.last_seen_at
-                 WHERE dashboard_judgements.tenant_id = excluded.tenant_id",
-            )
-            .bind(tenant_id)
-            .bind(user_id)
-            .bind(judgement.item_key.as_str())
-            .bind(&judgement.input_fingerprint)
-            .bind(i64::from(judgement.input_version))
-            .bind(i64::from(judgement.prompt_version))
-            .bind(serde_json::to_string(&judgement.body)?)
-            .bind(judgement.refresh_id.map(|id| id.to_string()))
-            .bind(judgement.job_id.map(|id| id.to_string()))
-            .bind(&judgement.model)
-            .bind(ts(judgement.judged_at))
-            .bind(ts(judgement.last_seen_at))
-            .execute(&mut *tx)
-            .await
-            .map_err(missing_owner)?;
-            found(saved.rows_affected())?;
+            upsert_judgement(&mut tx, tenant_id, user_id, judgement).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -959,6 +1129,42 @@ impl Dashboard<'_> {
             .await?
             .rows_affected())
     }
+}
+
+/// Stores a judgement, replacing the user's previous judgement of the item.
+async fn upsert_judgement(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant_id: &str,
+    user_id: &str,
+    judgement: &StoredJudgement,
+) -> Result<(), DbError> {
+    let saved = sqlx::query(
+            "INSERT INTO dashboard_judgements (tenant_id, user_id, item_key, input_fingerprint, input_version,
+                 prompt_version, body, refresh_id, job_id, model, judged_at, last_seen_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (user_id, item_key) DO UPDATE SET input_fingerprint = excluded.input_fingerprint,
+                 input_version = excluded.input_version, prompt_version = excluded.prompt_version,
+                 body = excluded.body, refresh_id = excluded.refresh_id, job_id = excluded.job_id,
+                 model = excluded.model, judged_at = excluded.judged_at, last_seen_at = excluded.last_seen_at
+             WHERE dashboard_judgements.tenant_id = excluded.tenant_id",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(judgement.item_key.as_str())
+        .bind(&judgement.input_fingerprint)
+        .bind(i64::from(judgement.input_version))
+        .bind(i64::from(judgement.prompt_version))
+        .bind(serde_json::to_string(&judgement.body)?)
+        .bind(judgement.refresh_id.map(|id| id.to_string()))
+        .bind(judgement.job_id.map(|id| id.to_string()))
+        .bind(&judgement.model)
+        .bind(ts(judgement.judged_at))
+        .bind(ts(judgement.last_seen_at))
+        .execute(&mut **tx)
+        .await
+        .map_err(missing_owner)?;
+    found(saved.rows_affected())?;
+    Ok(())
 }
 
 /// Whether a ranking state ends the ranking (the refresh is then `finished`).
@@ -2564,7 +2770,7 @@ mod tests {
         }
     }
 
-    /// Right after a start: besides the newest ten and the current snapshot, only refreshes started in the last 24
+    /// Right after a start: besides the newest ten and the current snapshot, only refreshes started in the last 48
     /// hours that judged something are kept.
     async fn assert_retention(db: &Db, user: &str, now: DateTime<Utc>) {
         let holder = current(db, user).await.map(|(id, _)| id);
@@ -2576,7 +2782,7 @@ mod tests {
             let kept = record(db, user, *id).await;
             assert!(
                 Some(*id) == holder
-                    || (kept.started_at >= now - TimeDelta::hours(24) && kept.counts.judged > 0),
+                    || (kept.started_at >= now - RECENT_REFRESHES_KEPT && kept.counts.judged > 0),
                 "{id} started {} kept at {now}",
                 kept.started_at
             );
@@ -3369,5 +3575,212 @@ mod tests {
             panic!("the failed ranking of the current snapshot is retryable");
         };
         assert_eq!(restarted.ranking_attempt, 1);
+    }
+
+    const CAPS: SendCaps = SendCaps {
+        per_refresh: 10,
+        per_day: 15,
+    };
+
+    #[tokio::test]
+    async fn sends_are_reserved_within_both_caps_and_counted_across_attempts() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let id = ranking(&db, "u1", 1).await;
+        let reserve = |items, attempt| dash.reserve_sends(T, "u1", id, attempt, items, CAPS, at(0));
+        assert_eq!(
+            reserve(8, 0).await.expect("reserve"),
+            SendReservation::Reserved
+        );
+        assert_eq!(
+            reserve(3, 0).await.expect("reserve"),
+            SendReservation::OverRefreshCap,
+            "8 + 3 > 10 sent items for this refresh"
+        );
+        assert_eq!(
+            reserve(2, 0).await.expect("reserve"),
+            SendReservation::Reserved
+        );
+        assert_eq!(
+            dash.sent_totals(T, "u1", id, at(0)).await.expect("totals"),
+            SentTotals {
+                refresh: 10,
+                day: 10
+            }
+        );
+        // A Retry ranking keeps the refresh's count: the room does not come back.
+        dash.finish_ranking(T, "u1", id, 0, RankingState::Failed, COUNTS, at(2))
+            .await
+            .expect("finish");
+        assert!(matches!(
+            dash.restart_ranking(T, "u1", id).await.expect("restart"),
+            RestartOutcome::Restarted(_)
+        ));
+        assert_eq!(
+            reserve(1, 0).await.expect("reserve"),
+            SendReservation::Stale
+        );
+        assert_eq!(
+            reserve(1, 1).await.expect("reserve"),
+            SendReservation::OverRefreshCap
+        );
+        // A new refresh of the same day: its own room, the day's sum caps it.
+        dash.finish_ranking(T, "u1", id, 1, RankingState::Finished, COUNTS, at(3))
+            .await
+            .expect("finish");
+        let next = ranking(&db, "u1", 4).await;
+        let reserve = |items| dash.reserve_sends(T, "u1", next, 0, items, CAPS, at(0));
+        assert_eq!(
+            reserve(6).await.expect("reserve"),
+            SendReservation::OverDailyCap
+        );
+        assert_eq!(
+            reserve(5).await.expect("reserve"),
+            SendReservation::Reserved
+        );
+        assert_eq!(
+            dash.sent_totals(T, "u1", next, at(0))
+                .await
+                .expect("totals"),
+            SentTotals {
+                refresh: 5,
+                day: 15
+            }
+        );
+        // Another user's sends are theirs.
+        let other = ranking(&db, "u2", 5).await;
+        assert_eq!(
+            dash.reserve_sends(T, "u2", other, 0, 8, CAPS, at(0))
+                .await
+                .expect("reserve"),
+            SendReservation::Reserved
+        );
+    }
+
+    #[tokio::test]
+    async fn sends_of_a_refresh_started_before_the_day_count_while_it_ranks_today() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let id = ranking(&db, "u1", 1).await;
+        let day = at(60);
+        assert_eq!(
+            dash.reserve_sends(T, "u1", id, 0, 4, CAPS, day)
+                .await
+                .expect("reserve"),
+            SendReservation::Reserved
+        );
+        assert_eq!(
+            dash.sent_totals(T, "u1", id, day)
+                .await
+                .expect("totals")
+                .day,
+            4,
+            "started before the day, still ranking"
+        );
+        dash.finish_ranking(T, "u1", id, 0, RankingState::Finished, COUNTS, at(30))
+            .await
+            .expect("finish");
+        assert_eq!(
+            dash.sent_totals(T, "u1", id, day)
+                .await
+                .expect("totals")
+                .day,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn refreshes_that_sent_judge_items_recently_are_kept() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let first = ranking(&db, "u1", 0).await;
+        dash.reserve_sends(T, "u1", first, 0, 3, CAPS, at(0))
+            .await
+            .expect("reserve");
+        dash.finish_ranking(
+            T,
+            "u1",
+            first,
+            0,
+            RankingState::Failed,
+            JudgeCounts::default(),
+            at(1),
+        )
+        .await
+        .expect("finish");
+        for minute in 2..(2 + i64::from(REFRESHES_KEPT) + 2) {
+            finished(&db, "u1", minute, RankingState::Finished).await;
+        }
+        assert_eq!(
+            record(&db, "u1", first).await.id,
+            first,
+            "sent items count for the daily cap"
+        );
+    }
+
+    #[tokio::test]
+    async fn ranking_write_stores_judgements_only_for_the_current_attempt() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let id = ranking(&db, "u1", 1).await;
+        let progress = RefreshProgress {
+            steps: Vec::new(),
+            percent: 100,
+        };
+        let log = vec!["ranking: 1 item".to_owned()];
+        let write = RankingWrite {
+            state: RankingState::Running,
+            counts: COUNTS,
+            judgements: &[judgement(1, "f1", at(2))],
+            progress: Some((&progress, &log)),
+        };
+        assert_eq!(
+            dash.write_ranking(T, "u1", id, 0, &write)
+                .await
+                .expect("write"),
+            RankingUpdate::Applied
+        );
+        assert_eq!(
+            dash.judgements(T, "u1", &[key(1)])
+                .await
+                .expect("read")
+                .len(),
+            1
+        );
+        assert_eq!(record(&db, "u1", id).await.log, log);
+        assert_eq!(record(&db, "u1", id).await.counts, COUNTS);
+        dash.cancel_ranking(T, "u1", id, 0, at(3))
+            .await
+            .expect("cancel");
+        let late = RankingWrite {
+            judgements: &[judgement(2, "f2", at(4))],
+            progress: Some((&progress, &[])),
+            ..write
+        };
+        assert_eq!(
+            dash.write_ranking(T, "u1", id, 0, &late)
+                .await
+                .expect("write"),
+            RankingUpdate::Stale
+        );
+        assert!(
+            dash.judgements(T, "u1", &[key(2)])
+                .await
+                .expect("read")
+                .is_empty()
+        );
+        assert_eq!(
+            record(&db, "u1", id).await.log,
+            log,
+            "a stale note is dropped"
+        );
+        let ending = RankingWrite {
+            state: RankingState::Finished,
+            ..write
+        };
+        assert!(matches!(
+            dash.write_ranking(T, "u1", id, 0, &ending).await,
+            Err(DbError::Conflict)
+        ));
     }
 }

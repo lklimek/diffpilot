@@ -32,7 +32,8 @@ use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::dashboard::{
-    JUDGEMENT_RETENTION_DAYS, JudgeCounts, RankingUpdate, RefreshRecord, StoredJudgement,
+    JUDGEMENT_RETENTION_DAYS, JudgeCounts, RankingUpdate, RefreshRecord, SendCaps, SendReservation,
+    StoredJudgement,
 };
 use db::repo::jobs::{JobStage, MAX_REPAIR_RUNS};
 use futures::StreamExt;
@@ -56,10 +57,15 @@ use crate::state::AppState;
 /// Version of the judge prompt and output schema (`prompts/judge_work.md`, pinned by its golden); a bump
 /// re-judges every item within the caps.
 pub const JUDGE_PROMPT_VERSION: u32 = 1;
-/// Items judged per refresh at most (plan §B.4).
+/// Items sent to the judge per refresh at most, across its attempts and retries (plan §B.4).
 pub const REFRESH_CAP: u32 = 48;
-/// Items judged per user and local day at most (plan §B.4).
+/// Items sent to the judge per user and local day at most, retries included (plan §B.4).
 pub const DAILY_CAP: u32 = 120;
+/// Both caps.
+const CAPS: SendCaps = SendCaps {
+    per_refresh: REFRESH_CAP,
+    per_day: DAILY_CAP,
+};
 /// Further runs of a batch whose job failed or whose answer was rejected (as the pipeline's repair runs).
 const RETRIES: u32 = MAX_REPAIR_RUNS;
 /// How often a waiting judge job is looked at: credential pause, a running analysis job, the claim.
@@ -135,6 +141,16 @@ struct End {
     message: Option<String>,
 }
 
+/// How a batch ended.
+enum BatchEnd {
+    /// Every item judged.
+    Judged,
+    /// These display ids stayed unjudged after the last run.
+    Unjudged(Vec<String>),
+    /// A further run of these items exceeded a cap (named) and was not sent.
+    Capped(Vec<String>, &'static str),
+}
+
 /// An item queued for judgement.
 #[derive(Clone, Debug)]
 struct Queued {
@@ -160,6 +176,7 @@ async fn rank(state: AppState, run: RankRun) {
         counts: JudgeCounts::default(),
         live: RankingState::Running,
         zone: Tz::UTC,
+        day: DateTime::<Utc>::MIN_UTC,
     };
     let end = match ranking.run().await {
         Ok(end) => Some(end),
@@ -194,6 +211,8 @@ struct Ranking<'a> {
     counts: JudgeCounts,
     live: RankingState,
     zone: Tz,
+    /// Start of the user's local day the ranking began in (the daily cap counts from it).
+    day: DateTime<Utc>,
 }
 
 impl<'a> Ranking<'a> {
@@ -228,11 +247,12 @@ impl<'a> Ranking<'a> {
             .collect();
         dashboard.mark_seen(tenant, user, &keys, now).await?;
         let (queue, reused) = self.queue(&snapshot, &candidates, &stored);
-        let today = dashboard
-            .judged_since(tenant, user, day_start(now, self.zone))
+        self.day = day_start(now, self.zone);
+        let sent = dashboard
+            .sent_totals(tenant, user, self.run.refresh_id, self.day)
             .await?;
-        let per_refresh = REFRESH_CAP.saturating_sub(self.counts.judged);
-        let per_day = DAILY_CAP.saturating_sub(today);
+        let per_refresh = REFRESH_CAP.saturating_sub(sent.refresh);
+        let per_day = DAILY_CAP.saturating_sub(sent.day);
         let room = usize::try_from(per_refresh.min(per_day)).unwrap_or(usize::MAX);
         let take = queue.len().min(room);
         let left = queue.len() - take;
@@ -242,11 +262,7 @@ impl<'a> Ranking<'a> {
             "ranking: {take} items to judge, {reused} judgements reused"
         )];
         if left > 0 {
-            let limit = if per_day < per_refresh {
-                "daily ranking limit"
-            } else {
-                "ranking limit per refresh"
-            };
+            let limit = limit(per_refresh, per_day);
             lines.push(format!("{left} items left provisional: {limit}"));
         }
         let total = self.counts.judged + count(take);
@@ -256,8 +272,35 @@ impl<'a> Ranking<'a> {
         tracing::info!(user_id = %user, refresh = %self.run.refresh_id, attempt = self.run.attempt,
             queued = take, reused, left_provisional = left, "dashboard ranking started");
         let mut not_ranked: Vec<String> = Vec::new();
-        for (index, items) in queue[..take].chunks(MAX_ITEMS).enumerate() {
-            not_ranked.extend(self.batch(count(index + 1), items).await?);
+        let mut stop = None;
+        let batches: Vec<&[Queued]> = queue[..take].chunks(MAX_ITEMS).collect();
+        for (index, items) in batches.iter().enumerate() {
+            let reason = match self.batch(count(index + 1), items).await? {
+                BatchEnd::Judged => continue,
+                BatchEnd::Unjudged(ids) => {
+                    not_ranked = ids;
+                    "a batch could not be judged"
+                }
+                BatchEnd::Capped(ids, limit) => {
+                    not_ranked = ids;
+                    limit
+                }
+            };
+            stop = Some((
+                reason,
+                batches[index + 1..].iter().map(|b| b.len()).sum::<usize>(),
+            ));
+            break;
+        }
+        if let Some((reason, unsent)) = stop.filter(|(_, unsent)| *unsent > 0) {
+            self.counts.left_provisional += count(unsent);
+            self.write_state().await?;
+            self.note(
+                None,
+                None,
+                &[format!("{unsent} items left provisional: {reason}")],
+            )
+            .await?;
         }
         if not_ranked.is_empty() {
             return Ok(End {
@@ -338,14 +381,20 @@ impl<'a> Ranking<'a> {
         (queue, reused)
     }
 
-    /// Judges one batch, running it again for the items whose answer failed or was rejected; returns the display
-    /// ids of the items left unjudged.
-    async fn batch(&mut self, batch: u32, items: &[Queued]) -> Result<Vec<String>, RankError> {
+    /// Judges one batch, running it again for the items whose answer failed or was rejected while runs are left
+    /// and the caps allow it. Every run's items are counted against the caps before its job is submitted.
+    async fn batch(&mut self, batch: u32, items: &[Queued]) -> Result<BatchEnd, RankError> {
+        let ids = |pending: &[&Queued]| pending.iter().map(|q| q.item.id.clone()).collect();
         let mut pending: Vec<&Queued> = items.iter().collect();
         for generation in 0..=RETRIES {
             let input = JudgeWorkInput {
                 items: pending.iter().map(|q| q.item.clone()).collect(),
             };
+            if let Some(limit) = self.reserve(count(pending.len())).await? {
+                tracing::info!(refresh = %self.run.refresh_id, batch, generation, items = pending.len(), limit,
+                    "dashboard judge batch not sent: the ranking cap is reached");
+                return Ok(BatchEnd::Capped(ids(&pending), limit));
+            }
             let handle = self.submit(batch, generation, &input).await?;
             let result = self.follow(&handle).await?;
             pending = self.apply(handle.job_id, &input, pending, result).await?;
@@ -355,7 +404,36 @@ impl<'a> Ranking<'a> {
             tracing::info!(refresh = %self.run.refresh_id, batch, generation, items = pending.len(),
                 "dashboard judge batch left items unjudged; judging them again while runs are left");
         }
-        Ok(pending.iter().map(|q| q.item.id.clone()).collect())
+        Ok(if pending.is_empty() {
+            BatchEnd::Judged
+        } else {
+            BatchEnd::Unjudged(ids(&pending))
+        })
+    }
+
+    /// Counts `items` as sent against both caps; the limit reached when they do not fit (nothing counted).
+    async fn reserve(&self, items: u32) -> Result<Option<&'static str>, RankError> {
+        let (tenant, user) = self.scope();
+        let reserved = self
+            .state
+            .db
+            .dashboard()
+            .reserve_sends(
+                tenant,
+                user,
+                self.run.refresh_id,
+                self.run.attempt,
+                items,
+                CAPS,
+                self.day,
+            )
+            .await?;
+        match reserved {
+            SendReservation::Reserved => Ok(None),
+            SendReservation::OverRefreshCap => Ok(Some(limit(0, 1))),
+            SendReservation::OverDailyCap => Ok(Some(limit(1, 0))),
+            SendReservation::Stale => Err(RankError::Stale),
+        }
     }
 
     async fn submit(
@@ -668,6 +746,15 @@ impl<'a> Ranking<'a> {
                 "dashboard ranking end could not be stored; the refresh shows it ranking until Retry or restart"),
         }
         self.publish().await;
+    }
+}
+
+/// The cap that leaves items provisional: the daily one when less of it is left.
+fn limit(per_refresh: u32, per_day: u32) -> &'static str {
+    if per_day < per_refresh {
+        "daily ranking limit"
+    } else {
+        "ranking limit per refresh"
     }
 }
 

@@ -16,7 +16,7 @@ use contracts::ids::RefreshId;
 use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
 use contracts::job::state::JobState;
-use db::repo::dashboard::{JudgeCounts, StartOutcome};
+use db::repo::dashboard::{JudgeCounts, SendCaps, SendReservation, StartOutcome};
 use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
 use db::repo::users::GithubProfile;
 use db::repo::{DEFAULT_TENANT, Db};
@@ -447,6 +447,47 @@ impl Harness {
         ended.expect("the judge jobs end")
     }
 
+    /// Answers every judge job of the refresh with `answer` until its ranking ended; returns the items sent and the
+    /// jobs run.
+    async fn serve_until_ended(
+        &self,
+        user: &str,
+        id: RefreshId,
+        answer: impl Fn(&JudgeWorkInput) -> JobOutcome,
+    ) -> (u32, u32) {
+        let served = tokio::time::timeout(WAIT, async {
+            let (mut sent, mut jobs) = (0, 0);
+            loop {
+                let now = Utc::now();
+                let job = self
+                    .db()
+                    .jobs()
+                    .claim(ClaimParams {
+                        credential_ids: &[CREDENTIAL_ID.to_owned()],
+                        job_token_hash: b"hash",
+                        lease_until: now + TimeDelta::hours(1),
+                        now,
+                    })
+                    .await
+                    .expect("claim");
+                if let Some(job) = job {
+                    let input = JudgeWorkInput::from_prompt(&job.spec.prompt).expect("judge input");
+                    sent += count(input.items.len());
+                    jobs += 1;
+                    self.complete(&job, answer(&input)).await;
+                } else if self.status(user, id).await.state != RefreshState::Ranking
+                    && !self.state.dashboard.is_running(id)
+                {
+                    return (sent, jobs);
+                } else {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        })
+        .await;
+        served.expect("the ranking ends")
+    }
+
     /// Ranks `snapshot` for `user` answering every job neutrally; returns the finished status.
     async fn rank_all(&self, user: &str, snapshot: &Snapshot) -> (RefreshId, RefreshStatus) {
         let id = self.rank(user, snapshot).await;
@@ -826,9 +867,27 @@ async fn prompt_version_bump_marks_older_judgements_inherited() {
     assert!(!h.judgements("u1", &snap).await[&key(1)].older_prompt);
 }
 
-/// A finished refresh of `user` started now that judged `judged` items (the daily cap counts it).
-async fn judged_earlier(h: &Harness, user: &str, judged: u32) {
+/// A finished refresh of `user` started now that sent `sent` items to the judge (the daily cap counts it).
+async fn sent_earlier(h: &Harness, user: &str, sent: u32) {
     let id = h.stored(user, &snapshot(vec![], vec![], vec![])).await;
+    let reserved = h
+        .db()
+        .dashboard()
+        .reserve_sends(
+            DEFAULT_TENANT,
+            user,
+            id,
+            0,
+            sent,
+            SendCaps {
+                per_refresh: sent,
+                per_day: DAILY_CAP,
+            },
+            h.state.dashboard.now(),
+        )
+        .await
+        .expect("reserve");
+    assert_eq!(reserved, SendReservation::Reserved);
     let ended = h
         .db()
         .dashboard()
@@ -839,7 +898,7 @@ async fn judged_earlier(h: &Harness, user: &str, judged: u32) {
             0,
             RankingState::Finished,
             JudgeCounts {
-                judged,
+                judged: sent,
                 reused: 0,
                 left_provisional: 0,
             },
@@ -853,7 +912,7 @@ async fn judged_earlier(h: &Harness, user: &str, judged: u32) {
 #[tokio::test]
 async fn daily_cap_leaves_rest_provisional_with_note() {
     let h = harness().await;
-    judged_earlier(&h, "u1", DAILY_CAP - 3).await;
+    sent_earlier(&h, "u1", DAILY_CAP - 3).await;
     let snap = snapshot(prs(5), vec![], vec![]);
     let (_, done) = h.rank_all("u1", &snap).await;
     assert_eq!((done.judged, done.left_provisional), (3, 2));
@@ -1403,31 +1462,77 @@ fn judge_sees_the_computed_default_it_confirms() {
     );
 }
 
-/// Plan §B.4 / OD19 (hard rule): caps bound the LLM work of a day. Even counting every retry run, the items sent to
-/// the judge in one local day stay within `DAILY_CAP × (1 + RETRIES)`, however often a failing ranking is retried.
+/// Plan §B.4 / OD19 (hard rule): the caps count the items SENT to the judge, retries included: a failing attempt
+/// stops after its first batch ran out of retries, Retry ranking keeps the refresh's count, and new refreshes of the
+/// same day share the daily count.
 #[tokio::test]
 async fn failing_rankings_stay_within_the_daily_cap() {
     let h = harness().await;
     let snap = snapshot(prs(REFRESH_CAP), vec![], vec![]);
+    let broken = |_: &JudgeWorkInput| succeeded(json!({"items": "not a list"}));
     let id = h.rank("u1", &snap).await;
-    let jobs_per_attempt = REFRESH_CAP.div_ceil(count(MAX_ITEMS)) * (1 + RETRIES);
-    let mut sent = 0u32;
-    for attempt in 0..3 {
-        if attempt > 0 {
-            refresh::rank_again(&h.state, &scope("u1"), id)
-                .await
-                .expect("Retry ranking");
-        }
-        for _ in 0..jobs_per_attempt {
-            let (_, input) = h.serve(|_| succeeded(json!({"items": "not a list"}))).await;
-            sent += count(input.items.len());
-        }
-        let ended = h.ranked("u1", id).await;
-        assert_eq!(ended.ranking.map(|r| r.state), Some(RankingState::Failed));
-    }
+    // Attempt 0: batch 1 (8 items) runs 3 times and the attempt ends: 24 sent.
+    let (first, jobs) = h.serve_until_ended("u1", id, broken).await;
+    assert_eq!((first, jobs), (24, 3));
+    let ended = h.status("u1", id).await;
+    assert_eq!(
+        ended.ranking.as_ref().map(|r| r.state),
+        Some(RankingState::Failed)
+    );
+    assert_eq!(
+        ended.left_provisional, 40,
+        "the unsent batches stay provisional"
+    );
     assert!(
-        sent <= DAILY_CAP * (1 + RETRIES),
-        "{sent} item judgements requested today, {} jobs, none counted against the daily cap",
-        3 * jobs_per_attempt
+        ended
+            .log
+            .iter()
+            .any(|l| l.ends_with("40 items left provisional: a batch could not be judged")),
+        "{:?}",
+        ended.log
+    );
+    // Retry ranking: the refresh has 48 - 24 = 24 left.
+    refresh::rank_again(&h.state, &scope("u1"), id)
+        .await
+        .expect("Retry ranking");
+    assert_eq!(h.serve_until_ended("u1", id, broken).await, (24, 3));
+    // Retry ranking again: nothing left for this refresh.
+    refresh::rank_again(&h.state, &scope("u1"), id)
+        .await
+        .expect("Retry ranking");
+    assert_eq!(h.serve_until_ended("u1", id, broken).await, (0, 0));
+    let capped = h.status("u1", id).await;
+    assert_eq!(capped.left_provisional, 48);
+    // New refreshes of the same day: 120 - 48 = 72 left for the day, 24 per failing refresh.
+    let mut day = 48;
+    for _ in 0..4 {
+        let next = h.rank("u1", &snap).await;
+        day += h.serve_until_ended("u1", next, broken).await.0;
+    }
+    assert_eq!(day, 120, "items sent to the judge today");
+}
+
+/// A judge item reserved against the caps before its job: a retry the refresh cap no longer allows is not run.
+#[tokio::test]
+async fn a_retry_beyond_the_cap_is_not_sent() {
+    let h = harness().await;
+    sent_earlier(&h, "u1", DAILY_CAP - 10).await;
+    let snap = snapshot(prs(8), vec![], vec![]);
+    let id = h.rank("u1", &snap).await;
+    let (sent, jobs) = h
+        .serve_until_ended("u1", id, |_: &JudgeWorkInput| {
+            succeeded(json!({"items": "not a list"}))
+        })
+        .await;
+    assert_eq!((sent, jobs), (8, 1), "8 + 8 would exceed the day's 10");
+    let done = h.status("u1", id).await;
+    let ranking = done.ranking.expect("ranking");
+    assert_eq!(ranking.state, RankingState::Failed);
+    assert!(
+        ranking
+            .message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("8 items could not be judged (")),
+        "{ranking:?}"
     );
 }
