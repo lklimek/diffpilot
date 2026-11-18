@@ -119,16 +119,6 @@ test("ranking effort sits in the LLM card, saves on change and shows the editor"
   await expect(llm).toContainText(/changed by alice at/);
 });
 
-test("server without the dashboard routes: Settings shows no dashboard part", async ({ page }) => {
-  await page.goto("/settings?settings-scenario=not-deployed");
-  await expect(page.getByRole("region", { name: "LLM model" })).toBeVisible();
-  await expect(page.getByText(/^Loading/)).toHaveCount(0);
-  await expect(dashboard(page)).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Access tokens" })).toHaveCount(0);
-  await expect(page.getByLabel("Dashboard ranking effort")).toHaveCount(0);
-  await expect(page.getByRole("alert")).toHaveCount(0);
-});
-
 test("Sign out still clears this login's drafts with the dashboard section on the page", async ({ page }) => {
   await page.goto("/settings");
   await expect(dashboard(page)).toBeVisible();
@@ -148,8 +138,18 @@ test("unsaved changes are marked and leaving the page asks first", async ({ page
   await expect(card.getByText("Unsaved changes")).toHaveCount(0);
   await card.getByLabel("Watch issues of acme/node-client").check();
   await expect(card.getByText("Unsaved changes")).toBeVisible();
+  // Inside the shell the brand link is an in-app move: the screen asks.
+  await page.getByRole("link", { name: "smart-review" }).first().click();
+  const ask = page.getByRole("alertdialog", { name: "Unsaved dashboard settings" });
+  await ask.getByRole("button", { name: "Stay" }).click();
+  await expect(ask).toHaveCount(0);
+  await expect(page).toHaveURL(/\/settings/);
+  await expect(card.getByLabel("Watch issues of acme/node-client")).toBeChecked();
+  // Leaving the app (a full page load) asks through the browser.
   const asked = page.waitForEvent("dialog");
-  void page.getByRole("link", { name: "smart-review" }).first().click();
+  void page.evaluate(() => {
+    window.location.href = "/";
+  });
   const dialog = await asked;
   expect(dialog.type()).toBe("beforeunload");
   await dialog.dismiss();

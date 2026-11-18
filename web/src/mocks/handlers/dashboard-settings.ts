@@ -28,8 +28,8 @@ interface Scenario {
   tokens?: AccessToken[];
   /** PUT answers 422 for a rule only the server checks. */
   rejectSave?: boolean;
-  /** Status of both GETs: 503 (cannot be read) or 404 (routes not deployed). */
-  loadStatus?: 404 | 503;
+  /** Status of both GETs: 503 (cannot be read). */
+  loadStatus?: 503;
 }
 
 /** Ten live tokens: the per-user limit. */
@@ -55,8 +55,6 @@ const SCENARIOS = {
   "save-rejected": { rejectSave: true },
   /** Neither the settings nor the tokens can be read. */
   "load-fails": { loadStatus: 503 },
-  /** The server has no dashboard routes yet (dark launch). */
-  "not-deployed": { loadStatus: 404 },
 } satisfies Record<string, Scenario>;
 
 /** Name of a dashboard settings scenario. */
@@ -84,9 +82,7 @@ const requested = new URLSearchParams(globalThis.location?.search ?? "").get("se
 if (requested !== null) setDashboardSettingsScenario(requested as DashboardSettingsScenario);
 
 const loadFailure = () =>
-  selected.loadStatus === 404
-    ? new HttpResponse(null, { status: 404 })
-    : apiError(503, "unavailable", "The dashboard settings cannot be read right now. Reload the page later.");
+  apiError(503, "unavailable", "The dashboard settings cannot be read right now. Reload the page later.");
 
 /** Effective MemCan projects (G17): repository short names, then the extras, deduplicated. */
 const memcanProjects = (settings: DashboardSettings) => [

@@ -12,7 +12,13 @@ import {
 const server = startMockServer();
 afterEach(resetDashboardSettings);
 
-const region = (name: string) => screen.findByRole("region", { name });
+// A card once its data has loaded or failed (a 503 GET is retried once after 1 s by the API client).
+const region = async (name: string) => {
+  await waitFor(() => expect(screen.getByRole("region", { name })).not.toHaveTextContent(/Loading/), {
+    timeout: 3000,
+  });
+  return screen.getByRole("region", { name });
+};
 
 describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6)", () => {
   it("shows the dashboard settings, the ranking effort in the LLM card and the tokens", async () => {
@@ -98,16 +104,17 @@ describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6
     );
   });
 
-  it("server without the dashboard routes (dark launch): nothing of the dashboard is shown", async () => {
-    setDashboardSettingsScenario("not-deployed");
+  it("a bare 404 of the dashboard routes is an error, never a reason to hide the dashboard part", async () => {
+    server.use(
+      http.get("/api/v1/settings/dashboard", () => new HttpResponse(null, { status: 404 })),
+      http.get("/api/v1/settings/access-tokens", () => new HttpResponse(null, { status: 404 })),
+    );
     renderRoute("/settings");
     const llm = await region("LLM model");
-    await waitFor(() => expect(screen.queryByText("Loading the dashboard settings…")).toBeNull());
-    await waitFor(() => expect(screen.queryByText("Loading your access tokens…")).toBeNull());
-    expect(screen.queryByRole("region", { name: "Dashboard" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Access tokens" })).toBeNull();
-    expect(within(llm).queryByLabelText("Dashboard ranking effort")).toBeNull();
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(await within(await region("Dashboard")).findByRole("alert")).toBeVisible();
+    expect(await within(await region("Access tokens")).findByRole("alert")).toBeVisible();
+    // The ranking effort belongs to the installation's LLM settings, whatever the dashboard settings answer.
+    expect(within(llm).getByLabelText("Dashboard ranking effort")).toBeVisible();
   });
 
   it("saving the ranking effort keeps an unsaved model choice and the focus", async () => {
