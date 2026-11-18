@@ -112,9 +112,18 @@ supervisor `lchown`s each root that is not the runner's yet (`serve.rs`, setup),
 step 1), and empties `/tmp`, failing the start if a leftover there cannot be removed (`main.rs`,
 `empty_private_tmp`; `scratch::clear`). Per job, steps 2 and 5 are unchanged, so no job reads another job's area.
 The image gives fresh volumes the same owners and modes. Accepted losses (threat model AR-8):
-- **No size bound.** An agent can fill Docker's disk (bytes and inodes), and with it the state volume and the
-  database, which share that filesystem; before this, `codex-homes` was a separate bounded filesystem (T8b) and
-  `/work` a capped tmpfs. TODO: a soft quota (e.g. per-job usage checked by the runner) once needed.
+- **No size bound.** The scratch volumes live on the filesystem that holds Docker's data root, together with the
+  state volume and the database. A job can fill it (bytes or inodes); where Docker's root is on the host's root
+  filesystem, the whole host is affected, not only this stack (on the owner's development host Docker's root is
+  `/data/docker` on a separate ext4). One consequence costs a sign-in: if copy-back cannot write the staging
+  `auth.json` (`ENOSPC`), the credential is marked unknown (`isolated.rs` `pull` and `copy_back`), and `leave`
+  then removes the agent's `CODEX_HOME`, the only copy of a refresh token Codex rotated, so the owner must sign
+  in to Codex again. Before this change, `codex-homes` was a separate bounded filesystem (T8b) and `/work` a
+  capped tmpfs. Guard: the runner claims no job while the work directory's filesystem has less than
+  `SR_RUNNER_DISK_RESERVE_MIB` free (default 2048; `statvfs`, `scratch::Reserve`). It logs each change of that
+  state once. The server has no "cannot take jobs" signal, so jobs simply stay queued. This is a start
+  condition, not a quota: a job started above the reserve can still fill the disk. TODO: a soft per-job quota
+  once needed.
 - **`nosuid`, `nodev`, `noexec` are gone** (Docker mounts volumes without them). No replacement is needed for this
   threat: `nodev` — creating a device node needs `CAP_MKNOD`, which no process here has (`cap_drop: ALL`; the
   supervisor holds only `CHOWN`, `SETUID`, `SETGID`, `KILL`), and Docker's device cgroup refuses unlisted devices
@@ -123,9 +132,10 @@ The image gives fresh volumes the same owners and modes. Accepted losses (threat
   files in its `HOME`/`TMPDIR` under `/work`, which never had `noexec`.
 - **Remanence:** deleted scratch stays on the host disk until overwritten (readable by host root only).
 - A job directory that start-up recovery quarantined stays until removed by hand (it is runner-owned, 0700).
-The test keeps a `size=16m,nr_inodes=2048` tmpfs as a stand-in for a full disk (`codex_home_exhaustion_fails_job_cleanly`:
-the agent hits `ENOSPC` for bytes and inodes, the runner still writes its state, copies `auth.json` back and
-cleans up).
+The r1 test keeps a `size=16m,nr_inodes=2048` tmpfs for `codex-homes` (`codex_home_exhaustion_fails_job_cleanly`).
+The agent hits `ENOSPC` there for bytes and inodes, while the runner still writes its state, copies `auth.json`
+back and cleans up. That models only a full agent home. It no longer models production, where one shared disk
+fills and the runner's own writes fail too (above).
 
 Skills exposed to the agent must not live under a 0700 runner dir: copy them in per job or keep them in a
 runner-owned 0755/0644 tree.

@@ -33,7 +33,8 @@ disk for images and build cache, plus the scratch volumes. Check: `docker versio
 
 2. Disk (nothing to prepare): compose creates every volume, and nothing is kept in RAM. The job work area holds
    a full-history checkout per job (a large repository such as `dashpay/platform` takes about 1.7 GB) and has no
-   size limit, so keep several GB free on Docker's disk (`df -h /var/lib/docker`).
+   size limit, so keep several GB free on Docker's disk (`df -h "$(docker info -f '{{.DockerRootDir}}')"`). Where
+   that is the host's root filesystem, a full disk stops the whole host, not only this stack.
 
 3. GitHub App (github.com → Settings → Developer settings → GitHub Apps → the App):
    - Callback URL, exactly: `https://review.klimek.ws/auth/github/callback` (no wildcard); "Expire user
@@ -358,6 +359,13 @@ docker volume ls -q --filter label=smart-review.volume=temporary --filter label=
   | xargs -r docker volume rm
 sr up -d
 ```
+
+Free-space reserve: the runner claims no job while the filesystem of `/work` (Docker's data root, shared by all
+volumes) has less than `SR_RUNNER_DISK_RESERVE_MIB` free (default 2048). Jobs then stay queued; the runner logs
+`the job scratch filesystem is below its free-space reserve` once, and `... has its free-space reserve again` when
+it claims again. This only stops new jobs: a running job can still fill the disk. If a job's copy-back of the
+Codex credential then fails (`the agent's auth.json could not be copied back`), the rotated token is lost: sign
+in again (section "LLM credential").
 
 `docker volume rm` refuses a volume a container still uses (stopped containers included); then `sr down` first
 (containers and networks only, the durable volumes stay). A start that cannot empty a leftover stops with exit 1
