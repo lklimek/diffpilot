@@ -84,7 +84,7 @@ export interface InspectorProps {
 export const ASK_MIN_PX = 160;
 /** Height change of one arrow key press on the dock's handle. */
 export const DOCK_KEY_STEP_PX = 40;
-// Room in px the Inspector keeps above a resized dock for its heading.
+// Room in px the Inspector keeps above a resized dock for its heading (its scroller's `min-h-30`).
 const PANEL_KEEP_PX = 120;
 
 /** The handle on the dock's top edge: drag, arrow keys, Home / End, Enter or double-click to reset. */
@@ -409,7 +409,12 @@ export function Inspector(props: InspectorProps) {
 
   return (
     <div ref={root} data-inspector className="flex h-full min-h-0 flex-col bg-surface">
-      <div ref={scroller} tabIndex={0} className="min-h-0 flex-1 overflow-auto overscroll-contain">
+      {/* A resized dock taller than the window allows shrinks; the panel keeps room for its heading. */}
+      <div
+        ref={scroller}
+        tabIndex={0}
+        className={`${dockHeight === null ? "min-h-0" : "min-h-30"} flex-1 overflow-auto overscroll-contain`}
+      >
         <div className="px-3 pt-2.5 pb-1.5">
           {panel.backTo && onBackToStep && (
             <p className="mb-1 flex flex-wrap items-baseline gap-2 text-[12px]">
@@ -450,12 +455,8 @@ export function Inspector(props: InspectorProps) {
           aria-label="Ask, feedback and comment"
           data-dock
           data-sized={dockHeight === null ? undefined : true}
-          style={
-            dockHeight === null
-              ? undefined
-              : { height: `${dockHeight}px`, maxHeight: `calc(100% - ${PANEL_KEEP_PX}px)` }
-          }
-          className={`flex shrink-0 flex-col gap-2.5 overflow-auto border-t-2 border-border bg-surface-2 px-3 py-2.5 [&>*:not([data-dock-grow])]:shrink-0 ${dockHeight === null ? "max-h-[42vh]" : ""}`}
+          style={dockHeight === null ? undefined : { height: `${dockHeight}px` }}
+          className={`flex flex-col gap-2.5 overflow-auto border-t-2 border-border bg-surface-2 px-3 py-2.5 [&>*:not([data-dock-grow])]:shrink-0 ${dockHeight === null ? "max-h-[42vh] shrink-0" : "min-h-0 shrink"}`}
         >
           {dock}
         </div>
