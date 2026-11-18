@@ -317,6 +317,8 @@ Changed behaviour of an existing variable:
 Open `https://review.example/` (your `SR_PUBLIC_URL`). The start page is now "My work"; the review start page is at
 `/review`. Links with `?pr=` keep working. Everything below is in Settings.
 
+Every Settings option, with when it is used and an example: `docs/settings.md` (in the app: Settings → "Settings help").
+
 1. **Settings → Dashboard.**
    - Accounts (linked logins), repositories (with short names, policy repository and path, release branches, issue
      watching) and owners to list when the search cannot see a login. Nothing is watched until you add repositories

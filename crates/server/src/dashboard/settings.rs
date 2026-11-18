@@ -109,6 +109,7 @@ pub fn validated(
         return invalid("\"Ready for a human\" label: use 1 to 50 characters.");
     }
     check_list(ListField::SkipAuthors, &settings.skip_authors, own_login)?;
+    check_list(ListField::KnownBots, &settings.known_bots, own_login)?;
     check_list(
         ListField::MemcanExtraProjects,
         &settings.memcan_extra_projects,
@@ -147,6 +148,7 @@ enum ListField {
     LinkedLogins,
     EnumerateOwners,
     SkipAuthors,
+    KnownBots,
     MemcanExtraProjects,
 }
 
@@ -167,7 +169,13 @@ impl ListField {
                 "is not a GitHub login (letters, digits, - or _, up to 39)",
             ),
             Self::SkipAuthors => (
-                "Bot authors to skip",
+                "Excluded authors",
+                20,
+                valid_bot_login,
+                "is not a GitHub login (optionally ending [bot])",
+            ),
+            Self::KnownBots => (
+                "Known bots",
                 20,
                 valid_bot_login,
                 "is not a GitHub login (optionally ending [bot])",
@@ -263,8 +271,9 @@ fn check_repositories(rows: &[RepositoryRule]) -> Result<(), InvalidSettings> {
         if let Some(policy) = &row.ownership_policy {
             let repo_given = !policy.repo.owner.is_empty() || !policy.repo.name.is_empty();
             if !repo_given || policy.path.is_empty() {
+                let missing = if repo_given { "path" } else { "repository" };
                 return invalid(format!(
-                    "{label}: give both the policy repository and its path, or neither."
+                    "{label}: the policy {missing} is missing. Give the repository and the path of the policy file, or leave both empty."
                 ));
             }
             if !valid_repo(&policy.repo) {
@@ -442,6 +451,10 @@ mod tests {
         assert_eq!(defaults.lookback_days, 7);
         assert_eq!(defaults.ready_label, "ready-for-human");
         assert_eq!(defaults.skip_authors, ["dependabot", "dependabot[bot]"]);
+        assert_eq!(
+            defaults.known_bots,
+            ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"]
+        );
         assert!(defaults.memcan_extra_projects.is_empty());
         assert!(defaults.schedule_enabled);
         assert_eq!(defaults.schedule_time, "06:00");
@@ -503,7 +516,11 @@ mod tests {
             ),
             (
                 Box::new(|s| s.skip_authors = strings(&["bot[robot]"])),
-                "Bot authors to skip: \"bot[robot]\" is not a GitHub login (optionally ending [bot]).",
+                "Excluded authors: \"bot[robot]\" is not a GitHub login (optionally ending [bot]).",
+            ),
+            (
+                Box::new(|s| s.known_bots = strings(&["two words"])),
+                "Known bots: \"two words\" is not a GitHub login (optionally ending [bot]).",
             ),
             (
                 Box::new(|s| s.memcan_extra_projects = strings(&["has space"])),
@@ -662,11 +679,19 @@ mod tests {
             let rule = with_policy(owner, name, path);
             problem(|s| s.repositories = vec![rule])
         };
-        let both = Some(
-            "Repository 1: give both the policy repository and its path, or neither.".to_owned(),
+        // The client's wording (validation.ts), so both sides name the missing half alike.
+        assert_eq!(
+            policy("acme", "p", "").as_deref(),
+            Some(
+                "Repository 1: the policy path is missing. Give the repository and the path of the policy file, or leave both empty."
+            )
         );
-        assert_eq!(policy("acme", "p", ""), both);
-        assert_eq!(policy("", "", "a.json"), both);
+        assert_eq!(
+            policy("", "", "a.json").as_deref(),
+            Some(
+                "Repository 1: the policy repository is missing. Give the repository and the path of the policy file, or leave both empty."
+            )
+        );
         assert_eq!(
             policy("acme", "", "a.json").as_deref(),
             Some("Repository 1: the policy repository uses owner/name.")
@@ -736,16 +761,30 @@ mod tests {
         let many: Vec<String> = (0..21).map(|i| format!("b{i}")).collect();
         assert_eq!(
             problem(|s| s.skip_authors = many).as_deref(),
-            Some("Bot authors to skip: at most 20.")
+            Some("Excluded authors: at most 20.")
         );
         assert_eq!(
             problem(|s| s.skip_authors = strings(&["renovate[bot]", "Renovate[bot]"])).as_deref(),
-            Some("Bot authors to skip: \"Renovate[bot]\" is listed twice.")
+            Some("Excluded authors: \"Renovate[bot]\" is listed twice.")
         );
         assert_eq!(
             problem(|s| s.skip_authors = strings(&["[bot]"]))
                 .map(|m| m.contains("not a GitHub login")),
             Some(true)
+        );
+        let bots: Vec<String> = (0..21).map(|i| format!("b{i}")).collect();
+        assert_eq!(
+            problem(|s| s.known_bots = bots).as_deref(),
+            Some("Known bots: at most 20.")
+        );
+        assert_eq!(
+            problem(|s| s.known_bots = strings(&["thepastaclaw", "ThePastaClaw"])).as_deref(),
+            Some("Known bots: \"ThePastaClaw\" is listed twice.")
+        );
+        assert_eq!(
+            problem(|s| s.known_bots = strings(&["alice", "alice-ci"])),
+            None,
+            "a linked or own login may also be a known bot"
         );
     }
 

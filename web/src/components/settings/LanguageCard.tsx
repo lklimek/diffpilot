@@ -1,6 +1,7 @@
 import { useId } from "react";
 import type { LlmLanguage } from "../../api/generated/types";
 import { SettingsCard } from "./Card";
+import { HelpTip } from "./HelpTip";
 
 const LANGUAGES: Record<LlmLanguage, string> = { en: "English", pl: "Polski" };
 
@@ -17,7 +18,7 @@ interface LanguageCardProps {
 export function LanguageCard({ language, busy, onChange }: LanguageCardProps) {
   const id = useId();
   return (
-    <SettingsCard title="Language of LLM texts">
+    <SettingsCard title="Language of LLM texts" help={<HelpTip topic="language" />}>
       <label htmlFor={id}>Explanations, questions and assessments are written in</label>
       <select
         id={id}

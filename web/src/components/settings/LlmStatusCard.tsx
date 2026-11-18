@@ -4,13 +4,14 @@ import type { LlmCallOutcome } from "../../api/generated/types";
 import { dateTimeText } from "../format/time";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SettingsCard } from "./Card";
+import { HelpTip } from "./HelpTip";
 
 const CHIP = "cursor-help rounded border px-1.5 text-[11px] leading-[18px] font-semibold";
 
 /** LLM status = outcome of the most recent LLM call and its time (brief §4.4); no on-demand check. */
 export function LlmStatusCard({ status, usage }: { status: LlmCallOutcome | null; usage?: UsageWindows }) {
   return (
-    <SettingsCard title="LLM status">
+    <SettingsCard title="LLM status" help={<HelpTip topic="llm_status" />}>
       {status === null && (
         <p>Status not known yet: no LLM call has been made. It appears after the first analysis.</p>
       )}

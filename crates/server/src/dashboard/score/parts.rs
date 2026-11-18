@@ -248,13 +248,14 @@ impl Eligibility {
     }
 }
 
+/// An excluded author's item is always left out (K7), whatever its relation to the user.
 fn skipped(rules: &ScoreRules, author: Option<&str>) -> Option<Eligibility> {
     author
         .filter(|a| rules.is_skipped_author(a))
-        .map(|a| Eligibility::no(format!("bot author @{a} is skipped")))
+        .map(|a| Eligibility::no(format!("author @{a} is excluded")))
 }
 
-/// Skill `pr_eligibility` with the skipped bot authors (K7) and per-repository ownership policies (K4).
+/// Skill `pr_eligibility` with the excluded authors (K7) and per-repository ownership policies (K4).
 pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
     let author = pr.author.as_deref().unwrap_or("?");
     if let Some(no) = skipped(rules, pr.author.as_deref()) {
@@ -279,7 +280,7 @@ pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
     }
 }
 
-/// Issues are ranked unless their author is a skipped bot (K7).
+/// Issues are ranked unless their author is excluded (K7).
 pub(super) fn issue_eligibility(rules: &ScoreRules, issue: &IssueFacts) -> Eligibility {
     skipped(rules, issue.author.as_deref()).unwrap_or_else(|| Eligibility::yes("open issue"))
 }

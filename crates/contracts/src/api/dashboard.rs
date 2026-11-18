@@ -722,8 +722,12 @@ pub struct DashboardSettings {
     pub lookback_days: u32,
     /// Label that marks a pull request ready for a human.
     pub ready_label: String,
-    /// Bot authors whose items are left out.
+    /// Excluded authors: every pull request and issue they author is left out of the dashboard. Being listed
+    /// does not make a login a bot.
     pub skip_authors: Vec<String>,
+    /// Logins treated as bots besides GitHub's `Bot` accounts and `[bot]` logins: never a waiting human.
+    #[serde(default = "default_known_bots")]
+    pub known_bots: Vec<String>,
     /// Show the user's MemCan TODOs.
     pub include_todos: bool,
     /// MemCan projects read besides the repositories' short names.
@@ -746,6 +750,7 @@ impl Default for DashboardSettings {
             lookback_days: 7,
             ready_label: "ready-for-human".to_owned(),
             skip_authors: vec!["dependabot".to_owned(), "dependabot[bot]".to_owned()],
+            known_bots: default_known_bots(),
             include_todos: true,
             memcan_extra_projects: Vec::new(),
             schedule_enabled: true,
@@ -753,6 +758,17 @@ impl Default for DashboardSettings {
             time_zone: None,
         }
     }
+}
+
+/// Review bots without a `[bot]` suffix: the default known bots.
+pub const DEFAULT_KNOWN_BOTS: [&str; 3] = ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"];
+
+/// [`DEFAULT_KNOWN_BOTS`] as a list (also the value of a settings document without `known_bots`).
+pub fn default_known_bots() -> Vec<String> {
+    DEFAULT_KNOWN_BOTS
+        .iter()
+        .map(|&bot| bot.to_owned())
+        .collect()
 }
 
 /// Settings of one repository row.

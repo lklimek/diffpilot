@@ -1,7 +1,7 @@
 import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { useBlocker, useNavigate, useSearchParams } from "react-router";
+import { Link, useBlocker, useNavigate, useSearchParams } from "react-router";
 import { LlmSelectionCard } from "../../components/settings/LlmSelectionCard";
 import { ApiError } from "../../api/client";
 import { routes } from "../../api/generated/routes";
@@ -30,6 +30,9 @@ import { AppInstallationsCard } from "../../components/settings/AppInstallations
 import { LanguageCard } from "../../components/settings/LanguageCard";
 import { LlmStatusCard } from "../../components/settings/LlmStatusCard";
 import { SettingsCard } from "../../components/settings/Card";
+import { HelpTip } from "../../components/settings/HelpTip";
+import { Tooltip } from "../../components/tooltip/Tooltip";
+import { SETTINGS_HELP_PATH } from "../shell/paths";
 import { RepoList } from "../../components/settings/RepoList";
 import { RepoSettingsCard } from "../../components/settings/RepoSettingsCard";
 import { SignInCard } from "../../components/sign-in/SignInCard";
@@ -139,6 +142,7 @@ function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
       ) : (
         // Loading, not known yet and failures sit in the repository's card, where its facts would be.
         <SettingsCard
+          help={<HelpTip topic="repository_settings" />}
           title={
             <>
               Repository <code>{`${selected.owner}/${selected.name}`}</code>
@@ -209,7 +213,7 @@ function SettingsContent({
             </LlmSelectionCard>
           )}
           <LlmStatusCard status={llm_status} usage={settings.data.llm_usage} />
-          <SettingsCard title="Memory">
+          <SettingsCard title="Memory" help={<HelpTip topic="memcan_status" />}>
             <p>
               <MemcanStatusLine status={settings.data.memcan_status} />
             </p>
@@ -258,8 +262,8 @@ export function SettingsScreen() {
     client.clear();
     void navigate("/", { replace: true });
   };
-  const leave = (login: string) =>
-    signOut.mutate(undefined, {
+  const leave = (login: string, everywhere: boolean) =>
+    signOut.mutate(everywhere, {
       onSuccess: () => signedOut(login),
       // 401: the session had already ended, so the user is signed out all the same.
       onError: (error) => {
@@ -268,7 +272,14 @@ export function SettingsScreen() {
     });
   return (
     <div className="grid content-start gap-4">
-      <h1 className="text-[22px] font-bold">Settings</h1>
+      <div className="flex flex-wrap items-baseline gap-4">
+        <h1 className="text-[22px] font-bold">Settings</h1>
+        <Tooltip tip="Opens the guide to every option on this page: what it is, when it is used and an example.">
+          <Link to={SETTINGS_HELP_PATH} className="text-sm text-accent underline">
+            Settings help
+          </Link>
+        </Tooltip>
+      </div>
       {blocker.state === "blocked" && (
         <div className="max-w-[900px]">
           <UnsavedChangesPrompt onStay={blocker.reset} onLeave={blocker.proceed} />
@@ -287,7 +298,8 @@ export function SettingsScreen() {
             login={user.login}
             busy={signOut.isPending}
             error={signOut.isError ? errorText(signOut.error) : undefined}
-            onSignOut={() => leave(user.login)}
+            onSignOut={() => leave(user.login, false)}
+            onSignOutEverywhere={() => leave(user.login, true)}
           />
         </div>
       )}

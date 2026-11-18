@@ -1536,6 +1536,31 @@ async fn partial_search_failure_stores_a_snapshot_with_notes() {
     );
 }
 
+/// A login GitHub search refuses, with no owners to list: the note names it and the Settings group to fill in.
+#[tokio::test]
+async fn refused_search_without_owners_says_where_to_add_them() {
+    let w = world().await;
+    let mut none = settings();
+    none.enumerate_owners.clear();
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &none, Utc::now())
+        .await
+        .expect("settings");
+    let done = w.refreshed().await;
+    assert_eq!(done.state, RefreshState::Finished, "{:?}", done.failure);
+    let meta = w.summary(ALICE).await.snapshot.expect("snapshot");
+    let expected = "GitHub search refuses alice-helper. Their work is missing from this list. In Settings → \
+                    Dashboard, add the organisations or users that hold it under \"When GitHub search refuses an \
+                    account\".";
+    assert!(
+        meta.notes.iter().any(|n| n.text == expected),
+        "{:?}",
+        meta.notes
+    );
+}
+
 /// T19: TODOs are shown only while the user's current settings include them, whatever the snapshot holds.
 #[tokio::test]
 async fn todos_hidden_when_switched_off() {

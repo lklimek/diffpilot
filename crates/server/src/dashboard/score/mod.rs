@@ -30,7 +30,7 @@ pub use facts::{
     TodoStatus,
 };
 pub use parts::{ESTIMATE, change_size_points, recency_points, unblocks_points, waiting_points};
-pub use rules::{BUILTIN_BRANCH_PATTERNS, PSEUDO_BOTS, ScoreRules, todo_display_ids};
+pub use rules::{BUILTIN_BRANCH_PATTERNS, ScoreRules, todo_display_ids};
 
 use parts::{Eligibility, Part};
 
@@ -492,14 +492,16 @@ pub fn ready_for_others(rules: &ScoreRules, pr: &PrFacts) -> bool {
             || pr.approved_by.iter().any(|l| rules.is_scanned(l)))
 }
 
-/// The user's ready, non-draft PRs with a pending request to others (skill `digest.awaiting_others`), longest
+/// The user's ready, non-draft PRs (not by an excluded author) with a pending request to others (skill `digest.awaiting_others`), longest
 /// wait first by the oldest open request; an unknown request time sorts last and the caller chooses the
 /// `waiting_since` it shows.
 pub fn awaiting_others<'a>(rules: &ScoreRules, prs: &'a [PrFacts]) -> Vec<&'a PrFacts> {
     let mut rows: Vec<&PrFacts> = prs
         .iter()
         .filter(|pr| {
-            pr.author.as_deref().is_some_and(|a| rules.is_scanned(a))
+            pr.author
+                .as_deref()
+                .is_some_and(|a| rules.is_scanned(a) && !rules.is_skipped_author(a))
                 && !pr.is_draft
                 && !pr.review_requested_from_others.is_empty()
                 && ready_for_others(rules, pr)

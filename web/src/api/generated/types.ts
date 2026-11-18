@@ -816,9 +816,14 @@ lookback_days: number,
  */
 ready_label: string,
 /**
- * Bot authors whose items are left out.
+ * Excluded authors: every pull request and issue they author is left out of the dashboard. Being listed
+ * does not make a login a bot.
  */
 skip_authors: Array<string>,
+/**
+ * Logins treated as bots besides GitHub's `Bot` accounts and `[bot]` logins: never a waiting human.
+ */
+known_bots: Array<string>,
 /**
  * Show the user's MemCan TODOs.
  */

@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { HelpTip } from "../../settings/HelpTip";
 import { ListEditor } from "./ListEditor";
 import type { FieldErrors } from "./validation";
 
@@ -29,17 +30,20 @@ export function MemcanGroup({
   return (
     <div className="grid content-start gap-3">
       <div className="grid gap-1">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={configured && includeTodos}
-            disabled={!configured}
-            aria-describedby={configured ? undefined : `${id}-off`}
-            className="size-4"
-            onChange={(e) => onChange({ include_todos: e.target.checked })}
-          />
-          Show my MemCan TODOs
-        </label>
+        <span className="flex items-center gap-2">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={configured && includeTodos}
+              disabled={!configured}
+              aria-describedby={configured ? undefined : `${id}-off`}
+              className="size-4"
+              onChange={(e) => onChange({ include_todos: e.target.checked })}
+            />
+            Show my MemCan TODOs
+          </label>
+          <HelpTip topic="include_todos" />
+        </span>
         {!configured && (
           <p id={`${id}-off`} className="text-xs text-muted">
             MemCan is not configured on this server, so there are no TODOs to show.
@@ -70,6 +74,7 @@ export function MemcanGroup({
       </div>
       <ListEditor
         label="Extra MemCan projects"
+        help={<HelpTip topic="memcan_extra_projects" />}
         addLabel="Add a MemCan project"
         items={extraProjects}
         empty="None."

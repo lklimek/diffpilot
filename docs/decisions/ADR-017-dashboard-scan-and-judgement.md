@@ -65,3 +65,12 @@ In smart-review the runner must not hold user tokens (T3, ADR-005) or contain Gi
 - Private-repository titles and excerpts are stored in snapshots and sent to the provider in judge prompts
   (threat-model T16–T19).
 - Rate limits are per user token; a refresh fails with a retry time instead of exhausting the limit.
+
+## Addendum (2026-11-18): excluded authors and known bots
+Owner decision. `skip_authors` ("excluded authors") is a list of banned authors: every pull request and issue a
+listed login authored is left out of the dashboard (Needs you and Waiting on others), also when a review is
+requested from the user or it is assigned to the user, so it never reaches the judge; the user's own reviews on
+such items still count in the history. Being listed does not make a login a bot. A bot is GitHub's `Bot` type, a `[bot]` login or a login in the per-user `known_bots`
+(migration 0009; default `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`, the former built-in list); nothing
+else is hard-coded. Bot classification reaches the judge only through the scan facts and scorer signals, so editing
+either list re-judges just the items whose judged inputs change.

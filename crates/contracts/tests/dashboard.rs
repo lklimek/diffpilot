@@ -224,9 +224,25 @@ fn dashboard_settings_default_to_plan_f6() {
         json!({
             "linked_logins": [], "repositories": [], "enumerate_owners": [], "lookback_days": 7,
             "ready_label": "ready-for-human", "skip_authors": ["dependabot", "dependabot[bot]"],
+            "known_bots": ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"],
             "include_todos": true, "memcan_extra_projects": [], "schedule_enabled": true,
             "schedule_time": "06:00", "time_zone": null
         })
+    );
+}
+
+/// A settings document without `known_bots` (an older client) reads the default known bots.
+#[test]
+fn dashboard_settings_without_known_bots_read_the_defaults() {
+    let mut document = serde_json::to_value(DashboardSettings::default()).expect("serialises");
+    document
+        .as_object_mut()
+        .expect("object")
+        .remove("known_bots");
+    let read: DashboardSettings = serde_json::from_value(document).expect("reads");
+    assert_eq!(
+        read.known_bots,
+        ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"]
     );
 }
 

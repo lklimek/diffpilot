@@ -142,4 +142,35 @@ describe("side panel sections", () => {
     );
     expect(items[1]).toMatch(/^MemCan TODOs not refreshed \(MemCan unreachable at \d\d:\d\d\)/);
   });
+
+  it("with notes, offers Open Settings (most notes are fixed there); without notes it does not", async () => {
+    const onNavigate = vi.fn();
+    const { unmount } = render(
+      <ScanNotes
+        notes={[{ text: "GitHub search refuses alice-bot.", item: null }]}
+        unreachable={[]}
+        todos={{ status: "read", read_at: null, failed_at: null }}
+        settingsHref="/settings"
+        onNavigate={onNavigate}
+        now={NOW}
+      />,
+    );
+    await userEvent.click(screen.getByText("What the scan missed"));
+    const link = screen.getByRole("link", { name: "Open Settings" });
+    expect(link).toHaveAttribute("href", "/settings");
+    expect(link).toHaveAccessibleDescription(/Settings → Dashboard/);
+    await userEvent.click(link);
+    expect(onNavigate).toHaveBeenCalledWith("/settings");
+    unmount();
+    render(
+      <ScanNotes
+        notes={[]}
+        unreachable={[]}
+        todos={{ status: "read", read_at: null, failed_at: null }}
+        settingsHref="/settings"
+        now={NOW}
+      />,
+    );
+    expect(screen.queryByRole("link", { name: "Open Settings" })).toBeNull();
+  });
 });
