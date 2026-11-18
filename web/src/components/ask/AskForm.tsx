@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from "react";
-import type { StepId } from "../../api/generated/types";
+import type { CommentTarget, StepId } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { assignRef, growField, useAction } from "../inspector/action";
 import type { SectionControl } from "../inspector/sectionState";
@@ -21,10 +21,30 @@ export interface AskFormProps {
   count?: number;
   /** A problem with the answers (e.g. the lost answer stream), announced above them; opens a collapsed Ask. */
   notice?: string | null;
+  /** Text to put in at the cursor ("Ask about this line"): opens Ask and focuses the field; nothing is sent. */
+  insert?: { text: string } | null;
+  /** `insert` went in; the next one may follow. */
+  onInserted?: () => void;
+}
+
+/** A code line or range as the Ask field takes it: `path:line` or `path:start-end`, old code said. */
+export function lineReference(target: CommentTarget): string {
+  const lines = target.start_line === null ? `${target.line}` : `${target.start_line}-${target.line}`;
+  return `${target.path}:${lines}${target.side === "base" ? " (old code)" : ""}`;
 }
 
 /** One-line question field that grows while typing; Enter sends, Shift+Enter adds a line. */
-export function AskForm({ step, onAsk, inputRef, answers, sections, count, notice }: AskFormProps) {
+export function AskForm({
+  step,
+  onAsk,
+  inputRef,
+  answers,
+  sections,
+  count,
+  notice,
+  insert,
+  onInserted,
+}: AskFormProps) {
   if (step === null) {
     return (
       <section aria-label="Ask">
@@ -44,6 +64,8 @@ export function AskForm({ step, onAsk, inputRef, answers, sections, count, notic
       sections={sections}
       count={count}
       notice={notice}
+      insert={insert}
+      onInserted={onInserted}
     />
   );
 }
@@ -56,6 +78,8 @@ function AskDraft({
   sections,
   count,
   notice,
+  insert,
+  onInserted,
 }: AskFormProps & { step: { id: StepId; label: string } }) {
   const open = sections ? sections.isOpen("ask") : true;
   const subject = step.label;
@@ -88,6 +112,33 @@ function AskDraft({
   useEffect(() => {
     if (alerting && !open) reveal?.("ask");
   }, [alerting, open, reveal]);
+
+  // Inserted text goes in at the cursor (the field keeps it while unfocused), spaced from its neighbours.
+  const inserted = useRef<{ text: string } | null>(null);
+  const caret = useRef<{ at: number; value: string } | null>(null);
+  useEffect(() => {
+    if (!insert || inserted.current === insert) return;
+    inserted.current = insert;
+    const element = field.current;
+    const from = element?.selectionStart ?? text.length;
+    const before = text.slice(0, from);
+    const after = text.slice(element?.selectionEnd ?? from);
+    const piece = `${before && !/\s$/.test(before) ? " " : ""}${insert.text}${/^\s/.test(after) ? "" : " "}`;
+    caret.current = { at: before.length + piece.length, value: before + piece + after };
+    setText(caret.current.value);
+    setEmpty(false);
+    if (!open) reveal?.("ask");
+    onInserted?.();
+  }, [insert, text, open, reveal, onInserted]);
+  useEffect(() => {
+    const element = field.current;
+    // Once the new text is rendered and Ask is open.
+    if (!caret.current || !open || !element || element.value !== caret.current.value) return;
+    element.focus();
+    element.setSelectionRange(caret.current.at, caret.current.at);
+    caret.current = null;
+    growField(element);
+  });
   return (
     // `data-dock-grow`: in a resized Inspector dock, Ask takes the room.
     <section aria-labelledby={`${id}-h`} data-dock-grow className="flex min-h-0 flex-col">

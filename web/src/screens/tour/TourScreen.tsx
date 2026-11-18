@@ -2,6 +2,7 @@ import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBann
 import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
 import { RemarkPill } from "../../components/remark-pills/RemarkPills";
+import { lineReference } from "../../components/ask/AskForm";
 import { remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -265,6 +266,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     saveLayout(next);
     setLayoutState(next);
   };
+  // "Ask about this line": the line reference goes into the Ask field, which opens and takes the focus.
+  const [askInsert, setAskInsert] = useState<{ text: string } | null>(null);
   const openInspector = () => {
     if (layout.full !== "inspector" && (layout.full !== null || layout.hidden.inspector)) {
       setLayout(showColumn(layout, "inspector"));
@@ -493,6 +496,13 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     comments: pendingComments,
     activeLine: commentLine?.target ?? null,
     onComment: comment,
+    onAskLine: step
+      ? (target) => {
+          openInspector();
+          sections.reveal("ask");
+          setAskInsert({ text: lineReference(target) });
+        }
+      : undefined,
     revealComment,
     onEditComment: comments.edit,
     onDeleteComment: comments.remove,
@@ -925,6 +935,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             commentRef={commentRef}
             askHeight={layout.askHeight}
             onAskHeight={(askHeight) => setLayout({ ...layout, askHeight })}
+            onAskLine={ctx.onAskLine}
+            askInsert={askInsert}
+            onAskInserted={() => setAskInsert(null)}
           />
         }
       />

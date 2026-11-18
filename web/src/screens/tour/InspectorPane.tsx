@@ -76,6 +76,11 @@ interface InspectorPaneProps {
   /** Dragged height of the Ask area (remembered with the layout); null = default. */
   askHeight: number | null;
   onAskHeight: (height: number | null) => void;
+  /** "Ask about this line" from a code line of the step. */
+  onAskLine?: (target: CommentTarget) => void;
+  /** Text for the Ask field from "Ask about this line"; `onAskInserted` once it is in. */
+  askInsert: { text: string } | null;
+  onAskInserted: () => void;
 }
 
 /** GitHub link to a line at the analysed commit of its side. */
@@ -116,6 +121,7 @@ export function InspectorPane(props: InspectorPaneProps) {
         comments: pending.data?.comments ?? [],
         onEditComment: comments.edit,
         onDeleteComment: comments.remove,
+        onAskLine: props.onAskLine,
       }}
       query={
         annotation
@@ -195,6 +201,8 @@ export function InspectorPane(props: InspectorPaneProps) {
             step={step ? { id: step.id, label: `Step ${step.number} · ${step.llm.title}` } : null}
             onAsk={onAsk}
             inputRef={props.askRef}
+            insert={props.askInsert}
+            onInserted={props.onAskInserted}
             answers={answers}
             sections={props.sections}
             notice={

@@ -733,3 +733,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   the Ask area taller by dragging up (the Inspector sections above shrink, keeping room for the heading) or with
   the arrow keys; Home and End go to the limits, Enter or double-click resets. The height is remembered with the
   tour layout like the diagram's. A collapsed Ask has no handle and its natural height.
+- **Ask about a line.** Each line of the step's code view and of the classic diff has a small "?" action (shown on
+  hover and on keyboard focus; Tab from the line's comment action reaches it, arrow keys move between lines). It
+  puts `path:line` (`path:start-end` when the line is inside a selection of several lines; " (old code)" for a
+  removed line) into the Ask field at the cursor, opens Ask and focuses the field; nothing is sent.

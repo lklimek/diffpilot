@@ -76,6 +76,8 @@ export interface CodeViewProps {
   onSelectAnnotation?: (ids: AnnotationId[]) => void;
   /** Comment action on a displayed line; without it line numbers are plain text. */
   onLineAction?: (target: CommentTarget) => void;
+  /** "Ask about this line" on a displayed line (the selected lines when the line is in a selection); none without it. */
+  onAskLine?: (target: CommentTarget) => void;
   /** Load the rest of a deleted block whose `lines` were cut (`lines.length < total_lines`). */
   onLoadDeleted?: (block: DeletedBlock) => void;
   /** "Show in Inspector" of a pinned remark or thread popover; without it the link is not offered. */
@@ -106,6 +108,7 @@ interface LineContext {
   activeKey: string | null;
   tabKey: string | null;
   onLineAction?: (target: CommentTarget) => void;
+  onAskLine?: (target: CommentTarget) => void;
   onFocusLine: (key: string) => void;
   onShowInInspector?: (target: MarkerTarget) => void;
   otherThreadStep?: (thread: GithubThread) => string | null;
@@ -152,7 +155,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
         data-moved={row?.moved || undefined}
         data-removed={removed || undefined}
         data-commenting={commenting || undefined}
-        className={`grid min-w-full grid-cols-[var(--ln)_var(--gutter)_max-content] ${tall ? "min-h-6 items-center" : ""} ${background}`}
+        className={`group/line grid min-w-full grid-cols-[var(--ln)_var(--gutter)_max-content] ${tall ? "min-h-6 items-center" : ""} ${background}`}
       >
         {ctx.onLineAction ? (
           <button
@@ -220,6 +223,16 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
               open={open}
               panelId={ctx.panelId(key)}
               onToggle={() => ctx.toggle(key)}
+            />
+          )}
+          {ctx.onAskLine && (
+            <AskLineButton
+              line={line}
+              removed={removedLine}
+              tabbable={ctx.tabKey === key}
+              onFocus={() => ctx.onFocusLine(key)}
+              onAsk={(button) => ctx.onAskLine?.(selectedTarget(button, ctx.path, side, line))}
+              className="ml-auto"
             />
           )}
         </span>
@@ -410,11 +423,73 @@ function FoldRow({
   );
 }
 
-// Arrow keys, Home and End move between line actions: one tab stop for all lines.
-function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
+/**
+ * The line, or the lines of a selection over several lines of the same view and side that includes it (selected
+ * with the mouse before "Ask about this line").
+ */
+function selectedTarget(button: HTMLElement, path: string, side: LineSide, line: number): CommentTarget {
+  const single = { path, side, start_line: null, line };
+  const selection = window.getSelection();
+  const view = button.closest("[role=region]");
+  if (!selection || selection.isCollapsed || !view) return single;
+  const lineOf = (node: Node | null) => {
+    const row = (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>("[data-line]");
+    return row && view.contains(row) && row.dataset.side === side ? Number(row.dataset.line) : null;
+  };
+  const a = lineOf(selection.anchorNode);
+  const b = lineOf(selection.focusNode);
+  if (a === null || b === null || a === b) return single;
+  const [from, to] = a < b ? [a, b] : [b, a];
+  return from <= line && line <= to ? { path, side, start_line: from, line: to } : single;
+}
+
+/** The small "Ask about this line" action of a code line; its mark is drawn by CSS, so the row's text stays. */
+export function AskLineButton({
+  line,
+  removed,
+  tabbable,
+  onFocus,
+  onAsk,
+  className = "",
+}: {
+  line: number;
+  removed: boolean;
+  tabbable: boolean;
+  onFocus: () => void;
+  onAsk: (button: HTMLElement) => void;
+  className?: string;
+}) {
+  const name = `Ask the LLM about ${removed ? "removed line" : "line"} ${line}`;
+  return (
+    <button
+      type="button"
+      data-ask-line
+      aria-label={name}
+      title={`Ask the LLM about ${removed ? "removed line" : "line"} ${line}: puts its file and line into the Ask field; nothing is sent. With several lines selected, about those lines.`}
+      tabIndex={tabbable ? 0 : -1}
+      onFocus={onFocus}
+      // Keeps a selection of several lines for the click.
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onAsk(event.currentTarget);
+      }}
+      className={`inline-flex h-[1.35em] w-5 shrink-0 cursor-pointer items-center justify-center rounded border-0 bg-transparent p-0 font-sans text-[11px] font-bold text-muted opacity-0 group-hover/line:opacity-100 group-focus-within/line:opacity-100 hover:bg-accent-bg hover:text-accent focus-visible:opacity-100 before:content-['?'] ${className}`}
+    />
+  );
+}
+
+// Arrow keys, Home and End move between line actions (comment, or Ask): one tab stop for all lines.
+export function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
   const target = event.target as HTMLElement;
-  if (!("lineAction" in target.dataset)) return;
-  const all = [...event.currentTarget.querySelectorAll<HTMLElement>("[data-line-action]")];
+  const kind =
+    "lineAction" in target.dataset
+      ? "[data-line-action]"
+      : "askLine" in target.dataset
+        ? "[data-ask-line]"
+        : null;
+  if (!kind) return;
+  const all = [...event.currentTarget.querySelectorAll<HTMLElement>(kind)];
   const at = all.indexOf(target);
   const next = (
     { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: all.length - 1 } as Record<string, number>
@@ -446,6 +521,7 @@ export function CodeView({
   highlight,
   onSelectAnnotation,
   onLineAction,
+  onAskLine,
   onLoadDeleted,
   onEditComment,
   onDeleteComment,
@@ -573,6 +649,7 @@ export function CodeView({
     activeKey: activeLine && keyOf(activeLine),
     tabKey: focusKey && keys.includes(focusKey) ? focusKey : (keys[0] ?? null),
     onLineAction,
+    onAskLine,
     onFocusLine: setFocusKey,
     onShowInInspector,
     otherThreadStep,
@@ -692,7 +769,7 @@ export function CodeView({
       style={
         {
           "--ln": `${String(maxLine).length + 2}ch`,
-          "--gutter": `${Math.max(50, 30 + 28 * buttons)}px`,
+          "--gutter": `${Math.max(50, 30 + 28 * buttons + (onAskLine ? 22 : 0))}px`,
         } as CSSProperties
       }
       className={`min-w-0 max-w-full overflow-auto rounded-md border border-border bg-code-bg py-0.5 font-mono text-[12.5px] leading-[1.55] ${
