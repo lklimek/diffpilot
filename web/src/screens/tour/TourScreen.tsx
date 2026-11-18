@@ -45,6 +45,7 @@ import { StatusMessage } from "../../components/status/StatusMessage";
 import { StepBlock } from "../../components/step/StepBlock";
 import { TopBar } from "../../components/top-bar/TopBar";
 import { Tooltip } from "../../components/tooltip/Tooltip";
+import { busyTip } from "../../components/button/button";
 import { ChunkedCode, DiffCode, FileDiffCode, LinesCode, errorText, type CodeContext } from "./code";
 import { DiagramPane } from "./DiagramPane";
 import { useCommentDrafts } from "./drafts";
@@ -96,7 +97,8 @@ export function TourScreen() {
   if (tour.error instanceof ApiError && tour.error.code === "analysis_not_finished") {
     return <Navigate to={`/analyses/${encodeURIComponent(analysisId)}/progress`} replace />;
   }
-  if (tour.isError) {
+  // A failed background refetch keeps the last good tour (and the drafts and state of the open review).
+  if (tour.isError && !tour.data) {
     return (
       <Shell login={login}>
         <StatusMessage kind="error">{errorText(tour.error)}</StatusMessage>
@@ -112,7 +114,20 @@ export function TourScreen() {
     );
   }
   // Session state (block, comment line, unconfirmed posts) belongs to one analysis.
-  return <TourView key={analysisId} analysisId={analysisId} tour={tour.data} review={review} login={login} />;
+  return (
+    <TourView
+      key={analysisId}
+      analysisId={analysisId}
+      tour={tour.data}
+      review={review}
+      login={login}
+      refresh={
+        tour.isError
+          ? { error: errorText(tour.error), busy: tour.isFetching, retry: () => void tour.refetch() }
+          : undefined
+      }
+    />
+  );
 }
 
 interface TourViewProps {
@@ -121,6 +136,8 @@ interface TourViewProps {
   /** Ticks and last viewed block of this analysis. */
   review: ReturnType<typeof useReviewStateStore>;
   login: string | null;
+  /** The last background refresh of the tour failed; the data shown is the last good one. */
+  refresh?: { error: string; busy: boolean; retry: () => void };
 }
 
 /** Where a resumed review opens, e.g. "flow 1, step 5". */
@@ -143,7 +160,7 @@ function resumedAt(tour: Tour, block: BlockRef): string {
   }
 }
 
-function TourView({ analysisId, tour, review, login }: TourViewProps) {
+function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const contextKey = `smart-review.hide-context-changes.${login ?? "anonymous"}`;
   const [hideContextChanges, setHideContextChanges] = useState(() => {
     try {
@@ -637,6 +654,28 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
               className="min-h-6 cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] hover:border-accent"
             >
               Dismiss
+            </button>
+          </Tooltip>
+        </div>
+      )}
+      {refresh && (
+        <div
+          role="alert"
+          className="mb-2 flex flex-wrap items-center gap-2 rounded-md border border-l-4 border-border border-l-med-bd bg-surface px-3 py-1 text-[12.5px]"
+        >
+          <p className="m-0 flex-1">
+            Could not refresh the review: {refresh.error} This page shows the last version read.
+          </p>
+          <Tooltip
+            tip={busyTip("Reads the review again; nothing you entered on this page is lost.", refresh.busy)}
+          >
+            <button
+              type="button"
+              aria-disabled={refresh.busy || undefined}
+              onClick={() => !refresh.busy && refresh.retry()}
+              className="min-h-6 cursor-pointer rounded border border-border bg-surface px-1.5 text-[11.5px] hover:border-accent"
+            >
+              Retry
             </button>
           </Tooltip>
         </div>

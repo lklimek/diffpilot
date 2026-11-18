@@ -1,6 +1,7 @@
 // Tour screen: analysis state, drafts, background refresh failures and the user's questions.
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
@@ -9,7 +10,7 @@ import type { AnalysisSummary } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { setScenario } from "../../mocks/scenarios";
 
-startMockServer();
+const server = startMockServer();
 const ID = (seedFor("default", "analysis") as AnalysisSummary).id;
 
 beforeEach(() => {
@@ -109,5 +110,31 @@ describe("Tour: the user's questions", () => {
       "aria-current",
       "step",
     );
+  });
+});
+
+describe("Tour: a failed background refresh keeps the open review", () => {
+  it("keeps the last good data and a typed draft; says it could not refresh, with Retry", async () => {
+    await open(null, "#f1.2");
+    const inspector = () => screen.getByRole("complementary", { name: "Inspector" });
+    const code = await within(main()).findByRole("region", { name: /lines 88 to 96/ });
+    await user().click(within(code).getByRole("button", { name: "Comment on line 95" }));
+    await user().type(within(inspector()).getByRole("textbox", { name: /^Comment on/ }), "half written");
+    server.use(
+      http.get("/api/v1/analyses/:id/tour", () =>
+        HttpResponse.json({ code: "internal", message: "Tour could not be built." }, { status: 500 }),
+      ),
+    );
+    const summary = seedFor("default", "analysis") as AnalysisSummary;
+    act(() =>
+      FakeEventSource.latest().emit({ event: "analysis", summary: { ...summary, review_ready: true } }),
+    );
+    const alert = await within(main()).findByRole("alert");
+    expect(alert).toHaveTextContent("Could not refresh the review: Tour could not be built.");
+    expect(within(inspector()).getByRole("textbox", { name: /^Comment on/ })).toHaveValue("half written");
+    expect(nav()).toBeVisible();
+    server.resetHandlers();
+    await user().click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(within(main()).queryByText(/Could not refresh the review/)).toBeNull());
   });
 });
