@@ -6,7 +6,7 @@
 //! is on `user_id`): a live refresh in another tenant makes a start or Retry ranking answer `Conflict`.
 //! `RankingStatus.message`, `total` and `resumes_at` are not stored here; the server derives them from the judge job.
 //! Ranking results carry the ranking attempt (`ranking_attempt`, server-internal): a late result of a superseded
-//! or restarted ranking is [`RankingUpdate::Stale`] and changes nothing.
+//! or restarted ranking is [`RankingUpdate::Stale`] and only records its LLM calls (`judged`, for the daily cap).
 
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use contracts::api::dashboard::{
@@ -26,7 +26,7 @@ use crate::error::DbError;
 
 /// Refreshes kept per user: the newest, plus the one holding the latest snapshot.
 pub const REFRESHES_KEPT: u32 = 10;
-/// Refreshes started this recently are always kept: their `judged` counts feed the daily ranking cap.
+/// Refreshes started this recently that judged something are always kept: their `judged` counts feed the daily cap.
 const RECENT_REFRESHES_KEPT: TimeDelta = TimeDelta::hours(24);
 /// Log lines kept per refresh (the newest).
 pub const LOG_LINES_KEPT: usize = 200;
@@ -170,7 +170,7 @@ pub enum RankingUpdate {
     /// The refresh was ranking in this attempt and is updated.
     Applied,
     /// The refresh is no longer ranking in this attempt (superseded, ended or restarted): the late result is
-    /// ignored.
+    /// ignored, except that `judged` is raised to its count.
     Stale,
 }
 
@@ -380,7 +380,8 @@ impl Dashboard<'_> {
     /// R2 and the schedule, in one write transaction: a refresh of the user in `ranking` is superseded
     /// ([`Dashboard::finish_ranking`] with `cancelled`), then a new one starts in `scanning`; a `scanning` one
     /// blocks ([`StartOutcome::ScanRunning`]). Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never
-    /// the one holding the current snapshot nor one started in the last 24 hours (the daily cap counts them).
+    /// the one holding the current snapshot nor one started in the last 24 hours that judged something (the daily
+    /// cap counts it).
     pub async fn start_refresh(
         &self,
         tenant_id: &str,
@@ -431,7 +432,7 @@ impl Dashboard<'_> {
             "DELETE FROM dashboard_refreshes WHERE tenant_id = ?1 AND user_id = ?2
                AND id NOT IN (SELECT id FROM dashboard_refreshes WHERE tenant_id = ?1 AND user_id = ?2
                               ORDER BY started_at DESC, rowid DESC LIMIT ?3)
-               AND started_at < ?4 AND id IS NOT (",
+               AND (started_at < ?4 OR judged = 0) AND id IS NOT (",
             current_snapshot_id!(),
             ")"
         ))
@@ -563,8 +564,9 @@ impl Dashboard<'_> {
     }
 
     /// Records the live ranking state (`waiting_for_analysis`, `running`, `paused`) and the judgement counts of a
-    /// refresh `ranking` in `attempt`; [`RankingUpdate::Stale`] (nothing changed) for any other refresh or attempt
-    /// of the user. `Conflict` for an ending ranking state (use [`Dashboard::finish_ranking`]).
+    /// refresh `ranking` in `attempt`. [`RankingUpdate::Stale`] for an earlier attempt or an ended ranking (only
+    /// `judged` is raised to the reported count); `Conflict` for a newer attempt, a refresh that never ranked, or
+    /// an ending ranking state (use [`Dashboard::finish_ranking`]).
     pub async fn set_ranking(
         &self,
         tenant_id: &str,
@@ -593,7 +595,7 @@ impl Dashboard<'_> {
         .execute(&mut *tx)
         .await?
         .rows_affected();
-        let update = ranking_update(&mut tx, tenant_id, user_id, id, rows).await?;
+        let update = ranking_update(&mut tx, tenant_id, user_id, id, attempt, counts, rows).await?;
         tx.commit().await?;
         Ok(update)
     }
@@ -634,8 +636,9 @@ impl Dashboard<'_> {
 
     /// Ends the ranking of a refresh `ranking` in `attempt` with `outcome` (`finished`, `failed`, `cancelled` or
     /// `interrupted`) and the final counts; the refresh becomes `finished` and its snapshot stays current.
-    /// [`RankingUpdate::Stale`] (nothing changed) for any other refresh or attempt of the user, so a late result of
-    /// a superseded or restarted ranking is ignored. `Conflict` for a live ranking state.
+    /// [`RankingUpdate::Stale`] for an earlier attempt or an ended ranking, so a late result of a superseded or
+    /// restarted ranking is ignored except for its LLM calls (`judged` raised to its count); `Conflict` for a newer
+    /// attempt, a refresh that never ranked, or a live ranking state.
     #[expect(
         clippy::too_many_arguments,
         reason = "frozen scope, refresh and attempt plus the outcome; a parameter struct would hide the guard"
@@ -671,7 +674,7 @@ impl Dashboard<'_> {
         .execute(&mut *tx)
         .await?
         .rows_affected();
-        let update = ranking_update(&mut tx, tenant_id, user_id, id, rows).await?;
+        let update = ranking_update(&mut tx, tenant_id, user_id, id, attempt, counts, rows).await?;
         tx.commit().await?;
         Ok(update)
     }
@@ -853,7 +856,8 @@ impl Dashboard<'_> {
     }
 
     /// LLM judgements made by the user's refreshes started at or after `since` (their `judged` counts, so a
-    /// re-judged item counts again); the daily cap counts from the local day's start.
+    /// re-judged item counts again); the daily cap counts from the local day's start. Accepted approximation: no
+    /// column records when the judging happened, so a ranking that runs past `since` counts wholly by its start.
     pub async fn judged_since(
         &self,
         tenant_id: &str,
@@ -923,22 +927,42 @@ async fn changed(
     Err(refused(tx, tenant_id, user_id, id).await?)
 }
 
-/// After a guarded ranking update of `rows` rows: none changed means a stale result for the user's refresh, else
-/// `NotFound`.
+/// After a guarded ranking update of `rows` rows: none changed means `NotFound` for another user's refresh,
+/// `Conflict` for a newer attempt or a refresh that never ranked (a caller bug, never a late result), else a stale
+/// result whose LLM calls are still recorded (`judged` raised to its count, for the daily cap).
 async fn ranking_update(
     tx: &mut Transaction<'static, Sqlite>,
     tenant_id: &str,
     user_id: &str,
     id: RefreshId,
+    attempt: u32,
+    counts: JudgeCounts,
     rows: u64,
 ) -> Result<RankingUpdate, DbError> {
     if rows > 0 {
-        Ok(RankingUpdate::Applied)
-    } else if owned(tx, tenant_id, user_id, id).await? {
-        Ok(RankingUpdate::Stale)
-    } else {
-        Err(DbError::NotFound)
+        return Ok(RankingUpdate::Applied);
     }
+    let stored: Option<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT ranking_attempt, ranking_state FROM dashboard_refreshes
+         WHERE id = ? AND tenant_id = ? AND user_id = ?",
+    )
+    .bind(id.to_string())
+    .bind(tenant_id)
+    .bind(user_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some((stored_attempt, ranking_state)) = stored else {
+        return Err(DbError::NotFound);
+    };
+    if i64::from(attempt) > stored_attempt || ranking_state.is_none() {
+        return Err(DbError::Conflict);
+    }
+    sqlx::query("UPDATE dashboard_refreshes SET judged = MAX(judged, ?) WHERE id = ?")
+        .bind(i64::from(counts.judged))
+        .bind(id.to_string())
+        .execute(&mut **tx)
+        .await?;
+    Ok(RankingUpdate::Stale)
 }
 
 /// The error for a refused change: `Conflict` for the user's refresh, `NotFound` for any other id.
@@ -1786,7 +1810,17 @@ mod tests {
                 .expect("late"),
             RankingUpdate::Stale
         );
-        assert_eq!(record(&db, "u1", id).await, restarted);
+        assert_eq!(
+            record(&db, "u1", id).await,
+            RefreshRecord {
+                counts: JudgeCounts {
+                    judged: 9,
+                    ..restarted.counts
+                },
+                ..restarted.clone()
+            },
+            "a late result only records the calls it made"
+        );
         assert_eq!(
             (
                 restarted.state,
@@ -1794,6 +1828,11 @@ mod tests {
                 restarted.ranking_attempt
             ),
             (RefreshState::Ranking, Some(RankingState::Running), 1)
+        );
+        assert_err(
+            dash.set_ranking(T, "u1", id, 2, RankingState::Running, late)
+                .await,
+            true,
         );
         assert_eq!(
             dash.finish_ranking(T, "u1", id, 1, RankingState::Finished, late, at(6))
@@ -1839,9 +1878,69 @@ mod tests {
                 .expect("late"),
             RankingUpdate::Stale
         );
+        let lower = JudgeCounts {
+            judged: 1,
+            ..COUNTS
+        };
+        assert_eq!(
+            dash.finish_ranking(T, "u1", old, 0, RankingState::Failed, lower, at(3))
+                .await
+                .expect("late, lower"),
+            RankingUpdate::Stale
+        );
         assert_eq!(
             (record(&db, "u1", old).await, record(&db, "u1", new).await),
-            (old_before, new_before)
+            (
+                RefreshRecord {
+                    counts: JudgeCounts {
+                        judged: COUNTS.judged,
+                        ..old_before.counts
+                    },
+                    ..old_before
+                },
+                new_before
+            ),
+            "only the calls made are recorded, never lowered; the new refresh is untouched"
+        );
+        assert_eq!(
+            dash.judged_since(T, "u1", at(0)).await.expect("count"),
+            COUNTS.judged
+        );
+    }
+
+    /// An attempt newer than the stored one, or a refresh that never ranked, cannot come from a late result.
+    #[tokio::test]
+    async fn future_attempt_or_unranked_refresh_is_a_conflict() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let ranked = ranking(&db, "u1", 0).await;
+        assert_err(
+            dash.set_ranking(T, "u1", ranked, 1, RankingState::Running, COUNTS)
+                .await,
+            true,
+        );
+        assert_err(
+            dash.finish_ranking(T, "u1", ranked, 1, RankingState::Finished, COUNTS, at(1))
+                .await,
+            true,
+        );
+        let scanning = start(&db, "u1", 2).await;
+        assert_err(
+            dash.set_ranking(T, "u1", scanning, 0, RankingState::Running, COUNTS)
+                .await,
+            true,
+        );
+        dash.end_scan(T, "u1", scanning, &ScanEnd::Failed(failure()), at(3))
+            .await
+            .expect("fail");
+        assert_err(
+            dash.finish_ranking(T, "u1", scanning, 0, RankingState::Finished, COUNTS, at(4))
+                .await,
+            true,
+        );
+        assert_eq!(
+            record(&db, "u1", scanning).await.counts,
+            JudgeCounts::default()
         );
     }
 
@@ -1875,13 +1974,18 @@ mod tests {
                 dash.end_scan(T, "u1", id, &ScanEnd::Cancelled, at(4)).await,
                 true,
             );
-            assert_eq!(
-                dash.finish_ranking(T, "u1", id, 0, RankingState::Cancelled, COUNTS, at(4))
-                    .await
-                    .expect("ended"),
-                RankingUpdate::Stale
-            );
         }
+        assert_err(
+            dash.finish_ranking(T, "u1", scanning, 0, RankingState::Cancelled, COUNTS, at(4))
+                .await,
+            true,
+        );
+        assert_eq!(
+            dash.finish_ranking(T, "u1", ranked, 0, RankingState::Cancelled, COUNTS, at(4))
+                .await
+                .expect("ended"),
+            RankingUpdate::Stale
+        );
         assert!(live(&db, "u1").await.is_empty());
     }
 
@@ -2200,11 +2304,11 @@ mod tests {
             ended.push(id);
         }
         let mut expected = vec![holder];
-        expected.extend_from_slice(&ended);
+        expected.extend_from_slice(&ended[2..]);
         assert_eq!(
             refresh_ids(&db, "u1").await,
             expected,
-            "every refresh started in the last 24 hours is kept"
+            "recent refreshes without judgements follow the newest-ten rule"
         );
         assert_eq!(refresh_ids(&db, "u2").await, [other]);
 
@@ -2297,7 +2401,7 @@ mod tests {
     }
 
     /// Right after a start: besides the newest ten and the current snapshot, only refreshes started in the last 24
-    /// hours are kept.
+    /// hours that judged something are kept.
     async fn assert_retention(db: &Db, user: &str, now: DateTime<Utc>) {
         let holder = current(db, user).await.map(|(id, _)| id);
         let ids = refresh_ids(db, user).await;
@@ -2305,10 +2409,12 @@ mod tests {
             .len()
             .saturating_sub(usize::try_from(REFRESHES_KEPT).expect("small"));
         for id in &ids[..older] {
-            let started = record(db, user, *id).await.started_at;
+            let kept = record(db, user, *id).await;
             assert!(
-                Some(*id) == holder || started >= now - TimeDelta::hours(24),
-                "{id} started {started} kept at {now}"
+                Some(*id) == holder
+                    || (kept.started_at >= now - TimeDelta::hours(24) && kept.counts.judged > 0),
+                "{id} started {} kept at {now}",
+                kept.started_at
             );
         }
     }
@@ -2432,11 +2538,11 @@ mod tests {
                 }
                 4 | 5 => {
                     let current_attempt = state.as_ref().map_or(0, |r| r.ranking_attempt);
-                    // Mostly the current attempt, sometimes an earlier one (a late result).
-                    let attempt = if next() % 4 == 0 {
-                        current_attempt.wrapping_sub(1)
-                    } else {
-                        current_attempt
+                    // Mostly the current attempt, sometimes an earlier one (a late result) or a later one (a bug).
+                    let attempt = match next() % 6 {
+                        0 => current_attempt.saturating_sub(1),
+                        1 => current_attempt + 1,
+                        _ => current_attempt,
                     };
                     let result = if op == 4 {
                         let ranking_state =
@@ -2450,6 +2556,8 @@ mod tests {
                     };
                     let applies =
                         target_state == Some(RefreshState::Ranking) && attempt == current_attempt;
+                    let refused = attempt > current_attempt
+                        || state.as_ref().is_some_and(|r| r.ranking_state.is_none());
                     match result {
                         Ok(RankingUpdate::Applied) => {
                             assert!(applies, "step {step}");
@@ -2460,13 +2568,25 @@ mod tests {
                             });
                         }
                         Ok(RankingUpdate::Stale) => {
-                            assert!(state.is_some() && !applies, "step {step}");
+                            assert!(state.is_some() && !applies && !refused, "step {step}");
+                            let expected = state.clone().map(|r| RefreshRecord {
+                                counts: JudgeCounts {
+                                    judged: r.counts.judged.max(COUNTS.judged),
+                                    ..r.counts
+                                },
+                                ..r
+                            });
                             assert_eq!(
                                 dash.refresh(T, user, target).await.ok(),
-                                state,
-                                "step {step}: a stale result changes nothing"
+                                expected,
+                                "step {step}: a stale result only records the calls it made"
                             );
                             saw("stale");
+                        }
+                        Err(DbError::Conflict) => {
+                            assert!(state.is_some() && refused, "step {step}");
+                            assert_eq!(dash.refresh(T, user, target).await.ok(), state);
+                            saw("future_or_unranked");
                         }
                         Err(DbError::NotFound) => assert!(state.is_none(), "step {step}"),
                         Err(other) => panic!("step {step}: {other:?}"),
@@ -2549,6 +2669,7 @@ mod tests {
             [
                 "end_scan",
                 "finish_ranking",
+                "future_or_unranked",
                 "interrupted",
                 "not_retryable",
                 "progress",
@@ -2745,7 +2866,23 @@ mod tests {
             .map(|update| assert_eq!(update, RankingUpdate::Applied))
             .expect("finish");
         }
-        assert_eq!(refresh_ids(&db, "u1").await.len(), 15);
+        let judged = refresh_ids(&db, "u1").await;
+        assert_eq!(judged.len(), 15);
+        let mut scans = Vec::new();
+        for minute in 0..12 {
+            let id = start(&db, "u1", 900 + minute).await;
+            dash.end_scan(T, "u1", id, &ScanEnd::Cancelled, at(900 + minute))
+                .await
+                .expect("cancel");
+            scans.push(id);
+        }
+        let mut expected = judged;
+        expected.extend_from_slice(&scans[2..]);
+        assert_eq!(
+            refresh_ids(&db, "u1").await,
+            expected,
+            "recent refreshes are kept beyond the newest ten only when they judged something"
+        );
         assert_eq!(dash.judged_since(T, "u1", at(0)).await.expect("count"), 120);
     }
 

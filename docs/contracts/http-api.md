@@ -607,7 +607,7 @@ not change). Until the token middleware exists, `read` routes accept the session
   rate-limit reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3
   (`waiting_for_analysis` while a review analysis holds the LLM credential). `log` holds at most 200 plain lines
   without tokens or query strings. The newest 10 refreshes per user are kept, plus the one holding the current
-  snapshot and every one started in the last 24 hours.
+  snapshot and every one started in the last 24 hours whose ranking judged items.
 - **Schedule.** `ScheduleStatus.time` is the local `HH:MM`; `next_run_at` is null when off or without a time zone;
   `last_run.at` is the scheduled instant of that local date; `needs_sign_in` and `failed` are shown until a later
   refresh succeeds.
