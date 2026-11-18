@@ -173,6 +173,7 @@ These remaining statements in `docs/design-brief.md` are superseded:
 | A requested flow that fails keeps its demand for its automatic retries (2 per flow), also with background analysis off; the "tried again automatically" sentence only while the analysis is live | The retry rule is the same for requested and background flows; a flow nobody requested never runs with background off. |
 | `progress.estimate`/`percent` with background off: plan and PR context only, null once the review is ready | A whole-run figure is misleading when flows run on request; per-flow size is `Flow.planned.ranges`. |
 | Optional `ResolvePrResponse.size {changed_lines, changed_files}`, `planning_estimate` (`AnalysisEstimate`) | Home confirms a lookup before starting: size and the plan + PR context estimate for every pull request, not only above the `size_warning` threshold. |
+| `ResolvePrResponse.analysis` is the latest analysis in any language, preferring the user's; no new field (`AnalysisSummary.language` exists) | After a language change the existing analysis stayed invisible and a second full analysis was started; the per-language conflict on start is unchanged. |
 
 Existing `analysis` SSE events publish availability and scheduling changes; clients refetch the Tour.
 A failed flow stays explicitly failed until requested again or retried automatically (twice at most); accepted siblings remain usable. Retry starts

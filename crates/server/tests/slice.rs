@@ -3508,6 +3508,38 @@ async fn analysis_without_admitted_work_parks_and_a_flow_request_restarts_it() {
         .await;
 }
 
+/// After the user changes the language the lookup still shows the pull request's analysis with its language;
+/// an analysis in the new language is started only on purpose, and the lookup then prefers it.
+#[tokio::test]
+async fn lookup_shows_an_analysis_made_in_another_language() {
+    let h = harness().await;
+    let first = h.create_fixture_analysis_on_request().await;
+    wait_parked(analysis_id(&first)).await;
+    let changed = h
+        .send(
+            "PUT",
+            "/api/v1/settings/language",
+            Auth::SessionCsrf,
+            Some(json!({ "language": "pl" })),
+        )
+        .await;
+    assert!(changed.status().is_success(), "{}", changed.status());
+    let (status, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    assert_eq!(resolved["analysis"]["id"], json!(first), "{resolved}");
+    assert_eq!(resolved["analysis"]["language"], "en");
+    assert_eq!(resolved["head_moved"], false);
+    let second = h.create_fixture_analysis_on_request().await;
+    assert_ne!(second, first, "another language is a new analysis");
+    let (_, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
+    assert_eq!(resolved["analysis"]["id"], json!(second), "{resolved}");
+    assert_eq!(resolved["analysis"]["language"], "pl");
+    for id in [first, second] {
+        h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+            .await;
+    }
+}
+
 /// The lookup carries the size of any pull request, not only of a large one, and makes no time claim without
 /// history.
 #[tokio::test]

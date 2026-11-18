@@ -81,7 +81,8 @@ async fn fetch_pull(
     Ok((pull, pr_id))
 }
 
-/// The pull request with the tenant's latest analysis of it in the user's language.
+/// The pull request with the tenant's latest analysis of it: in the user's language when one exists, else in
+/// another language.
 pub async fn resolve(
     state: &AppState,
     session: &Session,

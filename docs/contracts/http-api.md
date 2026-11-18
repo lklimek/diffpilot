@@ -411,6 +411,13 @@ The lookup never starts an analysis and makes no time claim without history; "St
 (`POST /api/v1/analyses`) does, and runs plan and PR context only.
 Old resolve responses without `size_warning`, `size` or `planning_estimate` remain readable.
 
+`analysis` in the resolve response is the tenant's latest analysis of the pull request whatever its language:
+the newest one in the user's current language when one exists, else the newest in another language. Every
+`AnalysisSummary` carries `language` (`en` | `pl`), so a client can label it. Changing the language therefore
+does not hide an existing analysis; `POST /api/v1/analyses` still creates an analysis per head and language
+(409 only when a live one exists for this head and the user's language), so analysing again in the new
+language stays an explicit action.
+
 ### Installation LLM choice and user pause
 
 Settings includes optional `llm_selection`: model options `{id,label}`, allowed efforts, `current`

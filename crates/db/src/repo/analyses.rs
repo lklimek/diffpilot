@@ -456,7 +456,8 @@ impl Analyses<'_> {
         }))
     }
 
-    /// The newest analysis of a pull request in a language, any head and state.
+    /// The newest analysis of a pull request in `language`, else the newest in another language; any head and
+    /// state.
     pub async fn latest_for_pr(
         &self,
         pull_request_id: i64,
@@ -465,8 +466,8 @@ impl Analyses<'_> {
         let row = sqlx::query(concat!(
             "SELECT ",
             columns!(),
-            " FROM analyses a WHERE a.pull_request_id = ? AND a.language = ?
-             ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1"
+            " FROM analyses a WHERE a.pull_request_id = ?
+             ORDER BY a.language = ? DESC, a.created_at DESC, a.rowid DESC LIMIT 1"
         ))
         .bind(pull_request_id)
         .bind(wire_name(language)?)
@@ -1142,6 +1143,38 @@ mod tests {
                 .await
                 .expect("none"),
             None
+        );
+    }
+
+    /// The lookup shows a pull request's analysis whatever language it was made in, and prefers the asked one.
+    #[tokio::test]
+    async fn latest_for_pr_prefers_the_language_and_falls_back_to_another() {
+        let db = &db().await;
+        let english = seed_analysis(db).await.expect("seed");
+        let latest = |language| async move {
+            db.analyses()
+                .latest_for_pr(1, language)
+                .await
+                .expect("latest")
+                .map(|record| record.id)
+        };
+        assert_eq!(latest(LlmLanguage::En).await, Some(english));
+        assert_eq!(
+            latest(LlmLanguage::Pl).await,
+            Some(english),
+            "no analysis in the asked language: the one that exists"
+        );
+        let polish = db
+            .analyses()
+            .create(new_analysis("b"), at(1))
+            .await
+            .expect("create");
+        assert_eq!(polish.language, LlmLanguage::Pl);
+        assert_eq!(latest(LlmLanguage::Pl).await, Some(polish.id));
+        assert_eq!(
+            latest(LlmLanguage::En).await,
+            Some(english),
+            "the older one in the asked language"
         );
     }
 

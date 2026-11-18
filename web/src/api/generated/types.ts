@@ -2056,7 +2056,8 @@ pr: PrSummary,
  */
 commenting_available: boolean,
 /**
- * The latest analysis of this pull request in the user's language, if any.
+ * The latest analysis of this pull request, if any: the one in the user's language when there is one, else
+ * in another language (its `language` says which).
  */
 analysis: AnalysisSummary | null,
 /**
