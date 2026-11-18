@@ -33,11 +33,12 @@ test("CSP header present; an inline script does not execute", async ({ page }) =
 
 test("security: LLM analysis text with markup renders as text", async ({ page, stack }) => {
   test.skip(!stack.script, "needs the fake provider's script (a local stack)");
-  const flow = JSON.parse(
-    readFileSync(new URL("../../fixtures/pr-482/agent/flow-1.json", import.meta.url), "utf8"),
-  ) as { steps: { title: string; why: string }[] };
-  flow.steps[0].title = `${MARKUP} trigger`;
-  flow.steps[0].why = `${MARKUP} why`;
+  // The flow file the agent writes (ADR-014): step 1's title and reason carry the markup.
+  const flow = readFileSync(new URL("../../fixtures/pr-482/agent/flow-1.md", import.meta.url), "utf8")
+    .replace("title: Trigger: callers of send\n", `title: ${MARKUP} trigger\n`)
+    .replace(/^why: Shows who reaches.*$/m, `why: ${MARKUP} why`);
+  expect(flow).toContain(`${MARKUP} trigger`);
+  expect(flow).toContain(`${MARKUP} why`);
   stack.script?.([{ id: "markup", job: "analyse_flow", flow: 1, action: { answer: { output: flow } } }]);
   const dialogs: string[] = [];
   page.on("dialog", (dialog) => {
@@ -47,8 +48,9 @@ test("security: LLM analysis text with markup renders as text", async ({ page, s
   await finishedReview(page);
   await openStep(page, 1, 1);
   await expect(heading(page)).toContainText(`${MARKUP} trigger`);
-  await expect(page.getByRole("main")).toContainText(`${MARKUP} why`);
+  // The step facts, the reason included, are in the Inspector (brief §4.3 show-less amendment).
   await expect(inspector(page)).toContainText(`${MARKUP} trigger`);
+  await expect(inspector(page)).toContainText(`${MARKUP} why`);
   await expect(page.locator("#root img, #root script, #root iframe, #root object")).toHaveCount(0);
   const handlers = await page
     .locator("#root")

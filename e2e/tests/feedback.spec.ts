@@ -124,10 +124,9 @@ test("MemCan rejects the call (synthetic tool error): recorded here, not reporte
   await openStep(page, 1, 4);
   await fake.mode({ mode: "synthetic_tool_error" });
   await buttons(page).getByRole("button", { name: "irrelevant" }).click();
-  await expect(memory(page)).toContainText(
-    "irrelevant: Recorded here; not yet saved to memory (retrying)",
-    { timeout: OUTCOME_MS },
-  );
+  await expect(memory(page)).toContainText("irrelevant: Recorded here; not yet saved to memory (retrying)", {
+    timeout: OUTCOME_MS,
+  });
   await checkScreen(page);
   expect(Object.values((await fake.state()).memories).map((entry) => entry.value)).not.toContain(
     "irrelevant",

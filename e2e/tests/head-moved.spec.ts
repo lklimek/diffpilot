@@ -1,5 +1,6 @@
 // Journey (c)/(e): the PR head moves after the analysis — a comment answers pr_head_changed, Home shows the moved
-// head with Re-analyze, the new analysis starts without ticks, and Ask on the superseded analysis is refused.
+// head with Re-analyze, the new analysis starts without ticks, and Ask on the superseded analysis is still answered
+// (the PR keeps its session).
 import { type Page } from "@playwright/test";
 import {
   checkScreen,
@@ -20,11 +21,19 @@ const pending = async (page: Page, id: string) =>
     }
   ).comments;
 
-test("head moved: comment refused with pr_head_changed, Re-analyze, superseded analysis refuses Ask", async ({
+test("head moved: comment refused with pr_head_changed, Re-analyze, the superseded analysis still takes Ask", async ({
   page,
   stack,
 }) => {
   test.skip(!stack.moveHead, "needs the clone base and fake GitHub's head control (a local stack)");
+  stack.script?.([
+    {
+      id: "old-analysis",
+      job: "ask",
+      prompt_contains: "still current",
+      action: { answer: { output: { answer: "Answered on the superseded analysis.", evidence: [] } } },
+    },
+  ]);
   const old = await finishedReview(page);
   await openStep(page, 1, 2);
   await page.keyboard.press("x");
@@ -70,8 +79,11 @@ test("head moved: comment refused with pr_head_changed, Re-analyze, superseded a
     .getByRole("textbox", { name: /^Ask the LLM about / })
     .fill("Is this still current?");
   await inspector(page).getByRole("button", { name: "Ask", exact: true }).click();
-  await expect(inspector(page).getByRole("alert")).toContainText(
-    "The pull request was analysed again; ask on the new analysis.",
-  );
+  // The PR keeps its agent session over Re-analyze: the old analysis still takes questions (refused only when the
+  // PR's data was explicitly removed, http-api.md Ask) and the question is answered on it.
+  await expect(inspector(page).getByRole("alert")).toHaveCount(0);
+  const asked = inspector(page).getByRole("list", { name: "Questions asked about this step" });
+  await expect(asked).toContainText("Asked by you: Is this still current?");
+  await expect(asked).toContainText("Answered on the superseded analysis.", { timeout: 60_000 });
   await checkScreen(page);
 });

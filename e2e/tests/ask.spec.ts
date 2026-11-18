@@ -49,7 +49,9 @@ test("a question on a step is answered, pinned to the step and kept over a reloa
   await finishedReview(page);
   await openStep(page, 1, 5);
   await ask(page, "Can broadcast_tx send the same transaction twice?");
-  await expect(answers(page)).toContainText("Asked by you: Can broadcast_tx send the same transaction twice?");
+  await expect(answers(page)).toContainText(
+    "Asked by you: Can broadcast_tx send the same transaction twice?",
+  );
   // Backtick spans are drawn as code, without the backticks.
   await expect(answers(page)).toContainText(ANSWER.replaceAll("`", ""), { timeout: 60_000 });
   await expect(answers(page).locator("code", { hasText: /^broadcast_tx$/ })).toBeVisible();

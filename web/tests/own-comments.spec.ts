@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { expectAccessible } from "./screens-support";
 import { expectTrustWording, openTour } from "./support";
@@ -60,6 +61,31 @@ test("… by keyboard, and after a reload", async ({ page }) => {
   ).toBeVisible();
   await page.keyboard.press("Space");
   await expect(page.getByText(TEXT)).toHaveCount(0);
+});
+
+// Product defect, open: the 12 px marker is partly covered by the remark band above line 91 and has no room to its
+// neighbours (WCAG 2.5.8); the fix is a design decision (row height vs target size).
+test.fixme("the marker of a comment on a line under an LLM remark is a large enough target", async ({
+  page,
+}) => {
+  await openTour(page);
+  await openStep(page, 1, 2);
+  await page.getByRole("button", { name: "Comment on line 91" }).click();
+  await page.getByRole("textbox", { name: /^Comment on src\/rpc\/client\.rs:91/ }).fill(TEXT);
+  await page.getByRole("button", { name: "Add to GitHub pending review" }).click();
+  await expect(code(page).getByRole("button", { name: "Your pending comment at line 91" })).toBeVisible();
+  // Line numbers keep the code's line height (WCAG 2.5.8 exception, as in a11y.spec.ts); the marker must pass.
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  const serious = results.violations
+    .filter((v) => v.impact === "serious" || v.impact === "critical")
+    .map((v) => ({
+      ...v,
+      nodes: v.nodes.filter((n) => !(v.id === "target-size" && n.html.includes("data-line-action"))),
+    }))
+    .filter((v) => v.nodes.length > 0);
+  expect(serious.map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(" ")}`)).toEqual([]);
 });
 
 test("the pending-review block leads back to the step with the comment open", async ({ page }) => {
