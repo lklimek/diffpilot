@@ -21,7 +21,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   Model and effort come from `select_model`, a plain Rust function in the server using the stored
   installation-wide Settings choice (default Sol, high; Ask: stored Ask effort, default medium). Each new job reads the current choice.
 - Flow jobs write tagged `out/flow.md` and run `sr-check`; server and checker share `analysis::tagged` (ADR-014).
-  Plan, PR context and Ask keep JSON. Stored documents and browser contracts stay unchanged.
+  Format version 2 (flags): server and runner images are rebuilt together. Plan, PR context and Ask keep JSON.
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy
   (`generic` returns `None` in v1).
 - Every UI block is a self-contained component in `web/src/components/`: props in, callbacks out, no fetching,
@@ -29,7 +29,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - Contract types come from `crates/contracts`; generated JSON Schemas and TS types are checked in and must be current.
   Contract, migration, route or trait changes need coordinator approval (change request).
 - Trust and wording rules of brief §1 are tested on rendered text and on agent output: badges only for
-  deterministic facts, no numeric confidence, no "no risk"/"verified"/"noise", facts carry evidence, questions
+  deterministic facts, no numeric confidence, no "no risk"/"verified"/"noise", facts carry evidence, flags and questions
   not verdicts, assessment collapsed.
 - GitHub credentials: user tokens and the App private key never leave the server. The agent holds only a
   short-lived read-only installation token (minted per job by the server, PR repository only (ADR-005), 1 h) for the

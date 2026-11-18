@@ -227,6 +227,145 @@ sr up -d
 `... was previously applied but has been modified` means an applied migration was edited: the build is defective;
 roll back and report it, never delete the database.
 
+## Upgrade to v1.1
+
+v1.1 adds the "My work" dashboard, the daily refresh, personal access tokens, flags in flow analysis and the Ask
+conversation. The upgrade is **in place**: migrations 0003 to 0007 upgrade a v1 database and keep all data. Migration
+0007 rebuilds the job tables and copies every row, so v1 jobs, their events and usage survive. Do not delete the
+database or the runner's session store. The general procedure and the rollback rules of "Upgrade" apply; this
+section adds the v1.1 specifics.
+
+**Both images must be rebuilt.** The flow file format is now version 2 (flags replace questions; ADR-014 addendum).
+An old runner image checks flow files against the old grammar and must not run with the new server. A flow job that
+was queued before the upgrade carries the old format: the server does not hand it to a runner, releases its claim and
+spends an attempt, so it fails after its attempts without an agent run. Analyse that flow again afterwards. Nothing
+is corrupted. Finished analyses are not converted: their questions show as flags of unknown level.
+
+1. Check that no job is running. The command reads the database read-only on the host (`sqlite3` 3.27+, as for
+   `deploy/backup.sh`); no row means no running job. Queued jobs are fine. If rows appear, wait or cancel the
+   analyses in the UI.
+
+   ```sh
+   sudo sqlite3 -readonly "$(docker volume inspect -f '{{.Mountpoint}}' smart-review_server-data)/smart-review.sqlite" \
+     "SELECT kind, state, count(*) FROM jobs WHERE state IN ('claimed', 'running') GROUP BY kind, state;"
+   ```
+
+2. Fetch and build as in "Upgrade" step 1 (it tags the old images as `rollback` and builds `runner` and `server`).
+   Then stop and copy the database volume to a new volume (volume to volume, nothing is deleted):
+
+   ```sh
+   sr stop
+   docker volume create smart-review_server-data-v1
+   docker run --rm --network none -v smart-review_server-data:/src:ro -v smart-review_server-data-v1:/dst ubuntu:26.04 \
+     cp -a /src/. /dst/
+   ```
+
+   `deploy/backup.sh` and the full backup in "Backup and restore" are the file-based alternatives. Keep the copy until
+   the new version has run for a few days.
+
+3. Add the new variables of the section "New configuration" to `/srv/smart-review/.env` (only `SR_MEMCAN_UI_URL` is
+   new; it is optional), then start and check:
+
+   ```sh
+   deploy/check-production-config.sh --env-file /srv/smart-review/.env   # from /srv/smart-review/app
+   sr up -d
+   sr ps                                    # all three: healthy
+   sr logs --since 5m server | grep -E 'server listening|dashboard scheduler started|schema migration failed'
+   ```
+
+   The migrations log nothing on success. A normal first start prints `server listening` for both listeners and
+   `dashboard scheduler started`. `the schema migration failed` (exit 1, restart loop) means the image does not
+   match the database: roll back. Then sign in and open an existing analysis. The first start can take a few
+   seconds longer while it resumes unfinished analyses.
+
+**Rollback.** The old server cannot read the new schema (migrations 0003 to 0007 stay applied). Stop, restore the
+volume copy, start the previous images and commit:
+
+```sh
+sr stop
+docker run --rm --network none -v smart-review_server-data-v1:/src:ro -v smart-review_server-data:/dst ubuntu:26.04 \
+  sh -c 'find /dst -mindepth 1 -delete && cp -a /src/. /dst/'
+for i in server runner egress-proxy; do docker tag "smart-review-$i:rollback" "smart-review-$i:local"; done
+cd /srv/smart-review/app && sudo git checkout --detach "$(cat /srv/smart-review/previous-version)"
+sr up -d
+```
+
+Everything written since the upgrade (dashboard data, tokens, analyses) is lost. Remove the copy when it is no longer
+needed: `docker volume rm smart-review_server-data-v1`.
+
+### New configuration
+
+Only one variable is new since v1; none is required. The scheduler and the dashboard have no variables: they are
+configured per user in Settings.
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `SR_MEMCAN_UI_URL` | no | empty | Base URL of the MemCan web UI **including `/ui`**, e.g. `http://memcan.example.lan:8190/ui`. The dashboard links a MemCan TODO to `<base>/tasks/<uuid>`. Must be `http://` or `https://`; a trailing `/` is removed. Empty: TODOs show without links. A bad value stops the server at start (exit 1). |
+
+Changed behaviour of an existing variable:
+
+- `SR_TRUSTED_PROXIES` (comma-separated addresses or CIDRs, default empty): it now matters beyond logging. The failed
+  access-token attempts are limited per client address (30 a minute). Behind the reverse proxy, with the variable
+  empty, all clients share the proxy's address and one limit. Set it to the proxy's address as seen by the container
+  (the Docker gateway `172.29.73.1` in `.env.example`) and let the reverse proxy append the client address to
+  `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`).
+  `deploy/check-production-config.sh` warns when it is empty; the warning does not fail the check.
+
+### First use
+
+Open `https://review.example/` (your `SR_PUBLIC_URL`). The start page is now "My work"; the review start page is at
+`/review`. Links with `?pr=` keep working. Everything below is in Settings.
+
+1. **Settings → Dashboard.**
+   - Accounts (linked logins), repositories (with short names, policy repository and path, release branches, issue
+     watching) and owners to list when the search cannot see a login. Nothing is watched until you add repositories
+     or owners.
+   - MemCan TODOs: on or off, plus extra MemCan projects. The repositories' short names are the default projects.
+   - Rules: the ready label, bot authors to skip, lookback days.
+   - Automatic refresh: on by default, time of day (default 06:00) and time zone. The browser's zone is stored at your
+     first visit to "My work" if none is set; without a zone the schedule does not run. Choose another zone here.
+   - Save. A refused value names its field.
+2. **Refresh.** The "Refresh" button on "My work" starts a scan (about one minute) and then the ranking. A refresh
+   scans GitHub with your sign-in; a ranking uses the owner's Codex quota.
+3. **Schedule.** The scheduler checks every minute. It runs once per local day at the set time; a run missed (server
+   stopped, user not seen) is caught up once on the same local date, so the first visit after the time normally
+   triggers one refresh within about a minute. A manual refresh that succeeded after the scheduled time cancels the
+   catch-up. Users run one at a time, each offset by 0 to 9 minutes.
+4. **Ranking cost.** The ranking judges at most 48 items per refresh and 120 per user and local day; the rest stay
+   provisional with a note. Unchanged items are not judged again.
+5. **Efforts** (Settings → LLM, installation-wide, shared by all users): "Dashboard ranking effort" (default low) and
+   the Ask effort (default medium; migration 0006 gives an existing selection `medium`). The analysis effort is
+   unchanged. A new job reads the current value.
+6. **Access tokens** (Settings → Access tokens): for agents that read your dashboard. Scope `read` only, expiry 30, 90
+   (default) or 365 days, at most 10 live tokens per user, shown once, stored as a hash. Create and revoke there.
+   Tokens never change anything. Format, routes and polling rules: `docs/contracts/agent-api.md`.
+7. **"Needs sign-in".** If the scheduled run finds no usable GitHub sign-in, the top bar says "Automatic refresh at
+   HH:MM needs you to sign in again" until a later refresh succeeds. Sign in again.
+8. **Kept GitHub token pair.** With the schedule on, the server keeps your encrypted GitHub token pair after the last
+   session ends, so the run at 06:00 can scan. It keeps it for up to 30 days after your last sign-in (ADR-020
+   addendum); then it deletes the pair and the schedule records `needs_sign_in`. "Sign out everywhere", removal from
+   the sign-in allow-list, or a rejected refresh deletes the pair at once. Switch the schedule off if you do not want
+   the pair kept.
+
+### Operating the dashboard
+
+- **State and failures of a refresh.** The top bar of "My work" shows the last scan, a running ranking, a failure, or
+  an automatic run that needs sign-in or failed (its tooltip gives the reason). "What the scan missed" in the side
+  panel lists unreachable repositories, items the scan could not read and a MemCan outage (the earlier TODO rows
+  stay). A failed scan keeps the previous snapshot. Server log lines (`sr logs server | grep -i dashboard`):
+  `dashboard refresh started`, `dashboard snapshot stored`, `dashboard refresh failed; the previous snapshot stays`,
+  `dashboard refresh cancelled`, `scheduled dashboard run recorded`, `a scheduled dashboard refresh could not be
+  started`, `dashboard judge job failed`. A server restart marks a refresh that was scanning as failed and a ranking
+  as interrupted; "Retry ranking" restarts the ranking of a stored snapshot.
+- **GitHub rate limits.** The scan paces its searches and batches its detail queries, and retries a secondary limit.
+  If your primary limit (5000 requests an hour, shared with the browser and token reads) is exhausted, the refresh
+  fails with `github_rate_limited`, and a new Refresh is refused with the reset time until then. Wait for it.
+- **Turn the schedule off.** Settings → Dashboard → Automatic refresh, clear "Refresh my dashboard automatically
+  every day", save. Manual refresh keeps working.
+- **Wipe dashboard data.** There is no route or command for it. Old refreshes are pruned by themselves (the newest 10
+  per user, plus the one holding the current snapshot) and judgements of items unseen for a long time are deleted.
+  Revoke tokens in Settings. Only the rollback above removes everything.
+
 ## Backup and restore
 
 Two kinds: a daily **online backup** (`deploy/backup.sh`, services keep running) and a **full backup** with every
