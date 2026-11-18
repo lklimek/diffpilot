@@ -134,8 +134,6 @@ pub enum Classification {
     Move,
     /// Renames identifiers.
     Rename,
-    /// Test code.
-    Test,
     /// Documentation and comments.
     DocsComments,
     /// Generated or mechanical changes.

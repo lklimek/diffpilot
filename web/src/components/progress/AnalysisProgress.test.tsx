@@ -2,7 +2,11 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisState } from "../../api/generated/types";
+import type {
+  AnalysisProgress as RunProgress,
+  AnalysisState,
+  RunStageState,
+} from "../../api/generated/types";
 import { AnalysisProgress, SILENT_MS, type ProgressActivity } from "./AnalysisProgress";
 
 function show(state: AnalysisState, busy = false, activity?: ProgressActivity) {
@@ -36,6 +40,16 @@ const startedAgo = (ago: number) => new Date(NOW - ago).toISOString();
 const indicator = () => document.querySelector("[data-activity]");
 
 const bar = () => screen.getByRole("progressbar", { name: "Analysis progress" });
+/** Waiting facts of a run that failed with planning and PR context in these states. */
+const failedAt = (planning: RunStageState, prContext: RunStageState): RunProgress => ({
+  started_at: "2026-11-17T09:00:00Z",
+  planning: { done: planning === "done" ? 1 : 0, total: planning === "done" ? 1 : null, state: planning },
+  pr_context: { done: prContext === "done" ? 1 : 0, total: 1, state: prContext },
+  flows: { done: 0, total: planning === "done" ? 5 : null, state: "pending" },
+  finishing: { done: 0, total: 1, state: "pending" },
+  estimate: null,
+  percent: null,
+});
 const buttons = () => screen.queryAllByRole("button").map((b) => b.textContent);
 
 describe("AnalysisProgress (brief §4.2)", () => {
@@ -45,7 +59,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
     expect(bar()).not.toHaveAttribute("aria-valuenow");
     expect(bar()).toHaveAttribute("aria-valuetext", "Planning flows");
     expect(buttons()).toEqual(["Cancel analysis"]);
-    expect(screen.queryByRole("link", { name: "Open review" })).toBeNull();
+    expect(screen.queryByRole("link", { name: /^(Resume|Open) review$/ })).toBeNull();
   });
 
   it("running: k of n flows analysed, determinate bar, Cancel analysis", () => {
@@ -56,7 +70,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
     const [filled, empty] = Array.from(bar().children) as HTMLElement[];
     expect([filled!.style.flexGrow, empty!.style.flexGrow]).toEqual(["2", "3"]);
     expect(buttons()).toEqual(["Cancel analysis"]);
-    expect(screen.queryByRole("link", { name: "Open review" })).toBeNull();
+    expect(screen.queryByRole("link", { name: /^(Resume|Open) review$/ })).toBeNull();
   });
 
   it("paused: usage limit with the resume time", () => {
@@ -102,22 +116,46 @@ describe("AnalysisProgress (brief §4.2)", () => {
   });
 
   it("failed before any flow: plain description and Retry", () => {
-    show({
-      state: "failed",
-      flow: null,
-      message: "The repository could not be fetched. Retry the analysis.",
-    });
+    render(
+      <AnalysisProgress
+        state={{
+          state: "failed",
+          flow: null,
+          message: "The repository could not be fetched. Retry the analysis.",
+        }}
+        progress={failedAt("pending", "pending")}
+        reviewHref="/analyses/a1"
+        busy={false}
+        onCancel={() => {}}
+        onRetry={() => {}}
+      />,
+    );
     expect(screen.getByText("The analysis failed before any flow was planned")).toBeVisible();
     expect(screen.getByText("The repository could not be fetched. Retry the analysis.")).toBeVisible();
     expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
   });
 
-  it("finished: n of n flows analysed and Open review", () => {
+  it("finished: n of n flows analysed and Open review for a review not started yet", () => {
     show({ state: "finished", total: 5 });
     expect(screen.getByText("5 of 5 flows analysed")).toBeVisible();
     expect(bar()).toHaveAttribute("aria-valuenow", "5");
     expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
+    expect(screen.queryByRole("link", { name: "Resume review" })).toBeNull();
     expect(buttons()).toEqual([]);
+  });
+
+  it("finished: Resume review for a review the user started", () => {
+    render(
+      <AnalysisProgress
+        state={{ state: "finished", total: 5 }}
+        reviewStarted
+        reviewHref="/analyses/a1"
+        busy={false}
+        onCancel={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("link", { name: "Resume review" })).toHaveAttribute("href", "/analyses/a1");
   });
 
   it("disables the actions while a request runs", async () => {
@@ -192,7 +230,9 @@ describe("AnalysisProgress (brief §4.2)", () => {
         { state: "planning", stage: { kind: "plan", started_at: null } },
         "Waiting for the runner; next: planning the review.",
       ],
-      [{ state: "running", done: 1, total: 4 }, "Between two jobs: the server starts the next one."],
+      // Parked: no flow job runs and none is admitted; nothing claims the server is working.
+      [{ state: "running", done: 1, total: 4 }, "No flow job is running."],
+      [{ state: "planning" }, "Between two jobs: the server starts the next one."],
     ] as [AnalysisState, string][])("names the stage from the server: %j", (state, text) => {
       show(state, false, activity());
       const line = screen.getByText(text);
@@ -230,7 +270,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
         show(state, false, activity());
         expect(
           screen.queryByText(
-            /^(Planning the review|Reading the PR context|Analysing|Waiting for the runner|Between two jobs)/,
+            /^(Planning the review|Reading the PR context|Analysing|Waiting for the runner|Between two jobs|No flow job)/,
           ),
         ).toBeNull();
         expect(indicator()).toBeNull();
@@ -462,4 +502,46 @@ it("opens the review as soon as context is ready while flows are still running",
   expect(screen.queryByText("Between two jobs: the server starts the next one.")).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Open review" })).toHaveAttribute("href", "/analyses/a1");
   expect(screen.getByRole("button", { name: "Cancel analysis" })).toBeVisible();
+});
+
+it.each([
+  [false, "Open"],
+  [true, "Resume"],
+])("parked while the review is open (started: %s): the line names the button, %s review", (started, verb) => {
+  render(
+    <AnalysisProgress
+      state={{ state: "running", done: 1, total: 5 }}
+      reviewReady
+      reviewStarted={started}
+      busy={false}
+      reviewHref="/analyses/a1"
+      onCancel={() => {}}
+      onRetry={() => {}}
+    />,
+  );
+  expect(
+    screen.getByText(
+      `No flow job is running. ${verb} the review to choose a flow or change background analysis.`,
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole("link", { name: `${verb} review` })).toBeVisible();
+});
+
+it("a failure without a flow after planning never claims it failed before planning", () => {
+  const state: AnalysisState = {
+    state: "failed",
+    flow: null,
+    message: "The repository mirror could not be updated.",
+  };
+  const props = { reviewHref: "/analyses/a1", busy: false, onCancel: () => {}, onRetry: () => {} };
+  const { rerender } = render(
+    <AnalysisProgress state={state} progress={failedAt("done", "done")} {...props} />,
+  );
+  expect(screen.getByText("The analysis failed after its flows were planned")).toBeVisible();
+  expect(document.body).not.toHaveTextContent("before any flow was planned");
+  rerender(<AnalysisProgress state={state} reviewReady {...props} />);
+  expect(screen.getByText("The analysis failed after its flows were planned")).toBeVisible();
+  // Without stage data the page does not guess when it failed.
+  rerender(<AnalysisProgress state={state} {...props} />);
+  expect(screen.getByText("The analysis failed")).toBeVisible();
 });

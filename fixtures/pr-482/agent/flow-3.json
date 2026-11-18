@@ -18,7 +18,7 @@
       "moved_from": null,
       "called_by": "RpcClient::send (step 7 of flow 1)",
       "decides": "Adds a variant that carries the attempt count.",
-      "next": "every match on RpcError",
+      "next": "Step 2; every match on RpcError",
       "why": "Callers need to tell “retried and failed” from one timeout.",
       "annotations": [
         {
@@ -95,7 +95,7 @@
       "symbol": "wallet::fetch_balance",
       "kind": "context",
       "moved_from": null,
-      "called_by": "the wallet balance view",
+      "called_by": "Step 1; the wallet balance view",
       "decides": "Maps any other error to WalletError::Rpc.",
       "next": "returns to the wallet UI",
       "why": "Same pattern × 2; the second site is src/sync/peers.rs:204.",
@@ -133,13 +133,8 @@
         }
       ],
       "assessment": {
-        "headline": "Wallet users may see a generic RPC error after exhausted retries.",
         "risk": "low",
         "reason": "This existing wildcard branch receives the new variant; its changed exposure is assessed at the variant definition.",
-        "basis_note": "Read: src/wallet/mod.rs and the flow's caller context.",
-        "not_checked": "Downstream matches outside this repository.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     }

@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import type { RepoRef } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
 
-const name = (repo: RepoRef) => `${repo.owner}/${repo.name}`;
+const name = (repo: RepoRef | null) => (repo ? `${repo.owner}/${repo.name}` : "");
 
 /** Searchable repository choice; input order is most recently analysed first. */
 export function RepoList({
@@ -11,7 +11,8 @@ export function RepoList({
   onSelect,
 }: {
   repos: RepoRef[];
-  selected: RepoRef;
+  /** The chosen repository; null when none is (e.g. the URL named an unknown one). */
+  selected: RepoRef | null;
   onSelect: (repo: RepoRef) => void;
 }) {
   const id = useId();

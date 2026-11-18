@@ -53,15 +53,8 @@ evidence: p15:head:120 p15:head:121
 text: Should Exhausted map to WalletError::Offline like Timeout?
 
 ### assessment
-headline: Wallet users may see a generic RPC error after exhausted retries.
 risk: low
 reason: This existing wildcard branch receives the new variant; its changed exposure is assessed at the variant definition.
-basis_note: Read: src/wallet/mod.rs and the flow's caller context.
-not_checked: Downstream matches outside this repository.
-origin: introduced
-blocking: no_action_proposed
-
-## edge s1 s2
 
 ## impact s1 p16:head:201-205
 symbol: Prober::probe

@@ -6,7 +6,7 @@ use chrono::Utc;
 use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
 use contracts::agent::ask::AskOutput;
 use contracts::agent::{self as agent, JobKind, StrictSchemaError};
-use contracts::api::analyses::AnalysisSummary;
+use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::questions::AskState;
 use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
 use contracts::job::access::AgentAccess;
@@ -23,7 +23,7 @@ use db::repo::settings::CallFailure;
 use futures::StreamExt;
 use serde_json::Value;
 
-use super::{MAX_ANSWER_CHARS, MAX_EVIDENCE, set, superseded};
+use super::{MAX_ANSWER_CHARS, MAX_EVIDENCE, publish_provisional, set, superseded};
 use crate::api::settings::plain_failure;
 use crate::github::mirror::{self, MirrorError};
 use crate::github::oauth::endpoint;
@@ -42,8 +42,13 @@ use crate::state::AppState;
 /// Failure sentence of an answer that did not pass the checks; it is never shown.
 pub(super) const UNFIT_ANSWER: &str =
     "The LLM's answer did not follow the answer rules, so it is not shown. Ask again.";
-/// Failure sentence of a question cancelled by a re-analysis.
+/// Failure sentence of a question cancelled because its PR session was removed (a re-analysis replaced it).
 pub(super) const SUPERSEDED: &str = "The question was cancelled because the pull request was analysed again. Ask it on the new analysis.";
+/// Failure sentence of a question cancelled together with its analysis.
+pub(super) const ANALYSIS_CANCELLED: &str =
+    "The question was cancelled because its analysis was cancelled.";
+/// Failure sentence of a question whose job was cancelled for another reason.
+pub(super) const CANCELLED: &str = "The question was cancelled before it was answered. Ask again.";
 /// Failure sentence of a server-side failure.
 pub(super) const SERVER_ERROR: &str =
     "The question could not be answered because of a server error. Ask again later.";
@@ -222,9 +227,19 @@ async fn follow_record(state: &AppState, record: QuestionRecord) -> Result<(), F
             JobUpdate::Requeued { .. } => {
                 (current != AskState::Answering).then_some(QuestionUpdate::Answering)
             }
-            // Published at once (ADR-004); the result is authoritative and may replace it.
+            // Published at once (ADR-004); the result is authoritative and may replace it. The check takes time:
+            // whether the answer may still be shown is decided again under the lock that publishes it.
             JobUpdate::OutputReady(output) => match check(state, &summary, output).await? {
-                Ok(answer) => Some(QuestionUpdate::Provisional(answer)),
+                Ok(answer) => {
+                    match publish_provisional(state, analysis, id, handle.job_id, answer).await? {
+                        Some(question) => current = question.state,
+                        None => {
+                            tracing::debug!(question = %id,
+                                "ready answer not shown: the question was cancelled while it was checked");
+                        }
+                    }
+                    None
+                }
                 Err(unfit) => {
                     tracing::debug!(question = %id, reasons = ?unfit.codes(),
                         "ready answer not shown; the job's result decides");
@@ -270,8 +285,16 @@ async fn finish(
             });
         }
         JobOutcome::Cancelled => {
-            tracing::info!(%question, "question cancelled");
-            return Ok(QuestionUpdate::Failed(SUPERSEDED.to_owned()));
+            let record = state.db.analyses().get(summary.id).await?;
+            let sentence = if superseded(&record) {
+                SUPERSEDED
+            } else if matches!(record.state, AnalysisState::Cancelled) {
+                ANALYSIS_CANCELLED
+            } else {
+                CANCELLED
+            };
+            tracing::info!(%question, analysis_state = ?record.state, "question cancelled");
+            return Ok(QuestionUpdate::Failed(sentence.to_owned()));
         }
         JobOutcome::Failed { kind, .. } => CallFailure::Failed(kind),
         JobOutcome::UsageLimited { .. } => CallFailure::UsageLimited,

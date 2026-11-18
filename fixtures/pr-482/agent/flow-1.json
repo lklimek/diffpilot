@@ -18,7 +18,7 @@
       "moved_from": null,
       "called_by": "a user action in the wallet or the relay (outside the diff)",
       "decides": "Nothing here; it builds the request and calls client.send.",
-      "next": "step 2",
+      "next": "Step 2",
       "why": "Shows who reaches the retry loop, in particular a call that is not safe to repeat.",
       "annotations": [
         {
@@ -65,13 +65,8 @@
         }
       ],
       "assessment": {
-        "headline": "A caller may see a repeated request after a timeout.",
         "risk": "low",
         "reason": "This context step submits one request; repetition is introduced by the downstream retry decision.",
-        "basis_note": "Read: src/mempool/mod.rs and the flow's caller context.",
-        "not_checked": "Downstream handling of repeated requests.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     },
@@ -85,9 +80,9 @@
       "symbol": "RpcClient::send",
       "kind": "modified",
       "moved_from": null,
-      "called_by": "step 1",
+      "called_by": "Step 1; Step 6 (loop); Step 9 (policy)",
       "decides": "Counts the attempt; rebuilds the request on every turn.",
-      "next": "step 3",
+      "next": "Step 3",
       "why": "The counter feeds the retry decision; the request is rebuilt because execute consumes it.",
       "annotations": [
         {
@@ -128,13 +123,8 @@
         }
       ],
       "assessment": {
-        "headline": "A rebuilt request may carry different data on a later attempt.",
         "risk": "low",
         "reason": "The attempt counter and request construction are local; the retry decision controls whether another request is sent.",
-        "basis_note": "Read: src/rpc/client.rs and the flow's caller context.",
-        "not_checked": "Request equality across attempts.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     },
@@ -148,9 +138,9 @@
       "symbol": "RpcClient::send",
       "kind": "modified",
       "moved_from": null,
-      "called_by": "step 2",
+      "called_by": "Step 2",
       "decides": "Branches on the result: Ok, Timeout, other error.",
-      "next": "step 4 (Ok), step 5 (Timeout), step 8 (other error)",
+      "next": "Step 4 (Ok); Step 5 (Timeout); Step 8 (other error)",
       "why": "Only timeouts are retried; every other error keeps the old behaviour.",
       "annotations": [
         {
@@ -171,13 +161,8 @@
         }
       ],
       "assessment": {
-        "headline": "Callers receive the result selected by this branch.",
         "risk": "low",
         "reason": "Only timeouts take the new path; success and other errors return directly.",
-        "basis_note": "Read: src/rpc/client.rs and the flow's caller context.",
-        "not_checked": "Transport error classification at runtime.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     },
@@ -191,7 +176,7 @@
       "symbol": "RpcClient::send",
       "kind": "modified",
       "moved_from": null,
-      "called_by": "step 3 (Ok)",
+      "called_by": "Step 3 (Ok)",
       "decides": "Nothing; ends the call.",
       "next": "back to the caller",
       "why": "A successful attempt ends the loop at once.",
@@ -214,13 +199,8 @@
         }
       ],
       "assessment": {
-        "headline": "The caller receives the successful response.",
         "risk": "low",
         "reason": "This unchanged return exits the loop immediately without another send.",
-        "basis_note": "Read: src/rpc/client.rs and the flow's caller context.",
-        "not_checked": "Runtime response decoding.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     },
@@ -234,9 +214,9 @@
       "symbol": "RpcClient::send",
       "kind": "added",
       "moved_from": null,
-      "called_by": "step 3 (Timeout)",
+      "called_by": "Step 3 (Timeout)",
       "decides": "Asks RetryPolicy::should_retry(attempt); yes goes to step 6, no goes to step 7.",
-      "next": "step 6 or step 7",
+      "next": "Step 6 (yes); Step 7 (no); Step 10 (should_retry)",
       "why": "The loop needs a rule for when to stop; the rule is a plain attempt limit.",
       "annotations": [
         {
@@ -319,9 +299,9 @@
       "symbol": "RpcClient::send",
       "kind": "added",
       "moved_from": null,
-      "called_by": "step 5 (yes)",
+      "called_by": "Step 5 (yes)",
       "decides": "Computes the delay and sleeps.",
-      "next": "step 2 (loop)",
+      "next": "Step 2 (loop); Step 10 (backoff)",
       "why": "Spaces the attempts so a briefly overloaded node can recover.",
       "annotations": [
         {
@@ -373,14 +353,9 @@
         }
       ],
       "assessment": {
-        "headline": "With the default policy the two waits stay at most 300 ms and 600 ms; a policy with more attempts could wait up to half longer than max_delay.",
         "risk": "low",
         "reason": "Latent: the 4 s cap is out of reach while every client uses the default of 3 attempts, and no setter can change it.",
-        "basis_note": "Read: 2 files (retry.rs, client.rs)",
-        "not_checked": "the jitter range at run time",
-        "origin": "introduced",
-        "blocking": "follow_up",
-        "smallest_correction": "Apply the jitter before min(max_delay)."
+        "smallest_correction": null
       }
     },
     {
@@ -393,7 +368,7 @@
       "symbol": "RpcClient::send",
       "kind": "added",
       "moved_from": null,
-      "called_by": "step 5 (no)",
+      "called_by": "Step 5 (no)",
       "decides": "Returns the new error instead of Timeout.",
       "next": "back to the caller",
       "why": "Callers need to tell a retried failure from a single timeout.",
@@ -477,9 +452,9 @@
       "symbol": "RpcClient::send",
       "kind": "modified",
       "moved_from": null,
-      "called_by": "step 3 (other error)",
+      "called_by": "Step 3 (other error)",
       "decides": "Nothing; ends the call.",
-      "next": "back to the caller",
+      "next": "",
       "why": "Only timeouts are worth another attempt.",
       "annotations": [
         {
@@ -500,13 +475,8 @@
         }
       ],
       "assessment": {
-        "headline": "The caller receives a transport error without another attempt.",
         "risk": "low",
         "reason": "The existing error return remains separate from the timeout retry path.",
-        "basis_note": "Read: src/rpc/client.rs and the flow's caller context.",
-        "not_checked": "Other transport error variants at runtime.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     },
@@ -522,7 +492,7 @@
       "moved_from": null,
       "called_by": "every caller that builds an RpcClient",
       "decides": "Stores RetryPolicy::default() in the new retry field.",
-      "next": "step 2 reads it as policy",
+      "next": "Step 2 (policy)",
       "why": "send needs a policy; new gives every client the default of 3 attempts.",
       "annotations": [
         {
@@ -564,13 +534,8 @@
         }
       ],
       "assessment": {
-        "headline": "New clients use the default retry limits.",
         "risk": "low",
         "reason": "Policy construction is bounded to client setup; retry exposure is assessed at the decision step.",
-        "basis_note": "Read: src/rpc/client.rs and the flow's caller context.",
-        "not_checked": "Configuration in downstream clients.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     },
@@ -584,7 +549,7 @@
       "symbol": "RetryPolicy",
       "kind": "added",
       "moved_from": null,
-      "called_by": "step 5 (should_retry) and step 6 (backoff)",
+      "called_by": "Step 5 (should_retry); Step 6 (backoff)",
       "decides": "Allows attempts while attempt < max_attempts; computes the delay before the next attempt.",
       "next": "back to step 5 or step 6",
       "why": "The loop needs a rule for when to stop and how long to wait; both live in one policy value.",
@@ -648,13 +613,8 @@
         }
       ],
       "assessment": {
-        "headline": "The policy controls how long the caller waits.",
         "risk": "low",
         "reason": "The default attempt limit bounds the loop; the send and jitter steps carry the concrete concerns.",
-        "basis_note": "Read: src/rpc/retry.rs and the flow's caller context.",
-        "not_checked": "Runtime delays and custom policy use.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     }

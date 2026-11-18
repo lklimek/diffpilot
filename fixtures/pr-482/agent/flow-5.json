@@ -20,7 +20,7 @@
         "base_start": 11,
         "base_end": 68
       },
-      "called_by": "RetryPolicy::backoff (flow 1)",
+      "called_by": "Step 2; RetryPolicy::backoff (flow 1)",
       "decides": "Computes the exponential delay and the jitter.",
       "next": "returns the delay to backoff",
       "why": "Keeps the helpers next to the policy that uses them.",
@@ -58,14 +58,9 @@
         }
       ],
       "assessment": {
-        "headline": "Retries wait noticeably longer or shorter from run to run; few users would see it.",
         "risk": "low",
         "reason": "A tuning change inside a bounded delay.",
-        "basis_note": "Read: 2 files (old and new location)",
-        "not_checked": "how often retries happen in production",
-        "origin": "introduced",
-        "blocking": "follow_up",
-        "smallest_correction": "Say it in the PR description, or keep the tenth in the move."
+        "smallest_correction": null
       }
     },
     {
@@ -80,7 +75,7 @@
       "moved_from": null,
       "called_by": "the crate root",
       "decides": "Declares rpc::retry and drops util::backoff.",
-      "next": "step 1 (the helpers in their new place)",
+      "next": "Step 1",
       "why": "The moved file needs its new module path.",
       "annotations": [
         {
@@ -106,13 +101,8 @@
         }
       ],
       "assessment": {
-        "headline": "Consumers may need the new module path.",
         "risk": "low",
         "reason": "The module declarations wire the moved implementation; there is no runtime branch here.",
-        "basis_note": "Read: src/lib.rs and the flow's caller context.",
-        "not_checked": "External imports of the old module path.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     }

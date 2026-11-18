@@ -18,6 +18,7 @@ path = "src/supervisor_main.rs"
 fake-provider = []
 
 [dependencies]
+base64.workspace = true
 contracts.workspace = true
 chrono.workspace = true
 futures.workspace = true

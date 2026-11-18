@@ -182,11 +182,25 @@ impl CodexProvider {
         }
         tracing::info!(job = %call.job_id, skills = ?call.skills, "job agent skills available");
         let invocation = resume.map_or(Invocation::New, Invocation::Resume);
+        let prompt = if resume.is_none() && !call.skills.is_empty() {
+            let files = call
+                .skills
+                .iter()
+                .map(|name| format!("$HOME/{SKILLS_ROOT}/{name}/SKILL.md"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "Read the required skills once for this new session: {files}. Apply them throughout this session.\n\n{}",
+                call.prompt
+            )
+        } else {
+            call.prompt.clone()
+        };
         let (stream, exit) = self
             .exec(
                 call,
                 invocation,
-                &call.prompt,
+                &prompt,
                 &mut credential,
                 Some(events),
                 deadline,

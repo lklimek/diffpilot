@@ -31,7 +31,7 @@ use crate::supervisor::client::{Supervisor, SupervisorError};
 pub struct Isolation {
     /// The supervisor connection.
     pub supervisor: Arc<Supervisor>,
-    /// `<state>/codex-homes`: the bounded filesystem holding the per-job agent `CODEX_HOME`s.
+    /// `<state>/codex-homes`: the disposable volume holding the per-job agent `CODEX_HOME`s.
     pub codex_homes: PathBuf,
     /// Set when an agent directory could be neither removed nor quarantined: no further job may run.
     poisoned: Arc<AtomicBool>,
@@ -95,9 +95,6 @@ impl Isolation {
         let mut removed = 0;
         for entry in std::fs::read_dir(&self.codex_homes)? {
             let home = entry?.path();
-            if crate::codex_homes::is_lost_found(&home) {
-                continue;
-            }
             let key = home.file_name().unwrap_or_default().to_owned();
             if staging
                 .join(format!("{}.cas", key.to_string_lossy()))
@@ -198,6 +195,8 @@ impl Isolation {
     /// An `auth.json` that cannot be copied back (missing, link, oversized, not a single regular file) leaves
     /// the credential state unknown: Codex may have rotated the single-use refresh token, so the old staged
     /// copy proves nothing and the call fails as [`ProviderError::CredentialUnusable`] (a new login is needed).
+    /// Rollouts that cannot be copied back never fail the call: the staging home then holds none, so the job
+    /// reports no session.
     pub(super) async fn pull(
         &self,
         call: &ProviderCall,
@@ -218,24 +217,59 @@ impl Isolation {
         let Some(thread) = thread.filter(|thread| session::valid_thread_id(thread)) else {
             return Ok(());
         };
-        let suffix = format!("-{thread}.jsonl");
-        for entry in self.supervisor.list(&home).await.map_err(io_error)? {
-            let parts: Vec<&str> = entry.path.split('/').collect();
-            let rollout = matches!(parts.as_slice(), [sessions, y, m, d, name]
-                if *sessions == session::SESSIONS_DIR
-                    && [y, m, d].iter().all(|part| part.bytes().all(|b| b.is_ascii_digit()))
-                    && name.starts_with("rollout-")
-                    && name.ends_with(&suffix));
-            if !rollout || !entry.file || entry.size > session::MAX_ROLLOUT_BYTES {
-                continue;
+        let staged = call.codex_home.join(session::SESSIONS_DIR);
+        if let Err(error) = self.pull_rollouts(&home, &call.codex_home, thread).await {
+            tracing::warn!(job = %call.job_id, %error, "the agent session was not copied back; the job reports no session and the next one starts from the context pack");
+            if let Err(error) = remove_dir_all(&staged) {
+                tracing::error!(job = %call.job_id, dir = %staged.display(), %error, "cannot remove partly copied session files from the staging home");
             }
-            let max = usize::try_from(session::MAX_ROLLOUT_BYTES).unwrap_or(usize::MAX);
+        }
+        Ok(())
+    }
+
+    /// Replaces the `sessions/` of the staging home `staging` (it may hold the rollout restored before the
+    /// turn) with the rollouts of `thread` in the agent's `home`: `sessions/YYYY/MM/DD/rollout-*-<thread>.jsonl`,
+    /// regular files within [`session::within_limits`] by their listed sizes, checked before any is read.
+    async fn pull_rollouts(&self, home: &Path, staging: &Path, thread: &str) -> io::Result<()> {
+        remove_dir_all(&staging.join(session::SESSIONS_DIR))?;
+        let suffix = format!("-{thread}.jsonl");
+        let listed = self.supervisor.list(home).await.map_err(io::Error::other)?;
+        let rollouts: Vec<_> = listed
+            .iter()
+            .filter(|entry| {
+                let parts: Vec<&str> = entry.path.split('/').collect();
+                matches!(parts.as_slice(), [sessions, y, m, d, name]
+                    if *sessions == session::SESSIONS_DIR
+                        && [(y, 4), (m, 2), (d, 2)].iter().all(|(part, digits)| {
+                            part.len() == *digits && part.bytes().all(|b| b.is_ascii_digit())
+                        })
+                        && name.starts_with("rollout-")
+                        && name.ends_with(&suffix))
+            })
+            .collect();
+        let sizes: Vec<u64> = rollouts.iter().map(|entry| entry.size).collect();
+        if rollouts.iter().any(|entry| !entry.file) || !session::within_limits(&sizes) {
+            tracing::error!(
+                files = sizes.len(),
+                bytes = sizes
+                    .iter()
+                    .fold(0_u64, |sum, size| sum.saturating_add(*size)),
+                "the agent left session rollouts that are not regular files or exceed the copy-back limits; none is copied"
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the thread's rollouts exceed the copy-back limits",
+            ));
+        }
+        for entry in rollouts {
+            // Never more than the listed size, so the bytes read stay within the limits just checked.
+            let max = usize::try_from(entry.size).unwrap_or(usize::MAX);
             let bytes = self
                 .supervisor
-                .copy_out(&home, Path::new(&entry.path), max)
+                .copy_out(home, Path::new(&entry.path), max)
                 .await
-                .map_err(io_error)?;
-            let target = call.codex_home.join(&entry.path);
+                .map_err(io::Error::other)?;
+            let target = staging.join(&entry.path);
             if let Some(parent) = target.parent() {
                 std::fs::DirBuilder::new()
                     .recursive(true)
@@ -359,6 +393,7 @@ impl CodexProvider {
             .await
             .map_err(io_error)?;
         let pid = process.pid;
+        credential.handed_over();
         // Only a panic drops this run before its own sweep; the guard still sweeps then.
         let mut guard = SweepOnDrop(Some(Arc::clone(supervisor)));
         self.set_group(call, Pid::from_raw(pid));
@@ -431,6 +466,11 @@ impl CodexProvider {
             Err(error) => {
                 // Collect the swept Codex's status so the supervisor forgets it.
                 let _ = timeout(REAP_DEADLINE, supervisor.wait(pid)).await;
+                // The agent is gone, so its credential copy comes back before the error ends the call. After
+                // a failed sweep it stays where it is, with its base, for the next start.
+                if sweep.is_ok() {
+                    let _ = copy_back(isolation, call, None, credential).await;
+                }
                 return Err(error);
             }
         };
@@ -445,12 +485,7 @@ impl CodexProvider {
             Invocation::Resume(thread) => Some(thread.to_owned()),
             Invocation::New => None,
         });
-        if let Err(error) = isolation.pull(call, thread.as_deref()).await {
-            if matches!(error, ProviderError::CredentialUnusable) {
-                credential.unknown("the agent's auth.json could not be copied back");
-            }
-            return Err(error);
-        }
+        copy_back(isolation, call, thread.as_deref(), credential).await?;
         if timed_out {
             return Err(ProviderError::Timeout);
         }
@@ -474,6 +509,25 @@ impl CodexProvider {
             .unwrap_or_else(PoisonError::into_inner)
             .get(&call.job_id)
             .and_then(|running| running.cancelled_at)
+    }
+}
+
+/// [`Isolation::pull`] with its outcome recorded on the credential: back in the staging home, or unknown.
+async fn copy_back(
+    isolation: &Isolation,
+    call: &ProviderCall,
+    thread: Option<&str>,
+    credential: &mut JobCredential<'_>,
+) -> Result<(), ProviderError> {
+    match isolation.pull(call, thread).await {
+        Ok(()) => {
+            credential.returned();
+            Ok(())
+        }
+        Err(error) => {
+            credential.unknown("the agent's auth.json could not be copied back");
+            Err(error)
+        }
     }
 }
 
@@ -522,6 +576,14 @@ fn absolute_binary(binary: &Path) -> Result<String, ProviderError> {
 
 fn lossy(value: OsString) -> String {
     value.to_string_lossy().into_owned()
+}
+
+/// Removes a runner-owned directory tree; absent is fine.
+fn remove_dir_all(dir: &Path) -> io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
+    }
 }
 
 fn create_dir(dir: &Path) -> io::Result<()> {

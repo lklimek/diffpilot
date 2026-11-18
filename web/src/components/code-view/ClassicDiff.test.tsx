@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { DiffResponse, PendingComment } from "../../api/generated/types";
@@ -137,6 +137,26 @@ describe("ClassicDiff", () => {
     const base = screen.getByRole("button", { name: "Your pending comment at removed line 54" });
     expect(base.closest("[data-diff-line]")).toHaveAttribute("data-diff-line", "removed");
     await userEvent.click(head);
-    expect(screen.getByText("Bounded?")).toBeVisible();
+    const panel = screen.getByRole("list", { name: "Your pending comments at line 96" });
+    expect(within(panel).getByText("Bounded?")).toBeVisible();
+  });
+
+  it("keeps a row with a 24 px comment marker aligned with its line numbers", () => {
+    const comment: PendingComment = {
+      id: "c1",
+      thread_id: "t1",
+      path: "src/rpc/client.rs",
+      kind: "line",
+      side: "head",
+      start_line: null,
+      line: 97,
+      body: "Bounded?",
+    };
+    render(<ClassicDiff diff={diff} comments={[comment]} />);
+    const row = screen
+      .getByRole("button", { name: "Your pending comment at line 97" })
+      .closest("[data-diff-line]")!;
+    expect(row.className).toMatch(/(^|\s)min-h-6(\s|$)/);
+    expect(row.className).toMatch(/(^|\s)items-center(\s|$)/);
   });
 });

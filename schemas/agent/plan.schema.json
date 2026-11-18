@@ -17,7 +17,7 @@
             "type": "string"
           },
           "classification": {
-            "description": "Classification. `behavioural`: Changes observable behaviour. `api_contract`: Changes a public API or contract. `new_code`: Adds new code. `refactor_pure`: Claimed refactor without behaviour change. `move`: Moves code. `rename`: Renames identifiers. `test`: Test code. `docs_comments`: Documentation and comments. `generated_mechanical`: Generated or mechanical changes. `config_build`: Configuration and build. `dependency`: Dependency changes. `other`: Anything else.",
+            "description": "Classification. `behavioural`: Changes observable behaviour. `api_contract`: Changes a public API or contract. `new_code`: Adds new code. `refactor_pure`: Claimed refactor without behaviour change. `move`: Moves code. `rename`: Renames identifiers. `docs_comments`: Documentation and comments. `generated_mechanical`: Generated or mechanical changes. `config_build`: Configuration and build. `dependency`: Dependency changes. `other`: Anything else.",
             "type": "string",
             "enum": [
               "behavioural",
@@ -26,7 +26,6 @@
               "refactor_pure",
               "move",
               "rename",
-              "test",
               "docs_comments",
               "generated_mechanical",
               "config_build",

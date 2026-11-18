@@ -203,3 +203,39 @@ describe("NavList", () => {
     expectTrustWording(container.textContent ?? "");
   });
 });
+
+describe("NavList: the user's questions", () => {
+  it("marks steps with the user's questions: count and tooltip", () => {
+    renderNav({ current: { block: "step", step_id: "f1.5" }, questionCounts: { "f1.5": 2, "f1.2": 1 } });
+    const marker = screen.getByText("?2");
+    expect(marker).toHaveAccessibleDescription("2 questions asked on this step");
+    expect(marker).toHaveAttribute("tabindex", "0");
+    expect(screen.getByText("?1")).toHaveAccessibleDescription("1 question asked on this step");
+    expect(screen.getByRole("button", { name: "Step 5: Retry allowed?, 2 questions asked" })).toBeVisible();
+    expect(screen.getAllByText(/^\?\d$/)).toHaveLength(2);
+  });
+
+  it("one entry with the count opens the questions page; while open, it is the current row", async () => {
+    const onOpen = vi.fn();
+    const { rerender } = renderNav({ questions: { count: 3, open: false, onOpen } });
+    const row = screen.getByRole("button", { name: "Your questions and answers: 3" });
+    expect(row).toHaveAccessibleDescription(/only you see them/i);
+    await userEvent.click(row);
+    expect(onOpen).toHaveBeenCalledOnce();
+    rerender(
+      <NavList
+        flows={tour.flows}
+        quiet={tour.quiet}
+        ticked={[]}
+        current={{ block: "pr_context" }}
+        onSelect={() => {}}
+        questions={{ count: 3, open: true, onOpen }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Your questions and answers: 3" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByRole("button", { name: "PR context" })).not.toHaveAttribute("aria-current");
+  });
+});

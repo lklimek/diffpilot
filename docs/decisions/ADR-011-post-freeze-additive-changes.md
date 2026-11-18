@@ -164,9 +164,19 @@ These remaining statements in `docs/design-brief.md` are superseded:
 | `POST /api/v1/analyses/{id}/flows/{flow}/request`; `PUT /api/v1/analyses/{id}/background` (`{enabled}`) | CSRF, tenant and moved-head checks; newest demand precedes rank-ordered background work, never interrupts a claimed job. |
 | `analyses.background_analysis`; `flow_work` requests/failures | Single rewritten pre-deployment migration; lazy scheduling adds no stored plan/flow fields or runner protocol change. Coordinator recreates the local DB. |
 | Nullable/optional assessment `headline`, `basis_note`, `not_checked`, `origin`, `blocking`; concise closed shape `{risk:"low", reason}` | Low assessments contain one sentence; full details and action requirements remain mandatory above low. Existing full assessments still parse. |
+| `flow_work.auto_retries` (migration `0002_flow_auto_retries.sql`, in-place, data kept) | A failed flow is retried automatically at most twice (owner decision, 2026-11-18), then stays failed until requested. |
+| No new state: an analysis without admitted flow work stays `running {done,total}` without `stage`, with no driver task | Unrequested or failed-for-good flows no longer hold a task and the diff in memory; `finished` keeps meaning "every flow analysed". `missed_by_llm` is recorded for comments in analysed flows before `finished`. |
+| `Flow.analysis_status.message` of a failed flow job: `The flow analysis failed. <cause sentence>` + `It will be tried again automatically.` while an automatic retry is left, in a failed analysis `Retry the analysis; then this flow can be analysed again.` (failed on configuration: `Ask the administrator to fix the server configuration.`), in a cancelled one `Start a new analysis to analyse this flow.`, else `Retry this flow.` | The typed cause of the failed call is kept (same fixed sentences as Settings); an unusable credential fails the analysis with the sign-in sentence. |
+| Question failure sentences for a cancelled `ask` job name the cause (analysis cancelled, PR session removed, other) | A failed pipeline or Retry no longer cancels Ask jobs; the "analysed again" sentence is used only when the PR session was removed. |
+| Unexplained rows keep the planned lines of failed flows (with `too_large_for_prompt` when not sent) | Only flows still waiting are left out of Unexplained; failed ones stay listed as not explained. |
+| `AnalysisState::Running.idle` (boolean, `false` when absent), derived on read from `FlowWork::parked` | Owner decision 2026-11-18: flows are analysed on request (a new analysis starts with `background_analysis` false), so a client must tell "nothing is being analysed" from "working between two jobs"; an `analysis` event is sent when it changes. |
+| A requested flow that fails keeps its demand for its automatic retries (2 per flow), also with background analysis off; the "tried again automatically" sentence only while the analysis is live | The retry rule is the same for requested and background flows; a flow nobody requested never runs with background off. |
+| `progress.estimate`/`percent` with background off: plan and PR context only, null once the review is ready | A whole-run figure is misleading when flows run on request; per-flow size is `Flow.planned.ranges`. |
+| Optional `ResolvePrResponse.size {changed_lines, changed_files}`, `planning_estimate` (`AnalysisEstimate`) | Home confirms a lookup before starting: size and the plan + PR context estimate for every pull request, not only above the `size_warning` threshold. |
+| `ResolvePrResponse.analysis` is the latest analysis in any language, preferring a usable (not cancelled) one, then the user's language; no new field (`AnalysisSummary.language` exists) | After a language change the existing analysis stayed invisible and a second full analysis was started; the per-language conflict on start is unchanged. |
 
 Existing `analysis` SSE events publish availability and scheduling changes; clients refetch the Tour.
-A failed flow stays explicitly failed until requested again; accepted siblings remain usable. Retry starts
+A failed flow stays explicitly failed until requested again or retried automatically (twice at most); accepted siblings remain usable. Retry starts
 another analysis job round at a serial boundary, preserving accepted documents and PR/private sessions.
 
 ## Flow file output (owner approval, 2026-11-17)
@@ -185,3 +195,14 @@ another analysis job round at a serial boundary, preserving accepted documents a
 | `DeletedBlock.context_only?: number[]` | Rule-covered base lines within removed/replaced blocks; applies the same main-view preference. |
 
 No stored document or database schema changes. Step ids and numbers remain unchanged; the top-to-bottom diagram follows the persisted walk order at every viewport width.
+
+### 2026-11-18 — concise flow connections and production-only classifications (owner approved)
+
+| Change | Purpose |
+|---|---|
+| Tagged flow `called_by` / `next` optional; absent edges mean reading order | The shared parser reconstructs Inspector connections from edge endpoints, step numbers and labels; explicit extra prose is kept. Stored/Tour field shapes are unchanged. |
+| Remove `test` from `Classification`, plan schema and generated browser type | Test-only flows are outside review scope; the model must not be offered an always-rejected value. No compatibility requirement before deployment. |
+
+The early-output route is retained: Ask publishes a checked answer before session archival
+and runner cleanup finish. `Finished` remains authoritative, including cancellation and
+attempt requeue reconciliation; this does not require a forced compaction turn.

@@ -21,6 +21,11 @@ use crate::scrub::Scrubber;
 pub(crate) const SESSIONS_DIR: &str = "sessions";
 /// Largest rollout copied in either direction.
 pub(crate) const MAX_ROLLOUT_BYTES: u64 = 256 * 1024 * 1024;
+/// Most rollouts of one thread copied back from a job and kept in an archive (a thread has one; a second
+/// appears when a job spans midnight).
+pub(crate) const MAX_ROLLOUT_FILES: usize = 4;
+/// Most bytes of one thread's rollouts copied back from a job and kept in an archive.
+pub(crate) const MAX_ROLLOUTS_BYTES: u64 = 512 * 1024 * 1024;
 /// Longest thread id accepted (Codex uses UUIDs).
 const MAX_THREAD_ID_CHARS: usize = 64;
 
@@ -29,6 +34,14 @@ pub(crate) fn valid_thread_id(thread: &str) -> bool {
     !thread.is_empty()
         && thread.len() <= MAX_THREAD_ID_CHARS
         && thread.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-')
+}
+
+/// Whether rollouts of these sizes may be copied: each within [`MAX_ROLLOUT_BYTES`], together within
+/// [`MAX_ROLLOUT_FILES`] and [`MAX_ROLLOUTS_BYTES`]. Decided from sizes alone, before anything is read.
+pub(crate) fn within_limits(sizes: &[u64]) -> bool {
+    sizes.len() <= MAX_ROLLOUT_FILES
+        && sizes.iter().all(|size| *size <= MAX_ROLLOUT_BYTES)
+        && sizes.iter().sum::<u64>() <= MAX_ROLLOUTS_BYTES
 }
 
 /// Copies the stored rollout of `thread` into `codex_home`; [`ProviderError::SessionUnavailable`] when the store
@@ -60,7 +73,8 @@ pub(crate) fn restore(
 }
 
 /// Saves the rollout of `thread` from `codex_home` into `store`, scrubbed with `scrubber`; whatever the store
-/// held before is replaced. Fails when the per-job copy has no valid rollout of that thread.
+/// held before is replaced. Fails when the per-job copy has no valid rollout of that thread, or more of them
+/// than an archive holds ([`within_limits`]).
 pub(crate) fn save(
     codex_home: &Path,
     thread: &str,
@@ -77,6 +91,13 @@ pub(crate) fn save(
             io::ErrorKind::NotFound,
             "no rollout of the thread",
         ));
+    }
+    let sizes = rollouts
+        .iter()
+        .map(|rel| Ok(source.join(rel).symlink_metadata()?.len()))
+        .collect::<io::Result<Vec<u64>>>()?;
+    if !within_limits(&sizes) {
+        return Err(invalid("the thread's rollouts exceed the archive limits"));
     }
     let mut turns = 0;
     for rel in &rollouts {

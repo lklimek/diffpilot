@@ -169,6 +169,8 @@ pub struct Worker {
     last_sweep: Option<Instant>,
     /// The claudius skills, refreshed between jobs.
     skills: Option<Arc<Skills>>,
+    /// Free space the scratch filesystem must keep for a claim.
+    disk_reserve: Option<crate::scratch::Reserve>,
 }
 
 impl std::fmt::Debug for Worker {
@@ -201,7 +203,14 @@ impl Worker {
             session_retention: None,
             last_sweep: None,
             skills: None,
+            disk_reserve: None,
         }
+    }
+
+    /// Takes no job while the scratch filesystem has less free space than `reserve` asks.
+    pub fn with_disk_reserve(mut self, reserve: crate::scratch::Reserve) -> Self {
+        self.disk_reserve = Some(reserve);
+        self
     }
 
     /// Refreshes the claudius skills between jobs at their interval.
@@ -216,21 +225,34 @@ impl Worker {
         self
     }
 
-    /// Claims and runs jobs until `shutdown` completes; a running job is then stopped and cleaned up.
+    /// Claims and runs jobs until `shutdown` completes; a running job is then cancelled, and its stop, sweep and
+    /// credential copy-back end before this returns (waited for at most three stop sequences, which stays below
+    /// the container's stop grace of 60 s).
     pub async fn run(mut self, shutdown: impl Future<Output = ()>) {
-        tokio::pin!(shutdown);
+        tokio::select! {
+            () = shutdown => {}
+            () = self.serve() => {}
+        }
+        // Dropping the loop cancelled its attempt; a detached one (process isolation) is still finishing.
+        let wait = (self.timing.term_grace + self.timing.kill_and_cleanup) * 3;
+        if tokio::time::timeout(wait, self.executor.settled())
+            .await
+            .is_err()
+        {
+            tracing::error!(
+                "the running job did not finish stopping before the runner exits; a Codex credential it refreshed is recovered at the next start"
+            );
+        }
+    }
+
+    /// Claims and runs jobs, forever.
+    async fn serve(&mut self) {
         loop {
             self.remove_expired_sessions();
             if let Some(skills) = &self.skills {
-                tokio::select! {
-                    () = &mut shutdown => return,
-                    () = skills.refresh_if_due() => {}
-                }
+                skills.refresh_if_due().await;
             }
-            let polled = tokio::select! {
-                () = &mut shutdown => return,
-                polled = self.poll_once() => polled,
-            };
+            let polled = self.poll_once().await;
             match polled {
                 Ok(Some(end)) => {
                     tracing::trace!(?end, "claiming the next job at once");
@@ -244,23 +266,31 @@ impl Worker {
                 }
                 Err(error) => tracing::warn!(%error, "claim failed; retrying"),
             }
-            tokio::select! {
-                () = &mut shutdown => return,
-                () = sleep(self.timing.idle_poll) => {}
-            }
+            sleep(self.timing.idle_poll).await;
         }
     }
 
-    /// One claim; runs the claimed job to its end. `None` when nothing was runnable.
+    /// One claim; runs the claimed job to its end. `None` when nothing was runnable. Below the scratch
+    /// filesystem's reserve the claim offers no credential, so the server hands out no job but still sends its
+    /// session drops.
     pub async fn poll_once(&mut self) -> Result<Option<JobEnd>, ClientError> {
         // The previous attempt (and its credential copy-back) is over before the next claim.
         self.executor.settled().await;
-        let request = ClaimRequest {
-            runner_id: self.runner_id.clone(),
-            credentials: vec![CredentialStatus {
+        let takes_jobs = self
+            .disk_reserve
+            .as_mut()
+            .is_none_or(crate::scratch::Reserve::allows_claim);
+        let credentials = if takes_jobs {
+            vec![CredentialStatus {
                 credential: self.executor.credential().clone(),
                 usable: (self.credential_usable)(),
-            }],
+            }]
+        } else {
+            Vec::new()
+        };
+        let request = ClaimRequest {
+            runner_id: self.runner_id.clone(),
+            credentials,
             dropped_sessions: self.dropped_sessions.clone(),
         };
         let sent = Instant::now();

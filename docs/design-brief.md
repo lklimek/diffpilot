@@ -608,3 +608,36 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
 ### Owner-approved amendment — 2026-11-18: nothing behaviour-changing is hidden
 
 The rule above covers only plain material, read from the Rust lexer's tokens (never raw text); what the rule cannot read with certainty is not covered. Covered (context: hidden in the main view by default, sent to the LLM, no coverage duty): `//`, `///`, `//!` lines; block comments when every line they span changed and every changed line of their hunk, on both sides, is comment; a single-line private `use` without `as` or `*`, alone on its line at the top level of the file after `;`, `}` or the file start, binding only names that no other `use` of either side binds to another path, that no item of the file declares, that are not prelude names and that the other side either binds by a plain `use` of the same path (a moved or regrouped import) or uses nowhere except as a `use` binding (so an extern-prelude crate, a `#[macro_use]` macro, a derive, an attribute or a constant in a pattern cannot be re-pointed unseen), in a file with no glob import on either side. Whitespace-only lines, as GitHub's "hide whitespace" shows them: a changed Rust line whose lexer tokens equal those of its exactly paired changed line on the other side (only indentation, trailing whitespace, line endings or spacing between tokens differ; punctuation jointness counts, so `a - -b` vs `a--b` stays changed; never a line touched by a multi-line string, a block comment or a macro token tree) is shown in the main view as ordinary unchanged code: no change mark, its base counterpart not shown as removed, not behind the switch and not counted as a changed line; it is sent to the LLM as context without coverage duty. Re-indented code inside a new `if` reads as unchanged while the wrapper lines are marked; pairing work is bounded per file, beyond it the lines stay changed. Never covered (shown, and in a flow or Unexplained): `mod name;` and `extern crate` (they add or remove whole files or crates); visibility-qualified or attributed declarations, also when the visibility or attribute is on the previous line; `use` inside a function, block or inline module; `as` aliases; globs; any line inside a macro token tree (`name! { … }`, `r#name! { … }`, `macro_rules!` bodies); block-comment delimiters that switch code off or on; anything when the other side was not read. Reading a finished analysis again under these rules never rejects its stored plan or flows: changed lines they do not cover are listed under Unexplained. Identical moves are quiet rows only when they leave a file that still exists at head for another file, or as a pure rename; their lines are sent to the LLM as context with the move fact. A reorder within one file, renamed or not, and a move out of a deleted file (possibly a rename git did not pair) stay with the agent and keep their move fact. The LLM is asked to cover a context line when it changes behaviour. Residual risk: a covered plain `use` (trait method resolution), a doc comment read by a derive macro or run as a doctest, or a quiet move can still change behaviour; only the LLM, asked to speak up, sees them. A source file left as a stub after its code moved to a new file still gives a quiet move. A renamed file with changed lines on both sides counts as two paths in the Unexplained file count. Inline Rust `#[cfg(test)]` code in production files stays with the agent until a syntax plugin delimits it.
+
+### Owner-approved amendment — 2026-11-18: provenance tags, Ask below the field, collapsed context code
+
+- **No-questions sentence.** "The LLM raised no questions. That is not evidence of no defects." is no longer
+  rendered; an empty Questions section is hidden like every other empty explanatory section. Supersedes that
+  sentence in §1 (Silence is not safety) and §4.3 (Inspector, section 6).
+- **Provenance tags.** The caption "LLM analysis unless marked otherwise" is removed everywhere. Explanatory
+  text written by the LLM (sections, the decision sentence, pattern descriptions, thread status, marker
+  popovers) carries a small "LLM" tag (tooltip: written by the LLM, not checked); LLM-written titles and labels
+  carry no tag and keep their own labels and tooltips (§3: no badge means LLM analysis). Content taken from
+  GitHub review threads carries a "GitHub" tag. A tag names the source, never correctness; deterministic facts keep
+  their fact badges. The step's decision sentence under its title carries the "LLM" tag. Supersedes the
+  one-line-per-panel rule in §1 (A badge names exactly what was checked) and the caption in the flow
+  introduction block of §4.3.
+- **Ask.** Answers render below the question field, newest first, with pending and failed states in the same
+  place; each keeps its LLM answer label and its author label ("Asked by you"). Its tooltip says the agent was told
+  not to run code, never that nothing was executed. The answers block has its own scroll in the dock, so
+  Feedback and Comment stay in view. Supersedes "answers stay pinned to the step" (§4.3 Dock, Ask) as to their
+  place.
+- **Context code.** In the context part of a step (impact outside the diff), each code block starts collapsed
+  behind a one-line header naming its file and lines; its explanation stays visible. The expanded state is not
+  carried to another step. Supersedes "impact outside the diff inline under the step as real code" (§4.3 Step
+  block).
+- **Resume.** The button that returns to a review the user has already started (saved review state) reads
+  "Resume review" (as §4.1), on Home and on the progress screen; "Open review" remains for a review the user has
+  not started. Supersedes "Open review" for a started review in §4.2.
+- **Comment drafts.** An unsent comment text is kept per line in the browser tab (sessionStorage, per user login
+  and analysis) so navigation and a reload do not lose it. It is dropped only when the comment is added, when its
+  text is cleared, or on an explicit sign-out by that user (that login's drafts). An expired session or a 401
+  keeps it (also a comment refused as unauthenticated), and the same user signing in again on the tab gets it
+  back. A post whose outcome is unknown is kept the same way with its idempotency key and comes back locked
+  ("may already be in your pending review"): Retry sends it with the same key, so it cannot be added twice;
+  Discard makes the text editable again. The composer's Close and Escape keep the draft. Supersedes "No local drafts" (§2 v1, Comments) and "Local comment drafts" (§2 Non-goals).

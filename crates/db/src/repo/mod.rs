@@ -63,6 +63,15 @@ pub mod testing {
         Db::open_with(&dir.join("smart-review.sqlite"), busy_timeout).await
     }
 
+    /// Makes every later write of an in-memory `db` fail while reads still work, as on a full disk
+    /// ([`Db::in_memory`] has one connection, which keeps the setting).
+    pub async fn refuse_writes(db: &Db) -> Result<(), DbError> {
+        sqlx::query("PRAGMA query_only = ON")
+            .execute(&db.pool)
+            .await?;
+        Ok(())
+    }
+
     /// The write lock held on its own connection until dropped (rolled back), as by a concurrent writer.
     #[derive(Debug)]
     pub struct WriteLock(
@@ -79,8 +88,16 @@ pub mod testing {
 /// How long a writer waits for the write lock before failing with `SQLITE_BUSY`.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The single schema file, rewritten in place until deployment.
-const INIT_SQL: &str = include_str!("../../migrations/0001_init.sql");
+/// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
+/// changes that upgrade an existing database in place.
+const MIGRATIONS: [(i64, &str, &str); 2] = [
+    (1, "init", include_str!("../../migrations/0001_init.sql")),
+    (
+        2,
+        "flow_auto_retries",
+        include_str!("../../migrations/0002_flow_auto_retries.sql"),
+    ),
+];
 
 /// Starts a transaction that may write: `BEGIN IMMEDIATE` takes the write lock at once and waits on the busy
 /// timeout. A deferred transaction that reads and then writes fails at once with `SQLITE_BUSY` when another
@@ -102,6 +119,25 @@ pub(crate) async fn read_tx(pool: &SqlitePool) -> Result<Transaction<'static, Sq
     )]
     let tx = pool.begin_with("BEGIN DEFERRED").await?;
     Ok(tx)
+}
+
+/// Applies the first `count` of [`MIGRATIONS`] that the database does not have yet.
+async fn migrate(pool: &SqlitePool, count: usize) -> Result<(), DbError> {
+    let migrations = MIGRATIONS
+        .iter()
+        .take(count)
+        .map(|(version, description, sql)| {
+            Migration::new(
+                *version,
+                (*description).into(),
+                MigrationType::Simple,
+                sql.into_sql_str(),
+                false,
+            )
+        })
+        .collect();
+    Migrator::with_migrations(migrations).run(pool).await?;
+    Ok(())
 }
 
 /// The tenant every v1 row belongs to.
@@ -153,14 +189,7 @@ impl Db {
     }
 
     async fn migrated(pool: SqlitePool) -> Result<Self, DbError> {
-        let init = Migration::new(
-            1,
-            "init".into(),
-            MigrationType::Simple,
-            INIT_SQL.into_sql_str(),
-            false,
-        );
-        Migrator::with_migrations(vec![init]).run(&pool).await?;
+        migrate(&pool, MIGRATIONS.len()).await?;
         Ok(Self { pool })
     }
 

@@ -1,21 +1,11 @@
 #!/bin/bash
-# Runner preflight (ADR-013), run as uid runner by the supervisor before the runner; refuses to start (exit 78):
-# 1. unless the per-job CODEX_HOME root is its own bounded filesystem mounted nosuid, nodev, noexec;
-#   SR_CODEX_HOMES_MAX_BYTES   upper bound of its capacity (default 17179869184 = 16 GiB)
-#   SR_CODEX_HOMES_MAX_INODES  upper bound of its inodes (default 1048576)
-#   SR_CODEX_HOMES_ALLOW_TMPFS 1 accepts a tmpfs (local stack only: a tmpfs loses a rotated credential on a crash,
-#                              ADR-003), and only with SR_CODEX_HOMES_TMPFS_PUBLIC_URL = the server's public URL
-#                              on localhost; production accepts only ext4
-# 2. unless the container's networks are isolated: no default route, and no gateway candidate (the first address of
-#    every attached subnet, every route's next hop, IPv4 and IPv6) answers a TCP connect, not even with a refusal.
-#    An Engine older than 28.0 ignores the runner network's `isolated` gateway mode and leaves the host's address
-#    there. SR_RUNNER_DEV_HOST_GATEWAY=1 skips this (development smoke only; never in a deployment).
+# Runner preflight (ADR-013), run as uid runner by the supervisor before the runner; refuses to start (exit 78)
+# unless the container's networks are isolated: no default route, and no gateway candidate (the first address of
+# every attached subnet, every route's next hop, IPv4 and IPv6) answers a TCP connect, not even with a refusal.
+# An Engine older than 28.0 ignores the runner network's `isolated` gateway mode and leaves the host's address there.
+# SR_RUNNER_DEV_HOST_GATEWAY=1 skips this (development smoke only; never in a deployment).
 # Then executes its arguments (the runner), keeping stdin, the supervisor's control socket.
 set -euo pipefail
-state="${SR_RUNNER_STATE_DIR:-/var/lib/smart-review-runner}"
-homes="${state}/codex-homes"
-max_bytes="${SR_CODEX_HOMES_MAX_BYTES:-17179869184}"
-max_inodes="${SR_CODEX_HOMES_MAX_INODES:-1048576}"
 probe_ports=(22 53 80 443 3000 3001 8080)
 
 refuse() {
@@ -23,30 +13,7 @@ refuse() {
   exit 78
 }
 
-# --- 1. bounded codex-homes ---------------------------------------------------------------------------------------
-mountpoint -q "$homes" || refuse "$homes is not a mount point"
-[[ "$(stat -c %d "$homes")" != "$(stat -c %d "$state")" ]] || refuse "$homes is on the state volume's filesystem"
-fstype="$(stat -f -c %T "$homes")"
-case "$fstype" in
-  ext2/ext3) ;;
-  tmpfs)
-    [[ "${SR_CODEX_HOMES_ALLOW_TMPFS:-0}" == 1 ]] || refuse "$homes is a tmpfs (not persistent)"
-    [[ "${SR_CODEX_HOMES_TMPFS_PUBLIC_URL:-}" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?/?$ ]] ||
-      refuse "$homes is a tmpfs and the public URL '${SR_CODEX_HOMES_TMPFS_PUBLIC_URL:-}' is not on localhost"
-    ;;
-  *) refuse "$homes is $fstype, not the bounded ext4 filesystem" ;;
-esac
-options="$(awk -v m="$homes" '$5 == m { o = $6 } END { print o }' /proc/self/mountinfo)"
-for option in nosuid nodev noexec; do
-  [[ ",$options," == *",$option,"* ]] || refuse "$homes is mounted without $option (options: $options)"
-done
-bytes=$(($(stat -f -c %b "$homes") * $(stat -f -c %S "$homes")))
-((bytes <= max_bytes)) || refuse "$homes holds $bytes bytes, more than SR_CODEX_HOMES_MAX_BYTES=$max_bytes"
-inodes="$(stat -f -c %c "$homes")"
-((inodes <= max_inodes)) || refuse "$homes has $inodes inodes, more than SR_CODEX_HOMES_MAX_INODES=$max_inodes"
-echo "runner preflight: $homes is a bounded $fstype filesystem ($bytes bytes, $inodes inodes, $options)" >&2
-
-# --- 2. network isolation -----------------------------------------------------------------------------------------
+# --- network isolation --------------------------------------------------------------------------------------------
 not_isolated() {
   refuse "the runner's network is not isolated: $1. Docker Engine 28.0 or newer is required, with the runner network option com.docker.network.bridge.gateway_mode_ipv4=isolated (and _ipv6) of deploy/compose.yaml"
 }

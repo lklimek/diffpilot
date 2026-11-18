@@ -263,3 +263,35 @@ fn archived_turn_count_uses_completed_tasks_not_token_events() {
         None
     );
 }
+
+#[test]
+fn save_refuses_more_rollouts_of_the_thread_than_an_archive_holds() {
+    let d = dirs();
+    for hour in 10..15 {
+        let name = format!("rollout-2026-11-16T{hour}-00-00-{THREAD}.jsonl");
+        write(&d.home.join(SESSIONS_DIR).join(DAY).join(name), "{}\n");
+    }
+    assert!(save(&d.home, THREAD, &d.store, &Scrubber::default()).is_err());
+    assert!(!d.store.exists(), "nothing is archived");
+}
+
+#[test]
+fn save_refuses_rollouts_over_the_total_cap_before_copying() {
+    let d = dirs();
+    // Sparse files, each below the per-file cap: nothing is allocated and nothing may be read.
+    for hour in 10..13 {
+        let name = format!("rollout-2026-11-16T{hour}-00-00-{THREAD}.jsonl");
+        let path = d.home.join(SESSIONS_DIR).join(DAY).join(name);
+        write(&path, "");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(200 * 1024 * 1024)
+            .unwrap();
+    }
+    let started = std::time::Instant::now();
+    assert!(save(&d.home, THREAD, &d.store, &Scrubber::default()).is_err());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(!d.store.exists(), "nothing is archived");
+}

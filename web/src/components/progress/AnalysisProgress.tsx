@@ -31,10 +31,12 @@ interface AnalysisProgressProps {
   /** State of the analysis (brief §4.2). */
   state: AnalysisState;
   reviewReady?: boolean;
+  /** The user has started this review (`has_my_state`): "Resume review", else "Open review". */
+  reviewStarted?: boolean;
   /** Whole-run facts; absent on older servers. */
   progress?: RunProgress;
   usage?: UsageTotals | null;
-  /** Where "Open review" leads once planning and PR context are accepted. */
+  /** Where "Resume review" / "Open review" leads once planning and PR context are accepted. */
   reviewHref: string;
   /** A cancel or retry request is running: the actions are disabled. */
   busy: boolean;
@@ -48,7 +50,8 @@ interface AnalysisProgressProps {
   activity?: ProgressActivity;
 }
 
-function label(state: AnalysisState): string {
+/** The headline; `planned` says whether the plan was accepted (null: not known from the stage data). */
+function label(state: AnalysisState, planned: boolean | null): string {
   switch (state.state) {
     case "planning":
       return "Planning flows…";
@@ -57,8 +60,10 @@ function label(state: AnalysisState): string {
     case "paused":
       return pausedText(state);
     case "failed":
-      return state.flow
-        ? `Analysis of flow “${state.flow.title}” failed`
+      if (state.flow) return `Analysis of flow “${state.flow.title}” failed`;
+      if (planned === null) return "The analysis failed";
+      return planned
+        ? "The analysis failed after its flows were planned"
         : "The analysis failed before any flow was planned";
     case "finished":
       return `${state.total} of ${plural(state.total, "flow")} analysed`;
@@ -97,7 +102,11 @@ function stageWork(stage: AnalysisStage, done: number | null, total: number | nu
 function stageText(state: AnalysisState): string | null {
   if (state.state !== "planning" && state.state !== "running") return null;
   const { stage } = state;
-  if (!stage) return "Between two jobs: the server starts the next one.";
+  // A running analysis without a stage may be parked (nothing admitted): no claim that work goes on.
+  if (!stage)
+    return state.state === "running"
+      ? "No flow job is running."
+      : "Between two jobs: the server starts the next one.";
   const [done, total] = state.state === "running" ? [state.done, state.total] : [null, null];
   const work = stageWork(stage, done, total);
   if (stage.started_at === null) return `Waiting for the runner; next: ${work}`;
@@ -147,10 +156,12 @@ function Bar({
   state,
   working,
   progress,
+  planned,
 }: {
   state: AnalysisState;
   working: boolean;
   progress?: RunProgress;
+  planned: boolean | null;
 }) {
   const counted = progress
     ? progress.percent === null
@@ -178,10 +189,10 @@ function Bar({
       aria-valuenow={counted?.now}
       aria-valuetext={
         progress && counted
-          ? percentLabel(counted.now) + label(state)
+          ? percentLabel(counted.now) + label(state, planned)
           : state.state === "planning"
             ? "Planning flows"
-            : label(state)
+            : label(state, planned)
       }
       className={`flex h-3 overflow-hidden rounded-md border bg-surface-2 ${BAR_LOOK[state.state]}`}
     >
@@ -198,6 +209,7 @@ function Bar({
 export function AnalysisProgress({
   state,
   reviewReady,
+  reviewStarted = false,
   progress,
   reviewHref,
   usage,
@@ -209,6 +221,7 @@ export function AnalysisProgress({
   activity,
 }: AnalysisProgressProps) {
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const planned = reviewReady ? true : progress ? progress.planning.state === "done" : null;
   const userPaused = state.state === "paused" && state.reason === "user";
   const done =
     state.state === "running" || state.state === "paused" ? state.done : (progress?.flows.done ?? 0);
@@ -216,7 +229,7 @@ export function AnalysisProgress({
   const live = state.state !== "finished" && state.state !== "cancelled";
   const stage =
     reviewReady && state.state === "running" && !state.stage
-      ? "No flow job is running. Open the review to choose a flow or change background analysis."
+      ? `No flow job is running. ${reviewStarted ? "Resume" : "Open"} the review to choose a flow or change background analysis.`
       : stageText(state);
   const started =
     (state.state === "planning" || state.state === "running") && state.stage ? state.stage.started_at : null;
@@ -238,7 +251,7 @@ export function AnalysisProgress({
         <p className="text-[15px] font-semibold">
           {reviewReady && state.state === "running"
             ? `${state.done} of ${state.total} flows analysed. The review is open.`
-            : label(state)}
+            : label(state, planned)}
         </p>
         {stage && <p className="text-[13px]">{stage}</p>}
         {silent ? (
@@ -250,7 +263,7 @@ export function AnalysisProgress({
       {progress && <StageList progress={progress} />}
       <div className="flex items-center gap-4">
         <div className="min-w-0 flex-1">
-          <Bar state={state} working={working} progress={progress} />
+          <Bar state={state} working={working} progress={progress} planned={planned} />
         </div>
         <span className="flex flex-none flex-wrap gap-2">
           {live && state.state !== "failed" && (userPaused ? onResume : onPause) && (
@@ -297,9 +310,15 @@ export function AnalysisProgress({
             </Tooltip>
           )}
           {(state.state === "finished" || reviewReady) && (
-            <Tooltip tip="Opens the review of this analysis.">
+            <Tooltip
+              tip={
+                reviewStarted
+                  ? "Returns to your review of this analysis where you left it."
+                  : "Opens the review of this analysis."
+              }
+            >
               <a href={reviewHref} className={buttonClass("primary")}>
-                Open review
+                {reviewStarted ? "Resume review" : "Open review"}
               </a>
             </Tooltip>
           )}

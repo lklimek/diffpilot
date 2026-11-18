@@ -384,7 +384,7 @@ fn no_floats_in_job_types() {
     }
 }
 
-/// The validated final output travels before compaction, scrubbed and per attempt.
+/// The validated final output travels before session archival, scrubbed and per attempt.
 #[test]
 fn output_ready_is_sent_per_attempt() {
     let ready = OutputReady {

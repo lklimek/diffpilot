@@ -33,6 +33,8 @@ const SK = ts.SyntaxKind;
 const RULES = JSON.parse(readFileSync(new URL("wording-rules.json", import.meta.url), "utf8"));
 const WORDS = new RegExp(RULES.words, "giu");
 const PERCENT = new RegExp(RULES.percent, "gu");
+// Claims the UI cannot back (the agent is only told not to run code); .json files hold agent output.
+const CLAIMS = new RegExp(RULES.claims, "giu");
 const SLOT = "{}";
 // Exempts the percentage rule (never the words) on its line; must be in a comment, with a reason.
 const ALLOW = /wording-check: allow[ \t]+[^\s*]/;
@@ -167,6 +169,7 @@ function scan(file) {
     };
     for (const match of joined.matchAll(WORDS)) report(match, false);
     for (const match of joined.matchAll(PERCENT)) report(match, true);
+    if (ext !== ".json") for (const match of joined.matchAll(CLAIMS)) report(match, false);
   }
   return found;
 }

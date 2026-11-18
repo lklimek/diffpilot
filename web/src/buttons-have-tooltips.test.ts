@@ -13,6 +13,18 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
       "Line numbers: one per displayed line (hundreds); each has an aria-label and a native title naming the action.",
   },
   {
+    file: "components/code-view/markers.tsx",
+    match: 'data-mark="remark"',
+    reason:
+      "LLM remark marker: hover and focus show its popover with the remark text, which serves as its tooltip.",
+  },
+  {
+    file: "components/code-view/markers.tsx",
+    match: 'data-mark="thread"',
+    reason:
+      "GitHub thread marker: hover and focus show its popover with the thread excerpt, which serves as its tooltip.",
+  },
+  {
     file: "components/inspector/Collapsible.tsx",
     match: "aria-expanded",
     reason: "Section disclosure header: named by its section title, its expanded state is announced.",
@@ -24,12 +36,12 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
   },
   {
     file: "components/nav/NavList.tsx",
-    match: 'current.block === "flow_intro"',
+    match: 'current?.block === "flow_intro"',
     reason: "Flow row named by its destination; its risk and group labels carry their own tooltips.",
   },
   {
     file: "components/nav/NavList.tsx",
-    match: 'current.block === "step"',
+    match: 'current?.block === "step"',
     reason: "Step row named by its destination; a tip would cover the rows below.",
   },
   {

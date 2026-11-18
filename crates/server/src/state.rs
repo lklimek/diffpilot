@@ -25,6 +25,8 @@ pub struct AppState {
     pub progress: ProgressHub,
     /// Refreshed GitHub token pairs not stored yet because the database was busy.
     pub pending_pairs: PendingPairs,
+    /// `true` once the server stops: open event streams end so the listeners can finish.
+    pub stopping: tokio::sync::watch::Sender<bool>,
 }
 
 impl AppState {
@@ -47,6 +49,7 @@ impl AppState {
             executor,
             progress: ProgressHub::default(),
             pending_pairs: PendingPairs::default(),
+            stopping: tokio::sync::watch::Sender::new(false),
         }
     }
 }

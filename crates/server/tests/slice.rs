@@ -15,6 +15,7 @@ use axum::response::Response;
 use chrono::{TimeDelta, Utc};
 use contracts::agent::JobKind;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
+use contracts::api::events::AnalysisEvent;
 use contracts::api::pr::PrSummary;
 use contracts::ids::{AnalysisId, CommitSha, JobId};
 use contracts::job::protocol::{Claim, ClaimResponse};
@@ -120,6 +121,8 @@ enum Script {
     Fail,
     /// Fails with this runner text.
     FailWith(String),
+    /// Fails with this typed cause.
+    FailKind(JobFailureKind),
     Configuration,
     Pending,
     /// Paused by the usage limit; returns the fixture output once notified.
@@ -250,6 +253,10 @@ impl JobExecutor for ScriptedExecutor {
             Some(Script::FailWith(message)) => JobOutcome::Failed {
                 kind: JobFailureKind::ProviderFailed,
                 message,
+            },
+            Some(Script::FailKind(kind)) => JobOutcome::Failed {
+                kind,
+                message: "private diagnostic of the runner".to_owned(),
             },
             Some(Script::Pending) => return stream::pending().boxed(),
             Some(Script::PausedUntil(notify)) => {
@@ -556,8 +563,30 @@ impl Harness {
         json_of(self.send("POST", uri, Auth::SessionCsrf, Some(body)).await).await
     }
 
-    /// Resolves the fixture PR and creates its analysis through the API; returns the analysis id.
+    /// [`Harness::create_fixture_analysis_on_request`] with background analysis switched on at once: every flow
+    /// is analysed without a request.
     async fn create_fixture_analysis(&self) -> String {
+        let id = self.create_fixture_analysis_on_request().await;
+        self.set_background(&id, true).await;
+        id
+    }
+
+    /// Switches background analysis of `id` on or off.
+    async fn set_background(&self, id: &str, enabled: bool) {
+        let response = self
+            .send(
+                "PUT",
+                &format!("/api/v1/analyses/{id}/background"),
+                Auth::SessionCsrf,
+                Some(json!({ "enabled": enabled })),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Resolves the fixture PR and creates its analysis through the API, as a user does (flows on request);
+    /// returns the analysis id.
+    async fn create_fixture_analysis_on_request(&self) -> String {
         let (status, resolved) = self
             .post("/api/v1/pr/resolve", json!({ "url": PR_URL }))
             .await;
@@ -619,6 +648,73 @@ impl Harness {
             .claim
     }
 
+    /// Polls for the next claim; panics once the analysis has ended or nothing is claimable in time.
+    async fn claim_next(&self, id: &str) -> Claim {
+        for _ in 0..500 {
+            if let Some(claim) = self.runner_claim().await {
+                return claim;
+            }
+            let (_, body) = self.get(&format!("/api/v1/analyses/{id}")).await;
+            assert!(
+                !matches!(
+                    body["state"]["state"].as_str(),
+                    Some("failed" | "cancelled")
+                ),
+                "the analysis ended while a job was expected: {}",
+                body["state"]
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("no job became claimable in time");
+    }
+
+    /// The stage key and generation of a claimed job.
+    async fn stage_of(&self, claim: &Claim) -> (String, u32) {
+        let job = self
+            .state
+            .db
+            .jobs()
+            .get(claim.spec.job_id)
+            .await
+            .expect("job");
+        (job.stage.key(), job.generation)
+    }
+
+    /// Posts the claimed attempt's result as the runner does.
+    async fn complete(&self, claim: &Claim, outcome: JobOutcome) {
+        let result = JobResult {
+            job_id: claim.spec.job_id,
+            attempt: claim.spec.attempt,
+            outcome,
+            session: None,
+            usage: None,
+            skills_commit: None,
+            llm_call: None,
+        };
+        let uri = RUNNER_RESULT
+            .path
+            .replace("{id}", &claim.spec.job_id.to_string());
+        let (status, body) = self
+            .runner(&uri, claim.job_token.expose(), json!(result))
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+
+    /// Runs plan and PR context through the runner routes with their fixture outputs: the review is open.
+    async fn open_review(&self, id: &str) {
+        for stage in ["plan:1", "pr_context"] {
+            let claim = self.claim_next(id).await;
+            assert_eq!(self.stage_of(&claim).await.0, stage);
+            self.complete(
+                &claim,
+                JobOutcome::Succeeded {
+                    output: agent_output(stage),
+                },
+            )
+            .await;
+        }
+    }
+
     async fn post_empty(&self, uri: &str) -> (StatusCode, Value) {
         json_of(self.send("POST", uri, Auth::SessionCsrf, None).await).await
     }
@@ -639,6 +735,16 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("the analysis did not reach the expected state in time");
+    }
+
+    /// Switches background analysis of a stored analysis on: its driver analyses every flow without a request.
+    async fn background_on(&self, id: AnalysisId) {
+        self.state
+            .db
+            .flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .expect("background on");
     }
 
     /// An analysis of the fixture PR stored directly (no pipeline run).
@@ -862,7 +968,9 @@ async fn slice_pipeline() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     assert_eq!(created["state"], json!({ "state": "planning" }));
+    assert_eq!(created["background_analysis"], json!(false));
     let id = created["id"].as_str().expect("id").to_owned();
+    h.set_background(&id, true).await;
 
     let finished = h.wait_until_finished(&id).await;
     assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
@@ -910,6 +1018,7 @@ async fn slice_pipeline() {
 async fn pipeline_resumes_unfinished_analysis_from_stored_documents() {
     let h = harness().await;
     let id = h.seed_analysis().await;
+    h.background_on(id).await;
     let documents = h.state.db.documents();
     let now = Utc::now();
     documents
@@ -1032,6 +1141,7 @@ async fn restart_keeps_demand_and_background_off_with_partial_results() {
 async fn memcan_profile_lookup_reaches_every_prompt_and_the_tour() {
     let h = harness().await;
     let id = h.seed_analysis().await;
+    h.background_on(id).await;
     let profile = "MemCan-profile-CANARY: payments service; risk lives in src/ledger.";
     h.state
         .db
@@ -1232,6 +1342,7 @@ const H19_H20: [(&str, u64, u64); 2] = [("head", 113, 144), ("base", 174, 205)];
 async fn stored_plan_and_flow_missing_newly_mandatory_lines_leave_them_unexplained() {
     let h = harness().await;
     let id = h.seed_analysis().await;
+    h.background_on(id).await;
     server::pipeline::resume_unfinished(&h.state)
         .await
         .expect("resume");
@@ -1300,6 +1411,7 @@ async fn stored_plan_and_flow_missing_newly_mandatory_lines_leave_them_unexplain
 async fn resume_reads_a_stored_plan_as_stored() {
     let h = harness().await;
     let id = h.seed_analysis().await;
+    h.background_on(id).await;
     let documents = h.state.db.documents();
     documents
         .put(
@@ -1370,6 +1482,7 @@ async fn retry_reads_a_stored_plan_as_stored() {
 async fn a_stored_flow_failing_another_check_is_failed_with_its_lines_listed() {
     let h = harness().await;
     let id = h.seed_analysis().await;
+    h.background_on(id).await;
     server::pipeline::resume_unfinished(&h.state)
         .await
         .expect("resume");
@@ -1829,7 +1942,34 @@ async fn lines_caps_deleted_blocks() {
     );
 }
 
-/// Pending and failed flow ranges stay explicitly unassessed in their planned flow.
+/// Waits until `stage` was submitted `runs` times and the driver of analysis `id` ended (nothing can follow),
+/// then checks that no further run was submitted.
+async fn settled_runs(h: &Harness, id: &str, stage: &str, runs: usize) {
+    for _ in 0..500 {
+        if h.executor.specs_of(stage).len() >= runs {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    wait_parked(analysis_id(id)).await;
+    assert_eq!(h.executor.specs_of(stage).len(), runs, "runs of {stage}");
+}
+
+/// Waits until no driver task works on the analysis (nothing is admitted).
+async fn wait_parked(analysis: AnalysisId) {
+    for _ in 0..250 {
+        if !server::pipeline::is_driven(analysis) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the driver did not park");
+}
+
+fn analysis_id(id: &str) -> AnalysisId {
+    serde_json::from_value(json!(id)).expect("analysis id")
+}
+
 async fn wait_for_failed_flow(h: &Harness, id: &str, flow: &str) -> Value {
     for _ in 0..300 {
         let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
@@ -1870,14 +2010,16 @@ async fn failed_job_keeps_partial_review_and_can_be_requested_again() {
     );
 }
 
+/// A failed flow's ranges stay explicitly unassessed in its planned flow.
 #[tokio::test]
 async fn schema_invalid_flow_exhausts_repairs_and_stays_explicitly_failed() {
     let h = harness().await;
     h.executor
         .script("flow:f2", Script::Output(json!({ "flow_id": "f2" })));
     let id = h.create_fixture_analysis().await;
+    // Three runs (two repairs) per turn; the first turn and two automatic retries.
+    settled_runs(&h, &id, "flow:f2", 9).await;
     let tour = wait_for_failed_flow(&h, &id, "f2").await;
-    assert_eq!(h.executor.specs_of("flow:f2").len(), 3);
     let flow = tour["flows"]
         .as_array()
         .unwrap()
@@ -2124,13 +2266,12 @@ async fn missing_step_assessments_trigger_repair_and_restore_flow_risk() {
         let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
         for flow in tour["flows"].as_array().unwrap() {
             assert!(flow["llm"]["risk"].is_string());
-            assert!(
-                flow["steps"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|step| step["llm"]["assessment"]["basis_note"].is_string())
-            );
+            assert!(flow["steps"].as_array().unwrap().iter().all(|step| {
+                let assessment = &step["llm"]["assessment"];
+                assessment["risk"].is_string()
+                    && assessment["reason"].is_string()
+                    && (assessment["risk"] == "low" || assessment["basis_note"].is_string())
+            }));
         }
     }
 }
@@ -2607,6 +2748,10 @@ async fn huge_pull_request_is_planned_in_batches() {
         resolved["size_warning"],
         json!({"changed_lines": 27081, "changed_files": 371, "estimate": null})
     );
+    assert_eq!(
+        resolved["size"],
+        json!({"changed_lines": 27081, "changed_files": 371})
+    );
     let (status, created) = h
         .post(
             "/api/v1/analyses",
@@ -2615,6 +2760,10 @@ async fn huge_pull_request_is_planned_in_batches() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().expect("id").to_owned();
+    h.set_background(&id, true).await;
+    // Each flow fails for good after its first turn and two automatic retries (three runs each).
+    settled_runs(&h, &id, "flow:f1", 9).await;
+    settled_runs(&h, &id, "flow:f2", 9).await;
     wait_for_failed_flow(&h, &id, "f1").await;
     wait_for_failed_flow(&h, &id, "f2").await;
     let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
@@ -2659,7 +2808,17 @@ async fn huge_pull_request_is_planned_in_batches() {
         "{titles:?}"
     );
     let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
-    assert_eq!(tour["quiet"]["unexplained"], json!([]));
+    let unexplained: Vec<&str> = tour["quiet"]["unexplained"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|rows| rows["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        unexplained,
+        ["a/big.txt", "b/big.txt"],
+        "the lines of failed flows stay listed as not explained"
+    );
     let pending: Vec<&str> = tour["flows"]
         .as_array()
         .unwrap()
@@ -2838,6 +2997,7 @@ async fn flow_too_large_for_a_prompt_stays_failed_with_its_reason() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().expect("id").to_owned();
+    h.set_background(&id, true).await;
     let tour = wait_for_failed_flow(&h, &id, "f2").await;
     assert!(!h.executor.submitted().contains(&"flow:f2".to_owned()));
     let flow = tour["flows"]
@@ -2853,7 +3013,25 @@ async fn flow_too_large_for_a_prompt_stays_failed_with_its_reason() {
             .contains("too large")
     );
     assert_eq!(flow["planned"]["ranges"][0]["file"], "b/two.txt");
-    assert_eq!(tour["quiet"]["unexplained"], json!([]));
+    // Both flows failed for good: their lines stay listed as not explained, the unsent ones with the reason.
+    settled_runs(&h, &id, "flow:f1", 9).await;
+    let tour = wait_for_failed_flow(&h, &id, "f1").await;
+    let lines = json!([{ "start_line": 1, "end_line": 5 }]);
+    assert_eq!(
+        tour["quiet"]["unexplained"],
+        json!([
+            { "file": "a/one.txt", "side": "head", "ranges": lines },
+            { "file": "b/two.txt", "side": "head", "ranges": lines, "reason": "too_large_for_prompt" }
+        ])
+    );
+    // The flow that was sent used its automatic retries (a job round each); the unsent one used neither.
+    for (flow, expected) in [("f1", (2, 2)), ("f2", (2, 0))] {
+        let flow = contracts::ids::FlowId(flow.to_owned());
+        let retries = db::repo::flow_work::testing::retries(&h.state.db, analysis_id(&id), &flow)
+            .await
+            .expect("retries");
+        assert_eq!(retries, expected, "{flow:?}");
+    }
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;
 }
@@ -3408,24 +3586,725 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         .await;
 }
 
+/// The removed `test` classification fails the plan's schema check: the plan is repaired like any rejected
+/// output (never a failed analysis), and no flow is planned from the rejected answer.
 #[tokio::test]
-async fn test_subject_plan_is_repaired_before_flow_jobs() {
+async fn test_classification_is_repaired_before_flow_jobs() {
     let h = harness().await;
     let mut output = agent_output("plan:1");
     output["flows"][0]["classification"] = json!("test");
     output["flows"][0]["title"] = json!("Test retry helpers");
     h.executor.script("plan:1#0", Script::Output(output));
     let id = h.create_fixture_analysis().await;
-    h.wait_until_finished(&id).await;
+    let ended = h.wait_until_ended(&id).await;
+    assert_eq!(ended.state, AnalysisState::Finished { total: 5 });
     let runs = h.executor.specs_of("plan:1");
     assert_eq!(runs.len(), 2);
-    assert!(runs[1].1.prompt.contains("test-only flows"));
+    assert!(runs[1].1.prompt.contains("/flows/0/classification"));
     let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    let flows = tour["flows"].as_array().expect("flows");
     assert!(
-        tour["flows"]
-            .as_array()
-            .expect("flows")
+        flows
             .iter()
-            .all(|flow| flow["llm"]["classification"] != "test")
+            .all(|flow| flow["llm"]["title"] != "Test retry helpers")
+    );
+}
+
+/// A repair run refused because the demand changed is not a failure: the demanded flow runs next, and the
+/// rejected flow is repaired afterwards from its stored output (no second first run).
+#[tokio::test]
+async fn repair_run_superseded_by_a_flow_request_waits_for_its_turn() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f3/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: json!("not a flow file"),
+        },
+    )
+    .await;
+    let demanded = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&demanded).await, ("flow:f3".to_owned(), 0));
+    h.complete(
+        &demanded,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&demanded.spec, "flow:f3"),
+        },
+    )
+    .await;
+    let repair = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&repair).await, ("flow:f1".to_owned(), 1));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// Background analysis switched off while a flow runs: its rejected output is not repaired until work is
+/// admitted again, and the analysis stays usable meanwhile.
+#[tokio::test]
+async fn repair_run_superseded_by_background_off_resumes_with_background_on() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    let background = format!("/api/v1/analyses/{id}/background");
+    let switch = |enabled: bool| {
+        h.send(
+            "PUT",
+            &background,
+            Auth::SessionCsrf,
+            Some(json!({ "enabled": enabled })),
+        )
+    };
+    assert_eq!(switch(false).await.status(), StatusCode::OK);
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: json!("not a flow file"),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(h.runner_claim().await.is_none());
+    let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(summary["state"]["state"], "running", "{summary}");
+    assert_eq!(switch(true).await.status(), StatusCode::OK);
+    let repair = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&repair).await, ("flow:f1".to_owned(), 1));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// A failed flow is retried automatically twice, after the flows not analysed yet; then it stays failed with
+/// its cause, the driver ends, and the user's Retry still runs it.
+#[tokio::test]
+async fn failed_flow_is_retried_automatically_twice_then_waits_for_the_user() {
+    let h = harness().await;
+    h.executor.script("flow:f2", Script::Fail);
+    let id = h.create_fixture_analysis().await;
+    settled_runs(&h, &id, "flow:f2", 3).await;
+    let order: Vec<String> = h
+        .executor
+        .specs
+        .lock()
+        .expect("lock")
+        .iter()
+        .map(|(stage, _, _)| stage.clone())
+        .collect();
+    assert_eq!(
+        order,
+        [
+            "plan:1",
+            "pr_context",
+            "flow:f1",
+            "flow:f2",
+            "flow:f3",
+            "flow:f4",
+            "flow:f5",
+            "flow:f2",
+            "flow:f2"
+        ]
+    );
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
+    assert_eq!(tour["analysis"]["state"]["state"], "running");
+    assert_eq!(tour["analysis"]["state"]["done"], 4);
+    wait_parked(analysis_id(&id)).await;
+    assert_eq!(
+        server::pipeline::resume_unfinished(&h.state)
+            .await
+            .expect("resume"),
+        0,
+        "an analysis without admitted work is not prepared again at start"
+    );
+    h.executor.unscript("flow:f2");
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f2/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        h.wait_until_finished(&id).await.state,
+        AnalysisState::Finished { total: 5 }
+    );
+}
+
+/// With background analysis off and nothing requested the driver ends and the analysis stays `running`
+/// without a stage; a flow request starts the work again.
+#[tokio::test]
+async fn analysis_without_admitted_work_parks_and_a_flow_request_restarts_it() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    let background = format!("/api/v1/analyses/{id}/background");
+    let off = h
+        .send(
+            "PUT",
+            &background,
+            Auth::SessionCsrf,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(off.status(), StatusCode::OK);
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&first.spec, "flow:f1"),
+        },
+    )
+    .await;
+    wait_parked(analysis_id(&id)).await;
+    let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(summary["state"]["state"], "running", "{summary}");
+    assert_eq!(summary["state"]["done"], 1, "{summary}");
+    assert_eq!(summary["state"]["stage"], Value::Null, "{summary}");
+    assert!(h.runner_claim().await.is_none());
+    assert_eq!(
+        server::pipeline::resume_unfinished(&h.state)
+            .await
+            .expect("resume"),
+        0
+    );
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f4/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let next = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&next).await, ("flow:f4".to_owned(), 0));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// After the user changes the language the lookup still shows the pull request's analysis with its language;
+/// an analysis in the new language is started only on purpose, and the lookup then prefers it.
+#[tokio::test]
+async fn lookup_shows_an_analysis_made_in_another_language() {
+    let h = harness().await;
+    let first = h.create_fixture_analysis_on_request().await;
+    wait_parked(analysis_id(&first)).await;
+    let changed = h
+        .send(
+            "PUT",
+            "/api/v1/settings/language",
+            Auth::SessionCsrf,
+            Some(json!({ "language": "pl" })),
+        )
+        .await;
+    assert!(changed.status().is_success(), "{}", changed.status());
+    let (status, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    assert_eq!(resolved["analysis"]["id"], json!(first), "{resolved}");
+    assert_eq!(resolved["analysis"]["language"], "en");
+    assert_eq!(resolved["head_moved"], false);
+    let second = h.create_fixture_analysis_on_request().await;
+    assert_ne!(second, first, "another language is a new analysis");
+    let (_, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
+    assert_eq!(resolved["analysis"]["id"], json!(second), "{resolved}");
+    assert_eq!(resolved["analysis"]["language"], "pl");
+    for id in [first, second] {
+        h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+            .await;
+    }
+}
+
+/// The lookup carries the size of any pull request, not only of a large one, and makes no time claim without
+/// history.
+#[tokio::test]
+async fn resolve_carries_the_size_of_any_pull_request() {
+    let h = harness().await;
+    let (status, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    assert_eq!(
+        resolved["size"],
+        json!({ "changed_lines": 238, "changed_files": 13 })
+    );
+    assert_eq!(resolved["size_warning"], Value::Null);
+    assert_eq!(resolved.get("planning_estimate"), None);
+}
+
+/// Waits for an `analysis` event of a running analysis whose `idle` is as given; returns its state.
+async fn idle_event(
+    events: &mut tokio::sync::broadcast::Receiver<AnalysisEvent>,
+    idle: bool,
+) -> Value {
+    let wait = async {
+        loop {
+            if let AnalysisEvent::Analysis { summary } = events.recv().await.expect("event") {
+                let state = serde_json::to_value(&summary.state).expect("state");
+                if state["state"] == "running" && state["idle"] == idle {
+                    return state;
+                }
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .expect("no analysis event with the expected idle value")
+}
+
+/// Nothing is analysed until the user asks: a new analysis plans, describes the PR context and waits (review
+/// ready, idle, no flow job); reading the Tour requests nothing; a requested flow runs and the analysis waits
+/// again; background analysis on runs the rest. Each change of `idle` is an `analysis` event.
+#[tokio::test]
+async fn new_analysis_waits_after_plan_and_context_until_flows_are_requested() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis_on_request().await;
+    let analysis = analysis_id(&id);
+    let mut events = h.state.progress.subscribe(analysis);
+    h.open_review(&id).await;
+    let state = idle_event(&mut events, true).await;
+    assert_eq!((&state["done"], &state["total"]), (&json!(0), &json!(5)));
+    wait_parked(analysis).await;
+    let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(summary["state"]["idle"], true, "{summary}");
+    assert_eq!(summary["state"]["stage"], Value::Null, "{summary}");
+    assert_eq!(summary["review_ready"], true, "{summary}");
+    assert_eq!(summary["background_analysis"], false, "{summary}");
+    assert_eq!(summary["progress"]["estimate"], Value::Null, "{summary}");
+    assert_eq!(summary["progress"]["percent"], Value::Null, "{summary}");
+    // Reading requests nothing.
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let flows = tour["flows"].as_array().expect("flows");
+    assert_eq!(flows.len(), 5);
+    for flow in flows {
+        assert_eq!(flow["analysis_status"]["state"], "not_analysed", "{flow}");
+        assert!(
+            !flow["planned"]["ranges"]
+                .as_array()
+                .expect("ranges")
+                .is_empty(),
+            "the planned lines give the flow's size: {flow}"
+        );
+    }
+    assert!(
+        h.runner_claim().await.is_none(),
+        "no flow job without a request"
+    );
+    // A restart leaves it waiting.
+    assert_eq!(
+        server::pipeline::resume_unfinished(&h.state)
+            .await
+            .expect("resume"),
+        0
+    );
+    let (status, requested) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f3/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{requested}");
+    assert_eq!(requested["state"]["idle"], false, "{requested}");
+    idle_event(&mut events, false).await;
+    let claim = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&claim).await, ("flow:f3".to_owned(), 0));
+    h.complete(
+        &claim,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&claim.spec, "flow:f3"),
+        },
+    )
+    .await;
+    let state = idle_event(&mut events, true).await;
+    assert_eq!(state["done"], 1);
+    wait_parked(analysis).await;
+    assert!(
+        h.runner_claim().await.is_none(),
+        "only the requested flow ran"
+    );
+    h.set_background(&id, true).await;
+    idle_event(&mut events, false).await;
+    for _ in 0..4 {
+        let claim = h.claim_next(&id).await;
+        let (stage, _) = h.stage_of(&claim).await;
+        h.complete(
+            &claim,
+            JobOutcome::Succeeded {
+                output: tagged_flow_output(&claim.spec, &stage),
+            },
+        )
+        .await;
+    }
+    assert_eq!(
+        h.wait_until_finished(&id).await.state,
+        AnalysisState::Finished { total: 5 }
+    );
+}
+
+/// With background analysis off a requested flow that fails is retried automatically twice and then waits for
+/// the user; no other flow runs.
+#[tokio::test]
+async fn requested_flow_that_fails_is_retried_automatically_and_nothing_else_runs() {
+    let h = harness().await;
+    h.executor
+        .script("flow:f2", Script::FailKind(JobFailureKind::Timeout));
+    let id = h.create_fixture_analysis_on_request().await;
+    wait_parked(analysis_id(&id)).await;
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f2/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    settled_runs(&h, &id, "flow:f2", 3).await;
+    let flows: Vec<String> = h
+        .executor
+        .submitted()
+        .into_iter()
+        .filter(|stage| stage.starts_with("flow:"))
+        .collect();
+    assert_eq!(flows, ["flow:f2", "flow:f2", "flow:f2"]);
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
+    let flow = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|f| f["id"] == "f2")
+        .expect("f2");
+    assert_eq!(
+        flow["analysis_status"]["message"],
+        "The flow analysis failed. The LLM call took too long and was stopped. Retry this flow."
+    );
+    assert_eq!(tour["analysis"]["state"]["idle"], true);
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// A flow request stored while no driver ran (the server stopped before starting one) is picked up at start.
+#[tokio::test]
+async fn restart_starts_a_driver_for_a_stored_flow_request() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    let off = h
+        .send(
+            "PUT",
+            &format!("/api/v1/analyses/{id}/background"),
+            Auth::SessionCsrf,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(off.status(), StatusCode::OK);
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&first.spec, "flow:f1"),
+        },
+    )
+    .await;
+    wait_parked(analysis_id(&id)).await;
+    h.state
+        .db
+        .flow_work()
+        .request(
+            analysis_id(&id),
+            &contracts::ids::FlowId("f4".to_owned()),
+            Utc::now(),
+        )
+        .await
+        .expect("request");
+    assert!(h.runner_claim().await.is_none(), "no driver, no job");
+    assert_eq!(
+        server::pipeline::resume_unfinished(&h.state)
+            .await
+            .expect("resume"),
+        1
+    );
+    let next = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&next).await, ("flow:f4".to_owned(), 0));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+#[tokio::test]
+async fn failed_flow_job_keeps_its_cause() {
+    let h = harness().await;
+    h.executor
+        .script("flow:f2", Script::FailKind(JobFailureKind::Timeout));
+    let id = h.create_fixture_analysis().await;
+    settled_runs(&h, &id, "flow:f2", 3).await;
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
+    let flow = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|f| f["id"] == "f2")
+        .expect("f2");
+    assert_eq!(
+        flow["analysis_status"]["message"],
+        "The flow analysis failed. The LLM call took too long and was stopped. Retry this flow."
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// While an automatic retry of a failed flow is left, its message says so instead of asking for a Retry.
+#[tokio::test]
+async fn failed_flow_with_an_automatic_retry_left_says_so() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    h.complete(
+        &first,
+        JobOutcome::Failed {
+            kind: JobFailureKind::Timeout,
+            message: "the runtime cap was reached".to_owned(),
+        },
+    )
+    .await;
+    let tour = wait_for_failed_flow(&h, &id, "f1").await;
+    let flow = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|f| f["id"] == "f1")
+        .expect("f1");
+    assert_eq!(
+        flow["analysis_status"]["message"],
+        "The flow analysis failed. The LLM call took too long and was stopped. It will be tried again automatically."
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// A flow retry cannot help when the credential is unusable: the analysis stops with the sign-in sentence.
+#[tokio::test]
+async fn unusable_credential_in_a_flow_job_stops_the_analysis_with_the_sign_in_sentence() {
+    let h = harness().await;
+    h.executor.script(
+        "flow:f2",
+        Script::FailKind(JobFailureKind::CredentialUnusable),
+    );
+    let id = h.create_fixture_analysis().await;
+    let failed = h
+        .wait_for_state(&id, |state| matches!(state, AnalysisState::Failed { .. }))
+        .await;
+    let AnalysisState::Failed { flow, message, .. } = failed.state else {
+        unreachable!("waited for failed");
+    };
+    assert_eq!(flow.map(|flow| flow.id.0), Some("f2".to_owned()));
+    assert!(
+        message.contains("Sign-in to the LLM provider is needed"),
+        "{message}"
+    );
+    assert_eq!(
+        h.executor.specs_of("flow:f2").len(),
+        1,
+        "no automatic retry"
+    );
+}
+
+/// The Tour's flow status comes from the documents its content was built from: a flow stored after that read is
+/// not called analysed with its placeholder content.
+#[tokio::test]
+async fn tour_of_an_earlier_read_does_not_call_a_flow_stored_since_analysed() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    let analysis = analysis_id(&id);
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    let read = server::pipeline::context::StoredResults::load(&h.state.db, analysis)
+        .await
+        .expect("results");
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&first.spec, "flow:f1"),
+        },
+    )
+    .await;
+    for _ in 0..200 {
+        let stored: Option<Value> = h
+            .state
+            .db
+            .documents()
+            .get(analysis, DocumentKind::Flow, "f1")
+            .await
+            .expect("read");
+        if stored.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let summary = h
+        .state
+        .db
+        .analyses()
+        .summary(analysis)
+        .await
+        .expect("summary");
+    let tour = server::pipeline::tour::load_from(&h.state, &summary, read)
+        .await
+        .expect("tour");
+    let flow = tour
+        .flows
+        .iter()
+        .find(|flow| flow.id.0 == "f1")
+        .expect("f1");
+    assert!(flow.steps.is_empty(), "built from the earlier read");
+    assert_ne!(
+        flow.analysis_status.as_ref().map(|status| status.state),
+        Some(contracts::api::tour::FlowAnalysisState::Analysed)
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// A flow job that succeeded before a restart, its verified document not stored yet, is recovered at start
+/// without a new agent call, also when background analysis was switched off meanwhile.
+#[tokio::test]
+async fn restart_recovers_a_succeeded_flow_job_with_background_off() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    let analysis = analysis_id(&id);
+    h.open_review(&id).await;
+    let flow = JobStage::Flow(contracts::ids::FlowId("f1".to_owned()));
+    let jobs = h.state.db.jobs();
+    for _ in 0..300 {
+        let queued = jobs
+            .list_for_analysis(analysis, &[JobState::Queued])
+            .await
+            .expect("jobs");
+        if queued.iter().any(|job| job.stage == flow) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // Background off withdraws the queued first flow: no driver works on the analysis afterwards.
+    let background = format!("/api/v1/analyses/{id}/background");
+    let off = h
+        .send(
+            "PUT",
+            &background,
+            Auth::SessionCsrf,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(off.status(), StatusCode::OK);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let withdrawn = jobs
+        .list_for_analysis(analysis, &[JobState::Cancelled])
+        .await
+        .expect("jobs")
+        .into_iter()
+        .find(|job| job.stage == flow)
+        .expect("the withdrawn flow job");
+    // The state a crash leaves: the flow started by background work, the switch turned off after the claim,
+    // the job succeeded, its document not stored.
+    let now = Utc::now();
+    h.state
+        .db
+        .flow_work()
+        .set_background(analysis, true, now)
+        .await
+        .expect("on");
+    let mut spec = withdrawn.spec.clone();
+    spec.job_id = JobId::new_random();
+    h.state
+        .executor
+        .submit(JobRequest {
+            spec,
+            priority: JobPriority::Batch,
+            stage: flow.clone(),
+            generation: 0,
+            pr_repo: contracts::common::RepoRef {
+                owner: "acme".to_owned(),
+                name: "node-client".to_owned(),
+            },
+        })
+        .await
+        .expect("submit");
+    let claim = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&claim).await, ("flow:f1".to_owned(), 0));
+    h.state
+        .db
+        .flow_work()
+        .set_background(analysis, false, now)
+        .await
+        .expect("off");
+    h.complete(
+        &claim,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&claim.spec, "flow:f1"),
+        },
+    )
+    .await;
+    let known = jobs
+        .list_for_analysis(analysis, &[])
+        .await
+        .expect("jobs")
+        .len();
+
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    let mut stored = None::<Value>;
+    for _ in 0..300 {
+        stored = h
+            .state
+            .db
+            .documents()
+            .get(analysis, DocumentKind::Flow, "f1")
+            .await
+            .expect("read");
+        if stored.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        stored.is_some(),
+        "the succeeded job's result is stored at start"
+    );
+    assert_eq!(
+        jobs.list_for_analysis(analysis, &[])
+            .await
+            .expect("jobs")
+            .len(),
+        known,
+        "no new agent call"
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// A plan output that does not match its schema gets a repair run like any other rejected output.
+#[tokio::test]
+async fn schema_invalid_plan_output_is_repaired() {
+    let h = harness().await;
+    h.executor.script("plan:1#0", Script::Output(json!({})));
+    let id = h.create_fixture_analysis().await;
+    assert_eq!(
+        h.wait_until_finished(&id).await.state,
+        AnalysisState::Finished { total: 5 }
+    );
+    let runs = h.executor.specs_of("plan:1");
+    assert_eq!(runs.len(), 2);
+    assert!(
+        runs[1].1.prompt.contains("schema_mismatch"),
+        "{}",
+        runs[1].1.prompt
     );
 }

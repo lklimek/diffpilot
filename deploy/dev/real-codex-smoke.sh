@@ -32,8 +32,9 @@
 #                         the ADR-013 options of deploy/compose.yaml, behind the egress proxy
 #                         (SR_SMOKE_PROXY_IMAGE, default smart-review-egress-proxy:local) on the internal network
 #                         `sr-smoke-int` (172.31.251.0/24, removed at the end); the image's own runner unless
-#                         SR_SMOKE_PROVIDER=fake (then SR_DEV_RUNNER_BIN is mounted over it); per-job CODEX_HOME root
-#                         on a capped tmpfs (SR_CODEX_HOMES_ALLOW_TMPFS=1, development only); the internal network keeps
+#                         SR_SMOKE_PROVIDER=fake (then SR_DEV_RUNNER_BIN is mounted over it); per-job CODEX_HOME root,
+#                         /work and /tmp on this run's disposable volumes (as the tmp-* volumes of
+#                         deploy/compose.yaml; removed at the end); the internal network keeps
 #                         a host address for the host's server, so the preflight's isolation check is skipped
 #                         (SR_RUNNER_DEV_HOST_GATEWAY=1, development only); the proxy's host-name
 #                         log is archived as egress-proxy.log
@@ -70,6 +71,11 @@ inner=sr-smoke-int proxy_ip=172.31.251.3
 if [[ "$isolation" == supervisor ]]; then gateway=172.31.251.1; fi
 run="$(date -u +%Y%m%dt%H%M%S)"
 container="sr-smoke-runner-$run" volume="${SR_SMOKE_STATE_VOLUME:-sr-smoke-runner-$run}" proxy="sr-smoke-proxy-$run"
+# Disposable scratch volumes of the runner container: target directory -> volume (nothing in RAM).
+declare -A scratch=(
+  [/tmp]="sr-smoke-tmp-runner-$run" [/work]="sr-smoke-tmp-runner-work-$run"
+  [/var/lib/smart-review-runner/codex-homes]="sr-smoke-tmp-runner-codex-homes-$run"
+)
 
 mkdir -p /data/tmp
 private="$(mktemp -d /data/tmp/smart-review-smoke.XXXXXX)"
@@ -118,6 +124,7 @@ cleanup() {
     say "egress proxy stopped and removed"
   fi
   if [[ "$isolation" == supervisor ]]; then docker network rm "$inner" > /dev/null 2>&1 || true; fi
+  docker volume rm "${scratch[@]}" > /dev/null 2>&1 || true
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -179,28 +186,29 @@ if [[ "$isolation" == supervisor ]]; then
     bin_mount=(--mount "type=bind,source=$(realpath "$SR_DEV_RUNNER_BIN"),target=/usr/local/bin/smart-review-runner,readonly")
   fi
   # ADR-013 options as in deploy/compose.yaml; the image's entrypoint is the supervisor, its CMD the preflight.
+  scratch_mounts=()
+  for target in "${!scratch[@]}"; do
+    docker volume create --label smart-review.volume=temporary "${scratch[$target]}" > /dev/null
+    scratch_mounts+=(--mount "type=volume,source=${scratch[$target]},target=$target")
+  done
   docker run -d --name "$container" --init --restart no --ipc none \
     --memory 4g --memory-swap 4g --pids-limit 1024 \
     --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID --cap-add KILL \
     --security-opt no-new-privileges --read-only \
-    --tmpfs /work:rw,nosuid,nodev,size=4g,uid=10001,gid=10001,mode=0711 \
-    --tmpfs /tmp:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700 \
     --network "$inner" "${bin_mount[@]}" \
-    --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" \
-    --tmpfs /var/lib/smart-review-runner/codex-homes:rw,nosuid,nodev,noexec,size=1g,nr_inodes=131072,uid=10001,gid=10001,mode=0711 \
+    --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" "${scratch_mounts[@]}" \
     -e SR_RUNNER_SERVER_URL="http://$gateway:$runner_port" -e SR_RUNNER_SECRET -e SR_RUNNER_ID=smoke-runner \
     -e SR_RUNNER_PROVIDER="$provider" -e SR_RUNNER_EGRESS_PROXY="http://$proxy_ip:3128" \
     -e HTTPS_PROXY="http://$proxy_ip:3128" -e https_proxy="http://$proxy_ip:3128" \
     -e NO_PROXY="localhost,127.0.0.1,$gateway" -e no_proxy="localhost,127.0.0.1,$gateway" \
-    -e SR_CODEX_HOMES_ALLOW_TMPFS=1 -e SR_CODEX_HOMES_TMPFS_PUBLIC_URL="$url" -e SR_RUNNER_DEV_HOST_GATEWAY=1 \
+    -e SR_RUNNER_DEV_HOST_GATEWAY=1 \
     -e RUST_LOG=info -e NO_COLOR=1 \
     "${SR_SMOKE_RUNNER_IMAGE:-smart-review-runner:local}" > /dev/null
 else
   docker run -d --name "$container" --init --restart no \
     --memory 4g --memory-swap 4g --pids-limit 1024 \
     --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges --read-only \
-    --tmpfs /tmp:rw,nosuid,nodev,size=512m \
-    --tmpfs /home/runner:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700 \
+    --mount "type=volume,source=${scratch[/tmp]},target=/tmp" -e HOME=/tmp \
     --network "$network" \
     --mount "type=bind,source=$(realpath "$SR_DEV_RUNNER_BIN"),target=/usr/local/bin/smart-review-runner,readonly" \
     --mount "type=volume,source=$volume,target=/var/lib/smart-review-runner" \
@@ -227,6 +235,10 @@ created="$(api -d "$(jq '{pr: {repo: .pr.repo, number: .pr.number}, head_sha: .p
 id="$(jq -r '.id // empty' <<< "$created")"
 [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || fail "the analysis could not be created" "$created"
 say "analysis $id requested"
+# A new analysis analyses flows on request; the smoke runs every flow, so background analysis goes on.
+background="$(api -X PUT -d '{"enabled":true}' "$url/api/v1/analyses/$id/background")"
+[[ "$(jq -r .background_analysis <<< "$background")" == true ]] ||
+  fail "background analysis could not be switched on" "$background"
 
 last="" started="$(date +%s)"
 while :; do

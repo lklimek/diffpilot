@@ -150,7 +150,8 @@ mapping, query rules and the endpoint × fixture-state inventory.
   Posting a value again replaces its note (same id); `overrated` and `underrated` exclude each other (posting one
   removes the other, one transaction); `DELETE …/feedback/{feedback_id}` removes one value of the user's own
   entries (`not_found` otherwise). `missed_by_llm` is recorded only by the server (a comment on a changed line
-  without annotation) and rejected from clients (`invalid_request`, it is not a `UserFeedbackValue`). A step or
+  without annotation; before the analysis is `finished` only inside a step of an analysed flow, since the LLM has
+  not read the other flows yet) and rejected from clients (`invalid_request`, it is not a `UserFeedbackValue`). A step or
   annotation target must exist in the analysis's flows under its canonical Tour id (`f3.1`, `f3.1.a2`; aliases
   such as `f3.01` are rejected), a line target must be a changed line of the analysed diff on its side (added on
   `head`, removed on `base`), the note at most `FeedbackRequest::MAX_NOTE_CHARS` (2000) characters, else
@@ -166,7 +167,9 @@ mapping, query rules and the endpoint × fixture-state inventory.
   question runs as an `ask` job claimed before batch jobs; one job runs per PR and credential, so a second question waits
   `pending` until the first ends. States: `pending` (queued; `resumes_at` set while it waits for the LLM usage
   limit), `answering`, `answered`, `failed` with a plain `failure` sentence (job failure by typed cause, an answer
-  that did not pass the checks, a re-analysis that cancelled it, a server error); a failed question is asked again
+  that did not pass the checks, a cancellation naming its cause: the analysis was cancelled, the PR session was
+  removed by a re-analysis, or another cancellation; a server error). A failed pipeline and Retry leave open
+  questions running; a ready answer is not published once the analysis is cancelled; a failed question is asked again
   as a new one. An answer is shown only after its schema, the wording rules of brief §1, plain text (no markup, no
   link other than `https://github.com/…`), at most 8000 characters and 50 evidence lines inside their file of the
   pinned tree; otherwise the question fails and the answer is never shown. After a server restart every `pending`,
@@ -339,8 +342,11 @@ Accepted plan documents count completed parts; repair jobs do not add parts. `st
 ETA sums remaining plan parts times this run's mean completed plan duration (fallback: recent plan seconds
 per changed agent line), one recent mean PR-context duration if needed, and remaining flows times this run's
 mean flow duration (fallback: recent mean). Before planning ends, flow time uses recent seconds per changed
-agent line and is `rough`. History is at most 30 completed analyses in the same tenant, current-round successful
-jobs lasting 1 second to 3 hours. Completed generations of a stage (including repairs) contribute to its
+agent line and is `rough`. History is at most the 30 newest review-ready analyses (not cancelled, accepted plan
+and PR context; most never finish while flows run on request) in the same tenant, successful jobs lasting
+1 second to 3 hours; a flow counts once its document is accepted, and flow seconds per changed agent line come
+only from finished analyses. A stage counts its jobs of the newest round in which it succeeded
+(a flow retry or Retry starts a new round). Completed generations of a stage (including repairs) contribute to its
 one duration; this analysis supplies samples only once the stage's document is accepted. Missing data for any remaining kind, or an estimate over
 7 days, yields null. Basis prefers `this_analysis`, otherwise `lines_only` before planning ends, else
 `recent_runs`. Queue delay and future repair runs are unknown. Paused and terminal analyses have no ETA.
@@ -354,8 +360,10 @@ There is no precise agent-start event in the runner protocol; claim time include
 
 Private Ask history used for re-forking is scoped to `(pull_request_id, user_id)`, never another reader's
 questions or answers. Review-state and feedback routes also select by the authenticated user; removing a
-foreign feedback id answers 404. Draft comment text remains component-local until explicitly sent to the
-user's GitHub pending review. Published GitHub review comments are public PR data.
+foreign feedback id answers 404. Draft comment text, and a create request whose outcome is unknown (with its
+idempotency key), stay in the browser (sessionStorage of the tab, keyed by user login and analysis) until the
+comment is added, its text is cleared, or that user explicitly signs out; an expired session or a 401 keeps
+them for the same user. The server never stores drafts. Published GitHub review comments are public PR data.
 
 ### Provider-reported usage
 
@@ -394,12 +402,27 @@ the size. Otherwise it returns:
 
 `changed_lines` and `changed_files` come from the same GitHub PR metadata request already used by resolve.
 There is no additional GitHub call. `estimate` uses the same tenant-scoped recent-run samples and formula
-as waiting progress: historical plan seconds per changed agent line × PR changed lines + mean PR-context
-seconds + historical flow seconds per changed agent line × PR changed lines. The flow count is unknown,
-so this pre-start estimate uses `lines_only`, `rough: true`. PR metadata includes quiet lines too; this is
+as waiting progress for what starting the analysis runs, plan and PR context: historical plan seconds per
+changed agent line × PR changed lines + mean PR-context seconds. Flows are analysed on request and are no part
+of it. It uses `lines_only`, `rough: true`. PR metadata includes quiet lines too; this is
 an intentionally rough comparison. Missing samples or an estimate above seven days produce null.
-The Home notice makes no time claim without history, never disables Analyze, and adds no dialog.
-Old resolve responses without `size_warning` remain readable.
+
+Independent of the threshold, resolve carries two optional fields from the same GitHub response (no extra
+request): `size {changed_lines, changed_files}` for a pull request of any size (absent when GitHub did not
+report it) and `planning_estimate {remaining_seconds, basis, rough}`, the same plan + PR context estimate
+(absent without the size or enough history; `basis` is `this_analysis | recent_runs | lines_only`, before the
+start always `lines_only`). `size_warning.estimate` equals `planning_estimate`.
+The lookup never starts an analysis and makes no time claim without history; "Start analysis"
+(`POST /api/v1/analyses`) does, and runs plan and PR context only.
+Old resolve responses without `size_warning`, `size` or `planning_estimate` remain readable.
+
+`analysis` in the resolve response is the tenant's latest analysis of the pull request whatever its language:
+usable analyses (not cancelled; a failed one can be retried) before cancelled ones, then the user's current
+language before another, then the newest. Every
+`AnalysisSummary` carries `language` (`en` | `pl`), so a client can label it. Changing the language therefore
+does not hide an existing analysis; `POST /api/v1/analyses` still creates an analysis per head and language
+(409 only when a live one exists for this head and the user's language), so analysing again in the new
+language stays an explicit action.
 
 ### Installation LLM choice and user pause
 
@@ -416,7 +439,8 @@ resumes_at:null, done:3, total:5}` (existing stage fields remain optional). It i
 original pauser and time. A running job finishes and its result is kept, but no next job is submitted or
 claimed. The pause survives restarts. Provider pauses use `reason:"usage_limit"` (also the meaning of
 an absent reason); a provider deadline never overrides a user pause. Resume clears the user pause;
-if the provider is still limited, its pause remains. Resume checks the pinned head with GitHub and
+if the provider is still limited (a paused job, or a waiting job whose credential another analysis paused),
+its pause remains with its `resumes_at`. Resume checks the pinned head with GitHub and
 returns `conflict` with the existing moved-head sentence if it changed. Neither action discards results or increments the retry round.
 Once the plan and PR context are accepted, a paused analysis retains its partial Tour; Ask works on its accepted steps.
 Cancel requires an inline UI confirmation, then discards documents and cancels unfinished jobs. Analytic and private working PR sessions are retained.
@@ -424,10 +448,14 @@ Cancel requires an inline UI confirmation, then discards documents and cancels u
 ### Lazy flow review
 
 `AnalysisSummary.review_ready` is true after accepted plan and PR context, including while running or
-paused; false after Cancel. `background_analysis` is the stored switch (default true). The Tour now
+paused; false after Cancel. `background_analysis` is the stored switch; a new analysis starts with it `false`
+(owner decision, 2026-11-18): after plan and PR context nothing is analysed until a flow is requested or the
+switch is turned on. Reading the analysis, its Tour or a flow never requests work. The Tour now
 contains every planned flow. Until accepted, `steps` and graph nodes are empty and `llm.risk` is null;
 clients show `analysis_status`, not a risk label or a review tick. `planned` carries intent, rank and
-verified changed ranges. Accepted flows support ticks, comments and private Ask before the run ends.
+verified changed ranges; the sum of `end_line - start_line + 1` over `planned.ranges[].ranges[]` is the flow's
+size in changed lines, known before the flow is analysed (no time estimate per flow). Accepted flows support
+ticks, comments and private Ask before the run ends.
 
 Example: `{"analysis_status":{"state":"analysing","started_at":"2026-11-17T20:00:00Z","message":null},
 "planned":{"intent":"Bound retries","importance_rank":2,"ranges":[{"file":"src/rpc.rs","side":"head","ranges":[{"start_line":8,"end_line":19}]}]}}`.
@@ -438,9 +466,32 @@ POST `/api/v1/analyses/{id}/flows/{flow}/request` has no body and returns `Analy
 is 404. PUT `/api/v1/analyses/{id}/background` takes `{"enabled":false}` and returns `AnalysisSummary`.
 Both require session/CSRF and tenant access; requesting work or enabling background checks the current PR
 head. Latest requested flow runs first, then background flows by plan rank. Already claimed work finishes;
-queued work may be withdrawn. A user pause still prevents submission/claim. A failed flow needs explicit
-Retry. Requests/preferences survive restart. With background disabled or a failed flow awaiting Retry, the overall ETA is omitted because
-unscheduled work has no completion time. Existing analysis SSE events invalidate the partial Tour,
+queued work may be withdrawn; a repair run refused because the demand changed waits for its flow's next turn
+and then repairs the stored output, also after another flow's retry started a new job round. A user pause still
+prevents submission/claim. A flow nobody requested never runs while background analysis is off. A failed flow
+is retried automatically at most twice (per flow, whoever started it): a requested flow keeps its demand and
+runs again at once (state `queued`), also with background analysis off; a flow analysed in the background is
+retried after the flows not analysed yet, while background analysis is on. Then it stays `failed` and needs
+explicit Retry, which runs it once more. Its `analysis_status.message` names the cause and what happens next:
+`The flow analysis failed. <cause sentence of the failed call>` followed by `It will be tried again
+automatically.` while the analysis is planning, running or paused and the server will run the flow again by
+itself (it is requested, or an automatic retry is left and background analysis is on), in a `failed` analysis
+(where a flow request answers 409) by `Retry the analysis; then this flow can be analysed again.` (with reason
+`configuration`, which offers no Retry: `Ask the administrator to fix the server configuration.`), in a
+`cancelled` one by `Start a new analysis to analyse this flow.`, else by `Retry this flow.` (likewise after `The flow output failed
+verification after repairs.`). A flow too large for the agent
+request (`This flow is too large for the agent request.`) is never retried automatically: the same plan and
+diff give the same prompt. An unusable LLM credential fails the analysis instead (state `failed`
+with the sign-in sentence and the flow). Requests/preferences survive restart.
+
+When no flow work is admitted (every flow analysed or failed for good, or the rest not requested with background
+off) and flows remain, the analysis stays `running {done, total, idle: true}` without `stage` and no server task
+holds it; a flow request or switching background on starts the work again. `idle` (boolean, `false` when absent)
+is read with every summary: `false` while a flow is requested, being analysed or waiting for its turn, so a
+client can tell "nothing is being analysed" from "working between two jobs". `finished` still means every
+planned flow is analysed. With background analysis off, `progress.estimate` and `progress.percent` cover plan
+parts and PR context only (the wait until the review is ready) and are null once it is ready, until `finished`
+(100); with a failed flow awaiting Retry the ETA is omitted. Unscheduled work has no completion time. Existing analysis SSE events invalidate the partial Tour,
 including when a verified flow becomes available; no extra polling is needed.
 
 #### Deterministic context and replacement lines

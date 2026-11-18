@@ -455,6 +455,57 @@ async fn cancel_with_full_event_channels_settles_a_detached_attempt() {
     );
 }
 
+/// A stop signal while a job runs: the attempt is cancelled and the worker returns only after it has ended
+/// (under the supervisor: stop, sweep and credential copy-back), not while it is still finishing.
+#[tokio::test]
+async fn shutdown_cancels_the_running_attempt_and_waits_for_it_to_end() {
+    let mut provider = Scripted::new(usize::MAX, UNIT / 4);
+    provider.honour_cancel = false;
+    provider.ends_after_cancel = Some(UNIT * 5);
+    let setup = setup_with(provider, Duration::ZERO, true).await;
+    mount(&setup, "events", ack(false)).await;
+    let provider = Arc::clone(&setup.provider);
+    let running = Arc::clone(&setup.provider);
+    let shutdown = async move {
+        while running.sent.load(Ordering::SeqCst) == 0 {
+            sleep(UNIT / 4).await;
+        }
+    };
+    tokio::time::timeout(UNIT * 200, setup.worker.run(shutdown))
+        .await
+        .expect("the wait for the attempt is bounded");
+    assert!(
+        provider.cancel_called.load(Ordering::SeqCst),
+        "the running attempt is cancelled"
+    );
+    assert!(
+        provider.finished.load(Ordering::SeqCst),
+        "the attempt ended before the worker returned"
+    );
+}
+
+/// An attempt that does not end is not waited for beyond the bound.
+#[tokio::test]
+async fn shutdown_does_not_wait_for_an_attempt_that_never_ends() {
+    let mut provider = Scripted::new(usize::MAX, UNIT / 4);
+    provider.honour_cancel = false;
+    let setup = setup_with(provider, Duration::ZERO, true).await;
+    mount(&setup, "events", ack(false)).await;
+    let running = Arc::clone(&setup.provider);
+    let shutdown = async move {
+        while running.sent.load(Ordering::SeqCst) == 0 {
+            sleep(UNIT / 4).await;
+        }
+    };
+    let started = Instant::now();
+    setup.worker.run(shutdown).await;
+    let waited = started.elapsed();
+    assert!(
+        waited >= timing().term_grace + timing().kill_and_cleanup && waited < UNIT * 100,
+        "{waited:?}"
+    );
+}
+
 /// The claim reply is delayed by 600 ms and no later request is ever acked: the deadline runs from the claim's
 /// SEND time (1400 ms), so the agent is stopped and cleaned up well before the lease (2400 ms from receipt) and
 /// before a deadline wrongly measured from the delayed ack (2000 ms).
@@ -607,6 +658,87 @@ async fn dropped_sessions_are_acknowledged_with_the_next_claim() {
     assert_eq!(
         body::<ClaimRequest>(&claims[1]).dropped_sessions,
         [analysis]
+    );
+}
+
+#[tokio::test]
+async fn below_the_reserve_the_runner_takes_no_job_but_still_drops_sessions() {
+    let server = MockServer::start().await;
+    let root = TempDir::new().unwrap();
+    let analysis = 1;
+    Mock::given(method("POST"))
+        .and(path("/runner/v1/claim"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            claim: None,
+            drop_sessions: vec![analysis],
+        }))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/runner/v1/claim"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ClaimResponse {
+            claim: None,
+            drop_sessions: Vec::new(),
+        }))
+        .mount(&server)
+        .await;
+    let executor = Arc::new(Executor::new(
+        Arc::new(Scripted::new(0, UNIT)),
+        dirs(root.path()),
+        credential(),
+    ));
+    let stored = executor.sessions().dir(analysis);
+    std::fs::create_dir_all(&stored).unwrap();
+    let worker = |executor: Arc<Executor>, reserve: u64| {
+        let client = ServerClient::new(
+            &server.uri(),
+            Secret::new(RUNNER_SECRET),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        Worker::new(
+            client,
+            executor,
+            "r".to_owned(),
+            Secret::new(RUNNER_SECRET),
+            timing(),
+            Arc::new(|| true),
+        )
+        .with_disk_reserve(crate::scratch::Reserve::new(
+            root.path().to_owned(),
+            reserve,
+        ))
+    };
+
+    let mut full = worker(Arc::clone(&executor), u64::MAX);
+    assert_eq!(full.poll_once().await.unwrap(), None);
+    assert!(!stored.exists(), "a session drop is still carried out");
+    assert_eq!(full.poll_once().await.unwrap(), None);
+    let mut roomy = worker(executor, 1);
+    assert_eq!(roomy.poll_once().await.unwrap(), None);
+
+    let claims: Vec<ClaimRequest> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(body)
+        .collect();
+    assert_eq!(claims.len(), 3, "polling goes on below the reserve");
+    assert!(
+        claims[0].credentials.is_empty() && claims[1].credentials.is_empty(),
+        "no credential offered, so the server hands out no job"
+    );
+    assert_eq!(
+        claims[1].dropped_sessions,
+        [analysis],
+        "the drop is acknowledged"
+    );
+    assert_eq!(
+        claims[2].credentials.len(),
+        1,
+        "jobs again once enough is free"
     );
 }
 

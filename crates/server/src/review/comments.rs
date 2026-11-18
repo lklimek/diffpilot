@@ -245,8 +245,10 @@ fn permalink(summary: &AnalysisSummary, target: &CommentTarget) -> String {
     url.into()
 }
 
-/// Records `missed_by_llm` when the analysis is finished and the target has a changed line without annotation;
-/// returns whether it was recorded. A failure is logged and never undoes the comment.
+/// Records `missed_by_llm` when the target has a changed line without annotation that the LLM has read: any
+/// such line once the analysis is finished, before that only a line inside a step of an analysed flow (the
+/// other flows may never be analysed). Returns whether it was recorded. A failure is logged and never undoes
+/// the comment.
 async fn record_missed(
     state: &AppState,
     user_id: &str,
@@ -254,9 +256,6 @@ async fn record_missed(
     files: &[FileDiff],
     target: &CommentTarget,
 ) -> bool {
-    if !matches!(summary.state, AnalysisState::Finished { .. }) {
-        return false;
-    }
     let flows: Vec<FlowAnalysisOutput> = match state
         .db
         .documents()
@@ -273,6 +272,15 @@ async fn record_missed(
     let Some(line) = missed_line(files, &flows, target) else {
         return false;
     };
+    let read_by_llm = matches!(summary.state, AnalysisState::Finished { .. })
+        || flows.iter().flat_map(|flow| &flow.steps).any(|step| {
+            step.file == target.path
+                && step.side == target.side
+                && (step.start_line..=step.end_line).contains(&line)
+        });
+    if !read_by_llm {
+        return false;
+    }
     let feedback = NewFeedback {
         id: FeedbackId::new_random(),
         analysis_id: summary.id,
@@ -1515,5 +1523,77 @@ mod github_tests {
                 line: 96
             }
         );
+    }
+
+    /// A flow fixture's analysis left running with only the flows `kept` stored (lazy review).
+    async fn lazy_fixture(kept: &[&str]) -> Fixture {
+        let mut f = fixture().await;
+        for n in 1..=5 {
+            let key = format!("f{n}");
+            if !kept.contains(&key.as_str()) {
+                f.state
+                    .db
+                    .documents()
+                    .delete(f.summary.id, DocumentKind::Flow, &key)
+                    .await
+                    .expect("delete");
+            }
+        }
+        let running = AnalysisState::Running {
+            done: u32::try_from(kept.len()).expect("count"),
+            total: 5,
+            idle: false,
+            stage: None,
+        };
+        f.state
+            .db
+            .analyses()
+            .set_state(f.summary.id, &running, Utc::now())
+            .await
+            .expect("running");
+        f.summary = f
+            .state
+            .db
+            .analyses()
+            .summary(f.summary.id)
+            .await
+            .expect("summary");
+        f
+    }
+
+    /// Lazy review: the flow of line 96 is analysed, so a comment there is `missed_by_llm` before the analysis
+    /// finishes (it may never finish when other flows are not requested).
+    #[tokio::test]
+    async fn comment_in_an_analysed_flow_records_missed_by_llm_before_the_analysis_finishes() {
+        let f = lazy_fixture(&["f1"]).await;
+        f.head_is(HEAD, 1).await;
+        f.add_thread_answers(json!({"line": 96}), line_ok(), 1)
+            .await;
+        let response = f
+            .create(Uuid::new_v4(), LineSide::Head, None, 96, CLIENT, "missed")
+            .await
+            .expect("comment");
+        assert!(response.missed_by_llm_recorded);
+    }
+
+    /// The LLM has not read a flow that is not analysed yet: a comment on its lines is no `missed_by_llm`.
+    #[tokio::test]
+    async fn comment_in_a_flow_not_analysed_yet_records_no_missed_by_llm() {
+        let f = lazy_fixture(&["f2"]).await;
+        f.head_is(HEAD, 1).await;
+        f.add_thread_answers(json!({"line": 96}), line_ok(), 1)
+            .await;
+        let response = f
+            .create(
+                Uuid::new_v4(),
+                LineSide::Head,
+                None,
+                96,
+                CLIENT,
+                "not read yet",
+            )
+            .await
+            .expect("comment");
+        assert!(!response.missed_by_llm_recorded);
     }
 }

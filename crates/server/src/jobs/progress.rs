@@ -165,6 +165,7 @@ mod tests {
                     let state = AnalysisState::Running {
                         done: 1,
                         total: 3,
+                        idle: false,
                         stage: None,
                     };
                     db_a.analyses().set_state(analysis, &state, at(1)).await?;
@@ -182,6 +183,7 @@ mod tests {
             &AnalysisState::Running {
                 done: 2,
                 total: 3,
+                idle: false,
                 stage: None,
             },
             at(2),
@@ -197,7 +199,8 @@ mod tests {
             Some(AnalysisState::Running {
                 done: 1,
                 total: 3,
-                stage: None
+                idle: false,
+                stage: None,
             })
         );
         let stored = db.analyses().get(analysis).await.expect("get").state;

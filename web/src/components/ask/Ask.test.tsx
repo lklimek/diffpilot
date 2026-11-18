@@ -151,9 +151,71 @@ describe("AskForm", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByText(/Ask works on a step/)).toBeInTheDocument();
   });
+
+  it("shows the answers below the question field, newest first, pending and failed in the same place", () => {
+    const questions = [
+      question({ id: "old", text: "Old question?", state: "failed", failure: "the job failed." }),
+      question({ id: "new", text: "New question?", created_at: "2026-11-16T10:30:00Z" }),
+    ];
+    render(<AskForm step={step5} onAsk={() => {}} answers={<AskAnswers questions={questions} />} />);
+    const field = screen.getByRole("textbox");
+    const items = within(screen.getByRole("list", { name: "Questions asked about this step" })).getAllByRole(
+      "listitem",
+    );
+    expect(items.map((i) => i.textContent)).toEqual([
+      expect.stringContaining("Asked by you: New question?"),
+      expect.stringContaining("Asked by you: Old question?"),
+    ]);
+    for (const item of items)
+      expect(field.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(items[0]).toHaveTextContent("Waiting for the LLM");
+    expect(items[1]).toHaveTextContent("No answer: the job failed.");
+    expect(screen.getByRole("heading", { name: /Ask/ })).toHaveTextContent(/answers appear below/);
+  });
+
+  it("keeps the answers in a block of bounded height with its own scroll, so the rest of the dock stays in view", async () => {
+    const user = userEvent.setup();
+    const onAsk = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AskForm step={step5} onAsk={onAsk} answers={<AskAnswers questions={[question({ id: "q" })]} />} />,
+    );
+    const block = screen.getByRole("region", { name: "Answers" });
+    expect(block).toContainElement(screen.getByRole("list", { name: "Questions asked about this step" }));
+    expect(block.className).toMatch(/(^|\s)max-h-\[/);
+    expect(block.className).toMatch(/(^|\s)overflow-y-auto(\s|$)/);
+    expect(block).toHaveAttribute("tabindex", "0");
+    // A new question goes to the top of the newest-first list: the block shows its start.
+    block.scrollTop = 120;
+    await user.type(screen.getByRole("textbox"), "Why?{Enter}");
+    expect(block.scrollTop).toBe(0);
+  });
 });
 
 describe("AskAnswers", () => {
+  it("shows the current file's name in bold in an answer's evidence", async () => {
+    const user = userEvent.setup();
+    render(
+      <AskAnswers
+        currentFile="src/rpc/client.rs"
+        questions={[
+          question({
+            state: "answered",
+            answer: {
+              answer: "Yes.",
+              evidence: [
+                { file: "src/rpc/client.rs", side: "head", line: 99 },
+                { file: "src/rpc/retry.rs", side: "head", line: 23 },
+              ],
+            },
+          }),
+        ]}
+      />,
+    );
+    await user.click(screen.getByText("Evidence · 2 places"));
+    expect(screen.getByText("client.rs")).toHaveClass("font-bold");
+    expect(screen.getByText("retry.rs")).not.toHaveClass("font-bold");
+  });
+
   it("wraps long answer words and code inside the inspector", () => {
     const questions = structuredClone(seedFor("resume", "questions") as AskQuestion[]);
     const long = "x".repeat(500);
@@ -176,6 +238,8 @@ describe("AskAnswers", () => {
     expect(item).toHaveTextContent("Does the node deduplicate broadcast_tx by transaction id?");
     expect(item).toHaveTextContent(questions[0]!.answer!.answer);
     expect(within(item).getByText("LLM answer")).toHaveAccessibleDescription(/LLM/);
+    expect(within(item).getByText("LLM answer")).toHaveAccessibleDescription(/told not to run/);
+    expect(within(item).getByText("LLM answer")).not.toHaveAccessibleDescription(/nothing was executed/i);
     expect(item).toHaveTextContent("Evidence · 2 places");
     expect(within(item).queryByRole("link")).toBeNull();
   });

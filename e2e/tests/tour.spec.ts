@@ -34,7 +34,7 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
     "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
   );
   await expect(banner).toContainText("flows reviewed 0 / 5");
-  await expect(page.getByRole("main")).toContainText("LLM analysis unless marked otherwise.");
+  await expect(page.getByRole("main").locator('[data-provenance="llm"]').first()).toBeVisible();
   await expect(inspector(page)).toContainText("Unexplained: 85 changed lines in 2 files — read these yourself");
   await checkScreen(page);
 });
@@ -147,7 +147,7 @@ test("resume where left off: the tick and the last viewed block survive a reload
   const found = page.getByRole("status").filter({ hasText: "Analysis found." });
   await expect(found).toContainText("Your ticks, answers and last viewed block are kept");
   await checkScreen(page);
-  await found.getByRole("link", { name: "Open review" }).click();
+  await found.getByRole("link", { name: "Resume review" }).click();
   await expect(heading(page)).toContainText("Default timeout");
   await expect(ticked).toBeVisible();
   await checkScreen(page);

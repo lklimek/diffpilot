@@ -22,7 +22,18 @@ const PROXY: &str = "http://egress-proxy:3128";
 const GITHUB_CANARY: &str = "ghs_CANARYinstallationTOKEN0001";
 const MEMCAN_CANARY: &str = "memcan-CANARY-bearer-0002";
 const PROMPT_CANARY: &str = "PROMPT-CANARY-0003";
-const ACCESS_CANARY: &str = "codex-access-CANARY-0004";
+/// A fake unsigned JWT of `user-1` in `acct-1` (`https://api.openai.com/auth` claims) ending in `$signature`.
+macro_rules! fake_jwt {
+    ($signature:literal) => {
+        concat!(
+            "eyJhbGciOiJub25lIn0.",
+            "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlci0xIn19.",
+            $signature
+        )
+    };
+}
+const ID_TOKEN: &str = fake_jwt!("codex-id-0009");
+const ACCESS_CANARY: &str = fake_jwt!("codex-access-CANARY-0004");
 const REFRESH_CANARY: &str = "codex-refresh-CANARY-0005";
 const RUNNER_SECRET_CANARY: &str = "runner-secret-CANARY-0006";
 /// The thread of the recorded fixture session.
@@ -60,6 +71,13 @@ if [ -f "$PWD/rollout-rel" ]; then
   mkdir -p "$(dirname "$rollout")"
   if [ -f "$PWD/$mode-rollout" ]; then cat "$PWD/$mode-rollout" >> "$rollout"; else echo '{"type":"turn"}' >> "$rollout"; fi
 fi
+if [ -f "$PWD/more-rollouts" ]; then
+  while read -r size rel; do
+    mkdir -p "$(dirname "$CODEX_HOME/sessions/$rel")"
+    truncate -s "$size" "$CODEX_HOME/sessions/$rel"
+  done < "$PWD/more-rollouts"
+fi
+if [ -f "$PWD/link-rollout" ]; then ln "$rollout" "$CODEX_HOME/second-link"; fi
 if [ -f "$PWD/ignore-term" ]; then trap '' TERM; fi
 if [ -f "$PWD/tamper" ]; then printf '\n[mcp_servers.evil]\ncommand = "/bin/evil"\n' >> "$CODEX_HOME/config.toml"; fi
 if [ -f "$PWD/rotate" ]; then cat "$PWD/rotate" > "$CODEX_HOME/auth.json"; fi
@@ -68,6 +86,7 @@ if [ -f "$PWD/chmod-auth" ]; then chmod 000 "$CODEX_HOME/auth.json"; fi
 if [ -f "$PWD/lock-home" ]; then mkdir -p "$HOME/locked/deeper"; echo left > "$HOME/locked/deeper/x"; chmod 000 "$HOME/locked/deeper" "$HOME/locked"; fi
 if [ -f "$PWD/symlink-auth" ]; then rm -f "$CODEX_HOME/auth.json"; ln -s "$(cat "$PWD/symlink-auth")" "$CODEX_HOME/auth.json"; fi
 if [ -f "$PWD/background" ]; then sleep 300 </dev/null >/dev/null 2>&1 & echo $! > "$PWD/background.pid"; fi
+if [ -f "$PWD/wait-for-go" ]; then while [ ! -f "$PWD/go" ]; do sleep 0.05; done; fi
 cat "$PWD/scenario.jsonl"
 if [ -f "$PWD/hang" ]; then sleep 300; fi
 exit "$(cat "$PWD/scenario-exit")"
@@ -110,7 +129,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
     fs::create_dir(master_auth.parent().unwrap()).unwrap();
     fs::write(
         &master_auth,
-        json!({"auth_mode": "chatgpt", "tokens": {"access_token": ACCESS_CANARY, "refresh_token": REFRESH_CANARY, "account_id": "acct-1"}})
+        json!({"auth_mode": "chatgpt", "tokens": {"id_token": ID_TOKEN, "access_token": ACCESS_CANARY, "refresh_token": REFRESH_CANARY, "account_id": "acct-1"}})
             .to_string(),
     )
     .unwrap();
@@ -433,11 +452,11 @@ async fn credential_tokens_are_scrubbed_from_events_and_output() {
     assert_eq!(outcome.output, json!({"leak": "[redacted]"}));
 }
 
-const NEW_ACCESS_CANARY: &str = "codex-access-ROTATED-CANARY-0007";
+const NEW_ACCESS_CANARY: &str = fake_jwt!("codex-access-ROTATED-CANARY-0007");
 const NEW_REFRESH_CANARY: &str = "codex-refresh-ROTATED-CANARY-0008";
 
 fn rotated_auth() -> String {
-    json!({"auth_mode": "chatgpt", "tokens": {"access_token": NEW_ACCESS_CANARY, "refresh_token": NEW_REFRESH_CANARY, "account_id": "acct-1"}})
+    json!({"auth_mode": "chatgpt", "tokens": {"id_token": ID_TOKEN, "access_token": NEW_ACCESS_CANARY, "refresh_token": NEW_REFRESH_CANARY, "account_id": "acct-1"}})
         .to_string()
 }
 
@@ -1095,7 +1114,7 @@ fn isolated_with(h: &mut Harness, fail_clears: Option<&str>) -> PathBuf {
 async fn isolated_call_copies_back_and_removes_the_agent_dirs() {
     let mut h = harness("plan.jsonl", 0);
     let agent_home = isolated(&mut h);
-    let rotated = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "rotated-access", "refresh_token": "rotated-refresh", "account_id": "acct-1"}});
+    let rotated = json!({"auth_mode": "chatgpt", "tokens": {"id_token": ID_TOKEN, "access_token": fake_jwt!("rotated-access"), "refresh_token": "rotated-refresh", "account_id": "acct-1"}});
     fs::write(h.call.job_dir.join("rotate"), rotated.to_string()).unwrap();
     let outcome = run(&h).await.0.expect("success");
     assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
@@ -1144,12 +1163,12 @@ async fn isolated_cancel_stops_codex_ignoring_sigterm_with_a_sweep() {
     assert!(started.elapsed() < Duration::from_secs(60));
 }
 
-const ROTATED_ACCESS: &str = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyb3RhdGVkIn0.c2lnbmF0dXJlLXJvdGF0ZWQ";
+const ROTATED_ACCESS: &str = fake_jwt!("c2lnbmF0dXJlLXJvdGF0ZWQ");
 /// Same shape as the master's refresh token (prefix `codex-`), as a rotation by the same issuer is.
 const ROTATED_REFRESH: &str = "codex-refresh-ROTATEDtokenABCDEFGHIJ0123";
 
 fn rotate_to_new_tokens(h: &Harness) {
-    let rotated = json!({"auth_mode": "chatgpt", "tokens": {"access_token": ROTATED_ACCESS, "refresh_token": ROTATED_REFRESH, "account_id": "acct-1"}});
+    let rotated = json!({"auth_mode": "chatgpt", "tokens": {"id_token": ID_TOKEN, "access_token": ROTATED_ACCESS, "refresh_token": ROTATED_REFRESH, "account_id": "acct-1"}});
     fs::write(h.call.job_dir.join("rotate"), rotated.to_string()).unwrap();
 }
 
@@ -1307,6 +1326,246 @@ async fn isolated_glued_rotated_tokens_never_leave_in_stderr() {
     );
 }
 
+/// The agent leaves further (sparse) files of an apparent `size` below `sessions/` in its `CODEX_HOME`.
+fn agent_leaves_rollouts(h: &Harness, rollouts: &[(&str, String)]) {
+    let lines: String = rollouts
+        .iter()
+        .map(|(size, rel)| format!("{size} {rel}\n"))
+        .collect();
+    fs::write(h.call.job_dir.join("more-rollouts"), lines).unwrap();
+}
+
+/// A rollout path of `thread` written at hour `hour`.
+fn rollout_at(hour: u32, thread: &str) -> String {
+    format!("2026/11/16/rollout-2026-11-16T{hour:02}-30-00-{thread}.jsonl")
+}
+
+/// A resumed isolated job whose copy-back was refused: the job succeeds and reports no session, and neither the
+/// staging home nor the store keeps the pre-turn rollout.
+async fn assert_resumed_session_is_lost(h: &Harness) {
+    let outcome = resume(h)
+        .await
+        .0
+        .expect("a failed archival does not fail the job");
+    assert_eq!(outcome.session_id, None, "the session was not archived");
+    assert!(
+        !h.call.session_dir.exists(),
+        "the stored pre-turn session is forgotten, not kept as current"
+    );
+    assert!(
+        !h.call.codex_home.join("sessions").exists(),
+        "no rollout stays in the runner's staging home"
+    );
+}
+
+#[tokio::test]
+async fn isolated_copy_back_refuses_more_rollouts_than_the_cap() {
+    let mut h = harness("pr-context.jsonl", 0);
+    isolated(&mut h);
+    store_session(&h, 50_000);
+    let extra: Vec<_> = (11..15)
+        .map(|hour| ("20", rollout_at(hour, THREAD)))
+        .collect();
+    agent_leaves_rollouts(&h, &extra);
+    assert_resumed_session_is_lost(&h).await;
+}
+
+#[tokio::test]
+async fn isolated_copy_back_refuses_rollouts_over_the_total_cap_without_reading_them() {
+    let mut h = harness("pr-context.jsonl", 0);
+    isolated(&mut h);
+    store_session(&h, 50_000);
+    // Each file is below the per-file cap; sparse, so nothing is allocated.
+    let extra: Vec<_> = (11..14)
+        .map(|hour| ("200M", rollout_at(hour, THREAD)))
+        .collect();
+    agent_leaves_rollouts(&h, &extra);
+    let started = std::time::Instant::now();
+    assert_resumed_session_is_lost(&h).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "decided from the listing, not by copying 600 MiB"
+    );
+}
+
+#[tokio::test]
+async fn isolated_oversized_rollout_never_leaves_the_pre_turn_one_as_the_session() {
+    let mut h = harness("pr-context.jsonl", 0);
+    isolated(&mut h);
+    store_session(&h, 50_000);
+    agent_leaves_rollouts(&h, &[("300M", rollout_rel(THREAD))]);
+    assert_resumed_session_is_lost(&h).await;
+}
+
+#[tokio::test]
+async fn isolated_rollout_that_cannot_be_copied_does_not_fail_the_job() {
+    let mut h = harness("pr-context.jsonl", 0);
+    isolated(&mut h);
+    store_session(&h, 50_000);
+    // A second hard link: the copy-out helper refuses the file.
+    fs::write(h.call.job_dir.join("link-rollout"), "").unwrap();
+    assert_resumed_session_is_lost(&h).await;
+}
+
+#[tokio::test]
+async fn isolated_copy_back_takes_only_the_dated_session_layout() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    let odd = format!("20261/11/16/rollout-2026-11-16T10-00-00-{THREAD}.jsonl");
+    fs::write(h.call.job_dir.join("rollout-rel"), &odd).unwrap();
+    let outcome = run(&h).await.0.expect("success");
+    assert_eq!(outcome.session_id, None);
+    assert!(
+        !h.call.codex_home.join("sessions").join(&odd).exists(),
+        "a rollout outside sessions/YYYY/MM/DD never enters the runner's staging home"
+    );
+}
+
+/// The runner stops while Codex runs (its runtime is dropped): the call never reaches its copy-back, so only
+/// the agent's `CODEX_HOME` holds a credential Codex refreshed. The next start must still find it.
+#[tokio::test]
+async fn isolated_dropped_call_keeps_a_refreshed_credential_for_the_next_start() {
+    let mut h = harness("plan.jsonl", 0);
+    let staging = h._dir.path().join("staging");
+    fs::create_dir(&staging).unwrap();
+    h.call.codex_home = staging.join("codex-home");
+    fs::create_dir(&h.call.codex_home).unwrap();
+    let agent_home = isolated(&mut h);
+    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
+    fs::write(h.call.job_dir.join("hang"), "").unwrap();
+    let original = fs::read_to_string(&h.master_auth).unwrap();
+    let (tx, _rx) = mpsc::channel(1024);
+    let refreshed = async {
+        while fs::read_to_string(agent_home.join("auth.json")).ok() != Some(rotated_auth()) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::select! {
+        result = h.provider.run(&h.call, tx) => panic!("the hanging call ended: {result:?}"),
+        waited = tokio::time::timeout(Duration::from_secs(30), refreshed) => waited.expect("Codex refreshed"),
+    }
+    assert_eq!(
+        fs::read_to_string(&h.master_auth).unwrap(),
+        original,
+        "the stale staged copy is not what the master gets"
+    );
+    // The next start: agent homes first (ADR-013 step 1), then the credential compare-and-swap.
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    isolation
+        .recover(&staging, &h._dir.path().join("work"))
+        .await
+        .expect("recovered");
+    h.provider.settings.credential.recover(&staging).unwrap();
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), rotated_auth());
+    assert!(usable(&h));
+}
+
+/// The call fails while Codex's events are read (here: the staged copy is rewritten more than a refresh does).
+/// The agent is swept by then, so the credential Codex refreshed still comes back before the error ends the
+/// call; nothing is left for a later start to trip over.
+#[tokio::test]
+async fn isolated_error_after_the_sweep_still_brings_the_refreshed_credential_back() {
+    let mut h = harness("plan.jsonl", 0);
+    isolated(&mut h);
+    fs::write(h.call.job_dir.join("rotate"), rotated_auth()).unwrap();
+    fs::write(h.call.job_dir.join("wait-for-go"), "").unwrap();
+    let many: serde_json::Map<String, Value> = (0..20)
+        .map(|n| (format!("token_{n}"), json!(format!("value-{n}"))))
+        .chain([("refresh_token".to_owned(), json!("codex-refresh-0011"))])
+        .collect();
+    let crowded = json!({"auth_mode": "chatgpt", "tokens": many});
+    let (result, ()) = tokio::join!(run(&h), async {
+        while !h.call.job_dir.join("child-stdin.txt").exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        fs::write(h.call.codex_home.join("auth.json"), crowded.to_string()).unwrap();
+        fs::write(h.call.job_dir.join("go"), "").unwrap();
+    });
+    assert!(
+        matches!(result.0, Err(ProviderError::CredentialUnusable)),
+        "{:?}",
+        result.0
+    );
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), rotated_auth());
+    assert!(
+        !PathBuf::from(format!("{}.cas", h.call.codex_home.display())).exists(),
+        "the compare-and-swap base is settled"
+    );
+}
+
+#[tokio::test]
+async fn master_without_an_account_bound_id_token_is_refused_before_codex_starts() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let sink = Arc::clone(&log);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(move || Captured(Arc::clone(&sink)))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let h = harness("plan.jsonl", 0);
+    let opaque = json!({"auth_mode": "chatgpt", "tokens": {"id_token": "opaque-id-token", "access_token": ACCESS_CANARY, "refresh_token": REFRESH_CANARY, "account_id": "acct-1"}});
+    fs::write(&h.master_auth, opaque.to_string()).unwrap();
+    assert!(!usable(&h), "claims report the credential unusable");
+    assert!(!usable(&h));
+    let (result, _) = run(&h).await;
+    assert!(
+        matches!(result, Err(ProviderError::CredentialUnusable)),
+        "{result:?}"
+    );
+    assert!(
+        !h.call.job_dir.join("invocations.txt").exists(),
+        "Codex never started, so the refresh token is unspent"
+    );
+    let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    let reason = "its id token does not name the stored account";
+    assert_eq!(logged.matches(reason).count(), 1, "said once: {logged}");
+    for secret in ["opaque-id-token", ACCESS_CANARY, REFRESH_CANARY] {
+        assert!(!logged.contains(secret), "{logged}");
+    }
+}
+
+#[tokio::test]
+async fn refreshed_copy_of_another_account_is_rejected_and_logged_without_token_material() {
+    let log = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let sink = Arc::clone(&log);
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .with_writer(move || Captured(Arc::clone(&sink)))
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let h = harness("plan.jsonl", 0);
+    let original = fs::read_to_string(&h.master_auth).unwrap();
+    // Tokens of account `acct-EVIL` behind the master's `account_id` field.
+    const FOREIGN: &str = concat!(
+        "eyJhbGciOiJub25lIn0.",
+        "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC1FVklMIiwiY2hhdGdwdF91c2VyX2lkIjoidXNlci1FVklMIn19.",
+        "Zm9yZWlnbi1DQU5BUlk"
+    );
+    let foreign = json!({"auth_mode": "chatgpt", "tokens": {"id_token": FOREIGN, "access_token": FOREIGN, "refresh_token": "codex-refresh-FOREIGN-CANARY-0010", "account_id": "acct-1"}});
+    fs::write(h.call.job_dir.join("rotate"), foreign.to_string()).unwrap();
+    run(&h).await.0.expect("the job's own output stands");
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), original);
+    assert!(
+        !usable(&h),
+        "the next claim reports the credential unusable"
+    );
+    let logged = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+    assert!(
+        logged.contains("not a credential of the same account and user"),
+        "{logged}"
+    );
+    for secret in [
+        FOREIGN,
+        "codex-refresh-FOREIGN-CANARY-0010",
+        ACCESS_CANARY,
+        REFRESH_CANARY,
+    ] {
+        assert!(!logged.contains(secret), "{logged}");
+    }
+}
+
 fn mode_and_owner(path: &Path) -> (u32, u32) {
     use std::os::unix::fs::MetadataExt as _;
     let meta = fs::symlink_metadata(path).unwrap();
@@ -1347,6 +1606,47 @@ async fn quarantine_sets_the_mode_in_the_supervisor_before_replying() {
         0o700,
         "set by the supervisor itself"
     );
+}
+
+/// The runner's start-up order (`main.rs`, isolation branch): empty `/tmp`, bring the crashed job's credential
+/// back from its agent home, empty the work volume, then recover the master. Mirrors the r1 container check
+/// `startup_empties_scratch_and_recovers_the_credential`.
+#[tokio::test]
+async fn startup_order_keeps_the_rotated_credential_and_empties_scratch() {
+    use sha2::Digest as _;
+    let mut h = harness("plan.jsonl", 0);
+    let agent_home = isolated(&mut h);
+    let root = h._dir.path().to_path_buf();
+    let tmp = root.join("tmp");
+    fs::create_dir_all(tmp.join("left/deep")).unwrap();
+    fs::write(tmp.join("left/deep/file"), "x").unwrap();
+    let work = root.join("work");
+    fs::create_dir_all(work.join("j-1/repo")).unwrap();
+    fs::write(work.join("j-1/repo/README"), "x").unwrap();
+    // A crash in the middle of job j-1: the agent rotated the token, the base digest is in staging.
+    let staging = root.join("staging");
+    fs::create_dir(&staging).unwrap();
+    let digest: String = sha2::Sha256::digest(fs::read(&h.master_auth).unwrap())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    fs::write(staging.join("j-1.cas"), digest).unwrap();
+    let crashed = agent_home.with_file_name("j-1");
+    fs::create_dir(&crashed).unwrap();
+    fs::write(crashed.join("auth.json"), rotated_auth()).unwrap();
+
+    crate::scratch::clear(&tmp).unwrap();
+    let isolation = h.provider.settings.isolation.as_ref().unwrap();
+    isolation.recover(&staging, &work).await.expect("recovered");
+    let cleared = crate::scratch::clear(&work).unwrap();
+    assert!(cleared.failed.is_empty());
+    assert_eq!(h.provider.settings.credential.recover(&staging).unwrap(), 1);
+
+    assert_eq!(fs::read_to_string(&h.master_auth).unwrap(), rotated_auth());
+    assert!(usable(&h));
+    for dir in [&tmp, &work, &staging, agent_home.parent().unwrap()] {
+        assert_eq!(fs::read_dir(dir).unwrap().count(), 0, "{}", dir.display());
+    }
 }
 
 #[tokio::test]
@@ -1425,7 +1725,7 @@ async fn recovery_with_a_rejected_agent_auth_keeps_a_newer_login() {
     let agent_home = isolated(&mut h);
     let staging = crashed_job_with_rejected_auth(&h, agent_home.parent().unwrap());
     // The owner signed in again after the crash.
-    let newer = json!({"auth_mode": "chatgpt", "tokens": {"access_token": "new-access", "refresh_token": "new-refresh", "account_id": "acct-1"}});
+    let newer = json!({"auth_mode": "chatgpt", "tokens": {"id_token": ID_TOKEN, "access_token": "new-access", "refresh_token": "new-refresh", "account_id": "acct-1"}});
     fs::write(&h.master_auth, newer.to_string()).unwrap();
     let isolation = h.provider.settings.isolation.as_ref().unwrap();
     isolation
@@ -1637,4 +1937,32 @@ async fn missing_flow_file_is_a_failed_attempt_with_a_repair_instruction() {
             .iter()
             .any(|event| matches!(event, ProviderEvent::OutputReady(_)))
     );
+}
+
+#[tokio::test]
+async fn required_skill_read_is_instructed_only_when_starting_a_session() {
+    let mut h = harness("plan.jsonl", 0);
+    configured_skills(&mut h).await;
+    run(&h).await.0.expect("first session");
+    let instruction = "Read the required skills once for this new session:";
+    let first = child_file(&h, "child-stdin.txt");
+    assert!(first.contains(instruction), "{first}");
+    assert!(first.contains("$HOME/.agents/skills/severity/SKILL.md"));
+    let mut resumed_job = harness("plan.jsonl", 0);
+    configured_skills(&mut resumed_job).await;
+    resumed_job.call.restore_dir = h.call.session_dir.clone();
+    let (tx, _rx) = mpsc::channel(1024);
+    resumed_job
+        .provider
+        .resume(THREAD, &resumed_job.call, tx)
+        .await
+        .expect("resume");
+    let resumed = child_file(&resumed_job, "child-stdin.txt");
+    assert!(!resumed.contains(instruction), "{resumed}");
+    // A context-pack fallback starts a new session through the same run entry point.
+    let mut fallback = harness("plan.jsonl", 0);
+    configured_skills(&mut fallback).await;
+    fallback.call.prompt = format!("Context pack: accepted plan.\n{}", fallback.call.prompt);
+    run(&fallback).await.0.expect("new session from pack");
+    assert!(child_file(&fallback, "child-stdin.txt").contains(instruction));
 }

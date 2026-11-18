@@ -43,7 +43,8 @@ const EVENT_BUFFER: usize = 16;
 /// Longest failure message in a result.
 const MESSAGE_MAX_CHARS: usize = 300;
 
-/// Runner directories. `work` may be tmpfs; the others live on the runner's persistent private volume.
+/// Runner directories, all on disk: `work` on a disposable volume emptied at start, the others on the runner's
+/// persistent private volume (the agent's own `CODEX_HOME`s, under isolation, are on a disposable volume, ADR-013).
 #[derive(Clone, Debug)]
 pub struct RunnerDirs {
     /// Job directories (`<job>-<attempt>/`, checkout at `repo/`).

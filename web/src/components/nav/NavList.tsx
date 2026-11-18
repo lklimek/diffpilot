@@ -1,13 +1,23 @@
 import { useId, type ReactNode } from "react";
-import type { BlockRef, Flow, QuietRowRef, QuietRows, StepId } from "../../api/generated/types";
+import type {
+  AnalysisState,
+  BlockRef,
+  Flow,
+  QuietRowRef,
+  QuietRows,
+  StepId,
+} from "../../api/generated/types";
 import { GroupLabel, RiskLabel } from "../badge/LlmLabel";
 import { isFlowReviewed } from "../flow-intro/progress";
+import { FlowWorkLabel } from "../flow-intro/status";
 import { NOT_ANALYSED_LABEL, fileCount, lineCount, plural } from "../quiet/labels";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface NavListProps {
   /** Flows in tour order. */
   flows: Flow[];
+  /** State of the whole analysis: pending flows say what they wait for; without it, only the flow's own state. */
+  analysis?: AnalysisState;
   /** Quiet rows of the analysis, listed after every flow. */
   quiet: QuietRows;
   /** Steps the user ticked. */
@@ -18,7 +28,14 @@ interface NavListProps {
   current: BlockRef;
   /** Called with the block the user picks. */
   onSelect: (block: BlockRef) => void;
+  /** Number of the user's own questions per step; steps without one are omitted. */
+  questionCounts?: Readonly<Record<StepId, number>>;
+  /** The entry of the user's questions page; no entry when omitted. */
+  questions?: { count: number | "loading" | "error"; open: boolean; onOpen: () => void };
 }
+
+// Spoken count of the questions entry while it has no number.
+const QUESTIONS_COUNT: Record<string, string> = { loading: "loading", error: "could not be read" };
 
 const ITEM =
   "block w-full cursor-pointer rounded-md border-l-4 border-transparent px-2 py-1.5 text-left text-text hover:bg-surface-2 aria-[current]:border-accent aria-[current]:bg-accent-bg aria-[current]:font-semibold";
@@ -38,8 +55,8 @@ const currentFlowId = (flows: Flow[], current: BlockRef): string | undefined => 
 
 const ariaCurrent = (isCurrent: boolean) => (isCurrent ? ("step" as const) : undefined);
 
-const sameRow = (current: BlockRef, row: QuietRowRef) =>
-  current.block === "quiet" && JSON.stringify(current.row) === JSON.stringify(row);
+const sameRow = (current: BlockRef | undefined, row: QuietRowRef) =>
+  current?.block === "quiet" && JSON.stringify(current.row) === JSON.stringify(row);
 
 function Heading({ children }: { children: ReactNode }) {
   return <h2 className="mt-3 mb-1 text-[10.5px] font-bold tracking-wide text-muted uppercase">{children}</h2>;
@@ -48,7 +65,7 @@ function Heading({ children }: { children: ReactNode }) {
 interface QuietRowProps {
   row: QuietRowRef;
   tip: string;
-  current: BlockRef;
+  current: BlockRef | undefined;
   onSelect: (block: BlockRef) => void;
   children: ReactNode;
 }
@@ -78,8 +95,20 @@ function pendingText(count: NonNullable<NavListProps["pendingCount"]>): string {
 }
 
 /** Left menu: PR context, flows in tour order with risk and ticks, quiet rows, pending review. */
-export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect }: NavListProps) {
-  const openFlow = currentFlowId(flows, current);
+export function NavList({
+  flows,
+  analysis,
+  quiet,
+  ticked,
+  pendingCount,
+  current: shown,
+  onSelect,
+  questionCounts = {},
+  questions,
+}: NavListProps) {
+  const openFlow = currentFlowId(flows, shown);
+  // The questions page replaces the block in the centre: no block row is current meanwhile.
+  const current = questions?.open ? undefined : shown;
   const unexplainedLines = quiet.unexplained.reduce((n, f) => n + lineCount(f.ranges), 0);
   const sections = quiet.not_analysed.filter((s) => s.items.length > 0);
   const rowProps = { current, onSelect };
@@ -90,7 +119,7 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
         type="button"
         data-row="menu"
         className={`${ITEM} mb-1 font-semibold`}
-        aria-current={ariaCurrent(current.block === "pr_context")}
+        aria-current={ariaCurrent(current?.block === "pr_context")}
         aria-label="PR context"
         aria-describedby={contextHint}
         onClick={() => onSelect({ block: "pr_context" })}
@@ -111,7 +140,7 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
                   type="button"
                   data-row="menu"
                   className={`${ITEM} flex-1`}
-                  aria-current={ariaCurrent(current.block === "flow_intro" && current.flow_id === flow.id)}
+                  aria-current={ariaCurrent(current?.block === "flow_intro" && current.flow_id === flow.id)}
                   onClick={() => onSelect({ block: "flow_intro", flow_id: flow.id })}
                   aria-label={`Flow ${flow.position}: ${flow.llm.title}${reviewed ? ", reviewed" : ""}`}
                 >
@@ -120,15 +149,7 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
                 </button>
                 <span className="flex flex-col items-end gap-0.5 pt-1.5">
                   {flow.analysis_status && flow.analysis_status.state !== "analysed" ? (
-                    <span className="text-xs">
-                      {flow.analysis_status.state === "analysing"
-                        ? "Being analysed"
-                        : flow.analysis_status.state === "failed"
-                          ? "Failed"
-                          : flow.analysis_status.state === "queued"
-                            ? "Queued"
-                            : "Not analysed yet"}
-                    </span>
+                    <FlowWorkLabel status={flow.analysis_status} analysis={analysis} />
                   ) : (
                     <RiskLabel risk={flow.llm.risk} />
                   )}
@@ -139,14 +160,15 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
                 <ol className="my-0.5 mb-1.5 ml-3.5 list-none border-l-2 border-border py-0 pl-1.5">
                   {flow.steps.map((step) => {
                     const done = ticked.includes(step.id);
+                    const asked = questionCounts[step.id] ?? 0;
                     return (
                       <li key={step.id}>
                         <button
                           type="button"
                           className={`${ITEM} py-0.5 text-[12.5px]`}
-                          aria-current={ariaCurrent(current.block === "step" && current.step_id === step.id)}
+                          aria-current={ariaCurrent(current?.block === "step" && current.step_id === step.id)}
                           onClick={() => onSelect({ block: "step", step_id: step.id })}
-                          aria-label={`Step ${step.number}: ${step.llm.title}${done ? ", reviewed" : ""}`}
+                          aria-label={`Step ${step.number}: ${step.llm.title}${asked > 0 ? `, ${plural(asked, "question")} asked` : ""}${done ? ", reviewed" : ""}`}
                         >
                           <span aria-hidden className="inline-block w-3.5 font-bold text-accent">
                             {done ? "☑" : ""}
@@ -163,6 +185,16 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
                             </span>
                           </Tooltip>
                           <b>{step.number}</b> {step.llm.title}
+                          {asked > 0 && (
+                            <Tooltip tip={`${plural(asked, "question")} asked on this step`}>
+                              <span
+                                tabIndex={0}
+                                className="ml-1 rounded-full bg-accent-bg px-1 font-mono text-[11px] font-semibold text-accent"
+                              >
+                                ?{asked}
+                              </span>
+                            </Tooltip>
+                          )}
                         </button>
                       </li>
                     );
@@ -231,13 +263,41 @@ export function NavList({ flows, quiet, ticked, pendingCount, current, onSelect 
               type="button"
               data-row="menu"
               className={ITEM}
-              aria-current={current.block === "pending_review" || undefined}
+              aria-current={current?.block === "pending_review" || undefined}
               aria-label={`Pending review on GitHub: ${pendingText(pendingCount)}`}
               onClick={() => onSelect({ block: "pending_review" })}
             >
               Pending review on GitHub{" "}
               <b className="ml-1 rounded-full bg-surface-2 px-1.5 text-xs whitespace-nowrap">
                 {pendingText(pendingCount)}
+              </b>
+            </button>
+          </Tooltip>
+        </>
+      )}
+      {questions && (
+        <>
+          <Heading>Your questions</Heading>
+          <Tooltip
+            tip={
+              questions.count === "error"
+                ? "Your questions could not be read; the page says why. Only you see them."
+                : "Every question you asked in this review, with its state and the LLM answer. Only you see them."
+            }
+            className="block"
+            placement="right"
+          >
+            <button
+              type="button"
+              data-row="menu"
+              className={ITEM}
+              aria-current={questions.open ? "page" : undefined}
+              aria-label={`Your questions and answers: ${QUESTIONS_COUNT[questions.count] ?? questions.count}`}
+              onClick={questions.onOpen}
+            >
+              Questions and answers{" "}
+              <b className="ml-1 rounded-full bg-surface-2 px-1.5 text-xs whitespace-nowrap">
+                {questions.count === "loading" ? "…" : questions.count === "error" ? "!" : questions.count}
               </b>
             </button>
           </Tooltip>

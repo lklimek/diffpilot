@@ -54,6 +54,7 @@ export function ProgressScreen() {
         {summary && (
           <AnalysisProgress
             reviewReady={summary.review_ready}
+            reviewStarted={summary.has_my_state === true}
             state={summary.state}
             progress={summary.progress}
             usage={summary.usage}

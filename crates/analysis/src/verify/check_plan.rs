@@ -50,12 +50,11 @@ fn partition(output: &PlanOutput, diff: &DiffIndex<'_>) -> (VerifiedPlan, Issues
     let mut ranks: BTreeMap<u32, &FlowId> = BTreeMap::new();
     for (index, flow) in output.flows.iter().enumerate() {
         let at = format!("flows[{index}] \"{}\"", flow.id);
-        if flow.classification == contracts::common::Classification::Test
-            || (!flow.hunks.is_empty()
-                && flow.hunks.iter().all(|selection| {
-                    diff.hunk(&selection.hunk_id)
-                        .is_some_and(|at| crate::tech::is_test_path(&at.file.path))
-                }))
+        if !flow.hunks.is_empty()
+            && flow.hunks.iter().all(|selection| {
+                diff.hunk(&selection.hunk_id)
+                    .is_some_and(|at| crate::tech::is_test_path(&at.file.path))
+            })
         {
             issues.push(
                 VerifyIssueKind::UnknownReference,

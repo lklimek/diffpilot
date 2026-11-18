@@ -23,20 +23,13 @@ evidence: p9:head:50 p10:base:23
 text: Is the jump from a tenth to a half of the delay intended in a PR that is described as a move?
 
 ### assessment
-headline: Retries wait noticeably longer or shorter from run to run; few users would see it.
 risk: low
 reason: A tuning change inside a bounded delay.
-basis_note: Read: 2 files (old and new location)
-not_checked: how often retries happen in production
-origin: introduced
-blocking: follow_up
-smallest_correction: Say it in the PR description, or keep the tenth in the move.
 
 ## step s2 p5:head:8-20 modified
 title: Module tree: retry in, backoff out
 called_by: the crate root
 decides: Declares rpc::retry and drops util::backoff.
-next: step 1 (the helpers in their new place)
 why: The moved file needs its new module path.
 
 ### annotation behaviour fact 13-13
@@ -45,12 +38,7 @@ is: rpc::retry is a module of rpc; util::backoff is gone.
 evidence: p5:head:13 p5:base:18
 
 ### assessment
-headline: Consumers may need the new module path.
 risk: low
 reason: The module declarations wire the moved implementation; there is no runtime branch here.
-basis_note: Read: src/lib.rs and the flow's caller context.
-not_checked: External imports of the old module path.
-origin: introduced
-blocking: no_action_proposed
 
 ## edge s2 s1

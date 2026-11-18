@@ -236,6 +236,10 @@ const EVENTS_KEPT: i64 = 500;
 /// How long a usage-limited job waits when the provider gave no reset time (ADR-003).
 pub const PAUSE_WITHOUT_RESET: TimeDelta = TimeDelta::minutes(30);
 
+/// Result text of a job that failed because no claim could prepare its context.
+const CONTEXT_UNPREPARED_MESSAGE: &str =
+    "the job's session or context pack could not be prepared at any claim";
+
 /// Message of the server-built result of a job whose leases expired on every attempt.
 const RUNNER_LOST_MESSAGE: &str =
     "The runner stopped reporting progress on every attempt, so the job was given up.";
@@ -588,7 +592,7 @@ impl Jobs<'_> {
         })
     }
 
-    /// Stores the output of `attempt` posted before compaction, moves `claimed` to `running` and renews the lease.
+    /// Stores the output of `attempt` posted before session archival, moves `claimed` to `running` and renews the lease.
     /// A different output for the same attempt, a stale attempt or a job that is not claimed or running is a
     /// `Conflict`.
     pub async fn record_output(
@@ -854,21 +858,53 @@ impl Jobs<'_> {
         Ok(())
     }
 
-    /// Undoes the claim of `attempt` before anything was handed out: back to `queued` with the attempt unspent,
-    /// no lease and no job token. `false` when the attempt is no longer claimed (nothing changes).
-    pub async fn release_claim(&self, job: JobId, attempt: u32) -> Result<bool, DbError> {
-        let released = sqlx::query(
-            "UPDATE jobs SET state = 'queued', attempt = attempt - 1,
-                 spec = json_set(spec, '$.attempt', attempt - 1), lease_expires_at = NULL,
-                 job_token_hash = NULL
-             WHERE id = ? AND attempt = ? AND state = 'claimed'",
+    /// Ends the claim of `attempt` before anything was handed out (its context could not be prepared), like an
+    /// expired lease: the attempt stays spent and the job is `queued` again without lease and job token,
+    /// `failed` with an internal cause once no attempt is left, or `cancelled` when that was requested. `None`
+    /// when the attempt is no longer claimed (nothing changes).
+    pub async fn release_claim(
+        &self,
+        job: JobId,
+        attempt: u32,
+        now: DateTime<Utc>,
+    ) -> Result<Option<JobState>, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let (current, row) = current(&mut tx, job).await?;
+        if current.state != JobState::Claimed || current.attempt != attempt {
+            return Ok(None);
+        }
+        let max_attempts: u32 = row.try_get("max_attempts")?;
+        let next = current
+            .state
+            .transition(JobTransition::LeaseExpired {
+                exhausted: attempt >= max_attempts,
+                cancel_requested: current.cancel_requested,
+            })
+            .map_err(|_| DbError::Conflict)?;
+        let result = match next {
+            JobState::Cancelled => Some(server_result(job, attempt, JobOutcome::Cancelled)),
+            JobState::Failed => Some(server_result(
+                job,
+                attempt,
+                JobOutcome::Failed {
+                    kind: JobFailureKind::Internal,
+                    message: CONTEXT_UNPREPARED_MESSAGE.to_owned(),
+                },
+            )),
+            _ => None,
+        };
+        sqlx::query(
+            "UPDATE jobs SET state = ?, result = ?, finished_at = ?, lease_expires_at = NULL, job_token_hash = NULL
+             WHERE id = ?",
         )
+        .bind(wire_name(next)?)
+        .bind(result.as_ref().map(serde_json::to_string).transpose()?)
+        .bind(next.is_terminal().then(|| ts(now)))
         .bind(job.to_string())
-        .bind(attempt)
-        .execute(self.pool)
-        .await?
-        .rows_affected();
-        Ok(released == 1)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(next))
     }
 
     /// The live or succeeded job of `stage` and `generation` in the analysis's current round, if any: the job an
@@ -1408,7 +1444,7 @@ mod tests {
         let analysis = seed_analysis(&db).await.expect("seed");
         let first = enqueue(&db, analysis, "f1", 0).await;
         let other = AnalysisId::new_random();
-        sqlx::query("INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by, created_at) SELECT ?, tenant_id, pull_request_id, base_sha, 'new-head', 'pl', 'planning', created_by, created_at FROM analyses WHERE id = ?")
+        sqlx::query("INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by, created_at, background_analysis) SELECT ?, tenant_id, pull_request_id, base_sha, 'new-head', 'pl', 'planning', created_by, created_at, background_analysis FROM analyses WHERE id = ?")
             .bind(other.to_string()).bind(analysis.to_string()).execute(&db.pool).await.unwrap();
         let second = enqueue(&db, other, "f2", 1).await;
         let claimed = db
@@ -1527,6 +1563,38 @@ mod tests {
             Some(JobOutcome::Cancelled)
         );
         assert_eq!(claim(&db, 100).await, None, "never re-claimed");
+    }
+
+    #[tokio::test]
+    async fn released_claim_of_a_job_flagged_for_cancel_ends_cancelled() {
+        let db = db().await;
+        let analysis = seed_analysis(&db).await.expect("seed");
+        let job = enqueue(&db, analysis, "f1", 0).await;
+        claim(&db, 0).await.expect("claim");
+        assert_eq!(
+            db.jobs().request_cancel(job, at(1)).await.expect("cancel"),
+            JobState::Claimed,
+            "a claimed job is only flagged"
+        );
+        assert_eq!(
+            db.jobs()
+                .release_claim(job, 1, at(2))
+                .await
+                .expect("release"),
+            Some(JobState::Cancelled)
+        );
+        let record = db.jobs().get(job).await.expect("get");
+        assert_eq!(record.state, JobState::Cancelled);
+        assert_eq!(
+            record.result.map(|r| r.outcome),
+            Some(JobOutcome::Cancelled)
+        );
+        assert_eq!(claim(&db, 100).await, None, "never re-claimed");
+        assert_eq!(
+            db.jobs().release_claim(job, 1, at(3)).await.expect("again"),
+            None,
+            "no longer claimed: nothing changes"
+        );
     }
 
     #[tokio::test]

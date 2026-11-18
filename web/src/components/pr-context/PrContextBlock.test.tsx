@@ -24,7 +24,8 @@ describe("PrContextBlock", () => {
     renderBlock(tour);
     const llm = screen.getByRole("region", { name: "LLM analysis" });
     const facts = screen.getByRole("region", { name: "Facts" });
-    expect(within(llm).getAllByText("LLM analysis unless marked otherwise.")).toHaveLength(1);
+    expect(within(llm).getByText("LLM")).toHaveAccessibleDescription(/written by the LLM/);
+    expect(llm).not.toHaveTextContent(/unless marked otherwise/);
     expect(within(facts).queryByText(/LLM analysis/)).not.toBeInTheDocument();
     // LLM content
     expect(llm).toHaveTextContent(tour.pr_context.llm.problem);

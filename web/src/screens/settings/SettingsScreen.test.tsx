@@ -88,6 +88,18 @@ describe("Settings (brief §4.4)", () => {
     ).toBeVisible();
   });
 
+  it("an unknown ?repo= is said, with the picker; nothing else is shown in its place and the URL stays", async () => {
+    const router = renderRoute("/settings?repo=acme/unknown");
+    expect(await screen.findByText("Repository acme/unknown not found in this installation.")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Repository" })).toHaveValue("");
+    expect(screen.queryByRole("region", { name: /^Repository acme\/node-client/ })).toBeNull();
+    expect(router.state.location.search).toBe("?repo=acme/unknown");
+    await userEvent.click(screen.getByRole("combobox", { name: "Repository" }));
+    await userEvent.click(await screen.findByRole("option", { name: "acme/node-client" }));
+    expect(await region(/^Repository acme\/node-client/)).toBeVisible();
+    expect(router.state.location.search).toBe("?repo=acme%2Fnode-client");
+  });
+
   it("settings cannot be read: plain error", async () => {
     server.use(
       http.get("/api/v1/settings", () =>

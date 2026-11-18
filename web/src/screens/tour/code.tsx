@@ -7,6 +7,7 @@ import type {
   Annotation,
   AnnotationId,
   CommentTarget,
+  Evidence,
   FragmentKind,
   GithubThread,
   LineRange,
@@ -20,6 +21,7 @@ import { useDiff, useLines } from "../../api/queries";
 import { highlight } from "../../app/highlight";
 import { ClassicDiff } from "../../components/code-view/ClassicDiff";
 import { CodeView } from "../../components/code-view/CodeView";
+import type { MarkerTarget } from "../../components/code-view/markers";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 
@@ -57,6 +59,12 @@ export interface CodeContext {
   /** Edit and delete of a pending comment, on GitHub. */
   onEditComment: (commentId: string, body: string) => Promise<void>;
   onDeleteComment: (commentId: string) => Promise<void>;
+  /** The line an evidence link jumped to: highlighted briefly where it is displayed. */
+  flash?: Evidence | null;
+  /** "Show in Inspector" of a remark or GitHub thread popover. */
+  onShowInInspector?: (target: MarkerTarget) => void;
+  /** "N.M" of a thread's step when it is not the step shown. */
+  otherThreadStep?: (thread: GithubThread) => string | null;
 }
 
 interface LinesCodeProps {
@@ -80,11 +88,19 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
   }
   const data = lines.data;
   const active = ctx.activeLine?.path === data.path ? ctx.activeLine : null;
+  const flash =
+    ctx.flash?.file === data.path &&
+    ctx.flash.side === data.side &&
+    ctx.flash.line >= data.from &&
+    ctx.flash.line <= data.to
+      ? ctx.flash.line
+      : undefined;
   return (
     <>
       <CodeView
         hideContextChanges={ctx.hideContextChanges}
         lines={data}
+        flashLine={flash}
         {...view}
         threads={ctx.threads}
         comments={ctx.comments}
@@ -95,6 +111,8 @@ export function LinesCode({ ctx, lines, ...view }: LinesCodeProps) {
         highlight={highlight}
         onLineAction={(target) => ctx.onComment(target, data)}
         onLoadDeleted={(block) => setOpened((all) => [...all, block.base_start])}
+        onShowInInspector={ctx.onShowInInspector}
+        otherThreadStep={ctx.otherThreadStep}
       />
       {data.deleted
         .filter((block) => opened.includes(block.base_start))

@@ -1,15 +1,55 @@
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::time::Duration;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 use tempfile::TempDir;
 
 use super::*;
 
-fn auth(refresh: &str, account: &str) -> Vec<u8> {
-    json!({"auth_mode": "chatgpt", "tokens": {"access_token": format!("at-{refresh}"), "refresh_token": refresh, "account_id": account}})
+/// A fake unsigned JWT whose `https://api.openai.com/auth` claims are `claims`; `jti` tells tokens with the
+/// same claims apart.
+fn jwt_as(claims: serde_json::Value, jti: &str) -> String {
+    let segment = |value: serde_json::Value| URL_SAFE_NO_PAD.encode(value.to_string());
+    format!(
+        "{}.{}.c2lnbmF0dXJl",
+        segment(json!({"alg": "none"})),
+        segment(json!({"https://api.openai.com/auth": claims, "jti": jti}))
+    )
+}
+
+fn jwt(claims: serde_json::Value) -> String {
+    jwt_as(claims, "first")
+}
+
+/// A fake token of `user` in `account`.
+fn token(account: &str, user: &str) -> String {
+    jwt(json!({"chatgpt_account_id": account, "chatgpt_user_id": user}))
+}
+
+/// The access token of `user-1` in `account` issued together with the refresh token `refresh`.
+fn access_token(account: &str, refresh: &str) -> String {
+    jwt_as(
+        json!({"chatgpt_account_id": account, "chatgpt_user_id": "user-1"}),
+        refresh,
+    )
+}
+
+/// A ChatGPT `auth.json` with the stored account field `account` and the given id and access tokens.
+fn auth_with(refresh: &str, account: &str, id_token: &str, access_token: &str) -> Vec<u8> {
+    json!({"auth_mode": "chatgpt", "tokens": {"id_token": id_token, "access_token": access_token, "refresh_token": refresh, "account_id": account}})
         .to_string()
         .into_bytes()
+}
+
+/// The credential of `user-1` in `account`; every refresh has its own access token, the id token stays.
+fn auth(refresh: &str, account: &str) -> Vec<u8> {
+    auth_with(
+        refresh,
+        account,
+        &token(account, "user-1"),
+        &access_token(account, refresh),
+    )
 }
 
 struct Dirs {
@@ -101,6 +141,273 @@ fn auth_writeback_rejects_account_change() {
     );
 }
 
+/// The agent can write the `account_id` field, so the identity is read from the token claims.
+#[test]
+fn auth_writeback_rejects_another_identity_behind_the_master_account_field() {
+    let own = token("acct-1", "user-1");
+    let other_account = token("acct-OTHER", "user-1");
+    let other_user = token("acct-1", "user-OTHER");
+    let cases = [
+        (
+            "tokens of another account",
+            auth_with("rt-attacker", "acct-1", &other_account, &other_account),
+        ),
+        (
+            "tokens of another user",
+            auth_with("rt-attacker", "acct-1", &other_user, &other_user),
+        ),
+        (
+            "an access token of another account",
+            auth_with("rt-attacker", "acct-1", &own, &other_account),
+        ),
+        (
+            "an id token of another user",
+            auth_with("rt-attacker", "acct-1", &other_user, &own),
+        ),
+        (
+            "tokens without identity claims",
+            auth_with("rt-attacker", "acct-1", "opaque-id", "opaque-access"),
+        ),
+        (
+            "tokens with empty identity claims",
+            auth_with("rt-attacker", "acct-1", &token("", ""), &token("", "")),
+        ),
+    ];
+    for (case, copy) in cases {
+        let d = dirs();
+        let credential = CodexCredential::new(d.master.clone());
+        let mut job = install(&credential, &d);
+        std::fs::write(d.home.join(AUTH_FILE), copy).unwrap();
+        job.settle(false);
+        assert_eq!(master(&d), auth("rt-original", "acct-1"), "{case}");
+        assert!(!credential.usable(), "{case}: the master may be spent");
+    }
+}
+
+/// Claim layouts Codex accepts (`login/src/token_data.rs`: every auth claim is optional, the access token is a
+/// plain string; `auth/manager.rs`: every field of a refresh response is optional), with fake values.
+#[test]
+fn write_back_follows_the_claim_layouts_codex_allows() {
+    let id = |account: &str, user: Option<&str>| match user {
+        Some(user) => token(account, user),
+        None => jwt(json!({"chatgpt_account_id": account})),
+    };
+    let access = |account: &str, user: &str, jti: &str| {
+        jwt_as(
+            json!({"chatgpt_account_id": account, "chatgpt_user_id": user}),
+            jti,
+        )
+    };
+    let full = id("acct-1", Some("user-1"));
+    let no_user = id("acct-1", None);
+    let legacy = jwt(json!({"chatgpt_account_id": "acct-1", "user_id": "user-1"}));
+    // (case, master id token, master access token, copy account field, copy id token, copy access token, accepted)
+    let cases = [
+        (
+            "a refresh response without an id token: Codex keeps the old one",
+            full.clone(),
+            access("acct-1", "user-1", "old"),
+            "acct-1",
+            full.clone(),
+            access("acct-1", "user-1", "new"),
+            true,
+        ),
+        (
+            "an access token that is not a JWT, before and after",
+            full.clone(),
+            "access-token".to_owned(),
+            "acct-1",
+            full.clone(),
+            "new-access-token".to_owned(),
+            true,
+        ),
+        (
+            "an opaque access token replaced by one naming the master's account",
+            full.clone(),
+            "access-token".to_owned(),
+            "acct-1",
+            full.clone(),
+            access("acct-1", "user-1", "new"),
+            true,
+        ),
+        (
+            "no user id in any token",
+            no_user.clone(),
+            jwt_as(json!({"chatgpt_account_id": "acct-1"}), "old"),
+            "acct-1",
+            no_user.clone(),
+            jwt_as(json!({"chatgpt_account_id": "acct-1"}), "new"),
+            true,
+        ),
+        (
+            "an id token that gains a user id",
+            no_user.clone(),
+            "access-token".to_owned(),
+            "acct-1",
+            full.clone(),
+            "new-access-token".to_owned(),
+            true,
+        ),
+        (
+            "the `user_id` claim Codex falls back to",
+            legacy.clone(),
+            jwt_as(
+                json!({"chatgpt_account_id": "acct-1", "user_id": "user-1"}),
+                "old",
+            ),
+            "acct-1",
+            legacy.clone(),
+            jwt_as(
+                json!({"chatgpt_account_id": "acct-1", "user_id": "user-1"}),
+                "new",
+            ),
+            true,
+        ),
+        (
+            "an id token that drops the master's user id",
+            full.clone(),
+            access("acct-1", "user-1", "old"),
+            "acct-1",
+            no_user.clone(),
+            access("acct-1", "user-1", "new"),
+            false,
+        ),
+        (
+            "an access token that drops the master's claims",
+            full.clone(),
+            access("acct-1", "user-1", "old"),
+            "acct-1",
+            full.clone(),
+            "new-access-token".to_owned(),
+            false,
+        ),
+        (
+            "account changed",
+            full.clone(),
+            access("acct-1", "user-1", "old"),
+            "acct-2",
+            id("acct-2", Some("user-1")),
+            access("acct-2", "user-1", "new"),
+            false,
+        ),
+        (
+            "user changed",
+            full.clone(),
+            access("acct-1", "user-1", "old"),
+            "acct-1",
+            id("acct-1", Some("user-2")),
+            access("acct-1", "user-1", "new"),
+            false,
+        ),
+        (
+            "account field kept but id token of another account",
+            full.clone(),
+            access("acct-1", "user-1", "old"),
+            "acct-1",
+            id("acct-2", Some("user-1")),
+            access("acct-1", "user-1", "new"),
+            false,
+        ),
+        (
+            "access token of another user",
+            full.clone(),
+            access("acct-1", "user-1", "old"),
+            "acct-1",
+            full.clone(),
+            access("acct-1", "user-2", "new"),
+            false,
+        ),
+        (
+            "an opaque access token replaced by one naming another account",
+            full.clone(),
+            "access-token".to_owned(),
+            "acct-1",
+            full.clone(),
+            access("acct-2", "user-1", "new"),
+            false,
+        ),
+    ];
+    for (case, master_id, master_access, account, copy_id, copy_access, accepted) in cases {
+        let d = dirs();
+        let original = auth_with("rt-original", "acct-1", &master_id, &master_access);
+        std::fs::write(&d.master, &original).unwrap();
+        let credential = CodexCredential::new(d.master.clone());
+        let mut job = install(&credential, &d);
+        let copy = auth_with("rt-rotated", account, &copy_id, &copy_access);
+        std::fs::write(d.home.join(AUTH_FILE), &copy).unwrap();
+        job.settle(false);
+        let expected = if accepted { &copy } else { &original };
+        assert_eq!(&master(&d), expected, "{case}");
+        assert_eq!(credential.usable(), accepted, "{case}");
+    }
+}
+
+/// A master whose refreshed copies could never be accepted is refused before a job spends its refresh token.
+#[test]
+fn master_without_an_account_bound_id_token_is_refused_before_a_job_starts() {
+    let own = token("acct-1", "user-1");
+    let masters = [
+        (
+            "no stored account id",
+            json!({"auth_mode": "chatgpt", "tokens": {"id_token": own, "access_token": own, "refresh_token": "rt-original"}})
+                .to_string()
+                .into_bytes(),
+        ),
+        (
+            "an id token that is not a JWT",
+            auth_with("rt-original", "acct-1", "opaque-id", &own),
+        ),
+        (
+            "an id token without an account claim",
+            auth_with(
+                "rt-original",
+                "acct-1",
+                &jwt(json!({"chatgpt_user_id": "user-1"})),
+                &own,
+            ),
+        ),
+        (
+            "an access token of another account than the stored one",
+            auth_with("rt-original", "acct-1", &own, &token("acct-2", "user-1")),
+        ),
+        (
+            "an id token of another account than the stored one",
+            auth_with(
+                "rt-original",
+                "acct-1",
+                &token("acct-2", "user-1"),
+                &own,
+            ),
+        ),
+    ];
+    for (case, bytes) in masters {
+        let d = dirs();
+        std::fs::write(&d.master, &bytes).unwrap();
+        let credential = CodexCredential::new(d.master.clone());
+        assert!(!credential.usable(), "{case}");
+        assert!(
+            matches!(
+                JobCredential::install(
+                    &credential,
+                    &d.home,
+                    JobId::new_random(),
+                    Scrubber::default()
+                ),
+                Err(ProviderError::CredentialUnusable)
+            ),
+            "{case}"
+        );
+        assert!(!d.home.join(AUTH_FILE).exists(), "{case}: no copy is made");
+        assert_eq!(master(&d), bytes, "{case}");
+        assert!(
+            !CodexCredential::new(d.master.clone()).usable(),
+            "{case}: also after a restart"
+        );
+        std::fs::write(&d.master, auth("rt-new-login", "acct-1")).unwrap();
+        assert!(credential.usable(), "{case}: a new login is usable");
+    }
+}
+
 #[test]
 fn auth_writeback_rejects_symlink() {
     let d = dirs();
@@ -133,27 +440,6 @@ fn oversized_or_non_credential_copy_is_rejected() {
         assert_eq!(master(&d), auth("rt-original", "acct-1"));
         assert!(!credential.usable());
     }
-}
-
-#[test]
-fn master_without_account_id_never_takes_a_refreshed_copy() {
-    let d = dirs();
-    let no_account = |refresh: &str| {
-        json!({"auth_mode": "chatgpt", "tokens": {"refresh_token": refresh}})
-            .to_string()
-            .into_bytes()
-    };
-    std::fs::write(&d.master, no_account("rt-original")).unwrap();
-    let credential = CodexCredential::new(d.master.clone());
-    let job = install(&credential, &d);
-    std::fs::write(d.home.join(AUTH_FILE), no_account("rt-rotated")).unwrap();
-    drop(job);
-    assert_eq!(
-        master(&d),
-        no_account("rt-original"),
-        "None == None is not the same account"
-    );
-    assert!(!credential.usable());
 }
 
 #[test]
@@ -227,9 +513,11 @@ fn rotated_tokens_join_the_scrubber() {
     std::fs::remove_file(d.home.join(AUTH_FILE)).unwrap();
     std::fs::write(d.home.join(AUTH_FILE), auth("rt-new-SECRET", "acct-1")).unwrap();
     job.watch();
+    let rotated = access_token("acct-1", "rt-new-SECRET");
+    assert_ne!(rotated, access_token("acct-1", "rt-original"));
     assert_eq!(
         job.scrubber()
-            .text("rt-new-SECRET at-rt-new-SECRET rt-original"),
+            .text(&format!("rt-new-SECRET {rotated} rt-original")),
         "[redacted] [redacted] [redacted]"
     );
 }
@@ -356,6 +644,23 @@ fn recovery_of_an_unchanged_copy_only_cleans_up() {
     std::mem::forget(install(&credential, &d));
     let restarted = CodexCredential::new(d.master.clone());
     assert_eq!(restarted.recover(&d.homes).unwrap(), 0);
+    assert!(restarted.usable());
+    assert_eq!(std::fs::read_dir(&d.homes).unwrap().count(), 0);
+}
+
+/// After a crash the owner signed in again, or a later job wrote a newer credential back: the leftover copy of
+/// the older master is stale and must not cost the newer one.
+#[test]
+fn recovery_of_a_copy_from_an_older_master_leaves_the_newer_master_alone() {
+    let d = dirs();
+    let credential = CodexCredential::new(d.master.clone());
+    let job = install(&credential, &d);
+    std::fs::write(d.home.join(AUTH_FILE), auth("rt-rotated", "acct-1")).unwrap();
+    std::mem::forget(job);
+    std::fs::write(&d.master, auth("rt-newer-login", "acct-1")).unwrap();
+    let restarted = CodexCredential::new(d.master.clone());
+    assert_eq!(restarted.recover(&d.homes).unwrap(), 0);
+    assert_eq!(master(&d), auth("rt-newer-login", "acct-1"));
     assert!(restarted.usable());
     assert_eq!(std::fs::read_dir(&d.homes).unwrap().count(), 0);
 }

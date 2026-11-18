@@ -84,7 +84,7 @@ function Hunk({
           <Fragment key={i}>
             <div
               data-diff-line={l.kind}
-              className={`grid min-w-full grid-cols-[5ch_5ch_2ch_max-content] ${kind.look}`}
+              className={`grid min-w-full grid-cols-[5ch_5ch_2ch_max-content] ${mine ? "min-h-6 items-center" : ""} ${kind.look}`}
             >
               <span className="pr-1 text-right text-muted select-none">{l.old_line}</span>
               <span className="pr-1 text-right text-muted select-none">{l.new_line}</span>

@@ -310,3 +310,206 @@ fn assessment_still_requires_risk_and_reason() {
     let error = parse(&text.replacen(reason, "", 1), &Catalog::default()).unwrap_err();
     assert!(error.message.contains("has no `reason:` line"), "{error}");
 }
+
+fn connections_fixture(edges: &str, extra: &str) -> String {
+    format!(
+        "# flow f1\nfile p1: src/lib.rs\n\n## introduction\nproblem_before: Before.\nchange: After.\nexample_before_after: Example.\n\n## step entry p1:head:1-2 modified\ntitle: Enter\ndecides: Read.\nwhy: Dispatch.\n{extra}\n### assessment\nrisk: low\nreason: Limited to dispatch.\n\n## step exit p1:head:3-4 modified\ntitle: Leave\ndecides: Return.\nwhy: Finish.\n\n### assessment\nrisk: low\nreason: Limited to return.\n{edges}"
+    )
+}
+
+#[test]
+fn omitted_connections_follow_reading_order_and_keep_boundaries_empty() {
+    let text = connections_fixture("", "");
+    let doc = parse(&text, &Catalog::default()).expect("connections are optional");
+    assert_eq!(doc.edges.len(), 1);
+    assert_eq!(doc.edges[0].from_step_id, "entry");
+    assert_eq!(doc.edges[0].to_step_id, "exit");
+    assert_eq!(doc.steps[0].called_by, "");
+    assert_eq!(doc.steps[0].next, "Step 2");
+    assert_eq!(doc.steps[1].called_by, "Step 1");
+    assert_eq!(doc.steps[1].next, "");
+    let encoded = encode(&doc, &Catalog::default()).unwrap();
+    assert!(!encoded.contains("called_by:"));
+    assert!(!encoded.contains("next:"));
+    assert!(!encoded.contains("## edge"));
+    assert_eq!(parse(&encoded, &Catalog::default()).unwrap(), doc);
+}
+
+#[test]
+fn explicit_edges_derive_connections_including_labels_and_loops() {
+    let text = connections_fixture(
+        "\n## edge entry exit\nlabel: ready\n\n## edge exit entry\nlabel: retry\n",
+        "",
+    );
+    let doc = parse(&text, &Catalog::default()).unwrap();
+    assert_eq!(doc.edges.len(), 2);
+    assert_eq!(doc.steps[0].called_by, "Step 2 (retry)");
+    assert_eq!(doc.steps[0].next, "Step 2 (ready)");
+    assert_eq!(doc.steps[1].called_by, "Step 1 (ready)");
+    assert_eq!(doc.steps[1].next, "Step 1 (retry)");
+    assert_eq!(
+        parse(
+            &encode(&doc, &Catalog::default()).unwrap(),
+            &Catalog::default()
+        )
+        .unwrap(),
+        doc
+    );
+}
+
+#[test]
+fn connection_prose_that_only_restates_the_derived_target_is_not_doubled() {
+    let text = connections_fixture("", "next: Step 2\n");
+    let doc = parse(&text, &Catalog::default()).unwrap();
+    assert_eq!(doc.steps[0].next, "Step 2");
+    let encoded = encode(&doc, &Catalog::default()).unwrap();
+    assert_eq!(parse(&encoded, &Catalog::default()).unwrap(), doc);
+}
+
+#[test]
+fn explicit_connection_prose_adds_to_the_derived_step_targets() {
+    let text = connections_fixture(
+        "",
+        "called_by: Worker::run outside this flow.\nnext: Leave only after committing.\n",
+    );
+    let doc = parse(&text, &Catalog::default()).unwrap();
+    assert_eq!(doc.steps[0].called_by, "Worker::run outside this flow.");
+    assert_eq!(doc.steps[0].next, "Step 2; Leave only after committing.");
+    assert_eq!(doc.steps[1].called_by, "Step 1");
+    let encoded = encode(&doc, &Catalog::default()).unwrap();
+    assert!(
+        encoded.contains("\nnext: Leave only after committing.\n"),
+        "{encoded}"
+    );
+    assert_eq!(parse(&encoded, &Catalog::default()).unwrap(), doc);
+}
+
+/// A catalogue with the planned hunk `h1` in `p1`.
+fn hunk_catalog() -> Catalog {
+    let mut catalog = Catalog::default();
+    catalog.files.insert("p1".into(), "src/queue.rs".into());
+    catalog.hunks.insert(
+        "h1".into(),
+        Anchor {
+            file: "src/queue.rs".into(),
+            side: "head".into(),
+            start: 1,
+            end: 1,
+            kind: "modified".into(),
+        },
+    );
+    catalog
+}
+
+/// A grammar-valid document: one step `id` on `h1` with `annotations` minimal annotations.
+fn one_step_document(id: &str, annotations: usize) -> String {
+    let mut text = format!(
+        "# flow f1\n\n## introduction\nproblem_before: x\nchange: x\nexample_before_after: x\n\n\
+         ## step {id} h1\ntitle: x\ncalled_by: x\ndecides: x\nnext: x\nwhy: x\n\n\
+         ### assessment\nrisk: low\nreason: x\n"
+    );
+    for _ in 0..annotations {
+        text.push_str("### annotation note inference 1-1\ntext: x\n");
+    }
+    text
+}
+
+#[test]
+fn ids_heading_words_field_names_and_sections_are_bounded_with_line_numbers() {
+    let catalog = hunk_catalog();
+    let valid = one_step_document("s1", 1);
+    parse(&valid, &catalog).expect("the baseline document is valid");
+    parse(&one_step_document(&"s".repeat(64), 1), &catalog).expect("64 characters are an id");
+    parse(&one_step_document("S_1-a", 1), &catalog).expect("letters, digits, `_` and `-`");
+    let long = "s".repeat(65);
+    let cases = [
+        (
+            valid.replace("## step s1 ", &format!("## step {long} ")),
+            "## step ",
+            "step id",
+        ),
+        (
+            valid.replace("## step s1 ", "## step s.1 "),
+            "## step ",
+            "step id",
+        ),
+        (
+            valid.replace("# flow f1", &format!("# flow {long}")),
+            "# flow ",
+            "flow id",
+        ),
+        (format!("{valid}## edge s1 {long}\n"), "## edge ", "step id"),
+        (format!("{valid}## edge s/1 s1\n"), "## edge ", "step id"),
+        (
+            format!("{valid}## impact {long} p1:head:1-1\nreason: x\nbasis: fact\n"),
+            "## impact ",
+            "step id",
+        ),
+        (
+            format!("{valid}## repetition {long}\ndescription: x\nsites: p1:head:1-1\n"),
+            "## repetition ",
+            "step id",
+        ),
+        (
+            format!("{valid}## thread {long} stale\nreason: x\n"),
+            "## thread ",
+            "thread alias",
+        ),
+        (
+            valid.replace(
+                "# flow f1",
+                &format!("# flow f1\nfile {long}: src/other.rs"),
+            ),
+            "file ",
+            "invalid file declaration",
+        ),
+        (
+            valid.replace("## step s1 h1", &format!("## step s1 {}", "h".repeat(129))),
+            "## step ",
+            "heading word",
+        ),
+        (
+            valid.replace("title: x", &format!("{}: x", "k".repeat(81))),
+            "kkkk",
+            "field name",
+        ),
+    ];
+    for (bad, at, message) in cases {
+        let error = parse(&bad, &catalog).unwrap_err();
+        assert!(error.message.contains(message), "{message}: {error}");
+        assert!(
+            error.message.len() < 200,
+            "the message does not echo the value"
+        );
+        assert_eq!(
+            error.line,
+            bad.lines().position(|line| line.starts_with(at)).unwrap() + 1,
+            "{message}"
+        );
+    }
+    // Header, introduction, step and assessment are four sections: one annotation too many.
+    let many = one_step_document("s1", 2_000 - 3);
+    let error = parse(&many, &catalog).unwrap_err();
+    assert!(error.message.contains("more than 2000 sections"), "{error}");
+    assert_eq!(error.line, many.lines().count() - 1);
+    parse(&one_step_document("s1", 2_000 - 4), &catalog).expect("2000 sections are allowed");
+}
+
+/// The line map built for verifier diagnostics repeats the step id in every key: its size must stay
+/// proportional to the document, whatever the document holds.
+#[test]
+fn diagnostic_line_map_stays_linear_in_the_document_size() {
+    let key_bytes = |text: &str| {
+        codec::source_lines(text).map(|map| map.keys().map(String::len).sum::<usize>())
+    };
+    // One huge id repeated into the keys of every annotation and field (scaled down from the 1 MiB case).
+    let hostile = one_step_document(&"s".repeat(100_000), 100);
+    if let Ok(bytes) = key_bytes(&hostile) {
+        assert!(bytes <= 16 * hostile.len(), "{bytes} key bytes");
+    }
+    // The largest accepted shape: longest id, section count at its cap.
+    let largest = one_step_document(&"s".repeat(64), 2_000 - 4);
+    parse(&largest, &hunk_catalog()).expect("valid");
+    let bytes = key_bytes(&largest).expect("valid");
+    assert!(bytes <= 16 * largest.len(), "{bytes} key bytes");
+}

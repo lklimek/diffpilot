@@ -3,6 +3,7 @@ import { PendingCommentItem } from "../comment/PendingCommentItem";
 import { PENDING_INCOMPLETE } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Note, QuietCard } from "./QuietCard";
+import { COMMENTING_UNAVAILABLE, COMMENTING_UNAVAILABLE_WHY } from "../comment/unavailable";
 
 interface PendingReviewBlockProps {
   /** The user's pending review on GitHub. */
@@ -38,7 +39,9 @@ export function PendingReviewBlock({ review, prUrl, onEdit, onDelete, placeOf }:
   if (!review.commenting_available) {
     return (
       <QuietCard title="Pending review on GitHub">
-        <p>Commenting is not available: the GitHub App is not installed on this repository.</p>
+        <p>
+          {COMMENTING_UNAVAILABLE} {COMMENTING_UNAVAILABLE_WHY}
+        </p>
       </QuietCard>
     );
   }

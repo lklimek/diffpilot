@@ -121,8 +121,8 @@ export function clampWidth(column: "nav" | "inspector", value: number, total: nu
 /** Default width of a side column in a workspace `total` px wide (mockup: 17 % and 27 %, clamped). */
 export function defaultWidth(column: "nav" | "inspector", total: number): number {
   return column === "nav"
-    ? Math.max(240, Math.min(400, Math.round(total * 0.17)))
-    : Math.max(400, Math.min(620, Math.round(total * 0.27)));
+    ? Math.max(200, Math.min(400, Math.round(total * 0.17)))
+    : Math.max(320, Math.min(620, Math.round(total * 0.27)));
 }
 
 /**

@@ -23,10 +23,14 @@ import {
 } from "../../api/queries";
 import { AskAnswers } from "../../components/ask/AskAnswers";
 import { AskForm } from "../../components/ask/AskForm";
-import { CommentComposer, type UnresolvedPosts } from "../../components/comment/CommentComposer";
+import {
+  CommentComposer,
+  type CommentDrafts,
+  type UnresolvedPosts,
+} from "../../components/comment/CommentComposer";
 import { commentPlacement, isChangedLine } from "../../components/comment/placement";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
-import { Inspector } from "../../components/inspector/Inspector";
+import { Inspector, type InspectorProps } from "../../components/inspector/Inspector";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { DiffCode, errorText } from "./code";
 import { stepQuery } from "./sequence";
@@ -45,6 +49,9 @@ interface InspectorPaneProps {
   /** The current step, when the block is one. */
   step: Step | undefined;
   annotationId: AnnotationId | null;
+  /** Remark or thread to scroll to and highlight ("Show in Inspector"). */
+  flash?: InspectorProps["flash"];
+  onFlashed?: () => void;
   onBackToStep: () => void;
   onSelectStep: (step: StepId) => void;
   onEvidence: (evidence: Evidence) => void;
@@ -55,6 +62,9 @@ interface InspectorPaneProps {
   onCancelComment: () => void;
   unresolved: UnresolvedPosts;
   onUnresolvedChange: (update: (posts: UnresolvedPosts) => UnresolvedPosts) => void;
+  drafts: CommentDrafts;
+  /** Where the PR can be analysed again (after a head-moved refusal of a comment). */
+  reanalyseHref?: string;
   askRef: RefObject<HTMLTextAreaElement | null>;
   commentRef: RefObject<HTMLTextAreaElement | null>;
 }
@@ -67,7 +77,7 @@ function permalink(tour: Tour, target: CommentTarget): string {
   return `https://github.com/${repo.owner}/${repo.name}/blob/${sha}/${path}#L${target.line}`;
 }
 
-/** The inspector with its data: classic diff, pinned answers, and the dock (Ask, feedback, comment). */
+/** The inspector with its data: classic diff and the dock (Ask with its pinned answers, feedback, comment). */
 export function InspectorPane(props: InspectorPaneProps) {
   const { analysisId, tour, block, step, annotationId, pending, comments, commentLine } = props;
   const questions = useQuestions(analysisId);
@@ -119,6 +129,7 @@ export function InspectorPane(props: InspectorPaneProps) {
         )}
         <AskAnswers
           onEvidence={props.onEvidence}
+          currentFile={step.facts.file}
           questions={questions.data.filter((q) => q.step_id === step.id)}
           onAskAgain={onAsk}
         />
@@ -143,6 +154,8 @@ export function InspectorPane(props: InspectorPaneProps) {
       textareaRef={props.commentRef}
       unresolved={props.unresolved}
       onUnresolvedChange={props.onUnresolvedChange}
+      drafts={props.drafts}
+      reanalyseHref={props.reanalyseHref}
     />
   ) : pending.isError ? (
     <p className="text-[12.5px]">
@@ -157,8 +170,9 @@ export function InspectorPane(props: InspectorPaneProps) {
       tour={tour}
       block={block}
       annotationId={annotationId}
+      flash={props.flash}
+      onFlashed={props.onFlashed}
       diff={diff}
-      answers={answers}
       pendingReview={pending.data ?? null}
       onBackToStep={props.onBackToStep}
       onSelectStep={props.onSelectStep}
@@ -171,6 +185,7 @@ export function InspectorPane(props: InspectorPaneProps) {
             step={step ? { id: step.id, label: `Step ${step.number} · ${step.llm.title}` } : null}
             onAsk={onAsk}
             inputRef={props.askRef}
+            answers={answers}
           />
           <FeedbackButtons
             target={target}

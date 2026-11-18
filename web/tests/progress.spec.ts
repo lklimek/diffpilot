@@ -28,6 +28,7 @@ test("running: k of n, no Open review", async ({ page }) => {
 });
 
 test("paused: usage limit with resume time", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-11-17T14:20:00Z"));
   await open(page, "paused");
   await expect(page.getByText(/^Paused until \d\d:\d\d — 2 of 5$/)).toBeVisible();
   await expect(bar(page)).toHaveAttribute("aria-valuenow", "2");
@@ -106,13 +107,13 @@ test.describe("stage and liveness", () => {
     await expect(page.getByText(/No signal from the server/)).toHaveCount(0);
   });
 
-  test("waiting for the runner, and between two jobs", async ({ page }) => {
+  test("waiting for the runner, and no flow job running", async ({ page }) => {
     await open(page, "waiting");
     await expect(page.getByText("Waiting for the runner; next: planning the review.")).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
     await expectTrustWording(page);
     await open(page, "between-jobs");
-    await expect(page.getByText("Between two jobs: the server starts the next one.")).toBeVisible();
+    await expect(page.getByText("No flow job is running.")).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
   });
 

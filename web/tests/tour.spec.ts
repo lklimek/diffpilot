@@ -102,7 +102,7 @@ for (const state of ["default", "wrong", "missed", "noq", "noprofile", "resume"]
   });
 }
 
-test("noq: the step says the LLM raised no questions", async ({ page }) => {
+test("noq: the step hides Questions and Assessment when the LLM gave none", async ({ page }) => {
   await openTour(page, "noq");
   await page
     .getByRole("navigation")
@@ -171,14 +171,14 @@ test("agent_output_xss_renders_as_text", async ({ page }) => {
   await expect(inspector.getByText(`${markup} answer`)).toBeVisible();
   await expectInert();
 
-  // Step 5: highlight tooltip (was → is) and the thread marker's title.
+  // Step 5: highlight tooltip (was → is) and the thread marker's popover.
   await nav.getByRole("button", { name: /^Step 5:/ }).click();
   const mark = page.locator("[role=mark]").first();
   await mark.hover();
   await expect(page.getByRole("tooltip").filter({ visible: true })).toContainText(`Was: ${markup}`);
-  await expect(page.locator('[data-mark="thread"]').first()).toHaveAttribute(
-    "title",
-    new RegExp(`by .*: ${markup.slice(0, 10)}`),
+  await page.locator('[data-mark="thread"]').first().hover();
+  await expect(page.getByRole("dialog", { name: /^GitHub threads? at line/ })).toContainText(
+    markup.slice(0, 10),
   );
   await expectInert();
   expect(dialogs).toEqual([]);

@@ -14,6 +14,7 @@ import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import {
   CommentComposer,
   type CommentComposerProps,
+  type CommentDrafts,
   type CommentLine,
   type UnresolvedPosts,
 } from "./CommentComposer";
@@ -30,18 +31,36 @@ const created = (over: Partial<CreateCommentResponse> = {}): CreateCommentRespon
   ...over,
 });
 
-type HarnessProps = Omit<CommentComposerProps, "unresolved" | "onUnresolvedChange"> & { mounted?: boolean };
+type HarnessProps = Omit<CommentComposerProps, "unresolved" | "onUnresolvedChange" | "drafts"> & {
+  mounted?: boolean;
+  drafts?: CommentDrafts & { all: Map<string, string> };
+};
 
-/** The screen's role: keeps the unresolved posts for the session while the composer mounts and unmounts. */
-function Harness({ mounted = true, ...props }: HarnessProps) {
+/** Drafts kept outside React state, as the screen keeps them; `all` shows what is stored. */
+function draftStore(): CommentDrafts & { all: Map<string, string> } {
+  const all = new Map<string, string>();
+  return {
+    all,
+    get: (key) => all.get(key) ?? "",
+    set: (key, text) => {
+      if (text === "") all.delete(key);
+      else all.set(key, text);
+    },
+  };
+}
+
+/** The screen's role: keeps unresolved posts and drafts for the session while the composer mounts and unmounts. */
+function Harness({ mounted = true, drafts: given, ...props }: HarnessProps) {
   const [unresolved, setUnresolved] = useState<UnresolvedPosts>({});
+  const [drafts] = useState(() => given ?? draftStore());
   return mounted ? (
-    <CommentComposer {...props} unresolved={unresolved} onUnresolvedChange={setUnresolved} />
+    <CommentComposer {...props} unresolved={unresolved} onUnresolvedChange={setUnresolved} drafts={drafts} />
   ) : null;
 }
 
 function setup(props: Partial<HarnessProps> = {}) {
-  const all: HarnessProps = {
+  const all: HarnessProps & { drafts: ReturnType<typeof draftStore> } = {
+    drafts: draftStore(),
     available: true,
     line: line96,
     comments: [],
@@ -63,8 +82,11 @@ describe("CommentComposer", () => {
     setup({ available: false });
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
+    expect(document.body).toHaveTextContent("Commenting is not available for this repository right now.");
+    // The server cannot tell a missing App from a failed check (commenting_available is one boolean).
+    expect(document.body).not.toHaveTextContent(/App is not installed/);
     expect(document.body).toHaveTextContent(
-      "Commenting is not available for this pull request: the smart-review GitHub App is not installed on this repository",
+      "The smart-review GitHub App may not be installed on it, or its installation could not be checked.",
     );
   });
 
@@ -126,6 +148,93 @@ describe("CommentComposer", () => {
     expect(screen.getByRole("textbox", { name: /^Comment on/ })).not.toHaveAttribute("readonly");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(document.body).not.toHaveTextContent(/may already be in your GitHub pending review/);
+  });
+
+  it.each([
+    ["pr_head_changed", "The pull request changed since this analysis. Analyse it again to comment."],
+    ["position_rejected", "GitHub did not accept a comment on this line."],
+    ["app_not_installed", "The smart-review GitHub App is not installed on this repository."],
+    ["invalid_request", "The comment is too long."],
+  ])(
+    "a definite refusal (%s) states the reason, keeps the text editable and offers no Retry",
+    async (code, sentence) => {
+      const onCreate = vi.fn().mockRejectedValue(Object.assign(new Error(sentence), { code }));
+      const { user } = setup({ onCreate });
+      await user.type(field(), "kept text");
+      await user.click(addButton());
+      expect(await screen.findByRole("alert")).toHaveTextContent(sentence);
+      expect(field()).toHaveValue("kept text");
+      expect(field()).not.toHaveAttribute("readonly");
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(document.body).not.toHaveTextContent(/may already be in your GitHub pending review/);
+    },
+  );
+
+  it("an unknown outcome (github_unavailable) keeps Retry with the same key", async () => {
+    const onCreate = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("GitHub did not answer."), { code: "github_unavailable" }));
+    const { user } = setup({ onCreate });
+    await user.type(field(), "text");
+    await user.click(addButton());
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeVisible();
+    expect(document.body).toHaveTextContent("The comment may already be in your GitHub pending review");
+  });
+
+  it("keeps no stored draft while the outcome is unknown: a reload cannot offer the text for a second Add", async () => {
+    const onCreate = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("GitHub did not answer."), { code: "github_unavailable" }));
+    const { user, drafts } = setup({ onCreate });
+    await user.type(field(), "maybe added");
+    expect([...drafts.all.values()]).toEqual(["maybe added"]);
+    await user.click(addButton());
+    await screen.findByRole("button", { name: "Retry" });
+    expect(drafts.all.size).toBe(0);
+    expect(field()).toHaveValue("maybe added");
+    // Discard is the explicit way back to an editable (and kept) text.
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    expect([...drafts.all.values()]).toEqual(["maybe added"]);
+  });
+
+  it.each([
+    ["position_rejected", "GitHub did not accept a comment on this line."],
+    ["unauthenticated", "Sign in again to continue."],
+  ])("keeps the stored draft after a definite refusal (%s)", async (code, sentence) => {
+    const onCreate = vi.fn().mockRejectedValue(Object.assign(new Error(sentence), { code }));
+    const { user, drafts } = setup({ onCreate });
+    await user.type(field(), "kept text");
+    await user.click(addButton());
+    await screen.findByRole("alert");
+    expect([...drafts.all.values()]).toEqual(["kept text"]);
+  });
+
+  it("after a head-moved refusal links to analysing the PR again, when the screen offers it", async () => {
+    const sentence = "The pull request changed since this analysis. Analyse it again to comment.";
+    const onCreate = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error(sentence), { code: "pr_head_changed" }));
+    const { user } = setup({
+      onCreate,
+      reanalyseHref: "/?pr=https%3A%2F%2Fgithub.com%2Facme%2Fnode-client%2Fpull%2F482",
+    });
+    await user.type(field(), "text");
+    await user.click(addButton());
+    await screen.findByRole("alert");
+    const link = screen.getByRole("link", { name: "Analyse the new head" });
+    expect(link).toHaveAttribute("href", "/?pr=https%3A%2F%2Fgithub.com%2Facme%2Fnode-client%2Fpull%2F482");
+    expect(link).toHaveAccessibleDescription(/Home/);
+  });
+
+  it("offers no re-analyse link for other refusals", async () => {
+    const onCreate = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("Too long."), { code: "invalid_request" }));
+    const { user } = setup({ onCreate, reanalyseHref: "/?pr=x" });
+    await user.type(field(), "text");
+    await user.click(addButton());
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("link", { name: "Analyse the new head" })).toBeNull();
   });
 
   it("an edit answered comment_published shows the server's sentence, not 'Not saved'", async () => {
@@ -324,15 +433,35 @@ describe("CommentComposer", () => {
     expect(other).toHaveValue("B");
   });
 
-  it("drops the draft when the line changes, also through null", async () => {
+  it("keeps a draft per line: another line starts empty, returning restores it, marked as a draft", async () => {
     const { user, rerender, ...props } = setup();
+    expect(screen.queryByText("Draft")).toBeNull();
     await user.type(field(), "for 96");
+    expect(screen.getByText("Draft")).toHaveAccessibleDescription(/Not added to GitHub yet/);
     rerender(<Harness {...props} line={{ ...line96, target: { ...target96, line: 97 } }} />);
     expect(screen.getByRole("textbox", { name: /client\.rs:97/ })).toHaveValue("");
     await user.type(screen.getByRole("textbox"), "for 97");
     rerender(<Harness {...props} line={null} />);
     rerender(<Harness {...props} line={line96} />);
+    expect(field()).toHaveValue("for 96");
+    expect(screen.getByText("Draft")).toBeVisible();
+  });
+
+  it("keeps the draft after Close; an added comment clears it", async () => {
+    const { user, rerender, ...props } = setup();
+    await user.type(field(), "kept");
+    const close = screen.getByRole("button", { name: "Close" });
+    expect(close).toHaveAccessibleDescription(/text not added yet is kept/);
+    await user.click(close);
+    rerender(<Harness {...props} line={null} />);
+    rerender(<Harness {...props} line={line96} />);
+    expect(field()).toHaveValue("kept");
+    await user.click(addButton());
+    await screen.findByRole("status");
+    rerender(<Harness {...props} line={null} />);
+    rerender(<Harness {...props} line={line96} />);
     expect(field()).toHaveValue("");
+    expect(screen.queryByText("Draft")).toBeNull();
   });
 
   it("treats a change of only start_line as another target with its own key", async () => {
@@ -379,10 +508,10 @@ describe("CommentComposer", () => {
     expect(within(list).getByRole("textbox", { name: "Edit comment" })).toHaveAttribute("readonly");
   });
 
-  it("cancels on Escape and with the Cancel button", async () => {
+  it("closes on Escape and with the Close button", async () => {
     const { user, onCancel } = setup();
     await user.keyboard("{Escape}");
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(screen.getByRole("button", { name: "Close" }));
     expect(onCancel).toHaveBeenCalledTimes(2);
   });
 
@@ -411,6 +540,7 @@ describe("CommentComposer", () => {
       [
         "Add to GitHub pending review",
         "Cancel",
+        "Close",
         "Delete",
         "Delete from GitHub",
         "Discard",

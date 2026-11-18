@@ -85,7 +85,6 @@ fn closed_enums_match_brief() {
             "refactor_pure",
             "move",
             "rename",
-            "test",
             "docs_comments",
             "generated_mechanical",
             "config_build",
@@ -565,4 +564,17 @@ fn concise_low_assessment_schema_accepts_omitted_detail_fields() {
     );
     flow["steps"][0]["assessment"]["risk"] = json!("high");
     assert!(!validator.is_valid(&flow));
+}
+
+#[test]
+fn plan_schema_and_decoder_exclude_test_classification() {
+    let schema = output_schema(JobKind::Plan).unwrap();
+    let choices = schema["properties"]["flows"]["items"]["properties"]["classification"]["enum"]
+        .as_array()
+        .unwrap();
+    assert!(!choices.contains(&json!("test")));
+    let mut plan: Value =
+        serde_json::from_str(include_str!("../../../fixtures/pr-482/agent/plan.json")).unwrap();
+    plan["flows"][0]["classification"] = json!("test");
+    assert!(serde_json::from_value::<PlanOutput>(plan).is_err());
 }

@@ -762,18 +762,12 @@ fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
     let moved = input.job.prepass.moves.moved.iter().filter(|block| {
         paths.contains(&block.from.file.as_str()) || paths.contains(&block.to.file.as_str())
     });
-    let test_flow = if flow.classification == Classification::Test {
-        part("test_flow")?
-    } else {
-        ""
-    };
     let planned = serde_json::to_string(&FlowEntry::of(flow))?;
     fill(
         ANALYSE_FLOW,
         &[
             ("flow_id", &plain(&flow.id.0)),
             ("lenses", part("lenses")?),
-            ("test_flow", test_flow),
             ("flow", &data("planned flow", &planned)),
             ("hunks", &data("flow hunks", &hunks)),
             ("moves", &moves(input.job.prepass, moved)?),

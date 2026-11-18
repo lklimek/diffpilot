@@ -26,8 +26,9 @@ pub trait JobExecutor: Send + Sync + Debug {
     /// Requests cancellation; the job ends with a `cancelled` result unless it finished first.
     fn cancel(&self, handle: &JobHandle) -> BoxFuture<'_, Result<(), ExecutorError>>;
 
-    /// Requests cancellation of every unfinished job of `analysis`, including jobs submitted before a server
-    /// restart; used when the analysis ends.
+    /// Requests cancellation of every unfinished pipeline job of `analysis`, including jobs submitted before a
+    /// server restart; used when the analysis ends. Its `ask` jobs are cancelled too only once the analysis is
+    /// cancelled or its PR session is removed (a failed pipeline leaves open questions alone).
     fn cancel_analysis(&self, analysis: AnalysisId) -> BoxFuture<'_, Result<(), ExecutorError>>;
 }
 
@@ -61,7 +62,7 @@ pub struct JobHandle {
 pub enum JobUpdate {
     /// Agent activity.
     Event(JobEvent),
-    /// The final output arrived before compaction (provisional: publish it as ready, persist only on
+    /// The final output arrived before session archival and runner cleanup (provisional: publish it as ready, persist only on
     /// [`JobUpdate::Finished`], which carries the same output or supersedes it).
     OutputReady(serde_json::Value),
     /// Usage limit reached; the job waits and is queued again later.

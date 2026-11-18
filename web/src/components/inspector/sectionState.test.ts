@@ -28,6 +28,23 @@ describe("section state", () => {
     expect(again.result.current.isOpen("assessment")).toBe(true);
   });
 
+  it("reveals a section for the current scope without storing it; a toggle after it is stored", () => {
+    const { result, rerender } = renderHook(({ scope }) => useSectionState(scope), {
+      initialProps: { scope: "f1.5" },
+    });
+    act(() => result.current.reveal("questions"));
+    expect(result.current.isOpen("questions")).toBe(true);
+    expect(window.localStorage.getItem(SECTION_STORAGE_KEY)).toBeNull();
+    rerender({ scope: "f1.6" });
+    expect(result.current.isOpen("questions")).toBe(false);
+    rerender({ scope: "f1.5" });
+    expect(result.current.isOpen("questions")).toBe(false);
+    act(() => result.current.reveal("questions"));
+    act(() => result.current.toggle("questions"));
+    expect(result.current.isOpen("questions")).toBe(false);
+    expect(JSON.parse(window.localStorage.getItem(SECTION_STORAGE_KEY)!)).toEqual({ questions: false });
+  });
+
   it.each([
     ["not JSON", "{"],
     ["an array", "[true]"],
