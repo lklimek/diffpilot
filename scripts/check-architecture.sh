@@ -9,7 +9,7 @@
 #
 # Also from the sources (A11): non-test Rust code in crates/ and tools/ declares no `Result<_, String>`, no
 # `Box<dyn ...Error>` and uses no `anyhow::`/`eyre::` paths. Non-test: outside tests/ and benches/, files not named
-# *tests.rs, and lines before a file's `#[cfg(test)] mod`.
+# *tests.rs, and lines before a file's inline `#[cfg(test)] mod NAME {` (an out-of-line `mod NAME;` is skipped).
 #
 # Not caught here (left to review, plan §4.2): hand-written GitHub HTTP calls through a generic client
 # (reqwest) outside server::github; sqlx types leaking through db's public API (A2); database or GitHub
@@ -87,6 +87,7 @@ source_violations() {
       ((allowed)) || echo "A11: $rel:${hit%%|*}: $text; use a thiserror enum"
     done < <(awk -v pat="$ERROR_PATTERN" '
       pending && /^[[:space:]]*$/ { next }
+      pending && /^[[:space:]]*(pub(\([a-z]+\))?[[:space:]]+)?mod[[:space:]]+[A-Za-z0-9_]+[[:space:]]*;/ { pending = 0; next }
       pending && /^[[:space:]]*(pub(\([a-z]+\))?[[:space:]]+)?mod[[:space:]]/ { exit }
       { pending = 0 }
       /^[[:space:]]*#\[cfg\(test\)\]/ { pending = 1; next }
@@ -209,6 +210,8 @@ self_test() {
   expect_source "eyre path" fail crates/x/src/lib.rs 'use eyre::Report;'
   expect_source "a cfg(test) item is not the test module" fail crates/x/src/lib.rs \
     "$(printf '#[cfg(test)]\nuse std::fs;\nfn a() -> Result<(), String> { Ok(()) }')"
+  expect_source "out-of-line test module declaration is skipped, not the end" fail crates/x/src/lib.rs \
+    "$(printf '#[cfg(test)]\nmod tests;\npub fn a() -> Result<(), String> { Ok(()) }')"
   expect_source "test module" pass crates/x/src/lib.rs \
     "$(printf 'fn a() {}\n#[cfg(test)]\nmod tests {\n    fn b() -> Result<(), String> { Ok(()) }\n}')"
   expect_source "integration test" pass crates/x/tests/it.rs 'fn b() -> Result<(), String> { Ok(()) }'
