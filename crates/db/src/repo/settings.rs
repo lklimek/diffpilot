@@ -162,6 +162,7 @@ impl SettingsRepo<'_> {
 
     /// Saves the ranking effort (R7) and returns the previous and new selection under one write transaction; the
     /// model choice is kept, or `default_choice` is stored with it when none was saved yet (the row needs one).
+    /// That first save pins the shown default model as the saved choice.
     pub async fn set_judge_effort(
         &self,
         effort: ReasoningEffort,

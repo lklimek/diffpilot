@@ -2,9 +2,11 @@
 //! `docs/v1.1-dashboard-plan.md` §D). Signatures frozen by WP11-A. Every function is scoped by
 //! `(tenant_id, user_id)`, except the server-internal ones that say so; there is no list-all API for serving, and
 //! another user's or tenant's id answers `NotFound`. Refresh transitions follow `docs/contracts/http-api.md`
-//! "Refresh states"; each runs in one write transaction, and the unique index on live refreshes keeps one per user.
+//! "Refresh states"; each runs in one write transaction. One live refresh per user across tenants (the unique index
+//! is on `user_id`): a live refresh in another tenant makes a start or Retry ranking answer `Conflict`.
+//! `RankingStatus.message`, `total` and `resumes_at` are not stored here; the server derives them from the judge job.
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use contracts::api::dashboard::{
     DashboardSettings, ItemKey, RankingState, RefreshFailure, RefreshState, RefreshTrigger,
     ScanStep, ScheduledOutcome,
@@ -22,6 +24,8 @@ use crate::error::DbError;
 
 /// Refreshes kept per user: the newest, plus the one holding the latest snapshot.
 pub const REFRESHES_KEPT: u32 = 10;
+/// Refreshes started this recently are always kept: their `judged` counts feed the daily ranking cap.
+const RECENT_REFRESHES_KEPT: TimeDelta = TimeDelta::hours(24);
 /// Log lines kept per refresh (the newest).
 pub const LOG_LINES_KEPT: usize = 200;
 /// Days a judgement is kept after its item was last seen.
@@ -36,8 +40,9 @@ const LOCAL_DATE: &str = "%Y-%m-%d";
 /// item, so "nothing changed, no job" stays cheap.
 const JUDGEMENTS_SQL: &str = "SELECT * FROM dashboard_judgements
     WHERE tenant_id = ?1 AND user_id = ?2 AND item_key IN (SELECT value FROM json_each(?3)) ORDER BY item_key";
-/// A user's judgements made since a time (index `dashboard_judgements_by_judged_at`).
-const JUDGED_SINCE_SQL: &str = "SELECT COUNT(*) FROM dashboard_judgements WHERE tenant_id = ?1 AND user_id = ?2 AND judged_at >= ?3";
+/// LLM judgements a user's refreshes started since a time made (index `dashboard_refreshes_by_user`).
+const JUDGED_SINCE_SQL: &str = "SELECT COALESCE(SUM(judged), 0) FROM dashboard_refreshes
+    WHERE tenant_id = ?1 AND user_id = ?2 AND started_at >= ?3";
 /// Judgements not seen since a time (index `dashboard_judgements_by_last_seen`).
 const DELETE_UNSEEN_SQL: &str = "DELETE FROM dashboard_judgements WHERE last_seen_at < ?1";
 
@@ -360,7 +365,7 @@ impl Dashboard<'_> {
     /// R2 and the schedule, in one write transaction: a refresh of the user in `ranking` is superseded
     /// ([`Dashboard::finish_ranking`] with `cancelled`), then a new one starts in `scanning`; a `scanning` one
     /// blocks ([`StartOutcome::ScanRunning`]). Deletes the user's older refreshes beyond [`REFRESHES_KEPT`], never
-    /// the one holding the current snapshot.
+    /// the one holding the current snapshot nor one started in the last 24 hours (the daily cap counts them).
     pub async fn start_refresh(
         &self,
         tenant_id: &str,
@@ -411,13 +416,14 @@ impl Dashboard<'_> {
             "DELETE FROM dashboard_refreshes WHERE tenant_id = ?1 AND user_id = ?2
                AND id NOT IN (SELECT id FROM dashboard_refreshes WHERE tenant_id = ?1 AND user_id = ?2
                               ORDER BY started_at DESC, rowid DESC LIMIT ?3)
-               AND id IS NOT (",
+               AND started_at < ?4 AND id IS NOT (",
             current_snapshot_id!(),
             ")"
         ))
         .bind(tenant_id)
         .bind(user_id)
         .bind(i64::from(REFRESHES_KEPT))
+        .bind(ts(now - RECENT_REFRESHES_KEPT))
         .execute(&mut *tx)
         .await?;
         let refresh = read_record(&mut *tx, tenant_id, user_id, id).await?;
@@ -821,7 +827,8 @@ impl Dashboard<'_> {
         Ok(())
     }
 
-    /// Judgements of the user made at or after `since` (the daily cap counts from the local day's start).
+    /// LLM judgements made by the user's refreshes started at or after `since` (their `judged` counts, so a
+    /// re-judged item counts again); the daily cap counts from the local day's start.
     pub async fn judged_since(
         &self,
         tenant_id: &str,
@@ -835,7 +842,7 @@ impl Dashboard<'_> {
             .fetch_one(self.pool)
             .await?;
         u32::try_from(count).map_err(|_| DbError::Corrupt {
-            column: "dashboard_judgements",
+            column: "dashboard_refreshes.judged",
         })
     }
 
@@ -2021,26 +2028,38 @@ mod tests {
             ended.push(id);
         }
         let mut expected = vec![holder];
-        expected.extend_from_slice(&ended[2..]);
+        expected.extend_from_slice(&ended);
         assert_eq!(
             refresh_ids(&db, "u1").await,
             expected,
-            "the newest ten plus the one holding the current snapshot"
+            "every refresh started in the last 24 hours is kept"
         );
         assert_eq!(refresh_ids(&db, "u2").await, [other]);
 
-        let newer = start(&db, "u1", 20).await;
-        assert!(
-            refresh_ids(&db, "u1").await.contains(&holder),
-            "still current while the new scan runs"
+        let later = 2 * 24 * 60;
+        let newer = start(&db, "u1", later).await;
+        let mut expected = vec![holder];
+        expected.extend_from_slice(&ended[3..]);
+        expected.push(newer);
+        assert_eq!(
+            refresh_ids(&db, "u1").await,
+            expected,
+            "older ones: the newest ten plus the one holding the current snapshot"
         );
-        dash.store_snapshot(T, "u1", newer, &json!({ "n": 20 }), at(21))
+        dash.store_snapshot(T, "u1", newer, &json!({ "n": 20 }), at(later + 1))
             .await
             .expect("snapshot");
-        dash.finish_ranking(T, "u1", newer, RankingState::Finished, COUNTS, at(22))
-            .await
-            .expect("finish");
-        let last = start(&db, "u1", 30).await;
+        dash.finish_ranking(
+            T,
+            "u1",
+            newer,
+            RankingState::Finished,
+            COUNTS,
+            at(later + 2),
+        )
+        .await
+        .expect("finish");
+        let last = start(&db, "u1", later + 30).await;
         let ids = refresh_ids(&db, "u1").await;
         assert_eq!(ids.len(), usize::try_from(REFRESHES_KEPT).expect("small"));
         assert!(!ids.contains(&holder), "an old snapshot is not kept");
@@ -2103,6 +2122,44 @@ mod tests {
         }
     }
 
+    /// Right after a start: besides the newest ten and the current snapshot, only refreshes started in the last 24
+    /// hours are kept.
+    async fn assert_retention(db: &Db, user: &str, now: DateTime<Utc>) {
+        let holder = current(db, user).await.map(|(id, _)| id);
+        let ids = refresh_ids(db, user).await;
+        let older = ids
+            .len()
+            .saturating_sub(usize::try_from(REFRESHES_KEPT).expect("small"));
+        for id in &ids[..older] {
+            let started = record(db, user, *id).await.started_at;
+            assert!(
+                Some(*id) == holder || started >= now - TimeDelta::hours(24),
+                "{id} started {started} kept at {now}"
+            );
+        }
+    }
+
+    /// One live refresh per user across tenants: a live refresh in another tenant makes a start or a Retry
+    /// ranking answer `Conflict`, never a storage error.
+    #[tokio::test]
+    async fn live_refresh_in_another_tenant_is_a_conflict() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let retry = finished(&db, "u1", 0, RankingState::Failed).await;
+        let elsewhere = start_in(&db, "other", "u1", 1).await;
+        assert_err(
+            dash.start_refresh(T, "u1", RefreshTrigger::Manual, at(2))
+                .await,
+            true,
+        );
+        assert_err(dash.restart_ranking(T, "u1", retry).await, true);
+        assert_eq!(live(&db, "u1").await, [(elsewhere, RefreshState::Scanning)]);
+        assert_eq!(
+            record(&db, "u1", retry).await.ranking_state,
+            Some(RankingState::Failed)
+        );
+    }
+
     /// A seeded random walk over every transition (both users): after each step at most one refresh per user is
     /// live, each operation's outcome follows the state table, and every live refresh can still end.
     #[tokio::test]
@@ -2131,7 +2188,7 @@ mod tests {
         let mut seen = std::collections::BTreeMap::<&str, u32>::new();
         let mut saw = |event: &'static str| *seen.entry(event).or_default() += 1;
         for step in 0..1000i64 {
-            let now = at(step);
+            let now = at(step * 20);
             let user = if next() % 3 == 0 { "u2" } else { "u1" };
             let before = live(&db, user).await;
             let ids = refresh_ids(&db, user).await;
@@ -2169,6 +2226,7 @@ mod tests {
                         live_ranking => {
                             let (_, superseded) = started(outcome);
                             assert_eq!(superseded, live_ranking.map(|(id, _)| *id), "step {step}");
+                            assert_retention(&db, user, now).await;
                             saw(if superseded.is_some() {
                                 "superseded"
                             } else {
@@ -2285,11 +2343,6 @@ mod tests {
             }
             for user in ["u1", "u2"] {
                 assert!(live(&db, user).await.len() <= 1, "step {step}");
-                let count = refresh_ids(&db, user).await.len();
-                assert!(
-                    count <= usize::try_from(REFRESHES_KEPT + 1).expect("small"),
-                    "step {step}: {count} refreshes kept"
-                );
             }
         }
         let events: Vec<&str> = seen.keys().copied().collect();
@@ -2315,16 +2368,16 @@ mod tests {
         for user in ["u1", "u2"] {
             for (id, state) in live(&db, user).await {
                 if state == RefreshState::Scanning {
-                    dash.end_scan(T, user, id, &ScanEnd::Cancelled, at(1000))
+                    dash.end_scan(T, user, id, &ScanEnd::Cancelled, at(20_000))
                         .await
                         .expect("end scan");
                 } else {
-                    dash.finish_ranking(T, user, id, RankingState::Cancelled, COUNTS, at(1000))
+                    dash.finish_ranking(T, user, id, RankingState::Cancelled, COUNTS, at(20_000))
                         .await
                         .expect("end ranking");
                 }
             }
-            start(&db, user, 1001).await;
+            start(&db, user, 20_001).await;
         }
     }
 
@@ -2416,33 +2469,64 @@ mod tests {
         );
     }
 
+    /// The daily cap counts judgements made (each refresh's `judged`), so re-judging an item counts again.
     #[tokio::test]
-    async fn judged_since_counts_the_users_judgements() {
+    async fn judged_since_counts_judgements_made() {
         let db = db().await;
         let dash = db.dashboard();
-        dash.save_judgements(
-            T,
-            "u1",
-            &[
-                judgement(1, "a", at(0)),
-                judgement(2, "b", at(10)),
-                judgement(3, "c", at(20)),
-            ],
-        )
-        .await
-        .expect("u1");
-        dash.save_judgements(T, "u2", &[judgement(1, "a", at(15))])
+        let judged = |judged| JudgeCounts {
+            judged,
+            reused: 7,
+            left_provisional: 1,
+        };
+        let first = ranking(&db, "u1", 0).await;
+        dash.finish_ranking(T, "u1", first, RankingState::Finished, judged(3), at(1))
+            .await
+            .expect("first");
+        // The same item is judged again: its stored judgement is replaced, the call still counts.
+        dash.save_judgements(T, "u1", &[judgement(1, "a", at(1))])
+            .await
+            .expect("judgement");
+        let second = ranking(&db, "u1", 10).await;
+        dash.set_ranking(T, "u1", second, RankingState::Running, judged(2))
+            .await
+            .expect("second, still ranking");
+        dash.save_judgements(T, "u1", &[judgement(1, "b", at(11))])
+            .await
+            .expect("judged again");
+        let theirs = ranking(&db, "u2", 0).await;
+        dash.finish_ranking(T, "u2", theirs, RankingState::Finished, judged(5), at(1))
             .await
             .expect("u2");
-        assert_eq!(dash.judged_since(T, "u1", at(10)).await.expect("count"), 2);
-        assert_eq!(dash.judged_since(T, "u1", at(21)).await.expect("count"), 0);
-        assert_eq!(dash.judged_since(T, "u2", at(0)).await.expect("count"), 1);
+        assert_eq!(dash.judged_since(T, "u1", at(0)).await.expect("count"), 5);
+        assert_eq!(dash.judged_since(T, "u1", at(5)).await.expect("count"), 2);
+        assert_eq!(dash.judged_since(T, "u1", at(11)).await.expect("count"), 0);
+        assert_eq!(dash.judged_since(T, "u2", at(0)).await.expect("count"), 5);
         assert_eq!(
             dash.judged_since("other", "u1", at(0))
                 .await
                 .expect("count"),
             0
         );
+    }
+
+    /// Retention never forgets calls of the last 24 hours: more than ten refreshes of one day all count.
+    #[tokio::test]
+    async fn judged_since_survives_retention_within_a_day() {
+        let db = db().await;
+        let dash = db.dashboard();
+        for minute in 0..15 {
+            let id = ranking(&db, "u1", minute * 60).await;
+            let counts = JudgeCounts {
+                judged: 8,
+                ..JudgeCounts::default()
+            };
+            dash.finish_ranking(T, "u1", id, RankingState::Finished, counts, at(minute * 60))
+                .await
+                .expect("finish");
+        }
+        assert_eq!(refresh_ids(&db, "u1").await.len(), 15);
+        assert_eq!(dash.judged_since(T, "u1", at(0)).await.expect("count"), 120);
     }
 
     #[tokio::test]
@@ -2514,7 +2598,7 @@ mod tests {
         assert!(
             since
                 .iter()
-                .any(|step| step.contains("dashboard_judgements_by_judged_at")),
+                .any(|step| step.contains("dashboard_refreshes_by_user")),
             "{since:?}"
         );
         let unseen = plan(&db, DELETE_UNSEEN_SQL, 1).await;
