@@ -216,3 +216,59 @@ it("a queued flow that failed and will be retried says so with the server's mess
     screen.getByText("The flow analysis timed out. It will be tried again automatically."),
   ).toBeVisible();
 });
+
+it("a failed flow of a finished analysis offers Analyse this flow again, the wording of its message", async () => {
+  const onRequest = vi.fn();
+  const failed = {
+    ...f1,
+    steps: [],
+    analysis_status: {
+      state: "failed",
+      started_at: null,
+      message:
+        "The stored analysis of this flow does not pass the server's current checks, so its changes are listed as not analysed. Analyse this flow again.",
+    },
+    planned: { intent: "Bound RPC retries", importance_rank: 1, ranges: [] },
+  } as Tour["flows"][number];
+  render(
+    <FlowIntroBlock
+      flow={failed}
+      analysis={{ state: "finished", total: 5 }}
+      dependencies={[]}
+      ticked={[]}
+      onRequest={onRequest}
+    />,
+  );
+  expect(screen.queryByRole("button", { name: "Retry this flow" })).toBeNull();
+  const again = screen.getByRole("button", { name: "Analyse this flow again" });
+  await userEvent.setup().hover(again);
+  expect(await screen.findByRole("tooltip")).toHaveTextContent(
+    "Replaces this flow's steps. Ticks, questions and feedback on them are removed.",
+  );
+  await userEvent.setup().click(again);
+  expect(onRequest).toHaveBeenCalledOnce();
+});
+
+it("a stored flow of a running analysis that fails today's checks offers the action its message names", () => {
+  const failed = {
+    ...f1,
+    steps: [],
+    analysis_status: {
+      state: "failed",
+      started_at: null,
+      message:
+        "The stored analysis of this flow does not pass the server's current checks, so its changes are listed as not analysed. Analyse this flow again.",
+    },
+    planned: { intent: "Bound RPC retries", importance_rank: 1, ranges: [] },
+  } as Tour["flows"][number];
+  render(
+    <FlowIntroBlock
+      flow={failed}
+      analysis={{ state: "running", done: 4, total: 5 }}
+      dependencies={[]}
+      ticked={[]}
+      onRequest={() => {}}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Analyse this flow again" })).toBeVisible();
+});

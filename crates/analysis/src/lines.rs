@@ -159,6 +159,76 @@ pub fn changed_lines_within(
     lines
 }
 
+/// `file` with the whitespace-only `pairs` (base line, head line) read as unchanged lines: each hunk is split around
+/// them, as `git diff -w` shows it. A pair outside a hunk or out of order is ignored.
+pub fn without_whitespace(file: &FileDiff, pairs: &[(u32, u32)]) -> FileDiff {
+    let mut hunks = Vec::with_capacity(file.hunks.len());
+    for hunk in &file.hunks {
+        let (base_end, head_end) = (
+            hunk.base.start.saturating_add(hunk.base.len),
+            hunk.head.start.saturating_add(hunk.head.len),
+        );
+        let (mut base, mut head) = (hunk.base.start, hunk.head.start);
+        let mut cuts = Vec::new();
+        for &(b, h) in pairs {
+            let inside = hunk.base.len > 0 && hunk.head.len > 0 && b < base_end && h < head_end;
+            if inside && b >= base && h >= head {
+                cuts.push((b, h));
+                (base, head) = (b + 1, h + 1);
+            }
+        }
+        if cuts.is_empty() {
+            hunks.push(hunk.clone());
+            continue;
+        }
+        let (mut base, mut head) = (hunk.base.start, hunk.head.start);
+        for cut in cuts.into_iter().map(Some).chain([None]) {
+            let (to_base, to_head) = cut.unwrap_or((base_end, head_end));
+            if to_base > base || to_head > head {
+                hunks.push(part(hunk, base..to_base, head..to_head));
+            }
+            if let Some((b, h)) = cut {
+                (base, head) = (b + 1, h + 1);
+            }
+        }
+    }
+    FileDiff {
+        hunks,
+        ..file.clone()
+    }
+}
+
+/// The lines `base` and `head` of `hunk` as a hunk of their own (an empty side starts after the line before it).
+fn part(hunk: &Hunk, base: std::ops::Range<u32>, head: std::ops::Range<u32>) -> Hunk {
+    let span = |range: &std::ops::Range<u32>| match range.end.checked_sub(range.start) {
+        Some(len) if len > 0 => LineSpan {
+            start: range.start,
+            len,
+        },
+        _ => LineSpan {
+            start: range.start.saturating_sub(1),
+            len: 0,
+        },
+    };
+    Hunk {
+        id: hunk.id.clone(),
+        base: span(&base),
+        head: span(&head),
+        added: hunk
+            .added
+            .iter()
+            .copied()
+            .filter(|line| head.contains(line))
+            .collect(),
+        removed: hunk
+            .removed
+            .iter()
+            .copied()
+            .filter(|line| base.contains(line))
+            .collect(),
+    }
+}
+
 /// Lines changed by the pull request on either side, over all files (the size of the change).
 pub fn changed_line_count(files: &[FileDiff]) -> u32 {
     files

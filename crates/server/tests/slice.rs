@@ -401,6 +401,11 @@ async fn harness() -> Harness {
 
 /// The harness; with `app`, the GitHub App is installed on the fixture repository (key and installation lookup).
 async fn harness_with_app(app: bool) -> Harness {
+    // Server warnings and errors go to the test's captured output: a failed test shows why the server failed.
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter("warn")
+        .try_init();
     let dir = tempfile::tempdir().expect("temp dir");
     let built = Command::new(fixtures().join("repo/build-repo.sh"))
         .arg(dir.path().join("remotes/acme/node-client.git"))
@@ -1228,6 +1233,45 @@ async fn lines_match_the_seed_for_whole_files() {
                     .contains(&json!(89))
             );
         }
+        // `let http = …` re-indented into the new `loop` (base 101, head 95): ordinary unchanged code, not hidden.
+        if seed["path"] == "src/rpc/client.rs" {
+            let (line, side) = if seed["side"] == "head" {
+                (95, "head")
+            } else {
+                (101, "base")
+            };
+            for field in ["changed", "context_only"] {
+                assert!(
+                    !lines[field].as_array().expect(field).contains(&json!(line)),
+                    "{side} {line} in {field}"
+                );
+            }
+            for block in lines["deleted"].as_array().expect("blocks") {
+                let start = block["base_start"].as_u64().expect("start");
+                let total = block["total_lines"].as_u64().expect("total");
+                assert!(
+                    !(start..start + total).contains(&101),
+                    "base 101 shown as removed"
+                );
+            }
+        }
+        // The view hides exactly the lines the stored pre-pass covers by a line rule (one decision).
+        let prepass: analysis::prepass::Prepass = h
+            .state
+            .db
+            .documents()
+            .get(id, DocumentKind::Prepass, "")
+            .await
+            .expect("read pre-pass")
+            .expect("stored pre-pass");
+        let side: contracts::common::LineSide =
+            serde_json::from_value(seed["side"].clone()).expect("side");
+        let path = seed["path"].as_str().expect("path");
+        assert_eq!(
+            lines["context_only"],
+            json!(prepass.view_context(side, path)),
+            "{uri}: route and pre-pass agree"
+        );
         // The historical seed still checks every original field; new metadata is asserted above.
         lines.as_object_mut().expect("lines").remove("context_only");
         for block in lines["deleted"].as_array_mut().expect("blocks") {
@@ -1236,6 +1280,412 @@ async fn lines_match_the_seed_for_whole_files() {
         }
         assert_eq!(lines, seed, "{}", seed_path.display());
     }
+}
+
+#[tokio::test]
+async fn a_pre_pass_stored_in_an_older_shape_is_computed_again() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let uri = format!("/api/v1/analyses/{id}/lines?path=src/rpc/client.rs&side=head&from=1&to=224");
+    let (status, fresh) = h.get(&uri).await;
+    assert_eq!(status, StatusCode::OK, "{fresh}");
+    let documents = h.state.db.documents();
+    let mut old: Value = documents
+        .get(id, DocumentKind::Prepass, "")
+        .await
+        .expect("read")
+        .expect("stored");
+    // The shape of 1525f6a: no quiet moves or whitespace pairs, identical moves as a hunk disposition.
+    let object = old.as_object_mut().expect("object");
+    object.remove("quiet_moves");
+    object.remove("whitespace");
+    old["hunks"][0]["disposition"] = json!({"kind": "identical_move"});
+    documents
+        .put(id, DocumentKind::Prepass, "", &old, chrono::Utc::now())
+        .await
+        .expect("store the old shape");
+    let (status, again) = h.get(&uri).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again, fresh, "computed again from the stored diff");
+    let stored: Option<analysis::prepass::Prepass> = documents
+        .get(id, DocumentKind::Prepass, "")
+        .await
+        .expect("the new shape is stored");
+    assert!(stored.is_some());
+}
+
+/// The fixture plan as an earlier build wrote it: h19/h20 (an in-file move, quiet then) in no flow and not in
+/// `unassigned`.
+fn plan_of_an_earlier_build() -> Value {
+    let mut plan = agent_output("plan:1");
+    plan["unassigned"]
+        .as_array_mut()
+        .expect("unassigned")
+        .retain(|hunk| !["h19", "h20"].contains(&hunk["hunk_id"].as_str().unwrap_or_default()));
+    plan
+}
+
+/// Whether `tour`'s Unexplained lists `start..=end` of src/rpc/client.rs on `side`.
+fn unexplained_has(tour: &Value, side: &str, start: u64, end: u64) -> bool {
+    tour["quiet"]["unexplained"]
+        .as_array()
+        .expect("unexplained")
+        .iter()
+        .any(|item| {
+            item["file"] == "src/rpc/client.rs"
+                && item["side"] == side
+                && item["ranges"].as_array().expect("ranges").iter().any(|r| {
+                    r["start_line"].as_u64() <= Some(start) && r["end_line"].as_u64() >= Some(end)
+                })
+        })
+}
+
+/// The moved code of h19/h20 without its context-only doc comments (head 112, 145; base 173, 206).
+const H19_H20: [(&str, u64, u64); 2] = [("head", 113, 144), ("base", 174, 205)];
+
+#[tokio::test]
+async fn stored_plan_and_flow_missing_newly_mandatory_lines_leave_them_unexplained() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    h.background_on(id).await;
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    h.wait_until_finished(&id.to_string()).await;
+    let documents = h.state.db.documents();
+    documents
+        .put(
+            id,
+            DocumentKind::Plan,
+            "",
+            &plan_of_an_earlier_build(),
+            Utc::now(),
+        )
+        .await
+        .expect("store the old plan");
+    // Flow f1 as if its step s9 (head 30-43: changed lines 35, 42 and removed base 41) had not been required.
+    let mut flow: Value = agent_output("flow:f1");
+    flow["steps"]
+        .as_array_mut()
+        .expect("steps")
+        .retain(|step| step["id"] != "s9");
+    flow["edges"]
+        .as_array_mut()
+        .expect("edges")
+        .retain(|edge| edge["from_step_id"] != "s9" && edge["to_step_id"] != "s9");
+    documents
+        .put(id, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .await
+        .expect("store the narrower flow");
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let flows = tour["flows"].as_array().expect("flows");
+    assert_eq!(flows.len(), 5);
+    for flow in flows {
+        assert_eq!(
+            flow["analysis_status"]["state"], "analysed",
+            "{}",
+            flow["id"]
+        );
+        assert!(
+            !flow["steps"].as_array().expect("steps").is_empty(),
+            "{}",
+            flow["id"]
+        );
+    }
+    let f1 = flows.iter().find(|flow| flow["id"] == "f1").expect("f1");
+    assert_eq!(
+        f1["steps"].as_array().map(Vec::len),
+        Some(9),
+        "f1 keeps its other steps"
+    );
+    for (side, start, end) in
+        H19_H20
+            .into_iter()
+            .chain([("head", 35, 35), ("head", 42, 42), ("base", 41, 41)])
+    {
+        assert!(
+            unexplained_has(&tour, side, start, end),
+            "{side} {start}-{end} in Unexplained: {}",
+            tour["quiet"]["unexplained"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn resume_reads_a_stored_plan_as_stored() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    h.background_on(id).await;
+    let documents = h.state.db.documents();
+    documents
+        .put(
+            id,
+            DocumentKind::Plan,
+            "",
+            &plan_of_an_earlier_build(),
+            Utc::now(),
+        )
+        .await
+        .expect("old plan");
+    documents
+        .put(
+            id,
+            DocumentKind::PrContext,
+            "",
+            &agent_output("pr_context"),
+            Utc::now(),
+        )
+        .await
+        .expect("pr context");
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    let finished = h.wait_until_finished(&id.to_string()).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    for (side, start, end) in H19_H20 {
+        assert!(
+            unexplained_has(&tour, side, start, end),
+            "{side} {start}-{end}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn retry_reads_a_stored_plan_as_stored() {
+    let h = harness().await;
+    h.executor.script("pr_context", Script::Fail);
+    let id = h.create_fixture_analysis().await;
+    let ended = h.wait_until_ended(&id).await;
+    assert!(
+        matches!(ended.state, AnalysisState::Failed { .. }),
+        "{ended:?}"
+    );
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    h.state
+        .db
+        .documents()
+        .put(
+            analysis,
+            DocumentKind::Plan,
+            "",
+            &plan_of_an_earlier_build(),
+            Utc::now(),
+        )
+        .await
+        .expect("old plan");
+    h.executor.unscript("pr_context");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+}
+
+#[tokio::test]
+async fn a_stored_flow_failing_another_check_is_failed_and_can_be_analysed_again() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    h.background_on(id).await;
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    h.wait_until_finished(&id.to_string()).await;
+    let mut flow: Value = agent_output("flow:f1");
+    flow["edges"]
+        .as_array_mut()
+        .expect("edges")
+        .push(json!({"from_step_id": "s1", "to_step_id": "s99", "label": null}));
+    h.state
+        .db
+        .documents()
+        .put(id, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .await
+        .expect("store a flow that fails a check");
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let f1 = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|flow| flow["id"] == "f1")
+        .expect("f1");
+    assert_eq!(f1["analysis_status"]["state"], "failed", "{f1}");
+    let message = f1["analysis_status"]["message"].as_str().expect("message");
+    assert!(
+        !message.contains('_'),
+        "no problem code in user text: {message}"
+    );
+    assert!(message.ends_with("Analyse this flow again."), "{message}");
+    assert!(f1["steps"].as_array().expect("steps").is_empty());
+    let planned = f1["planned"]["ranges"].as_array().expect("planned ranges");
+    assert!(
+        planned
+            .iter()
+            .any(|r| r["file"] == "src/rpc/client.rs" && r["side"] == "head"),
+        "its lines are listed: {planned:?}"
+    );
+
+    // An accepted stored flow of the finished analysis: the request changes nothing.
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f2/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"]["state"], "finished", "{body}");
+    // The rejected one is discarded and analysed again: the finished analysis runs again, then finishes.
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f1/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_ne!(body["state"]["state"], "finished", "{body}");
+    let finished = h.wait_until_finished(&id.to_string()).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    let runs = h.executor.specs_of("flow:f1");
+    assert_eq!(
+        runs.iter()
+            .map(|(generation, _)| *generation)
+            .collect::<Vec<_>>(),
+        [0, 0],
+        "a new first run, never a repair of the rejected output"
+    );
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let f1 = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|flow| flow["id"] == "f1")
+        .expect("f1");
+    assert_eq!(f1["analysis_status"]["state"], "analysed", "{f1}");
+    assert!(!f1["steps"].as_array().expect("steps").is_empty());
+}
+
+/// Cancel of a finished analysis that runs again for one flow ends that run only: the analysis is finished
+/// again with its results, and the flow says how to analyse it again.
+#[tokio::test]
+async fn cancelling_the_rerun_of_a_finished_analysis_keeps_its_results() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    h.background_on(id).await;
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    let first = h.wait_until_finished(&id.to_string()).await;
+    let mut flow: Value = agent_output("flow:f1");
+    flow["edges"]
+        .as_array_mut()
+        .expect("edges")
+        .push(json!({"from_step_id": "s1", "to_step_id": "s99", "label": null}));
+    h.state
+        .db
+        .documents()
+        .put(id, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .await
+        .expect("store a flow that fails a check");
+    h.executor.script("flow:f1", Script::Pending);
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f1/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["finished_at"], Value::Null, "{body}");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/cancel")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let summary: AnalysisSummary = serde_json::from_value(body).expect("summary");
+    assert_eq!(summary.state, AnalysisState::Finished { total: 5 });
+    assert_eq!(summary.finished_at, first.finished_at);
+    let flows = h
+        .state
+        .db
+        .documents()
+        .list::<Value>(id, DocumentKind::Flow)
+        .await
+        .expect("flows");
+    assert_eq!(flows.len(), 4, "the other results stay");
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let f1 = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|flow| flow["id"] == "f1")
+        .expect("f1");
+    assert_eq!(f1["analysis_status"]["state"], "failed", "{f1}");
+    assert!(
+        f1["analysis_status"]["message"]
+            .as_str()
+            .is_some_and(|m| m.ends_with("Analyse this flow again.")),
+        "{f1}"
+    );
+}
+
+/// "Analyse all remaining flows" also runs again a stored flow that today's checks reject.
+#[tokio::test]
+async fn analysing_all_remaining_flows_reruns_a_rejected_stored_flow() {
+    let h = harness().await;
+    let id = h.create_fixture_analysis_on_request().await;
+    h.wait_for_state(&id, |state| {
+        matches!(state, AnalysisState::Running { idle: true, .. })
+    })
+    .await;
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f1/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.wait_for_state(&id, |state| {
+        matches!(
+            state,
+            AnalysisState::Running {
+                done: 1,
+                idle: true,
+                ..
+            }
+        )
+    })
+    .await;
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    let mut flow: Value = agent_output("flow:f1");
+    flow["edges"]
+        .as_array_mut()
+        .expect("edges")
+        .push(json!({"from_step_id": "s1", "to_step_id": "s99", "label": null}));
+    h.state
+        .db
+        .documents()
+        .put(analysis, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .await
+        .expect("store a flow that fails a check");
+    h.set_background(&id, true).await;
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    let runs = h.executor.specs_of("flow:f1");
+    assert_eq!(
+        runs.iter()
+            .map(|(generation, _)| *generation)
+            .collect::<Vec<_>>(),
+        [0, 0],
+        "a new first run, never a repair of the rejected output"
+    );
+    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    let f1 = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|flow| flow["id"] == "f1")
+        .expect("f1");
+    assert_eq!(f1["analysis_status"]["state"], "analysed", "{f1}");
 }
 
 #[tokio::test]
@@ -1267,7 +1717,8 @@ async fn lines_caps_the_range() {
 
     let (status, body) = h.get(&lines(95, 99)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["changed"], json!([95, 96, 97, 98, 99]));
+    // Line 95 only moved into the new `loop` (whitespace only): unchanged code.
+    assert_eq!(body["changed"], json!([96, 97, 98, 99]));
     assert_eq!(body["lines"].as_array().map(Vec::len), Some(5));
     assert_eq!(
         body["comments"]["line_thread_ranges"],
@@ -2380,10 +2831,9 @@ async fn tour_has_no_uncomputed_fact_with_the_app_installed() {
     );
 }
 
-/// A pull request over the plan batch limit is planned in directory batches whose plans are merged.
-#[tokio::test]
-async fn huge_pull_request_is_planned_in_batches() {
-    let h = harness().await;
+/// Creates the analysis of a pull request over the plan batch limit (two directory batches): each batch's plan,
+/// one flow over all its hunks, is scripted by `plan_script(batch, plan)`; both flows' outputs are rejected.
+async fn huge_analysis(h: &Harness, mut plan_script: impl FnMut(usize, Value) -> Script) -> String {
     let (base, head) = h.remote_repo("huge", |repo| {
         let base = commit(repo, &[("README.txt", "readme\n")], "base");
         for dir in ["a", "b"] {
@@ -2428,7 +2878,7 @@ async fn huge_pull_request_is_planned_in_batches() {
             "unassigned": []
         });
         h.executor
-            .script(&format!("plan:{}", index + 1), Script::Output(plan));
+            .script(&format!("plan:{}", index + 1), plan_script(index + 1, plan));
     }
     let mut context = agent_output("pr_context");
     context["fit_questions"] = json!([]);
@@ -2477,7 +2927,14 @@ async fn huge_pull_request_is_planned_in_batches() {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
-    let id = created["id"].as_str().expect("id").to_owned();
+    created["id"].as_str().expect("id").to_owned()
+}
+
+/// A pull request over the plan batch limit is planned in directory batches whose plans are merged.
+#[tokio::test]
+async fn huge_pull_request_is_planned_in_batches() {
+    let h = harness().await;
+    let id = huge_analysis(&h, |_, plan| Script::Output(plan)).await;
     h.set_background(&id, true).await;
     // Each flow fails for good after its first turn and two automatic retries (three runs each).
     settled_runs(&h, &id, "flow:f1", 9).await;
@@ -2551,6 +3008,73 @@ async fn huge_pull_request_is_planned_in_batches() {
         })
         .collect();
     assert_eq!(pending, ["a/big.txt", "b/big.txt"]);
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// An analysis planning in batches when the server was upgraded: Retry merges the stored batch plans, whose
+/// lines today's rules may find missing; they are read as stored (those lines Unexplained), never failed for good.
+#[tokio::test]
+async fn retry_reads_stored_batch_plans_as_stored() {
+    let h = harness().await;
+    let mut planned = Vec::new();
+    let id = huge_analysis(&h, |batch, plan| {
+        planned.push(plan.clone());
+        if batch == 2 {
+            Script::Fail
+        } else {
+            Script::Output(plan)
+        }
+    })
+    .await;
+    let ended = h.wait_until_ended(&id).await;
+    assert!(
+        matches!(ended.state, AnalysisState::Failed { .. }),
+        "{ended:?}"
+    );
+    // Batch 2's plan of an earlier build: it leaves lines 2001-2500 of b/big.txt in no flow and not unassigned.
+    let mut earlier = planned[1].clone();
+    let selection = &mut earlier["flows"][0]["hunks"][0];
+    selection["head_start"] = json!(1);
+    selection["head_end"] = json!(2000);
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    h.state
+        .db
+        .documents()
+        .put(analysis, DocumentKind::Plan, "2", &earlier, Utc::now())
+        .await
+        .expect("stored batch plan");
+    h.executor.unscript("plan:2");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let summary = h
+        .wait_for_state(&id, |state| {
+            matches!(
+                state,
+                AnalysisState::Failed { .. } | AnalysisState::Running { idle: true, .. }
+            )
+        })
+        .await;
+    assert!(
+        matches!(summary.state, AnalysisState::Running { .. }),
+        "{:?}",
+        summary.state
+    );
+    assert_eq!(h.executor.specs_of("plan:2").len(), 1, "not planned again");
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let unexplained = tour["quiet"]["unexplained"]
+        .as_array()
+        .expect("unexplained");
+    assert!(
+        unexplained.iter().any(|rows| rows["file"] == "b/big.txt"
+            && rows["ranges"]
+                .as_array()
+                .expect("ranges")
+                .iter()
+                .any(|r| r["start_line"] == 2001 && r["end_line"] == 2500)),
+        "{unexplained:?}"
+    );
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;
 }
@@ -2798,6 +3322,7 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // The new round's plan job is queued behind the old claim.
+    let mut queued = false;
     for _ in 0..500 {
         let current = h
             .state
@@ -2807,10 +3332,12 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
             .await
             .expect("read");
         if current.is_some_and(|job| job.id != old.job_id) {
+            queued = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    assert!(queued, "the new round's plan job was not queued within 5 s");
     let resets_at = chrono::DateTime::from_timestamp(Utc::now().timestamp() + 3, 0).expect("time");
     let late = JobResult {
         job_id: old.job_id,
@@ -3304,8 +3831,10 @@ async fn lazy_review_opens_after_context_before_any_flow() {
         .await;
 }
 
+/// The removed `test` classification fails the plan's schema check: the plan is repaired like any rejected
+/// output (never a failed analysis), and no flow is planned from the rejected answer.
 #[tokio::test]
-async fn test_classification_is_rejected_before_flow_jobs() {
+async fn test_classification_is_repaired_before_flow_jobs() {
     let h = harness().await;
     let mut output = agent_output("plan:1");
     output["flows"][0]["classification"] = json!("test");
@@ -3313,14 +3842,36 @@ async fn test_classification_is_rejected_before_flow_jobs() {
     h.executor.script("plan:1#0", Script::Output(output));
     let id = h.create_fixture_analysis().await;
     let ended = h.wait_until_ended(&id).await;
-    assert!(matches!(ended.state, AnalysisState::Failed { message, .. }
-        if message == "The agent's answer did not have the expected structure."));
-    assert_eq!(h.executor.specs_of("plan:1").len(), 1);
+    assert_eq!(ended.state, AnalysisState::Finished { total: 5 });
+    let runs = h.executor.specs_of("plan:1");
+    assert_eq!(runs.len(), 2);
+    assert!(runs[1].1.prompt.contains("/flows/0/classification"));
+    let order: Vec<(String, u32)> = h
+        .executor
+        .specs
+        .lock()
+        .expect("lock")
+        .iter()
+        .map(|(stage, generation, _)| (stage.clone(), *generation))
+        .collect();
+    let repaired = order
+        .iter()
+        .position(|run| *run == ("plan:1".to_owned(), 1))
+        .expect("the repair run");
+    let first_flow = order
+        .iter()
+        .position(|(stage, _)| stage.starts_with("flow:"))
+        .expect("a flow run");
     assert!(
-        h.executor
-            .submitted()
+        repaired < first_flow,
+        "no flow before the repaired plan: {order:?}"
+    );
+    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    let flows = tour["flows"].as_array().expect("flows");
+    assert!(
+        flows
             .iter()
-            .all(|stage| stage.starts_with("plan:"))
+            .all(|flow| flow["llm"]["title"] != "Test retry helpers")
     );
 }
 

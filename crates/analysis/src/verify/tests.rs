@@ -45,6 +45,7 @@ struct Fixture {
     flows: Vec<FlowAnalysisOutput>,
     aliases: BTreeMap<FlowId, Vec<String>>,
     moves: MovesReport,
+    stored: bool,
 }
 
 impl Fixture {
@@ -103,6 +104,7 @@ impl Fixture {
             flows,
             aliases: BTreeMap::from([(id("f1"), vec!["t1".to_owned(), "t2".to_owned()])]),
             moves: MovesReport::default(),
+            stored: false,
         }
     }
 
@@ -136,6 +138,7 @@ impl Fixture {
             pr_context: &self.pr_context,
             flows: &self.flows,
             thread_aliases: &self.aliases,
+            stored: self.stored,
         })
         .expect("verdict")
     }
@@ -170,17 +173,59 @@ fn fixture_pr_482_output_is_accepted_and_ordered() {
     assert!(tour.unanalysed.is_empty());
     assert_eq!(
         tour.coverage.unexplained,
-        [file_ranges(
-            "src/rpc/metrics.rs",
-            LineSide::Head,
-            &[(40, 46)]
-        )],
-        "the plan's unassigned hunk h22 is Unexplained"
+        [
+            file_ranges("src/rpc/client.rs", LineSide::Head, &[(112, 152)]),
+            file_ranges("src/rpc/client.rs", LineSide::Base, &[(173, 214)]),
+            file_ranges("src/rpc/metrics.rs", LineSide::Head, &[(40, 46)]),
+        ],
+        "the plan's unassigned hunks h19, h20 and h22 are Unexplained"
     );
     assert_eq!(tour.coverage.double_covered, []);
     let steps: usize = tour.flows.iter().map(|flow| flow.step_ids.len()).sum();
     assert_eq!(steps, 17);
     assert!(!verdict.moves_incomplete);
+}
+
+#[test]
+fn stored_outputs_read_under_stricter_rules_leave_new_lines_unexplained() {
+    let mut fixture = Fixture::new();
+    let facts = fixture.facts();
+    // Written under earlier rules: the plan left out h19/h20 (then quiet), flow f1 has no step on lines 35 and 42.
+    fixture
+        .plan
+        .unassigned
+        .retain(|hunk| !["h19", "h20"].contains(&hunk.hunk_id.0.as_str()));
+    let f1 = &mut fixture.flows[0];
+    f1.steps.retain(|step| step.id != "s9");
+    f1.edges
+        .retain(|edge| edge.from_step_id != "s9" && edge.to_step_id != "s9");
+
+    let fresh = fixture.verdict(&facts);
+    assert!(fresh.tour.is_none(), "a new plan stays strict");
+
+    fixture.stored = true;
+    let verdict = fixture.verdict(&facts);
+    assert_eq!(
+        verdict.repairs,
+        [],
+        "a stored, accepted output is not rejected for coverage"
+    );
+    let tour = verdict.tour.expect("tour");
+    assert_eq!(flow_ids(&tour.flows), ["f1", "f2", "f3", "f4", "f5"]);
+    assert!(tour.unanalysed.is_empty());
+    assert_eq!(
+        tour.coverage.unexplained,
+        [
+            file_ranges(
+                "src/rpc/client.rs",
+                LineSide::Head,
+                &[(35, 35), (42, 42), (112, 152)]
+            ),
+            file_ranges("src/rpc/client.rs", LineSide::Base, &[(41, 41), (173, 214)]),
+            file_ranges("src/rpc/metrics.rs", LineSide::Head, &[(40, 46)]),
+        ],
+        "h19/h20 and the lines step s9 covered (head 35, 42, removed base 41)"
+    );
 }
 
 #[test]
@@ -244,6 +289,7 @@ fn foreign_pr_output_is_rejected() {
             pr_context: &fixture.pr_context,
             flows: &fixture.flows,
             thread_aliases: &fixture.aliases,
+            stored: false,
         })
         .expect("verdict")
     };
@@ -254,7 +300,7 @@ fn foreign_pr_output_is_rejected() {
     assert_eq!(verdict.repairs[0].output, OutputRef::Plan);
     let unassigned = verdict.repairs[0].issues.iter();
     let unassigned = unassigned.filter(|issue| issue.kind == VerifyIssueKind::LineUnassigned);
-    assert_eq!(unassigned.count(), 19, "{:#?}", verdict.repairs[0]);
+    assert_eq!(unassigned.count(), 17, "{:#?}", verdict.repairs[0]);
     assert_eq!(
         verdict.repairs[1].output,
         OutputRef::PrContext,
@@ -262,7 +308,9 @@ fn foreign_pr_output_is_rejected() {
     );
 
     // Worst case: exactly the plan's hunk ids. The plan fits, but no flow output does.
-    let verdict = run(&foreign(&[11, 12, 13, 14, 15, 16, 18, 21, 22, 23, 24]));
+    let verdict = run(&foreign(&[
+        11, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 23, 24,
+    ]));
     let tour = verdict
         .tour
         .expect("the plan's whole-hunk selections fit any hunk list");
@@ -296,7 +344,7 @@ fn foreign_pr_output_is_rejected() {
         .sum();
     assert_eq!(
         unexplained_lines,
-        11 * 3,
+        13 * 3,
         "every changed line is Unexplained"
     );
 }
@@ -365,6 +413,8 @@ fn failed_flows_become_unexplained_and_quiet_rows_never_above_a_rated_flow() {
         [
             file_ranges("src/config.rs", LineSide::Head, &[(23, 23)]),
             file_ranges("src/config.rs", LineSide::Base, &[(23, 23)]),
+            file_ranges("src/rpc/client.rs", LineSide::Head, &[(112, 152)]),
+            file_ranges("src/rpc/client.rs", LineSide::Base, &[(173, 214)]),
             file_ranges("src/rpc/metrics.rs", LineSide::Head, &[(40, 46)]),
         ],
         "the lines of the failed flow f2 and the unassigned hunk"
@@ -686,6 +736,7 @@ fn each_output_is_verified_with_its_own_bounded_read() {
         },
         flows: &outputs,
         thread_aliases: &BTreeMap::new(),
+        stored: false,
     })
     .expect("verdict");
     assert_eq!(verdict.repairs, Vec::<Repair>::new());
@@ -903,6 +954,7 @@ proptest::proptest! {
             },
             flows: &outputs,
             thread_aliases: &BTreeMap::new(),
+            stored: false,
         })
         .expect("verdict");
         proptest::prop_assert_eq!(&verdict.repairs, &Vec::<Repair>::new());
@@ -1204,4 +1256,40 @@ fn plan_rejects_flow_with_only_test_locations() {
     output.flows[0].hunks[0].head_end = Some(1);
     output.unassigned.clear();
     assert!(plan(&output, &DiffIndex::new(&files).expect("diff")).is_err());
+}
+
+#[test]
+fn a_flow_may_claim_context_only_lines_without_owing_them() {
+    let mut fixture = Fixture::new();
+    // h17 changes one comment line per side: listed as context (its lines quiet, nothing left to cover).
+    let h17 = fixture
+        .files
+        .iter()
+        .flat_map(|file| file.hunks.iter().map(move |hunk| (file, hunk)))
+        .find(|(_, hunk)| hunk.id.0 == "h17")
+        .map(|(file, hunk)| (file.path.clone(), hunk.clone()))
+        .expect("h17");
+    let listed = fixture
+        .listed
+        .iter_mut()
+        .find(|file| file.path == h17.0)
+        .expect("listed file");
+    listed.hunks.push(Hunk {
+        added: Vec::new(),
+        removed: Vec::new(),
+        ..h17.1
+    });
+    listed.hunks.sort_by_key(|hunk| hunk.head.start);
+    fixture.plan.flows[0]
+        .hunks
+        .push(contracts::agent::plan::HunkSelection {
+            hunk_id: HunkId("h17".to_owned()),
+            head_start: None,
+            head_end: None,
+        });
+    let verdict = fixture.verdict(&fixture.facts());
+    assert_eq!(verdict.repairs, [], "claiming a context line is allowed");
+    let tour = verdict.tour.expect("tour");
+    assert!(tour.flows.iter().any(|flow| flow.flow_id == id("f1")));
+    assert_eq!(tour.coverage.double_covered, []);
 }

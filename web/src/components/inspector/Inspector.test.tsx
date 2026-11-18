@@ -35,7 +35,7 @@ describe("Inspector at a step", () => {
     await userEvent.click(sectionButton(/^Assessment/));
     expect(region(/^Assessment/)).toHaveTextContent("LOW");
     expect(region(/^Assessment/)).toHaveTextContent(step(tour, "f1.1").llm.assessment!.reason);
-    expect(region(/^Assessment/)).not.toHaveTextContent("nothing executed");
+    expect(region(/^Assessment/)).not.toHaveTextContent("Read: ");
   });
 
   it("shows populated sections in review order", () => {
@@ -259,6 +259,20 @@ describe("Inspector summaries", () => {
     expect(region(/^Depends on/)).toHaveTextContent(/Flow 3 ·/);
     await userEvent.click(screen.getByRole("button", { name: /Step 5 · Retry allowed\?/ }));
     expect(onSelectStep).toHaveBeenCalledWith("f1.5");
+  });
+
+  it("counts Unexplained files by path, not by side", () => {
+    const range = { start_line: 1, end_line: 2 };
+    const unexplained = [
+      { file: "src/a.rs", side: "head", ranges: [range] },
+      { file: "src/a.rs", side: "base", ranges: [range] },
+    ] as Tour["quiet"]["unexplained"];
+    render(
+      <Inspector tour={{ ...tour, quiet: { ...tour.quiet, unexplained } }} block={{ block: "pr_context" }} />,
+    );
+    expect(region(/^Coverage/)).toHaveTextContent(
+      "Unexplained: 4 changed lines in 1 file — read these yourself",
+    );
   });
 
   it("summarises the PR context: coverage facts apart from the LLM analysis, nothing the centre already lists", () => {

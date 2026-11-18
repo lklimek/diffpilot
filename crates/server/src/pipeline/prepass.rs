@@ -37,13 +37,21 @@ pub enum PrepassRunError {
     Db(#[from] DbError),
 }
 
-/// The stored pre-pass of `analysis`, if computed.
+/// The stored pre-pass of `analysis`, if computed. A document stored by an earlier build in another shape counts as
+/// missing: the pre-pass is deterministic, so [`ensure`] computes it again from the stored diff.
 pub async fn stored(state: &AppState, analysis: AnalysisId) -> Result<Option<Prepass>, DbError> {
-    state
+    match state
         .db
         .documents()
         .get(analysis, DocumentKind::Prepass, "")
         .await
+    {
+        Err(DbError::Json(error)) => {
+            tracing::info!(%analysis, %error, "stored pre-pass has an older shape; it is computed again");
+            Ok(None)
+        }
+        stored => stored,
+    }
 }
 
 /// The stored pre-pass, computed and stored first when missing (restart-safe: the pre-pass is deterministic).

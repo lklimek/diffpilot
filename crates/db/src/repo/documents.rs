@@ -163,6 +163,21 @@ impl Documents<'_> {
             .collect()
     }
 
+    /// Every document of a kind as stored text, as `(key, body)` ordered by key: the version a caller verified.
+    pub async fn list_raw(
+        &self,
+        analysis: AnalysisId,
+        kind: DocumentKind,
+    ) -> Result<Vec<(String, String)>, DbError> {
+        Ok(sqlx::query_as(
+            "SELECT key, body FROM documents WHERE analysis_id = ? AND kind = ? ORDER BY key",
+        )
+        .bind(analysis.to_string())
+        .bind(kind.as_str())
+        .fetch_all(self.pool)
+        .await?)
+    }
+
     /// Deletes one document, if stored.
     pub async fn delete(
         &self,

@@ -27,7 +27,7 @@ text: How does a caller now send a request that must not be repeated?
 headline: A downstream developer gets a compile error; a user of broadcast_tx loses the only no-retry path.
 risk: medium
 reason: Public API removal with a known downstream user; ties to the double-send question.
-basis_note: read 2 files, searched this repository and the stacked PR title; nothing executed
+basis_note: Read: 2 files, searched this repository and the stacked PR title
 not_checked: other downstream crates
 origin: introduced
 blocking: blocks_this_pr

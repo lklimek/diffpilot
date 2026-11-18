@@ -162,7 +162,8 @@ impl Context {
         }
         let output = parse(text, &self.catalog()).map_err(|problem| vec![problem])?;
         let listed = DiffIndex::new(&self.listed).map_err(|e| fail(e.to_string()))?;
-        let plan = verify::plan(&self.plan, &listed).map_err(|e| fail(e.to_string()))?;
+        // The plan was accepted before any flow job: read it as stored (lines today's rules add are Unexplained).
+        let plan = verify::stored_plan(&self.plan, &listed).map_err(|e| fail(e.to_string()))?;
         let planned = self
             .plan
             .flows

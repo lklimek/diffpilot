@@ -1155,6 +1155,7 @@ fn api_seed_projects_the_agent_output_and_the_repository() {
             });
             let mut changed: Vec<u32> = changed
                 .filter(|l| (a.start_line..=a.end_line).contains(l))
+                .filter(|l| !WHITESPACE_ONLY.contains(&(a.file.as_str(), a.side, *l)))
                 .collect();
             changed.sort_unstable();
             assert_eq!(
@@ -1244,17 +1245,26 @@ fn api_seed_projects_the_agent_output_and_the_repository() {
     }
     assert_eq!(tour.pr_context.facts.flow_count as usize, tour.flows.len());
     assert_eq!(tour.pr_context.facts.step_count as usize, steps_total);
+    // The hand-written seed keeps the in-file move of `build_request` (h19, h20) as a quiet move row for the UI
+    // components; the server lists such a reorder under Unexplained (fixtures/pr-482/api/default/tour.json).
+    let in_seed_move = |hunk: &HunkRec| {
+        tour.quiet.moves.iter().any(|moved| {
+            let lines = |side: &[u32], range: &contracts::common::FileRange, path: &str| {
+                range.file == path
+                    && side
+                        .iter()
+                        .any(|l| (range.range.start_line..=range.range.end_line).contains(l))
+            };
+            lines(&hunk.added(), &moved.to, &hunk.path)
+                || lines(&hunk.removed(), &moved.from, hunk.base_path())
+        })
+    };
     let unexplained: BTreeSet<&str> = plan
         .unassigned
         .iter()
-        .map(|u| {
-            hunks
-                .iter()
-                .find(|h| h.id == u.hunk_id.0)
-                .expect("hunk")
-                .path
-                .as_str()
-        })
+        .map(|u| hunks.iter().find(|h| h.id == u.hunk_id.0).expect("hunk"))
+        .filter(|hunk| !in_seed_move(hunk))
+        .map(|hunk| hunk.path.as_str())
         .collect();
     let shown: BTreeSet<&str> = tour
         .quiet
@@ -1287,11 +1297,19 @@ fn api_seed_projects_the_agent_output_and_the_repository() {
                 _ => Vec::new(),
             })
             .filter(|l| (lines.from..=lines.to).contains(l))
+            .filter(|l| !WHITESPACE_ONLY.contains(&(lines.path.as_str(), lines.side, *l)))
             .collect();
         changed.sort_unstable();
         assert_eq!(lines.changed, changed, "{key}: changed lines");
     }
 }
+
+/// Changed lines of the fixture whose only change is whitespace (`let http = …` re-indented into the new `loop`): the
+/// lines route shows them as unchanged code (the server's lexer pairs them; `crates/server/tests/slice.rs` checks it).
+const WHITESPACE_ONLY: [(&str, LineSide, u32); 2] = [
+    ("src/rpc/client.rs", LineSide::Base, 101),
+    ("src/rpc/client.rs", LineSide::Head, 95),
+];
 
 /// The percentage rule `wording_violation` implements: digits or the `{}` slot, one optional whitespace, `%`.
 const PERCENT_RULE: &str = r"(?:\d+|\{\})\s?%";

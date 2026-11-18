@@ -80,7 +80,7 @@ fn checker_accepts_fixture_file_and_reports_line_numbered_rejections() {
 
     // The fixture itself uses the concise low-risk grammar.
     assert!(text.contains("risk: low\nreason:"));
-    assert!(!text.contains("basis_note: Read src/sync/mod.rs"));
+    assert!(!text.contains("basis_note: Read: src/sync/mod.rs"));
     std::fs::write(&path, &text).unwrap();
     let accepted = check();
     assert!(

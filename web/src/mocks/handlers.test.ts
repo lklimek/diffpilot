@@ -160,8 +160,8 @@ describe("msw handlers from fixtures/pr-482", () => {
     expect(lines).toMatchObject({ from: 88, to: 96, total_lines: 224 });
     expect(lines.lines).toHaveLength(9);
     expect(lines.lines[0]).toContain("impl RpcClient");
-    expect(lines.changed).toEqual([89, 91, 92, 93, 94, 95, 96]);
-    expect(lines.deleted.map((d) => d.after_line)).toEqual([88, 90]);
+    expect(lines.changed).toEqual([89, 91, 92, 93, 94, 96]);
+    expect(lines.deleted.map((d) => d.after_line)).toEqual([88, 95]);
   });
 
   it("clamp the end of a range to the file", async () => {

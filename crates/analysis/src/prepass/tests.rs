@@ -107,7 +107,6 @@ fn prepass_reproduces_fixture_pr_482() {
         .map(|hunk| {
             let disposition = match hunk.disposition {
                 Disposition::Agent => "agent".to_owned(),
-                Disposition::IdenticalMove => "identical_move".to_owned(),
                 Disposition::NotAnalysed(category) => format!(
                     "not_analysed:{}",
                     serde_json::to_value(category)
@@ -130,9 +129,9 @@ fn prepass_reproduces_fixture_pr_482() {
             &json(&fixture().join("api/default/tour.json"))["quiet"]["not_analysed"]
         )
     );
-    assert_eq!(
-        result.identical_moves(),
-        from_value::<Vec<IdenticalMove>>(&tour["quiet"]["moves"])
+    assert!(
+        result.identical_moves().is_empty(),
+        "the fixture's only identical move stays within src/rpc/client.rs"
     );
     assert_eq!(
         result.counters.counters,
@@ -278,8 +277,8 @@ fn generated_file_never_in_agent_input() {
             "src/gen.rs",
             &[header, "", "pub const A: u32 = 2;"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["pub mod a;"]),
-        text(LineSide::Head, "src/lib.rs", &["pub mod b;"]),
+        text(LineSide::Base, "src/lib.rs", &["use a::x;"]),
+        text(LineSide::Head, "src/lib.rs", &["use a::y;"]),
     ]
     .into_iter()
     .collect();
@@ -380,8 +379,8 @@ fn agent_files_quiet_lines_and_binaries_split_the_diff() {
             "api/service.pb.go",
             &["package api", "func A() {}"],
         ),
-        text(LineSide::Base, "src/lib.rs", &["pub mod a;"]),
-        text(LineSide::Head, "src/lib.rs", &["pub mod b;"]),
+        text(LineSide::Base, "src/lib.rs", &["use a::x;"]),
+        text(LineSide::Head, "src/lib.rs", &["use a::y;"]),
     ]
     .into_iter()
     .collect();
@@ -741,7 +740,8 @@ fn generated_files() -> impl Strategy<Value = Vec<(usize, u8, Vec<usize>, Vec<us
 }
 
 proptest! {
-    /// Every non-blank changed line is in exactly one of: the agent's lines, a Not analysed item, an identical move.
+    /// Every non-blank changed line is in exactly one of: the agent's lines, a Not analysed item, an identical move;
+    /// unless its only change is whitespace (it reads as unchanged code and is never the agent's).
     #[test]
     fn every_changed_line_has_exactly_one_disposition(specs in generated_files()) {
         let mut files = Vec::new();
@@ -780,6 +780,17 @@ proptest! {
                 }
             }
         }
+        for file in &result.whitespace {
+            for &(base, head) in &file.pairs {
+                count.remove(&(LineSide::Base, file.base.clone(), base));
+                count.remove(&(LineSide::Head, file.head.clone(), head));
+                for (side, path, line) in [(LineSide::Base, &file.base, base), (LineSide::Head, &file.head, head)] {
+                    prop_assert!(!result.agent_lines.iter().any(|r| r.side == side
+                        && &r.file == path
+                        && r.ranges.iter().any(|r| r.start_line <= line && line <= r.end_line)));
+                }
+            }
+        }
         let mut hit = |side: LineSide, file: &str, lines: &mut dyn Iterator<Item = u32>| {
             for line in lines {
                 if let Some(n) = count.get_mut(&(side, file.to_owned(), line)) {
@@ -807,6 +818,86 @@ proptest! {
             prop_assert_eq!(n, 1, "{:?}", line);
         }
     }
+}
+
+#[test]
+fn whitespace_only_lines_read_as_unchanged_code_and_stay_context() {
+    // Both statements are re-indented into a new `if` and swapped.
+    let base = [
+        "fn withdraw() {",
+        "    ensure_authorised()?;",
+        "    debit()?;",
+        "}",
+    ];
+    let head = [
+        "fn withdraw() {",
+        "    if enabled {",
+        "        debit()?;",
+        "        ensure_authorised()?;",
+        "    }",
+        "}",
+    ];
+    let mut next_id = 0;
+    let files = vec![file(
+        "src/pay.rs",
+        None,
+        FileStatus::Modified,
+        hunks_between(&base, &head, &mut next_id),
+    )];
+    let texts = Texts::from([
+        text(LineSide::Base, "src/pay.rs", &base),
+        text(LineSide::Head, "src/pay.rs", &head),
+    ]);
+    let result = run(&files, &[], &texts);
+    let (head_ws, base_ws) = (
+        result.whitespace_lines(LineSide::Head, "src/pay.rs"),
+        result.whitespace_lines(LineSide::Base, "src/pay.rs"),
+    );
+    assert_eq!(
+        (head_ws.len(), base_ws.len()),
+        (1, 1),
+        "one statement pairs"
+    );
+    // Not hidden: no line-rule context, no Not analysed entry.
+    assert!(result.view_context(LineSide::Head, "src/pay.rs").is_empty());
+    assert!(result.view_context(LineSide::Base, "src/pay.rs").is_empty());
+    assert!(result.not_analysed.is_empty());
+    // Context for the agent without coverage duty.
+    let context = result.context();
+    assert_eq!(
+        context.get(&(LineSide::Head, "src/pay.rs".into())),
+        Some(&head_ws)
+    );
+    assert_eq!(
+        context.get(&(LineSide::Base, "src/pay.rs".into())),
+        Some(&base_ws)
+    );
+
+    // The view: every head line is shown; the paired one is unchanged, the rest is marked; the other statement's
+    // base line is shown as removed, the paired base line is not.
+    let view = crate::lines::without_whitespace(&files[0], &result.whitespace_pairs(&files[0]));
+    let changed = crate::lines::changed_lines_within(
+        std::slice::from_ref(&view),
+        "src/pay.rs",
+        LineSide::Head,
+        1,
+        6,
+    );
+    let moved_statement = if head_ws == [4] { 3 } else { 4 };
+    assert_eq!(
+        changed,
+        [2, moved_statement, 5],
+        "the `if`, the moved statement and `}}` are marked"
+    );
+    let removed: Vec<u32> = crate::lines::deletion_markers(&view, 1, 6)
+        .iter()
+        .flat_map(|marker| marker.base.start..marker.base.start + marker.base.len)
+        .collect();
+    assert_eq!(removed.len(), 1);
+    assert!(
+        !base_ws.contains(&removed[0]),
+        "the paired base line is not shown as removed"
+    );
 }
 
 #[test]
@@ -875,4 +966,136 @@ fn fixture_and_mock_directories_are_excluded_from_agent_input() {
         assert!(result.agent_files(&files).is_empty(), "{path}");
         assert_eq!(result.not_analysed[0].category, NotAnalysedCategory::Tests);
     }
+}
+
+#[test]
+fn reorder_within_a_file_stays_with_the_agent_cross_file_move_stays_quiet() {
+    let guard = [
+        "    self.ensure_authorised(amount)?;",
+        "    self.ensure_within_limit(amount)?;",
+        "    self.audit.record(\"withdraw\", amount);",
+    ];
+    let rest = [
+        "    self.ledger.debit(self.account, amount)?;",
+        "    self.ledger.flush()?;",
+        "    self.notify_owner(amount)?;",
+        "    self.metrics.inc(\"withdraw\");",
+        "    self.metrics.flush_all();",
+        "    self.log_completion();",
+    ];
+    let open = ["fn withdraw(&mut self, amount: u64) -> Result<(), Error> {"];
+    let close = ["    Ok(())", "}"];
+    let base: Vec<&str> = [&open[..], &guard, &rest, &close].concat();
+    let head: Vec<&str> = [&open[..], &rest, &guard, &close].concat();
+    let mut next_id = 0;
+    let files = vec![file(
+        "src/bank.rs",
+        None,
+        FileStatus::Modified,
+        hunks_between(&base, &head, &mut next_id),
+    )];
+    let texts = Texts::from([
+        text(LineSide::Base, "src/bank.rs", &base),
+        text(LineSide::Head, "src/bank.rs", &head),
+    ]);
+    let result = run(&files, &[], &texts);
+    let block = result.moves.moved.iter().find(|block| block.identical);
+    assert!(
+        block.is_some_and(|block| !result.is_quiet_move(block)),
+        "an identical move within one file is no quiet move"
+    );
+    assert!(result.quiet_lines(&files).is_empty());
+    assert!(result.identical_moves().is_empty(), "no quiet row");
+    assert_eq!(result.agent_files(&files), files);
+
+    // A whole function moved into another file that the origin still calls: a quiet row, its lines context.
+    let helper = [
+        "fn audit_entry(ledger: &Ledger, amount: u64) {",
+        "    ledger.record(\"withdraw\", amount);",
+        "    ledger.flush_audit_trail();",
+        "}",
+    ];
+    let caller = [
+        "fn withdraw(ledger: &Ledger, amount: u64) {",
+        "    audit_entry(ledger, amount);",
+        "}",
+    ];
+    let base_a: Vec<&str> = [&caller[..], &helper].concat();
+    let head_b: Vec<&str> = ["const LIMIT: u64 = 10;"]
+        .into_iter()
+        .chain(helper)
+        .collect();
+    let mut next_id = 0;
+    let files = vec![
+        file(
+            "src/a.rs",
+            None,
+            FileStatus::Modified,
+            hunks_between(&base_a, &caller, &mut next_id),
+        ),
+        file(
+            "src/b.rs",
+            None,
+            FileStatus::Added,
+            hunks_between(&[], &head_b, &mut next_id),
+        ),
+    ];
+    let texts = Texts::from([
+        text(LineSide::Base, "src/a.rs", &base_a),
+        text(LineSide::Head, "src/a.rs", &caller),
+        text(LineSide::Head, "src/b.rs", &head_b),
+    ]);
+    let result = run(&files, &[], &texts);
+    assert_eq!(result.identical_moves().len(), 1, "cross-file: a quiet row");
+    assert!(
+        result
+            .hunks
+            .iter()
+            .all(|hunk| hunk.disposition == Disposition::Agent),
+        "listed to the agent as context"
+    );
+    let listed = result.agent_files(&files);
+    assert!(
+        listed[0].hunks[0].removed.is_empty(),
+        "no coverage duty at the origin"
+    );
+    assert_eq!(
+        listed[1].hunks[0].added,
+        [1],
+        "only the new use line is mandatory"
+    );
+    assert!(
+        result
+            .quiet_lines(&files)
+            .iter()
+            .any(|lines| lines.file == "src/a.rs" && lines.side == LineSide::Base)
+    );
+
+    // The source file is deleted (possibly a rename git did not pair): the move stays with the agent.
+    let mut next_id = 0;
+    let files = vec![
+        file(
+            "src/a.rs",
+            None,
+            FileStatus::Deleted,
+            hunks_between(&base_a, &[], &mut next_id),
+        ),
+        file(
+            "src/b.rs",
+            None,
+            FileStatus::Added,
+            hunks_between(&[], &head_b, &mut next_id),
+        ),
+    ];
+    let texts = Texts::from([
+        text(LineSide::Base, "src/a.rs", &base_a),
+        text(LineSide::Head, "src/b.rs", &head_b),
+    ]);
+    let result = run(&files, &[], &texts);
+    assert!(result.moves.moved.iter().any(|block| block.identical));
+    assert!(
+        result.identical_moves().is_empty(),
+        "the source file is gone"
+    );
+    assert!(result.quiet_lines(&files).is_empty());
 }

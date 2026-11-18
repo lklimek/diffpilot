@@ -1714,6 +1714,9 @@ async fn ready_answer_checked_after_a_cancel_is_not_published() {
         .set_state(f.analysis, &running, Utc::now())
         .await
         .expect("running");
+    db::repo::analyses::testing::never_finished(&f.state.db, f.analysis)
+        .await
+        .expect("live for the first time");
     pipeline::control::cancel(&f.state, f.analysis)
         .await
         .expect("cancel");
@@ -1822,6 +1825,9 @@ async fn question_cancelled_with_its_analysis_says_what_happened() {
         .set_state(f.analysis, &running, Utc::now())
         .await
         .expect("running");
+    db::repo::analyses::testing::never_finished(&f.state.db, f.analysis)
+        .await
+        .expect("live for the first time");
     pipeline::control::cancel(&f.state, f.analysis)
         .await
         .expect("cancel");

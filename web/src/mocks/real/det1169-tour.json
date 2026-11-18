@@ -196,7 +196,7 @@
               "headline": "Navigation labels stay on one line across Tokens, Tools and DashPay.",
               "risk": "low",
               "reason": "The change is confined to shared navigation layout. Its noticeable effects concern label readability and the horizontal space available to adjacent content; navigation actions remain unchanged.",
-              "basis_note": "Read the base and head button builders, shared renderer, chooser callers and token regression test. Nothing was executed.",
+              "basis_note": "Read: the base and head button builders, shared renderer, chooser callers and token regression test.",
               "not_checked": "Actual rendering at narrow widths, DashPay panel dragging, and recovery after reloading persisted panel state.",
               "origin": "introduced",
               "blocking": "follow_up",

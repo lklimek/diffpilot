@@ -40,9 +40,10 @@ pub struct LinesResponse {
     /// Text of lines `from..=to`.
     pub lines: Vec<String>,
     /// Changed lines in the range (neutral gutter mark): added lines on the head side, removed lines on the
-    /// base side.
+    /// base side; Rust lines whose only change is whitespace are left out (they read as unchanged code).
     pub changed: Vec<u32>,
-    /// Rust comment/import lines covered by deterministic rules; classic diff retains them.
+    /// Changed Rust comment and plain import lines a deterministic line rule covers: the main view may hide them,
+    /// the classic diff always shows them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub context_only: Option<Vec<u32>>,
@@ -85,7 +86,8 @@ pub struct DeletedBlock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub replacement: Option<LineRange>,
-    /// Base-side comment/import lines covered by deterministic rules.
+    /// Removed Rust comment and plain import lines of the block a deterministic line rule covers: the main view may
+    /// hide them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub context_only: Option<Vec<u32>>,

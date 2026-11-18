@@ -31,7 +31,7 @@ evidence: p15:head:63
 headline: Header sync from slow peers may fail where it used to finish; an operator would see sync stall on slow links.
 risk: medium
 reason: Affects node sync on slow links, not wallet funds; CI already shows a failing test for it.
-basis_note: read 3 files (config.rs, sync/mod.rs, the CI log); nothing executed
+basis_note: Read: 3 files (config.rs, sync/mod.rs, the CI log)
 not_checked: real peer latencies
 origin: introduced
 blocking: blocks_this_pr

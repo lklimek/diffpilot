@@ -26,6 +26,25 @@ struct Selection {
 type Lines = BTreeMap<(LineSide, String), Vec<Span>>;
 
 pub(super) fn plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<VerifiedPlan, VerifyError> {
+    let (verified, issues) = partition(output, diff);
+    issues.finish(verified)
+}
+
+/// [`plan`] for a plan accepted earlier and read again: lines it leaves in no flow and not in `unassigned` (the
+/// rules of today list more than the rules it was written for) are no issue; they are Unexplained.
+pub(super) fn stored_plan(
+    output: &PlanOutput,
+    diff: &DiffIndex<'_>,
+) -> Result<VerifiedPlan, VerifyError> {
+    let (verified, mut issues) = partition(output, diff);
+    issues
+        .0
+        .retain(|issue| issue.kind != VerifyIssueKind::LineUnassigned);
+    issues.finish(verified)
+}
+
+/// The plan's lines per flow and its issues.
+fn partition(output: &PlanOutput, diff: &DiffIndex<'_>) -> (VerifiedPlan, Issues) {
     let mut issues = Issues::default();
     let mut ids = BTreeSet::new();
     let mut ranks: BTreeMap<u32, &FlowId> = BTreeMap::new();
@@ -176,11 +195,12 @@ pub(super) fn plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<Verified
             .entry(flow.id.clone())
             .or_insert_with(|| to_file_ranges(lines));
     }
-    issues.finish(VerifiedPlan {
+    let verified = VerifiedPlan {
         output: output.clone(),
         flow_lines,
         unassigned: to_file_ranges(unassigned),
-    })
+    };
+    (verified, issues)
 }
 
 /// The regions covered by `picked` (owner, span): `Some(owner)` where exactly one selection covers them, `None`

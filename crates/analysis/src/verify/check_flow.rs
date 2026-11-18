@@ -218,6 +218,20 @@ pub(super) fn flow(
     Ok(verified(output, context, &changes, confirmed))
 }
 
+/// The flow's planned changed lines outside every step of `output`.
+pub(super) fn uncovered_lines(
+    output: &FlowAnalysisOutput,
+    context: FlowContext<'_>,
+) -> BTreeMap<(LineSide, String), Vec<Span>> {
+    let changes = Changes::new(context.diff.files());
+    let confirmed: Vec<Option<ConfirmedMove>> = output
+        .steps
+        .iter()
+        .map(|step| confirm(context.moves, step))
+        .collect();
+    uncovered(output, context, &changes, &confirmed)
+}
+
 fn check_step(
     issues: &mut Issues,
     context: FlowContext<'_>,
@@ -863,7 +877,7 @@ mod tests {
                 headline: Some("A response may take longer.".to_owned()),
                 risk: RiskBand::Low,
                 reason: "The wait is bounded to one request.".to_owned(),
-                basis_note: Some("Read the caller and retry; nothing executed.".to_owned()),
+                basis_note: Some("Read: the caller and retry.".to_owned()),
                 not_checked: Some("Runtime timing.".to_owned()),
                 origin: Some(Origin::Introduced),
                 blocking: Some(Blocking::NoActionProposed),
@@ -912,7 +926,7 @@ mod tests {
             headline: Some("Payments may be sent twice.".to_owned()),
             risk: RiskBand::High,
             reason: "Retries are not idempotent.".to_owned(),
-            basis_note: Some("Read 2 files; nothing executed.".to_owned()),
+            basis_note: Some("Read: 2 files.".to_owned()),
             not_checked: Some("The node's deduplication.".to_owned()),
             origin: Some(Origin::Introduced),
             blocking: Some(Blocking::BlocksThisPr),

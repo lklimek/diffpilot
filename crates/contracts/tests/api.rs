@@ -186,7 +186,7 @@ fn tour() -> Tour {
                         headline: Some("h".to_owned()),
                         risk: RiskBand::High,
                         reason: "r".to_owned(),
-                        basis_note: Some("read 4 files".to_owned()),
+                        basis_note: Some("Read: 4 files".to_owned()),
                         not_checked: Some("node".to_owned()),
                         origin: Some(Origin::Introduced),
                         blocking: Some(Blocking::BlocksThisPr),

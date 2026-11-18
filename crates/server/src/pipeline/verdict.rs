@@ -153,6 +153,14 @@ pub fn plan(
     checked(verify::plan(output, &DiffIndex::new(batch)?))
 }
 
+/// [`plan`] for a plan accepted and stored earlier, read again (`analysis::verify::stored_plan`).
+pub fn stored_plan(
+    output: &PlanOutput,
+    listed: &[FileDiff],
+) -> Result<Checked<VerifiedPlan>, VerdictError> {
+    checked(verify::stored_plan(output, &DiffIndex::new(listed)?))
+}
+
 /// Checks a `pr_context` output (its evidence lines are read from the mirror).
 pub async fn pr_context(
     facts: Arc<Facts>,
@@ -227,11 +235,13 @@ pub struct Outputs {
     pub flows: Vec<FlowAnalysisOutput>,
 }
 
-/// Verifies every stored output of one analysis and orders the Tour (`analysis::verify::analysis`).
+/// Verifies every stored output of one analysis and orders the Tour (`analysis::verify::analysis`); `stored`: the
+/// outputs were accepted earlier and are read again (lines today's rules add are Unexplained, not a rejection).
 pub async fn analysis(
     facts: Arc<Facts>,
     outputs: Arc<Outputs>,
     aliases: BTreeMap<FlowId, Vec<String>>,
+    stored: bool,
 ) -> Result<AnalysisVerdict, VerdictError> {
     blocking(move || {
         let diff = DiffIndex::new(&facts.files)?;
@@ -251,6 +261,7 @@ pub async fn analysis(
             pr_context: &outputs.pr_context,
             flows: &outputs.flows,
             thread_aliases: &aliases,
+            stored,
         })
         .map_err(VerdictError::Verify)
     })

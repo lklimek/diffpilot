@@ -57,11 +57,15 @@ Flow transport is superseded by [ADR-014](ADR-014-flow-file-output.md); the cano
   `agent_instruction_files` (paths in the diff matching AGENTS.md, CLAUDE.md, `.agents/`, `.codex/`, `.claude/`,
   `.cursor*`, `.github/copilot-instructions.md`; shown as a notice, threat model WP1-T) and
   `related_work_checked` (false when the GitHub App is not installed on the PR repository, ADR-005).
-- Whitespace-only changes stay in the hunks given to the agent, marked as a fact. Moves with deterministically
-  identical text are removed from the agent's hunks and shown as quiet rows. An identical move carries no flow
+- Rust lines whose only change is whitespace stay in the hunks given to the agent as context without coverage
+  duty and read as unchanged code in the view (brief amendment 2026-11-18); other whitespace-only changes stay in the
+  hunks, marked as a fact. Moves with deterministically
+  identical text out of a still existing file into another one (or a pure rename) are quiet rows; their lines stay in
+  the agent's hunks as context without coverage duty, and a reorder within one file stays mandatory (brief
+  amendment 2026-11-18). An identical move carries no flow
   reference; its row reads "Body text identical" only and never implies unchanged behaviour.
   For the owner: [deviation] brief §4.3 "call site changed in flow N" is not in v1: there is no deterministic
-  producer while the call hierarchy is n/a, and the LLM does not see identical moves.
+  producer while the call hierarchy is n/a; the LLM sees identical moves only as context.
 - `FlowFacts` has no changed-line counter (no consumer in the brief or mockups).
 
 ## Consequences

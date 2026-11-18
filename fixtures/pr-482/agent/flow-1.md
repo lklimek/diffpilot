@@ -98,7 +98,7 @@ evidence: p9:head:23
 headline: A wallet user could see one payment broadcast twice after a slow node reply; an operator would see duplicate-transaction rejections in the node log.
 risk: high
 reason: A repeated value-moving request at system scale (wallet and relay both call send). It needs a reply delayed past 5 s, which flow 2 makes more likely.
-basis_note: read 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs); nothing executed
+basis_note: Read: 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs)
 not_checked: node-side deduplication (not in this repository)
 origin: introduced
 blocking: blocks_this_pr
@@ -146,7 +146,7 @@ text: Two wildcard sites were found (flow 3): do all callers of send still handl
 headline: Wallet users get a generic RPC error instead of the “offline” message once retries run out.
 risk: medium
 reason: User-visible message change on a common failure; no data is affected.
-basis_note: read 3 files; nothing executed
+basis_note: Read: 3 files
 not_checked: callers in other repositories
 origin: introduced
 blocking: follow_up

@@ -2,7 +2,7 @@
 use crate::{
     api::analyses::{AnalysisApiError, ApiResult, failure, visible_analysis},
     auth::SessionCsrf,
-    pipeline::{self, control, ingest},
+    pipeline::{self, control, ingest, tour},
     state::AppState,
 };
 use axum::extract::rejection::{JsonRejection, PathRejection};
@@ -13,7 +13,7 @@ use axum::{
 };
 use contracts::{
     api::{
-        analyses::{AnalysisSummary, BackgroundAnalysisRequest},
+        analyses::{AnalysisState, AnalysisSummary, BackgroundAnalysisRequest},
         events::AnalysisEvent,
     },
     ids::{AnalysisId, FlowId},
@@ -33,8 +33,13 @@ async fn request(
     path: Result<Path<(AnalysisId, String)>, PathRejection>,
 ) -> ApiResult<Json<AnalysisSummary>> {
     let Path((id, flow)) = path.map_err(failure)?;
+    let flow = FlowId(flow);
     let summary = visible_analysis(&state, &session, id).await?;
-    if summary.review_ready != Some(true) || !control::is_live(&summary.state) {
+    // A finished analysis takes a request too: a failed flow there (a stored flow today's checks reject, or a
+    // re-run that was cancelled) is analysed again, and the analysis runs until it is.
+    let open =
+        control::is_live(&summary.state) || matches!(summary.state, AnalysisState::Finished { .. });
+    if summary.review_ready != Some(true) || !open {
         return Err(failure(AnalysisApiError::StateConflict {
             action: "scheduled",
         }));
@@ -42,23 +47,39 @@ async fn request(
     ingest::check_head(&state, &session, &summary)
         .await
         .map_err(failure)?;
+    // Verified outside the write; only the verified version is discarded (a newer result stays).
+    let rejected = tour::rejected_stored_flows(&state, &summary)
+        .await
+        .map_err(failure)?
+        .into_iter()
+        .find_map(|(rejected, verified)| (rejected == flow).then_some(verified));
     state
         .progress
         .update(id, || async {
-            state
-                .db
-                .flow_work()
-                .request(id, &FlowId(flow), chrono::Utc::now())
-                .await?;
+            let now = chrono::Utc::now();
+            let work = state.db.flow_work();
+            let discarded = match &rejected {
+                Some(verified) => work.request_again(id, &flow, verified, now).await?,
+                None => false,
+            };
+            if discarded {
+                // Feedback on the discarded steps was removed: its MemCan memories are deleted.
+                crate::memcan::writer::nudge();
+            } else {
+                work.request(id, &flow, now).await?;
+            }
             Ok::<_, DbError>(AnalysisEvent::Analysis {
                 summary: state.db.analyses().summary(id).await?,
             })
         })
         .await
         .map_err(failure)?;
-    // The driver ends while no flow is admitted: the request starts one again.
-    pipeline::start(&state, id);
-    Ok(Json(visible_analysis(&state, &session, id).await?))
+    let summary = visible_analysis(&state, &session, id).await?;
+    // The driver ends while no flow is admitted: the request starts one again (a finished analysis has none).
+    if control::is_live(&summary.state) {
+        pipeline::start(&state, id);
+    }
+    Ok(Json(summary))
 }
 async fn background(
     State(state): State<AppState>,
@@ -74,19 +95,31 @@ async fn background(
             action: "scheduled",
         }));
     }
+    // Analysing all remaining flows includes stored flows today's checks reject (verified outside the write).
+    let mut rejected = Vec::new();
     if body.enabled {
         ingest::check_head(&state, &session, &summary)
             .await
             .map_err(failure)?;
+        if summary.review_ready == Some(true) {
+            rejected = tour::rejected_stored_flows(&state, &summary)
+                .await
+                .map_err(failure)?;
+        }
     }
     state
         .progress
         .update(id, || async {
-            state
-                .db
-                .flow_work()
-                .set_background(id, body.enabled, chrono::Utc::now())
-                .await?;
+            let now = chrono::Utc::now();
+            let work = state.db.flow_work();
+            if body.enabled {
+                work.analyse_remaining(id, &rejected, now).await?;
+                if !rejected.is_empty() {
+                    crate::memcan::writer::nudge();
+                }
+            } else {
+                work.set_background(id, false, now).await?;
+            }
             Ok::<_, DbError>(AnalysisEvent::Analysis {
                 summary: state.db.analyses().summary(id).await?,
             })

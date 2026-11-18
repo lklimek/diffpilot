@@ -67,7 +67,8 @@ mapping, query rules and the endpoint × fixture-state inventory.
   no live job); rules in `sse-events.md`. Example: `{"state": "running", "done": 1, "total": 5, "stage": {"kind":
   "flow", "flow": {"index": 2, "title": "Default timeout 30 s → 5 s"}, "started_at": "2026-11-17T09:30:00Z"}}`.
 - **Cancel and retry**: cancel applies to a planning, running, paused or failed analysis (else `conflict`): state
-  `cancelled`, unfinished jobs cancelled and stored results discarded; both PR sessions retained. Retry applies to a
+  `cancelled`, unfinished jobs cancelled and stored results discarded; both PR sessions retained (a `finished`
+  analysis running again for a flow request is `finished` again instead, results kept). Retry applies to a
   failed analysis only (else `conflict`): state `planning`, stored results kept, failed stages submitted again.
 - **Deleted blocks** (`LinesResponse.deleted`): every deletion marker in the range is reported with its
   `total_lines`; its `lines` hold at most `RangeQuery::MAX_LINES` removed lines per response, shared by the
@@ -463,7 +464,29 @@ States: `not_analysed`, `queued`, `analysing`, `analysed`, `failed`. A claimed j
 repository preparation. Unaccepted planned ranges appear under their flow, not as accepted coverage.
 
 POST `/api/v1/analyses/{id}/flows/{flow}/request` has no body and returns `AnalysisSummary`. Unknown flow
-is 404. PUT `/api/v1/analyses/{id}/background` takes `{"enabled":false}` and returns `AnalysisSummary`.
+is 404. It is accepted while the analysis is planning, running or paused and review-ready, and when it is
+`finished` (else 409 `conflict`). A flow whose stored document passes today's checks is left as it is (no
+change). A stored flow that today's checks reject (other than for lines they newly require: those lines are
+Unexplained and the flow stays analysed) is shown `failed` with `The stored analysis of this flow does not pass
+the server's current checks, so its changes are listed as not analysed. Analyse this flow again.` (in a `failed`
+analysis: `Retry the analysis; then analyse this flow again.`); the problem codes go to the server log only.
+The Tour's button for it, and for any failed flow of a `finished` analysis, reads "Analyse this flow again" and
+says before the click: "Replaces this flow's steps. Ticks, questions and feedback on them are removed."
+Requesting it discards that document (only the version the server verified: a result stored since is kept) and
+requests the flow in one transaction: it runs in a new job round like a failed flow (the rejected output is
+never repaired), with the automatic retries of any requested flow. The same transaction removes what was said
+about its steps, whose ids the new run reuses: every user's ticks of `<flow>.` steps, the questions on its steps
+with their answers (their unfinished ask jobs are cancelled) and the feedback on its steps and annotations
+(removed as by its author, so its MemCan memory is deleted). Comments and pending review comments stay: they are
+anchored to code lines. Switching background analysis on ("Analyse all remaining flows") discards and requests
+every such flow the same way, in the transaction that switches it on. In a `finished` analysis any `failed` flow
+may be requested: the analysis becomes `running` again and finishes when its flows are analysed; while it runs
+again `finished_at` is null, and `analysis statistics` logs the new finish with `refinish=true`, `finished_at` then
+being the last finish. Cancel of such an analysis only stops that work: it is `finished` again with its results
+and first finish time, and each flow left without a result is `failed` with `The new analysis of this flow was
+cancelled. Analyse this flow again.`. Resume and Retry read a plan accepted earlier (whole, or the batch plans
+of an analysis that was planning in batches) with the same stored-reading rule.
+PUT `/api/v1/analyses/{id}/background` takes `{"enabled":false}` and returns `AnalysisSummary`.
 Both require session/CSRF and tenant access; requesting work or enabling background checks the current PR
 head. Latest requested flow runs first, then background flows by plan rank. Already claimed work finishes;
 queued work may be withdrawn; a repair run refused because the demand changed waits for its flow's next turn
@@ -496,7 +519,7 @@ including when a verified flow becomes available; no extra polling is needed.
 
 #### Deterministic context and replacement lines
 
-The lines response may include `context_only`, changed Rust comment/import line numbers on its returned side. These lines remain in the response and classic diff; the browser may hide them in the main view. A deleted block's optional `replacement` identifies the head range from the same diff hunk. Without it the block is a pure deletion. Example:
+The lines response may include `context_only`, the changed line numbers on its returned side that the stored pre-pass covers by a line rule (Rust comments and plain private imports, brief amendment 2026-11-18); route and pre-pass use the same decision. Rust lines whose only change is whitespace are not in `changed` and not in a removed block: they read as unchanged code. These lines remain in the response and classic diff; the browser may hide them in the main view. A deleted block's optional `replacement` identifies the head range from the same diff hunk. Without it the block is a pure deletion. Example:
 
 ```json
 {"context_only":[10,11],"deleted":[{"after_line":12,"base_start":13,"lines":["old();"],"total_lines":1,"replacement":{"start_line":13,"end_line":13}}]}

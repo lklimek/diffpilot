@@ -195,6 +195,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const ask = useAskQuestion(analysisId);
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
+  // A finished analysis takes a request only for a flow shown failed (a stored flow today's checks reject).
+  const finished = tour.analysis.state.state === "finished";
   const pending = usePendingReview(analysisId);
   // Remarks the user gave feedback on dim their pills; nothing else is per-user state of a remark.
   const feedback = useFeedback(analysisId);
@@ -569,7 +571,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           flow={flow}
           analysis={tour.analysis.state}
           now={now}
-          onRequest={workAllowed ? () => work.request.mutate(flow.id) : undefined}
+          onRequest={
+            workAllowed || (finished && flow.analysis_status?.state === "failed")
+              ? () => work.request.mutate(flow.id)
+              : undefined
+          }
           busy={work.request.isPending}
           error={
             work.request.error && work.request.variables === flow.id

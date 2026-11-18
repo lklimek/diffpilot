@@ -387,7 +387,7 @@ risk: RiskBand,
  */
 reason: string,
 /**
- * What was read and that nothing was executed.
+ * What the agent did: `Read: …` and, if it ran anything, `Ran: …`.
  */
 basis_note?: string,
 /**
@@ -685,7 +685,8 @@ total_lines: number,
  */
 replacement?: LineRange,
 /**
- * Base-side comment/import lines covered by deterministic rules.
+ * Removed Rust comment and plain import lines of the block a deterministic line rule covers: the main view may
+ * hide them.
  */
 context_only?: Array<number>, };
 
@@ -1284,11 +1285,12 @@ total_lines: number,
 lines: Array<string>,
 /**
  * Changed lines in the range (neutral gutter mark): added lines on the head side, removed lines on the
- * base side.
+ * base side; Rust lines whose only change is whitespace are left out (they read as unchanged code).
  */
 changed: Array<number>,
 /**
- * Rust comment/import lines covered by deterministic rules; classic diff retains them.
+ * Changed Rust comment and plain import lines a deterministic line rule covers: the main view may hide them,
+ * the classic diff always shows them.
  */
 context_only?: Array<number>,
 /**

@@ -641,6 +641,7 @@ fn plan_task(input: &PlanInput<'_>) -> Result<String, PromptError> {
         .iter()
         .map(|hunk| (&hunk.id, hunk.disposition))
         .collect();
+    let context = prepass.context();
     let mut listing = String::new();
     for file in input.files {
         // A hunk the pre-pass does not know is listed: only a deterministic rule takes material out.
@@ -659,7 +660,12 @@ fn plan_task(input: &PlanInput<'_>) -> Result<String, PromptError> {
         listing.push_str(&file_label(file));
         listing.push('\n');
         for hunk in hunks {
-            listing.push_str(&format!("  {} {}\n", plain(&hunk.id.0), spans(hunk)));
+            listing.push_str(&format!(
+                "  {} {}{}\n",
+                plain(&hunk.id.0),
+                spans(hunk),
+                context_note(file, hunk, &context)
+            ));
         }
     }
     let batch = match input.batch {
@@ -673,13 +679,12 @@ fn plan_task(input: &PlanInput<'_>) -> Result<String, PromptError> {
         }
         None => String::new(),
     };
-    let moved = prepass.moves.moved.iter().filter(|block| !block.identical);
     fill(
         PLAN,
         &[
             ("batch", &batch),
             ("profile", &profile(input.profile)?),
-            ("moves", &moves(prepass, moved)?),
+            ("moves", &moves(prepass, prepass.moves.moved.iter())?),
             ("hunks", &data("hunks", &listing)),
         ],
     )
@@ -726,6 +731,7 @@ fn pr_context_task(input: &PrContextInput<'_>) -> Result<String, PromptError> {
 
 fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
     let flow = input.flow;
+    let context = input.job.prepass.context();
     let mut hunks = String::new();
     let mut paths: Vec<&str> = Vec::new();
     for selection in &flow.hunks {
@@ -750,12 +756,11 @@ fn flow_task(input: &FlowInput<'_>) -> Result<String, PromptError> {
         if let (Some(start), Some(end)) = (selection.head_start, selection.head_end) {
             hunks.push_str(&format!(", only head lines {start}-{end}"));
         }
+        hunks.push_str(&context_note(file, hunk, &context));
         hunks.push('\n');
     }
     let moved = input.job.prepass.moves.moved.iter().filter(|block| {
-        !block.identical
-            && (paths.contains(&block.from.file.as_str())
-                || paths.contains(&block.to.file.as_str()))
+        paths.contains(&block.from.file.as_str()) || paths.contains(&block.to.file.as_str())
     });
     let planned = serde_json::to_string(&FlowEntry::of(flow))?;
     fill(
@@ -882,11 +887,17 @@ fn moves<'a>(
 ) -> Result<String, PromptError> {
     let lines: Vec<String> = blocks
         .map(|block| {
-            let differ = format!(
-                "text differs in {} head and {} base lines",
-                block.differing_head_lines.len(),
-                block.differing_base_lines.len()
-            );
+            let differ = if !block.identical {
+                format!(
+                    "text differs in {} head and {} base lines",
+                    block.differing_head_lines.len(),
+                    block.differing_base_lines.len()
+                )
+            } else if prepass.is_quiet_move(block) {
+                "text identical, moved into another file: context only".to_owned()
+            } else {
+                "text identical".to_owned()
+            };
             format!(
                 "base {} {}-{} -> head {} {}-{}: {differ}",
                 block.from.file,
@@ -1125,6 +1136,47 @@ fn file_label(file: &FileDiff) -> String {
         (FileStatus::Added, _) => format!("{path} (new file)"),
         (FileStatus::Deleted, _) => format!("{path} (deleted file)"),
         _ => path,
+    }
+}
+
+/// The hunk's lines that are context without coverage duty, e.g. `; context only: base 99, head 112-150`.
+fn context_note(
+    file: &FileDiff,
+    hunk: &Hunk,
+    context: &BTreeMap<(LineSide, String), Vec<u32>>,
+) -> String {
+    let mut parts = Vec::new();
+    for (side, word, span) in [
+        (LineSide::Base, "base", hunk.base),
+        (LineSide::Head, "head", hunk.head),
+    ] {
+        let Some(lines) = file
+            .path_on(side)
+            .and_then(|path| context.get(&(side, path.to_owned())))
+        else {
+            continue;
+        };
+        let inside: Vec<u32> = (span.start..span.start.saturating_add(span.len))
+            .filter(|line| lines.binary_search(line).is_ok())
+            .collect();
+        if !inside.is_empty() {
+            let ranges: Vec<String> = analysis::lines::ranges(&inside)
+                .iter()
+                .map(|r| {
+                    if r.start_line == r.end_line {
+                        r.start_line.to_string()
+                    } else {
+                        format!("{}-{}", r.start_line, r.end_line)
+                    }
+                })
+                .collect();
+            parts.push(format!("{word} {}", ranges.join(" ")));
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("; context only: {}", parts.join(", "))
     }
 }
 

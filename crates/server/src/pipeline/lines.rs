@@ -7,7 +7,7 @@ use std::path::Path;
 use analysis::diff::FileDiff;
 use analysis::lines::{
     DiffTexts, DiffTooLarge, LineWindow, changed_lines_within, classic_diff, deleted_blocks,
-    deletion_markers, line_window, thread_ranges,
+    deletion_markers, line_window, thread_ranges, without_whitespace,
 };
 use analysis::prepass::Prepass;
 use contracts::api::analyses::AnalysisSummary;
@@ -97,24 +97,23 @@ pub async fn read(
         to,
         lines,
     } = line_window(&text, query.from, query.to);
-    let context_only = std::str::from_utf8(&text)
-        .map(|text| {
-            analysis::tech::context_lines(
-                &query.path,
-                text,
-                &changed_lines_within(&files, &query.path, query.side, from, to),
-            )
-        })
-        .unwrap_or_default();
     drop(text);
 
     let file = files
         .iter()
         .find(|file| file.path_on(query.side) == Some(query.path.as_str()));
-    let changed = changed_lines_within(&files, &query.path, query.side, from, to);
-    let deleted = match (query.side, file) {
-        (LineSide::Head, Some(file)) => {
-            removed_code(&mirror, &summary.pr.base_sha, file, from, to).await?
+    // Whitespace-only lines read as unchanged code: not marked, not removed.
+    let view = file.map(|file| without_whitespace(file, &prepass.whitespace_pairs(file)));
+    let changed = changed_lines_within(view.as_slice(), &query.path, query.side, from, to);
+    // The pre-pass decided which lines are context; the view hides exactly those.
+    let context_only = prepass
+        .view_context(query.side, &query.path)
+        .into_iter()
+        .filter(|line| (from..=to).contains(line))
+        .collect();
+    let deleted = match (query.side, &view) {
+        (LineSide::Head, Some(view)) => {
+            removed_code(&mirror, &summary.pr.base_sha, view, &prepass, from, to).await?
         }
         _ => Vec::new(),
     };
@@ -150,6 +149,7 @@ async fn removed_code(
     mirror: &Path,
     base: &CommitSha,
     file: &FileDiff,
+    prepass: &Prepass,
     from: u32,
     to: u32,
 ) -> Result<Vec<DeletedBlock>, LinesError> {
@@ -161,14 +161,7 @@ async fn removed_code(
         .await?
         .unwrap_or_default();
     let mut blocks = deleted_blocks(&markers, &base_text, RangeQuery::MAX_LINES);
-    let changed: Vec<u32> = file
-        .hunks
-        .iter()
-        .flat_map(|h| h.removed.iter().copied())
-        .collect();
-    let context = std::str::from_utf8(&base_text)
-        .map(|text| analysis::tech::context_lines(base_path, text, &changed))
-        .unwrap_or_default();
+    let context = prepass.view_context(LineSide::Base, base_path);
     for block in &mut blocks {
         block.context_only = Some(
             context

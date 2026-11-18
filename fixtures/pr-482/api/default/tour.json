@@ -184,6 +184,10 @@
               },
               {
                 "start_line": 91,
+                "end_line": 94
+              },
+              {
+                "start_line": 96,
                 "end_line": 109
               }
             ]
@@ -227,7 +231,7 @@
                 "end_line": 41
               },
               {
-                "start_line": 101,
+                "start_line": 102,
                 "end_line": 103
               }
             ]
@@ -493,6 +497,10 @@
               },
               {
                 "start_line": 91,
+                "end_line": 94
+              },
+              {
+                "start_line": 96,
                 "end_line": 96
               }
             ],
@@ -783,7 +791,7 @@
               "headline": "A wallet user could see one payment broadcast twice after a slow node reply; an operator would see duplicate-transaction rejections in the node log.",
               "risk": "high",
               "reason": "A repeated value-moving request at system scale (wallet and relay both call send). It needs a reply delayed past 5 s, which flow 2 makes more likely.",
-              "basis_note": "read 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs); nothing executed",
+              "basis_note": "Read: 4 files (client.rs, retry.rs, mempool/mod.rs, wallet/pay.rs)",
               "not_checked": "node-side deduplication (not in this repository)",
               "origin": "introduced",
               "blocking": "blocks_this_pr",
@@ -987,7 +995,7 @@
               "headline": "Wallet users get a generic RPC error instead of the “offline” message once retries run out.",
               "risk": "medium",
               "reason": "User-visible message change on a common failure; no data is affected.",
-              "basis_note": "read 3 files; nothing executed",
+              "basis_note": "Read: 3 files",
               "not_checked": "callers in other repositories",
               "origin": "introduced",
               "blocking": "follow_up",
@@ -1425,7 +1433,7 @@
               "headline": "Header sync from slow peers may fail where it used to finish; an operator would see sync stall on slow links.",
               "risk": "medium",
               "reason": "Affects node sync on slow links, not wallet funds; CI already shows a failing test for it.",
-              "basis_note": "read 3 files (config.rs, sync/mod.rs, the CI log); nothing executed",
+              "basis_note": "Read: 3 files (config.rs, sync/mod.rs, the CI log)",
               "not_checked": "real peer latencies",
               "origin": "introduced",
               "blocking": "blocks_this_pr",
@@ -1702,7 +1710,7 @@
               "headline": "A wallet user sees a generic RPC error; a peer that keeps timing out is ignored instead of being marked failed.",
               "risk": "medium",
               "reason": "Wrong handling of a common failure in two places; no data loss.",
-              "basis_note": "read 3 files and searched the repository for matches on send results; nothing executed",
+              "basis_note": "Read: 3 files and searched the repository for matches on send results",
               "not_checked": "matches in other repositories",
               "origin": "introduced",
               "blocking": "follow_up",
@@ -1938,7 +1946,7 @@
               "headline": "A downstream developer gets a compile error; a user of broadcast_tx loses the only no-retry path.",
               "risk": "medium",
               "reason": "Public API removal with a known downstream user; ties to the double-send question.",
-              "basis_note": "read 2 files, searched this repository and the stacked PR title; nothing executed",
+              "basis_note": "Read: 2 files, searched this repository and the stacked PR title",
               "not_checked": "other downstream crates",
               "origin": "introduced",
               "blocking": "blocks_this_pr",
@@ -1963,7 +1971,12 @@
           {
             "file": "src/lib.rs",
             "side": "head",
-            "ranges": []
+            "ranges": [
+              {
+                "start_line": 13,
+                "end_line": 13
+              }
+            ]
           },
           {
             "file": "src/rpc/retry.rs",
@@ -1972,6 +1985,16 @@
               {
                 "start_line": 50,
                 "end_line": 50
+              }
+            ]
+          },
+          {
+            "file": "src/lib.rs",
+            "side": "base",
+            "ranges": [
+              {
+                "start_line": 18,
+                "end_line": 18
               }
             ]
           },
@@ -2195,6 +2218,34 @@
   "quiet": {
     "unexplained": [
       {
+        "file": "src/rpc/client.rs",
+        "side": "head",
+        "ranges": [
+          {
+            "start_line": 113,
+            "end_line": 144
+          },
+          {
+            "start_line": 146,
+            "end_line": 152
+          }
+        ]
+      },
+      {
+        "file": "src/rpc/client.rs",
+        "side": "base",
+        "ranges": [
+          {
+            "start_line": 174,
+            "end_line": 205
+          },
+          {
+            "start_line": 207,
+            "end_line": 214
+          }
+        ]
+      },
+      {
         "file": "src/rpc/metrics.rs",
         "side": "head",
         "ranges": [
@@ -2209,27 +2260,7 @@
         ]
       }
     ],
-    "moves": [
-      {
-        "from": {
-          "file": "src/rpc/client.rs",
-          "side": "base",
-          "range": {
-            "start_line": 173,
-            "end_line": 213
-          }
-        },
-        "to": {
-          "file": "src/rpc/client.rs",
-          "side": "head",
-          "range": {
-            "start_line": 112,
-            "end_line": 152
-          }
-        },
-        "badge": "text_identical"
-      }
-    ],
+    "moves": [],
     "not_analysed": [
       {
         "category": "tests",
@@ -2313,7 +2344,7 @@
       },
       {
         "category": "docs_comments",
-        "file_count": 6,
+        "file_count": 5,
         "items": [
           {
             "renderable": true,
@@ -2375,34 +2406,6 @@
           },
           {
             "renderable": true,
-            "rule_kind": "line_regex",
-            "file": "src/lib.rs",
-            "side": "base",
-            "ranges": [
-              {
-                "start_line": 18,
-                "end_line": 18
-              }
-            ],
-            "badge": "classified_by_line_rule",
-            "rule": "Rust use/mod/extern crate declarations (line regex)"
-          },
-          {
-            "renderable": true,
-            "rule_kind": "line_regex",
-            "file": "src/lib.rs",
-            "side": "head",
-            "ranges": [
-              {
-                "start_line": 13,
-                "end_line": 13
-              }
-            ],
-            "badge": "classified_by_line_rule",
-            "rule": "Rust use/mod/extern crate declarations (line regex)"
-          },
-          {
-            "renderable": true,
             "rule_kind": "lexer",
             "file": "src/rpc/client.rs",
             "side": "base",
@@ -2414,6 +2417,14 @@
               {
                 "start_line": 99,
                 "end_line": 99
+              },
+              {
+                "start_line": 173,
+                "end_line": 173
+              },
+              {
+                "start_line": 206,
+                "end_line": 206
               }
             ],
             "badge": "classified_by_line_rule",
@@ -2428,6 +2439,14 @@
               {
                 "start_line": 89,
                 "end_line": 89
+              },
+              {
+                "start_line": 112,
+                "end_line": 112
+              },
+              {
+                "start_line": 145,
+                "end_line": 145
               }
             ],
             "badge": "classified_by_line_rule",

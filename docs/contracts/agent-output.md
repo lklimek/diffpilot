@@ -43,7 +43,7 @@ repository there is no GitHub tool: `related_work` is `[]` and the server shows 
   (inside the step, step's side), **`was` and `is`** (nonempty before/after facts for `behaviour`, empty strings
   for the other types), `text` (the consequence, question or note; null exactly
   for `behaviour`), `evidence[]`.
-- Low `assessment`: only `risk` and one-sentence `reason`. Above low: `headline`, `risk`, `reason`, `basis_note` ("read N files; nothing executed"),
+- Low `assessment`: only `risk` and one-sentence `reason`. Above low: `headline`, `risk`, `reason`, `basis_note` (what the agent did: "Read: …", and "Ran: …" if it ran anything),
   `not_checked`, `origin`, `blocking` (`no_action_proposed | blocks_this_pr | follow_up`), `smallest_correction`.
   Rate unresolved risk introduced or left by the change, not the pre-existing defect it fixes.
   With no blocking action or follow-up proposed, use `no_action_proposed` and null `smallest_correction`;

@@ -31,7 +31,7 @@ text: Should the two wildcard sites handle Exhausted explicitly?
 headline: A wallet user sees a generic RPC error; a peer that keeps timing out is ignored instead of being marked failed.
 risk: medium
 reason: Wrong handling of a common failure in two places; no data loss.
-basis_note: read 3 files and searched the repository for matches on send results; nothing executed
+basis_note: Read: 3 files and searched the repository for matches on send results
 not_checked: matches in other repositories
 origin: introduced
 blocking: follow_up

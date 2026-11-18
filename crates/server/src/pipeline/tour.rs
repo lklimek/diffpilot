@@ -10,7 +10,7 @@ use std::sync::Arc;
 use analysis::diff::FileDiff;
 use analysis::lines::{changed_lines_within, contains_range, ranges};
 use analysis::prepass::Prepass;
-use analysis::verify::{TourSkeleton, VerifiedFlow};
+use analysis::verify::{OutputRef, Repair, TourSkeleton, VerifiedFlow};
 use contracts::agent::plan::PlannedFlow;
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
@@ -155,10 +155,26 @@ pub async fn load_from(
         pr_context: pr_context.clone(),
         flows: results.flows,
     });
-    let verdict = verdict::analysis(Arc::clone(&facts), outputs, aliases.clone())
+    let verdict = verdict::analysis(Arc::clone(&facts), outputs, aliases.clone(), true)
         .await
         .map_err(TourError::from)?;
+    let repairs = verdict.repairs;
     let skeleton = verdict.tour.ok_or(TourError::PlanRejected)?;
+    // A stored flow today's checks reject: failed, its lines listed, never silently gone.
+    for planned in &skeleton.plan.output.flows {
+        let accepted = skeleton.flows.iter().any(|flow| flow.flow_id == planned.id);
+        if !accepted && !waiting.contains_key(&planned.id) {
+            let codes = rejected_codes(&repairs, &planned.id);
+            tracing::warn!(analysis = %summary.id, flow = %planned.id, issues = ?codes,
+                "a stored flow fails today's checks; the Tour shows it failed with its lines");
+            let status = FlowAnalysisStatus {
+                state: FlowAnalysisState::Failed,
+                started_at: None,
+                message: Some(rejected_message(&summary.state)),
+            };
+            waiting.insert(planned.id.clone(), status);
+        }
+    }
     // Stored with the accepted PR context: its agent had the GitHub tool.
     let related_work_checked = state
         .db
@@ -187,6 +203,71 @@ pub async fn load_from(
         memcan_profile: profile::stored(&state.db, summary.id).await?.found(),
         waiting: &waiting,
     }))
+}
+
+/// The server's issue codes of a stored flow that today's checks reject (for the log, never user text).
+fn rejected_codes<'a>(repairs: &'a [Repair], flow: &FlowId) -> Vec<&'a str> {
+    let mut codes: Vec<&str> = repairs
+        .iter()
+        .filter(|repair| repair.output == OutputRef::Flow(flow.clone()))
+        .flat_map(|repair| &repair.issues)
+        .map(|issue| issue.kind.code())
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    codes
+}
+
+/// Plain failure text of a stored flow that today's checks reject, naming the action that works in `state`.
+fn rejected_message(state: &AnalysisState) -> String {
+    let action = if matches!(state, AnalysisState::Failed { .. }) {
+        "Retry the analysis; then analyse this flow again."
+    } else {
+        "Analyse this flow again."
+    };
+    format!(
+        "The stored analysis of this flow does not pass the server's current checks, so its changes are listed \
+         as not analysed. {action}"
+    )
+}
+
+/// Flows whose stored document fails today's checks (the Tour shows them failed), each with the document text
+/// verified, so only that version is discarded.
+pub async fn rejected_stored_flows(
+    state: &AppState,
+    summary: &AnalysisSummary,
+) -> Result<Vec<(FlowId, String)>, TourLoadError> {
+    let documents = state.db.documents();
+    let stored = documents.list_raw(summary.id, DocumentKind::Flow).await?;
+    if stored.is_empty() {
+        return Ok(Vec::new());
+    }
+    let flows = stored
+        .iter()
+        .map(|(_, body)| serde_json::from_str(body).map_err(DbError::from))
+        .collect::<Result<Vec<_>, _>>()?;
+    let results = StoredResults {
+        plan: documents.get(summary.id, DocumentKind::Plan, "").await?,
+        pr_context: documents
+            .get(summary.id, DocumentKind::PrContext, "")
+            .await?,
+        flows,
+    };
+    let tour = load_from(state, summary, results).await?;
+    let failed = |flow: &str| {
+        tour.flows.iter().any(|shown| {
+            shown.id.0 == flow
+                && shown
+                    .analysis_status
+                    .as_ref()
+                    .is_some_and(|status| status.state == FlowAnalysisState::Failed)
+        })
+    };
+    Ok(stored
+        .into_iter()
+        .filter(|(key, _)| failed(key))
+        .map(|(key, body)| (FlowId(key), body))
+        .collect())
 }
 
 /// Everything the Tour is projected from.
@@ -234,7 +315,7 @@ pub fn project(input: &Projection<'_>) -> Tour {
             planned,
             verified,
             position,
-            input.files,
+            (input.files, input.prepass),
             &links,
         ));
     }
@@ -263,7 +344,7 @@ pub fn project(input: &Projection<'_>) -> Tour {
                 id: planned.id.clone(),
                 position: 0,
                 group: planned.classification.into(),
-                // A stored flow the check of the whole analysis left out keeps `analysed` (its document exists).
+                // Every planned flow outside the skeleton has a status in `waiting` (a rejected stored one: failed).
                 analysis_status: Some(
                     input
                         .waiting
@@ -454,7 +535,7 @@ fn project_flow(
     planned: &PlannedFlow,
     verified: &VerifiedFlow,
     position: u32,
-    files: &[FileDiff],
+    (files, prepass): (&[FileDiff], &Prepass),
     links: &Links,
 ) -> Flow {
     let output = &verified.output;
@@ -487,13 +568,15 @@ fn project_flow(
                 start_line: step.start_line,
                 end_line: step.end_line,
             };
-            let inside = changed_lines_within(
+            let whitespace = prepass.whitespace_lines(step.side, &step.file);
+            let mut inside = changed_lines_within(
                 files,
                 &step.file,
                 step.side,
                 range.start_line,
                 range.end_line,
             );
+            inside.retain(|line| whitespace.binary_search(line).is_err());
             let annotations = step
                 .annotations
                 .iter()

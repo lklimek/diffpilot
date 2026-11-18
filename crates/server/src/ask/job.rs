@@ -32,6 +32,7 @@ use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::memcan::profile;
 use crate::model::{ModelContext, select_model};
 use crate::pipeline::context::{StoredResults, pack};
+use crate::pipeline::prepass::PrepassRunError;
 use crate::pipeline::{self, CREDENTIAL_ID, PrDiffError};
 use crate::prompts::{
     self, AnsweredQuestion, AskContext, AskInput, JobContext, Profile, PromptError,
@@ -64,9 +65,9 @@ pub(super) enum FollowError {
     /// The asked step is no longer stored.
     #[error("the asked step is not stored")]
     UnknownStep,
-    /// The analysis has no stored pre-pass.
-    #[error("the analysis has no stored pre-pass")]
-    NoPrepass,
+    /// The pre-pass could not be read or computed.
+    #[error("the pre-pass of the analysis is not available")]
+    Prepass(#[from] PrepassRunError),
     /// The diff of the analysis is not available.
     #[error("the diff of the analysis is not available")]
     Diff(#[from] PrDiffError),
@@ -140,6 +141,16 @@ fn step_of<'f>(flow: &'f FlowAnalysisOutput, step: &StepId) -> Option<&'f AgentS
 pub(super) async fn run(state: &AppState, question: QuestionId) {
     let analysis = match follow(state, question).await {
         Ok(()) => return,
+        // Removed with its flow's steps (the flow is analysed again): nothing is left to answer.
+        Err((_, FollowError::Db(DbError::NotFound)))
+            if matches!(
+                state.db.questions().get(question, Utc::now()).await,
+                Err(DbError::NotFound)
+            ) =>
+        {
+            tracing::debug!(%question, "question removed with its flow's steps; its answer is dropped");
+            return;
+        }
         Err((analysis, error)) => {
             tracing::error!(%question, error = ?error, "the question could not be answered");
             analysis
@@ -363,11 +374,9 @@ async fn submit(
     let (_, step) = stored_step(&state.db, summary.id, &question.step_id)
         .await?
         .ok_or(FollowError::UnknownStep)?;
-    let prepass = pipeline::prepass::stored(state, summary.id)
-        .await?
-        .ok_or(FollowError::NoPrepass)?;
+    let (mirror_dir, files) = pipeline::pr_diff(state, summary).await?;
+    let prepass = pipeline::prepass::ensure_for_read(state, summary, &mirror_dir, &files).await?;
     let memcan_profile = profile::stored(&state.db, summary.id).await?;
-    let (_, files) = pipeline::pr_diff(state, summary).await?;
     let pr = &summary.pr;
     let prompt = prompts::ask(&AskInput {
         job: JobContext {

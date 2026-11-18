@@ -5,7 +5,10 @@ use contracts::api::settings::{NotAnalysedRule, RuleKind};
 use contracts::api::tour::CallHierarchy;
 use contracts::common::{LineRange, LineSide, NotAnalysedCategory, ProvenanceBadge};
 
+use crate::diff::Hunk;
 use crate::lines::ranges;
+
+mod rust;
 
 /// A language plugin.
 pub trait TechPlugin: Send + Sync {
@@ -29,8 +32,23 @@ pub struct FileSource<'a> {
     pub side: LineSide,
     /// Text on that side; `None` for binary files.
     pub text: Option<&'a str>,
-    /// Changed lines on that side: added head lines or removed base lines.
+    /// The same file on the other side.
+    pub other: OtherSide<'a>,
+    /// Changed lines on that side: added head lines or removed base lines (sorted).
     pub changed_lines: &'a [u32],
+    /// Every hunk of the file (both sides).
+    pub hunks: &'a [Hunk],
+}
+
+/// The same file on the other side of the diff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OtherSide<'a> {
+    /// The file does not exist there (added or deleted file).
+    Absent,
+    /// Its text.
+    Text(&'a str),
+    /// It exists but was not read (binary, too large, over budget): rules that need it cover nothing.
+    Unknown,
 }
 
 /// Material recognised by a rule.
@@ -113,20 +131,25 @@ impl TechPlugin for Generic {
                 changed_ranges(file),
             )]);
         }
-        let comments = comment_runs(file.path, text, file.changed_lines);
-        let imports = import_runs(file.path, text, file.changed_lines);
-        Ok([(LINE_COMMENT_RULE, comments), (IMPORT_RULE, imports)]
-            .into_iter()
-            .filter(|(_, ranges)| !ranges.is_empty())
-            .map(|(rule, ranges)| {
-                item(
-                    NotAnalysedCategory::DocsComments,
-                    ProvenanceBadge::ClassifiedByLineRule,
-                    rule,
-                    Some(ranges),
-                )
-            })
-            .collect())
+        if !file.path.ends_with(".rs") {
+            return Ok(Vec::new());
+        }
+        let covered = rust::covered(file, text);
+        Ok([
+            (LINE_COMMENT_RULE, covered.comments),
+            (IMPORT_RULE, covered.imports),
+        ]
+        .into_iter()
+        .filter(|(_, lines)| !lines.is_empty())
+        .map(|(rule, lines)| {
+            item(
+                NotAnalysedCategory::DocsComments,
+                ProvenanceBadge::ClassifiedByLineRule,
+                rule,
+                Some(ranges(&lines)),
+            )
+        })
+        .collect())
     }
 
     fn call_hierarchy(&self, _symbol: &SymbolAt) -> Option<CallHierarchy> {
@@ -135,8 +158,8 @@ impl TechPlugin for Generic {
     }
 }
 
-/// Complete single-line Rust imports and module declarations.
-pub const IMPORT_RULE: &str = "Rust use/mod/extern crate declarations (line regex)";
+/// Plain private single-line Rust `use` declarations (brief amendment 2026-11-18).
+pub const IMPORT_RULE: &str = "plain private use declarations (Rust, by the compiler's lexer)";
 /// Comment-only lines, including block and doc comments.
 pub const LINE_COMMENT_RULE: &str = "comment-only lines (Rust, by the compiler's lexer)";
 /// Rule of a generated-file header in the first lines.
@@ -220,7 +243,7 @@ pub fn rules() -> Vec<NotAnalysedRule> {
     });
     let lines = [
         (
-            RuleKind::LineRegex,
+            RuleKind::Lexer,
             IMPORT_RULE,
             NotAnalysedCategory::DocsComments,
         ),
@@ -336,9 +359,23 @@ pub fn is_agent_instruction_file(path: &str) -> bool {
     AGENT_INSTRUCTION_RULES.iter().any(|rule| glob(rule, &path))
 }
 
-/// Whether the item is recognised by the comment line rule (not a whole-file rule).
+/// Whether the item is recognised by a line rule (not a whole-file rule).
 pub fn is_line_rule(item: &Classified) -> bool {
-    item.rule == LINE_COMMENT_RULE || item.rule == IMPORT_RULE
+    is_line_rule_name(&item.rule)
+}
+
+/// Whether `rule` names a line rule: its lines are context for the agent without coverage duty.
+pub fn is_line_rule_name(rule: &str) -> bool {
+    rule == LINE_COMMENT_RULE || rule == IMPORT_RULE
+}
+
+/// Pairs (base line, head line) of changed lines of `hunks` whose only change is whitespace, in a Rust file whose head
+/// path is `path`; `base` and `head` are its texts. They read as unchanged code; empty for other files.
+pub fn whitespace_pairs(path: &str, base: &str, head: &str, hunks: &[Hunk]) -> Vec<(u32, u32)> {
+    if !path.ends_with(".rs") {
+        return Vec::new();
+    }
+    rust::whitespace_pairs(base, head, hunks)
 }
 
 /// Whether the item marks a generated file: never rendered, never given to the agent (brief §7).
@@ -371,152 +408,12 @@ pub fn has_generated_header(text: &str) -> bool {
     })
 }
 
-/// Runs of consecutive changed lines whose non-blank lines are all comment-only (at least one); Rust files only.
-fn comment_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
-    let Some(comment) = path
-        .ends_with(".rs")
-        .then(|| rust_comment_lines(text))
-        .flatten()
-    else {
-        return Vec::new();
-    };
-    let selected: Vec<u32> = changed
-        .iter()
-        .copied()
-        .filter(|&line| {
-            line.checked_sub(1)
-                .and_then(|i| usize::try_from(i).ok())
-                .and_then(|i| comment.get(i))
-                .copied()
-                .unwrap_or(false)
-        })
-        .collect();
-    ranges(&selected)
-}
-
-/// Changed Rust comment/import lines; other languages have no rule.
-pub fn context_lines(path: &str, text: &str, changed: &[u32]) -> Vec<u32> {
-    let mut lines: Vec<u32> = comment_runs(path, text, changed)
-        .into_iter()
-        .chain(import_runs(path, text, changed))
-        .flat_map(|r| r.start_line..=r.end_line)
-        .collect();
-    lines.sort_unstable();
-    lines.dedup();
-    lines
-}
-
 /// File-path test rules shared by pre-pass and plan verification.
 // TODO: delimit inline Rust #[cfg(test)] modules and #[test] functions with a syntax plugin.
 pub fn is_test_path(path: &str) -> bool {
     PATH_RULES
         .iter()
         .any(|(rule, category)| *category == NotAnalysedCategory::Tests && glob(rule, path))
-}
-
-fn import_runs(path: &str, text: &str, changed: &[u32]) -> Vec<LineRange> {
-    // TODO: delimit multiline use groups before treating their lines as import-only context.
-    if !path.ends_with(".rs") {
-        return Vec::new();
-    }
-    let Ok(rule) = regex::Regex::new(
-        r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use\s+[^;]+|mod\s+[A-Za-z_][A-Za-z_0-9]*|extern\s+crate\s+[A-Za-z_][A-Za-z_0-9]*(?:\s+as\s+[A-Za-z_][A-Za-z_0-9]*)?)\s*;\s*$",
-    ) else {
-        return Vec::new();
-    };
-    // A raw string containing an apparent import is not an import declaration.
-    let mut offset = 0usize;
-    let mut literals = Vec::new();
-    for token in ra_ap_rustc_lexer::tokenize(text, ra_ap_rustc_lexer::FrontmatterAllowed::Yes) {
-        let end = offset + token.len as usize;
-        if matches!(
-            token.kind,
-            ra_ap_rustc_lexer::TokenKind::Literal { .. }
-                | ra_ap_rustc_lexer::TokenKind::BlockComment { .. }
-        ) {
-            literals.push(offset..end);
-        }
-        offset = end;
-    }
-    offset = 0;
-    let mut selected = Vec::new();
-    for (number, line) in (1u32..).zip(text.split_inclusive('\n')) {
-        if changed.binary_search(&number).is_ok()
-            && rule.is_match(line)
-            && !literals
-                .iter()
-                .any(|r| r.start < offset + line.len() && r.end > offset)
-        {
-            selected.push(number);
-        }
-        offset += line.len();
-    }
-    ranges(&selected)
-}
-
-/// Per line (index = line - 1): every token on the line is a comment or whitespace, and one is a comment. Tokens
-/// come from `rustc_lexer` after the compiler's BOM and shebang stripping, frontmatter allowed. `None` when the
-/// file has an unterminated literal or comment, an unknown token or invalid frontmatter.
-fn rust_comment_lines(text: &str) -> Option<Vec<bool>> {
-    use ra_ap_rustc_lexer::{FrontmatterAllowed, LiteralKind, TokenKind, strip_shebang, tokenize};
-
-    let lines = text.lines().count();
-    let (mut comment, mut other) = (vec![false; lines], vec![false; lines]);
-    let body = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let shebang = strip_shebang(body).unwrap_or(0);
-    if shebang > 0 {
-        *other.first_mut()? = true;
-    }
-    let mut rest = body.get(shebang..)?;
-    let mut line = 0usize;
-    for token in tokenize(rest, FrontmatterAllowed::Yes) {
-        let len = usize::try_from(token.len).ok()?;
-        let (lexeme, tail) = (rest.get(..len)?, rest.get(len..)?);
-        rest = tail;
-        let invalid = match token.kind {
-            TokenKind::BlockComment { terminated, .. } => !terminated,
-            TokenKind::Literal { kind, .. } => match kind {
-                LiteralKind::Char { terminated }
-                | LiteralKind::Byte { terminated }
-                | LiteralKind::Str { terminated }
-                | LiteralKind::ByteStr { terminated }
-                | LiteralKind::CStr { terminated } => !terminated,
-                LiteralKind::RawStr { n_hashes }
-                | LiteralKind::RawByteStr { n_hashes }
-                | LiteralKind::RawCStr { n_hashes } => n_hashes.is_none(),
-                LiteralKind::Int { .. } | LiteralKind::Float { .. } => false,
-            },
-            TokenKind::Frontmatter {
-                has_invalid_preceding_whitespace,
-                invalid_infostring,
-            } => has_invalid_preceding_whitespace || invalid_infostring,
-            TokenKind::Unknown
-            | TokenKind::InvalidIdent
-            | TokenKind::UnknownPrefix
-            | TokenKind::UnknownPrefixLifetime
-            | TokenKind::GuardedStrPrefix => true,
-            _ => false,
-        };
-        if invalid {
-            return None;
-        }
-        let first = line;
-        line += lexeme.matches('\n').count();
-        let touched = if lexeme.ends_with('\n') {
-            line.saturating_sub(1)
-        } else {
-            line
-        };
-        let marks = match token.kind {
-            TokenKind::Whitespace => continue,
-            TokenKind::LineComment { .. } | TokenKind::BlockComment { .. } => &mut comment,
-            _ => &mut other,
-        };
-        for flag in marks.iter_mut().take(touched + 1).skip(first) {
-            *flag = true;
-        }
-    }
-    Some(comment.iter().zip(&other).map(|(c, o)| *c && !*o).collect())
 }
 
 fn basename(path: &str) -> &str {
@@ -558,18 +455,26 @@ fn wildcard(pattern: &[u8], text: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    fn source<'a>(
-        path: &'a str,
-        side: LineSide,
-        text: Option<&'a str>,
-        changed: &'a [u32],
-    ) -> FileSource<'a> {
-        FileSource {
-            path,
-            side,
-            text,
-            changed_lines: changed,
-        }
+    /// Pure additions on head: one hunk per run of `changed`.
+    pub(super) fn added_hunks(changed: &[u32]) -> Vec<Hunk> {
+        use crate::diff::LineSpan;
+        ranges(changed)
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| Hunk {
+                id: contracts::ids::HunkId(format!("h{i}")),
+                base: LineSpan {
+                    start: r.start_line - 1,
+                    len: 0,
+                },
+                head: LineSpan {
+                    start: r.start_line,
+                    len: r.end_line - r.start_line + 1,
+                },
+                added: (r.start_line..=r.end_line).collect(),
+                removed: Vec::new(),
+            })
+            .collect()
     }
 
     fn range(start_line: u32, end_line: u32) -> LineRange {
@@ -589,8 +494,16 @@ mod tests {
         ProvenanceBadge,
         String,
     )> {
+        let hunks = added_hunks(changed);
         Generic
-            .classify(&source(path, LineSide::Head, text, changed))
+            .classify(&FileSource {
+                path,
+                side: LineSide::Head,
+                text,
+                other: OtherSide::Absent,
+                changed_lines: changed,
+                hunks: &hunks,
+            })
             .expect("classify")
             .into_iter()
             .map(|item| {
@@ -788,9 +701,13 @@ mod tests {
         ];
         let text: String = block.iter().map(|l| format!("{l}\n")).collect();
         assert_eq!(
-            classify("src/a.rs", Some(&text), &[2])[0].0,
-            Some(line(2)),
+            classify("src/a.rs", Some(&text), &[1, 2, 3])[0].0,
+            Some(vec![range(1, 2)]),
             "inside a nested block comment"
+        );
+        assert!(
+            classify("src/a.rs", Some(&text), &[2]).is_empty(),
+            "the comment spans unchanged lines"
         );
         assert!(
             classify("src/a.rs", Some(&text), &[3]).is_empty(),

@@ -238,7 +238,6 @@
     92,
     93,
     94,
-    95,
     96,
     97,
     98,
@@ -331,14 +330,13 @@
       "total_lines": 1
     },
     {
-      "after_line": 90,
-      "base_start": 101,
+      "after_line": 95,
+      "base_start": 102,
       "lines": [
-        "        let http = self.build_request(&req)?;",
         "        let resp = self.transport.execute(http, self.config.timeout).await?;",
         "        Ok(resp)"
       ],
-      "total_lines": 3
+      "total_lines": 2
     },
     {
       "after_line": 219,

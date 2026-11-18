@@ -282,7 +282,7 @@
       "start": 112,
       "len": 41
     },
-    "prepass": "identical_move"
+    "prepass": "agent"
   },
   {
     "id": "h20",
@@ -297,7 +297,7 @@
       "start": 219,
       "len": 0
     },
-    "prepass": "identical_move"
+    "prepass": "agent"
   },
   {
     "id": "h21",
