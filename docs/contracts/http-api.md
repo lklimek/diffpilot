@@ -258,7 +258,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `unavailable` | 503 | the database was busy or locked past its wait; carries `Retry-After: 1`. The web client retries a GET, PUT or DELETE once after that delay, never a POST |
 | `insufficient_scope` | 403 | a valid access token without the route's scope |
 | `token_not_accepted` | 403 | an access token on a route that is not `read` or on a non-safe method |
-| `refresh_running` | 409 | dashboard: a refresh of the user is already scanning or ranking |
+| `refresh_running` | 409 | dashboard: a refresh of the user is already scanning (R2) or live (R4) |
 | `cursor_expired` | 409 | dashboard items: the cursor belongs to an older `revision`; read again from the start |
 | `token_limit_reached` | 409 | the user has 10 live access tokens |
 | `invalid_dashboard_settings` | 422 | dashboard settings or time zone break a rule of plan §F.6; the message names the field and the rule |
@@ -549,7 +549,7 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 |---|---|---|---|---|---|
 | R1 | GET | `/api/v1/dashboard` | read | – | `DashboardSummary` |
 | R1b | GET | `/api/v1/dashboard/items` | read | `ItemQuery` | `ItemPage`; weak `ETag`, `If-None-Match` → 304; 409 `cursor_expired` |
-| R2 | POST | `/api/v1/dashboard/refreshes` | session_csrf | – | 201 `RefreshStatus`; 409 `refresh_running`; 429 `github_rate_limited` |
+| R2 | POST | `/api/v1/dashboard/refreshes` | session_csrf | – | 201 `RefreshStatus` (supersedes a ranking, Refresh states); 409 `refresh_running` while one scans; 429 `github_rate_limited` |
 | R2b | GET | `/api/v1/dashboard/refreshes/{id}` | read | – | `RefreshStatus` |
 | R3 | POST | `/api/v1/dashboard/refreshes/{id}/cancel` | session_csrf | – | `RefreshStatus`; 409 `conflict` once the refresh ended |
 | R4 | POST | `/api/v1/dashboard/refreshes/{id}/rank` | session_csrf | – | 202 `RefreshStatus` (Retry ranking of that snapshot); 409 `conflict` or `refresh_running` (Refresh states) |
@@ -574,7 +574,8 @@ not change). Until the token middleware exists, `read` routes accept the session
   `Cache-Control: no-store` stays on every API response.
 - **Items (R1b).** Rank order of the current snapshot. Filters, all optional: `tier`; `kind` = `pr` | `issue`
   (absent = pull requests and issues together; TODO items, plan §G, are listed whatever `kind` says while the user
-  shows MemCan TODOs); `repo` (`owner/name`); `state` (score state); `updated_since` (compared with
+  shows MemCan TODOs); `todos` = `false` leaves TODO items out (absent = `true`; a TODOs-only list is not supported
+  in v1.1: filter `kind == "todo"` on the client); `repo` (`owner/name`); `state` (score state); `updated_since` (compared with
   `WorkItem.updated_at`). The web UI opens the list with `kind=pr` and offers PRs / issues / both (owner decision);
   the statistics (`SnapshotMeta.history`, headline, charts) count pull requests and reviews given only, with no
   switch (OD16). `limit` defaults to 100, at most 500
@@ -600,8 +601,9 @@ not change). Until the token middleware exists, `read` routes accept the session
   `p0` = LLM alarm, else `p1` ≥ 650, `p2` 350–<650, `p3` < 350 tenths, compared at full precision before rounding to
   tenths. `state`: `final`; `provisional` (an LLM part `inherited` after the item changed, or a computed default
   awaiting confirmation; shown `~N`, keeps its tier group); `unjudged` (new item, group "Not judged yet").
-- **Refreshes.** One per user is `scanning` or `ranking` at a time (R2 answers 409 `refresh_running`; a scheduled
-  start finding a live refresh counts as done). Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
+- **Refreshes.** One per user is `scanning` or `ranking` at a time. R2 and a scheduled start supersede a refresh in
+  `ranking` and are refused only by one in `scanning` (R2: 409 `refresh_running`; schedule: counts as done), so a
+  `paused` or `waiting_for_analysis` ranking never blocks a new scan. Transitions: "Refresh states" below. `failure.retry_at` is GitHub's
   rate-limit reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3
   (`waiting_for_analysis` while a review analysis holds the LLM credential). `log` holds at most 200 plain lines
   without tokens or query strings. The newest 10 refreshes per user are kept, plus the one holding the current
@@ -634,7 +636,7 @@ not change). Until the token middleware exists, `read` routes accept the session
 
   | From | Event | To | Ranking state |
   |---|---|---|---|
-  | – | R2 or the schedule (none live) | `scanning` | – |
+  | – | R2 or the schedule (none `scanning`) | `scanning` | – |
   | `scanning` | snapshot stored | `ranking` | `running` (then `waiting_for_analysis` / `running` / `paused`) |
   | `scanning` | scan fails | `failed` (`failure`) | – |
   | `scanning` | R3 cancel | `cancelled` | – |
@@ -642,10 +644,13 @@ not change). Until the token middleware exists, `read` routes accept the session
   | `ranking` | ranking done (or nothing to judge) | `finished` | `finished` |
   | `ranking` | ranking fails | `finished` | `failed` (`message`) |
   | `ranking` | R3 cancel | `finished` | `cancelled` |
+  | `ranking` | superseded by R2 or the schedule (same write transaction as the new `scanning` refresh) | `finished` | `cancelled` |
   | `ranking` | server restart | `finished` | `interrupted` |
   | `finished` with ranking `failed`, `interrupted` or `cancelled`, holding the current snapshot | R4 | `ranking` | `running` |
 
-  R3 on an ended refresh (`finished`, `failed`, `cancelled`) answers 409 `conflict`. R4 answers 409 `conflict` for
+  A superseded refresh's snapshot stays current until the new scan stores its own. R2 while a refresh is
+  `scanning` answers 409 `refresh_running`; a scheduled start then counts as done (`skipped`). R3 on an ended
+  refresh (`finished`, `failed`, `cancelled`) answers 409 `conflict`. R4 answers 409 `conflict` for
   any other refresh or ranking outcome and 409 `refresh_running` while another refresh of the user is live. After a
   restart no refresh is live, so neither R2 nor the schedule is blocked.
 - **Tolerant readers** (plan §E.5 E5-3): clients ignore unknown fields and treat unknown values of `kind`,
