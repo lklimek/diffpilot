@@ -33,3 +33,7 @@ export const analysisHref = (analysis: AnalysisSummary) =>
   analysis.review_ready || analysis.state.state === "finished"
     ? `/analyses/${analysis.id}`
     : `/analyses/${analysis.id}/progress`;
+
+/** "Resume review" returns to a review this user started; "Open review" opens one not started yet. */
+export const reviewLabel = (analysis: { has_my_state?: boolean }) =>
+  analysis.has_my_state === true ? "Resume review" : "Open review";

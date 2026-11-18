@@ -28,7 +28,7 @@ export function QuestionsBlock({ questions, placeOf, onEvidence, onAskAgain }: Q
   const steps = [...new Set(mine.map((q) => q.step_id))];
   return (
     <QuietCard title={`Your questions and answers (${mine.length})`}>
-      <Note>Only you see these questions. Answers are LLM analysis; nothing was executed.</Note>
+      <Note>Only you see these questions. Answers are LLM analysis; the agent was told not to run code.</Note>
       {mine.length === 0 ? (
         <p>You have not asked any questions in this review yet. Ask about a step in the Inspector.</p>
       ) : (

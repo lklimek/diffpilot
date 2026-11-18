@@ -341,11 +341,21 @@ describe("Inspector summaries", () => {
     );
   });
 
-  it("says related work was not checked without the GitHub App", () => {
+  it("says related work was not checked, without claiming why", () => {
     const t = structuredClone(tour);
     t.pr_context.facts.related_work_checked = false;
     render(<Inspector tour={t} block={{ block: "pr_context" }} />);
-    expect(region(/^LLM analysis at a glance/)).toHaveTextContent("Related work: not checked");
+    // The cause is not known (a failed check or a missing App), so none is claimed.
+    expect(region(/^LLM analysis at a glance/)).toHaveTextContent(/Related work: not checked\.?$/);
+    expect(region(/^LLM analysis at a glance/)).not.toHaveTextContent(/App/);
+  });
+
+  it("counts an unexplained file with base and head entries once", () => {
+    const t = structuredClone(tour);
+    const [first] = t.quiet.unexplained;
+    t.quiet.unexplained = [first!, { ...first!, side: "base" }];
+    render(<Inspector tour={t} block={{ block: "pr_context" }} />);
+    expect(region(/^Coverage/)).toHaveTextContent(/changed lines in 1 file/);
   });
 
   it.each([

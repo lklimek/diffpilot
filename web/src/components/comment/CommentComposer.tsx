@@ -36,7 +36,7 @@ export interface CommentComposerProps {
   onEdit: (commentId: string, body: string) => Promise<unknown> | void;
   /** Deletes a pending comment on GitHub (DELETE). */
   onDelete: (commentId: string) => Promise<unknown> | void;
-  /** Leaves the line (Cancel or Escape); the screen clears the line highlight. */
+  /** Leaves the line (Close or Escape; an unsent text stays a draft); the screen clears the line highlight. */
   onCancel: () => void;
   /** The text field, for the `c` shortcut. */
   textareaRef?: Ref<HTMLTextAreaElement>;
@@ -44,10 +44,10 @@ export interface CommentComposerProps {
   unresolved: UnresolvedPosts;
   /** Updates `unresolved`; takes an updater, so a React state setter fits (`useState<UnresolvedPosts>({})`). */
   onUnresolvedChange: (update: (posts: UnresolvedPosts) => UnresolvedPosts) => void;
-  /** Unsent texts by comment target, kept by the screen so leaving a line never loses one; start `{}`. */
+  /** Unsent texts by comment target, kept by the screen so leaving a line never loses one. */
   drafts: CommentDrafts;
-  /** Stores the unsent text of a target (`key`); an empty text removes it. */
-  onDraftChange: (key: string, text: string) => void;
+  /** Where the PR can be analysed again; offered after a refusal because the PR head moved. */
+  reanalyseHref?: string;
 }
 
 const BUTTON =
@@ -63,6 +63,8 @@ const TIP = {
   draft:
     "Not added to GitHub yet. Kept in this browser tab, also when you leave the line, until you add it or clear the text.",
   leaveOutside: "Leaves this line; nothing is sent to GitHub.",
+  reanalyse:
+    "Opens Home with this pull request filled in; Analyze there offers Re-analyze for its new head. Ticks are not carried over.",
   retry: "Sends the same comment again with the same key, so GitHub does not add it twice.",
   discard:
     "Makes the text editable again and forgets the failed attempt. It may already be in your pending review on GitHub: check the list below before posting it again.",
@@ -117,8 +119,13 @@ export interface UnresolvedPost {
 /** Unresolved posts by comment target (path, side, start line, line). */
 export type UnresolvedPosts = Readonly<Record<string, UnresolvedPost>>;
 
-/** Unsent comment texts by comment target (path, side, start line, line). */
-export type CommentDrafts = Readonly<Record<string, string>>;
+/** Unsent comment texts by comment target (path, side, start line, line), kept outside React state. */
+export interface CommentDrafts {
+  /** The kept text of a target; "" when there is none. */
+  get: (key: string) => string;
+  /** Keeps the text of a target; "" removes it. */
+  set: (key: string, text: string) => void;
+}
 
 function without(all: UnresolvedPosts, key: string): UnresolvedPosts {
   const rest = { ...all };
@@ -228,15 +235,7 @@ function OwnComment({
 
 /** Comment on any displayed line into the user's GitHub pending review (brief §4.3 Dock, ADR-006). */
 export function CommentComposer(props: CommentComposerProps) {
-  const {
-    available,
-    line,
-    onCreate,
-    unresolved,
-    onUnresolvedChange: setUnresolved,
-    drafts,
-    onDraftChange,
-  } = props;
+  const { available, line, onCreate, unresolved, onUnresolvedChange: setUnresolved, drafts } = props;
   const id = useId();
   // Unconfirmed posts live with the screen (props): after a failure the server may have created the comment,
   // so the only ways on are Retry with the same key and payload, or Discard — also after a remount.
@@ -273,16 +272,19 @@ export function CommentComposer(props: CommentComposerProps) {
       if (inFlight.current.has(key) || unresolved[key]?.error === null) return null;
       inFlight.current.add(key);
       setUnresolved((all) => ({ ...all, [key]: { request, error: null } }));
+      // While the outcome is unknown no draft is stored: a reload must not offer the text for a second Add.
+      drafts.set(key, "");
       try {
         const response = await onCreate(request);
         setUnresolved((all) => without(all, key));
-        onDraftChange(key, "");
         return response;
       } catch (error) {
         // A definite refusal: nothing to retry (a moved head stays moved); the text stays for the user to keep.
-        if (DEFINITE_REFUSALS.has(codeOf(error) ?? "")) {
+        const code = codeOf(error) ?? "";
+        if (DEFINITE_REFUSALS.has(code)) {
           setUnresolved((all) => without(all, key));
-          return { settled: messageOf(error) };
+          drafts.set(key, request.body);
+          return { settled: messageOf(error), headMoved: code === "pr_head_changed" };
         }
         setUnresolved((all) => ({ ...all, [key]: { request, error: messageOf(error) } }));
         return null;
@@ -298,8 +300,8 @@ export function CommentComposer(props: CommentComposerProps) {
         {...props}
         line={line}
         post={unresolved[key] ?? null}
-        draft={drafts[key] ?? ""}
-        onDraft={(text) => onDraftChange(key, text)}
+        draft={drafts.get(key)}
+        onDraft={(text) => drafts.set(key, text)}
         send={send}
         discard={discard}
       />
@@ -314,7 +316,7 @@ export function CommentComposer(props: CommentComposerProps) {
 }
 
 /** Outcome of a send: the response, a definite failure with the server's sentence, or unknown (null). */
-type SendResult = CreateCommentResponse | { settled: string } | null;
+type SendResult = CreateCommentResponse | { settled: string; headMoved: boolean } | null;
 
 interface DraftProps extends Omit<CommentComposerProps, "unresolved" | "drafts"> {
   line: CommentLine;
@@ -334,6 +336,7 @@ function Draft({
   onDelete,
   onCancel,
   textareaRef,
+  reanalyseHref,
   post: unresolved,
   draft,
   onDraft,
@@ -350,6 +353,7 @@ function Draft({
   const [empty, setEmpty] = useState(false);
   const [done, setDone] = useState<CreateCommentResponse | null>(null);
   const [settled, setSettled] = useState<string | null>(null);
+  const [headMoved, setHeadMoved] = useState(false);
 
   // A newly chosen line takes the focus (click on a line number, or `c`).
   useEffect(() => field.current?.focus(), []);
@@ -386,9 +390,15 @@ function Draft({
     setEmpty(false);
     setDone(null);
     setSettled(null);
+    setHeadMoved(false);
     const response = await send({ idempotency_key: newIdempotencyKey(), target: line.target, body });
-    if (response && "settled" in response) setSettled(response.settled);
-    else if (response) finish(response);
+    settle(response);
+  };
+  const settle = (response: SendResult) => {
+    if (response && "settled" in response) {
+      setSettled(response.settled);
+      setHeadMoved(response.headMoved);
+    } else if (response) finish(response);
   };
   const finish = (response: CreateCommentResponse) => {
     setText("");
@@ -398,9 +408,7 @@ function Draft({
   const retry = async () => {
     if (!unresolved) return;
     setDone(null);
-    const response = await send(unresolved.request);
-    if (response && "settled" in response) setSettled(response.settled);
-    else if (response) finish(response);
+    settle(await send(unresolved.request));
   };
 
   const mine = comments.filter((c) => onTarget(c, line.target));
@@ -427,7 +435,7 @@ function Draft({
         )}
         <Tooltip tip={TIP.leave}>
           <button type="button" onClick={onCancel} className={BUTTON}>
-            Cancel
+            Close
           </button>
         </Tooltip>
       </p>
@@ -474,6 +482,15 @@ function Draft({
         {error && (
           <p id={`${id}-e`} role="alert" className="text-[12px] text-high">
             {error}
+          </p>
+        )}
+        {headMoved && !empty && reanalyseHref && (
+          <p className="text-[12px]">
+            <Tooltip tip={TIP.reanalyse}>
+              <a href={reanalyseHref} className="text-accent underline">
+                Analyse the new head
+              </a>
+            </Tooltip>
           </p>
         )}
         {locked && !pending ? (

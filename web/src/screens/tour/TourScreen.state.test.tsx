@@ -1,12 +1,12 @@
 // Tour screen: analysis state, drafts, background refresh failures and the user's questions.
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { HttpResponse, http } from "msw";
+import { HttpResponse, delay, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeEventSource } from "../../__tests__/fake-event-source";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
-import type { AnalysisSummary } from "../../api/generated/types";
+import type { AnalysisSummary, MeResponse } from "../../api/generated/types";
 import { seedFor, setFixtureState } from "../../mocks/fixtures";
 import { setScenario } from "../../mocks/scenarios";
 
@@ -90,11 +90,89 @@ describe("Tour: unsent comment drafts survive navigation", () => {
     await user().click(within(main()).getByRole("button", { name: /^← Previous/ }));
     expect(await commentOn95()).toHaveValue("Is the deadline respected?");
     expect(within(inspector()).getByText("Draft")).toBeVisible();
-    expect(JSON.stringify(window.sessionStorage)).toContain("Is the deadline respected?");
+    const login = (seedFor("default", "me") as MeResponse).user!.login;
+    await waitFor(() =>
+      expect(window.sessionStorage.getItem(`smart-review.comment-drafts.${login}.${ID}`)).toContain(
+        "Is the deadline respected?",
+      ),
+    );
+  });
+
+  it.each([
+    ["the session ended (401)", 401, "unauthenticated"],
+    ["nobody is signed in", 0, ""],
+  ])("removes every stored draft when %s", async (_, status, code) => {
+    window.sessionStorage.setItem("smart-review.comment-drafts.someone.a9", JSON.stringify({ k: "secret" }));
+    server.use(
+      status
+        ? http.get("/api/v1/analyses/:id/pending-review", () =>
+            HttpResponse.json({ code, message: "Sign in again." }, { status }),
+          )
+        : http.get("/api/v1/me", () => HttpResponse.json({ user: null, csrf_token: null })),
+    );
+    renderRoute(`/analyses/${ID}#f1.2`);
+    await waitFor(() => expect(JSON.stringify({ ...window.sessionStorage })).not.toContain("secret"));
+  });
+});
+
+describe("Tour: a background refresh that cannot succeed", () => {
+  it.each([
+    [401, "unauthenticated", "Sign in again to continue."],
+    [404, "not_found", "This analysis does not exist."],
+  ])("a %s on refresh shows the error page instead of the old data", async (status, code, message) => {
+    await open(null, "#f1.2");
+    server.use(http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json({ code, message }, { status })));
+    const summary = seedFor("default", "analysis") as AnalysisSummary;
+    act(() =>
+      FakeEventSource.latest().emit({ event: "analysis", summary: { ...summary, review_ready: true } }),
+    );
+    expect(await screen.findByText(message)).toBeVisible();
+    expect(screen.queryByRole("navigation", { name: "Flows and steps" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Back to Home" })).toHaveAttribute("href", "/");
   });
 });
 
 describe("Tour: the user's questions", () => {
+  it("the questions page keeps the block the user came from as current, and announces itself", async () => {
+    setFixtureState("resume");
+    await open(null, "#f1.5");
+    const inspector = screen.getByRole("complementary", { name: "Inspector" });
+    const before = within(inspector).getAllByRole("heading", { level: 2 }).at(-1)!.textContent;
+    await user().click(within(nav()).getByRole("button", { name: "Your questions and answers: 1" }));
+    await within(main()).findByRole("article", { name: /Your questions and answers/ });
+    expect(within(inspector).getAllByRole("heading", { level: 2 }).at(-1)).toHaveTextContent(before!);
+    expect(within(main()).getByRole("button", { name: /^Next/ })).toHaveTextContent(/6/);
+    expect(document.querySelector('[aria-live="polite"].sr-only')).toHaveTextContent(
+      "Your questions and answers",
+    );
+  });
+
+  it("the questions entry says while the questions load", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/questions", async () => {
+        await delay(300);
+        return HttpResponse.json([]);
+      }),
+    );
+    await open(null, "#f1.5");
+    expect(
+      within(nav()).getByRole("button", { name: "Your questions and answers: loading" }),
+    ).toHaveTextContent("…");
+    expect(await within(nav()).findByRole("button", { name: "Your questions and answers: 0" })).toBeVisible();
+  });
+
+  it("the questions entry says when the questions cannot be read", async () => {
+    server.use(
+      http.get("/api/v1/analyses/:id/questions", () =>
+        HttpResponse.json({ code: "internal", message: "Broken." }, { status: 500 }),
+      ),
+    );
+    await open(null, "#f1.5");
+    expect(
+      await within(nav()).findByRole("button", { name: "Your questions and answers: could not be read" }),
+    ).toBeVisible();
+  });
+
   it("steps with questions are marked in the menu; one entry opens every question with its answer and step", async () => {
     setFixtureState("resume");
     await open(null, "#f1.5");

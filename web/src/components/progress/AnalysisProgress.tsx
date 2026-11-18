@@ -31,10 +31,12 @@ interface AnalysisProgressProps {
   /** State of the analysis (brief §4.2). */
   state: AnalysisState;
   reviewReady?: boolean;
+  /** The user has started this review (`has_my_state`): "Resume review", else "Open review". */
+  reviewStarted?: boolean;
   /** Whole-run facts; absent on older servers. */
   progress?: RunProgress;
   usage?: UsageTotals | null;
-  /** Where "Resume review" leads once planning and PR context are accepted. */
+  /** Where "Resume review" / "Open review" leads once planning and PR context are accepted. */
   reviewHref: string;
   /** A cancel or retry request is running: the actions are disabled. */
   busy: boolean;
@@ -203,6 +205,7 @@ function Bar({
 export function AnalysisProgress({
   state,
   reviewReady,
+  reviewStarted = false,
   progress,
   reviewHref,
   usage,
@@ -303,9 +306,15 @@ export function AnalysisProgress({
             </Tooltip>
           )}
           {(state.state === "finished" || reviewReady) && (
-            <Tooltip tip="Opens the review of this analysis.">
+            <Tooltip
+              tip={
+                reviewStarted
+                  ? "Returns to your review of this analysis where you left it."
+                  : "Opens the review of this analysis."
+              }
+            >
               <a href={reviewHref} className={buttonClass("primary")}>
-                Resume review
+                {reviewStarted ? "Resume review" : "Open review"}
               </a>
             </Tooltip>
           )}

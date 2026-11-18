@@ -12,7 +12,7 @@ import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { TopBar } from "../../components/top-bar/TopBar";
-import { analysisHref, homeOutcome, startsAtOnce } from "./outcome";
+import { analysisHref, homeOutcome, reviewLabel, startsAtOnce } from "./outcome";
 
 /** Router state of Home after Cancel analysis on the progress screen. */
 export interface HomeState {
@@ -45,6 +45,8 @@ export function HomeScreen() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const { cancelledPrUrl } = (useLocation().state ?? {}) as HomeState;
+  // `/?pr=<url>` (a refused comment's way back to analysing): fills the field, starts nothing.
+  const givenPrUrl = params.get("pr") ?? undefined;
   const user = me.data?.user ?? null;
   const loginErrorCode = params.get("login_error");
   const loginError = loginErrorCode === null ? null : (LOGIN_ERRORS[loginErrorCode] ?? LOGIN_FAILED);
@@ -94,7 +96,7 @@ export function HomeScreen() {
               <>
                 <h1 className="text-[22px] font-bold">Which pull request?</h1>
                 <PrUrlForm
-                  initialUrl={cancelledPrUrl}
+                  initialUrl={cancelledPrUrl ?? givenPrUrl}
                   busy={busy}
                   onSubmit={submit}
                   sizeWarning={
@@ -145,9 +147,9 @@ export function HomeScreen() {
                       )
                     }
                   >
-                    {COMMENTING_UNAVAILABLE_WHY} The analysis works without the App, but related work is not
-                    checked and comments cannot be written into your pending review. The installations are
-                    listed in <Link to="/settings">Settings</Link>.
+                    {COMMENTING_UNAVAILABLE_WHY} The analysis still runs; comments cannot be written into your
+                    pending review while this lasts. The installations are listed in{" "}
+                    <Link to="/settings">Settings</Link>.
                   </Banner>
                 )}
                 {outcome?.kind === "resume" && outcome.analysis.state.state === "finished" && (
@@ -155,16 +157,22 @@ export function HomeScreen() {
                     tone="info"
                     title="Analysis found."
                     actions={
-                      <Tooltip tip="Opens this analysis; any saved progress is restored.">
+                      <Tooltip
+                        tip={
+                          outcome.analysis.has_my_state === true
+                            ? "Returns to your review of this analysis where you left it."
+                            : "Opens the review of this analysis."
+                        }
+                      >
                         <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
-                          Resume review
+                          {reviewLabel(outcome.analysis)}
                         </Link>
                       </Tooltip>
                     }
                   >
                     {outcome.analysis.has_my_state === true
                       ? "This PR head is already analysed. Your ticks, answers and last viewed block are kept."
-                      : "This PR head is already analysed. Resume review."}
+                      : "This PR head is already analysed."}
                   </Banner>
                 )}
                 {outcome?.kind === "in_progress" && (
@@ -199,7 +207,7 @@ export function HomeScreen() {
                           }
                         >
                           <Link to={analysisHref(outcome.analysis)} className={SMALL_PRIMARY}>
-                            {outcome.analysis.review_ready ? "Resume review" : "Show progress"}
+                            {outcome.analysis.review_ready ? reviewLabel(outcome.analysis) : "Show progress"}
                           </Link>
                         </Tooltip>
                       </>

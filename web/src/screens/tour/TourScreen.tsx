@@ -1,5 +1,6 @@
 import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
 import { ApiError } from "../../api/client";
@@ -50,7 +51,7 @@ import { Tooltip } from "../../components/tooltip/Tooltip";
 import { busyTip } from "../../components/button/button";
 import { ChunkedCode, DiffCode, FileDiffCode, LinesCode, errorText, type CodeContext } from "./code";
 import { DiagramPane } from "./DiagramPane";
-import { useCommentDrafts } from "./drafts";
+import { clearCommentDrafts, useCommentDrafts } from "./drafts";
 import { InspectorPane, type CommentLineState } from "./InspectorPane";
 import { loadLayout, saveLayout, showColumn, type TourLayout } from "./layout";
 import {
@@ -81,6 +82,32 @@ function isTyping(event: KeyboardEvent): boolean {
   );
 }
 
+// A failure the next try may not have: the server or the network, not an answer about this request.
+const transient = (error: unknown) =>
+  !(error instanceof ApiError) || error.status === 0 || error.status >= 500;
+const sessionEnded = (error: unknown) => error instanceof ApiError && error.status === 401;
+
+/** Removes the tab's comment drafts when nobody is signed in or any request says the session ended. */
+function useDraftsEndWithSession(signedOut: boolean): void {
+  const client = useQueryClient();
+  useEffect(() => {
+    if (signedOut) clearCommentDrafts();
+  }, [signedOut]);
+  useEffect(() => {
+    const ended = (event: { type: string; action?: { type: string; error?: unknown } }) => {
+      if (event.type === "updated" && event.action?.type === "error" && sessionEnded(event.action.error)) {
+        clearCommentDrafts();
+      }
+    };
+    const queries = client.getQueryCache().subscribe(ended);
+    const mutations = client.getMutationCache().subscribe(ended);
+    return () => {
+      queries();
+      mutations();
+    };
+  }, [client]);
+}
+
 const onStep = (c: PendingComment, step: Step) =>
   c.path === step.facts.file &&
   c.line !== null &&
@@ -95,12 +122,14 @@ export function TourScreen() {
   const tour = useTour(analysisId);
   const review = useReviewStateStore(analysisId);
   const login = me.data?.user?.login ?? null;
+  useDraftsEndWithSession(me.isSuccess && !me.data.user);
 
   if (tour.error instanceof ApiError && tour.error.code === "analysis_not_finished") {
     return <Navigate to={`/analyses/${encodeURIComponent(analysisId)}/progress`} replace />;
   }
-  // A failed background refetch keeps the last good tour (and the drafts and state of the open review).
-  if (tour.isError && !tour.data) {
+  // A transient failure of a background refetch keeps the last good tour (and the drafts and state of the open
+  // review); an answer such as 401 or 404 does not change on retry.
+  if (tour.isError && (!tour.data || !transient(tour.error))) {
     return (
       <Shell login={login}>
         <StatusMessage kind="error">{errorText(tour.error)}</StatusMessage>
@@ -196,21 +225,21 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const navigate = useNavigate();
   const navigationType = useNavigationType();
   const [locationKey, setLocationKey] = useState(location.key);
-  const [resumeBlock] = useState<BlockRef>(() => {
-    const last = state.last_viewed;
-    const known =
-      last &&
-      (sequence.some((b) => sameBlock(b, last)) || last.block === "quiet" || last.block === "pending_review");
-    return known ? last : PR_CONTEXT;
-  });
+  const known = (last: BlockRef | null | undefined): last is BlockRef =>
+    !!last &&
+    (sequence.some((b) => sameBlock(b, last)) || last.block === "quiet" || last.block === "pending_review");
+  const [resumeBlock] = useState<BlockRef>(() => (known(state.last_viewed) ? state.last_viewed : PR_CONTEXT));
+  // The user's questions page: a view of its own, not a block of the stored review state; the block the user
+  // came from stays current (Inspector, Previous/Next, j/k).
+  const questionsView = location.hash === "#questions";
+  const lastViewed = state.last_viewed;
+  const cameFrom = questionsView && known(lastViewed) ? lastViewed : null;
   const current = useMemo(
-    () => blockFromHash(tour, location.hash) ?? (location.hash ? PR_CONTEXT : resumeBlock),
-    [tour, location.hash, resumeBlock],
+    () => blockFromHash(tour, location.hash) ?? cameFrom ?? (location.hash ? PR_CONTEXT : resumeBlock),
+    [tour, location.hash, resumeBlock, cameFrom],
   );
   const evidence = useMemo(() => evidenceFromHash(location.hash), [location.hash]);
   const lineView = location.hash.startsWith("#lines?") ? evidence : undefined;
-  // The user's questions page: a view of its own, not a block of the stored review state.
-  const questionsView = location.hash === "#questions";
   // A review opened elsewhere than at its start says once where it resumed (mockup "returning to a review").
   const [resumed, setResumed] = useState<BlockRef | null>(() =>
     location.hash || current.block === "pr_context" ? null : current,
@@ -224,7 +253,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   // A pending comment opened from the pending-review list, shown open at its line.
   const [revealComment, setRevealComment] = useState<string | null>(null);
   const [unresolved, setUnresolved] = useState<UnresolvedPosts>({});
-  const [drafts, setDraft] = useCommentDrafts(analysisId);
+  const drafts = useCommentDrafts(analysisId, login);
   const [helpOpen, setHelpOpen] = useState(false);
   const [layout, setLayoutState] = useState(loadLayout);
   const [focusNext, setFocusNext] = useState<"ask" | "comment" | null>(null);
@@ -338,7 +367,6 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   }, [current, location, navigate]);
 
   // The last viewed block is part of the stored review state (resume).
-  const lastViewed = state.last_viewed;
   useEffect(() => {
     if (questionsView) return;
     if (!lastViewed || !sameBlock(lastViewed, current)) save((s) => ({ ...s, last_viewed: current }));
@@ -732,7 +760,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         onNext={() => go(next)}
       />
       <p className="sr-only" aria-live="polite">
-        {blockTitle(tour, current)}
+        {questionsView ? "Your questions and answers" : blockTitle(tour, current)}
       </p>
     </>
   );
@@ -779,7 +807,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             onSelect={go}
             questionCounts={questionCounts}
             questions={{
-              count: myQuestions.length,
+              count: questions.isSuccess ? myQuestions.length : questions.isError ? "error" : "loading",
               open: questionsView,
               onOpen: () => openFragment("questions"),
             }}
@@ -809,7 +837,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             unresolved={unresolved}
             onUnresolvedChange={setUnresolved}
             drafts={drafts}
-            onDraftChange={setDraft}
+            reanalyseHref={`/?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
             askRef={askRef}
             commentRef={commentRef}
           />

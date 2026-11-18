@@ -144,7 +144,8 @@ export function PrContextSummary({
       >
         <ul className="m-0 list-disc pl-5">
           <li>
-            Unexplained: {plural(unexplained, "changed line")} in {plural(quiet.unexplained.length, "file")}
+            Unexplained: {plural(unexplained, "changed line")} in{" "}
+            {plural(new Set(quiet.unexplained.map((u) => u.file)).size, "file")}
             {unexplained > 0 && " — read these yourself"}
           </li>
           <li>
@@ -166,7 +167,7 @@ export function PrContextSummary({
           <li>
             {facts.related_work_checked
               ? `Related work: ${plural(llm.related_work.length, "item")}`
-              : "Related work: not checked (the GitHub App is not installed on this repository)"}
+              : "Related work: not checked."}
           </li>
         </ul>
       </Collapsible>

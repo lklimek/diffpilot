@@ -31,8 +31,11 @@ interface NavListProps {
   /** Number of the user's own questions per step; steps without one are omitted. */
   questionCounts?: Readonly<Record<StepId, number>>;
   /** The entry of the user's questions page; no entry when omitted. */
-  questions?: { count: number; open: boolean; onOpen: () => void };
+  questions?: { count: number | "loading" | "error"; open: boolean; onOpen: () => void };
 }
+
+// Spoken count of the questions entry while it has no number.
+const QUESTIONS_COUNT: Record<string, string> = { loading: "loading", error: "could not be read" };
 
 const ITEM =
   "block w-full cursor-pointer rounded-md border-l-4 border-transparent px-2 py-1.5 text-left text-text hover:bg-surface-2 aria-[current]:border-accent aria-[current]:bg-accent-bg aria-[current]:font-semibold";
@@ -276,7 +279,11 @@ export function NavList({
         <>
           <Heading>Your questions</Heading>
           <Tooltip
-            tip="Every question you asked in this review, with its state and the LLM answer. Only you see them."
+            tip={
+              questions.count === "error"
+                ? "Your questions could not be read; the page says why. Only you see them."
+                : "Every question you asked in this review, with its state and the LLM answer. Only you see them."
+            }
             className="block"
             placement="right"
           >
@@ -285,12 +292,12 @@ export function NavList({
               data-row="menu"
               className={ITEM}
               aria-current={questions.open ? "page" : undefined}
-              aria-label={`Your questions and answers: ${questions.count}`}
+              aria-label={`Your questions and answers: ${QUESTIONS_COUNT[questions.count] ?? questions.count}`}
               onClick={questions.onOpen}
             >
               Questions and answers{" "}
               <b className="ml-1 rounded-full bg-surface-2 px-1.5 text-xs whitespace-nowrap">
-                {questions.count}
+                {questions.count === "loading" ? "…" : questions.count === "error" ? "!" : questions.count}
               </b>
             </button>
           </Tooltip>

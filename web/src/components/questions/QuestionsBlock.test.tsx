@@ -53,6 +53,9 @@ describe("QuestionsBlock (the user's questions of the review)", () => {
       within(screen.getAllByRole("listitem")[0]!).getByText("Is the broadcast deduplicated?"),
     ).toBeVisible();
     expectTrustWording(document.body.textContent ?? "");
+    // The UI cannot back a claim that nothing ran; it states what the agent was told.
+    expect(document.body).toHaveTextContent("Answers are LLM analysis; the agent was told not to run code.");
+    expect(document.body).not.toHaveTextContent(/nothing (was )?executed/i);
   });
 
   it("only the user's own questions; a step no longer in the tour is said plainly", () => {

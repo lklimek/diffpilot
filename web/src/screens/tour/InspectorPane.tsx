@@ -63,7 +63,8 @@ interface InspectorPaneProps {
   unresolved: UnresolvedPosts;
   onUnresolvedChange: (update: (posts: UnresolvedPosts) => UnresolvedPosts) => void;
   drafts: CommentDrafts;
-  onDraftChange: (key: string, text: string) => void;
+  /** Where the PR can be analysed again (after a head-moved refusal of a comment). */
+  reanalyseHref?: string;
   askRef: RefObject<HTMLTextAreaElement | null>;
   commentRef: RefObject<HTMLTextAreaElement | null>;
 }
@@ -154,7 +155,7 @@ export function InspectorPane(props: InspectorPaneProps) {
       unresolved={props.unresolved}
       onUnresolvedChange={props.onUnresolvedChange}
       drafts={props.drafts}
-      onDraftChange={props.onDraftChange}
+      reanalyseHref={props.reanalyseHref}
     />
   ) : pending.isError ? (
     <p className="text-[12.5px]">
