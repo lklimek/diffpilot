@@ -90,6 +90,22 @@ describe("Tour: flows are analysed on request only", () => {
     expect(requested).toEqual([]);
     await user().click(within(main()).getByRole("button", { name: "Analyse this flow" }));
     await waitFor(() => expect(requested).toHaveLength(1));
+    // The requested flow is queued: the left panel no longer says that nothing is being analysed.
+    await waitFor(() => expect(within(work()).queryByRole("status")).toBeNull());
+  });
+
+  it("a refused Analyse this flow is said in the flow, next to the button", async () => {
+    server.use(
+      http.post("/api/v1/analyses/:id/flows/:flow/request", () =>
+        HttpResponse.json({ code: "pr_head_changed", message: "The PR has moved." }, { status: 409 }),
+      ),
+    );
+    await open("lazy-flows");
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 2:/ }));
+    await user().click(await within(main()).findByRole("button", { name: "Analyse this flow" }));
+    expect(await within(main()).findByRole("alert")).toHaveTextContent(
+      "This flow was not requested: The PR has moved.",
+    );
   });
 
   it("with background off (the default) the left panel says nothing runs and offers Analyse all remaining flows", async () => {
@@ -101,6 +117,8 @@ describe("Tour: flows are analysed on request only", () => {
     expect(
       await within(work()).findByRole("button", { name: "Analysing all remaining flows — Stop" }),
     ).toBeVisible();
+    // Like the server, switching it on queues the next flow by rank.
+    await waitFor(() => expect(within(work()).queryByRole("status")).toBeNull());
   });
 
   it("reads the switch from the analysis: on, it offers Stop", async () => {

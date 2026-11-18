@@ -92,13 +92,13 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
     expect(screen.getByText("Bad output.")).toBeVisible();
   });
 
-  it("Cancel analysis returns to Home with 'Analysis cancelled — analyze again'", async () => {
+  it("Cancel analysis returns to Home with 'Analysis cancelled. Check the PR to start again.'", async () => {
     const router = await showAt({ state: "running", done: 1, total: 5 });
     await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
     expect(liveAnalysis().state).toEqual({ state: "cancelled" });
-    expect(await screen.findByText("Analysis cancelled — analyze again.")).toBeVisible();
+    expect(await screen.findByText("Analysis cancelled. Check the PR to start again.")).toBeVisible();
     expect(screen.getByLabelText("GitHub pull request URL")).toHaveValue(analysis.pr.html_url);
   });
 

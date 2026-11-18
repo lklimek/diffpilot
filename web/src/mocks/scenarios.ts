@@ -70,7 +70,7 @@ interface Scenario {
   me?: () => MeResponse;
   /** Changes to the `pr/resolve` answer of the fixture PR. */
   resolve?: (seed: ResolvePrResponse) => ResolvePrResponse;
-  /** The analysis stays in this state (no scripted run after Analyze). */
+  /** The analysis stays in this state (no scripted run after Start analysis). */
   analysis?: AnalysisState;
   usage?: UsageTotals;
   /** Waiting facts, projected on each scripted stage change. */
@@ -399,6 +399,12 @@ const SCENARIOS = {
     },
   },
   "existing-cancelled": { resolve: withAnalysis({ state: "cancelled" }) },
+  "existing-other-language": {
+    resolve: (seed) => ({
+      ...seed,
+      analysis: { ...analysisAt({ state: "finished", total: 5 }), language: "pl" },
+    }),
+  },
   "existing-paused": {
     resolve: withAnalysis({ state: "paused", resumes_at: "2026-11-17T14:20:00Z", done: 2, total: 5 }),
     analysis: { state: "paused", resumes_at: "2026-11-17T14:20:00Z", done: 2, total: 5 },
@@ -512,7 +518,7 @@ export const SCENARIO_NAMES = Object.keys(SCENARIOS) as ScenarioName[];
 
 let current: ScenarioName | null = null;
 
-/** Selects a scenario (null = none: fixture answers and a scripted run after Analyze). */
+/** Selects a scenario (null = none: fixture answers and a scripted run after Start analysis). */
 export function setScenario(name: ScenarioName | null): void {
   if (name !== null && !(name in SCENARIOS)) throw new Error(`unknown scenario "${String(name)}"`);
   current = name;

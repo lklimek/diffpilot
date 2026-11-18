@@ -9,6 +9,7 @@ it("names the signed-in login; Sign out has a tooltip saying what it clears", as
   expect(screen.getByRole("region", { name: "Account" })).toHaveTextContent("Signed in as alice");
   const button = screen.getByRole("button", { name: "Sign out" });
   expect(button).toHaveAccessibleDescription(/unsent comment drafts in this tab/);
+  expect(button).toHaveAccessibleDescription(/other browsers stay signed in/);
   await userEvent.click(button);
   expect(onSignOut).toHaveBeenCalledOnce();
 });

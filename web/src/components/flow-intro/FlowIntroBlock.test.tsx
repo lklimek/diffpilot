@@ -140,6 +140,29 @@ it("a flow not analysed yet shows its files with line counts and a primary Analy
   expect(onRequest).toHaveBeenCalledOnce();
 });
 
+it("a refused request is said next to Analyse this flow", () => {
+  const pending = {
+    ...f1,
+    steps: [],
+    analysis_status: { state: "not_analysed", started_at: null, message: null },
+    planned: { intent: "Bound RPC retries", importance_rank: 1, ranges: [] },
+  } as Tour["flows"][number];
+  render(
+    <FlowIntroBlock
+      flow={pending}
+      dependencies={[]}
+      ticked={[]}
+      onRequest={() => {}}
+      error="The PR has moved."
+    />,
+  );
+  const alert = screen.getByRole("alert");
+  expect(alert).toHaveTextContent("This flow was not requested: The PR has moved.");
+  expect(
+    screen.getByRole("button", { name: "Analyse this flow" }).parentElement?.parentElement,
+  ).toContainElement(alert);
+});
+
 it("a pending flow says what it waits for in a paused or failed analysis, never Queued forever", () => {
   const queued = {
     ...f1,

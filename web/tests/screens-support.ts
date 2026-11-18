@@ -4,7 +4,7 @@ import { expect, type Page } from "@playwright/test";
 /** The fixture PR of fixtures/pr-482. */
 export const PR_URL = "https://github.com/acme/node-client/pull/482";
 
-/** Fills the PR URL and presses Analyze. */
+/** Fills the PR URL and presses Check (a lookup; nothing starts). */
 export async function analyze(page: Page, url = PR_URL): Promise<void> {
   await page.getByLabel("GitHub pull request URL").fill(url);
   await page.getByRole("button", { name: "Check" }).click();

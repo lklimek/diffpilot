@@ -2,7 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { PrSummary } from "../../api/generated/types";
-import { PrCheckCard } from "./PrCheckCard";
+import { PrCheckCard, SETTLE_MS } from "./PrCheckCard";
+import { LanguageTag } from "../language-tag/LanguageTag";
 
 const pr: PrSummary = {
   repo: { owner: "acme", name: "node-client" },
@@ -21,11 +22,11 @@ describe("PrCheckCard (Home: the result of Check)", () => {
     render(
       <PrCheckCard
         pr={pr}
-        actions={
-          <button type="button" data-primary>
+        actions={(describedBy) => (
+          <button type="button" data-primary aria-describedby={describedBy}>
             Start analysis
           </button>
-        }
+        )}
         onCancel={() => {}}
       >
         <p>Details</p>
@@ -49,5 +50,77 @@ describe("PrCheckCard (Home: the result of Check)", () => {
     expect(cancel).toHaveAccessibleDescription(/nothing was started/i);
     await userEvent.click(cancel);
     expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  function startCard(onStart: () => void) {
+    render(
+      <PrCheckCard
+        pr={pr}
+        actions={(describedBy) => (
+          <button type="button" data-primary aria-describedby={describedBy} onClick={onStart}>
+            Start analysis anyway
+          </button>
+        )}
+        onCancel={() => {}}
+      >
+        <p role="note">Large PR: 27 081 changed lines in 371 files.</p>
+      </PrCheckCard>,
+    );
+    return screen.getByRole("button", { name: "Start analysis anyway" });
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, SETTLE_MS + 50));
+
+  it("the primary action is described by what the check found, so the warning is read with it", () => {
+    expect(startCard(() => {})).toHaveAccessibleDescription(/Large PR: 27 081 changed lines in 371 files\./);
+  });
+
+  it("an Enter right after the card appears does not start anything; a later one does", async () => {
+    const onStart = vi.fn();
+    const start = startCard(onStart);
+    expect(start).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(onStart).not.toHaveBeenCalled();
+    await settle();
+    await userEvent.keyboard("{Enter}");
+    expect(onStart).toHaveBeenCalledOnce();
+  });
+
+  it("a held Enter (auto-repeat) never activates the primary action", async () => {
+    const onStart = vi.fn();
+    startCard(onStart);
+    await settle();
+    // One press, then two auto-repeats of the held key: only the press counts.
+    await userEvent.keyboard("{Enter>3}");
+    expect(onStart).toHaveBeenCalledOnce();
+  });
+
+  it("shows the PR's size facts when the check has them", () => {
+    render(
+      <PrCheckCard
+        pr={pr}
+        size={{
+          changed_lines: 1240,
+          changed_files: 12,
+          estimate: { remaining_seconds: 1500, basis: "recent_runs", rough: false },
+        }}
+        onCancel={() => {}}
+      >
+        {null}
+      </PrCheckCard>,
+    );
+    expect(screen.getByRole("region", { name: "Pull request check" })).toHaveTextContent(
+      "1 240 changed lines in 12 files. About 25 min (estimate from recent runs here).",
+    );
+  });
+
+  it("an existing analysis names its language with a tag", () => {
+    render(
+      <PrCheckCard pr={pr} onCancel={() => {}}>
+        <p>
+          <LanguageTag language="pl" /> Analysis found.
+        </p>
+      </PrCheckCard>,
+    );
+    expect(screen.getByText("PL")).toHaveAccessibleDescription("LLM texts of this analysis are in Polish.");
   });
 });

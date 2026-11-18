@@ -519,11 +519,7 @@ it.each([
       onRetry={() => {}}
     />,
   );
-  expect(
-    screen.getByText(
-      `No flow job is running. ${verb} the review to choose a flow or change background analysis.`,
-    ),
-  ).toBeVisible();
+  expect(screen.getByText(`No flow job is running. ${verb} the review to choose a flow.`)).toBeVisible();
   expect(screen.getByRole("link", { name: `${verb} review` })).toBeVisible();
 });
 
@@ -547,6 +543,8 @@ it("plan ready with background off: not stuck; says so and offers Open review an
     ),
   ).toBeVisible();
   expect(screen.getByRole("link", { name: "Open review" })).toBeVisible();
+  // The remaining count is visible next to the button, not only in its tooltip.
+  expect(screen.getByText("4 not analysed")).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Analyse all remaining flows" }));
   expect(onBackground).toHaveBeenCalledWith(true);
 });

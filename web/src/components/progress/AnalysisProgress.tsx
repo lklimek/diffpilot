@@ -12,6 +12,7 @@ import { busyTip, buttonClass } from "../button/button";
 import { PAUSE_REASON, pausedText } from "./paused";
 import { Tooltip } from "../tooltip/Tooltip";
 import { AnalyseAllButton } from "./AnalyseAllButton";
+import { isIdle } from "./idle";
 
 /** What this page knows of the event stream; the screen ticks `now`. */
 export interface ProgressActivity {
@@ -106,11 +107,9 @@ function stageWork(stage: AnalysisStage, done: number | null, total: number | nu
 function stageText(state: AnalysisState): string | null {
   if (state.state !== "planning" && state.state !== "running") return null;
   const { stage } = state;
-  // A running analysis without a stage may be parked (nothing admitted): no claim that work goes on.
-  if (!stage)
-    return state.state === "running"
-      ? "No flow job is running."
-      : "Between two jobs: the server starts the next one.";
+  // Parked (nothing admitted): no claim that work goes on.
+  if (isIdle(state)) return "No flow job is running.";
+  if (!stage) return "Between two jobs: the server starts the next one.";
   const [done, total] = state.state === "running" ? [state.done, state.total] : [null, null];
   const work = stageWork(stage, done, total);
   if (stage.started_at === null) return `Waiting for the runner; next: ${work}`;
@@ -233,11 +232,11 @@ export function AnalysisProgress({
     state.state === "running" || state.state === "paused" ? state.done : (progress?.flows.done ?? 0);
   const cancelText = `Cancel discards the plan and the ${done} analysed flows. The agent's session for this pull request is kept. Pause keeps everything.`;
   const live = state.state !== "finished" && state.state !== "cancelled";
-  const parked = reviewReady && state.state === "running" && !state.stage;
+  const parked = reviewReady && isIdle(state);
   const stage = parked
     ? backgroundAnalysis === false
       ? "The plan is ready. Nothing is being analysed. Choose a flow to analyse, or analyse all remaining flows."
-      : `No flow job is running. ${reviewStarted ? "Resume" : "Open"} the review to choose a flow or change background analysis.`
+      : `No flow job is running. ${reviewStarted ? "Resume" : "Open"} the review to choose a flow.`
     : stageText(state);
   const started =
     (state.state === "planning" || state.state === "running") && state.stage ? state.stage.started_at : null;
@@ -331,12 +330,15 @@ export function AnalysisProgress({
             </Tooltip>
           )}
           {reviewReady && state.state === "running" && onBackground && backgroundAnalysis !== undefined && (
-            <AnalyseAllButton
-              enabled={backgroundAnalysis}
-              busy={busy}
-              hint={`${state.total - state.done} ${state.total - state.done === 1 ? "flow" : "flows"} not analysed yet.`}
-              onChange={onBackground}
-            />
+            <span className="flex items-center gap-2">
+              <AnalyseAllButton
+                enabled={backgroundAnalysis}
+                busy={busy}
+                hint={`${state.total - state.done} ${state.total - state.done === 1 ? "flow" : "flows"} not analysed yet.`}
+                onChange={onBackground}
+              />
+              <span className="text-xs text-muted">{state.total - state.done} not analysed</span>
+            </span>
           )}
         </span>
       </div>

@@ -144,3 +144,35 @@ it("Sign out ends the session, clears this login's drafts and shows the signed-o
   expect(window.sessionStorage.getItem("smart-review.comment-drafts.bob.a1")).toContain("bob's");
   window.sessionStorage.clear();
 });
+
+it("Sign out of a session that already ended (401) still clears the drafts and shows the signed-out Home", async () => {
+  window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
+  server.use(
+    http.post("/auth/logout", () => {
+      setScenario("signed-out");
+      return HttpResponse.json({ code: "unauthenticated", message: "Sign in again." }, { status: 401 });
+    }),
+  );
+  const router = renderRoute("/settings");
+  await userEvent.click(within(await region("Account")).getByRole("button", { name: "Sign out" }));
+  await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+  expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toBeVisible();
+  expect(screen.queryByText(/Not signed out/)).toBeNull();
+  expect(window.sessionStorage.getItem("smart-review.comment-drafts.alice.a1")).toBeNull();
+  window.sessionStorage.clear();
+});
+
+it("Sign out that fails otherwise keeps everything and says so", async () => {
+  window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
+  server.use(
+    http.post("/auth/logout", () =>
+      HttpResponse.json({ code: "internal", message: "The server failed." }, { status: 500 }),
+    ),
+  );
+  const router = renderRoute("/settings");
+  await userEvent.click(within(await region("Account")).getByRole("button", { name: "Sign out" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Not signed out");
+  expect(router.state.location.pathname).toBe("/settings");
+  expect(window.sessionStorage.getItem("smart-review.comment-drafts.alice.a1")).toContain("mine");
+  window.sessionStorage.clear();
+});

@@ -42,6 +42,12 @@ it("parked: says that nothing is being analysed and what to do", () => {
   );
 });
 
+it("background_analysis not known: neither the button nor the parked line (no assumed default)", () => {
+  render(<FlowWork {...props} background={undefined} parked onBackground={() => {}} />);
+  expect(screen.queryByRole("button", { name: /all remaining flows/ })).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
 it("with every flow analysed: no button", () => {
   render(<FlowWork {...props} done={5} remainingLines={0} background={false} onBackground={() => {}} />);
   expect(screen.queryByRole("button", { name: /all remaining flows/ })).toBeNull();

@@ -644,9 +644,15 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
   appears as its own card under the field, announced and scrolled into view: PR title and number, the size
   warning with its estimate when it applies, an existing analysis with "Open review" / "Resume review", or the
   lookup error. Nothing starts without the card's primary button "Start analysis" (it takes the focus, so a
-  second Enter starts it); with a size warning or without commenting it reads "Start analysis anyway" below the
-  warning; "Cancel" clears the card. A moved head is started the same way. Supersedes the start on "Analyze"
-  and "Re-analyze" in §4.1 and the separate "Analyze anyway" step.
+  second, deliberate Enter starts it; a held key or one in the moment the card appears does not); with a size
+  warning or without commenting it reads "Start analysis anyway" below the warning, and the card's findings
+  describe it; "Cancel" clears the card, and so does any edit of the field. A moved head is started the same way.
+  After a cancel Home says "Analysis cancelled. Check the PR to start again.". Supersedes the start on "Analyze"
+  and "Re-analyze", and "Analysis cancelled — analyze again", in §4.1 and the separate "Analyze anyway" step.
+- **Language of an analysis.** Wherever an analysis is offered or shown (Home's check card, the progress screen
+  and Tour top bar) a small tag names the language of its LLM texts ("EN" / "PL"). An existing analysis in
+  another language than the user's setting is still offered first ("Open review"); a secondary
+  "Analyse again in <language>" starts one in the user's language.
 - **Flows on request.** Flows are analysed only when the user asks: "Analyse this flow" on a flow not analysed
   yet (opening it requests nothing), or "Analyse all remaining flows", the one opt-in for everything (the
   analysis's background switch; shown as "Analysing all remaining flows — Stop" while on), in the Tour's left
@@ -654,5 +660,6 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
   nothing queued or running: "Nothing is being analysed. Choose a flow to analyse, or analyse all remaining
   flows."; the progress screen says the plan is ready and offers "Open review". Supersedes "Opening a pending
   flow requests it" and "the background switch defaults on" in the 2026-11-17 amendment of §4.2.
-- **Sign-out.** Settings has "Sign out": it ends the session (`POST /auth/logout`), removes that login's comment
-  drafts and unconfirmed posts from the tab, clears cached data and shows the signed-out Home.
+- **Sign-out.** Settings has "Sign out": it ends the session in this browser (`POST /auth/logout`; a session
+  that had already ended counts as signed out), removes that login's comment drafts and unconfirmed posts from
+  the tab, clears cached data and shows the signed-out Home.

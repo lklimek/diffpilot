@@ -17,6 +17,8 @@ interface FlowIntroBlockProps {
   now?: number;
   onRequest?: () => void;
   busy?: boolean;
+  /** Why the last request of this flow was refused. */
+  error?: string;
   /** Flows this flow depends on (LLM claim), in tour order. */
   dependencies: Flow[];
   /** Steps the user ticked (any flow). */
@@ -41,6 +43,7 @@ export function FlowIntroBlock({
   now,
   onRequest,
   busy,
+  error,
 }: FlowIntroBlockProps) {
   const headingId = useId();
   const { llm, facts } = flow;
@@ -128,6 +131,7 @@ export function FlowIntroBlock({
               </button>
             </Tooltip>
           )}
+          {error && <p role="alert">This flow was not requested: {error}</p>}
         </Section>
       </article>
     );

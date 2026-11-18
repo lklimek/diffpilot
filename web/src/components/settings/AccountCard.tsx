@@ -20,7 +20,7 @@ export function AccountCard({ login, busy, error, onSignOut }: Props) {
       <p>
         <Tooltip
           tip={busyTip(
-            "Ends this session and removes your unsent comment drafts in this tab. Your GitHub pending review stays on GitHub.",
+            "Ends this session in this browser (other browsers stay signed in) and removes your unsent comment drafts in this tab. Your GitHub pending review stays on GitHub.",
             busy,
           )}
         >

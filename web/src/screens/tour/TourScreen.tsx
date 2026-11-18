@@ -1,5 +1,6 @@
 import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
+import { isIdle } from "../../components/progress/idle";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
 import { ApiError } from "../../api/client";
@@ -514,6 +515,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         now={now}
         onRequest={workAllowed ? () => work.request.mutate(flow.id) : undefined}
         busy={work.request.isPending}
+        error={
+          work.request.error && work.request.variables === flow.id ? errorText(work.request.error) : undefined
+        }
         dependencies={tour.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
         ticked={ticked}
         onSetReviewed={(on) =>
@@ -636,7 +640,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         ? `Your ticks and last viewed block are not saved: ${errorText(saveError)}`
         : null;
   // Flows run on request only; "Analyse all remaining flows" (background_analysis) is the opt-in for the rest.
-  const background = tour.analysis.background_analysis === true;
+  const background = tour.analysis.background_analysis;
   const pendingFlows = tour.flows.filter((f) => f.analysis_status && f.analysis_status.state !== "analysed");
   const flowWork = tour.analysis.review_ready && workAllowed && (
     <FlowWork
@@ -652,22 +656,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         0,
       )}
       background={background}
-      parked={
-        !background &&
-        tour.analysis.state.state === "running" &&
-        pendingFlows.length > 0 &&
-        !pendingFlows.some(
-          (f) => f.analysis_status?.state === "queued" || f.analysis_status?.state === "analysing",
-        )
-      }
+      parked={background === false && pendingFlows.length > 0 && isIdle(tour.analysis.state)}
       busy={work.background.isPending}
       onBackground={(enabled) => work.background.mutate(enabled)}
       progressHref={`/analyses/${analysisId}/progress`}
-      error={
-        work.request.error || work.background.error
-          ? errorText(work.request.error || work.background.error)
-          : undefined
-      }
+      error={work.background.error ? errorText(work.background.error) : undefined}
     />
   );
   const centre = (
@@ -767,6 +760,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       <TopBar
         pr={tour.analysis.pr}
         ci={tour.pr_context.facts.ci}
+        language={tour.analysis.language}
         login={login}
         hideContextChanges={hideContextChanges}
         onHideContextChanges={changeContextVisibility}

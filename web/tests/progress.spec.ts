@@ -220,7 +220,10 @@ test("plan ready, nothing analysed by itself: says so, Open review and Analyse a
   ).toBeVisible();
   await expect(openReview(page)).toBeVisible();
   await expectTooltips(page);
+  await expect(page.getByText("4 not analysed")).toBeVisible();
   await page.getByRole("button", { name: "Analyse all remaining flows" }).click();
   await expect(page.getByRole("button", { name: "Analysing all remaining flows — Stop" })).toBeVisible();
+  // The next flow by rank is queued: the stage line names it.
+  await expect(page.getByText(/flow 2 of 5: /)).toBeVisible();
   await expectAccessible(page);
 });

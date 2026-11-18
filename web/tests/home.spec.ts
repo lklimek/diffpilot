@@ -17,8 +17,11 @@ test("sign in → analyze → progress → resume review", async ({ page }) => {
   await expectTooltips(page);
   await analyze(page);
   // Check only looks the PR up; the card's Start analysis has the focus, so Enter starts it.
-  await expect(page.getByRole("button", { name: "Start analysis", exact: true })).toBeFocused();
+  const start = page.getByRole("button", { name: "Start analysis", exact: true });
+  await expect(start).toBeFocused();
   await expectTooltips(page);
+  // A deliberate second Enter on the focused button (keys in the moment the card appears are ignored).
+  await start.focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(PROGRESS);
   await expect(page.getByText(/flows analysed|Planning flows…/)).toBeVisible();
@@ -125,13 +128,15 @@ test("without the GitHub App: warning, Start analysis anyway", async ({ page }) 
   await expect(page).toHaveURL(PROGRESS);
 });
 
-test("cancelled: Home says 'Analysis cancelled — analyze again' with the URL filled in", async ({ page }) => {
+test("cancelled: Home says 'Analysis cancelled. Check the PR to start again.' with the URL filled in", async ({
+  page,
+}) => {
   await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=running`);
   await page.getByRole("button", { name: "Cancel analysis" }).click();
   await page.getByRole("button", { name: "Confirm cancel", exact: true }).click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
-    page.getByRole("status").filter({ hasText: "Analysis cancelled — analyze again." }),
+    page.getByRole("status").filter({ hasText: "Analysis cancelled. Check the PR to start again." }),
   ).toBeVisible();
   await expect(page.getByLabel("GitHub pull request URL")).toHaveValue(PR_URL);
   await expectTrustWording(page);

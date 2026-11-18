@@ -15,6 +15,7 @@ import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
 import { TopBar } from "../../components/top-bar/TopBar";
+import { LANGUAGE_NAME, LanguageTag } from "../../components/language-tag/LanguageTag";
 import { analysisHref, homeOutcome, reviewLabel } from "./outcome";
 
 /** Router state of Home after Cancel analysis on the progress screen. */
@@ -66,6 +67,14 @@ export function HomeScreen() {
     resolve.mutate(url);
   };
   const field = useRef<HTMLInputElement>(null);
+  // The card belongs to the checked URL: an edit of the field clears it, so Start never takes another PR.
+  const edited = (url: string) => {
+    if (!resolve.isIdle && url !== resolve.variables) {
+      resolve.reset();
+      create.reset();
+      resume.reset();
+    }
+  };
   const clear = () => {
     resolve.reset();
     create.reset();
@@ -78,26 +87,52 @@ export function HomeScreen() {
   const busy = resolve.isPending || create.isPending || resume.isPending;
   // With a size warning or without commenting the start is confirmed against that warning.
   const warned = resolved !== undefined && (resolved.size_warning !== null || !resolved.commenting_available);
-  const start = resolved && (outcome?.kind === "analyze" || outcome?.kind === "head_moved") && (
+  const existing =
+    outcome && (outcome.kind === "resume" || outcome.kind === "in_progress" || outcome.kind === "failed")
+      ? outcome.analysis
+      : null;
+  // An existing analysis in another language than the user's setting is offered first; a new one is secondary.
+  const otherLanguage = existing && user && existing.language !== user.language ? user.language : null;
+  const again = resolved && otherLanguage && (
     <Tooltip
       tip={busyTip(
-        outcome.kind === "head_moved"
-          ? "Starts a fresh analysis of the current head; ticks are not carried over."
-          : "Starts the analysis of this pull request: the plan and the PR context first.",
+        `Starts a new analysis of this head with LLM texts in ${LANGUAGE_NAME[otherLanguage]}, your language setting. The ${LANGUAGE_NAME[existing!.language]} one stays.`,
         busy,
       )}
     >
       <button
         type="button"
-        data-primary
         aria-disabled={busy || undefined}
         onClick={() => !busy && analyze(resolved)}
-        className={buttonClass("primary")}
+        className={buttonClass("plain")}
       >
-        {create.isPending ? "Starting…" : warned ? "Start analysis anyway" : "Start analysis"}
+        {create.isPending ? "Starting…" : `Analyse again in ${LANGUAGE_NAME[otherLanguage]}`}
       </button>
     </Tooltip>
   );
+  const start = (describedBy: string) =>
+    resolved &&
+    (outcome?.kind === "analyze" || outcome?.kind === "head_moved") && (
+      <Tooltip
+        tip={busyTip(
+          outcome.kind === "head_moved"
+            ? "Starts a fresh analysis of the current head; ticks are not carried over."
+            : "Starts the analysis of this pull request: the plan and the PR context first.",
+          busy,
+        )}
+      >
+        <button
+          type="button"
+          data-primary
+          aria-describedby={describedBy}
+          aria-disabled={busy || undefined}
+          onClick={() => !busy && analyze(resolved)}
+          className={buttonClass("primary")}
+        >
+          {create.isPending ? "Starting…" : warned ? "Start analysis anyway" : "Start analysis"}
+        </button>
+      </Tooltip>
+    );
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -122,13 +157,14 @@ export function HomeScreen() {
                   checking={resolve.isPending}
                   inputRef={field}
                   onSubmit={submit}
+                  onChange={edited}
                 />
                 {cancelledPrUrl && resolve.isIdle && (
-                  <Banner tone="info" title="Analysis cancelled — analyze again.">
+                  <Banner tone="info" title="Analysis cancelled. Check the PR to start again.">
                     Its partial results were discarded.
                   </Banner>
                 )}
-                <div aria-live="polite" className="contents">
+                <div aria-live="polite" className="grid gap-3">
                   {resolve.isError && (
                     <PrCheckCard pr={null} onCancel={clear}>
                       <Banner tone="error" title="Cannot open this pull request.">
@@ -137,7 +173,18 @@ export function HomeScreen() {
                     </PrCheckCard>
                   )}
                   {resolved && (
-                    <PrCheckCard pr={resolved.pr} onCancel={clear} actions={start}>
+                    // TODO(size facts): pass `size` once the resolve response carries the PR's size and
+                    // estimate for every PR (server stream; field names pending).
+                    <PrCheckCard
+                      pr={resolved.pr}
+                      onCancel={clear}
+                      actions={(describedBy) => (
+                        <>
+                          {start(describedBy)}
+                          {again}
+                        </>
+                      )}
+                    >
                       {resolved.size_warning && <SizeWarning warning={resolved.size_warning} />}
                       {resolved && !resolved.commenting_available && (
                         <Banner
@@ -171,6 +218,7 @@ export function HomeScreen() {
                             </Tooltip>
                           }
                         >
+                          <LanguageTag language={outcome.analysis.language} />{" "}
                           {outcome.analysis.has_my_state === true
                             ? "This PR head is already analysed. Your ticks, answers and last viewed block are kept."
                             : "This PR head is already analysed."}
@@ -222,6 +270,7 @@ export function HomeScreen() {
                             </>
                           }
                         >
+                          <LanguageTag language={outcome.analysis.language} />{" "}
                           {outcome.analysis.state.state === "paused" &&
                             `${pausedText(outcome.analysis.state)}${outcome.analysis.state.reason === "user" ? "" : `. ${PAUSE_REASON}`} `}
                           Nothing new is started.
@@ -253,7 +302,7 @@ export function HomeScreen() {
                             </Tooltip>
                           }
                         >
-                          {outcome.message}
+                          <LanguageTag language={outcome.analysis.language} /> {outcome.message}
                         </Banner>
                       )}
                       {outcome?.kind === "head_moved" && resolved && (
@@ -271,7 +320,8 @@ export function HomeScreen() {
                             </Tooltip>
                           }
                         >
-                          This analysis is for {short(outcome.analysis.pr.head_sha)}; the PR is now at{" "}
+                          <LanguageTag language={outcome.analysis.language} /> This analysis is for{" "}
+                          {short(outcome.analysis.pr.head_sha)}; the PR is now at{" "}
                           {short(resolved.pr.head_sha)}. Start analysis starts a fresh analysis; ticks are not
                           carried over.
                         </Banner>

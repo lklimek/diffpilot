@@ -40,6 +40,14 @@ test("Analyse all remaining flows switches background analysis on and off", asyn
   const put = page.waitForRequest((r) => r.url().endsWith("/background") && r.method() === "PUT");
   await work.getByRole("button", { name: "Analyse all remaining flows" }).click();
   expect((await put).postDataJSON()).toEqual({ enabled: true });
+  // Like the server, the switch queues the next flow by rank: the panel no longer says nothing is analysed.
+  await expect(work.getByRole("status")).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("navigation")
+      .getByText(/^(Queued|Being analysed)/)
+      .first(),
+  ).toBeVisible();
   await work.getByRole("button", { name: "Analysing all remaining flows — Stop" }).click();
   await expect(work.getByRole("button", { name: "Analyse all remaining flows" })).toBeVisible();
 });

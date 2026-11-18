@@ -166,12 +166,17 @@ export function SettingsScreen() {
   const client = useQueryClient();
   const navigate = useNavigate();
   // Sign-out clears this login's local drafts and every cached answer, then shows the signed-out Home.
+  const signedOut = (login: string) => {
+    clearCommentDrafts(login);
+    client.clear();
+    void navigate("/", { replace: true });
+  };
   const leave = (login: string) =>
     signOut.mutate(undefined, {
-      onSuccess: () => {
-        clearCommentDrafts(login);
-        client.clear();
-        void navigate("/", { replace: true });
+      onSuccess: () => signedOut(login),
+      // 401: the session had already ended, so the user is signed out all the same.
+      onError: (error) => {
+        if (error instanceof ApiError && error.status === 401) signedOut(login);
       },
     });
   return (

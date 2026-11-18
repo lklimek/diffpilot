@@ -43,7 +43,7 @@ export function ProgressScreen() {
   const failure = cancel.error ?? retry.error ?? pause.error ?? resume.error ?? work.background.error;
   return (
     <div className="flex min-h-screen flex-col">
-      <TopBar pr={summary?.pr} login={me.data?.user?.login ?? null} />
+      <TopBar pr={summary?.pr} language={summary?.language} login={me.data?.user?.login ?? null} />
       <main id="main" className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-6">
         <h1 className="sr-only">Analysis progress</h1>
         {!summary && live.error === undefined && <StatusMessage kind="loading">Connecting…</StatusMessage>}

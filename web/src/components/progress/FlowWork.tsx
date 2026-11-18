@@ -6,8 +6,8 @@ interface Props {
   total: number;
   /** Changed lines in the planned ranges of the flows not analysed yet. */
   remainingLines: number;
-  /** `background_analysis` of the analysis. */
-  background: boolean;
+  /** `background_analysis` of the analysis; when not known, neither its button nor the parked line. */
+  background: boolean | undefined;
   /** No flow is queued or being analysed and nothing will start by itself. */
   parked: boolean;
   busy: boolean;
@@ -39,8 +39,8 @@ export function FlowWork({
       <p>
         {done} of {total} flows analysed. Pending flows have not been assessed.
       </p>
-      {parked && <p role="status">{PARKED}</p>}
-      {(remaining > 0 || background) && (
+      {parked && background !== undefined && <p role="status">{PARKED}</p>}
+      {background !== undefined && (remaining > 0 || background) && (
         <p>
           <AnalyseAllButton
             enabled={background}
