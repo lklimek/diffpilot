@@ -7,6 +7,7 @@ import { Banner } from "../../components/banner/Banner";
 import { busyTip, buttonClass } from "../../components/button/button";
 import { PAUSE_REASON, pausedText } from "../../components/progress/paused";
 import { PrUrlForm } from "../../components/pr-form/PrUrlForm";
+import { COMMENTING_UNAVAILABLE_WHY } from "../../components/comment/unavailable";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
@@ -123,25 +124,30 @@ export function HomeScreen() {
                 {resolved && !resolved.commenting_available && (
                   <Banner
                     tone="warn"
-                    title={`The GitHub App is not installed on ${resolved.pr.repo.owner}/${resolved.pr.repo.name}.`}
+                    title={`Commenting is not available for ${resolved.pr.repo.owner}/${resolved.pr.repo.name} right now.`}
                     actions={
                       outcome?.kind === "analyze" && (
-                        <Tooltip tip={busyTip("Starts the analysis without the GitHub App.", busy)}>
+                        <Tooltip
+                          tip={busyTip(
+                            "Starts the analysis; comments into your pending review stay unavailable.",
+                            busy,
+                          )}
+                        >
                           <button
                             type="button"
                             aria-disabled={busy || undefined}
                             onClick={() => !busy && analyze(resolved)}
                             className={SMALL_PRIMARY}
                           >
-                            Analyze without it
+                            Analyze anyway
                           </button>
                         </Tooltip>
                       )
                     }
                   >
-                    The analysis works without it, but related work is not checked and comments cannot be
-                    written into your pending review. The installations are listed in{" "}
-                    <Link to="/settings">Settings</Link>.
+                    {COMMENTING_UNAVAILABLE_WHY} The analysis works without the App, but related work is not
+                    checked and comments cannot be written into your pending review. The installations are
+                    listed in <Link to="/settings">Settings</Link>.
                   </Banner>
                 )}
                 {outcome?.kind === "resume" && outcome.analysis.state.state === "finished" && (

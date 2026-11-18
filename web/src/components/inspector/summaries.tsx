@@ -14,6 +14,7 @@ import type {
 import { ProvenanceBadge } from "../badge/Badge";
 import { PENDING_INCOMPLETE, dependencyFacts, rangeText } from "../section/format";
 import { Collapsible } from "./Collapsible";
+import { COMMENTING_UNAVAILABLE, COMMENTING_UNAVAILABLE_WHY } from "../comment/unavailable";
 import type { SectionControl } from "./sectionState";
 
 type Sections = { sections: SectionControl };
@@ -280,8 +281,7 @@ export function PendingSummary({ review, sections }: { review: PendingReview | n
   let text: string;
   if (review === null) text = "Your pending review is listed in the centre.";
   else if (!review.commenting_available)
-    text =
-      "Commenting is not available: the smart-review GitHub App is not installed on this repository. Comment on GitHub directly.";
+    text = `${COMMENTING_UNAVAILABLE} ${COMMENTING_UNAVAILABLE_WHY} Comment on GitHub directly.`;
   else
     text = `${plural(review.comments.length, "comment")} in your GitHub pending review.${
       review.incomplete ? ` ${PENDING_INCOMPLETE}` : ""

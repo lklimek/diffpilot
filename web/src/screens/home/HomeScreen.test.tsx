@@ -168,9 +168,10 @@ describe("Home (brief §4.1)", () => {
     setScenario("no-app");
     const router = renderRoute("/");
     await analyze();
-    const noApp = await banner("The GitHub App is not installed on acme/node-client.", "alert");
+    const noApp = await banner("Commenting is not available for acme/node-client right now.", "alert");
+    expect(noApp).not.toHaveTextContent(/App is not installed/);
     expect(router.state.location.pathname).toBe("/");
-    await userEvent.click(within(noApp).getByRole("button", { name: "Analyze without it" }));
+    await userEvent.click(within(noApp).getByRole("button", { name: "Analyze anyway" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
   });
 

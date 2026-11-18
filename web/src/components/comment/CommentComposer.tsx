@@ -10,6 +10,7 @@ import { assignRef, codeOf, growField, messageOf, useAction } from "../inspector
 import { GithubLink } from "../inspector/text";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { CommentPlacement } from "./placement";
+import { COMMENTING_UNAVAILABLE, COMMENTING_UNAVAILABLE_WHY } from "./unavailable";
 
 /** The displayed line a comment is written on. */
 export interface CommentLine {
@@ -23,7 +24,7 @@ export interface CommentLine {
 
 /** Props of the comment composer in the inspector dock. */
 export interface CommentComposerProps {
-  /** `PendingReview.commenting_available`: false without the GitHub App on the PR repository. */
+  /** `PendingReview.commenting_available`: false when the GitHub App is missing or could not be checked. */
   available: boolean;
   /** The line being commented on; null = none chosen yet. */
   line: CommentLine | null;
@@ -250,9 +251,8 @@ export function CommentComposer(props: CommentComposerProps) {
   if (!available) {
     body = (
       <p className="text-[12.5px]">
-        Commenting is not available for this pull request: the smart-review GitHub App is not installed on
-        this repository, so comments cannot be written into your GitHub pending review. Comment on GitHub
-        directly.
+        {COMMENTING_UNAVAILABLE} {COMMENTING_UNAVAILABLE_WHY} Comments cannot be written into your GitHub
+        pending review; comment on GitHub directly.
       </p>
     );
   } else if (line === null) {

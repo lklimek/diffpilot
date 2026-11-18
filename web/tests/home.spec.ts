@@ -110,14 +110,14 @@ test("analysis in progress and failed analysis lead to the progress screen", asy
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
 });
 
-test("without the GitHub App: warning, Analyze without it", async ({ page }) => {
+test("without the GitHub App: warning, Analyze anyway", async ({ page }) => {
   await page.goto("/?scenario=no-app");
   await analyze(page);
   const banner = page
     .getByRole("alert")
-    .filter({ hasText: "The GitHub App is not installed on acme/node-client." });
+    .filter({ hasText: "Commenting is not available for acme/node-client right now." });
   await expect(banner).toContainText("comments cannot be written");
-  await banner.getByRole("button", { name: "Analyze without it" }).click();
+  await banner.getByRole("button", { name: "Analyze anyway" }).click();
   await expect(page).toHaveURL(PROGRESS);
 });
 

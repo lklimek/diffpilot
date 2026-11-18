@@ -76,8 +76,11 @@ describe("CommentComposer", () => {
     setup({ available: false });
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
+    expect(document.body).toHaveTextContent("Commenting is not available for this repository right now.");
+    // The server cannot tell a missing App from a failed check (commenting_available is one boolean).
+    expect(document.body).not.toHaveTextContent(/App is not installed/);
     expect(document.body).toHaveTextContent(
-      "Commenting is not available for this pull request: the smart-review GitHub App is not installed on this repository",
+      "The smart-review GitHub App may not be installed on it, or its installation could not be checked.",
     );
   });
 

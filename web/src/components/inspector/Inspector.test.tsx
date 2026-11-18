@@ -358,7 +358,7 @@ describe("Inspector summaries", () => {
         pendingReview={{ commenting_available: false, comments: [], incomplete: false }}
       />,
     );
-    expect(document.body).toHaveTextContent("GitHub App is not installed");
+    expect(document.body).toHaveTextContent("Commenting is not available for this repository right now.");
   });
 
   it("is never empty, also for a block outside the analysis", () => {
