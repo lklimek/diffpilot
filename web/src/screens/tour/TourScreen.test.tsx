@@ -697,3 +697,80 @@ describe("Tour screen (brief §4.3)", () => {
     }
   });
 });
+
+describe("Use as review comment (owner request F31): anchors and availability", () => {
+  const useButtons = () => within(inspector()).queryAllByRole("button", { name: "Use as review comment" });
+  const conversation = () => within(inspector()).findByRole("list", { name: "Ask conversation" });
+  const composer = () => within(inspector()).getByRole("textbox", { name: /^Comment on / });
+
+  it("an answer with no comment open goes on the step's first changed line", async () => {
+    setScenario("ask-thread");
+    await open();
+    await openStep("1", "2");
+    await user().click(
+      within(await conversation()).getAllByRole("button", { name: "Use as review comment" })[0]!,
+    );
+    expect(composer()).toHaveAccessibleName("Comment on src/rpc/client.rs:89");
+    expect((composer() as HTMLTextAreaElement).value).toContain("In `RpcConfig::default`.");
+  });
+
+  it.each([
+    ["5", "f1.5.a3", "src/rpc/client.rs:99", null, 99],
+    ["7", "f1.7.a3", "src/rpc/client.rs:104–106", 104, 106],
+  ])(
+    "step %s: the flag %s anchors on its lines (%s); Add posts that target",
+    async (step, flag, where, start, end) => {
+      const posted: unknown[] = [];
+      const record = ({ request }: { request: Request }) => {
+        if (request.method === "POST" && request.url.endsWith("/pending-review/comments"))
+          void request
+            .clone()
+            .json()
+            .then((body) => posted.push(body));
+      };
+      server.events.on("request:start", record);
+      try {
+        await open();
+        await openStep("1", step);
+        const card = await waitFor(() => {
+          const found = inspector().querySelector(`[data-annotation-id="${flag}"]`);
+          expect(found).not.toBeNull();
+          return found as HTMLElement;
+        });
+        await user().click(within(card).getByRole("button", { name: "Use as review comment" }));
+        expect(composer()).toHaveAccessibleName(`Comment on ${where}`);
+        await user().click(within(inspector()).getByRole("button", { name: "Add to GitHub pending review" }));
+        await waitFor(() => expect(posted).toHaveLength(1));
+        expect(posted[0]).toMatchObject({
+          target: { path: "src/rpc/client.rs", side: "head", start_line: start, line: end },
+        });
+      } finally {
+        server.events.removeListener("request:start", record);
+      }
+    },
+  );
+
+  it("no buttons when commenting into the pending review is not available", async () => {
+    setScenario("ask-thread");
+    server.use(
+      http.get("/api/v1/analyses/:id/pending-review", () =>
+        HttpResponse.json({ ...readStore("pendingReview"), commenting_available: false }),
+      ),
+    );
+    await open();
+    await openStep("1", "5");
+    await conversation();
+    await waitFor(() => expect(inspector()).toHaveTextContent("Potential double broadcast on a late reply"));
+    expect(useButtons()).toHaveLength(0);
+  });
+
+  it("no buttons while the step's lines cannot be shown (no line to anchor on)", async () => {
+    setScenario("ask-thread");
+    server.use(http.get("/api/v1/analyses/:id/lines", () => HttpResponse.json({}, { status: 500 })));
+    await open();
+    await openStep("1", "5");
+    await conversation();
+    await waitFor(() => expect(inspector()).toHaveTextContent("Potential double broadcast on a late reply"));
+    expect(useButtons()).toHaveLength(0);
+  });
+});

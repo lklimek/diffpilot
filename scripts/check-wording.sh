@@ -132,6 +132,7 @@ self_test() {
   expect_pass "dashboard component" components/dashboard/x/a.tsx '<p>42% of your PRs</p>'
   expect_pass "dashboard screen"   screens/dashboard/a.ts "const s = '42% done';"
   expect_fail "near the dashboard" components/dashboards/a.tsx '<p>42% done</p>'     "components/dashboards/a.tsx:1:"
+  expect_fail "shell of the review routes" screens/shell/ShellLayout.tsx '<p>No risk</p>' "screens/shell/ShellLayout.tsx:1:"
   expect_pass "told not to run"    a.tsx '<span title="The agent was told not to run code.">x</span>'
 
   # Allow marker: only in a comment, only with a reason, only for the percentage rule.

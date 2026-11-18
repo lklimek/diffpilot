@@ -29,8 +29,8 @@ import {
   weeklySeries,
   yesterday,
 } from "./history";
-import { REVIEW_START_PATH } from "./paths";
-import { ShellActions, useShellSlots } from "./ShellRoute";
+import { REVIEW_START_PATH } from "../shell/paths";
+import { ShellActions, useShellSlots } from "../shell/ShellRoute";
 import { reviewHref } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
