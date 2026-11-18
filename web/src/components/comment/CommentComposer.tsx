@@ -71,7 +71,7 @@ const TIP = {
     "Not added to GitHub yet. Kept in this browser tab, also when you leave the line, until you add it or clear the text.",
   leaveOutside: "Leaves this line; nothing is sent to GitHub.",
   reanalyse:
-    "Opens Home with this pull request filled in; Check there offers Start analysis for its new head. Ticks are not carried over.",
+    "Opens Review a PR with this pull request checked; Start analysis there analyses its new head. Ticks are not carried over.",
   retry: "Sends the same comment again with the same key, so GitHub does not add it twice.",
   discard:
     "Makes the text editable again and forgets the failed attempt. It may already be in your pending review on GitHub: check the list below before posting it again.",
