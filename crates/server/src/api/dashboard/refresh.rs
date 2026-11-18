@@ -34,6 +34,7 @@ use tokio::sync::broadcast;
 use tokio::time::MissedTickBehavior;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
+use crate::api::events::{StreamSlot, holding};
 use crate::auth::{Session, SessionCsrf};
 use crate::dashboard::judge;
 use crate::dashboard::refresh::rank::ItemJudgement;
@@ -412,14 +413,25 @@ async fn events(
     State(state): State<AppState>,
     session: Session,
     path: Result<Path<RefreshId>, PathRejection>,
-) -> DashboardResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
-    let Path(id) = path?;
-    let stream = refresh_events(state, session, id, HEARTBEAT).await?;
-    Ok(Sse::new(
-        stream
-            .filter_map(|event| async move { sse_event(&event) })
-            .map(Ok),
-    ))
+) -> Response {
+    let slot = match StreamSlot::open(&session) {
+        Ok(slot) => slot,
+        Err(full) => return full.into_response(),
+    };
+    let opened: DashboardResult<_> = async {
+        let Path(id) = path?;
+        Ok(refresh_events(state, session, id, HEARTBEAT).await?)
+    }
+    .await;
+    match opened {
+        Ok(stream) => Sse::new(
+            holding(slot, stream)
+                .filter_map(|event| async move { sse_event(&event) })
+                .map(Ok::<_, Infallible>),
+        )
+        .into_response(),
+        Err(error) => error.into_response(),
+    }
 }
 
 /// What the stream sends next.

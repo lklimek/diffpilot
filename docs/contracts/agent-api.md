@@ -119,7 +119,9 @@ curl -sS -H "$H" "$SR/api/v1/dashboard/items?tier=p1&kind=pr&todos=false&limit=5
 ### Live progress (SSE)
 A5 streams `refresh` events (`{"event":"refresh","status":RefreshStatus}`, first the current status) and a
 `heartbeat` every 15 s. Each heartbeat re-checks the token: a revoked or expired token ends the stream within
-15 s; reconnecting then answers 401. Polling A2 is enough for most agents.
+15 s; reconnecting then answers 401. A user holds at most **16 open event streams** (A5 and A8 together, browser
+tabs included); one more answers 429 `rate_limited` with `Retry-After` until a stream closes. Polling A2 is enough
+for most agents.
 
 ## 5. Errors
 Body: `{"code": "<ApiErrorCode>", "message": "<plain text>"}` (`api_error.schema.json`). Clients ignore unknown
@@ -134,7 +136,7 @@ fields and treat unknown enum values (`kind`, `component`, `status`, `tier`, `To
 | E5 | 404 | `not_found` | unknown id, or another user's refresh or tenant's analysis | — |
 | E6 | 409 | `cursor_expired` | the ranking changed since the cursor was issued | start paging again |
 | E7 | 409 | `analysis_not_finished` | Tour, lines, diff or repository settings before the analysis is ready | retry later |
-| E8 | 429 | `rate_limited` + `Retry-After` | over 120 requests per minute for this token, or a failed attempt past 30 failed token attempts per minute from this address (IPv6: its /64); a valid token is never refused by the failure limit | wait `Retry-After` seconds |
+| E8 | 429 | `rate_limited` + `Retry-After` | over 120 requests per minute for this token; a failed attempt past 30 failed token attempts per minute from this address (IPv6: its /64; a well-formed token is still checked first, so a valid token is never refused by this limit); a 17th open event stream of the user | wait `Retry-After` seconds (close a stream) |
 | E9 | 503 | `unavailable` + `Retry-After` | the server is busy | retry after `Retry-After` |
 | E10 | 5xx | `internal`, `github_unavailable` | server or GitHub failure | retry later |
 

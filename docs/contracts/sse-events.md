@@ -2,6 +2,8 @@
 
 `GET /api/v1/analyses/{id}/events` (session). Type: `AnalysisEvent` (`crates/contracts/src/api/events.rs`).
 
+- A user holds at most 16 open event streams (this route and the dashboard's together, cookie sessions and access
+  tokens alike, `MAX_STREAMS_PER_USER`); one more answers 429 `rate_limited` with `Retry-After` until one closes.
 - SSE `event:` = the `event` tag (`analysis` | `question` | `heartbeat`), `data:` = the JSON of the variant. No `id:` and no
   replay. Every event is a full snapshot of one entity (the analysis or one question), applied by id.
 - **(Re)connect = snapshot, then live events.** On every connection the server:

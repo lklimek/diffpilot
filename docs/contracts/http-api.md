@@ -264,7 +264,7 @@ Body `ApiError {code, message}`; `message` is plain text for the user, never int
 | `token_limit_reached` | 409 | the user has 10 live access tokens |
 | `invalid_dashboard_settings` | 422 | dashboard settings or time zone break a rule of plan §F.6; the message names the field and the rule |
 | `github_rate_limited` | 429 | starting a refresh while the user's GitHub rate limit is exhausted; `Retry-After` and the message give the reset time |
-| `rate_limited` | 429 | over an access token's request rate (120/min), or a failed attempt past a client's 30 failed bearer attempts/min; `Retry-After` |
+| `rate_limited` | 429 | over an access token's request rate (120/min), a failed attempt past a client's 30 failed bearer attempts/min, or a user's 17th open event stream (analysis and dashboard SSE, cookie or token); `Retry-After` |
 
 ## Endpoint × fixture-state inventory
 Fixture PR `acme/node-client#482` (`fixtures/pr-482/`): `api-seed/default/` plus merge patches per state.

@@ -1,13 +1,18 @@
 //! Server-sent events of an analysis (`docs/contracts/sse-events.md`): subscribe, snapshot, then live events.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
+use axum::http::HeaderValue;
+use axum::http::header::RETRY_AFTER;
 use axum::response::sse::{Event, Sse};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use chrono::Utc;
 use contracts::api::error::ApiErrorCode;
@@ -26,6 +31,79 @@ use crate::state::AppState;
 
 /// Interval of the `heartbeat` event, which also keeps proxies from closing an idle stream.
 const HEARTBEAT: Duration = Duration::from_secs(15);
+/// Most event streams (analysis and dashboard) one user may hold open at once, cookie sessions and tokens alike.
+pub const MAX_STREAMS_PER_USER: u32 = 16;
+/// Seconds a refused stream is asked to wait before opening again.
+const STREAM_RETRY_AFTER_SECONDS: u32 = 15;
+
+/// Open event streams per (tenant, user); in-process, as one server process serves every stream.
+static OPEN_STREAMS: LazyLock<Mutex<HashMap<(String, String), u32>>> =
+    LazyLock::new(Mutex::default);
+
+/// One open event stream of a user; frees its place when dropped (client disconnect, stream end, shutdown).
+#[derive(Debug)]
+pub(crate) struct StreamSlot {
+    user: (String, String),
+}
+
+/// The user already holds [`MAX_STREAMS_PER_USER`] event streams.
+#[derive(Debug, thiserror::Error)]
+#[error("the user holds the maximum number of open event streams")]
+pub struct TooManyStreams;
+
+impl ApiErrorSource for TooManyStreams {
+    fn code(&self) -> ApiErrorCode {
+        ApiErrorCode::RateLimited
+    }
+
+    fn public_message(&self) -> Cow<'static, str> {
+        Cow::Borrowed("Too many open event streams. Close one and try again.")
+    }
+}
+
+impl IntoResponse for TooManyStreams {
+    fn into_response(self) -> Response {
+        let mut response = ApiFailure(self).into_response();
+        response
+            .headers_mut()
+            .insert(RETRY_AFTER, HeaderValue::from(STREAM_RETRY_AFTER_SECONDS));
+        response
+    }
+}
+
+impl StreamSlot {
+    /// Takes one of the session user's stream places, or refuses past [`MAX_STREAMS_PER_USER`].
+    pub(crate) fn open(session: &Session) -> Result<Self, TooManyStreams> {
+        let user = (session.tenant_id.clone(), session.user_id.clone());
+        let mut open = OPEN_STREAMS.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = open.entry(user.clone()).or_insert(0);
+        if *count >= MAX_STREAMS_PER_USER {
+            return Err(TooManyStreams);
+        }
+        *count += 1;
+        Ok(Self { user })
+    }
+}
+
+impl Drop for StreamSlot {
+    fn drop(&mut self) {
+        let mut open = OPEN_STREAMS.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = open.get_mut(&self.user) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                open.remove(&self.user);
+            }
+        }
+    }
+}
+
+/// `events` as a stream that holds `slot` until it is dropped.
+pub(crate) fn holding<S: Stream>(slot: StreamSlot, events: S) -> impl Stream<Item = S::Item> {
+    events.map(move |event| {
+        let _held = &slot;
+        event
+    })
+}
 
 /// The event stream could not be opened.
 #[derive(Debug, thiserror::Error)]
@@ -63,14 +141,24 @@ async fn analysis_events(
     State(state): State<AppState>,
     session: Session,
     path: Result<Path<AnalysisId>, PathRejection>,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiFailure<EventsError>> {
-    let Path(analysis) = path.map_err(EventsError::from)?;
-    let events = reader_events(state, session, analysis, HEARTBEAT).await?;
-    Ok(Sse::new(
-        events
-            .filter_map(|event| async move { sse_event(&event) })
-            .map(Ok),
-    ))
+) -> Response {
+    let slot = match StreamSlot::open(&session) {
+        Ok(slot) => slot,
+        Err(full) => return full.into_response(),
+    };
+    let opened = match path {
+        Ok(Path(analysis)) => reader_events(state, session, analysis, HEARTBEAT).await,
+        Err(rejection) => Err(EventsError::from(rejection)),
+    };
+    match opened {
+        Ok(events) => Sse::new(
+            holding(slot, events)
+                .filter_map(|event| async move { sse_event(&event) })
+                .map(Ok::<_, Infallible>),
+        )
+        .into_response(),
+        Err(error) => ApiFailure(error).into_response(),
+    }
 }
 
 /// The events of `analysis` as the session's user sees them: the snapshot, then live events and a heartbeat
@@ -244,6 +332,7 @@ mod tests {
     use db::repo::DEFAULT_TENANT;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis, seed_tenant};
     use db::repo::jobs::{ClaimParams, JobStage, NewJob};
+    use http_body_util::BodyExt;
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
@@ -739,6 +828,137 @@ mod tests {
         assert!(
             rest.len() <= 1,
             "at most the tick already under way: {rest:?}"
+        );
+    }
+
+    /// At most [`MAX_STREAMS_PER_USER`] event streams per user, analysis and dashboard streams, cookie and token
+    /// alike; the 17th answers 429 with a plain message, and a closed stream frees its place.
+    #[tokio::test]
+    async fn open_event_streams_are_capped_per_user() {
+        use contracts::api::dashboard::RefreshTrigger;
+        use contracts::routes::DASHBOARD_REFRESH_EVENTS;
+        use db::repo::dashboard::StartOutcome;
+        use db::repo::sessions::NewSession;
+        use db::repo::users::GithubProfile;
+        assert_eq!(MAX_STREAMS_PER_USER, 16);
+        let state = test_state().await;
+        let analysis = seed_analysis(&state.db).await.expect("seed");
+        // A user of its own, so parallel tests on the same process never share its count.
+        db::repo::tenants::testing::allow_login(&state.db, DEFAULT_TENANT, "streamer", 77)
+            .await
+            .expect("allow");
+        let profile = GithubProfile {
+            github_id: 77,
+            login: "streamer".to_owned(),
+            name: None,
+            avatar_url: None,
+        };
+        state
+            .db
+            .users()
+            .upsert_member(DEFAULT_TENANT, "u-streams", &profile, Utc::now())
+            .await
+            .expect("user");
+        state
+            .db
+            .sessions()
+            .create(
+                &NewSession {
+                    token_hash: &crate::secrets::sha256(b"streamer-session"),
+                    tenant_id: DEFAULT_TENANT,
+                    user_id: "u-streams",
+                    csrf_token: "csrf",
+                    expires_at: Utc::now() + chrono::TimeDelta::hours(1),
+                },
+                Utc::now(),
+            )
+            .await
+            .expect("session");
+        let cookie = "__Host-sr_session=streamer-session";
+        let (token, _) = crate::auth::access_tokens::stored_token(
+            &state.db,
+            "u-streams",
+            vec![contracts::api::access_tokens::TokenScope::Read],
+            Utc::now() + chrono::TimeDelta::days(1),
+        )
+        .await;
+        let StartOutcome::Started { refresh, .. } = state
+            .db
+            .dashboard()
+            .start_refresh(
+                DEFAULT_TENANT,
+                "u-streams",
+                RefreshTrigger::Manual,
+                Utc::now(),
+            )
+            .await
+            .expect("refresh")
+        else {
+            panic!("started");
+        };
+        let app = router(state.clone());
+        let analysis_uri = ANALYSIS_EVENTS.path.replace("{id}", &analysis.to_string());
+        let dashboard_uri = DASHBOARD_REFRESH_EVENTS
+            .path
+            .replace("{id}", &refresh.id.to_string());
+        let open = |uri: &str, with_token: bool| {
+            let request = Request::get(uri);
+            let request = if with_token {
+                request.header("authorization", format!("Bearer {token}"))
+            } else {
+                request.header("cookie", cookie)
+            };
+            app.clone()
+                .oneshot(request.body(Body::empty()).expect("request"))
+        };
+        let mut streams = Vec::new();
+        for n in 0..MAX_STREAMS_PER_USER {
+            let (uri, with_token) = match n % 4 {
+                0 => (&dashboard_uri, false),
+                1 => (&dashboard_uri, true),
+                2 => (&analysis_uri, true),
+                _ => (&analysis_uri, false),
+            };
+            let response = open(uri, with_token).await.expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "stream {n}: {uri}");
+            streams.push(response);
+        }
+        for (uri, with_token) in [(&analysis_uri, false), (&dashboard_uri, true)] {
+            let response = open(uri, with_token).await.expect("response");
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS, "{uri}");
+            assert!(response.headers().contains_key("retry-after"));
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            let error: Value = serde_json::from_slice(&body).expect("JSON");
+            assert_eq!(error["code"], "rate_limited");
+            assert_eq!(
+                error["message"],
+                "Too many open event streams. Close one and try again."
+            );
+        }
+        // A cookie user of another account is not affected.
+        let other = session_cookie(&state, DEFAULT_TENANT).await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(&analysis_uri)
+                    .header("cookie", other)
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        drop(streams.pop());
+        let response = open(&analysis_uri, true).await.expect("response");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "a closed stream frees its place"
         );
     }
 
