@@ -61,6 +61,31 @@ describe("settings help (owner request B3)", () => {
       expect(text).toContain(path);
   });
 
+  it("excluded authors, known bots and linked logins say exactly how each list works", () => {
+    expect(SETTINGS_HELP.skip_authors.title).toBe("Excluded authors");
+    expect(SETTINGS_HELP.skip_authors.what).toBe(
+      "Banned authors. Pull requests and issues written by these accounts are never shown in Needs you — also when a review is requested from you or they are assigned to you. Being listed does not make an account a bot.",
+    );
+    expect(SETTINGS_HELP.skip_authors.empty).toBe("dependabot, dependabot[bot].");
+    expect(SETTINGS_HELP.skip_authors.example).toBe("Add renovate[bot] to hide Renovate's pull requests.");
+    expect(SETTINGS_HELP.known_bots.title).toBe("Known bots");
+    expect(SETTINGS_HELP.known_bots.what).toBe(
+      "Accounts treated as bots: their review requests and comments do not count as a person waiting for you, they are not listed among reviewers you wait on, and their reviews count as bot reviews. GitHub Apps (…[bot]) are always bots and need not be listed. Nothing else is built in.",
+    );
+    expect(SETTINGS_HELP.known_bots.empty).toContain("thepastaclaw, Claudius-Maginificent and DCG-Claude");
+    expect(SETTINGS_HELP.linked_logins.example).toBe(
+      "A bot account that opens pull requests you take care of (e.g. Claudius-Maginificent): put it here so its pull requests count as yours, and keep it in Known bots so its reviews count as a bot's. Do not put it into Excluded authors.",
+    );
+  });
+
+  it("Sign out everywhere is on the page and says what it ends", () => {
+    const help = SETTINGS_HELP.sign_out_everywhere;
+    expect(help.onPage).toBeUndefined();
+    expect(help.when).toContain("Sign out everywhere");
+    expect(help.what).toContain("revokes all your personal access tokens");
+    expect(help.what).toContain("GitHub sign-in");
+  });
+
   it("release branches explain X.Y, * and that a list replaces the built-ins", () => {
     const help = SETTINGS_HELP.branch_patterns;
     expect(help.empty).toContain("main, master, release/*, hotfix/*, vX.Y, vX.Y-dev");

@@ -93,13 +93,34 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     ).toBeVisible();
   });
 
-  it("bot authors to skip say what is left out and where", () => {
-    renderCard();
+  it("Excluded authors and Known bots: two lists with their defaults and what each does", async () => {
+    const { onSave } = renderCard();
+    expect(screen.getByRole("list", { name: "Excluded authors (never shown)" })).toHaveTextContent(
+      "dependabot[bot]",
+    );
+    const bots = screen.getByRole("list", { name: "Known bots" });
+    for (const login of ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"])
+      expect(bots).toHaveTextContent(login);
     expect(
       screen.getByText(
-        "Their pull requests and issues are left out of My work unless you or a linked login are a requested reviewer or an assignee; they count as bots there. Only My work uses this list.",
+        "Pull requests and issues written by these accounts are never shown in Needs you, also when a review is requested from you or they are assigned to you.",
       ),
     ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Treated as bots: their review requests and comments do not count as a person waiting for you. GitHub Apps (…[bot]) are always bots.",
+      ),
+    ).toBeVisible();
+    await userEvent.type(screen.getByLabelText("Add a known bot"), "renovate-helper");
+    await userEvent.click(screen.getByRole("button", { name: "Add to known bots" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save dashboard settings" }));
+    expect(saved(onSave).known_bots).toEqual([
+      "thepastaclaw",
+      "Claudius-Maginificent",
+      "DCG-Claude",
+      "renovate-helper",
+    ]);
+    expect(saved(onSave).skip_authors).toEqual(VIEW.settings.skip_authors);
   });
 
   it("refuses a list entry that breaks its rule and adds a valid one", async () => {

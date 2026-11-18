@@ -20,9 +20,9 @@ Personal access tokens keep working after Sign out.
 
 ### Sign out everywhere
 
-- **What:** Ends every session of yours, revokes all your personal access tokens and deletes the GitHub sign-in the server keeps for the automatic refresh.
-- **When used:** Only through the API (POST /auth/logout with everywhere set); the Settings page has no button for it.
-- **Empty or default:** Until you sign in again, the automatic refresh records that it needs you to sign in.
+- **What:** Ends every session of yours in every browser, revokes all your personal access tokens and deletes the GitHub sign-in this server keeps for the automatic refresh. Nothing changes on GitHub.
+- **When used:** When you press Sign out everywhere and confirm. The API does the same for POST /auth/logout with everywhere set.
+- **Empty or default:** Until you sign in again, the automatic refresh records that it needs you to sign in. Your unsent comment drafts in this browser are removed.
 - **Example:** Use it when a token or a browser session may have leaked.
 
 ## LLM
@@ -111,7 +111,7 @@ Personal access tokens keep working after Sign out.
 - **When used:** Every refresh searches them together with your own login.
 - **Empty or default:** Only your own login is scanned; it is always scanned.
 - **Limits:** Up to 5 GitHub logins (letters, digits, - or _, up to 39); not your own login.
-- **Example:** alice-bot, a bot account that opens pull requests for you.
+- **Example:** A bot account that opens pull requests you take care of (e.g. Claudius-Maginificent): put it here so its pull requests count as yours, and keep it in Known bots so its reviews count as a bot's. Do not put it into Excluded authors.
 
 ### Repository
 
@@ -186,13 +186,21 @@ How you find out: after a refresh, What the scan missed names the accounts searc
 - **Limits:** 1 to 50 characters; compared without regard to case.
 - **Example:** needs-review.
 
-### Bot authors to skip
+### Excluded authors
 
-- **What:** Logins of bots. Their pull requests and issues are left out of Needs you unless they are directed at you: you or a linked login are a requested reviewer or an assignee (a mention alone does not keep them). They also count as bots wherever My work asks whether a human waits: their review requests and latest comments do not count as someone waiting for you, they are not listed among the reviewers your pull request waits on, and their reviews count as bot reviews.
+- **What:** Banned authors. Pull requests and issues written by these accounts are never shown in Needs you — also when a review is requested from you or they are assigned to you. Being listed does not make an account a bot.
 - **When used:** Only on My work (the scan and the ranking); never in pull request analyses, flows or Ask.
-- **Empty or default:** dependabot and dependabot[bot]. GitHub Apps (…[bot]) and the review bots thepastaclaw, Claudius-Maginificent and DCG-Claude already count as bots, but their items are left out only when listed here.
+- **Empty or default:** dependabot, dependabot[bot].
 - **Limits:** Up to 20 GitHub logins, optionally ending in [bot].
-- **Example:** Dependabot's pull requests are hidden, except those where you are the requested reviewer or assignee; add renovate[bot] to do the same for Renovate.
+- **Example:** Add renovate[bot] to hide Renovate's pull requests.
+
+### Known bots
+
+- **What:** Accounts treated as bots: their review requests and comments do not count as a person waiting for you, they are not listed among reviewers you wait on, and their reviews count as bot reviews. GitHub Apps (…[bot]) are always bots and need not be listed. Nothing else is built in.
+- **When used:** Only on My work (the scan and the ranking); never in pull request analyses, flows or Ask.
+- **Empty or default:** thepastaclaw, Claudius-Maginificent and DCG-Claude. An empty list leaves only GitHub Apps as bots.
+- **Limits:** Up to 20 GitHub logins, optionally ending in [bot]. Your own and linked logins may be listed.
+- **Example:** Add a review bot that runs under a normal user account, so its review requests do not wait on you.
 
 ### Show my MemCan TODOs
 
