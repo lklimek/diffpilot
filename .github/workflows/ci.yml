@@ -143,7 +143,7 @@ jobs:
         env:
           R1_SUPERVISOR: rust
           R1_SKIP_CODEX: "1"
-        run: R1_TMP="$RUNNER_TEMP" deploy/runner/r1-test/run.sh "$RUNNER_TEMP/r1-test.log"
+        run: deploy/runner/r1-test/run.sh "$RUNNER_TEMP/r1-test.log"
       - name: Build the server image
         run: docker build -f deploy/server/Dockerfile -t smart-review-server:local .
       - name: Server image answers its healthcheck

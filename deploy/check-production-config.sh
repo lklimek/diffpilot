@@ -187,18 +187,23 @@ while (($#)); do
   esac
 done
 
-# can_render: 0 when rendering is wanted and possible; 1 when --no-render; exits 1 when compose is missing.
+# can_render: 0 when rendering is wanted and possible; 1 when --no-render; exits 1 when compose or jq is missing.
 can_render() {
   ((render)) || return 1
-  docker compose version > /dev/null 2>&1 && return 0
-  echo "check-production-config: docker compose is not available, so the rendered configuration cannot be checked; install it or pass --no-render" >&2
-  exit 1
+  if ! docker compose version > /dev/null 2>&1; then
+    echo "check-production-config: docker compose is not available, so the rendered configuration cannot be checked; install it or pass --no-render" >&2
+    exit 1
+  fi
+  if ! command -v jq > /dev/null 2>&1; then
+    echo "check-production-config: jq is not available, so the rendered configuration cannot be checked for RAM mounts; install jq or pass --no-render" >&2
+    exit 1
+  fi
 }
 
 # rendered ROOT ENV_FILE [OVERRIDE]: `docker compose config` of the production stack has no switch and keeps
 # nothing in RAM (OVERRIDE: a file in ROOT/deploy, or an absolute path).
 rendered() {
-  local out ram files=(-f "$1/deploy/compose.yaml")
+  local out mounts ram files=(-f "$1/deploy/compose.yaml")
   case "${3:-}" in
     "") ;;
     /*) files+=(-f "$3") ;;
@@ -208,9 +213,13 @@ rendered() {
   out="$(docker compose --env-file "$2" "${files[@]}" config --format json 2>&1)" || { echo "$out" >&2; return 1; }
   if grep -nE "$forbidden" <<< "$out"; then return 1; fi
   # shellcheck disable=SC2016 # jq program
-  ram="$(jq -r '.services | to_entries[] | .key as $s
+  mounts="$(jq -r '.services | to_entries[] | .key as $s
     | ((.value.tmpfs // [])[] | "\($s) \(split(":")[0])"),
-      ((.value.volumes // [])[] | select(.type == "tmpfs") | "\($s) \(.target)")' <<< "$out" | grep -vE "$ram_allowed")" || true
+      ((.value.volumes // [])[] | select(.type == "tmpfs") | "\($s) \(.target)")' <<< "$out")" || {
+    echo "check-production-config: cannot list the tmpfs mounts of the rendered configuration (jq failed)" >&2
+    return 1
+  }
+  ram="$(grep -vE "$ram_allowed" <<< "$mounts")" || true
   if [[ -n "$ram" ]]; then
     echo "check-production-config: keeps scratch in RAM (tmpfs), use a tmp-* volume instead: $(tr '\n' ';' <<< "$ram")" >&2
     return 1
@@ -323,6 +332,17 @@ if ((self_test)); then
         exit 1
       fi
     done
+    # Without jq the RAM check cannot run: refused up front, and a failing jq fails the rendering (fail closed).
+    mkdir "$tmp/nojq"
+    ln -s "$(command -v docker)" "$tmp/nojq/docker"
+    if out="$(PATH="$tmp/nojq" can_render 2>&1)" || ! grep -q 'jq is not available' <<< "$out"; then
+      echo "self-test: a missing jq not refused: $out" >&2
+      exit 1
+    fi
+    if out="$(jq() { return 2; }; rendered "$repo" "$repo/.env.example" 2>&1)" || ! grep -q 'jq failed' <<< "$out"; then
+      echo "self-test: a failing jq passed the RAM check: $out" >&2
+      exit 1
+    fi
   fi
   echo "check-production-config: self-test passed"
   exit 0
