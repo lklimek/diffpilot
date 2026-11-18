@@ -70,6 +70,9 @@ const CAPS: SendCaps = SendCaps {
 const RETRIES: u32 = MAX_REPAIR_RUNS;
 /// How often a waiting judge job is looked at: credential pause, a running analysis job, the claim.
 const TICK: Duration = Duration::from_secs(1);
+/// A judge job still queued after this long, with the credential usable and no analysis job holding it, ends the
+/// ranking: no runner is picking jobs up.
+const UNCLAIMED_LIMIT: Duration = Duration::from_secs(10 * 60);
 /// Display ids named in a failure message, at most.
 const NAMED_ITEMS: usize = 5;
 /// Job updates buffered between their reader task and the ranking.
@@ -116,6 +119,8 @@ enum RankError {
     Unusable,
     #[error("a judge job was cancelled outside the ranking")]
     JobCancelled,
+    #[error("no runner claimed the judge job in time")]
+    Unclaimed,
 }
 
 impl RankError {
@@ -124,6 +129,7 @@ impl RankError {
         match self {
             Self::Unusable => "The LLM credential is not usable; sign it in again on the runner",
             Self::JobCancelled => "A ranking job was cancelled",
+            Self::Unclaimed => "No runner picked up the ranking job",
             Self::NoSnapshot => "The scan result could not be read",
             Self::Stale
             | Self::Db(_)
@@ -177,6 +183,7 @@ async fn rank(state: AppState, run: RankRun) {
         live: RankingState::Running,
         zone: Tz::UTC,
         day: DateTime::<Utc>::MIN_UTC,
+        unclaimed_since: None,
     };
     let end = match ranking.run().await {
         Ok(end) => Some(end),
@@ -213,6 +220,8 @@ struct Ranking<'a> {
     zone: Tz,
     /// Start of the user's local day the ranking began in (the daily cap counts from it).
     day: DateTime<Utc>,
+    /// Since when the followed job waits for a runner (queued, credential usable, no analysis job running).
+    unclaimed_since: Option<tokio::time::Instant>,
 }
 
 impl<'a> Ranking<'a> {
@@ -499,6 +508,7 @@ impl<'a> Ranking<'a> {
             })
             .abort_handle(),
         );
+        self.unclaimed_since = None;
         let mut ticks = tokio::time::interval(TICK);
         ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -515,7 +525,8 @@ impl<'a> Ranking<'a> {
     }
 
     /// Reads the job and its credential: `paused` while the usage limit holds, `waiting_for_analysis` while a
-    /// review analysis job holds the credential, else `running`.
+    /// review analysis job holds the credential, else `running`; `Unclaimed` once the job waited
+    /// [`UNCLAIMED_LIMIT`] for a runner in none of those states.
     async fn observe(&mut self, job: JobId) -> Result<(), RankError> {
         let db = &self.state.db;
         let record = db.jobs().get(job).await?;
@@ -547,6 +558,19 @@ impl<'a> Ranking<'a> {
             | JobState::Failed
             | JobState::Cancelled => RankingState::Running,
         };
+        self.unclaimed_since = (record.state == JobState::Queued && live == RankingState::Running)
+            .then(|| {
+                self.unclaimed_since
+                    .unwrap_or_else(tokio::time::Instant::now)
+            });
+        if self
+            .unclaimed_since
+            .is_some_and(|since| since.elapsed() >= UNCLAIMED_LIMIT)
+        {
+            tracing::warn!(refresh = %self.run.refresh_id, %job,
+                "dashboard judge job was never claimed; the ranking ends and items stay provisional");
+            return Err(RankError::Unclaimed);
+        }
         if live != self.live {
             self.live = live;
             self.write_state().await?;

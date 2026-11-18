@@ -1233,6 +1233,59 @@ async fn usage_limit_pauses_ranking() {
     assert!(jobs.iter().all(|j| j.state == JobState::Cancelled));
 }
 
+/// A judge job no runner claims ends the ranking `failed` after [`UNCLAIMED_LIMIT`]; a paused credential does not
+/// count towards it.
+#[tokio::test]
+async fn unclaimed_judge_job_ends_the_ranking() {
+    let h = harness().await;
+    let snap = snapshot(prs(1), vec![], vec![]);
+    let id = h.stored("u1", &snap).await;
+    let run = RankRun {
+        scope: scope("u1"),
+        refresh_id: id,
+        attempt: 0,
+    };
+    let long_ago = tokio::time::Instant::now()
+        .checked_sub(UNCLAIMED_LIMIT)
+        .expect("uptime");
+    let mut ranking = Ranking {
+        state: &h.state,
+        run: &run,
+        counts: JudgeCounts::default(),
+        live: RankingState::Running,
+        zone: Tz::UTC,
+        day: now(),
+        unclaimed_since: Some(long_ago),
+    };
+    let input = JudgeWorkInput {
+        items: vec![candidates(&snap)[0].item.clone()],
+    };
+    let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
+    // Paused for the usage limit: the wait does not count, and starts again after the pause.
+    h.db()
+        .llm_credentials()
+        .pause(CREDENTIAL_ID, Utc::now() + TimeDelta::hours(1))
+        .await
+        .expect("pause");
+    ranking.observe(job).await.expect("paused, not timed out");
+    assert_eq!(ranking.live, RankingState::Paused);
+    assert_eq!(ranking.unclaimed_since, None);
+    h.db()
+        .llm_credentials()
+        .pause(CREDENTIAL_ID, Utc::now() - TimeDelta::hours(1))
+        .await
+        .expect("resume");
+    ranking
+        .observe(job)
+        .await
+        .expect("queued, within the limit");
+    assert_eq!(ranking.live, RankingState::Running);
+    ranking.unclaimed_since = Some(long_ago);
+    let error = ranking.observe(job).await.expect_err("unclaimed too long");
+    assert!(matches!(error, RankError::Unclaimed));
+    assert_eq!(error.message(), "No runner picked up the ranking job");
+}
+
 #[tokio::test]
 async fn ranking_waits_for_running_analysis_job() {
     let h = harness().await;
@@ -1338,6 +1391,7 @@ async fn stale_attempt_writes_neither_notes_nor_judgements() {
         live: RankingState::Running,
         zone: Tz::UTC,
         day: now(),
+        unclaimed_since: None,
     };
     let dashboard = h.db().dashboard();
     let cancelled = dashboard
