@@ -34,6 +34,10 @@ pub const FLAG_SCENARIO_STEPS: std::ops::RangeInclusive<usize> = 2..=7;
 pub const MAX_FLAG_TITLE_CHARS: usize = 160;
 /// Longest scenario step or `not_checked` line of a flag, in characters.
 pub const MAX_FLAG_LINE_CHARS: usize = 300;
+/// Shortest scenario step of a flag, in characters.
+const MIN_FLAG_STEP_CHARS: usize = 10;
+/// Shortest risk class after a flag title's "Potential " prefix, in characters.
+const MIN_FLAG_CLASS_CHARS: usize = 3;
 /// Title prefixes of a flag: English, and the Polish forms of "Potential".
 const FLAG_TITLE_PREFIXES: [&str; 4] =
     ["Potential ", "Potencjalny ", "Potencjalna ", "Potencjalne "];
@@ -454,11 +458,17 @@ fn check_flag(issues: &mut Issues, at: &str, title: &str, flag: &Flag) {
     if flag.level == FlagLevel::Unknown {
         invalid("level", "write red or yellow".to_owned());
     }
-    if !FLAG_TITLE_PREFIXES
+    let class = FLAG_TITLE_PREFIXES
         .iter()
-        .any(|prefix| title.trim_start().starts_with(prefix))
-    {
-        invalid("text", "a flag's title names the risk class and starts with \"Potential \" (Polish: \"Potencjalny \", \"Potencjalna \" or \"Potencjalne \")".to_owned());
+        .find_map(|prefix| title.trim_start().strip_prefix(prefix))
+        .map(|rest| rest.trim().trim_end_matches(':').trim());
+    match class {
+        None => invalid("text", "a flag's title names the risk class and starts with \"Potential \" (Polish: \"Potencjalny \", \"Potencjalna \" or \"Potencjalne \")".to_owned()),
+        Some(class) if class.chars().count() < MIN_FLAG_CLASS_CHARS => invalid(
+            "text",
+            "name the risk class after \"Potential \", for example \"Potential double send on a late reply:\"".to_owned(),
+        ),
+        Some(_) => {}
     }
     let steps = flag.scenario.len();
     if !FLAG_SCENARIO_STEPS.contains(&steps) {
@@ -487,6 +497,18 @@ fn check_flag(issues: &mut Issues, at: &str, title: &str, flag: &Flag) {
             invalid(field, format!("write one line of at most {max} characters"));
         }
     }
+    for (number, step) in flag.scenario.iter().enumerate() {
+        let length = step.trim().chars().count();
+        if (1..MIN_FLAG_STEP_CHARS).contains(&length) {
+            invalid(
+                "scenario",
+                format!(
+                    "step {} is too short; write at least {MIN_FLAG_STEP_CHARS} characters saying who acts and what happens",
+                    number + 1
+                ),
+            );
+        }
+    }
     for (field, text) in std::iter::once(("not_checked", flag.not_checked.as_str()))
         .chain(flag.scenario.iter().map(|step| ("scenario", step.as_str())))
     {
@@ -498,7 +520,8 @@ fn check_flag(issues: &mut Issues, at: &str, title: &str, flag: &Flag) {
     {
         if let Some(found) = plain::check(text) {
             let message = format!(
-                "{at}.{field} contains {}; write plain text",
+                "{at}.{field} contains {}; write plain text and put code (names, types such as `Vec<u8>`, \
+                 expressions) in backticks",
                 found.describe()
             );
             issues.push(VerifyIssueKind::MarkupOrLink, message);
@@ -1183,7 +1206,7 @@ mod tests {
         *flag_of(&mut polish).0 = Some("Potencjalny wyścig między odczytem a zapisem:".to_owned());
         assert!(Setup::new().run(&polish).is_ok());
         type Mutation = (&'static str, fn(&mut Option<String>, &mut Flag));
-        let mutations: [Mutation; 10] = [
+        let mutations: [Mutation; 12] = [
             ("unknown level", |_, flag| flag.level = FlagLevel::Unknown),
             ("question title", |text, _| {
                 *text = Some("Can it be sent twice?".to_owned());
@@ -1191,9 +1214,15 @@ mod tests {
             ("long title", |text, _| {
                 *text = Some(format!("Potential {}", "x".repeat(MAX_FLAG_TITLE_CHARS)));
             }),
+            ("prefix only", |text, _| {
+                *text = Some("Potential :".to_owned())
+            }),
+            ("short step", |_, flag| {
+                flag.scenario[1] = "B sends.".to_owned()
+            }),
             ("one step", |_, flag| flag.scenario.truncate(1)),
             ("eight steps", |_, flag| {
-                flag.scenario = vec!["A step.".to_owned(); 8];
+                flag.scenario = vec!["The client sends again.".to_owned(); 8];
             }),
             ("blank step", |_, flag| flag.scenario[1] = " ".to_owned()),
             ("long step", |_, flag| {
@@ -1231,6 +1260,15 @@ mod tests {
             kinds(&Setup::new().issues(&linked)),
             [VerifyIssueKind::MarkupOrLink]
         );
+        // Bare code reads as markup; the message says how to write it.
+        let mut code = flagged(FlagLevel::Yellow);
+        flag_of(&mut code).1.scenario[0] = "The reply is decoded into a Vec<u8> twice.".to_owned();
+        let issues = Setup::new().issues(&code);
+        assert_eq!(kinds(&issues), [VerifyIssueKind::MarkupOrLink]);
+        assert!(issues[0].message.contains("backticks"), "{issues:#?}");
+        flag_of(&mut code).1.scenario[0] =
+            "The reply is decoded into a `Vec<u8>` twice.".to_owned();
+        assert!(Setup::new().run(&code).is_ok());
     }
 
     #[test]

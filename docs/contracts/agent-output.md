@@ -85,7 +85,7 @@ material (e.g. a deleted comment) is classified on the base side.
 | `FactWithoutEvidence` | `fact` ⇒ ≥ 1 evidence line |
 | `BehaviourMissing` | `was` and `is` non-empty on `behaviour` annotations only |
 | `RemarkMismatch` | `text` null iff `type = behaviour` (blank text counts as null); other annotation types use empty strings for `was` and `is`; only a flag carries a `flag` object |
-| `FlagInvalid` | a flag has level `red` or `yellow`, a title starting "Potential " (Polish "Potencjalny/-a/-e "), 2 to 7 non-empty one-line scenario steps and a non-empty one-line `not_checked`; title ≤ 160, other lines ≤ 300 characters; at most 5 flags per step (`MarkupOrLink` for markup or links in them) |
+| `FlagInvalid` | a flag has level `red` or `yellow`, a title starting "Potential " (Polish "Potencjalny/-a/-e ") followed by the risk class, 2 to 7 one-line scenario steps of at least 10 characters and a non-empty one-line `not_checked`; title ≤ 160, other lines ≤ 300 characters; at most 5 flags per step (`MarkupOrLink` for markup or links in them; code belongs in backticks) |
 | `RedFlagOnLowStep` | a step with a red flag is rated `medium` or `high` |
 | `AgentLimitation` | reviewer-facing text must not report missing agent tools, skills or instructions, or AI self-commentary |
 | `SchemaMismatch` | the pipeline requests repair of a flow output that fails the schema before deserialization; exhausted repairs leave its lines Unexplained |

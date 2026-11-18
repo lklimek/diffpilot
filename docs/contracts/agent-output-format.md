@@ -46,9 +46,11 @@ at most 80 bytes. Violations are reported with their line.
   A `flag` also requires `level` (`red` or `yellow`), `scenario` (2 to 7 steps, one
   per line, unnumbered; list markers are dropped) and `not_checked` (one line: what was
   not reproduced or run); its `text` is the title, starting `Potential ` (Polish:
-  `Potencjalny `, `Potencjalna ` or `Potencjalne `). Plain text, title at most 160 and
-  other lines at most 300 characters, at most 5 flags per step, and a step with a red
-  flag is rated `medium` or `high`. Only a flag has these fields.
+  `Potencjalny `, `Potencjalna ` or `Potencjalne `) followed by the risk class. Plain
+  text with code and types such as `Option<A>` in backticks (no other Markdown, links
+  or HTML); title at most 160, scenario steps 10 to 300 and `not_checked` at most 300
+  characters; at most 5 flags per step, and a step with a red flag is rated `medium`
+  or `high`. Only a flag has these fields.
 - `### assessment` under every step, exactly once. Required: `risk`, `reason`. At
   `risk: low` the rest may be omitted (concise assessment: band plus one sentence).
   Above low also required: `headline`, `basis_note`, `not_checked`, `origin`,
