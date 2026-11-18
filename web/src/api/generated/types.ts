@@ -1341,6 +1341,11 @@ title: string, };
 export type FragmentKind = "modified" | "added" | "moved" | "renamed" | "deleted_site" | "context";
 
 /**
+ * GitHub item kinds of the list filter `kind`.
+ */
+export type GithubKind = "pr" | "issue";
+
+/**
  * A GitHub review thread of the pull request.
  */
 export type GithubThread = {
@@ -1551,6 +1556,13 @@ p3: number,
 not_judged: number, };
 
 /**
+ * Stable key of a work item, the normative form (`docs/contracts/http-api.md` "Item keys"):
+ * `<owner>~<repo>~pr~<number>`, `<owner>~<repo>~issue~<number>` or `memcan~<uuid>`. Built and parsed only here;
+ * deserialisation rejects any other form.
+ */
+export type ItemKey = string;
+
+/**
  * Kind of a work item.
  */
 export type ItemKind = "pr" | "issue" | "todo";
@@ -1581,9 +1593,10 @@ export type ItemQuery = {
  */
 tier?: Tier,
 /**
- * Only this kind.
+ * Only pull requests or only issues; absent = both. TODO items are listed whatever this filter says (while the
+ * user shows MemCan TODOs, plan §G).
  */
-kind?: ItemKind,
+kind?: GithubKind,
 /**
  * Only this repository, `owner/name`.
  */
@@ -1649,7 +1662,11 @@ judged_at: string,
 /**
  * Carried over from before the item changed.
  */
-inherited: boolean, };
+inherited: boolean,
+/**
+ * Keys of items the LLM merged into this one (chosen only from server-suggested pairs).
+ */
+also_keys: Array<ItemKey>, };
 
 /**
  * Counts by item kind.
@@ -1800,7 +1817,8 @@ efforts: Array<ReasoningEffort>,
  */
 current: ModelChoice,
 /**
- * Reasoning effort of the dashboard ranking (`judge_work`; default low); absent on older servers.
+ * Reasoning effort of the dashboard ranking (`judge_work`; default low). Optional on the wire until WP11-JOB
+ * stores and fills it; absent on older servers.
  */
 judge_effort?: ReasoningEffort,
 /**
@@ -2396,9 +2414,9 @@ from: number,
 to: number, };
 
 /**
- * State of the LLM ranking (plan §B.3).
+ * State of the LLM ranking (plan §B.3); the last four end it and leave the refresh `finished`.
  */
-export type RankingState = "waiting_for_analysis" | "running" | "paused" | "failed" | "interrupted" | "finished";
+export type RankingState = "waiting_for_analysis" | "running" | "paused" | "failed" | "interrupted" | "cancelled" | "finished";
 
 /**
  * The LLM ranking of a stored snapshot.
@@ -2458,7 +2476,8 @@ export type RefreshFailureCode = "github_rate_limited" | "github_unavailable" | 
 export type RefreshId = string;
 
 /**
- * State of a refresh. At most one refresh per user is `scanning` or `ranking`.
+ * State of a refresh; transitions in `docs/contracts/http-api.md` "Refresh states". At most one refresh per user
+ * is `scanning` or `ranking`; only `ranking` and `finished` refreshes hold a snapshot.
  */
 export type RefreshState = "scanning" | "ranking" | "finished" | "failed" | "cancelled";
 
@@ -2511,7 +2530,7 @@ scanned_at: string | null,
  */
 ranking: RankingStatus | null,
 /**
- * Why the refresh failed; null unless `failed`.
+ * Why the scan failed; null unless `failed`.
  */
 failure: RefreshFailure | null,
 /**
@@ -2755,9 +2774,9 @@ export type ScanNote = {
  */
 text: string,
 /**
- * The item it concerns (`WorkItem.key`), if one.
+ * The item it concerns, if one.
  */
-item: string | null, };
+item: ItemKey | null, };
 
 /**
  * A step of the scan, shown as a list with progress.
@@ -3294,9 +3313,9 @@ export type WorkItem = {
  */
 id: string,
 /**
- * Stable, opaque, URL-safe key.
+ * Stable, unique, URL-safe key.
  */
-key: string,
+key: ItemKey,
 /**
  * Kind.
  */
@@ -3326,7 +3345,8 @@ author: string | null,
  */
 private: boolean,
 /**
- * When a judged input last changed (TODOs: their change time).
+ * Pull requests and issues: GitHub `updatedAt`. TODOs: when the dashboard first saw the current values of the
+ * fields of plan §G (MemCan has no `updated_at`).
  */
 updated_at: string,
 /**
@@ -3345,10 +3365,6 @@ score: ItemScore,
  * LLM-written text; null before the first judgement.
  */
 llm: ItemText | null,
-/**
- * Display aliases of items the LLM merged into this one (only from server-suggested pairs).
- */
-also_ids: Array<string>,
 /**
  * The user's smart-review analysis of this pull request, read at request time; null when none.
  */

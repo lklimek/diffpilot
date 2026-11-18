@@ -20,3 +20,6 @@ live in `github/` (WP11-GHFAKE).
 
 Scores are in tenths of a point: each item's `total_tenths` is the sum of its parts; the tier follows plan §C
 (P0 alarm, P1 ≥ 650, P2 350–<650, P3 < 350 tenths).
+Item keys use the normative form of `docs/contracts/http-api.md` "Item keys" (`acme~wallet-ui~pr~320`,
+`memcan~<uuid>`); `updated_at` is GitHub's `updatedAt` for pull requests and issues and the first sight of the
+current values for TODOs.

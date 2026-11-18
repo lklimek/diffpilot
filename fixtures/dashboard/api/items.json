@@ -135,9 +135,9 @@
         "next": "Ask @renata-s whether PLAT-1203 covers the stalled peers, then answer the operators on the issue.",
         "alarm": "Three operators report stalled block sync since yesterday after upgrading to 2.4. No workaround is known, and the 2.4 release notes call the upgrade safe.",
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -282,9 +282,9 @@
         "next": "Review now; the retry loop in header_sync.rs is the part to read closely.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -429,9 +429,9 @@
         "next": "Open your review; the PR moved since, so re-analyze the new head first.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": {
         "analysis_id": "6d3a2f1e-0482-4c5e-9a7b-000000000482",
         "analysed_head": "52d2da140191a9d47becf6a446310be803c007fc",
@@ -581,9 +581,9 @@
         "next": "Fix the failing e2e test (withdrawals.spec), then answer @tobias-w's two threads.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -720,9 +720,9 @@
         "next": "Quick review: check the dark-theme colour of the ring.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -855,9 +855,9 @@
         "next": "Read and approve if the rollback section matches PLAT-1203.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -994,9 +994,9 @@
         "next": "Wait for @jun-park to resolve the three threads, then review.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -1125,9 +1125,9 @@
         "next": "Reproduce on the test network with the reorg script; decide whether it belongs in v2.4.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -1260,9 +1260,9 @@
         "next": "Review the pagination cursor type first; the rest is mechanical.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -1275,7 +1275,7 @@
       "url": "http://memcan.example/ui/tasks/3fa91c2e-0000-4000-8000-000000000000",
       "author": null,
       "private": false,
-      "updated_at": "2026-11-13T07:14:00Z",
+      "updated_at": "2026-11-13T09:00:00Z",
       "tags": [
         {
           "text": "in progress",
@@ -1396,9 +1396,9 @@
         "next": "Draft the three breaking keys; ask @renata-s to proofread.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -1531,9 +1531,9 @@
         "next": "Mark ready once the dependency review is done.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -1666,9 +1666,9 @@
         "next": "Wait for CON-1534 to merge, then profile again.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -1793,9 +1793,9 @@
         "next": "Reply with the contrast token to use; no code needed from you.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     },
     {
@@ -1808,7 +1808,7 @@
       "url": "http://memcan.example/ui/tasks/91bd0a44-0000-4000-8000-000000000000",
       "author": null,
       "private": false,
-      "updated_at": "2026-10-29T07:14:00Z",
+      "updated_at": "2026-10-29T15:30:00Z",
       "tags": [
         {
           "text": "postponed",
@@ -1925,9 +1925,9 @@
         "next": "Pick up after v2.4 ships.",
         "alarm": null,
         "judged_at": "2026-11-18T08:15:04Z",
-        "inherited": false
+        "inherited": false,
+        "also_keys": []
       },
-      "also_ids": [],
       "review": null
     }
   ],

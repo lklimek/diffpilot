@@ -10,26 +10,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::common::RepoRef;
-use crate::ids::{AnalysisId, CommitSha};
-
-/// Identifier of a dashboard refresh (one scan and its ranking).
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, TS,
-)]
-pub struct RefreshId(pub Uuid);
-
-impl RefreshId {
-    /// A new random identifier.
-    pub fn new_random() -> Self {
-        Self(Uuid::new_v4())
-    }
-}
-
-impl fmt::Display for RefreshId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
+use crate::ids::{AnalysisId, CommitSha, RefreshId};
 
 /// Response of `GET /api/v1/dashboard`: the user's dashboard without its items.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -56,19 +37,20 @@ pub enum RefreshTrigger {
     Scheduled,
 }
 
-/// State of a refresh. At most one refresh per user is `scanning` or `ranking`.
+/// State of a refresh; transitions in `docs/contracts/http-api.md` "Refresh states". At most one refresh per user
+/// is `scanning` or `ranking`; only `ranking` and `finished` refreshes hold a snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RefreshState {
-    /// Reading GitHub and MemCan.
+    /// Reading GitHub and MemCan; no snapshot yet.
     Scanning,
-    /// The snapshot is stored; the LLM judges new and changed items.
+    /// The snapshot is stored and current; the LLM judges new and changed items.
     Ranking,
-    /// Ended; the snapshot is current.
+    /// The snapshot is current; the ranking ended with the outcome in `ranking.state`.
     Finished,
-    /// Ended without a new snapshot; the previous one stays.
+    /// The scan failed before its snapshot was complete; the previous snapshot stays.
     Failed,
-    /// Cancelled by the user; the previous snapshot stays.
+    /// The scan was cancelled before its snapshot was complete; the previous snapshot stays.
     Cancelled,
 }
 
@@ -97,7 +79,7 @@ pub struct RefreshStatus {
     pub scanned_at: Option<DateTime<Utc>>,
     /// The LLM ranking of the snapshot; null before the scan finished.
     pub ranking: Option<RankingStatus>,
-    /// Why the refresh failed; null unless `failed`.
+    /// Why the scan failed; null unless `failed`.
     pub failure: Option<RefreshFailure>,
     /// Plain log lines of the scan (at most 200, oldest first); no tokens, no query strings.
     pub log: Vec<String>,
@@ -169,7 +151,7 @@ pub struct RankingStatus {
     pub message: Option<String>,
 }
 
-/// State of the LLM ranking (plan §B.3).
+/// State of the LLM ranking (plan §B.3); the last four end it and leave the refresh `finished`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RankingState {
@@ -183,6 +165,8 @@ pub enum RankingState {
     Failed,
     /// Stopped by a server restart (Retry ranking).
     Interrupted,
+    /// Cancelled by the user (Retry ranking).
+    Cancelled,
     /// Done, or nothing needed judging.
     Finished,
 }
@@ -395,8 +379,8 @@ pub enum TodosStatus {
 pub struct ScanNote {
     /// The note.
     pub text: String,
-    /// The item it concerns (`WorkItem.key`), if one.
-    pub item: Option<String>,
+    /// The item it concerns, if one.
+    pub item: Option<ItemKey>,
 }
 
 /// Query of `GET /api/v1/dashboard/items`; every filter is optional.
@@ -406,10 +390,11 @@ pub struct ItemQuery {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tier: Option<Tier>,
-    /// Only this kind.
+    /// Only pull requests or only issues; absent = both. TODO items are listed whatever this filter says (while the
+    /// user shows MemCan TODOs, plan §G).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub kind: Option<ItemKind>,
+    pub kind: Option<GithubKind>,
     /// Only this repository, `owner/name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -450,6 +435,16 @@ pub struct ItemPage {
     pub next_cursor: Option<String>,
 }
 
+/// GitHub item kinds of the list filter `kind`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum GithubKind {
+    /// Pull requests.
+    Pr,
+    /// Issues.
+    Issue,
+}
+
 /// Kind of a work item.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
@@ -467,8 +462,8 @@ pub enum ItemKind {
 pub struct WorkItem {
     /// Display alias, e.g. `PLAT-1187` or `TODO-3fa91c2e`.
     pub id: String,
-    /// Stable, opaque, URL-safe key.
-    pub key: String,
+    /// Stable, unique, URL-safe key.
+    pub key: ItemKey,
     /// Kind.
     pub kind: ItemKind,
     /// Repository; null for TODOs (their MemCan project is a tag).
@@ -483,7 +478,8 @@ pub struct WorkItem {
     pub author: Option<String>,
     /// From a private repository (shown only to this user).
     pub private: bool,
-    /// When a judged input last changed (TODOs: their change time).
+    /// Pull requests and issues: GitHub `updatedAt`. TODOs: when the dashboard first saw the current values of the
+    /// fields of plan §G (MemCan has no `updated_at`).
     pub updated_at: DateTime<Utc>,
     /// Deterministic tags from scan facts.
     pub tags: Vec<FactTag>,
@@ -493,8 +489,6 @@ pub struct WorkItem {
     pub score: ItemScore,
     /// LLM-written text; null before the first judgement.
     pub llm: Option<ItemText>,
-    /// Display aliases of items the LLM merged into this one (only from server-suggested pairs).
-    pub also_ids: Vec<String>,
     /// The user's smart-review analysis of this pull request, read at request time; null when none.
     pub review: Option<ReviewLink>,
 }
@@ -664,6 +658,8 @@ pub struct ItemText {
     pub judged_at: DateTime<Utc>,
     /// Carried over from before the item changed.
     pub inherited: bool,
+    /// Keys of items the LLM merged into this one (chosen only from server-suggested pairs).
+    pub also_keys: Vec<ItemKey>,
 }
 
 /// The user's smart-review analysis of a pull request item.
@@ -797,4 +793,146 @@ pub struct DashboardSettingsView {
 pub struct SetTimeZoneRequest {
     /// IANA time zone name.
     pub time_zone: String,
+}
+
+/// Stable key of a work item, the normative form (`docs/contracts/http-api.md` "Item keys"):
+/// `<owner>~<repo>~pr~<number>`, `<owner>~<repo>~issue~<number>` or `memcan~<uuid>`. Built and parsed only here;
+/// deserialisation rejects any other form.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, TS)]
+pub struct ItemKey(String);
+
+/// JSON Schema pattern of [`ItemKey`].
+const ITEM_KEY_PATTERN: &str = "^(memcan~[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\
+                                [A-Za-z0-9-]{1,39}~[A-Za-z0-9._-]{1,100}~(pr|issue)~[1-9][0-9]{0,9})$";
+
+/// What an [`ItemKey`] names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ItemTarget {
+    /// A pull request.
+    PullRequest {
+        /// Repository.
+        repo: RepoRef,
+        /// Number.
+        number: u32,
+    },
+    /// An issue.
+    Issue {
+        /// Repository.
+        repo: RepoRef,
+        /// Number.
+        number: u32,
+    },
+    /// A MemCan TODO.
+    Todo(Uuid),
+}
+
+/// A string is not an item key.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("`{0}` is not an item key (<owner>~<repo>~pr|issue~<number> or memcan~<uuid>)")]
+pub struct ItemKeyError(pub String);
+
+/// A GitHub login: 1–39 ASCII letters, digits or hyphens.
+fn valid_owner(owner: &str) -> bool {
+    (1..=39).contains(&owner.len())
+        && owner
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// A GitHub repository name: 1–100 ASCII letters, digits, `.`, `_` or `-`, not `.` or `..`.
+fn valid_repo(name: &str) -> bool {
+    (1..=100).contains(&name.len())
+        && name != "."
+        && name != ".."
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+impl ItemKey {
+    /// The key of `target`; fails for an owner or repository name GitHub does not allow, or number 0.
+    pub fn new(target: &ItemTarget) -> Result<Self, ItemKeyError> {
+        let (repo, kind, number) = match target {
+            ItemTarget::Todo(uuid) => return Ok(Self(format!("memcan~{}", uuid.hyphenated()))),
+            ItemTarget::PullRequest { repo, number } => (repo, "pr", number),
+            ItemTarget::Issue { repo, number } => (repo, "issue", number),
+        };
+        let key = format!("{}~{}~{kind}~{number}", repo.owner, repo.name);
+        if valid_owner(&repo.owner) && valid_repo(&repo.name) && *number > 0 {
+            Ok(Self(key))
+        } else {
+            Err(ItemKeyError(key))
+        }
+    }
+
+    /// Parses a key in its normative form.
+    pub fn parse(key: &str) -> Result<Self, ItemKeyError> {
+        let target = Self::target_of(key).ok_or_else(|| ItemKeyError(key.to_owned()))?;
+        let built = Self::new(&target)?;
+        if built.0 == key {
+            Ok(built)
+        } else {
+            Err(ItemKeyError(key.to_owned()))
+        }
+    }
+
+    /// The key as sent on the wire.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// What the key names.
+    pub fn target(&self) -> ItemTarget {
+        // A constructed key always parses.
+        Self::target_of(&self.0).unwrap_or(ItemTarget::Todo(Uuid::nil()))
+    }
+
+    fn target_of(key: &str) -> Option<ItemTarget> {
+        let parts: Vec<&str> = key.split('~').collect();
+        match parts.as_slice() {
+            ["memcan", uuid] => Uuid::parse_str(uuid).ok().map(ItemTarget::Todo),
+            [owner, name, kind, number] => {
+                let repo = RepoRef {
+                    owner: (*owner).to_owned(),
+                    name: (*name).to_owned(),
+                };
+                let number = number.parse().ok()?;
+                match *kind {
+                    "pr" => Some(ItemTarget::PullRequest { repo, number }),
+                    "issue" => Some(ItemTarget::Issue { repo, number }),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
+impl Serialize for ItemKey {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ItemKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        Self::parse(&key).map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for ItemKey {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ItemKey".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type": "string", "pattern": ITEM_KEY_PATTERN})
+    }
+}
+
+impl fmt::Display for ItemKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }

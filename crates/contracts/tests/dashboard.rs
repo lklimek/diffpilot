@@ -13,11 +13,14 @@ use contracts::api::access_tokens::{
 };
 use contracts::api::auth::MeResponse;
 use contracts::api::dashboard::{
-    DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, ItemCounts,
-    ItemKind, ItemPage, ItemQuery, ItemScore, PartSource, PartStatus, RefreshFailureCode,
-    RefreshId, RefreshState, RefreshStatus, ScoreComponent, ScoreState, Tier,
+    DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, GithubKind,
+    ItemCounts, ItemKey, ItemKind, ItemPage, ItemQuery, ItemScore, ItemTarget, PartSource,
+    PartStatus, RankingState, RefreshFailureCode, RefreshState, RefreshStatus, ScoreComponent,
+    ScoreState, Tier, WorkItem,
 };
 use contracts::api::settings::{LlmSelection, Settings};
+use contracts::common::RepoRef;
+use contracts::ids::RefreshId;
 use contracts::routes::{self, HttpMethod, Listener, ROUTES, Route, RouteAuth};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -267,8 +270,16 @@ fn item_query_is_optional_and_bounded() {
         .expect("deserialises");
     assert_eq!(
         (query.tier, query.kind, query.limit),
-        (Some(Tier::P1), Some(ItemKind::Pr), Some(50))
+        (Some(Tier::P1), Some(GithubKind::Pr), Some(50))
     );
+    // `kind` selects pull requests or issues only; TODOs are not a filter value.
+    for kind in ["issue", "pr"] {
+        assert!(
+            serde_json::from_value::<ItemQuery>(json!({ "kind": kind })).is_ok(),
+            "{kind}"
+        );
+    }
+    assert!(serde_json::from_value::<ItemQuery>(json!({"kind": "todo"})).is_err());
 }
 
 /// `judge_effort` is optional on the wire, so stored settings and older servers keep their JSON.
@@ -328,12 +339,21 @@ fn check_items(rel: &str) -> ItemPage {
     for item in &page.items {
         let at = format!("{rel} {}", item.id);
         assert!(keys.insert(item.key.clone()), "{at}: duplicate key");
-        assert!(
-            item.key
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_.~".contains(c)),
-            "{at}: key is not URL-safe"
-        );
+        let expected_target = match (item.kind, &item.repo, item.number) {
+            (ItemKind::Pr, Some(repo), Some(number)) => Some(ItemTarget::PullRequest {
+                repo: repo.clone(),
+                number,
+            }),
+            (ItemKind::Issue, Some(repo), Some(number)) => Some(ItemTarget::Issue {
+                repo: repo.clone(),
+                number,
+            }),
+            _ => None,
+        };
+        match (expected_target, item.key.target()) {
+            (Some(expected), target) => assert_eq!(target, expected, "{at}: key"),
+            (None, target) => assert!(matches!(target, ItemTarget::Todo(_)), "{at}: key"),
+        }
         let components: Vec<_> = item.score.parts.iter().map(|part| part.component).collect();
         assert_eq!(components, ScoreComponent::ALL, "{at}: components");
         let sum: i32 = item
@@ -400,7 +420,7 @@ fn check_items(rel: &str) -> ItemPage {
         match item.kind {
             ItemKind::Todo => {
                 assert!(item.repo.is_none() && item.number.is_none(), "{at}");
-                let uuid = item.key.trim_start_matches("memcan~");
+                let uuid = item.key.as_str().trim_start_matches("memcan~");
                 assert_eq!(
                     item.url.as_deref(),
                     Some(format!("http://memcan.example/ui/tasks/{uuid}").as_str()),
@@ -420,6 +440,18 @@ fn check_items(rel: &str) -> ItemPage {
                     repo.owner, repo.name
                 );
                 assert_eq!(item.url.as_deref(), Some(url.as_str()), "{at}");
+            }
+        }
+        if let Some(llm) = &item.llm {
+            for also in &llm.also_keys {
+                let listed = page
+                    .items
+                    .iter()
+                    .any(|other| &other.key == also && other.key != item.key);
+                assert!(
+                    listed,
+                    "{at}: also_keys names {also}, not another item of the page"
+                );
             }
         }
         if let Some(review) = &item.review {
@@ -503,10 +535,34 @@ fn dashboard_fixtures_are_typed_and_consistent() {
         (RefreshState::Failed, RefreshFailureCode::GithubRateLimited)
     );
     assert!(failure.retry_at.is_some());
+    let mut statuses = vec![
+        ("api/summary.json".to_owned(), latest.clone()),
+        ("api/refresh-failed.json".to_owned(), failed.clone()),
+    ];
     for rel in ["api/refresh-scanning.json", "api/refresh-ranking.json"] {
         let status: RefreshStatus = typed(rel);
         assert!(status.failure.is_none() && status.percent <= 100, "{rel}");
         let _: RefreshId = status.id;
+        statuses.push((rel.to_owned(), status));
+    }
+    // http-api.md "Refresh states": a ranking exactly on `ranking` (live state) and `finished` (ending state).
+    for (rel, status) in &statuses {
+        let ranking = status.ranking.as_ref().map(|ranking| ranking.state);
+        let live = [
+            RankingState::WaitingForAnalysis,
+            RankingState::Running,
+            RankingState::Paused,
+        ];
+        match status.state {
+            RefreshState::Ranking => assert!(ranking.is_some_and(|r| live.contains(&r)), "{rel}"),
+            RefreshState::Finished => assert!(ranking.is_some_and(|r| !live.contains(&r)), "{rel}"),
+            _ => assert!(ranking.is_none() && status.scanned_at.is_none(), "{rel}"),
+        }
+        assert_eq!(
+            status.failure.is_some(),
+            status.state == RefreshState::Failed,
+            "{rel}"
+        );
     }
 
     let view: DashboardSettingsView = typed("api/settings.json");
@@ -529,7 +585,8 @@ fn dashboard_fixtures_are_typed_and_consistent() {
             .starts_with(&format!("{}_fake-", created.access_token.prefix))
     );
 
-    // Every pull request and issue item has its scan facts; every TODO its MemCan row.
+    // Every pull request and issue item has its scan facts (`updated_at` = GitHub `updatedAt`); every TODO its
+    // MemCan row (`updated_at` not before its creation).
     let scan = json_file("scan/scan.json");
     let todos = json_file("scan/todos.json");
     for item in &items.items {
@@ -540,8 +597,13 @@ fn dashboard_fixtures_are_typed_and_consistent() {
                     .expect("todos")
                     .iter()
                     .any(|todo| {
-                        item.key == format!("memcan~{}", todo["id"].as_str().expect("id"))
+                        let created = chrono::DateTime::parse_from_rfc3339(
+                            todo["created_at"].as_str().expect("created_at"),
+                        )
+                        .expect("RFC 3339");
+                        item.key.as_str() == format!("memcan~{}", todo["id"].as_str().expect("id"))
                             && todo["title"] == json!(item.title)
+                            && item.updated_at >= created
                     })
             }),
             (kind, Some(repo), Some(number)) => scan[if kind == ItemKind::Pr {
@@ -555,10 +617,128 @@ fn dashboard_fixtures_are_typed_and_consistent() {
             .any(|fact| {
                 fact["repo"] == json!(format!("{}/{}", repo.owner, repo.name))
                     && fact["number"] == json!(number)
+                    && fact["updatedAt"] == json!(item.updated_at)
                     && fact["title"] == json!(item.title)
             }),
             _ => false,
         };
         assert!(found, "{}: no scan facts", item.id);
     }
+}
+
+/// The normative key forms (http-api.md "Item keys"): built and parsed only by `ItemKey`, rejected otherwise.
+#[test]
+fn item_keys_have_one_normative_form() {
+    let repo = RepoRef {
+        owner: "acme".to_owned(),
+        name: "wallet-ui".to_owned(),
+    };
+    let uuid = uuid::Uuid::parse_str("3fa91c2e-0000-4000-8000-000000000000").expect("uuid");
+    let schema =
+        jsonschema::validator_for(&schemars::schema_for!(ItemKey).to_value()).expect("schema");
+    for (target, text) in [
+        (
+            ItemTarget::PullRequest {
+                repo: repo.clone(),
+                number: 320,
+            },
+            "acme~wallet-ui~pr~320",
+        ),
+        (
+            ItemTarget::Issue {
+                repo: repo.clone(),
+                number: 305,
+            },
+            "acme~wallet-ui~issue~305",
+        ),
+        (
+            ItemTarget::Todo(uuid),
+            "memcan~3fa91c2e-0000-4000-8000-000000000000",
+        ),
+    ] {
+        let key = ItemKey::new(&target).expect("valid target");
+        assert_eq!(key.as_str(), text);
+        assert_eq!(ItemKey::parse(text), Ok(key.clone()));
+        assert_eq!(key.target(), target);
+        assert_eq!(serde_json::to_value(&key).expect("serialises"), json!(text));
+        assert_eq!(
+            serde_json::from_value::<ItemKey>(json!(text)).expect("deserialises"),
+            key
+        );
+        assert!(
+            text.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.~".contains(&b)),
+            "URL-safe"
+        );
+        assert!(schema.is_valid(&json!(text)), "schema rejects {text}");
+    }
+    for bad in [
+        "",
+        "acme~wallet-ui~pr~0",
+        "acme~wallet-ui~pr~0320",
+        "acme~wallet-ui~pull~320",
+        "acme~wallet ui~pr~320",
+        "acme~wallet-ui~pr~320~x",
+        "ac~me~wallet-ui~pr~320",
+        "acme_wallet-ui_pr_320",
+        "memcan~3FA91C2E-0000-4000-8000-000000000000",
+        "memcan~3fa91c2e000040008000000000000000",
+        "memcan~not-a-uuid",
+        "todo~3fa91c2e-0000-4000-8000-000000000000",
+    ] {
+        assert!(ItemKey::parse(bad).is_err(), "{bad} accepted");
+        let shape_only = [
+            "acme~wallet-ui~pr~0320",
+            "memcan~3FA91C2E-0000-4000-8000-000000000000",
+        ];
+        if !shape_only.contains(&bad) {
+            assert!(!schema.is_valid(&json!(bad)), "schema accepts {bad}");
+        }
+        assert!(
+            serde_json::from_value::<ItemKey>(json!(bad)).is_err(),
+            "{bad} deserialised"
+        );
+    }
+    let bad_owner = RepoRef {
+        owner: "ac~me".to_owned(),
+        name: "x".to_owned(),
+    };
+    assert!(
+        ItemKey::new(&ItemTarget::Issue {
+            repo: bad_owner,
+            number: 1
+        })
+        .is_err()
+    );
+    let mut item = json_file("api/items.json")["items"][0].clone();
+    item["key"] = json!("PLAT-1187");
+    assert!(
+        serde_json::from_value::<WorkItem>(item).is_err(),
+        "an item with a display alias as key"
+    );
+}
+
+/// LLM-chosen merges are LLM content and carry item keys.
+#[test]
+fn merged_items_are_llm_text_with_item_keys() {
+    let mut item = json_file("api/items.json")["items"][1].clone();
+    assert!(item.get("also_ids").is_none() && item.get("also_keys").is_none());
+    item["llm"]["also_keys"] = json!(["acme~platform~issue~1187"]);
+    let parsed: WorkItem = serde_json::from_value(item.clone()).expect("deserialises");
+    let also = &parsed.llm.as_ref().expect("llm").also_keys;
+    assert_eq!(
+        also,
+        &[ItemKey::parse("acme~platform~issue~1187").expect("key")]
+    );
+    item["llm"]["also_keys"] = json!(["PLAT-1187"]);
+    assert!(serde_json::from_value::<WorkItem>(item).is_err());
+}
+
+/// Every ranking outcome is a wire value; `cancelled` ends a ranking the user cancelled (refresh `finished`).
+#[test]
+fn ranking_outcomes_include_cancelled() {
+    assert_eq!(
+        serde_json::to_value(RankingState::Cancelled).expect("serialises"),
+        json!("cancelled")
+    );
 }
