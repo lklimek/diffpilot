@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import type { LlmSelection, ModelChoice, ReasoningEffort } from "../../api/generated/types";
 import { SettingsCard } from "./Card";
 import { Tooltip } from "../tooltip/Tooltip";
@@ -12,12 +12,15 @@ export function LlmSelectionCard({
   saved,
   error,
   onSave,
+  children,
 }: {
   selection: LlmSelection;
   busy: boolean;
   saved?: boolean;
   error?: string;
   onSave: (choice: ModelChoice) => void;
+  /** Further installation choices shown in this card (the dashboard ranking effort). */
+  children?: ReactNode;
 }) {
   const id = useId();
   const [choice, setChoice] = useState(selection.current);
@@ -96,6 +99,7 @@ export function LlmSelectionCard({
       )}
       {saved && <p role="status">LLM choice saved.</p>}
       {error && <p role="alert">The LLM choice was not saved: {error}</p>}
+      {children}
     </SettingsCard>
   );
 }

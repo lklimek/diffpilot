@@ -1,19 +1,28 @@
 import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { useEffect, useRef, useState } from "react";
+import { useBlocker, useNavigate, useSearchParams } from "react-router";
 import { LlmSelectionCard } from "../../components/settings/LlmSelectionCard";
 import { ApiError } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type { RepoRef } from "../../api/generated/types";
 import {
+  useAccessTokenActions,
+  useAccessTokens,
+  useDashboardSettings,
   useMe,
   useRepoSettings,
+  useSaveDashboardSettings,
+  useSetJudgeEffort,
   useSetLanguage,
   useSettings,
   useSetLlm,
   useSignOut,
 } from "../../api/queries";
+import { AccessTokensCard } from "../../components/dashboard/settings-access-tokens/AccessTokensCard";
+import { DashboardSettingsCard } from "../../components/dashboard/settings-dashboard/DashboardSettingsCard";
+import { UnsavedChangesPrompt } from "../../components/dashboard/settings-dashboard/UnsavedChangesPrompt";
+import { JudgeEffortSelect } from "../../components/dashboard/settings-judge-effort/JudgeEffortSelect";
 import { AccountCard } from "../../components/settings/AccountCard";
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
 import { LanguageCard } from "../../components/settings/LanguageCard";
@@ -28,6 +37,58 @@ import { clearCommentDrafts } from "../tour/drafts";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
+
+// TODO(WP11-SWITCH): remove the dark-launch hide once the dashboard routes ship.
+/**
+ * The server has no such route yet (dashboard dark launch, plan §H.2.2): a 404 without the API's error body
+ * (the client reads it as `internal`); its block stays hidden. A 404 from a deployed handler is an error.
+ */
+const notDeployed = (query: { isError: boolean; error: unknown }) =>
+  query.isError &&
+  query.error instanceof ApiError &&
+  query.error.status === 404 &&
+  query.error.code === "internal";
+
+/** Dashboard settings (plan §F.6) and access tokens (ADR-019), each in its own card. */
+function DashboardSection({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
+  const settings = useDashboardSettings();
+  const save = useSaveDashboardSettings();
+  const tokens = useAccessTokens();
+  const tokenActions = useAccessTokenActions();
+  if (notDeployed(settings) && notDeployed(tokens)) return null;
+  return (
+    <div className="grid w-full max-w-[1800px] items-start gap-4">
+      {settings.data ? (
+        <DashboardSettingsCard view={settings.data} onSave={save} onDirtyChange={onDirtyChange} />
+      ) : (
+        !notDeployed(settings) && (
+          <SettingsCard title="Dashboard">
+            {settings.isPending && (
+              <StatusMessage kind="loading">Loading the dashboard settings…</StatusMessage>
+            )}
+            {settings.isError && <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>}
+          </SettingsCard>
+        )
+      )}
+      <div className="max-w-[1100px]">
+        {tokens.data ? (
+          <AccessTokensCard
+            tokens={tokens.data}
+            onCreate={tokenActions.create}
+            onRevoke={tokenActions.revoke}
+          />
+        ) : (
+          !notDeployed(tokens) && (
+            <SettingsCard title="Access tokens">
+              {tokens.isPending && <StatusMessage kind="loading">Loading your access tokens…</StatusMessage>}
+              {tokens.isError && <StatusMessage kind="error">{errorText(tokens.error)}</StatusMessage>}
+            </SettingsCard>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
 
 function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
   const [params, setParams] = useSearchParams();
@@ -115,8 +176,16 @@ function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
   );
 }
 
-function SettingsContent({ userId }: { userId: string }) {
+function SettingsContent({
+  userId,
+  onDirtyChange,
+}: {
+  userId: string;
+  onDirtyChange: (dirty: boolean) => void;
+}) {
   const setLlm = useSetLlm();
+  const setJudgeEffort = useSetJudgeEffort();
+  const dashboard = useDashboardSettings();
   const settings = useSettings();
   const setLanguage = useSetLanguage();
   if (settings.isPending) return <StatusMessage kind="loading">Loading the settings…</StatusMessage>;
@@ -128,13 +197,26 @@ function SettingsContent({ userId }: { userId: string }) {
         <div className="grid min-w-0 items-start gap-4 min-[1600px]:grid-cols-2">
           {settings.data.llm_selection && (
             <LlmSelectionCard
-              key={settings.data.llm_selection.changed_at ?? "default"}
+              // The model choice only: saving the ranking effort must not reset an unsaved model edit.
+              key={`${settings.data.llm_selection.current.model}/${settings.data.llm_selection.current.reasoning_effort}`}
               selection={settings.data.llm_selection}
               busy={setLlm.isPending}
               saved={setLlm.isSuccess}
               error={setLlm.isError ? errorText(setLlm.error) : undefined}
               onSave={(choice) => setLlm.mutate(choice)}
-            />
+            >
+              {/* Shown with the dashboard settings, so not before the server has them (dark launch). */}
+              {dashboard.isSuccess && (
+                <JudgeEffortSelect
+                  effort={settings.data.llm_selection.judge_effort}
+                  efforts={settings.data.llm_selection.efforts}
+                  busy={setJudgeEffort.isPending}
+                  saved={setJudgeEffort.isSuccess}
+                  error={setJudgeEffort.isError ? errorText(setJudgeEffort.error) : undefined}
+                  onChange={(effort) => setJudgeEffort.mutate(effort)}
+                />
+              )}
+            </LlmSelectionCard>
           )}
           <LlmStatusCard status={llm_status} usage={settings.data.llm_usage} />
           <SettingsCard title="Memory">
@@ -151,6 +233,7 @@ function SettingsContent({ userId }: { userId: string }) {
         </div>
         <RepoSection repos={repos} userId={userId} />
       </div>
+      <DashboardSection onDirtyChange={onDirtyChange} />
       {setLanguage.isError && (
         <StatusMessage kind="error">The language was not saved: {errorText(setLanguage.error)}</StatusMessage>
       )}
@@ -165,8 +248,22 @@ export function SettingsScreen() {
   const signOut = useSignOut();
   const client = useQueryClient();
   const navigate = useNavigate();
+  // Unsaved dashboard settings guard leaving Settings (another screen or unloading the page), not sign-out.
+  const [dirty, setDirty] = useState(false);
+  const signingOut = useRef(false);
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      dirty && !signingOut.current && currentLocation.pathname !== nextLocation.pathname,
+  );
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
   // Sign-out clears this login's local drafts and every cached answer, then shows the signed-out Home.
   const signedOut = (login: string) => {
+    signingOut.current = true;
     clearCommentDrafts(login);
     client.clear();
     void navigate("/", { replace: true });
@@ -184,6 +281,11 @@ export function SettingsScreen() {
       <TopBar login={user?.login ?? null} />
       <main id="main" className="grid flex-1 content-start gap-4 px-8 py-5">
         <h1 className="text-[22px] font-bold">Settings</h1>
+        {blocker.state === "blocked" && (
+          <div className="max-w-[900px]">
+            <UnsavedChangesPrompt onStay={blocker.reset} onLeave={blocker.proceed} />
+          </div>
+        )}
         {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
         {me.isError && <StatusMessage kind="error">{errorText(me.error)}</StatusMessage>}
         {me.isSuccess && !user && (
@@ -201,7 +303,7 @@ export function SettingsScreen() {
             />
           </div>
         )}
-        {user && <SettingsContent userId={user.login} />}
+        {user && <SettingsContent userId={user.login} onDirtyChange={setDirty} />}
       </main>
     </div>
   );
