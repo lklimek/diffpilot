@@ -1186,6 +1186,38 @@ async fn alarm_raises_p0_only_for_asked_items() {
     );
 }
 
+/// An eligibility answer counts only where the scorer asks for it: #1 (ownership unchecked, asked) is left out by
+/// the judge's `false`, #2 (eligible by the computed rules) stays ranked although its answer says `false` too.
+#[tokio::test]
+async fn eligibility_answer_hides_an_item_only_when_asked() {
+    let h = harness().await;
+    let mut unchecked = pr(1, "fix: owned paths unknown");
+    unchecked.facts.owned_change = OwnedChange::Unknown;
+    let snap = snapshot(vec![unchecked, pr(2, "fix: y")], vec![], vec![]);
+    let id = h.rank("u1", &snap).await;
+    let (_, input) = h
+        .serve(|i| {
+            let mut answer = neutral(i);
+            for item in answer["items"].as_array_mut().expect("items") {
+                item["eligibility"] = json!({"eligible": false, "reason": "Generated code only."});
+            }
+            succeeded(answer)
+        })
+        .await;
+    assert_eq!(
+        input
+            .items
+            .iter()
+            .map(|i| (i.key.clone(), i.asks_eligibility))
+            .collect::<Vec<_>>(),
+        [(key(1), true), (key(2), false)]
+    );
+    h.ranked("u1", id).await;
+    let view = snapshot::build(&snap, &h.judgements("u1", &snap).await, None);
+    let ids: Vec<&str> = view.items.iter().map(|i| i.item.id.as_str()).collect();
+    assert_eq!(ids, ["wallet-ui#2"]);
+}
+
 #[test]
 fn unasked_eligibility_answer_is_dropped() {
     let answer = contracts::agent::judge_work::ValidAnswer {
