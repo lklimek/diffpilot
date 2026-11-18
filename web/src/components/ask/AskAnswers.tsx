@@ -78,7 +78,7 @@ function Answer({
       if (!answer) return <p className="text-muted">The answer is not available.</p>;
       return (
         <div className="rounded-md border-l-4 border-l-llm bg-llm-bg px-2.5 py-1.5">
-          <Tooltip tip="Answer written by the LLM after reading the code; nothing was executed. LLM analysis.">
+          <Tooltip tip="Answer written by the LLM after reading the code; the agent was told not to run code. LLM analysis.">
             <span
               data-llm-label
               tabIndex={0}
