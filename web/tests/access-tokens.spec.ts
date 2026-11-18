@@ -50,6 +50,10 @@ test("create: the secret is shown once with a copy button and is gone after Done
   await expectAccessible(page);
   await page.emulateMedia({ colorScheme: "dark" });
   await expectAccessible(page);
+  // Escape (here dismissing the Copy tooltip) never discards the secret: only Done closes this view.
+  await shown.getByRole("button", { name: "Copy" }).focus();
+  await page.keyboard.press("Escape");
+  await expect(shown.getByLabel("Your new token")).toHaveValue(secret);
   await shown.getByRole("button", { name: "Done" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(tokens(page).getByRole("row", { name: /ci agent/ })).toContainText("18 Dec 2026");

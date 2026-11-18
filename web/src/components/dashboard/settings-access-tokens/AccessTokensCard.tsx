@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AccessToken, CreateAccessToken, CreatedAccessToken } from "../../../api/generated/types";
 import { busyTip, buttonClass } from "../../button/button";
 import { dateTimeText } from "../../format/time";
@@ -9,6 +9,15 @@ import { CreateTokenDialog } from "./CreateTokenDialog";
 
 /** Most live tokens per user (`CreateAccessToken::MAX_LIVE_PER_USER`). */
 const MAX_LIVE = 10;
+
+const COLUMNS: [string, string][] = [
+  ["Name", "The name you gave the token."],
+  ["Token", "Start of the token (srp_ and its id); the secret part is never shown again."],
+  ["Scope", "What the token may do: read = every read route, as you."],
+  ["Created", "When the token was created."],
+  ["Last used", "Last request the token was accepted for, recorded at most once a minute."],
+  ["Expires", "The token stops working at this time."],
+];
 
 const CELL = "border-b border-border px-2 py-1.5 text-left align-top";
 const HEAD = `${CELL} text-[11px] tracking-[.4px] whitespace-nowrap text-muted uppercase`;
@@ -28,6 +37,21 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
   const [creating, setCreating] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
   const opener = useRef<HTMLButtonElement>(null);
+  const keep = useRef<HTMLButtonElement>(null);
+  const revokeButtons = useRef(new Map<string, HTMLButtonElement>());
+  // Where focus goes when the confirmation closes: the row's Revoke (Keep) or New token (revoked).
+  const returnFocus = useRef<{ to: "new" } | { to: "row"; id: string } | null>(null);
+  useEffect(() => {
+    if (confirming !== null) {
+      keep.current?.focus();
+      return;
+    }
+    const target = returnFocus.current;
+    returnFocus.current = null;
+    if (target === null) return;
+    const row = target.to === "row" ? revokeButtons.current.get(target.id) : undefined;
+    (row ?? opener.current)?.focus();
+  }, [confirming]);
   const revoke = useAction();
   const expired = (token: AccessToken) => new Date(token.expires_at) <= now;
   const live = tokens.filter((t) => !expired(t)).length;
@@ -52,9 +76,13 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
             <caption className="sr-only">Your access tokens</caption>
             <thead>
               <tr>
-                {["Name", "Token", "Scope", "Created", "Last used", "Expires"].map((name) => (
+                {COLUMNS.map(([name, tip]) => (
                   <th key={name} scope="col" className={HEAD}>
-                    {name}
+                    <Tooltip tip={tip}>
+                      <span tabIndex={0} className="cursor-help">
+                        {name}
+                      </span>
+                    </Tooltip>
                   </th>
                 ))}
                 <th scope="col" className={HEAD}>
@@ -74,7 +102,13 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
                   </td>
                   <td className={`${CELL} whitespace-nowrap`}>
                     {dateTimeText(token.expires_at)}
-                    {expired(token) && <span className="ml-1.5 font-semibold text-high">expired</span>}
+                    {expired(token) && (
+                      <Tooltip tip="This token stopped working when it expired. Revoke it to remove it from the list.">
+                        <span tabIndex={0} className="ml-1.5 cursor-help font-semibold text-high">
+                          expired
+                        </span>
+                      </Tooltip>
+                    )}
                   </td>
                   <td className={CELL}>
                     {confirming === token.id ? (
@@ -95,6 +129,7 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
                               onClick={() =>
                                 void revoke.run(async () => {
                                   await onRevoke(token.id);
+                                  returnFocus.current = { to: "new" };
                                   setConfirming(null);
                                 })
                               }
@@ -104,10 +139,15 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
                           </Tooltip>
                           <Tooltip tip="Keeps the token and closes this confirmation.">
                             <button
+                              ref={keep}
                               type="button"
                               aria-disabled={revoke.busy || undefined}
                               className={buttonClass("plain", true)}
-                              onClick={() => !revoke.busy && setConfirming(null)}
+                              onClick={() => {
+                                if (revoke.busy) return;
+                                returnFocus.current = { to: "row", id: token.id };
+                                setConfirming(null);
+                              }}
                             >
                               Keep
                             </button>
@@ -117,6 +157,10 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
                     ) : (
                       <Tooltip tip={`Asks for confirmation, then revokes ${token.name}.`}>
                         <button
+                          ref={(button) => {
+                            if (button) revokeButtons.current.set(token.id, button);
+                            else revokeButtons.current.delete(token.id);
+                          }}
                           type="button"
                           aria-label={`Revoke ${token.name}`}
                           className={buttonClass("plain", true)}

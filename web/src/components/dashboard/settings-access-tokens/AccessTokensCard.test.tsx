@@ -77,13 +77,37 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
     expect(JSON.stringify({ ...localStorage, ...sessionStorage })).not.toContain(SECRET);
   });
 
-  it("Escape closes the secret view and drops the secret", async () => {
+  it("Escape closes the form, but on the secret view only Done closes", async () => {
     renderCard();
-    await createToken();
-    expect(screen.getByLabelText("Your new token")).toHaveValue(SECRET);
+    await userEvent.click(screen.getByRole("button", { name: "New token" }));
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).toBeNull();
+    await createToken();
+    screen.getByRole("button", { name: "Copy" }).focus();
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByLabelText("Your new token")).toHaveValue(SECRET);
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(document.body.innerHTML).not.toContain(SECRET);
+  });
+
+  it("accepts a 60-character name counted in characters, not code units", async () => {
+    const { onCreate } = renderCard();
+    await userEvent.click(screen.getByRole("button", { name: "New token" }));
+    const name = screen.getByLabelText("Name");
+    await userEvent.type(name, "🔑".repeat(61));
+    await userEvent.click(screen.getByRole("button", { name: "Create token" }));
+    expect(onCreate).not.toHaveBeenCalled();
+    await userEvent.type(name, "{Backspace}{Backspace}");
+    await userEvent.click(screen.getByRole("button", { name: "Create token" }));
+    expect(onCreate).toHaveBeenCalledWith(expect.objectContaining({ name: "🔑".repeat(60) }));
+  });
+
+  it("explains each column and the expired mark", () => {
+    renderCard({ now: new Date("2027-01-01T00:00:00Z") });
+    expect(
+      screen.getByRole("columnheader", { name: "Last used" }).querySelector("[tabindex]"),
+    ).toHaveAccessibleDescription(/at most once a minute/);
+    expect(screen.getByText("expired")).toHaveAccessibleDescription(/stopped working/);
   });
 
   it("when copying fails says to copy by hand", async () => {
@@ -125,16 +149,19 @@ describe("AccessTokensCard (ADR-019, plan §F.6)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("revokes only after confirmation; Keep closes the confirmation", async () => {
+  it("revokes only after confirmation; focus goes to Keep, back to Revoke, then to New token", async () => {
     const { onRevoke } = renderCard();
     await userEvent.click(screen.getByRole("button", { name: "Revoke laptop scripts" }));
     const confirm = screen.getByRole("group", { name: "Confirm revoking laptop scripts" });
     expect(confirm).toHaveTextContent("Agents using it lose access at once.");
-    await userEvent.click(within(confirm).getByRole("button", { name: "Keep" }));
+    expect(within(confirm).getByRole("button", { name: "Keep" })).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
     expect(onRevoke).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Revoke laptop scripts" })).toHaveFocus();
     await userEvent.click(screen.getByRole("button", { name: "Revoke laptop scripts" }));
     await userEvent.click(screen.getByRole("button", { name: "Revoke token" }));
     expect(onRevoke).toHaveBeenCalledWith("Zq9xW2vB");
+    expect(screen.getByRole("button", { name: "New token" })).toHaveFocus();
   });
 
   it("with no tokens says so", () => {

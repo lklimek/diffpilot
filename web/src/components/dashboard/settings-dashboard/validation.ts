@@ -76,8 +76,11 @@ const validRepo = (repo: RepoRef) =>
 
 const repoText = (repo: RepoRef) => `${repo.owner}/${repo.name}`;
 
-const validPolicyPath = (path: string) =>
-  path.endsWith(".json") && !path.startsWith("/") && !path.split("/").includes("..");
+/** Relative, ending `.json`, no `..` segment once a backslash counts as a separator. */
+function validPolicyPath(path: string): boolean {
+  const normalised = path.replace(/\\/g, "/");
+  return normalised.endsWith(".json") && !normalised.startsWith("/") && !normalised.split("/").includes("..");
+}
 
 /** Every rule of plan §F.6 the client can check; empty when the settings may be saved. */
 export function validateSettings(settings: DashboardSettings, ownLogin: string): FieldErrors {
@@ -104,6 +107,17 @@ export function validateSettings(settings: DashboardSettings, ownLogin: string):
       } else if (rows.some((_, j) => j !== i && same(prefix(j), row.alias!))) {
         put(`repositories.${i}.alias`, `${label}: the short name ${row.alias} is used by another row.`);
       }
+    } else if (
+      row.repo.name !== "" &&
+      rows
+        .slice(0, i)
+        .some((r, j) => same(prefix(j), row.repo.name) && !same(repoText(r.repo), repoText(row.repo)))
+    ) {
+      // Two rows falling back to the same bare name: the later one needs its own short name.
+      put(
+        `repositories.${i}.alias`,
+        `${label}: its name ${row.repo.name} is already another row's short name; set a different short name.`,
+      );
     }
     const policy = row.ownership_policy;
     if (policy) {
@@ -150,6 +164,21 @@ export function validateSettings(settings: DashboardSettings, ownLogin: string):
   }
   return errors;
 }
+
+/** Canonical JSON (keys sorted) for comparing settings. */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, canonical((value as Record<string, unknown>)[key])]),
+  );
+}
+
+/** Whether two settings are equal, whatever their key order. */
+export const sameSettings = (a: DashboardSettings, b: DashboardSettings) =>
+  JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 
 /** A repository row as edited: text fields, split on save. */
 export interface RepositoryDraft {
@@ -227,6 +256,7 @@ export function fromDraft(draft: SettingsDraft): DashboardSettings {
       };
     }),
     lookback_days: /^[0-9]+$/.test(days) ? Number(days) : Number.NaN,
+    ready_label: draft.ready_label.trim(),
     time_zone: draft.time_zone === "" ? null : draft.time_zone,
   };
 }

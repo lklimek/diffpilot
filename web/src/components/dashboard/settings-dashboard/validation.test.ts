@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DashboardSettings, RepositoryRule } from "../../../api/generated/types";
-import { checkEntry, fromDraft, toDraft, validateSettings } from "./validation";
+import { checkEntry, fromDraft, sameSettings, toDraft, validateSettings } from "./validation";
 
 const DEFAULTS: DashboardSettings = {
   linked_logins: [],
@@ -90,6 +90,15 @@ describe("dashboard settings validation (plan §F.6)", () => {
     ]);
   });
 
+  it("G4: two rows falling back to the same bare name clash; the later row is asked for a short name", () => {
+    const clash = errors({ repositories: [row("acme/platform"), row("fork/Platform")] });
+    expect(clash).not.toHaveProperty(["repositories.0.alias"]);
+    expect(clash["repositories.1.alias"]).toMatch(/set a different short name/);
+    expect(errors({ repositories: [row("acme/platform"), row("fork/platform", { alias: "FORK" })] })).toEqual(
+      {},
+    );
+  });
+
   it("G6 ownership policy: both or neither, owner/name, relative .json path without ..", () => {
     const policy = (owner: string, name: string, path: string) =>
       errors({ repositories: [row("acme/x", { ownership_policy: { repo: { owner, name }, path } })] });
@@ -98,6 +107,9 @@ describe("dashboard settings validation (plan §F.6)", () => {
     expect(policy("acme", "", "a.json")).toHaveProperty(["repositories.0.policy"]);
     expect(policy("acme", "p", "/abs.json")).toHaveProperty(["repositories.0.policy"]);
     expect(policy("acme", "p", "a/../b.json")).toHaveProperty(["repositories.0.policy"]);
+    expect(policy("acme", "p", "a\\..\\b.json")).toHaveProperty(["repositories.0.policy"]);
+    expect(policy("acme", "p", "../b.json")).toHaveProperty(["repositories.0.policy"]);
+    expect(policy("acme", "p", "a..b.json")).toEqual({});
     expect(policy("acme", "p", "a.yaml")).toHaveProperty(["repositories.0.policy"]);
     expect(policy("acme", "p", "dir/a.json")).toEqual({});
   });
@@ -128,6 +140,7 @@ describe("dashboard settings validation (plan §F.6)", () => {
     expect(errors({ ready_label: " " })).toHaveProperty("ready_label");
     expect(errors({ ready_label: "x".repeat(51) })).toHaveProperty("ready_label");
     expect(errors({ ready_label: "x".repeat(50) })).toEqual({});
+    expect(errors({ ready_label: "😀".repeat(50) })).toEqual({});
     expect(errors({ skip_authors: ["bot[robot]"] })).toHaveProperty("skip_authors");
     expect(errors({ skip_authors: Array.from({ length: 21 }, (_, i) => `b${i}`) }).skip_authors).toMatch(
       /at most 20/,
@@ -179,6 +192,15 @@ describe("checkEntry: one value about to join a list", () => {
   });
 });
 
+describe("sameSettings: whether a form differs from the stored settings", () => {
+  it("ignores key order and sees any changed value", () => {
+    const reordered = Object.fromEntries(Object.entries(DEFAULTS).reverse()) as DashboardSettings;
+    expect(sameSettings(DEFAULTS, reordered)).toBe(true);
+    expect(sameSettings(DEFAULTS, { ...DEFAULTS, lookback_days: 8 })).toBe(false);
+    expect(sameSettings(DEFAULTS, { ...DEFAULTS, skip_authors: ["dependabot"] })).toBe(false);
+  });
+});
+
 describe("form draft", () => {
   it("round-trips the settings and turns text fields into the wire shape", () => {
     const settings: DashboardSettings = {
@@ -201,12 +223,14 @@ describe("form draft", () => {
       branch_patterns: "main,  release/* hotfix/*",
     };
     draft.lookback_days = "x";
+    draft.ready_label = " ready ";
     draft.time_zone = "";
     const back = fromDraft(draft);
     expect(back.repositories[1]).toEqual(
       row("acme/web", { branch_patterns: ["main", "release/*", "hotfix/*"] }),
     );
     expect(back.lookback_days).toBeNaN();
+    expect(back.ready_label).toBe("ready");
     expect(back.time_zone).toBeNull();
   });
 

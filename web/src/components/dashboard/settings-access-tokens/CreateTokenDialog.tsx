@@ -13,7 +13,7 @@ interface CreateTokenDialogProps {
   /** Names already in use (unique per user). */
   names: string[];
   onCreate: (request: CreateAccessToken) => Promise<CreatedAccessToken>;
-  /** Called on Cancel, Done or Escape; the secret is gone with the dialog. */
+  /** Called on Cancel or Escape (form) and on Done (secret view); the secret is gone with the dialog. */
   onClose: () => void;
 }
 
@@ -69,9 +69,12 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
     onClose();
   };
   const onKeyDown = (event: KeyboardEvent) => {
+    // On the secret view only Done closes: an Escape (often meant for a tooltip) must not discard the secret.
     if (event.key === "Escape") {
-      event.preventDefault();
-      close();
+      if (secret === null) {
+        event.preventDefault();
+        close();
+      }
       return;
     }
     if (event.key !== "Tab") return;
@@ -113,7 +116,6 @@ export function CreateTokenDialog({ names, onCreate, onClose }: CreateTokenDialo
               <input
                 id={`${id}-name`}
                 value={name}
-                maxLength={60}
                 autoComplete="off"
                 placeholder="dispatcher agent"
                 aria-invalid={problem ? true : undefined}

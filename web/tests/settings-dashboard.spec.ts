@@ -141,3 +141,18 @@ test("Sign out still clears this login's drafts with the dashboard section on th
     await page.evaluate(() => sessionStorage.getItem("smart-review.comment-drafts.alice.a1")),
   ).toBeNull();
 });
+
+test("unsaved changes are marked and leaving the page asks first", async ({ page }) => {
+  await page.goto("/settings");
+  const card = dashboard(page);
+  await expect(card.getByText("Unsaved changes")).toHaveCount(0);
+  await card.getByLabel("Watch issues of acme/node-client").check();
+  await expect(card.getByText("Unsaved changes")).toBeVisible();
+  const asked = page.waitForEvent("dialog");
+  void page.getByRole("link", { name: "smart-review" }).first().click();
+  const dialog = await asked;
+  expect(dialog.type()).toBe("beforeunload");
+  await dialog.dismiss();
+  await expect(page).toHaveURL(/\/settings/);
+  await expect(card.getByLabel("Watch issues of acme/node-client")).toBeChecked();
+});

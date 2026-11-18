@@ -7,9 +7,13 @@ import { DashboardSettingsCard } from "./DashboardSettingsCard";
 
 const VIEW = viewJson as unknown as DashboardSettingsView;
 
-function renderCard(view: DashboardSettingsView = VIEW, onSave = vi.fn().mockResolvedValue(view)) {
-  render(<DashboardSettingsCard view={view} onSave={onSave} />);
-  return { onSave, card: screen.getByRole("region", { name: "Dashboard" }) };
+function renderCard(
+  view: DashboardSettingsView = VIEW,
+  onSave = vi.fn().mockResolvedValue(view),
+  onDirtyChange = vi.fn(),
+) {
+  render(<DashboardSettingsCard view={view} onSave={onSave} onDirtyChange={onDirtyChange} />);
+  return { onSave, onDirtyChange, card: screen.getByRole("region", { name: "Dashboard" }) };
 }
 
 const saved = (onSave: ReturnType<typeof vi.fn>) => onSave.mock.calls[0]![0] as DashboardSettings;
@@ -147,6 +151,24 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(toggle).toBeDisabled();
     expect(toggle).not.toBeChecked();
     expect(toggle).toHaveAccessibleDescription(/MemCan is not configured on this server/);
+  });
+
+  it("says when the form differs from the stored settings and reports it", async () => {
+    const onSave = vi.fn();
+    const { onDirtyChange, card } = renderCard(VIEW, onSave);
+    expect(card).not.toHaveTextContent("Unsaved changes");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    await userEvent.click(screen.getByLabelText("Watch issues of acme/node-client"));
+    expect(card).toHaveTextContent("Unsaved changes");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    await userEvent.click(screen.getByLabelText("Watch issues of acme/node-client"));
+    expect(card).not.toHaveTextContent("Unsaved changes");
+    expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("offers a stored time zone the browser does not list", () => {
+    renderCard({ ...VIEW, settings: { ...VIEW.settings, time_zone: "Asia/Calcutta-Old" } });
+    expect(screen.getByLabelText("Time zone")).toHaveValue("Asia/Calcutta-Old");
   });
 
   it("without a stored time zone says the automatic refresh does not run yet", () => {

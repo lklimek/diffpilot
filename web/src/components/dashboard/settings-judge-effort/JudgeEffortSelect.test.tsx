@@ -11,17 +11,24 @@ describe("JudgeEffortSelect (plan §F.6 G13)", () => {
     render(<JudgeEffortSelect efforts={[...EFFORTS]} busy={false} onChange={onChange} />);
     const select = screen.getByLabelText("Dashboard ranking effort");
     expect(select).toHaveValue("low");
-    expect(select).toHaveAccessibleDescription(/for everyone using this installation/);
+    expect(select).toHaveAccessibleDescription(/everyone using this installation/);
+    expect(select).toHaveAccessibleDescription(/How much reasoning/);
     await userEvent.selectOptions(select, "medium");
     expect(onChange).toHaveBeenCalledWith("medium");
   });
 
-  it("is disabled while saving and reports the outcome", () => {
+  it("ignores changes while saving and reports the outcome", async () => {
+    const busyChange = vi.fn();
     const { rerender } = render(
-      <JudgeEffortSelect effort="high" efforts={[...EFFORTS]} busy onChange={() => {}} />,
+      <JudgeEffortSelect effort="high" efforts={[...EFFORTS]} busy onChange={busyChange} />,
     );
-    expect(screen.getByLabelText("Dashboard ranking effort")).toBeDisabled();
-    expect(screen.getByLabelText("Dashboard ranking effort")).toHaveValue("high");
+    const select = screen.getByLabelText("Dashboard ranking effort");
+    // Stays focusable while saving (aria-disabled): changes are ignored, focus is kept.
+    expect(select).toHaveAttribute("aria-disabled", "true");
+    expect(select).not.toBeDisabled();
+    expect(select).toHaveValue("high");
+    await userEvent.selectOptions(select, "low");
+    expect(busyChange).not.toHaveBeenCalled();
     rerender(
       <JudgeEffortSelect effort="high" efforts={[...EFFORTS]} busy={false} saved onChange={() => {}} />,
     );

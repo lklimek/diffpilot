@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { DashboardSettings, DashboardSettingsView } from "../../../api/generated/types";
 import { busyTip, buttonClass } from "../../button/button";
 import { useAction } from "../../inspector/action";
@@ -13,6 +13,7 @@ import { UnreachableMark, isUnreachable } from "./UnreachableMark";
 import {
   checkEntry,
   fromDraft,
+  sameSettings,
   toDraft,
   validateSettings,
   type ListField,
@@ -33,10 +34,12 @@ interface DashboardSettingsCardProps {
   view: DashboardSettingsView;
   /** Saves the whole form (one `PUT`); rejects with the server's message (422 names the field). */
   onSave: (settings: DashboardSettings) => Promise<unknown>;
+  /** Called when the form starts or stops differing from the stored settings. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 /** Per-user dashboard settings of plan §F.6, saved together with Save. */
-export function DashboardSettingsCard({ view, onSave }: DashboardSettingsCardProps) {
+export function DashboardSettingsCard({ view, onSave, onDirtyChange }: DashboardSettingsCardProps) {
   const [draft, setDraft] = useState<SettingsDraft>(() => toDraft(view.settings));
   const [attempted, setAttempted] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -44,6 +47,9 @@ export function DashboardSettingsCard({ view, onSave }: DashboardSettingsCardPro
   const own = view.own_login;
   const errors = attempted ? validateSettings(fromDraft(draft), own) : {};
   const problems = Object.values(errors);
+  const dirty = !sameSettings(fromDraft(draft), view.settings);
+  useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
+  useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
   const edit = (change: Partial<SettingsDraft>) => {
     setDraft((d) => ({ ...d, ...change }));
     setNote(null);
@@ -170,6 +176,7 @@ export function DashboardSettingsCard({ view, onSave }: DashboardSettingsCardPro
             Reset to defaults
           </button>
         </Tooltip>
+        {dirty && <span className="self-center text-sm font-semibold text-med">Unsaved changes</span>}
       </div>
       {problems.length > 0 && (
         <div role="alert" className="text-sm text-high">

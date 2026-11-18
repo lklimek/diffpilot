@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
@@ -8,7 +9,7 @@ import {
   setDashboardSettingsScenario,
 } from "../../mocks/handlers/dashboard-settings";
 
-startMockServer();
+const server = startMockServer();
 afterEach(resetDashboardSettings);
 
 const region = (name: string) => screen.findByRole("region", { name });
@@ -107,5 +108,77 @@ describe("Settings: dashboard section, ranking effort, access tokens (plan §F.6
     expect(screen.queryByRole("region", { name: "Access tokens" })).toBeNull();
     expect(within(llm).queryByLabelText("Dashboard ranking effort")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("saving the ranking effort keeps an unsaved model choice and the focus", async () => {
+    renderRoute("/settings");
+    const llm = await region("LLM model");
+    await userEvent.selectOptions(within(llm).getByLabelText("Model", { exact: true }), "gpt-6-astra");
+    const effort = within(llm).getByLabelText("Dashboard ranking effort");
+    await userEvent.selectOptions(effort, "medium");
+    expect(await screen.findByText("Ranking effort saved.")).toBeVisible();
+    const card = await region("LLM model");
+    expect(within(card).getByLabelText("Model", { exact: true })).toHaveValue("gpt-6-astra");
+    expect(within(card).getByLabelText("Dashboard ranking effort")).toHaveFocus();
+  });
+
+  it("unsaved dashboard settings: leaving asks first, Stay keeps them, Leave goes; the page unload is guarded", async () => {
+    const router = renderRoute("/settings");
+    const dashboard = await region("Dashboard");
+    await userEvent.click(within(dashboard).getByLabelText("Watch issues of acme/node-client"));
+    expect(dashboard).toHaveTextContent("Unsaved changes");
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+    // Another repository in the URL (same screen) is not leaving.
+    await router.navigate("/settings?repo=acme%2Fnode-client");
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    void router.navigate("/");
+    const ask = await screen.findByRole("alertdialog", { name: "Unsaved dashboard settings" });
+    expect(router.state.location.pathname).toBe("/settings");
+    await userEvent.click(within(ask).getByRole("button", { name: "Stay" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(
+      within(await region("Dashboard")).getByLabelText("Watch issues of acme/node-client"),
+    ).toBeChecked();
+    void router.navigate("/");
+    await userEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Leave without saving" }),
+    );
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+  });
+
+  it("after Save nothing is guarded", async () => {
+    renderRoute("/settings");
+    const dashboard = await region("Dashboard");
+    await userEvent.click(within(dashboard).getByLabelText("Watch issues of acme/node-client"));
+    await userEvent.click(within(dashboard).getByRole("button", { name: "Save dashboard settings" }));
+    await waitFor(() => expect(dashboard).not.toHaveTextContent("Unsaved changes"));
+    await waitFor(() => {
+      const unload = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(unload);
+      expect(unload.defaultPrevented).toBe(false);
+    });
+  });
+
+  it("Sign out with unsaved dashboard settings leaves without asking", async () => {
+    const router = renderRoute("/settings");
+    const dashboard = await region("Dashboard");
+    await userEvent.click(within(dashboard).getByLabelText("Watch issues of acme/node-client"));
+    await userEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("a 404 with the API's error body is an error, not a missing route", async () => {
+    server.use(
+      http.get("/api/v1/settings/dashboard", () =>
+        HttpResponse.json({ code: "not_found", message: "No dashboard settings here." }, { status: 404 }),
+      ),
+    );
+    renderRoute("/settings");
+    expect(await within(await region("Dashboard")).findByRole("alert")).toHaveTextContent(
+      "No dashboard settings here.",
+    );
   });
 });
