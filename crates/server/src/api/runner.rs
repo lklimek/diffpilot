@@ -12,7 +12,9 @@ use chrono::{TimeDelta, Utc};
 use contracts::api::error::ApiErrorCode;
 use contracts::ids::JobId;
 use contracts::job::event::JobEvent;
-use contracts::job::protocol::{ClaimRequest, ClaimResponse, EventBatch, EventsAck, OutputReady};
+use contracts::job::protocol::{
+    ClaimRequest, ClaimResponse, EventBatch, EventsAck, LeaseTiming, OutputReady,
+};
 use contracts::job::result::{JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus};
 use contracts::job::state::JobState;
 use contracts::routes::{RUNNER_CLAIM, RUNNER_EVENTS, RUNNER_OUTPUT, RUNNER_RESULT};
@@ -458,10 +460,15 @@ async fn apply_result(
     if let JobOutcome::UsageLimited {
         resets_at: Some(resets_at),
     } = &mut result.outcome
-        && *resets_at > now + MAX_USAGE_LIMIT_PAUSE
     {
-        tracing::warn!(job = %auth.job, reported = %resets_at, "the reported usage-limit reset time is more than 7 days away; the pause is limited to 7 days");
-        *resets_at = now + MAX_USAGE_LIMIT_PAUSE;
+        // No sooner than the protocol's first retry pause: a reset time that has passed would re-queue the
+        // job at once, to hit the same limit again.
+        let first_retry = TimeDelta::seconds(i64::from(LeaseTiming::V1.output_retry_secs[0]));
+        let accepted = (*resets_at).clamp(now + first_retry, now + MAX_USAGE_LIMIT_PAUSE);
+        if accepted != *resets_at {
+            tracing::warn!(job = %auth.job, reported = %resets_at, %accepted, "the reported usage-limit reset time is not between the first retry pause and 7 days from now; the pause is limited to that range");
+            *resets_at = accepted;
+        }
     }
     let completion = state.db.jobs().complete(&result, now).await?;
     if let Completion::Applied { state: job_state } = completion {
@@ -1213,6 +1220,43 @@ mod tests {
             other => panic!("{other:?}"),
         };
         for until in [credential.paused_until, job.resumes_at, stored] {
+            assert!(
+                until.is_some_and(|until| until >= earliest && until <= latest),
+                "{until:?}"
+            );
+        }
+    }
+
+    /// A reset time that has passed would re-queue the job at once, to hit the same limit again.
+    #[tokio::test]
+    async fn usage_limit_reset_time_in_the_past_is_raised_to_the_first_retry_pause() {
+        let harness = Harness::new().await;
+        harness.enqueue(CREDENTIAL).await;
+        let claimed = harness.claim(CREDENTIAL).await;
+        let mut result = succeeded(claimed.job, 1);
+        result.outcome = JobOutcome::UsageLimited {
+            resets_at: Some(Utc::now() - TimeDelta::days(1)),
+        };
+        let pause = TimeDelta::seconds(i64::from(LeaseTiming::V1.output_retry_secs[0]));
+        let earliest = Utc::now() + pause;
+        let (status, _) = harness
+            .send(
+                &path(RUNNER_RESULT.path, claimed.job),
+                Some(&claimed.token),
+                result,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let latest = Utc::now() + pause;
+        let credential = harness
+            .state
+            .db
+            .llm_credentials()
+            .get(CREDENTIAL)
+            .await
+            .expect("credential");
+        let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
+        for until in [credential.paused_until, job.resumes_at] {
             assert!(
                 until.is_some_and(|until| until >= earliest && until <= latest),
                 "{until:?}"
