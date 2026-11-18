@@ -9,6 +9,7 @@ import { reviewStates } from "../api/review-state";
 import { appRoutes } from "../app/routes";
 import { setFixtureState } from "../mocks/fixtures";
 import { handlers } from "../mocks/handlers";
+import { resetSignOut } from "../mocks/handlers/get-me";
 import { setMockLanguage } from "../mocks/handlers/get-settings";
 import { resetLazyFlows } from "../mocks/lazy-flows";
 import { resetLive } from "../mocks/live-analysis";
@@ -26,6 +27,7 @@ export function startMockServer() {
     setMockLanguage(null);
     resetLive();
     resetLazyFlows();
+    resetSignOut();
     resetStore();
     reviewStates.reset();
   });

@@ -637,3 +637,22 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
   back. A post whose outcome is unknown is kept the same way with its idempotency key and comes back locked
   ("may already be in your pending review"): Retry sends it with the same key, so it cannot be added twice;
   Discard makes the text editable again. The composer's Close and Escape keep the draft. Supersedes "No local drafts" (§2 v1, Comments) and "Local comment drafts" (§2 Non-goals).
+
+### Owner-approved amendment — 2026-11-18: explicit start, flows on request, sign-out
+
+- **Start analysis.** On Home, Enter or "Check" only looks the PR up (busy state on the field). The result
+  appears as its own card under the field, announced and scrolled into view: PR title and number, the size
+  warning with its estimate when it applies, an existing analysis with "Open review" / "Resume review", or the
+  lookup error. Nothing starts without the card's primary button "Start analysis" (it takes the focus, so a
+  second Enter starts it); with a size warning or without commenting it reads "Start analysis anyway" below the
+  warning; "Cancel" clears the card. A moved head is started the same way. Supersedes the start on "Analyze"
+  and "Re-analyze" in §4.1 and the separate "Analyze anyway" step.
+- **Flows on request.** Flows are analysed only when the user asks: "Analyse this flow" on a flow not analysed
+  yet (opening it requests nothing), or "Analyse all remaining flows", the one opt-in for everything (the
+  analysis's background switch; shown as "Analysing all remaining flows — Stop" while on), in the Tour's left
+  panel and on the progress screen. The web reads the switch from the analysis and assumes no default. With
+  nothing queued or running: "Nothing is being analysed. Choose a flow to analyse, or analyse all remaining
+  flows."; the progress screen says the plan is ready and offers "Open review". Supersedes "Opening a pending
+  flow requests it" and "the background switch defaults on" in the 2026-11-17 amendment of §4.2.
+- **Sign-out.** Settings has "Sign out": it ends the session (`POST /auth/logout`), removes that login's comment
+  drafts and unconfirmed posts from the tab, clears cached data and shows the signed-out Home.

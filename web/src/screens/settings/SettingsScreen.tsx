@@ -1,11 +1,20 @@
 import { MemcanStatusLine } from "../../components/section/MemcanStatusLine";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { LlmSelectionCard } from "../../components/settings/LlmSelectionCard";
 import { ApiError } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type { RepoRef } from "../../api/generated/types";
-import { useMe, useRepoSettings, useSetLanguage, useSettings, useSetLlm } from "../../api/queries";
+import {
+  useMe,
+  useRepoSettings,
+  useSetLanguage,
+  useSettings,
+  useSetLlm,
+  useSignOut,
+} from "../../api/queries";
+import { AccountCard } from "../../components/settings/AccountCard";
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
 import { LanguageCard } from "../../components/settings/LanguageCard";
 import { LlmStatusCard } from "../../components/settings/LlmStatusCard";
@@ -15,6 +24,7 @@ import { RepoSettingsCard } from "../../components/settings/RepoSettingsCard";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { TopBar } from "../../components/top-bar/TopBar";
+import { clearCommentDrafts } from "../tour/drafts";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
@@ -152,6 +162,18 @@ function SettingsContent({ userId }: { userId: string }) {
 export function SettingsScreen() {
   const me = useMe();
   const user = me.data?.user ?? null;
+  const signOut = useSignOut();
+  const client = useQueryClient();
+  const navigate = useNavigate();
+  // Sign-out clears this login's local drafts and every cached answer, then shows the signed-out Home.
+  const leave = (login: string) =>
+    signOut.mutate(undefined, {
+      onSuccess: () => {
+        clearCommentDrafts(login);
+        client.clear();
+        void navigate("/", { replace: true });
+      },
+    });
   return (
     <div className="flex min-h-screen flex-col">
       <TopBar login={user?.login ?? null} />
@@ -162,6 +184,16 @@ export function SettingsScreen() {
         {me.isSuccess && !user && (
           <div className="max-w-[900px]">
             <SignInCard loginHref="/auth/github/login" />
+          </div>
+        )}
+        {user && (
+          <div className="max-w-[900px]">
+            <AccountCard
+              login={user.login}
+              busy={signOut.isPending}
+              error={signOut.isError ? errorText(signOut.error) : undefined}
+              onSignOut={() => leave(user.login)}
+            />
           </div>
         )}
         {user && <SettingsContent userId={user.login} />}

@@ -429,6 +429,9 @@ export function useSetLlm() {
     },
   });
 }
+/** Signs out of this session. */
+export const useSignOut = () => useMutation({ mutationFn: () => api.logout({ everywhere: false }) });
+
 /** Pause future jobs; the current one finishes. */
 export const usePauseAnalysis = () => useMutation({ mutationFn: api.pauseAnalysis });
 /** Continue a user-paused analysis. */
