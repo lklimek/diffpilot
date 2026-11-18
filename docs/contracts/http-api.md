@@ -607,7 +607,7 @@ not change). Until the token middleware exists, `read` routes accept the session
   rate-limit reset. `ranking` is null until the snapshot is stored; its `state` follows plan §B.3
   (`waiting_for_analysis` while a review analysis holds the LLM credential). `log` holds at most 200 plain lines
   without tokens or query strings. The newest 10 refreshes per user are kept, plus the one holding the current
-  snapshot.
+  snapshot and every one started in the last 24 hours.
 - **Schedule.** `ScheduleStatus.time` is the local `HH:MM`; `next_run_at` is null when off or without a time zone;
   `last_run.at` is the scheduled instant of that local date; `needs_sign_in` and `failed` are shown until a later
   refresh succeeds.
@@ -652,6 +652,7 @@ not change). Until the token middleware exists, `read` routes accept the session
   `scanning` answers 409 `refresh_running`; a scheduled start then counts as done (`skipped`). R3 on an ended
   refresh (`finished`, `failed`, `cancelled`) answers 409 `conflict`. R4 answers 409 `conflict` for
   any other refresh or ranking outcome and 409 `refresh_running` while another refresh of the user is live. After a
-  restart no refresh is live, so neither R2 nor the schedule is blocked.
+  restart no refresh is live, so neither R2 nor the schedule is blocked. Each R4 starts a new ranking attempt
+  (server-internal); a late result of an earlier attempt or of a superseded ranking is ignored.
 - **Tolerant readers** (plan §E.5 E5-3): clients ignore unknown fields and treat unknown values of `kind`,
   `component`, `status`, `tier`, `TokenScope` and history `kind` as opaque. Changes stay additive (ADR-011).

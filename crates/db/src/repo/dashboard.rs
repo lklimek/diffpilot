@@ -5,6 +5,8 @@
 //! "Refresh states"; each runs in one write transaction. One live refresh per user across tenants (the unique index
 //! is on `user_id`): a live refresh in another tenant makes a start or Retry ranking answer `Conflict`.
 //! `RankingStatus.message`, `total` and `resumes_at` are not stored here; the server derives them from the judge job.
+//! Ranking results carry the ranking attempt (`ranking_attempt`, server-internal): a late result of a superseded
+//! or restarted ranking is [`RankingUpdate::Stale`] and changes nothing.
 
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use contracts::api::dashboard::{
@@ -50,7 +52,7 @@ const DELETE_UNSEEN_SQL: &str = "DELETE FROM dashboard_judgements WHERE last_see
 macro_rules! record_columns {
     () => {
         "id, user_id, trigger, state, progress, log, failure_code, failure_message, retry_at, ranking_state, judged,
-         reused, left_provisional, snapshot IS NOT NULL AS has_snapshot, started_at, scanned_at, finished_at"
+         reused, left_provisional, ranking_attempt, snapshot IS NOT NULL AS has_snapshot, started_at, scanned_at, finished_at"
     };
 }
 
@@ -147,6 +149,8 @@ pub struct RefreshRecord {
     pub failure: Option<RefreshFailure>,
     /// State of the ranking; none before the snapshot is stored.
     pub ranking_state: Option<RankingState>,
+    /// Attempt of the ranking: 0, incremented by each Retry ranking (server-internal, not on the wire).
+    pub ranking_attempt: u32,
     /// Judgement counts.
     pub counts: JudgeCounts,
     /// A snapshot is stored.
@@ -157,6 +161,17 @@ pub struct RefreshRecord {
     pub scanned_at: Option<DateTime<Utc>>,
     /// When it ended (finished, failed or cancelled).
     pub finished_at: Option<DateTime<Utc>>,
+}
+
+/// Result of [`Dashboard::set_ranking`] and [`Dashboard::finish_ranking`].
+#[must_use]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RankingUpdate {
+    /// The refresh was ranking in this attempt and is updated.
+    Applied,
+    /// The refresh is no longer ranking in this attempt (superseded, ended or restarted): the late result is
+    /// ignored.
+    Stale,
 }
 
 /// How a scan ends before its snapshot is complete.
@@ -548,37 +563,39 @@ impl Dashboard<'_> {
     }
 
     /// Records the live ranking state (`waiting_for_analysis`, `running`, `paused`) and the judgement counts of a
-    /// `ranking` refresh; `Conflict` for any other refresh or an ending ranking state (use
-    /// [`Dashboard::finish_ranking`]).
+    /// refresh `ranking` in `attempt`; [`RankingUpdate::Stale`] (nothing changed) for any other refresh or attempt
+    /// of the user. `Conflict` for an ending ranking state (use [`Dashboard::finish_ranking`]).
     pub async fn set_ranking(
         &self,
         tenant_id: &str,
         user_id: &str,
         id: RefreshId,
+        attempt: u32,
         state: RankingState,
         counts: JudgeCounts,
-    ) -> Result<(), DbError> {
+    ) -> Result<RankingUpdate, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let mut rows = 0;
-        if !ends(state) {
-            rows = sqlx::query(
-                "UPDATE dashboard_refreshes SET ranking_state = ?, judged = ?, reused = ?, left_provisional = ?
-                 WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'ranking'",
-            )
-            .bind(wire_name(state)?)
-            .bind(i64::from(counts.judged))
-            .bind(i64::from(counts.reused))
-            .bind(i64::from(counts.left_provisional))
-            .bind(id.to_string())
-            .bind(tenant_id)
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        if ends(state) {
+            return Err(refused(&mut tx, tenant_id, user_id, id).await?);
         }
-        changed(&mut tx, tenant_id, user_id, id, rows).await?;
+        let rows = sqlx::query(
+            "UPDATE dashboard_refreshes SET ranking_state = ?, judged = ?, reused = ?, left_provisional = ?
+             WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'ranking' AND ranking_attempt = ?",
+        )
+        .bind(wire_name(state)?)
+        .bind(i64::from(counts.judged))
+        .bind(i64::from(counts.reused))
+        .bind(i64::from(counts.left_provisional))
+        .bind(id.to_string())
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(i64::from(attempt))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let update = ranking_update(&mut tx, tenant_id, user_id, id, rows).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(update)
     }
 
     /// Ends a `scanning` refresh before its snapshot is complete; `Conflict` for any other state.
@@ -615,46 +632,53 @@ impl Dashboard<'_> {
         Ok(())
     }
 
-    /// Ends the ranking of a `ranking` refresh with `outcome` (`finished`, `failed`, `cancelled` or
+    /// Ends the ranking of a refresh `ranking` in `attempt` with `outcome` (`finished`, `failed`, `cancelled` or
     /// `interrupted`) and the final counts; the refresh becomes `finished` and its snapshot stays current.
-    /// `Conflict` for any other refresh or a live ranking state.
+    /// [`RankingUpdate::Stale`] (nothing changed) for any other refresh or attempt of the user, so a late result of
+    /// a superseded or restarted ranking is ignored. `Conflict` for a live ranking state.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "frozen scope, refresh and attempt plus the outcome; a parameter struct would hide the guard"
+    )]
     pub async fn finish_ranking(
         &self,
         tenant_id: &str,
         user_id: &str,
         id: RefreshId,
+        attempt: u32,
         outcome: RankingState,
         counts: JudgeCounts,
         now: DateTime<Utc>,
-    ) -> Result<(), DbError> {
+    ) -> Result<RankingUpdate, DbError> {
         let mut tx = write_tx(self.pool).await?;
-        let mut rows = 0;
-        if ends(outcome) {
-            rows = sqlx::query(
-                "UPDATE dashboard_refreshes SET state = 'finished', ranking_state = ?, judged = ?, reused = ?,
-                     left_provisional = ?, finished_at = ?
-                 WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'ranking'",
-            )
-            .bind(wire_name(outcome)?)
-            .bind(i64::from(counts.judged))
-            .bind(i64::from(counts.reused))
-            .bind(i64::from(counts.left_provisional))
-            .bind(ts(now))
-            .bind(id.to_string())
-            .bind(tenant_id)
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?
-            .rows_affected();
+        if !ends(outcome) {
+            return Err(refused(&mut tx, tenant_id, user_id, id).await?);
         }
-        changed(&mut tx, tenant_id, user_id, id, rows).await?;
+        let rows = sqlx::query(
+            "UPDATE dashboard_refreshes SET state = 'finished', ranking_state = ?, judged = ?, reused = ?,
+                 left_provisional = ?, finished_at = ?
+             WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'ranking' AND ranking_attempt = ?",
+        )
+        .bind(wire_name(outcome)?)
+        .bind(i64::from(counts.judged))
+        .bind(i64::from(counts.reused))
+        .bind(i64::from(counts.left_provisional))
+        .bind(ts(now))
+        .bind(id.to_string())
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(i64::from(attempt))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let update = ranking_update(&mut tx, tenant_id, user_id, id, rows).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(update)
     }
 
     /// Retry ranking (R4), in one write transaction: a `finished` refresh holding the current snapshot whose
     /// ranking ended `failed`, `interrupted` or `cancelled` goes back to `ranking` (ranking state `running`, counts
-    /// kept). `NotFound` for an unknown id or another user's refresh.
+    /// kept) in its next ranking attempt. `NotFound` for an unknown id or another user's refresh.
     pub async fn restart_ranking(
         &self,
         tenant_id: &str,
@@ -691,7 +715,8 @@ impl Dashboard<'_> {
             return Ok(RestartOutcome::NotRetryable);
         }
         sqlx::query(
-            "UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running', finished_at = NULL
+            "UPDATE dashboard_refreshes SET state = 'ranking', ranking_state = 'running', finished_at = NULL,
+                 ranking_attempt = ranking_attempt + 1
              WHERE id = ?",
         )
         .bind(id.to_string())
@@ -895,19 +920,55 @@ async fn changed(
     if rows > 0 {
         return Ok(());
     }
-    let exists: bool = sqlx::query_scalar(
+    Err(refused(tx, tenant_id, user_id, id).await?)
+}
+
+/// After a guarded ranking update of `rows` rows: none changed means a stale result for the user's refresh, else
+/// `NotFound`.
+async fn ranking_update(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant_id: &str,
+    user_id: &str,
+    id: RefreshId,
+    rows: u64,
+) -> Result<RankingUpdate, DbError> {
+    if rows > 0 {
+        Ok(RankingUpdate::Applied)
+    } else if owned(tx, tenant_id, user_id, id).await? {
+        Ok(RankingUpdate::Stale)
+    } else {
+        Err(DbError::NotFound)
+    }
+}
+
+/// The error for a refused change: `Conflict` for the user's refresh, `NotFound` for any other id.
+async fn refused(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant_id: &str,
+    user_id: &str,
+    id: RefreshId,
+) -> Result<DbError, DbError> {
+    Ok(if owned(tx, tenant_id, user_id, id).await? {
+        DbError::Conflict
+    } else {
+        DbError::NotFound
+    })
+}
+
+async fn owned(
+    tx: &mut Transaction<'static, Sqlite>,
+    tenant_id: &str,
+    user_id: &str,
+    id: RefreshId,
+) -> Result<bool, DbError> {
+    Ok(sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM dashboard_refreshes WHERE id = ? AND tenant_id = ? AND user_id = ?)",
     )
     .bind(id.to_string())
     .bind(tenant_id)
     .bind(user_id)
     .fetch_one(&mut **tx)
-    .await?;
-    Err(if exists {
-        DbError::Conflict
-    } else {
-        DbError::NotFound
-    })
+    .await?)
 }
 
 async fn read_record<'c>(
@@ -969,6 +1030,7 @@ fn record_of(row: &SqliteRow) -> Result<RefreshRecord, DbError> {
             .try_get::<Option<String>, _>("ranking_state")?
             .map(|state| parse_wire(&state, "ranking_state"))
             .transpose()?,
+        ranking_attempt: count(row, "ranking_attempt")?,
         counts: JudgeCounts {
             judged: count(row, "judged")?,
             reused: count(row, "reused")?,
@@ -1126,8 +1188,9 @@ mod tests {
     async fn finished(db: &Db, user: &str, minute: i64, outcome: RankingState) -> RefreshId {
         let id = ranking(db, user, minute).await;
         db.dashboard()
-            .finish_ranking(T, user, id, outcome, COUNTS, at(minute))
+            .finish_ranking(T, user, id, 0, outcome, COUNTS, at(minute))
             .await
+            .map(|update| assert_eq!(update, RankingUpdate::Applied))
             .expect("finish");
         id
     }
@@ -1405,6 +1468,7 @@ mod tests {
                 log: Vec::new(),
                 failure: None,
                 ranking_state: None,
+                ranking_attempt: 0,
                 counts: JudgeCounts::default(),
                 has_snapshot: false,
                 started_at: at(0),
@@ -1443,8 +1507,9 @@ mod tests {
             let db = db().await;
             let dash = db.dashboard();
             let old = ranking(&db, "u1", 0).await;
-            dash.set_ranking(T, "u1", old, state, COUNTS)
+            dash.set_ranking(T, "u1", old, 0, state, COUNTS)
                 .await
+                .map(|update| assert_eq!(update, RankingUpdate::Applied))
                 .expect("ranking state");
             let (new, superseded) = started(
                 dash.start_refresh(T, "u1", RefreshTrigger::Scheduled, at(10))
@@ -1621,8 +1686,9 @@ mod tests {
                     reused: 5,
                     left_provisional: 0,
                 };
-                dash.set_ranking(T, "u1", id, state, counts)
+                dash.set_ranking(T, "u1", id, 0, state, counts)
                     .await
+                    .map(|update| assert_eq!(update, RankingUpdate::Applied))
                     .expect("live ranking state");
                 let stored = record(&db, "u1", id).await;
                 assert_eq!(
@@ -1636,7 +1702,7 @@ mod tests {
                 RankingState::Cancelled,
                 RankingState::Finished,
             ] {
-                assert_err(dash.set_ranking(T, "u1", id, ending, COUNTS).await, true);
+                assert_err(dash.set_ranking(T, "u1", id, 0, ending, COUNTS).await, true);
             }
             for live_state in [
                 RankingState::WaitingForAnalysis,
@@ -1644,13 +1710,14 @@ mod tests {
                 RankingState::Paused,
             ] {
                 assert_err(
-                    dash.finish_ranking(T, "u1", id, live_state, COUNTS, at(5))
+                    dash.finish_ranking(T, "u1", id, 0, live_state, COUNTS, at(5))
                         .await,
                     true,
                 );
             }
-            dash.finish_ranking(T, "u1", id, outcome, COUNTS, at(5))
+            dash.finish_ranking(T, "u1", id, 0, outcome, COUNTS, at(5))
                 .await
+                .map(|update| assert_eq!(update, RankingUpdate::Applied))
                 .expect("finish");
             let stored = record(&db, "u1", id).await;
             assert_eq!(
@@ -1671,18 +1738,111 @@ mod tests {
                 "{outcome:?}"
             );
             assert_eq!(current(&db, "u1").await, Some((id, 0)), "{outcome:?}");
-            assert_err(
-                dash.set_ranking(T, "u1", id, RankingState::Running, COUNTS)
-                    .await,
-                true,
+            assert_eq!(
+                dash.set_ranking(T, "u1", id, 0, RankingState::Running, COUNTS)
+                    .await
+                    .expect("late"),
+                RankingUpdate::Stale
             );
-            assert_err(
-                dash.finish_ranking(T, "u1", id, RankingState::Finished, COUNTS, at(6))
-                    .await,
-                true,
+            assert_eq!(
+                dash.finish_ranking(T, "u1", id, 0, RankingState::Finished, COUNTS, at(6))
+                    .await
+                    .expect("late"),
+                RankingUpdate::Stale
+            );
+            assert_eq!(
+                record(&db, "u1", id).await,
+                stored,
+                "a late result changes nothing"
             );
             assert!(live(&db, "u1").await.is_empty());
         }
+    }
+
+    /// A late result of attempt 0 after Retry ranking is ignored; attempt 1 keeps running and ends normally.
+    #[tokio::test]
+    async fn late_result_after_restart_ranking_is_stale() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let id = finished(&db, "u1", 0, RankingState::Failed).await;
+        assert!(matches!(
+            dash.restart_ranking(T, "u1", id).await.expect("restart"),
+            RestartOutcome::Restarted(_)
+        ));
+        let restarted = record(&db, "u1", id).await;
+        let late = JudgeCounts {
+            judged: 9,
+            ..COUNTS
+        };
+        assert_eq!(
+            dash.set_ranking(T, "u1", id, 0, RankingState::Paused, late)
+                .await
+                .expect("late"),
+            RankingUpdate::Stale
+        );
+        assert_eq!(
+            dash.finish_ranking(T, "u1", id, 0, RankingState::Finished, late, at(5))
+                .await
+                .expect("late"),
+            RankingUpdate::Stale
+        );
+        assert_eq!(record(&db, "u1", id).await, restarted);
+        assert_eq!(
+            (
+                restarted.state,
+                restarted.ranking_state,
+                restarted.ranking_attempt
+            ),
+            (RefreshState::Ranking, Some(RankingState::Running), 1)
+        );
+        assert_eq!(
+            dash.finish_ranking(T, "u1", id, 1, RankingState::Finished, late, at(6))
+                .await
+                .expect("current"),
+            RankingUpdate::Applied
+        );
+        let done = record(&db, "u1", id).await;
+        assert_eq!(
+            (
+                done.state,
+                done.ranking_state,
+                done.counts,
+                done.ranking_attempt
+            ),
+            (
+                RefreshState::Finished,
+                Some(RankingState::Finished),
+                late,
+                1
+            )
+        );
+    }
+
+    /// A late result of a superseded ranking is ignored and leaves the new refresh untouched.
+    #[tokio::test]
+    async fn late_result_after_a_supersede_is_stale() {
+        let db = db().await;
+        let dash = db.dashboard();
+        let old = ranking(&db, "u1", 0).await;
+        let new = start(&db, "u1", 1).await;
+        let (old_before, new_before) = (record(&db, "u1", old).await, record(&db, "u1", new).await);
+        assert_eq!(old_before.ranking_state, Some(RankingState::Cancelled));
+        assert_eq!(
+            dash.set_ranking(T, "u1", old, 0, RankingState::Running, COUNTS)
+                .await
+                .expect("late"),
+            RankingUpdate::Stale
+        );
+        assert_eq!(
+            dash.finish_ranking(T, "u1", old, 0, RankingState::Finished, COUNTS, at(2))
+                .await
+                .expect("late"),
+            RankingUpdate::Stale
+        );
+        assert_eq!(
+            (record(&db, "u1", old).await, record(&db, "u1", new).await),
+            (old_before, new_before)
+        );
     }
 
     /// R3 in each phase: a scan ends `cancelled`, a ranking ends `finished` with ranking `cancelled`, an ended
@@ -1700,8 +1860,9 @@ mod tests {
             RefreshState::Cancelled
         );
         let ranked = ranking(&db, "u1", 2).await;
-        dash.finish_ranking(T, "u1", ranked, RankingState::Cancelled, COUNTS, at(3))
+        dash.finish_ranking(T, "u1", ranked, 0, RankingState::Cancelled, COUNTS, at(3))
             .await
+            .map(|update| assert_eq!(update, RankingUpdate::Applied))
             .expect("cancel the ranking");
         let stored = record(&db, "u1", ranked).await;
         assert_eq!(
@@ -1714,10 +1875,11 @@ mod tests {
                 dash.end_scan(T, "u1", id, &ScanEnd::Cancelled, at(4)).await,
                 true,
             );
-            assert_err(
-                dash.finish_ranking(T, "u1", id, RankingState::Cancelled, COUNTS, at(4))
-                    .await,
-                true,
+            assert_eq!(
+                dash.finish_ranking(T, "u1", id, 0, RankingState::Cancelled, COUNTS, at(4))
+                    .await
+                    .expect("ended"),
+                RankingUpdate::Stale
             );
         }
         assert!(live(&db, "u1").await.is_empty());
@@ -1757,8 +1919,9 @@ mod tests {
             .await
             .expect("progress while ranking");
         assert_eq!(record(&db, "u1", id).await.log, short);
-        dash.finish_ranking(T, "u1", id, RankingState::Finished, COUNTS, at(2))
+        dash.finish_ranking(T, "u1", id, 0, RankingState::Finished, COUNTS, at(2))
             .await
+            .map(|update| assert_eq!(update, RankingUpdate::Applied))
             .expect("finish");
         assert_err(
             dash.record_progress(T, "u1", id, &progress, &log).await,
@@ -1797,13 +1960,21 @@ mod tests {
                     false,
                 );
                 assert_err(
-                    dash.set_ranking(tenant, user, id, RankingState::Running, COUNTS)
+                    dash.set_ranking(tenant, user, id, 0, RankingState::Running, COUNTS)
                         .await,
                     false,
                 );
                 assert_err(
-                    dash.finish_ranking(tenant, user, id, RankingState::Cancelled, COUNTS, at(2))
-                        .await,
+                    dash.finish_ranking(
+                        tenant,
+                        user,
+                        id,
+                        0,
+                        RankingState::Cancelled,
+                        COUNTS,
+                        at(2),
+                    )
+                    .await,
                     false,
                 );
                 assert_err(dash.restart_ranking(tenant, user, id).await, false);
@@ -1860,6 +2031,7 @@ mod tests {
                 ),
                 "{outcome:?}"
             );
+            assert_eq!(restarted.ranking_attempt, 1);
             assert_eq!(record(&db, "u1", id).await, restarted);
             assert_eq!(current(&db, "u1").await, Some((id, 0)));
             assert_eq!(
@@ -2053,11 +2225,13 @@ mod tests {
             T,
             "u1",
             newer,
+            0,
             RankingState::Finished,
             COUNTS,
             at(later + 2),
         )
         .await
+        .map(|update| assert_eq!(update, RankingUpdate::Applied))
         .expect("finish");
         let last = start(&db, "u1", later + 30).await;
         let ids = refresh_ids(&db, "u1").await;
@@ -2212,7 +2386,8 @@ mod tests {
                 (Err(DbError::NotFound), false) if state.is_none() => false,
                 (other, _) => panic!("step {step}: {other:?} for {state:?}"),
             };
-            match next() % 9 {
+            let op = next() % 9;
+            match op {
                 0 | 1 => {
                     let outcome = dash
                         .start_refresh(T, user, RefreshTrigger::Scheduled, now)
@@ -2255,23 +2430,46 @@ mod tests {
                         saw("end_scan");
                     }
                 }
-                4 => {
-                    let ranking_state =
-                        live_states[usize::try_from(next() % 3).unwrap_or_default()];
-                    let result = dash
-                        .set_ranking(T, user, target, ranking_state, COUNTS)
-                        .await;
-                    if expect(result, target_state == Some(RefreshState::Ranking)) {
-                        saw("set_ranking");
-                    }
-                }
-                5 => {
-                    let outcome = endings[usize::try_from(next() % 4).unwrap_or_default()];
-                    let result = dash
-                        .finish_ranking(T, user, target, outcome, COUNTS, now)
-                        .await;
-                    if expect(result, target_state == Some(RefreshState::Ranking)) {
-                        saw("finish_ranking");
+                4 | 5 => {
+                    let current_attempt = state.as_ref().map_or(0, |r| r.ranking_attempt);
+                    // Mostly the current attempt, sometimes an earlier one (a late result).
+                    let attempt = if next() % 4 == 0 {
+                        current_attempt.wrapping_sub(1)
+                    } else {
+                        current_attempt
+                    };
+                    let result = if op == 4 {
+                        let ranking_state =
+                            live_states[usize::try_from(next() % 3).unwrap_or_default()];
+                        dash.set_ranking(T, user, target, attempt, ranking_state, COUNTS)
+                            .await
+                    } else {
+                        let outcome = endings[usize::try_from(next() % 4).unwrap_or_default()];
+                        dash.finish_ranking(T, user, target, attempt, outcome, COUNTS, now)
+                            .await
+                    };
+                    let applies =
+                        target_state == Some(RefreshState::Ranking) && attempt == current_attempt;
+                    match result {
+                        Ok(RankingUpdate::Applied) => {
+                            assert!(applies, "step {step}");
+                            saw(if op == 4 {
+                                "set_ranking"
+                            } else {
+                                "finish_ranking"
+                            });
+                        }
+                        Ok(RankingUpdate::Stale) => {
+                            assert!(state.is_some() && !applies, "step {step}");
+                            assert_eq!(
+                                dash.refresh(T, user, target).await.ok(),
+                                state,
+                                "step {step}: a stale result changes nothing"
+                            );
+                            saw("stale");
+                        }
+                        Err(DbError::NotFound) => assert!(state.is_none(), "step {step}"),
+                        Err(other) => panic!("step {step}: {other:?}"),
                     }
                 }
                 6 => {
@@ -2359,6 +2557,7 @@ mod tests {
                 "scan_running",
                 "set_ranking",
                 "snapshot",
+                "stale",
                 "started",
                 "superseded"
             ],
@@ -2372,9 +2571,18 @@ mod tests {
                         .await
                         .expect("end scan");
                 } else {
-                    dash.finish_ranking(T, user, id, RankingState::Cancelled, COUNTS, at(20_000))
-                        .await
-                        .expect("end ranking");
+                    dash.finish_ranking(
+                        T,
+                        user,
+                        id,
+                        0,
+                        RankingState::Cancelled,
+                        COUNTS,
+                        at(20_000),
+                    )
+                    .await
+                    .map(|update| assert_eq!(update, RankingUpdate::Applied))
+                    .expect("end ranking");
                 }
             }
             start(&db, user, 20_001).await;
@@ -2480,23 +2688,26 @@ mod tests {
             left_provisional: 1,
         };
         let first = ranking(&db, "u1", 0).await;
-        dash.finish_ranking(T, "u1", first, RankingState::Finished, judged(3), at(1))
+        dash.finish_ranking(T, "u1", first, 0, RankingState::Finished, judged(3), at(1))
             .await
+            .map(|update| assert_eq!(update, RankingUpdate::Applied))
             .expect("first");
         // The same item is judged again: its stored judgement is replaced, the call still counts.
         dash.save_judgements(T, "u1", &[judgement(1, "a", at(1))])
             .await
             .expect("judgement");
         let second = ranking(&db, "u1", 10).await;
-        dash.set_ranking(T, "u1", second, RankingState::Running, judged(2))
+        dash.set_ranking(T, "u1", second, 0, RankingState::Running, judged(2))
             .await
+            .map(|update| assert_eq!(update, RankingUpdate::Applied))
             .expect("second, still ranking");
         dash.save_judgements(T, "u1", &[judgement(1, "b", at(11))])
             .await
             .expect("judged again");
         let theirs = ranking(&db, "u2", 0).await;
-        dash.finish_ranking(T, "u2", theirs, RankingState::Finished, judged(5), at(1))
+        dash.finish_ranking(T, "u2", theirs, 0, RankingState::Finished, judged(5), at(1))
             .await
+            .map(|update| assert_eq!(update, RankingUpdate::Applied))
             .expect("u2");
         assert_eq!(dash.judged_since(T, "u1", at(0)).await.expect("count"), 5);
         assert_eq!(dash.judged_since(T, "u1", at(5)).await.expect("count"), 2);
@@ -2521,9 +2732,18 @@ mod tests {
                 judged: 8,
                 ..JudgeCounts::default()
             };
-            dash.finish_ranking(T, "u1", id, RankingState::Finished, counts, at(minute * 60))
-                .await
-                .expect("finish");
+            dash.finish_ranking(
+                T,
+                "u1",
+                id,
+                0,
+                RankingState::Finished,
+                counts,
+                at(minute * 60),
+            )
+            .await
+            .map(|update| assert_eq!(update, RankingUpdate::Applied))
+            .expect("finish");
         }
         assert_eq!(refresh_ids(&db, "u1").await.len(), 15);
         assert_eq!(dash.judged_since(T, "u1", at(0)).await.expect("count"), 120);
@@ -2630,6 +2850,13 @@ mod tests {
                 "dashboard_refreshes_one_live_per_user",
             ]
         );
+        let attempt: (String, i64) = sqlx::query_as(
+            "SELECT dflt_value, \"notnull\" FROM pragma_table_info('dashboard_refreshes') WHERE name = 'ranking_attempt'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("ranking_attempt column");
+        assert_eq!(attempt, ("0".to_owned(), 1));
         let dash = db.dashboard();
         assert_eq!(dash.settings(T, "u1").await.expect("settings"), None);
         assert_eq!(dash.latest_refresh(T, "u1").await.expect("latest"), None);
@@ -2749,6 +2976,91 @@ mod tests {
         .fetch_all(&db.pool)
         .await
         .expect("versions");
-        assert_eq!(versions, [1, 2, 3, 4]);
+        assert_eq!(versions, [1, 2, 3, 4, 5]);
+    }
+
+    /// Migration 0005 upgrades a database with dashboard rows in place: refreshes, settings and judgements are kept,
+    /// every refresh starts at ranking attempt 0, and the attempt cannot go below zero.
+    #[tokio::test]
+    async fn ranking_attempt_migration_keeps_dashboard_rows() {
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .in_memory(true)
+            .foreign_keys(true);
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .min_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None)
+            .connect_with(options)
+            .await
+            .expect("pool");
+        super::super::migrate(&pool, 4).await.expect("0001-0004");
+        let db = Db { pool };
+        seed_users(&db).await;
+        sqlx::raw_sql(
+            "INSERT INTO dashboard_settings (user_id, tenant_id, time_zone, updated_at)
+               VALUES ('u1', 'default', 'Europe/Warsaw', '2026-11-18T06:00:00.000000Z');
+             INSERT INTO dashboard_refreshes (id, tenant_id, user_id, trigger, state, started_at, snapshot,
+                 ranking_state, judged)
+               VALUES ('00000000-0000-4000-8000-000000000001', 'default', 'u1', 'manual', 'finished',
+                       '2026-11-18T06:00:00.000000Z', '{\"n\":1}', 'failed', 4),
+                      ('00000000-0000-4000-8000-000000000002', 'default', 'u2', 'scheduled', 'ranking',
+                       '2026-11-18T06:00:00.000000Z', '{\"n\":2}', 'paused', 1);
+             INSERT INTO dashboard_judgements (tenant_id, user_id, item_key, input_fingerprint, input_version,
+                 prompt_version, body, refresh_id, model, judged_at, last_seen_at)
+               VALUES ('default', 'u1', 'dashpay~platform~pr~1', 'aa', 1, 1, '{}',
+                       '00000000-0000-4000-8000-000000000001', 'gpt-6.1-sol', '2026-11-18T06:00:00.000000Z',
+                       '2026-11-18T06:00:00.000000Z');",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("dashboard rows");
+        let rows = "SELECT
+            (SELECT group_concat(user_id || time_zone) FROM dashboard_settings) || '|' ||
+            (SELECT group_concat(id || user_id || state || ranking_state || judged || snapshot) FROM dashboard_refreshes)
+            || '|' || (SELECT group_concat(item_key || refresh_id) FROM dashboard_judgements)";
+        let before: String = sqlx::query_scalar(rows)
+            .fetch_one(&db.pool)
+            .await
+            .expect("before");
+
+        super::super::migrate(&db.pool, super::super::MIGRATIONS.len())
+            .await
+            .expect("upgrade in place");
+
+        let after: String = sqlx::query_scalar(rows)
+            .fetch_one(&db.pool)
+            .await
+            .expect("after");
+        assert_eq!(after, before);
+        let attempts: Vec<i64> =
+            sqlx::query_scalar("SELECT ranking_attempt FROM dashboard_refreshes ORDER BY id")
+                .fetch_all(&db.pool)
+                .await
+                .expect("attempts");
+        assert_eq!(attempts, [0, 0]);
+        let negative = sqlx::query("UPDATE dashboard_refreshes SET ranking_attempt = -1")
+            .execute(&db.pool)
+            .await;
+        assert!(negative.is_err(), "the attempt cannot go below zero");
+        let paused: RefreshId =
+            parse_wire("00000000-0000-4000-8000-000000000002", "id").expect("id");
+        let dash = db.dashboard();
+        assert_eq!(
+            dash.finish_ranking(T, "u2", paused, 0, RankingState::Finished, COUNTS, at(1))
+                .await
+                .expect("attempt 0"),
+            RankingUpdate::Applied
+        );
+        let failed: RefreshId =
+            parse_wire("00000000-0000-4000-8000-000000000001", "id").expect("id");
+        let RestartOutcome::Restarted(restarted) = dash
+            .restart_ranking(T, "u1", failed)
+            .await
+            .expect("restart")
+        else {
+            panic!("the failed ranking of the current snapshot is retryable");
+        };
+        assert_eq!(restarted.ranking_attempt, 1);
     }
 }
