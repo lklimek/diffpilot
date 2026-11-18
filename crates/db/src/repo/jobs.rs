@@ -492,7 +492,8 @@ impl Jobs<'_> {
     /// Enqueues a job in state `queued` in the analysis's current round (a dashboard job: the refresh's ranking
     /// attempt); `Conflict` if a live or succeeded job of the same stage, generation and round exists (look it up
     /// with [`Jobs::current_for_stage`] or [`Jobs::current_for_judge_stage`] and reuse it). `NotFound` when the
-    /// target's analysis or refresh does not exist.
+    /// target's analysis does not exist, or its refresh does not exist or no longer ranks (a job that could never
+    /// be claimed).
     pub async fn enqueue(&self, job: NewJob, now: DateTime<Utc>) -> Result<JobRecord, DbError> {
         let mut spec = job.spec;
         // The stored spec never holds a credential (threat model T3b); access is filled at claim.
@@ -514,7 +515,7 @@ impl Jobs<'_> {
                 "INSERT INTO jobs (id, tenant_id, refresh_id, kind, priority, state, spec, credential_id, stage,
                      generation, flow_id, question_id, created_at, round)
                  SELECT ?, tenant_id, id, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ranking_attempt
-                 FROM dashboard_refreshes WHERE id = ?",
+                 FROM dashboard_refreshes WHERE id = ? AND state = 'ranking'",
                 refresh_id.to_string(),
             ),
         };
@@ -2335,6 +2336,21 @@ mod tests {
                 .await,
             Err(DbError::NotFound)
         ));
+        sqlx::query(
+            "UPDATE dashboard_refreshes SET state = 'finished', ranking_state = 'cancelled', finished_at = 't'
+             WHERE id = ?",
+        )
+        .bind(refresh.to_string())
+        .execute(&db.pool)
+        .await
+        .expect("ranking ended");
+        assert!(
+            matches!(
+                db.jobs().enqueue(judge_job(refresh, 2), at(4)).await,
+                Err(DbError::NotFound)
+            ),
+            "no job for a ranking that ended"
+        );
     }
 
     #[tokio::test]
