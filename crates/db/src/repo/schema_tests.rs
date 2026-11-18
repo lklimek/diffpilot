@@ -1052,3 +1052,188 @@ async fn access_tokens_keep_hashes_and_live_names_unique() {
         .expect("count");
     assert_eq!(left, 0);
 }
+
+/// Migration 0007 rebuilds the job tables in place on a populated v1 database: every job, event and pending token
+/// revocation is kept, stored specs move into `target`, and the children reference the new `jobs` table.
+#[tokio::test]
+async fn jobs_targets_migration_applies_to_a_v1_database() {
+    use contracts::ids::AnalysisId;
+    use contracts::job::spec::{JobTarget, PullRequestTarget};
+
+    use crate::repo::analyses::testing::{job_spec, judge_spec, seed_ranking_refresh};
+
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    migrate(&pool, 6).await.expect("schema before 0007");
+    let db = Db { pool };
+    seed(&db).await;
+    let analysis: AnalysisId =
+        serde_json::from_value(serde_json::json!("00000000-0000-4000-8000-0000000000a1"))
+            .expect("id");
+    sqlx::query("UPDATE analyses SET id = ? WHERE id = 'a1'")
+        .bind(analysis.to_string())
+        .execute(&db.pool)
+        .await
+        .expect("uuid analysis id");
+    let current = job_spec(analysis, JobKind::AnalyseFlow);
+    let mut v1 = serde_json::to_value(&current).expect("spec");
+    let target = v1
+        .as_object_mut()
+        .and_then(|spec| spec.remove("target"))
+        .expect("target");
+    for field in ["analysis_id", "pull_request_id", "repo"] {
+        v1[field] = target[field].clone();
+    }
+    v1["pull_request_id"] = serde_json::json!(1);
+    sqlx::query(
+        "INSERT INTO jobs (id, tenant_id, analysis_id, kind, priority, state, spec, credential_id, created_at, stage,
+             attempt, result, claimed_at, finished_at)
+         VALUES (?1, 'default', ?2, 'analyse_flow', 1, 'succeeded', ?3, 'c1', ?5, 'flow:f1', 1, ?4, ?5, ?5)",
+    )
+    .bind(current.job_id.to_string())
+    .bind(analysis.to_string())
+    .bind(v1.to_string())
+    .bind(
+        serde_json::to_string(&contracts::job::result::JobResult {
+            usage: Some(contracts::job::result::Usage {
+                input_tokens: 7,
+                cached_input_tokens: 0,
+                output_tokens: 1,
+            }),
+            ..crate::repo::jobs::server_result(
+                current.job_id,
+                1,
+                contracts::job::result::JobOutcome::Cancelled,
+            )
+        })
+        .expect("result"),
+    )
+    .bind("2026-11-16T00:00:00.000000Z")
+    .execute(&db.pool)
+    .await
+    .expect("v1 job");
+    for sql in [
+        "INSERT INTO job_events (job_id, tenant_id, attempt, seq, at, body) VALUES (?1, 'default', 1, 1, 't', '{}')",
+        "INSERT INTO job_events (job_id, tenant_id, attempt, seq, at, body) VALUES (?1, 'default', 1, 2, 't', '{}')",
+        "INSERT INTO installation_tokens (job_id, tenant_id, attempt, ciphertext, expires_at)
+           VALUES (?1, 'default', 1, x'00', 't')",
+    ] {
+        sqlx::query(sql)
+            .bind(current.job_id.to_string())
+            .execute(&db.pool)
+            .await
+            .expect("child row");
+    }
+
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+
+    let record = db.jobs().get(current.job_id).await.expect("job reads back");
+    assert_eq!(record.analysis_id, Some(analysis));
+    assert_eq!(record.refresh_id, None);
+    assert_eq!(
+        record.spec.target,
+        JobTarget::PullRequest(PullRequestTarget {
+            analysis_id: analysis,
+            pull_request_id: 1,
+            repo: current
+                .target
+                .pull_request()
+                .expect("pull request")
+                .repo
+                .clone(),
+        })
+    );
+    assert_eq!(record.spec.prompt, current.prompt);
+    assert_eq!(record.state, JobState::Succeeded);
+    let kept: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM job_events), (SELECT COUNT(*) FROM installation_tokens),
+             (SELECT json_extract(result, '$.usage.input_tokens') FROM jobs)",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("children");
+    assert_eq!(kept, (2, 1, 7));
+    for child in ["job_events", "installation_tokens"] {
+        let parents: Vec<String> =
+            sqlx::query_scalar("SELECT \"table\" FROM pragma_foreign_key_list(?)")
+                .bind(child)
+                .fetch_all(&db.pool)
+                .await
+                .expect("foreign keys");
+        assert!(parents.contains(&"jobs".to_owned()), "{child}: {parents:?}");
+    }
+    sqlx::query("DELETE FROM installation_tokens")
+        .execute(&db.pool)
+        .await
+        .expect("revoked");
+    sqlx::query("DELETE FROM jobs")
+        .execute(&db.pool)
+        .await
+        .expect("delete job");
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_events")
+        .fetch_one(&db.pool)
+        .await
+        .expect("events");
+    assert_eq!(events, 0, "events still cascade with their job");
+
+    let refresh = seed_ranking_refresh(&db).await.expect("refresh");
+    let judge = judge_spec(refresh);
+    let insert = |analysis: Option<String>,
+                  refresh: Option<String>,
+                  kind: &'static str,
+                  stage: &'static str| {
+        sqlx::query(
+            "INSERT INTO jobs (id, tenant_id, analysis_id, refresh_id, kind, priority, state, spec, credential_id,
+                 created_at, stage)
+             VALUES (?, 'default', ?, ?, ?, 0, 'queued', '{}', 'c1', 't', ?)",
+        )
+        .bind(contracts::ids::JobId::new_random().to_string())
+        .bind(analysis)
+        .bind(refresh)
+        .bind(kind)
+        .bind(stage)
+        .execute(&db.pool)
+    };
+    let (a, r) = (Some(analysis.to_string()), Some(refresh.to_string()));
+    assert!(
+        insert(None, r.clone(), "judge_work", "judge:x:1")
+            .await
+            .is_ok()
+    );
+    assert!(
+        insert(a.clone(), r.clone(), "judge_work", "judge:x:2")
+            .await
+            .is_err(),
+        "both targets"
+    );
+    assert!(
+        insert(None, None, "judge_work", "judge:x:3").await.is_err(),
+        "no target"
+    );
+    assert!(
+        insert(a.clone(), None, "judge_work", "judge:x:4")
+            .await
+            .is_err(),
+        "judge job of an analysis"
+    );
+    assert!(
+        insert(None, r.clone(), "plan", "plan:1").await.is_err(),
+        "analysis kind on a refresh"
+    );
+    assert!(
+        insert(None, r, "judge_work", "flow:f1").await.is_err(),
+        "stage of another kind"
+    );
+    assert_eq!(judge.kind, JobKind::JudgeWork);
+}

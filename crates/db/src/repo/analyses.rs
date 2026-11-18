@@ -734,11 +734,11 @@ impl Analyses<'_> {
 #[cfg(any(test, feature = "test-util"))]
 pub mod testing {
     use contracts::agent::JobKind;
-    use contracts::ids::{AnalysisId, CommitSha, JobId};
+    use contracts::ids::{AnalysisId, CommitSha, JobId, RefreshId};
     use contracts::job::access::AgentAccess;
     use contracts::job::spec::{
-        CredentialKind, JobLimits, JobSpec, LlmCredentialRef, ModelChoice, ReasoningEffort,
-        RepoCheckout,
+        CredentialKind, JobLimits, JobSpec, JobTarget, LlmCredentialRef, ModelChoice,
+        PullRequestTarget, ReasoningEffort, RepoCheckout,
     };
 
     use crate::error::DbError;
@@ -816,13 +816,15 @@ pub mod testing {
             job_id: JobId::new_random(),
             attempt: 0,
             kind,
-            analysis_id: analysis,
-            pull_request_id: 1,
-            repo: RepoCheckout {
-                clone_url: "https://github.com/acme/node-client.git".to_owned(),
-                base_sha: CommitSha("1".repeat(40)),
-                head_sha: CommitSha("9".repeat(40)),
-            },
+            target: JobTarget::PullRequest(PullRequestTarget {
+                analysis_id: analysis,
+                pull_request_id: 1,
+                repo: RepoCheckout {
+                    clone_url: "https://github.com/acme/node-client.git".to_owned(),
+                    base_sha: CommitSha("1".repeat(40)),
+                    head_sha: CommitSha("9".repeat(40)),
+                },
+            }),
             prompt: "Analyse the flow.".to_owned(),
             output_schema: serde_json::json!({"type": "object"}),
             flow_file: None,
@@ -841,6 +843,40 @@ pub mod testing {
             skills: Vec::new(),
             access: AgentAccess::default(),
         }
+    }
+
+    /// A `judge_work` spec for `refresh` without credentials, running with [`CREDENTIAL`].
+    pub fn judge_spec(refresh: RefreshId) -> JobSpec {
+        JobSpec {
+            kind: JobKind::JudgeWork,
+            target: JobTarget::Dashboard {
+                refresh_id: refresh,
+            },
+            prompt: "Judge the items.".to_owned(),
+            ..job_spec(AnalysisId::new_random(), JobKind::JudgeWork)
+        }
+    }
+
+    /// Inserts user `u1` (once) and a refresh of it in `ranking` with an empty snapshot.
+    pub async fn seed_ranking_refresh(db: &Db) -> Result<RefreshId, DbError> {
+        let id = RefreshId::new_random();
+        sqlx::raw_sql(
+            "INSERT OR IGNORE INTO users (id, github_id, login, created_at, updated_at)
+                 VALUES ('u1', 1, 'lklimek', '2026-11-16T00:00:00.000000Z', '2026-11-16T00:00:00.000000Z');",
+        )
+        .execute(&db.pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO dashboard_refreshes (id, tenant_id, user_id, trigger, state, ranking_state, snapshot,
+                 started_at, scanned_at)
+             VALUES (?, ?, 'u1', 'manual', 'ranking', 'running', '{}', '2026-11-16T00:00:00.000000Z',
+                 '2026-11-16T00:00:00.000000Z')",
+        )
+        .bind(id.to_string())
+        .bind(DEFAULT_TENANT)
+        .execute(&db.pool)
+        .await?;
+        Ok(id)
     }
 }
 
