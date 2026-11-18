@@ -77,6 +77,23 @@ describe("useDashboardPage", () => {
     localStorage.removeItem(FILTER_KEY);
   });
 
+  it("remembers a single kind choice as chosen (PRs only, Issues only)", async () => {
+    for (const only of [["pr"], ["issue"]] as const) {
+      localStorage.clear();
+      const { result } = renderPage();
+      act(() => result.current.setFilter([...only]));
+      expect(renderPage().result.current.filter).toEqual(only);
+    }
+  });
+
+  it("a corrupt stored value naming an Object.prototype key falls back to every kind", () => {
+    for (const value of ["constructor", "toString", "__proto__"]) {
+      localStorage.setItem(FILTER_KEY, value);
+      expect(renderPage().result.current.filter).toEqual(["pr", "issue", "todo"]);
+    }
+    localStorage.removeItem(FILTER_KEY);
+  });
+
   it("reads nothing while signed out", async () => {
     setScenario("signed-out");
     const { result } = renderPage();
