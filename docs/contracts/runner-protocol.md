@@ -35,6 +35,8 @@ the same attempt; 400 malformed body.
     `add_memory` only when `allow_write` is true, which the server sets for analytic jobs and never for Ask.
 - `drop_sessions`: PR database keys whose session files the runner deletes on explicit removal (ADR-004); it
   acknowledges in the next claim's `dropped_sessions` (at least once; idempotent).
+- A claim with an empty `credentials` list gets no job but still its `drop_sessions`; the runner polls this way
+  while its scratch disk is below the free-space reserve (ADR-013 "Scratch volumes").
 - The job token is for the runner only: never placed in the agent's environment, config, logs or events.
 
 ## State machine

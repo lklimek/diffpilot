@@ -119,10 +119,11 @@ The image gives fresh volumes the same owners and modes. Accepted losses (threat
   `auth.json` (`ENOSPC`), the credential is marked unknown (`isolated.rs` `pull` and `copy_back`), and `leave`
   then removes the agent's `CODEX_HOME`, the only copy of a refresh token Codex rotated, so the owner must sign
   in to Codex again. Before this change, `codex-homes` was a separate bounded filesystem (T8b) and `/work` a
-  capped tmpfs. Guard: the runner claims no job while the work directory's filesystem has less than
-  `SR_RUNNER_DISK_RESERVE_MIB` free (default 2048; `statvfs`, `scratch::Reserve`). It logs each change of that
-  state once. The server has no "cannot take jobs" signal, so jobs simply stay queued. This is a start
-  condition, not a quota: a job started above the reserve can still fill the disk. TODO: a soft per-job quota
+  capped tmpfs. Guard: the runner takes no job while the work directory's filesystem has less than
+  `SR_RUNNER_DISK_RESERVE_MIB` free (default 2048; `statvfs`, `scratch::Reserve`). Below the reserve it polls
+  with an empty `credentials` list, so the server hands out no job but session drops still arrive. It warns at
+  once and then hourly, and keeps a marker file that turns the container healthcheck `unhealthy`. This is a
+  start condition, not a quota: a job started above the reserve can still fill the disk. TODO: a soft per-job quota
   once needed.
 - **`nosuid`, `nodev`, `noexec` are gone** (Docker mounts volumes without them). No replacement is needed for this
   threat: `nodev` — creating a device node needs `CAP_MKNOD`, which no process here has (`cap_drop: ALL`; the

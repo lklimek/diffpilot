@@ -184,10 +184,10 @@ async fn run() -> Result<(), StartError> {
     )
     .with_session_retention(config.session_retention)
     .with_skills(skills)
-    .with_disk_reserve(scratch::Reserve::new(
-        config.work_dir.clone(),
-        config.disk_reserve,
-    ))
+    .with_disk_reserve(
+        scratch::Reserve::new(config.work_dir.clone(), config.disk_reserve)
+            .with_marker(config.state_dir.join(DISK_RESERVE_MARKER)),
+    )
     .run(shutdown_signal())
     .await;
     tracing::info!("runner stopped");
@@ -197,6 +197,9 @@ async fn run() -> Result<(), StartError> {
 /// Runs agents as the runner's own uid when no supervisor is present (development only; never set in the
 /// image).
 const DEV_NO_ISOLATION: &str = "SR_RUNNER_DEV_NO_ISOLATION";
+
+/// Present in the state directory while the scratch disk is below its reserve; the container healthcheck reads it.
+const DISK_RESERVE_MARKER: &str = "disk-below-reserve";
 
 /// The runner-private staging `CODEX_HOME`s under the supervisor, below the state directory.
 const CODEX_STAGING: &str = "codex-staging";

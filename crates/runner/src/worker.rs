@@ -207,7 +207,7 @@ impl Worker {
         }
     }
 
-    /// Claims no job while the scratch filesystem has less free space than `reserve` asks.
+    /// Takes no job while the scratch filesystem has less free space than `reserve` asks.
     pub fn with_disk_reserve(mut self, reserve: crate::scratch::Reserve) -> Self {
         self.disk_reserve = Some(reserve);
         self
@@ -270,22 +270,27 @@ impl Worker {
         }
     }
 
-    /// One claim; runs the claimed job to its end. `None` when nothing was runnable, or when the scratch
-    /// filesystem is below its reserve (then no claim is sent).
+    /// One claim; runs the claimed job to its end. `None` when nothing was runnable. Below the scratch
+    /// filesystem's reserve the claim offers no credential, so the server hands out no job but still sends its
+    /// session drops.
     pub async fn poll_once(&mut self) -> Result<Option<JobEnd>, ClientError> {
         // The previous attempt (and its credential copy-back) is over before the next claim.
         self.executor.settled().await;
-        if let Some(reserve) = &mut self.disk_reserve
-            && !reserve.allows_claim()
-        {
-            return Ok(None);
-        }
-        let request = ClaimRequest {
-            runner_id: self.runner_id.clone(),
-            credentials: vec![CredentialStatus {
+        let takes_jobs = self
+            .disk_reserve
+            .as_mut()
+            .is_none_or(crate::scratch::Reserve::allows_claim);
+        let credentials = if takes_jobs {
+            vec![CredentialStatus {
                 credential: self.executor.credential().clone(),
                 usable: (self.credential_usable)(),
-            }],
+            }]
+        } else {
+            Vec::new()
+        };
+        let request = ClaimRequest {
+            runner_id: self.runner_id.clone(),
+            credentials,
             dropped_sessions: self.dropped_sessions.clone(),
         };
         let sent = Instant::now();

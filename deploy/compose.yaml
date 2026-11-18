@@ -129,12 +129,14 @@ services:
       - tmp-runner:/tmp
     healthcheck:
       # The supervisor exits (and the container with it) when the runner stops; healthy = a process whose
-      # argv[0] is the runner binary exists, so the preflight has passed (/proc/<pid>/exe is not readable here).
+      # argv[0] is the runner binary exists, so the preflight has passed (/proc/<pid>/exe is not readable here),
+      # and the runner's disk-below-reserve marker is absent (SR_RUNNER_DISK_RESERVE_MIB).
       test:
         - CMD
         - /bin/sh
         - -c
         - >-
+          [ ! -e /var/lib/smart-review-runner/disk-below-reserve ] || exit 1;
           for p in /proc/[0-9]*; do
           [ "$$(tr '\0' '\n' < $$p/cmdline 2> /dev/null | head -n 1)" = /usr/local/bin/smart-review-runner ] && exit 0;
           done; exit 1

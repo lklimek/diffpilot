@@ -360,12 +360,19 @@ docker volume ls -q --filter label=smart-review.volume=temporary --filter label=
 sr up -d
 ```
 
-Free-space reserve: the runner claims no job while the filesystem of `/work` (Docker's data root, shared by all
-volumes) has less than `SR_RUNNER_DISK_RESERVE_MIB` free (default 2048). Jobs then stay queued; the runner logs
-`the job scratch filesystem is below its free-space reserve` once, and `... has its free-space reserve again` when
-it claims again. This only stops new jobs: a running job can still fill the disk. If a job's copy-back of the
-Codex credential then fails (`the agent's auth.json could not be copied back`), the rotated token is lost: sign
-in again (section "LLM credential").
+Free-space reserve: the runner takes no job while the filesystem of `/work` (Docker's data root, shared by all
+volumes) has less than `SR_RUNNER_DISK_RESERVE_MIB` free (default 2048). It keeps polling the server, so session
+deletions still happen, but jobs stay queued. What you see:
+- `sr ps` shows the runner `unhealthy` (marker file `/var/lib/smart-review-runner/disk-below-reserve`);
+- the runner log says `the job scratch filesystem is below its free-space reserve` with `free_mib` and
+  `required_mib`, at once and then every hour.
+
+What to do: free space on Docker's disk (`df -h "$(docker info -f '{{.DockerRootDir}}')"`; `docker system df`),
+for example by removing the temporary volumes as above. Within one poll after space is back, the runner logs
+`... has its free-space reserve again; taking jobs`, and the next healthcheck reports it `healthy`. The reserve
+only stops new jobs: a running job can still fill the disk. If a job's copy-back of the Codex credential then
+fails (`the agent's auth.json could not be copied back`), the rotated token is lost: sign in again (section "LLM
+credential").
 
 `docker volume rm` refuses a volume a container still uses (stopped containers included); then `sr down` first
 (containers and networks only, the durable volumes stay). A start that cannot empty a leftover stops with exit 1

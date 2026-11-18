@@ -44,7 +44,7 @@ pub const CLAUDIUS_REFRESH_SECS: &str = "SR_RUNNER_CLAUDIUS_REFRESH_SECS";
 pub const SKILLS: &str = "SR_RUNNER_SKILLS";
 /// Days an agent session is kept after its last job (default 14).
 pub const SESSION_RETENTION_DAYS: &str = "SR_RUNNER_SESSION_RETENTION_DAYS";
-/// MiB that must stay free on the work directory's filesystem for the runner to claim a job (default 2048).
+/// MiB that must stay free on the work directory's filesystem for the runner to take a job (default 2048).
 pub const DISK_RESERVE_MIB: &str = "SR_RUNNER_DISK_RESERVE_MIB";
 
 const DEFAULT_RUNNER_ID: &str = "runner";
