@@ -343,8 +343,11 @@ async fn claim_job(
     let response = claim::claim(&state.db, &state.config, &packs, &request, Utc::now())
         .await
         .map_err(RunnerError::from)?;
-    if let Some(claimed) = &response.claim {
-        let analysis = claimed.spec.analysis_id;
+    if let Some(analysis) = response
+        .claim
+        .as_ref()
+        .and_then(|claimed| claimed.spec.target.analysis_id())
+    {
         // The claim is done; a failed publish only delays the new stage until the next event or reconnect.
         if let Err(error) = state.progress.publish_analysis(&state.db, analysis).await {
             tracing::warn!(%analysis, ?error, "the stage of a claimed job could not be published to the progress stream");
@@ -822,10 +825,10 @@ mod tests {
             priority: JobPriority::Batch,
             stage,
             generation: 0,
-            pr_repo: contracts::common::RepoRef {
+            pr_repo: Some(contracts::common::RepoRef {
                 owner: "acme".to_owned(),
                 name: "node-client".to_owned(),
-            },
+            }),
         };
         let handle = harness
             .state

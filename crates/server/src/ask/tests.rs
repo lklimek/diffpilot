@@ -651,7 +651,7 @@ async fn ask_job_goes_through_the_executor_as_an_interactive_ask_job() {
     assert_eq!(request.generation, 0);
     let spec: &JobSpec = &request.spec;
     assert_eq!(spec.kind, contracts::agent::JobKind::Ask);
-    assert_eq!(spec.analysis_id, f.analysis);
+    assert_eq!(spec.target.analysis_id(), Some(f.analysis));
     assert!(
         spec.prompt.contains(QUESTION),
         "the question is in the prompt"
@@ -1002,10 +1002,10 @@ impl Fixture {
                 priority: JobPriority::Interactive,
                 stage: JobStage::Ask(id),
                 generation: 0,
-                pr_repo: contracts::common::RepoRef {
+                pr_repo: Some(contracts::common::RepoRef {
                     owner: "acme".to_owned(),
                     name: "node-client".to_owned(),
-                },
+                }),
             })
             .await
             .expect("submit");
@@ -1317,10 +1317,11 @@ async fn ask_on_an_older_analysis_resumes_the_pr_session_from_a_new_head() {
     let question = f.asked("f1.5", QUESTION).await;
     f.queued_job(question).await;
     let claim = f.claim().await.unwrap();
-    assert_eq!(claim.spec.analysis_id, f.analysis);
-    assert_eq!(claim.spec.pull_request_id, previous.pull_request_id);
+    let target = claim.spec.target.pull_request().unwrap();
+    assert_eq!(target.analysis_id, f.analysis);
+    assert_eq!(target.pull_request_id, previous.pull_request_id);
+    assert_eq!(target.repo.head_sha, previous.head_sha);
     assert_eq!(claim.spec.session.unwrap().thread_id, "new-head-thread");
-    assert_eq!(claim.spec.repo.head_sha, previous.head_sha);
     assert!(claim.spec.prompt.contains(&previous.head_sha.0));
 }
 

@@ -220,10 +220,10 @@ impl JobExecutor for ScriptedExecutor {
             } else {
                 format!("{stage}#{generation}")
             });
-        self.analyses
-            .lock()
-            .expect("lock")
-            .insert(job_id, request.spec.analysis_id);
+        self.analyses.lock().expect("lock").insert(
+            job_id,
+            request.spec.target.analysis_id().expect("analysis job"),
+        );
         Box::pin(async move { Ok(JobHandle { job_id }) })
     }
 
@@ -2223,10 +2223,10 @@ async fn restart_with_failing_preparation_cancels_live_jobs() {
             priority: JobPriority::Batch,
             stage: JobStage::Plan { batch: 1 },
             generation: 0,
-            pr_repo: contracts::common::RepoRef {
+            pr_repo: Some(contracts::common::RepoRef {
                 owner: "acme".to_owned(),
                 name: "node-client".to_owned(),
-            },
+            }),
         })
         .await
         .expect("submit");
@@ -3296,10 +3296,10 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
             priority: JobPriority::Batch,
             stage: JobStage::Plan { batch: 1 },
             generation: 0,
-            pr_repo: contracts::common::RepoRef {
+            pr_repo: Some(contracts::common::RepoRef {
                 owner: "acme".to_owned(),
                 name: "node-client".to_owned(),
-            },
+            }),
         })
         .await
         .expect("submit");
@@ -4494,10 +4494,10 @@ async fn restart_recovers_a_succeeded_flow_job_with_background_off() {
             priority: JobPriority::Batch,
             stage: flow.clone(),
             generation: 0,
-            pr_repo: contracts::common::RepoRef {
+            pr_repo: Some(contracts::common::RepoRef {
                 owner: "acme".to_owned(),
                 name: "node-client".to_owned(),
-            },
+            }),
         })
         .await
         .expect("submit");

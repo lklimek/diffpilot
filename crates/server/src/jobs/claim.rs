@@ -9,7 +9,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use contracts::ids::AnalysisId;
 use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::protocol::{Claim, ClaimRequest, ClaimResponse, LeaseTiming};
-use contracts::job::spec::{SessionRef, WorkingSession};
+use contracts::job::spec::{JobTarget, SessionRef, WorkingSession};
 use db::error::DbError;
 use db::repo::analyses::SessionState;
 use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
@@ -154,6 +154,19 @@ pub async fn claim(
         })
         .await?;
     let claim = match claimed {
+        Some(job) if matches!(job.spec.target, JobTarget::Dashboard { .. }) => {
+            tracing::info!(
+                job = %job.id,
+                attempt = job.attempt,
+                runner = %request.runner_id,
+                "runner claimed a dashboard job"
+            );
+            Some(Claim {
+                job_token: token,
+                lease_expires_at,
+                spec: dashboard_spec(&job),
+            })
+        }
         Some(job) => {
             tracing::info!(
                 job = %job.id,
@@ -214,6 +227,19 @@ pub async fn claim(
     })
 }
 
+/// A dashboard job's spec as handed out: it holds nothing beyond its prompt and schema, whatever was stored (no
+/// session, context pack, skills, installation token or MemCan endpoint; ADR-018, threat model T17).
+fn dashboard_spec(job: &JobRecord) -> contracts::job::spec::JobSpec {
+    contracts::job::spec::JobSpec {
+        session: None,
+        working_session: None,
+        context_pack: None,
+        skills: Vec::new(),
+        access: AgentAccess::default(),
+        ..job.spec.clone()
+    }
+}
+
 /// The MemCan endpoint of one job; `allow_write` only for jobs that never see user-typed text.
 fn memcan_endpoint(config: &Config, allow_write: bool) -> McpHttpEndpoint {
     McpHttpEndpoint {
@@ -232,10 +258,14 @@ async fn prepare_spec(
     job: &JobRecord,
 ) -> Result<contracts::job::spec::JobSpec, ClaimError> {
     let mut spec = job.spec.clone();
-    spec.session = analysis_session(db, job.analysis_id).await?;
+    let (analysis, pull_request_id) = match &spec.target {
+        JobTarget::PullRequest(target) => (target.analysis_id, target.pull_request_id),
+        JobTarget::Dashboard { .. } => return Err(DbError::NotFound.into()),
+    };
+    spec.session = analysis_session(db, analysis).await?;
     spec.working_session = if let JobStage::Ask(question) = job.stage {
         let record = db.questions().get(question, Utc::now()).await?;
-        if record.analysis_id != job.analysis_id {
+        if record.analysis_id != analysis {
             return Err(DbError::NotFound.into());
         }
         Some(WorkingSession {
@@ -243,17 +273,17 @@ async fn prepare_spec(
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect(),
-            analytic_generation: db.agent_sessions().generation(spec.pull_request_id).await?,
+            analytic_generation: db.agent_sessions().generation(pull_request_id).await?,
             thread_id: db
                 .agent_sessions()
-                .working(spec.pull_request_id, &record.user_id)
+                .working(pull_request_id, &record.user_id)
                 .await?,
         })
     } else {
         None
     };
     spec.context_pack = packs
-        .pack(job.analysis_id, &job.stage)
+        .pack(analysis, &job.stage)
         .await
         .map_err(ClaimError::ContextPack)?;
     Ok(spec)
@@ -283,7 +313,8 @@ async fn github_access(
     now: DateTime<Utc>,
 ) -> Result<Option<InstallationToken>, ClaimError> {
     let (db, config, job) = (&db, config.as_ref(), &job);
-    let repo = db.analyses().summary(job.analysis_id).await?.pr.repo;
+    let analysis = job.analysis_id.ok_or(DbError::NotFound)?;
+    let repo = db.analyses().summary(analysis).await?.pr.repo;
     let runtime = TimeDelta::seconds(i64::from(job.spec.limits.max_runtime_secs));
     let token = match app_token::mint_for_job(&config.github, &repo, now, runtime).await {
         Ok(Minted::Accepted(token)) => token,
@@ -582,6 +613,92 @@ mod tests {
         mount_mint(&s.github, minted(now), 1).await;
     }
 
+    /// A dashboard job gets nothing at claim: no installation token (GitHub is never called), no MemCan
+    /// endpoint, session, context pack or skills, even when its stored spec asked for skills (threat model T17).
+    #[tokio::test]
+    async fn judge_job_spec_has_no_access() {
+        let s = setup().await;
+        let analysis = seed_analysis(&s.db).await.expect("seed");
+        s.db.analyses()
+            .set_session(analysis, "thread-7", None)
+            .await
+            .expect("session");
+        let refresh = db::repo::analyses::testing::seed_ranking_refresh(&s.db)
+            .await
+            .expect("refresh");
+        let mut spec = db::repo::analyses::testing::judge_spec(refresh);
+        spec.skills = vec!["severity".to_owned()];
+        let job = QueueExecutor::new(s.db.clone(), ProgressHub::default())
+            .submit(crate::jobs::executor::JobRequest {
+                spec,
+                priority: JobPriority::Interactive,
+                stage: JobStage::Judge { refresh, batch: 1 },
+                generation: 0,
+                pr_repo: None,
+            })
+            .await
+            .expect("submit")
+            .job_id;
+        let claimed = claim_one(&s, Utc::now()).await;
+        assert_eq!(claimed.spec.job_id, job);
+        assert_eq!(
+            claimed.spec.target,
+            contracts::job::spec::JobTarget::Dashboard {
+                refresh_id: refresh
+            }
+        );
+        assert_eq!(claimed.spec.access, AgentAccess::default());
+        assert_eq!(claimed.spec.session, None);
+        assert_eq!(claimed.spec.working_session, None);
+        assert_eq!(claimed.spec.context_pack, None);
+        assert!(claimed.spec.skills.is_empty());
+        assert_eq!(
+            claimed.spec.model.reasoning_effort,
+            contracts::job::spec::ReasoningEffort::Low,
+            "the ranking effort"
+        );
+        let calls = s.github.received_requests().await.unwrap_or_default();
+        assert!(calls.is_empty(), "GitHub was called: {calls:?}");
+        let stored = s.db.jobs().get(job).await.expect("job");
+        assert!(!stored.github_access_granted);
+        assert_eq!(s.db.jobs().github_token(job, 1).await.expect("token"), None);
+    }
+
+    /// Ending an analysis cancels its jobs only; a dashboard job keeps running.
+    #[tokio::test]
+    async fn cancel_analysis_leaves_dashboard_jobs_alone() {
+        let s = setup().await;
+        let analysis = seed_analysis(&s.db).await.expect("seed");
+        let refresh = db::repo::analyses::testing::seed_ranking_refresh(&s.db)
+            .await
+            .expect("refresh");
+        let executor = QueueExecutor::new(s.db.clone(), ProgressHub::default());
+        let judge = executor
+            .submit(crate::jobs::executor::JobRequest {
+                spec: db::repo::analyses::testing::judge_spec(refresh),
+                priority: JobPriority::Interactive,
+                stage: JobStage::Judge { refresh, batch: 1 },
+                generation: 0,
+                pr_repo: None,
+            })
+            .await
+            .expect("submit")
+            .job_id;
+        s.db.analyses()
+            .set_state(
+                analysis,
+                &contracts::api::analyses::AnalysisState::Cancelled,
+                Utc::now(),
+            )
+            .await
+            .expect("cancel");
+        executor.cancel_analysis(analysis).await.expect("cancel");
+        assert_eq!(
+            s.db.jobs().get(judge).await.expect("job").state,
+            contracts::job::state::JobState::Queued
+        );
+    }
+
     #[tokio::test]
     async fn claim_places_installation_token_in_spec() {
         let capture = LogCapture::start();
@@ -616,7 +733,13 @@ mod tests {
     async fn lost_session_uses_context_pack() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        let analysis =
+            s.db.jobs()
+                .get(job)
+                .await
+                .expect("job")
+                .analysis_id
+                .expect("analysis job");
         let now = Utc::now();
         let documents = s.db.documents();
         documents
@@ -695,7 +818,13 @@ mod tests {
     async fn claim_skips_jobs_of_a_cancelled_analysis() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        let analysis =
+            s.db.jobs()
+                .get(job)
+                .await
+                .expect("job")
+                .analysis_id
+                .expect("analysis job");
         s.db.analyses()
             .set_state(
                 analysis,
@@ -737,7 +866,13 @@ mod tests {
     async fn jobs_carry_analysis_session() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        let analysis =
+            s.db.jobs()
+                .get(job)
+                .await
+                .expect("job")
+                .analysis_id
+                .expect("analysis job");
         let now = Utc::now();
         installed(&s, now).await;
         s.db.analyses()
@@ -763,7 +898,13 @@ mod tests {
     async fn dropped_session_is_not_resumed() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
-        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        let analysis =
+            s.db.jobs()
+                .get(job)
+                .await
+                .expect("job")
+                .analysis_id
+                .expect("analysis job");
         s.db.analyses()
             .set_session(analysis, "thread-7", None)
             .await
@@ -1138,7 +1279,13 @@ mod tests {
         installed(&s, now).await;
         mount_revoke(&s.github, 204, 1).await;
         let claimed = claim_one(&s, now).await;
-        let analysis = s.db.jobs().get(job).await.expect("job").analysis_id;
+        let analysis =
+            s.db.jobs()
+                .get(job)
+                .await
+                .expect("job")
+                .analysis_id
+                .expect("analysis job");
         QueueExecutor::new(s.db.clone(), ProgressHub::default())
             .cancel_analysis(analysis)
             .await
