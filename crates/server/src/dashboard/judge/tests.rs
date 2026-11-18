@@ -672,33 +672,56 @@ fn golden_input() -> JudgeWorkInput {
     }
 }
 
-/// The rendered prompt is pinned, and the template with the output schema is recorded under the current
-/// `JUDGE_PROMPT_VERSION`: `UPDATE_GOLDEN=1` rewrites the prompt and records the edit under the current version
-/// (non-semantic); a semantic edit bumps the version first.
+/// Message of a prompt or schema edit without a version decision.
+fn undecided(version: u32, hash: &str) -> String {
+    format!(
+        "the judge prompt template or output schema changed (hash {hash}) and is not recorded under \
+         JUDGE_PROMPT_VERSION {version} in prompts/golden/judge_work.versions. Decide: (a) a semantic change \
+         (stored judgements should be re-judged): bump JUDGE_PROMPT_VERSION, then run with RECORD_PROMPT_HASH=1 to \
+         record the hash under the new version; (b) a non-semantic edit (wording that cannot change an answer): run \
+         with RECORD_PROMPT_HASH=1 to record it under version {version}. UPDATE_GOLDEN=1 never records a version."
+    )
+}
+
+/// The version check of the golden test: the versions file to write (`record` = `RECORD_PROMPT_HASH`), nothing
+/// when the hash is recorded, or the failure when no decision was made.
+fn version_decision(
+    versions: &str,
+    version: u32,
+    hash: &str,
+    record: bool,
+) -> Result<Option<String>, String> {
+    if recorded(versions, version, hash) {
+        Ok(None)
+    } else if record {
+        Ok(Some(format!("{versions}{version} {hash}\n")))
+    } else {
+        Err(undecided(version, hash))
+    }
+}
+
+/// The template with the output schema is recorded under the current `JUDGE_PROMPT_VERSION` (checked first:
+/// `RECORD_PROMPT_HASH=1` records it), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
 #[test]
 fn golden_judge_work_prompt() {
     let prompt = prompt::render(&golden_input()).expect("prompt");
     let path = golden_dir().join("judge_work.txt");
     let versions_path = golden_dir().join("judge_work.versions");
     let hash = prompt_hash(prompt::TEMPLATE);
+    let versions = std::fs::read_to_string(&versions_path).unwrap_or_default();
+    let record = std::env::var_os("RECORD_PROMPT_HASH").is_some();
+    match version_decision(&versions, JUDGE_PROMPT_VERSION, &hash, record) {
+        Ok(Some(updated)) => std::fs::write(&versions_path, updated).expect("write versions"),
+        Ok(None) => {}
+        Err(message) => panic!("{message}"),
+    }
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
         std::fs::write(&path, &prompt).expect("write golden");
-        let mut versions = std::fs::read_to_string(&versions_path).unwrap_or_default();
-        if !recorded(&versions, JUDGE_PROMPT_VERSION, &hash) {
-            versions.push_str(&format!("{JUDGE_PROMPT_VERSION} {hash}\n"));
-            std::fs::write(&versions_path, versions).expect("write versions");
-        }
     }
     let golden = std::fs::read_to_string(&path).unwrap_or_default();
     assert_eq!(
         golden, prompt,
         "prompts/golden/judge_work.txt differs (UPDATE_GOLDEN=1)"
-    );
-    let versions = std::fs::read_to_string(&versions_path).unwrap_or_default();
-    assert!(
-        recorded(&versions, JUDGE_PROMPT_VERSION, &hash),
-        "the judge prompt or schema changed without a version decision: bump JUDGE_PROMPT_VERSION or record the \
-         edit as non-semantic (UPDATE_GOLDEN=1)"
     );
 }
 
@@ -706,12 +729,21 @@ fn golden_judge_work_prompt() {
 fn prompt_text_change_without_version_decision_fails_golden() {
     let versions =
         std::fs::read_to_string(golden_dir().join("judge_work.versions")).unwrap_or_default();
-    let edited = prompt::TEMPLATE.replace("help rank", "rank");
-    assert!(!recorded(
-        &versions,
-        JUDGE_PROMPT_VERSION,
-        &prompt_hash(&edited)
-    ));
+    let edited = prompt_hash(&prompt::TEMPLATE.replace("help rank", "rank"));
+    let failure = version_decision(&versions, JUDGE_PROMPT_VERSION, &edited, false)
+        .expect_err("an unrecorded edit fails");
+    assert!(failure.contains("bump JUDGE_PROMPT_VERSION"), "{failure}");
+    assert!(failure.contains("RECORD_PROMPT_HASH=1"), "{failure}");
+    // Only the explicit switch records, under the current version; a recorded hash needs nothing.
+    let updated = version_decision(&versions, JUDGE_PROMPT_VERSION, &edited, true)
+        .expect("recorded")
+        .expect("versions to write");
+    assert!(updated.starts_with(&versions));
+    assert!(recorded(&updated, JUDGE_PROMPT_VERSION, &edited));
+    assert_eq!(
+        version_decision(&updated, JUDGE_PROMPT_VERSION, &edited, false),
+        Ok(None)
+    );
 }
 
 #[test]
