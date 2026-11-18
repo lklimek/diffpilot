@@ -11,6 +11,7 @@ Served by `tools/fake-github --dashboard-fixture-dir fixtures/dashboard/github` 
 | Review requested | `acme/platform#1203` (fixes #1187, CI green, milestone v2.4, owned path), `#1199` (large, milestone v3.0), `acme/wallet-ui#320` (requested today), `acme/node-client#482` (the recorded PR; head follows `POST /_fake/head`), `#495` (bot author), `acme/docs-site#77`, `acme/consensus#1534` (3 unresolved threads) |
 | Assigned PR, private | `acme/ops-runbooks#14` (private repository: needs a token) |
 | Archived | `acme/legacy-wallet#9` (excluded by `archived:false`) |
+| Fork | `acme/docs-site#80` (`isCrossRepository`, head `main` of the fork: not a base for `#77`) |
 | Linked login (unsearchable) | `acme/consensus#1541` (author `alice-helper`, stacked on #1534), issue `#1525` (assignee `alice-helper`), events of `alice-helper` |
 | Issues | `acme/platform#1187` (assigned, production report, mention in a comment), `#1210` (assigned), `#1215` (watched repository only), `#1150` (closed), `acme/consensus#1520` (assigned, "Blocked by #1534"), `acme/wallet-ui#305` (mention) |
 | History | merged `acme/platform#1190`, closed unmerged `acme/wallet-ui#300`, reviewed by `alice`: `acme/platform#1195` (two reviews), `acme/consensus#1510`; outside the window: `acme/platform#1100` |

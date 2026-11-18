@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -16,6 +17,8 @@ use secrecy::{ExposeSecret, SecretString};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::Url;
+use wiremock::matchers::{method, path, query_param_contains};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::enumerate::mentions;
 use super::*;
@@ -266,7 +269,10 @@ async fn third_secondary_hit_fails_the_search() {
         .await
         .unwrap_err();
 
-    assert!(matches!(error, WorkError::SecondaryRateLimit), "{error:?}");
+    assert!(
+        matches!(error, WorkError::SecondaryRateLimit { .. }),
+        "{error:?}"
+    );
     assert!(error.ends_refresh());
     assert_eq!(fake.requests_on("search").await.len(), 3);
 }
@@ -403,7 +409,7 @@ async fn pr_details_are_batched_by_ten() {
             .unwrap()
         })
         .collect();
-    assert_eq!(pulls.len(), 20);
+    assert_eq!(pulls.len(), 21);
     pulls.extend([item("acme/platform#9999"), item("acme/secret#1")]);
 
     let fetched = fake.client().pull_requests(&pulls).await.unwrap();
@@ -414,11 +420,11 @@ async fn pr_details_are_batched_by_ten() {
         .map(|r| r["pull_requests"].as_u64().unwrap())
         .collect();
     sizes.sort_unstable();
-    assert_eq!(sizes, [2, 10, 10]);
+    assert_eq!(sizes, [3, 10, 10]);
     assert!(graphql.iter().all(|r| r["rate_limit_selected"] == true));
     assert!(sizes.iter().all(|size| *size <= MAX_PR_BATCH as u64));
 
-    assert_eq!(fetched.found.len(), 20);
+    assert_eq!(fetched.found.len(), 21);
     let noted: Vec<_> = fetched.notes.iter().map(|n| n.item.clone()).collect();
     assert_eq!(
         noted,
@@ -527,6 +533,7 @@ async fn blocker_relations_from_one_ref_listing_per_repository() {
         "acme/wallet-ui",
         "acme/consensus",
         "acme/node-client",
+        "acme/docs-site",
         "acme/secret",
     ]
     .map(repo);
@@ -535,13 +542,16 @@ async fn blocker_relations_from_one_ref_listing_per_repository() {
 
     let graphql = fake.requests_on("graphql").await;
     assert_eq!(graphql.len(), 1);
-    assert_eq!(graphql[0]["lookups"], 4);
+    assert_eq!(graphql[0]["lookups"], 5);
     let blockers = |key: &str| listing.blockers(&item(key)).unwrap();
     assert_eq!(blockers("acme/wallet-ui#311").dependents, [298]);
     assert_eq!(blockers("acme/wallet-ui#298").stacked_on, [311]);
     assert_eq!(blockers("acme/consensus#1541").stacked_on, [1534]);
     assert_eq!(blockers("acme/consensus#1534").dependents, [1541]);
     assert_eq!(blockers("acme/node-client#482"), Blockers::default());
+    // A fork's `main` is no branch of the base repository: nothing there is based on it or stacked under it.
+    assert_eq!(blockers("acme/docs-site#80"), Blockers::default());
+    assert_eq!(blockers("acme/docs-site#77"), Blockers::default());
     assert_eq!(
         listing.blockers(&item("acme/secret#1")),
         None,
@@ -640,9 +650,18 @@ async fn rest_reads_answer_q3_q4_q7_q8_q14() {
     let releases = client.releases(&platform).await.unwrap();
     let milestones = client.milestones(&platform).await.unwrap();
     let events = client.user_events("alice-helper").await.unwrap();
-    let traversal = client
-        .file_contents(&platform, "../secret/policy.json")
-        .await;
+    let mut refused = Vec::new();
+    for path in [
+        "../secret/policy.json",
+        "policies/%2e%2e/%2e%2e/%2e%2e/%2e%2e/user/installations",
+        "policies/.%2e/x.json",
+        "policies\\..\\x.json",
+        "./policies/platform.json",
+        "policies//platform.json",
+        "policies/plat form.json",
+    ] {
+        refused.push((path, client.file_contents(&platform, path).await));
+    }
 
     let policy: Value = serde_json::from_str(&policy).unwrap();
     assert_eq!(policy["areas"][0]["paths"][0], "packages/sync/");
@@ -665,7 +684,25 @@ async fn rest_reads_answer_q3_q4_q7_q8_q14() {
             .iter()
             .any(|e| e.item == item("acme/consensus#1541") && e.action.as_deref() == Some("opened"))
     );
-    assert!(matches!(traversal, Err(WorkError::NotFound)));
+    for (path, answer) in &refused {
+        assert!(
+            matches!(answer, Err(WorkError::NotFound)),
+            "{path}: {answer:?}"
+        );
+    }
+    let paths: Vec<String> = fake
+        .requests_on("rest")
+        .await
+        .iter()
+        .map(|r| r["path"].as_str().unwrap().to_owned())
+        .collect();
+    let read = |part: &str| paths.iter().filter(|p| p.contains(part)).count();
+    assert_eq!(
+        read("/contents/"),
+        1,
+        "only the valid policy path: {paths:?}"
+    );
+    assert_eq!(read("installations"), 0, "{paths:?}");
     let file_pages = fake
         .requests_on("rest")
         .await
@@ -803,6 +840,186 @@ async fn work_client_sends_no_mutation_and_never_logs_the_token() {
             );
         }
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_after_beyond_the_ladder_ends_the_search_at_once() {
+    let fake = Fake::start().await;
+    fake.faults(json!([{"on": "search",
+        "answer": {"kind": "secondary_rate_limit", "retry_after": 86_400}}]))
+        .await;
+    let started = tokio::time::Instant::now();
+
+    let error = fake
+        .client()
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, WorkError::SecondaryRateLimit { retry_after: Some(wait) }
+            if wait == Duration::from_secs(86_400)),
+        "{error:?}"
+    );
+    assert!(error.ends_refresh());
+    assert!(started.elapsed() < Duration::from_secs(1), "no wait");
+    assert_eq!(fake.requests_on("search").await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn invalid_logins_and_repositories_never_reach_a_search() {
+    let fake = Fake::start().await;
+    let client = fake.client();
+    let odd_repo = RepoRef {
+        owner: "acme".to_owned(),
+        name: "platform is:closed".to_owned(),
+    };
+    let since = NaiveDate::from_ymd_opt(2026, 8, 26).unwrap();
+
+    let prs = client
+        .search_pull_requests(&logins(&["alice repo:acme/secret", "alice"]))
+        .await
+        .unwrap();
+    let issues = client
+        .search_issues(&[odd_repo], &logins(&["bob OR x"]))
+        .await
+        .unwrap();
+    let history = client.search_history("x y", since).await.unwrap();
+
+    let searches = fake.requests_on("search").await;
+    assert_eq!(searches.len(), 3, "only alice's searches: {searches:?}");
+    assert!(
+        searches
+            .iter()
+            .all(|r| !r["q"].as_str().unwrap().contains("repo:"))
+    );
+    assert!(!prs.candidates.pull_requests.is_empty());
+    let texts = |notes: &[contracts::api::dashboard::ScanNote]| {
+        notes.iter().map(|n| n.text.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        texts(&prs.notes),
+        ["`alice repo:acme/secret` is not a valid GitHub login; its searches are skipped"]
+    );
+    assert_eq!(
+        texts(&issues.notes),
+        [
+            "`acme/platform is:closed` is not a valid repository name; its searches are skipped",
+            "`bob OR x` is not a valid GitHub login; its searches are skipped",
+        ]
+    );
+    assert_eq!(
+        texts(&history.notes),
+        ["`x y` is not a valid GitHub login; its searches are skipped"]
+    );
+}
+
+/// A client of a wiremock server, for answers the fake cannot produce.
+fn mock_client(server: &MockServer) -> WorkClient<TestTokens> {
+    WorkClient::new(
+        Url::parse(&server.uri()).unwrap(),
+        TestTokens::new("ghu_mock_token", None),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn incomplete_or_capped_search_results_leave_a_note() {
+    let server = MockServer::start().await;
+    for (repo, total, incomplete) in [("acme/big", 1500, false), ("acme/slow", 3, true)] {
+        Mock::given(method("GET"))
+            .and(path("/search/issues"))
+            .and(query_param_contains("q", format!("repo:{repo}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"total_count": total, "incomplete_results": incomplete, "items": []}),
+            ))
+            .mount(&server)
+            .await;
+    }
+
+    // One client per search: no pacing wait.
+    let big = mock_client(&server)
+        .search_issues(&[repo("acme/big")], &[])
+        .await
+        .unwrap();
+    let slow = mock_client(&server)
+        .search_issues(&[repo("acme/slow")], &[])
+        .await
+        .unwrap();
+
+    let text = |found: &IssueSearch| {
+        found
+            .notes
+            .iter()
+            .map(|n| n.text.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        text(&big),
+        ["GitHub found more than 1000 matches for issues of acme/big; the rest is not shown"]
+    );
+    assert_eq!(
+        text(&slow),
+        ["GitHub returned an incomplete result for issues of acme/slow; some items may be missing"]
+    );
+}
+
+#[tokio::test]
+async fn graphql_execution_timeout_retries_as_two_halves() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": null, "errors": [
+            {"message": "Something went wrong while executing your query. This may be the result of a timeout."}
+        ]})))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+        .mount(&server)
+        .await;
+    let pulls: Vec<ItemRef> = (1..=10)
+        .map(|n| item(&format!("acme/platform#{n}")))
+        .collect();
+
+    mock_client(&server).pull_requests(&pulls).await.unwrap();
+
+    let sizes: Vec<usize> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            String::from_utf8_lossy(&r.body)
+                .matches("pullRequest(")
+                .count()
+        })
+        .collect();
+    assert_eq!(sizes, [10, 5, 5]);
+}
+
+#[tokio::test]
+async fn refused_graphql_document_is_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"errors": [{"message": "Parse error on \"}\""}]})),
+        )
+        .mount(&server)
+        .await;
+    let pulls: Vec<ItemRef> = (1..=4)
+        .map(|n| item(&format!("acme/platform#{n}")))
+        .collect();
+
+    let fetched = mock_client(&server).pull_requests(&pulls).await.unwrap();
+
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(fetched.notes.len(), 4);
 }
 
 #[test]

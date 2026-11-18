@@ -7,8 +7,9 @@ use chrono::{DateTime, NaiveDate, Utc};
 use contracts::api::dashboard::ScanNote;
 use serde::Deserialize;
 
-use super::client::{TokenSource, WorkClient, WorkError};
-use super::{ItemRef, Milestone, note, parse_repo, repo_name};
+use super::client::{Page, SEARCH_CAP, TokenSource, WorkClient, WorkError};
+use super::{ItemRef, Milestone, note, parse_repo, repo_name, valid_login};
+use crate::github::rest::is_valid_repo;
 use contracts::common::RepoRef;
 
 /// How a scanned login relates to an open pull request.
@@ -171,6 +172,8 @@ pub struct HistorySearch {
     pub closed: BTreeSet<ItemRef>,
     /// Reviewed by the login and updated in the window.
     pub reviewed: BTreeSet<ItemRef>,
+    /// Searches skipped or cut short.
+    pub notes: Vec<ScanNote>,
 }
 
 /// A REST search item (issues and pull requests share the shape).
@@ -247,19 +250,50 @@ fn search_failed(what: &str, error: &WorkError) -> ScanNote {
     )
 }
 
+/// Notes for a search GitHub answered only in part.
+fn cut_short(what: &str, page: &Page<SearchItem>) -> Vec<ScanNote> {
+    let mut notes = Vec::new();
+    if page.total_count > SEARCH_CAP as u64 {
+        notes.push(note(
+            format!("GitHub found more than 1000 matches for {what}; the rest is not shown"),
+            None,
+        ));
+    }
+    if page.incomplete_results {
+        notes.push(note(
+            format!("GitHub returned an incomplete result for {what}; some items may be missing"),
+            None,
+        ));
+    }
+    notes
+}
+
+fn invalid_login(login: &str) -> ScanNote {
+    note(
+        format!("`{login}` is not a valid GitHub login; its searches are skipped"),
+        None,
+    )
+}
+
 impl<T: TokenSource> WorkClient<T> {
     /// Searches open, non-archived pull requests each login authored, is assigned or asked to review (Q1). The
-    /// first refusal marks a login unsearchable and skips its remaining searches.
+    /// first refusal marks a login unsearchable and skips its remaining searches. An invalid login is skipped
+    /// with a note (it never reaches `q`).
     pub async fn search_pull_requests(&self, logins: &[String]) -> Result<PrSearch, WorkError> {
         let mut found = PrSearch::default();
         for login in logins {
+            if !valid_login(login) {
+                found.notes.push(invalid_login(login));
+                continue;
+            }
             for relation in PrRelation::ALL {
                 let q = format!(
                     "is:pr is:open archived:false {}:{login}",
                     relation.qualifier()
                 );
-                let items = match self.search::<SearchItem>(&q).await {
-                    Ok(items) => items,
+                let what = format!("pull requests of {login}");
+                let page = match self.search::<SearchItem>(&q).await {
+                    Ok(page) => page,
                     Err(WorkError::Unsearchable) => {
                         tracing::info!(
                             login,
@@ -270,13 +304,12 @@ impl<T: TokenSource> WorkClient<T> {
                     }
                     Err(error) if error.ends_refresh() => return Err(error),
                     Err(error) => {
-                        found
-                            .notes
-                            .push(search_failed(&format!("pull requests of {login}"), &error));
+                        found.notes.push(search_failed(&what, &error));
                         continue;
                     }
                 };
-                for item in items {
+                found.notes.extend(cut_short(&what, &page));
+                for item in page.items {
                     if let Some(key) = item.item() {
                         found
                             .candidates
@@ -289,24 +322,34 @@ impl<T: TokenSource> WorkClient<T> {
     }
 
     /// Searches open, non-archived issues of the watched repositories and those assigned to or mentioning a
-    /// searchable login (Q10).
+    /// searchable login (Q10). Invalid repository names and logins are skipped with a note.
     pub async fn search_issues(
         &self,
         watched: &[RepoRef],
         searchable_logins: &[String],
     ) -> Result<IssueSearch, WorkError> {
-        let mut searches: Vec<(String, IssueRelation, String)> = watched
-            .iter()
-            .map(|repo| {
-                let name = repo_name(repo);
-                (
-                    format!("repo:{name}"),
-                    IssueRelation::RepoOpen,
-                    format!("issues of {name}"),
-                )
-            })
-            .collect();
+        let mut found = IssueSearch::default();
+        let mut searches: Vec<(String, IssueRelation, String)> = Vec::new();
+        for repo in watched {
+            let name = repo_name(repo);
+            if !is_valid_repo(repo) {
+                found.notes.push(note(
+                    format!("`{name}` is not a valid repository name; its searches are skipped"),
+                    None,
+                ));
+                continue;
+            }
+            searches.push((
+                format!("repo:{name}"),
+                IssueRelation::RepoOpen,
+                format!("issues of {name}"),
+            ));
+        }
         for login in searchable_logins {
+            if !valid_login(login) {
+                found.notes.push(invalid_login(login));
+                continue;
+            }
             searches.push((
                 format!("assignee:{login}"),
                 IssueRelation::Assigned,
@@ -318,12 +361,12 @@ impl<T: TokenSource> WorkClient<T> {
                 format!("issues mentioning {login}"),
             ));
         }
-        let mut found = IssueSearch::default();
         for (qualifier, relation, what) in searches {
             let q = format!("is:issue is:open archived:false {qualifier}");
             match self.search::<SearchItem>(&q).await {
-                Ok(items) => {
-                    for item in items {
+                Ok(page) => {
+                    found.notes.extend(cut_short(&what, &page));
+                    for item in page.items {
                         if let Some(key) = item.item() {
                             found.candidates.add_issue(key, item.issue(relation));
                         }
@@ -337,27 +380,46 @@ impl<T: TokenSource> WorkClient<T> {
     }
 
     /// Pull requests `login` opened, closed or reviewed since `since` (Q12; `reviewed-by:` needs `updated:`).
-    /// [`WorkError::Unsearchable`] when search refuses the login: its events are the fallback (Q14).
+    /// [`WorkError::Unsearchable`] when search refuses the login: its events are the fallback (Q14). An invalid
+    /// login is skipped with a note.
     pub async fn search_history(
         &self,
         login: &str,
         since: NaiveDate,
     ) -> Result<HistorySearch, WorkError> {
         let mut history = HistorySearch::default();
+        if !valid_login(login) {
+            history.notes.push(invalid_login(login));
+            return Ok(history);
+        }
         let HistorySearch {
             opened,
             closed,
             reviewed,
+            notes,
         } = &mut history;
-        for (qualifiers, set) in [
-            (format!("author:{login} created:>={since}"), opened),
-            (format!("author:{login} closed:>={since}"), closed),
-            (format!("reviewed-by:{login} updated:>={since}"), reviewed),
+        for (qualifiers, set, what) in [
+            (
+                format!("author:{login} created:>={since}"),
+                opened,
+                "pull requests opened by",
+            ),
+            (
+                format!("author:{login} closed:>={since}"),
+                closed,
+                "pull requests closed by",
+            ),
+            (
+                format!("reviewed-by:{login} updated:>={since}"),
+                reviewed,
+                "pull requests reviewed by",
+            ),
         ] {
-            let items = self
+            let page = self
                 .search::<SearchItem>(&format!("is:pr {qualifiers}"))
                 .await?;
-            set.extend(items.iter().filter_map(SearchItem::item));
+            notes.extend(cut_short(&format!("{what} {login}"), &page));
+            set.extend(page.items.iter().filter_map(SearchItem::item));
         }
         Ok(history)
     }

@@ -130,6 +130,15 @@ impl<T> Default for Fetched<T> {
     }
 }
 
+/// A login (optionally with GitHub's `[bot]` suffix) is safe in an API path and a search query.
+fn valid_login(login: &str) -> bool {
+    let bare = login.strip_suffix("[bot]").unwrap_or(login);
+    (1..=39).contains(&bare.len())
+        && bare
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
 fn note(text: String, item: Option<ItemKey>) -> ScanNote {
     ScanNote { text, item }
 }

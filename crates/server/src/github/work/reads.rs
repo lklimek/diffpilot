@@ -5,8 +5,8 @@ use chrono::{DateTime, Utc};
 use contracts::common::RepoRef;
 use serde::Deserialize;
 
-use super::ItemRef;
 use super::client::{TokenSource, WorkClient, WorkError};
+use super::{ItemRef, valid_login};
 use crate::github::rest::is_valid_repo;
 
 /// GitHub serves at most 3000 files of a pull request.
@@ -100,23 +100,24 @@ fn repo_path(repo: &RepoRef, rest: &str) -> Result<String, WorkError> {
     Ok(format!("repos/{}/{}/{rest}", repo.owner, repo.name))
 }
 
-/// A login (optionally with GitHub's `[bot]` suffix) is safe in an API path.
-fn valid_login(login: &str) -> bool {
-    let bare = login.strip_suffix("[bot]").unwrap_or(login);
-    (1..=39).contains(&bare.len())
-        && bare
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+/// A relative path whose segments use only `[A-Za-z0-9._-]` and are not `.` or `..` (settings G6). `%` and `\`
+/// are refused, so nothing the URL parser decodes or normalises can climb out of the repository.
+fn valid_path(path: &str) -> bool {
+    path.split('/').all(|segment| {
+        !segment.is_empty()
+            && segment != "."
+            && segment != ".."
+            && segment
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    })
 }
 
 impl<T: TokenSource> WorkClient<T> {
     /// The raw text of `path` in `repo` (Q3, ownership policy); [`WorkError::NotFound`] when absent. `path` must
     /// be relative without `..` (settings G6).
     pub async fn file_contents(&self, repo: &RepoRef, path: &str) -> Result<String, WorkError> {
-        if path
-            .split('/')
-            .any(|segment| segment.is_empty() || segment == "..")
-        {
+        if !valid_path(path) {
             return Err(WorkError::NotFound);
         }
         self.rest_raw(&repo_path(repo, &format!("contents/{path}"))?)

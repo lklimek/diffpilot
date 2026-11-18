@@ -955,6 +955,33 @@
   },
   {
     "repository": {
+      "nameWithOwner": "acme/docs-site"
+    },
+    "number": 80,
+    "title": "docs: fix a typo in the install guide",
+    "author": {
+      "__typename": "User",
+      "login": "olek-d"
+    },
+    "state": "OPEN",
+    "createdAt": "2026-11-17T09:00:00Z",
+    "updatedAt": "2026-11-17T09:30:00Z",
+    "baseRefName": "main",
+    "headRefName": "main",
+    "headRefOid": "8c3f6a1d2e4b5c6d7e8f90a1b2c3d4e5f6a7b8c9",
+    "isCrossRepository": true,
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "additions": 1,
+    "deletions": 1,
+    "milestone": null,
+    "participants": {
+      "totalCount": 1
+    }
+  },
+  {
+    "repository": {
       "nameWithOwner": "acme/consensus"
     },
     "number": 1534,

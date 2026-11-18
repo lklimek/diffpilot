@@ -56,21 +56,21 @@ impl RefListing {
         let open = self.repositories.get(&pr.repo)?;
         let this = open.iter().find(|other| other.number == pr.number)?;
         let others = || open.iter().filter(|other| other.number != pr.number);
+        // A fork's head branch is no branch of this repository: nothing here is based on it.
+        if this.is_cross_repository {
+            return Some(Blockers::default());
+        }
         let mut blockers = Blockers {
             dependents: others()
                 .filter(|other| other.base_ref_name == this.head_ref_name)
                 .map(|other| other.number)
                 .collect(),
-            stacked_on: if this.is_cross_repository {
-                Vec::new()
-            } else {
-                others()
-                    .filter(|other| {
-                        !other.is_cross_repository && other.head_ref_name == this.base_ref_name
-                    })
-                    .map(|other| other.number)
-                    .collect()
-            },
+            stacked_on: others()
+                .filter(|other| {
+                    !other.is_cross_repository && other.head_ref_name == this.base_ref_name
+                })
+                .map(|other| other.number)
+                .collect(),
         };
         blockers.dependents.sort_unstable();
         blockers.stacked_on.sort_unstable();

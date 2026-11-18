@@ -29,12 +29,14 @@ pub(crate) const SEARCH_INTERVAL: Duration = Duration::from_secs(3);
 /// hit fails.
 pub(crate) const SECONDARY_RETRY_WAITS: [Duration; 2] =
     [Duration::from_secs(60), Duration::from_secs(120)];
+/// A longer `retry-after` fails the refresh with the wait as its retry time instead of sleeping.
+const MAX_SECONDARY_WAIT: Duration = Duration::from_secs(120);
 /// Non-search calls in flight at once (plan §A.3).
 pub(crate) const MAX_CONCURRENT_CALLS: usize = 4;
 /// GitHub's largest page.
 const PAGE_SIZE: u32 = 100;
 /// GitHub serves the first 1000 results of a search only.
-const SEARCH_CAP: usize = 1000;
+pub(crate) const SEARCH_CAP: usize = 1000;
 
 /// A GitHub read of the scan failed. No variant carries the token or GitHub's message text.
 #[derive(Debug, thiserror::Error)]
@@ -57,9 +59,12 @@ pub enum WorkError {
         /// When the limit resets (`x-ratelimit-reset`), if GitHub said.
         reset: Option<DateTime<Utc>>,
     },
-    /// GitHub's secondary rate limit was hit a third time.
-    #[error("GitHub's secondary rate limit persisted after two retries")]
-    SecondaryRateLimit,
+    /// GitHub's secondary rate limit was hit a third time, or asked for a wait beyond the retry ladder.
+    #[error("GitHub's secondary rate limit persists")]
+    SecondaryRateLimit {
+        /// GitHub's last `retry-after`, if it sent one; the caller turns it into a retry time.
+        retry_after: Option<Duration>,
+    },
     /// GitHub search refuses a login or repository (unknown, or not visible to the token).
     #[error("GitHub search refuses this login or repository")]
     Unsearchable,
@@ -81,6 +86,9 @@ pub enum WorkError {
     /// GitHub refused the GraphQL document before executing it; the error types (never messages).
     #[error("GitHub refused the query ({0:?})")]
     Refused(Vec<String>),
+    /// GitHub failed while executing the query (`data: null`, an error without type; e.g. its timeout).
+    #[error("GitHub failed while executing the query")]
+    ExecutionFailed,
     /// Only queries are sent (T18).
     #[error("the scan sends GraphQL queries only")]
     NotAQuery,
@@ -97,7 +105,7 @@ impl WorkError {
             Self::Token(_)
                 | Self::Unauthorized
                 | Self::PrimaryRateLimit { .. }
-                | Self::SecondaryRateLimit
+                | Self::SecondaryRateLimit { .. }
                 | Self::Interrupted
         )
     }
@@ -105,7 +113,7 @@ impl WorkError {
     /// A batch failing this way is retried once as two halves (5xx, non-JSON, timeout; S11-2).
     pub(crate) fn splits_batch(&self) -> bool {
         match self {
-            Self::ServerError(_) | Self::NotJson(_) => true,
+            Self::ServerError(_) | Self::NotJson(_) | Self::ExecutionFailed => true,
             Self::Http(error) => error.is_timeout(),
             _ => false,
         }
@@ -210,10 +218,18 @@ fn has_next(headers: &HeaderMap) -> bool {
 
 #[derive(Deserialize)]
 struct Envelope {
-    #[serde(default)]
-    data: Option<Map<String, Value>>,
+    /// Absent when GitHub refused the document; `null` when execution failed.
+    #[serde(default, deserialize_with = "present")]
+    data: Option<Value>,
     #[serde(default)]
     errors: Vec<ErrorEntry>,
+}
+
+/// Keeps a present `data: null` apart from a missing `data`.
+fn present<'de, De: serde::Deserializer<'de>>(
+    deserializer: De,
+) -> Result<Option<Value>, De::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
@@ -222,9 +238,16 @@ struct ErrorEntry {
     kind: Option<String>,
 }
 
+/// Items of a list, with what a search answer says about its completeness.
 #[derive(Deserialize)]
-struct SearchPage<I> {
-    items: Vec<I>,
+pub(crate) struct Page<I> {
+    pub(crate) items: Vec<I>,
+    /// Matches in total (search only); GitHub serves the first 1000.
+    #[serde(default)]
+    pub(crate) total_count: u64,
+    /// GitHub's search timed out and answered with part of the matches.
+    #[serde(default)]
+    pub(crate) incomplete_results: bool,
 }
 
 impl<T: TokenSource> WorkClient<T> {
@@ -281,15 +304,6 @@ impl<T: TokenSource> WorkClient<T> {
             CallKind::Search => Some(self.last_search.lock().await),
             CallKind::Other => None,
         };
-        let _permit = match kind {
-            CallKind::Other => Some(
-                self.calls
-                    .acquire()
-                    .await
-                    .map_err(|_| WorkError::Interrupted)?,
-            ),
-            CallKind::Search => None,
-        };
         let mut refreshed = false;
         let mut secondary_hits = 0;
         loop {
@@ -299,6 +313,16 @@ impl<T: TokenSource> WorkClient<T> {
                 }
                 **last = Some(Instant::now());
             }
+            // Per attempt: a retry wait never holds a slot other calls need.
+            let permit = match kind {
+                CallKind::Other => Some(
+                    self.calls
+                        .acquire()
+                        .await
+                        .map_err(|_| WorkError::Interrupted)?,
+                ),
+                CallKind::Search => None,
+            };
             let token = self.current_token().await?;
             let response = build(&self.http)
                 .bearer_auth(token.expose_secret())
@@ -322,13 +346,18 @@ impl<T: TokenSource> WorkClient<T> {
             if status != StatusCode::FORBIDDEN && status != StatusCode::TOO_MANY_REQUESTS {
                 return Ok(response);
             }
-            match limit(response).await {
+            let limited = limit(response).await;
+            drop(permit);
+            match limited {
                 Limit::Primary(reset) => return Err(WorkError::PrimaryRateLimit { reset }),
                 Limit::Secondary(retry_after) => {
                     let Some(ladder) = SECONDARY_RETRY_WAITS.get(secondary_hits) else {
-                        return Err(WorkError::SecondaryRateLimit);
+                        return Err(WorkError::SecondaryRateLimit { retry_after });
                     };
                     let wait = retry_after.unwrap_or(*ladder);
+                    if wait > MAX_SECONDARY_WAIT {
+                        return Err(WorkError::SecondaryRateLimit { retry_after });
+                    }
                     secondary_hits += 1;
                     tracing::info!(
                         wait_secs = wait.as_secs(),
@@ -405,21 +434,27 @@ impl<T: TokenSource> WorkClient<T> {
         query: &[(&str, String)],
         cap: usize,
     ) -> Result<Vec<D>, WorkError> {
-        self.pages(CallKind::Other, path, query, cap, |bytes| {
-            serde_json::from_slice::<Vec<D>>(bytes)
-        })
-        .await
+        let page = self
+            .pages(CallKind::Other, path, query, cap, |bytes| {
+                serde_json::from_slice::<Vec<D>>(bytes).map(|items| Page {
+                    items,
+                    total_count: 0,
+                    incomplete_results: false,
+                })
+            })
+            .await?;
+        Ok(page.items)
     }
 
     /// Every page of `GET /search/issues?q=<q>`, up to GitHub's 1000 results.
-    pub(crate) async fn search<D: DeserializeOwned>(&self, q: &str) -> Result<Vec<D>, WorkError> {
+    pub(crate) async fn search<D: DeserializeOwned>(&self, q: &str) -> Result<Page<D>, WorkError> {
         let query = [("q", q.to_owned())];
         self.pages(
             CallKind::Search,
             "search/issues",
             &query,
             SEARCH_CAP,
-            |bytes| serde_json::from_slice::<SearchPage<D>>(bytes).map(|page| page.items),
+            |bytes| serde_json::from_slice::<Page<D>>(bytes),
         )
         .await
     }
@@ -430,9 +465,13 @@ impl<T: TokenSource> WorkClient<T> {
         path: &str,
         query: &[(&str, String)],
         cap: usize,
-        parse: impl Fn(&[u8]) -> Result<Vec<D>, serde_json::Error>,
-    ) -> Result<Vec<D>, WorkError> {
-        let mut items = Vec::new();
+        parse: impl Fn(&[u8]) -> Result<Page<D>, serde_json::Error>,
+    ) -> Result<Page<D>, WorkError> {
+        let mut all = Page {
+            items: Vec::new(),
+            total_count: 0,
+            incomplete_results: false,
+        };
         let mut page = 1_u32;
         loop {
             let mut paged = query.to_vec();
@@ -443,10 +482,13 @@ impl<T: TokenSource> WorkClient<T> {
                 .await?;
             let next = has_next(response.headers());
             let bytes = response.bytes().await.map_err(WorkError::Http)?;
-            items.extend(parse(&bytes).map_err(WorkError::Malformed)?);
-            if !next || items.len() >= cap {
-                items.truncate(cap);
-                return Ok(items);
+            let parsed = parse(&bytes).map_err(WorkError::Malformed)?;
+            all.items.extend(parsed.items);
+            all.total_count = parsed.total_count;
+            all.incomplete_results |= parsed.incomplete_results;
+            if !next || all.items.len() >= cap {
+                all.items.truncate(cap);
+                return Ok(all);
             }
             page += 1;
         }
@@ -484,7 +526,7 @@ impl<T: TokenSource> WorkClient<T> {
             .map(|error| error.kind.clone().unwrap_or_default())
             .collect();
         match envelope.data {
-            Some(data) => {
+            Some(Value::Object(data)) => {
                 if !kinds.is_empty() {
                     tracing::debug!(?kinds, "GitHub answered a scan query with partial errors");
                 }
@@ -494,10 +536,14 @@ impl<T: TokenSource> WorkClient<T> {
                 }
                 Ok(data)
             }
-            None if kinds.iter().any(|kind| kind == "RATE_LIMITED") => {
+            _ if kinds.iter().any(|kind| kind == "RATE_LIMITED") => {
                 Err(WorkError::PrimaryRateLimit { reset })
             }
-            None => Err(WorkError::Refused(kinds)),
+            // GitHub's execution timeout: `data: null` and an error without a type.
+            Some(Value::Null) if kinds.iter().any(String::is_empty) => {
+                Err(WorkError::ExecutionFailed)
+            }
+            Some(_) | None => Err(WorkError::Refused(kinds)),
         }
     }
 }
