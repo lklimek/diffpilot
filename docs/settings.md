@@ -163,17 +163,17 @@ Worked examples: dashpay/platform uses dashpay/stale_prs_are_bad with policies/p
 ### When GitHub search refuses an account
 
 - **What:** Optional. Organisations or users whose open pull requests and issues are listed directly when GitHub search will not answer for one of your accounts. GitHub search refuses some logins, typically bot or restricted accounts.
-- **When used:** Only in a refresh where search refuses one of your logins. The scan then lists the open pull requests and issues of every repository of these owners and keeps those involving the refused login.
+- **When used:** Only in a refresh where search refuses one of your logins. The scan then lists the open pull requests and issues of every repository of these owners and keeps those involving the refused login, and the charts count the refused login's pull requests in these owners' repositories and in your repository rows, whoever merged them. Its reviews and its pull requests elsewhere come from its last 300 public events only.
 - **Empty or default:** Nothing is listed; the refused account's work is missing from My work.
 - **Limits:** Up to 5 owners. Each costs extra GitHub requests per refresh, so keep the list short.
 - **Example:** dashpay.
 
-How you find out: after a refresh, What the scan missed names the accounts search refused.
+How you find out: after a refresh, What the scan missed names the accounts search refused and how far back their history is complete.
 
 ### Look-back days
 
 - **What:** How many days an issue counts as new.
-- **When used:** Stored with your settings. The current server does not use it in the scan or the ranking yet.
+- **When used:** Every refresh: an issue opened at most this many days before the scan shows the tag new, with its opening date in the tip. It does not change the ranking.
 - **Empty or default:** 7 days.
 - **Limits:** A whole number from 1 to 30.
 - **Example:** 14 if you look at My work once a week.
