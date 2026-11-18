@@ -197,7 +197,7 @@ pub struct PreviousJudgement {
 }
 
 /// An input that cannot be sent to the judge.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum InputError {
     /// No items, or more than [`MAX_ITEMS`].
     #[error("a judge job takes 1 to {MAX_ITEMS} items, not {0}")]
@@ -226,7 +226,7 @@ pub enum InputError {
     SelfMerge(ItemKey),
     /// The data block could not be rendered.
     #[error("the judge input could not be rendered as JSON")]
-    Json(String),
+    Json(#[source] serde_json::Error),
 }
 
 impl JudgeWorkInput {
@@ -266,13 +266,16 @@ impl JudgeWorkInput {
         Ok(())
     }
 
-    /// The input as the prompt's data block: [`DATA_BLOCK_OPEN`], pretty JSON, a closing fence. JSON escapes every
-    /// line break in a string, so no untrusted text can start a line or close the fence.
+    /// The input as the prompt's data block: [`DATA_BLOCK_OPEN`], pretty JSON, a closing fence. JSON escapes the
+    /// C0 line breaks in a string and U+0085, U+2028 and U+2029 are escaped too, so no untrusted text can start a
+    /// line or close the fence.
     pub fn data_block(&self) -> Result<String, InputError> {
         self.check()?;
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|error| InputError::Json(error.to_string()))?;
-        Ok(format!("{DATA_BLOCK_OPEN}\n{json}\n{DATA_BLOCK_CLOSE}"))
+        let json = serde_json::to_string_pretty(self).map_err(InputError::Json)?;
+        Ok(format!(
+            "{DATA_BLOCK_OPEN}\n{}\n{DATA_BLOCK_CLOSE}",
+            escape_separators(&json)
+        ))
     }
 
     /// The input of the first data block of `prompt`; `None` when there is none or it does not parse.
@@ -282,6 +285,21 @@ impl JudgeWorkInput {
         let body: Vec<&str> = lines.take_while(|line| *line != DATA_BLOCK_CLOSE).collect();
         serde_json::from_str(&body.join("\n")).ok()
     }
+}
+
+/// `json` with U+0085, U+2028 and U+2029 as JSON escapes; serialised JSON holds them only inside strings, so the
+/// result stays the same JSON value.
+fn escape_separators(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        match c {
+            '\u{0085}' => out.push_str("\\u0085"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn is_age_part(component: ScoreComponent) -> bool {
@@ -461,6 +479,9 @@ pub enum AnswerRejection {
     /// A component that is never judged in `parts` (defect severity, recency, change size).
     #[error("the {0:?} part cannot be answered in parts")]
     NotJudgeable(ScoreComponent),
+    /// A part (or the defect) that was neither asked nor known for the item.
+    #[error("the {0:?} part was not offered for judgement")]
+    NotOffered(ScoreComponent),
     /// A value outside the component's closed set.
     #[error("{points} points is not an allowed value of the {component:?} part")]
     OutOfRange {
@@ -550,8 +571,14 @@ impl JudgeWorkOutput {
 }
 
 fn validate_item(item: &JudgeItem, answer: &ItemAnswer) -> Result<ValidAnswer, AnswerRejection> {
+    let offered = |component: ScoreComponent| {
+        item.asks.contains(&component) || item.known.iter().any(|k| k.component == component)
+    };
     let mut parts = Vec::with_capacity(answer.parts.len() + 1);
     if let Some(defect) = &answer.defect {
+        if !offered(ScoreComponent::DefectSeverity) {
+            return Err(AnswerRejection::NotOffered(ScoreComponent::DefectSeverity));
+        }
         if defect.likelihood > DEFECT_AXIS_MAX || defect.impact > DEFECT_AXIS_MAX {
             return Err(AnswerRejection::DefectOutOfRange {
                 likelihood: defect.likelihood,
@@ -571,6 +598,9 @@ fn validate_item(item: &JudgeItem, answer: &ItemAnswer) -> Result<ValidAnswer, A
     for part in &answer.parts {
         let values =
             part_values(part.component).ok_or(AnswerRejection::NotJudgeable(part.component))?;
+        if !offered(part.component) {
+            return Err(AnswerRejection::NotOffered(part.component));
+        }
         if !values.contains(&part.points) {
             return Err(AnswerRejection::OutOfRange {
                 component: part.component,
@@ -638,8 +668,8 @@ fn component_name(component: ScoreComponent) -> String {
         .unwrap_or_default()
 }
 
-/// Trimmed single-line plain text of at most `max` characters, without control or bidirectional formatting
-/// characters (which could disguise text, CWE-451).
+/// Trimmed single-line plain text of at most `max` characters, without control, format (bidirectional,
+/// zero-width, tag) or line and paragraph separator characters, which could hide or disguise text (CWE-451).
 fn plain(field: &str, text: &str, max: usize) -> Result<String, AnswerRejection> {
     let problem = |problem| AnswerRejection::Text {
         field: field.to_owned(),
@@ -652,14 +682,42 @@ fn plain(field: &str, text: &str, max: usize) -> Result<String, AnswerRejection>
     if text.chars().count() > max {
         return Err(problem(TextProblem::TooLong(max)));
     }
-    if text.chars().any(|c| c.is_control() || is_bidi_format(c)) {
+    if text
+        .chars()
+        .any(|c| c.is_control() || is_format_or_separator(c))
+    {
         return Err(problem(TextProblem::NotPlain));
     }
     Ok(text.to_owned())
 }
 
-fn is_bidi_format(c: char) -> bool {
-    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+/// Unicode general categories Cf (format: soft hyphen, bidirectional controls, zero-width characters, word
+/// joiner, invisible operators, byte order mark, interlinear annotations, tags, …), Zl and Zp (Unicode 16).
+fn is_format_or_separator(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
 }
 
 #[cfg(test)]
