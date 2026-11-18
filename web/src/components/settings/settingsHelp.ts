@@ -155,7 +155,8 @@ const HELP = {
     when: "Every refresh searches them together with your own login.",
     empty: "Only your own login is scanned; it is always scanned.",
     limits: "Up to 5 GitHub logins (letters, digits, - or _, up to 39); not your own login.",
-    example: "alice-bot, a bot account that opens pull requests for you.",
+    example:
+      "A bot account that opens pull requests you take care of (e.g. Claudius-Maginificent): put it here so its pull requests count as yours, and keep it in Known bots so its reviews count as a bot's. Do not put it into Excluded authors.",
   },
   repo: {
     section: "Dashboard",
@@ -238,18 +239,25 @@ const HELP = {
     limits: "1 to 50 characters; compared without regard to case.",
     example: "needs-review.",
   },
-  // TODO(B3-BOTS): stub. The contract splits this list into Excluded authors and Known bots (`known_bots`); rewrite
-  // this entry, add one for Known bots and extend the Linked logins example when that contract is merged.
   skip_authors: {
     section: "Dashboard",
-    title: "Bot authors to skip",
-    what: "Logins of bots. Their pull requests and issues are left out of Needs you unless they are directed at you: you or a linked login are a requested reviewer or an assignee (a mention alone does not keep them). They also count as bots wherever My work asks whether a human waits: their review requests and latest comments do not count as someone waiting for you, they are not listed among the reviewers your pull request waits on, and their reviews count as bot reviews.",
+    title: "Excluded authors",
+    what: "Banned authors. Pull requests and issues written by these accounts are never shown in Needs you — also when a review is requested from you or they are assigned to you. Being listed does not make an account a bot.",
+    when: "Only on My work (the scan and the ranking); never in pull request analyses, flows or Ask.",
+    empty: "dependabot, dependabot[bot].",
+    limits: "Up to 20 GitHub logins, optionally ending in [bot].",
+    example: "Add renovate[bot] to hide Renovate's pull requests.",
+  },
+  known_bots: {
+    section: "Dashboard",
+    title: "Known bots",
+    what: "Accounts treated as bots: their review requests and comments do not count as a person waiting for you, they are not listed among reviewers you wait on, and their reviews count as bot reviews. GitHub Apps (…[bot]) are always bots and need not be listed. Nothing else is built in.",
     when: "Only on My work (the scan and the ranking); never in pull request analyses, flows or Ask.",
     empty:
-      "dependabot and dependabot[bot]. GitHub Apps (…[bot]) and the review bots thepastaclaw, Claudius-Maginificent and DCG-Claude already count as bots, but their items are left out only when listed here.",
-    limits: "Up to 20 GitHub logins, optionally ending in [bot].",
+      "thepastaclaw, Claudius-Maginificent and DCG-Claude. An empty list leaves only GitHub Apps as bots.",
+    limits: "Up to 20 GitHub logins, optionally ending in [bot]. Your own and linked logins may be listed.",
     example:
-      "Dependabot's pull requests are hidden, except those where you are the requested reviewer or assignee; add renovate[bot] to do the same for Renovate.",
+      "Add a review bot that runs under a normal user account, so its review requests do not wait on you.",
   },
   include_todos: {
     section: "Dashboard",
@@ -366,6 +374,7 @@ export const CONTRACT_HELP: {
     lookback_days: "lookback_days",
     ready_label: "ready_label",
     skip_authors: "skip_authors",
+    known_bots: "known_bots",
     include_todos: "include_todos",
     memcan_extra_projects: "memcan_extra_projects",
     schedule_enabled: "schedule_enabled",

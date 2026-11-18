@@ -9,6 +9,7 @@ const DEFAULTS: DashboardSettings = {
   lookback_days: 7,
   ready_label: "ready-for-human",
   skip_authors: ["dependabot", "dependabot[bot]"],
+  known_bots: ["thepastaclaw", "Claudius-Maginificent", "DCG-Claude"],
   include_todos: true,
   memcan_extra_projects: [],
   schedule_enabled: true,
@@ -152,8 +153,29 @@ describe("dashboard settings validation (plan §F.6)", () => {
     expect(errors({ ready_label: "x".repeat(50) })).toEqual({});
     expect(errors({ ready_label: "😀".repeat(50) })).toEqual({});
     expect(errors({ skip_authors: ["bot[robot]"] })).toHaveProperty("skip_authors");
-    expect(errors({ skip_authors: Array.from({ length: 21 }, (_, i) => `b${i}`) }).skip_authors).toMatch(
-      /at most 20/,
+    expect(errors({ skip_authors: Array.from({ length: 21 }, (_, i) => `b${i}`) }).skip_authors).toBe(
+      "Excluded authors: at most 20.",
+    );
+    expect(errors({ skip_authors: ["bot[robot]"] }).skip_authors).toBe(
+      'Excluded authors: "bot[robot]" is not a GitHub login (optionally ending [bot]).',
+    );
+  });
+
+  it("known bots: login syntax (optionally [bot]), unique, at most 20; own and linked logins allowed", () => {
+    expect(errors({ known_bots: ["two words"] }).known_bots).toBe(
+      'Known bots: "two words" is not a GitHub login (optionally ending [bot]).',
+    );
+    expect(errors({ known_bots: Array.from({ length: 21 }, (_, i) => `b${i}`) }).known_bots).toBe(
+      "Known bots: at most 20.",
+    );
+    expect(errors({ known_bots: ["thepastaclaw", "ThePastaClaw"] }).known_bots).toBe(
+      'Known bots: "ThePastaClaw" is listed twice.',
+    );
+    expect(
+      errors({ linked_logins: ["alice-ci"], known_bots: ["alice", "alice-ci", "renovate[bot]"] }),
+    ).toEqual({});
+    expect(checkEntry("known_bots", "thepastaclaw", ["ThePastaClaw"], "alice")).toBe(
+      'Known bots: "thepastaclaw" is already listed.',
     );
   });
 

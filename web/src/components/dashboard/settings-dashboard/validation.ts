@@ -8,7 +8,8 @@ export const BUILT_IN_BRANCHES = ["main", "master", "release/*", "hotfix/*", "vX
 export type FieldErrors = Record<string, string>;
 
 /** Lists edited one entry at a time. */
-export type ListField = "linked_logins" | "enumerate_owners" | "skip_authors" | "memcan_extra_projects";
+export type ListField =
+  "linked_logins" | "enumerate_owners" | "skip_authors" | "known_bots" | "memcan_extra_projects";
 
 const LOGIN = /^[A-Za-z0-9_-]{1,39}$/;
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
@@ -30,7 +31,13 @@ const LISTS: Record<ListField, { label: string; max: number; valid: RegExp; rule
     rule: "is not a GitHub login (letters, digits, - or _, up to 39)",
   },
   skip_authors: {
-    label: "Bot authors to skip",
+    label: "Excluded authors",
+    max: 20,
+    valid: /^[A-Za-z0-9_-]{1,39}(\[bot\])?$/,
+    rule: "is not a GitHub login (optionally ending [bot])",
+  },
+  known_bots: {
+    label: "Known bots",
     max: 20,
     valid: /^[A-Za-z0-9_-]{1,39}(\[bot\])?$/,
     rule: "is not a GitHub login (optionally ending [bot])",
@@ -161,6 +168,7 @@ export function validateSettings(settings: DashboardSettings, ownLogin: string):
     put("ready_label", '"Ready for a human" label: use 1 to 50 characters.');
   }
   put("skip_authors", checkList("skip_authors", settings.skip_authors, ownLogin));
+  put("known_bots", checkList("known_bots", settings.known_bots, ownLogin));
   put("memcan_extra_projects", checkList("memcan_extra_projects", settings.memcan_extra_projects, ownLogin));
   if (!TIME.test(settings.schedule_time)) {
     put("schedule_time", "Time of day: use HH:MM in steps of 15 minutes.");

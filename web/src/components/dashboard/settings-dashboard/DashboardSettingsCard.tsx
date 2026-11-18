@@ -130,8 +130,10 @@ export function DashboardSettingsCard({ view, onSave, onDirtyChange }: Dashboard
             lookbackDays={draft.lookback_days}
             readyLabel={draft.ready_label}
             skipAuthors={draft.skip_authors}
+            knownBots={draft.known_bots}
             errors={errors}
             checkAuthor={check("skip_authors")}
+            checkBot={check("known_bots")}
             onChange={edit}
           />
         </Group>
