@@ -2,7 +2,7 @@
 
 use contracts::agent::JobKind;
 use contracts::job::spec::{ModelChoice, ReasoningEffort};
-use db::repo::settings::{DEFAULT_ASK_EFFORT, StoredLlmSelection};
+use db::repo::settings::{DEFAULT_ASK_EFFORT, DEFAULT_JUDGE_EFFORT, StoredLlmSelection};
 
 /// Codex model id of "Sol" (spike S1a).
 const SOL: &str = "gpt-6.1-sol";
@@ -15,7 +15,8 @@ pub struct ModelContext {
 }
 
 /// The saved installation choice (Sol at high effort before any save); Ask jobs use the saved Ask effort
-/// instead ([`DEFAULT_ASK_EFFORT`] before any save).
+/// instead ([`DEFAULT_ASK_EFFORT`] before any save) and dashboard ranking jobs the saved ranking effort
+/// ([`DEFAULT_JUDGE_EFFORT`] before any save).
 pub fn select_model(
     kind: JobKind,
     context: &ModelContext,
@@ -35,7 +36,11 @@ pub fn select_model(
             reasoning_effort: saved.map_or(DEFAULT_ASK_EFFORT, |saved| saved.ask_effort),
             ..choice
         },
-        _ => choice,
+        JobKind::JudgeWork => ModelChoice {
+            reasoning_effort: saved.map_or(DEFAULT_JUDGE_EFFORT, |saved| saved.judge_effort),
+            ..choice
+        },
+        JobKind::Plan | JobKind::PrContext | JobKind::AnalyseFlow => choice,
     }
 }
 
@@ -69,7 +74,11 @@ pub fn selection(saved: Option<StoredLlmSelection>) -> contracts::api::settings:
             ReasoningEffort::High,
         ],
         current: select_model(JobKind::Plan, &ModelContext::default(), saved.as_ref()),
-        judge_effort: None,
+        judge_effort: Some(
+            saved
+                .as_ref()
+                .map_or(DEFAULT_JUDGE_EFFORT, |s| s.judge_effort),
+        ),
         ask_effort: Some(saved.as_ref().map_or(DEFAULT_ASK_EFFORT, |s| s.ask_effort)),
         changed_by: saved.as_ref().map(|s| s.changed_by.clone()),
         changed_at: saved.map(|s| s.changed_at),
@@ -88,7 +97,7 @@ mod tests {
                 model: model.into(),
                 reasoning_effort: effort,
             },
-            judge_effort: ReasoningEffort::Low,
+            judge_effort: ReasoningEffort::Medium,
             ask_effort: ask,
             changed_by: "alice".into(),
             changed_at: Utc::now(),
@@ -96,12 +105,12 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_sol_high_and_medium_for_ask() {
+    fn defaults_are_sol_high_medium_for_ask_and_low_for_ranking() {
         for kind in JobKind::ALL {
-            let effort = if kind == JobKind::Ask {
-                ReasoningEffort::Medium
-            } else {
-                ReasoningEffort::High
+            let effort = match kind {
+                JobKind::Ask => ReasoningEffort::Medium,
+                JobKind::JudgeWork => ReasoningEffort::Low,
+                _ => ReasoningEffort::High,
             };
             for changed_lines in [0, 1, 100_000] {
                 assert_eq!(
@@ -117,13 +126,29 @@ mod tests {
     }
 
     #[test]
+    fn select_model_judge_work_uses_judge_effort() {
+        let saved = saved("gpt-6-astra", ReasoningEffort::High, ReasoningEffort::Low);
+        assert_eq!(
+            select_model(JobKind::JudgeWork, &ModelContext::default(), Some(&saved)),
+            ModelChoice {
+                model: "gpt-6-astra".into(),
+                reasoning_effort: ReasoningEffort::Medium,
+            }
+        );
+        assert_eq!(
+            select_model(JobKind::JudgeWork, &ModelContext::default(), None).reasoning_effort,
+            ReasoningEffort::Low
+        );
+    }
+
+    #[test]
     fn ask_uses_the_saved_ask_effort_and_others_the_installation_choice() {
         let saved = saved("gpt-6-astra", ReasoningEffort::High, ReasoningEffort::Low);
         for kind in JobKind::ALL {
-            let expected = if kind == JobKind::Ask {
-                ReasoningEffort::Low
-            } else {
-                ReasoningEffort::High
+            let expected = match kind {
+                JobKind::Ask => ReasoningEffort::Low,
+                JobKind::JudgeWork => ReasoningEffort::Medium,
+                _ => ReasoningEffort::High,
             };
             assert_eq!(
                 select_model(kind, &ModelContext::default(), Some(&saved)),
@@ -149,11 +174,13 @@ mod tests {
     }
 
     #[test]
-    fn selection_reports_the_ask_effort() {
+    fn selection_reports_the_ask_and_ranking_efforts() {
         assert_eq!(selection(None).ask_effort, Some(ReasoningEffort::Medium));
+        assert_eq!(selection(None).judge_effort, Some(ReasoningEffort::Low));
         let saved = saved("gpt-6-astra", ReasoningEffort::High, ReasoningEffort::Low);
         let shown = selection(Some(saved));
         assert_eq!(shown.ask_effort, Some(ReasoningEffort::Low));
+        assert_eq!(shown.judge_effort, Some(ReasoningEffort::Medium));
         assert_eq!(shown.current.reasoning_effort, ReasoningEffort::High);
     }
 }
