@@ -762,3 +762,14 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   comment (file comment, not in the diff). The draft starts with "LLM-suggested — review before posting", then
   the flag's title, numbered scenario and not-checked line, or the answer as written; a draft already there keeps
   its text and gets this after a blank line. It stays an editable draft; nothing is posted until the user adds it.
+
+### Owner-approved amendment — 2026-11-18: GitHub work dashboard
+
+The start page `/` is "My work": the pull requests and issues the user authored, is assigned or is asked to review,
+and optionally the user's MemCan TODOs, ranked P0–P3 by a computed score with visible components, plus
+pull-request throughput charts. It refreshes on request and once a day at a time the user sets (default 06:00),
+and is read-only towards GitHub and MemCan. The user's agents may read it, and everything else the user can read,
+with a personal access token. The review start page moves to `/review`. §1 trust rules apply to the review
+module; on the dashboard LLM text carries the "LLM" tag and every score part names its source. Supersedes "No
+dashboard" in §2 v1 and the v3+ dashboard item in §2 Later. Decision: `docs/decisions/ADR-016-dashboard-start-page.md`;
+plan: `docs/v1.1-dashboard-plan.md`.
