@@ -221,7 +221,7 @@
                   ],
                   "properties": {
                     "level": {
-                      "description": "red or yellow. `red`: A likely defect or damage if the scenario is reachable. `yellow`: Worth a look: plausible but weaker, or of lower cost. `unknown`: A flag stored before flags had levels (a former question to check); never in new agent output.",
+                      "description": "red or yellow in agent output; unknown only on a flag stored before levels. `red`: A likely defect or damage if the scenario is reachable. `yellow`: Worth a look: plausible but weaker, or of lower cost. `unknown`: A flag stored before flags had levels (a former question to check); never in new agent output.",
                       "type": "string",
                       "enum": [
                         "red",

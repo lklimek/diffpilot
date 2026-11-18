@@ -1187,7 +1187,7 @@ export type FitTopic = "layer_or_repository" | "size_for_problem" | "duplicate_m
  */
 export type Flag = {
 /**
- * red or yellow.
+ * red or yellow in agent output; unknown only on a flag stored before levels.
  */
 level: FlagLevel,
 /**
