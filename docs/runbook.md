@@ -196,10 +196,10 @@ Never delete the database to upgrade.
 
    ```sh
    cd /srv/smart-review/app
-   OLD="$(git rev-parse HEAD)"; echo "previous version: $OLD"
+   git rev-parse HEAD | sudo tee /srv/smart-review/previous-version   # read by the rollback
    sudo git pull --ff-only
    scripts/check-migrations.sh
-   git diff --name-status "$OLD" -- crates/db/migrations   # only A (added) lines; M or D: stop, do not deploy
+   git diff --name-status "$(cat /srv/smart-review/previous-version)" -- crates/db/migrations   # only A lines; M or D: stop
    for i in server runner egress-proxy; do docker tag "smart-review-$i:local" "smart-review-$i:rollback"; done
    sr build egress-proxy && sr build runner && sr build server
    ```
@@ -217,14 +217,15 @@ Never delete the database to upgrade.
 
 3. Verify: all three `healthy`, sign-in works, an existing analysis opens.
 
-**Rollback** (the new version fails, or a migration error in the log): restore the backup of step 2 together with
-the previous images and commit; whatever was written after the upgrade is lost.
+**Rollback** (the new version fails, or a migration error in the log): once the new version has applied a new
+migration, the old image refuses to start against that database, so a rollback always means restoring the step-2
+backup together with the previous images and commit; everything written since the upgrade is lost.
 
 ```sh
 sr stop
 # restore the step-2 backup here (section "Backup and restore")
 for i in server runner egress-proxy; do docker tag "smart-review-$i:rollback" "smart-review-$i:local"; done
-cd /srv/smart-review/app && sudo git checkout --detach "$OLD"   # back later with: sudo git switch -
+cd /srv/smart-review/app && sudo git checkout --detach "$(cat /srv/smart-review/previous-version)"   # back later: sudo git switch -
 sr up -d
 ```
 
