@@ -1,5 +1,5 @@
 import type { RouteObject } from "react-router";
-import { ShellRoute, StartRoute } from "../screens/dashboard/ShellRoute";
+import { ShellRoute, StartRoute } from "../screens/shell/ShellRoute";
 import { HomeScreen } from "../screens/home/HomeScreen";
 import { NotFoundScreen } from "../screens/home/NotFoundScreen";
 import { ProgressScreen } from "../screens/progress/ProgressScreen";

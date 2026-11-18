@@ -33,8 +33,10 @@ test("Use as review comment prefills the pending-review composer from a flag and
   // An Ask answer on the same step goes after the open draft, after a blank line.
   const thread = inspector.getByRole("list", { name: "Ask conversation" });
   await thread.getByRole("button", { name: "Use as review comment" }).first().click();
+  const appended = `${text} My note.\n\nLLM-suggested — review before posting\n\n`;
+  await expect.poll(() => composer.inputValue()).toContain(appended);
   const both = await composer.inputValue();
-  expect(both.startsWith(`${text} My note.\n\nLLM-suggested — review before posting\n\n`)).toBe(true);
+  expect(both.startsWith(appended)).toBe(true);
   expect(both).toContain("1. The first reply is late.");
   expect(posts).toEqual([]);
   await expectAccessible(page);

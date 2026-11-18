@@ -51,3 +51,30 @@ it("text is appended to an existing draft after a blank line, never over it", ()
   expect(appendDraft("  \n", "B")).toBe("B");
   expect(appendDraft("My note\n", "B")).toBe("My note\n\nB");
 });
+
+it("the same text is not appended again when the draft already ends with it", () => {
+  const once = appendDraft("My note", "B");
+  expect(appendDraft(once, "B")).toBe(once);
+  expect(appendDraft("B\n", "B")).toBe("B\n");
+  expect(appendDraft("AB", "B")).toBe("AB\n\nB");
+});
+
+it("LLM text cannot mention, cross-link or make headings on GitHub: such tokens become code", () => {
+  expect(answerComment("Needs @types/node and @Override; see #482 and acme/node-client#9.")).toBe(
+    `${LLM_SUGGESTED}\n\nNeeds \`@types/node\` and \`@Override\`; see \`#482\` and \`acme/node-client#9\`.`,
+  );
+  expect(answerComment("# Heading\n## Sub\n#482 is the PR\nmail alice@example.com")).toBe(
+    `${LLM_SUGGESTED}\n\n\\# Heading\n\\## Sub\n\`#482\` is the PR\nmail alice@example.com`,
+  );
+  // Code spans and fenced blocks stay as written.
+  expect(answerComment("Use `@Override` or `#1`.\n```java\n@Override\n#include x\n```\nthen @bob")).toBe(
+    `${LLM_SUGGESTED}\n\nUse \`@Override\` or \`#1\`.\n\`\`\`java\n@Override\n#include x\n\`\`\`\nthen \`@bob\``,
+  );
+  expect(
+    flagComment({ ...flag, text: "# Race with @alice", flag: { ...flag.flag!, scenario: ["See #7."] } }),
+  ).toBe(
+    `${LLM_SUGGESTED}\n\n\\# Race with \`@alice\`\n1. See \`#7\`.\n\nNot checked: Not reproduced; no test was run.`,
+  );
+  // A URL keeps its @ and #.
+  expect(answerComment("https://x.test/@u/p#12")).toBe(`${LLM_SUGGESTED}\n\nhttps://x.test/@u/p#12`);
+});

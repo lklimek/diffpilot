@@ -216,14 +216,19 @@ describe("CommentComposer", () => {
       .mockRejectedValue(Object.assign(new Error(sentence), { code: "pr_head_changed" }));
     const { user } = setup({
       onCreate,
-      reanalyseHref: "/?pr=https%3A%2F%2Fgithub.com%2Facme%2Fnode-client%2Fpull%2F482",
+      reanalyseHref: "/review?pr=https%3A%2F%2Fgithub.com%2Facme%2Fnode-client%2Fpull%2F482",
     });
     await user.type(field(), "text");
     await user.click(addButton());
     await screen.findByRole("alert");
     const link = screen.getByRole("link", { name: "Analyse the new head" });
-    expect(link).toHaveAttribute("href", "/?pr=https%3A%2F%2Fgithub.com%2Facme%2Fnode-client%2Fpull%2F482");
-    expect(link).toHaveAccessibleDescription(/Home/);
+    expect(link).toHaveAttribute(
+      "href",
+      "/review?pr=https%3A%2F%2Fgithub.com%2Facme%2Fnode-client%2Fpull%2F482",
+    );
+    expect(link).toHaveAccessibleDescription(
+      "Opens Review a PR with this pull request checked; Start analysis there analyses its new head. Ticks are not carried over.",
+    );
   });
 
   it("offers no re-analyse link for other refusals", async () => {
