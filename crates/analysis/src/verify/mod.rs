@@ -278,6 +278,12 @@ pub fn plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<VerifiedPlan, V
     check_plan::plan(output, diff)
 }
 
+/// [`plan`] for a plan accepted and stored earlier, read again: lines it leaves in no flow and not in
+/// `unassigned` (today's rules require more than the rules it was written for) are Unexplained, not an issue.
+pub fn stored_plan(output: &PlanOutput, diff: &DiffIndex<'_>) -> Result<VerifiedPlan, VerifyError> {
+    check_plan::stored_plan(output, diff)
+}
+
 /// Verifies a `pr_context` output (required texts; evidence lines inside their file on their side).
 pub fn pr_context(output: &PrContextOutput, facts: &LineFacts) -> Result<(), VerifyError> {
     let mut issues = Issues::default();

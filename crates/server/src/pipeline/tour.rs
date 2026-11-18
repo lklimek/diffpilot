@@ -10,13 +10,14 @@ use std::sync::Arc;
 use analysis::diff::FileDiff;
 use analysis::lines::{changed_lines_within, contains_range, ranges};
 use analysis::prepass::Prepass;
-use analysis::verify::{TourSkeleton, VerifiedFlow};
+use analysis::verify::{OutputRef, Repair, TourSkeleton, VerifiedFlow};
 use contracts::agent::plan::PlannedFlow;
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::tour::{
-    Annotation, Flow, FlowFacts, FlowGroup, FlowLlm, GithubThread, ImpactRef, PatternRepetition,
-    PatternSite, PrContextBlock, PrContextFacts, QuietRows, Step, StepFacts, StepLlm, Tour,
+    Annotation, Flow, FlowAnalysisState, FlowFacts, FlowGroup, FlowLlm, GithubThread, ImpactRef,
+    PatternRepetition, PatternSite, PrContextBlock, PrContextFacts, QuietRows, Step, StepFacts,
+    StepLlm, Tour,
 };
 use contracts::common::{LineRange, LineSide};
 use contracts::ids::{AnnotationId, FlowId, StepId};
@@ -140,6 +141,7 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
     let verdict = verdict::analysis(Arc::clone(&facts), outputs, aliases.clone(), true)
         .await
         .map_err(TourError::from)?;
+    let repairs = verdict.repairs;
     let skeleton = verdict.tour.ok_or(TourError::PlanRejected)?;
     // Stored with the accepted PR context: its agent had the GitHub tool.
     let related_work_checked = state
@@ -169,9 +171,38 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         memcan_profile: profile::stored(&state.db, summary.id).await?.found(),
     });
     for flow in &mut tour.flows {
-        flow.analysis_status = Some(state.db.flow_work().status(summary.id, &flow.id).await?);
+        let mut status = state.db.flow_work().status(summary.id, &flow.id).await?;
+        let accepted = skeleton
+            .flows
+            .iter()
+            .any(|verified| verified.flow_id == flow.id);
+        if status.state == FlowAnalysisState::Analysed && !accepted {
+            // Stored, but today's checks reject it: its lines stay listed as not analysed, never silently gone.
+            // TODO: a per-flow request is a no-op while the stored document exists; analysing it anew needs a new
+            // analysis of the pull request until a request may replace a stored flow (coordinator decision).
+            status.state = FlowAnalysisState::Failed;
+            status.message = Some(rejected_message(&repairs, &flow.id));
+        }
+        flow.analysis_status = Some(status);
     }
     Ok(tour)
+}
+
+/// Plain failure text of a stored flow that today's checks reject, with the server's issue codes (never agent text).
+fn rejected_message(repairs: &[Repair], flow: &FlowId) -> String {
+    let mut codes: Vec<&str> = repairs
+        .iter()
+        .filter(|repair| repair.output == OutputRef::Flow(flow.clone()))
+        .flat_map(|repair| &repair.issues)
+        .map(|issue| issue.kind.code())
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    format!(
+        "The stored analysis of this flow does not pass today's checks ({}). Its changes are listed here as not \
+         analysed; read them yourself or analyse the pull request again.",
+        codes.join(", ")
+    )
 }
 
 /// Everything the Tour is projected from.

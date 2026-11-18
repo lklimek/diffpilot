@@ -1171,10 +1171,6 @@ async fn lines_match_the_seed_for_whole_files() {
 async fn a_pre_pass_stored_in_an_older_shape_is_computed_again() {
     let h = harness().await;
     let id = h.seed_analysis().await;
-    server::pipeline::resume_unfinished(&h.state)
-        .await
-        .expect("resume");
-    h.wait_until_finished(&id.to_string()).await;
     let uri = format!("/api/v1/analyses/{id}/lines?path=src/rpc/client.rs&side=head&from=1&to=224");
     let (status, fresh) = h.get(&uri).await;
     assert_eq!(status, StatusCode::OK, "{fresh}");
@@ -1201,48 +1197,213 @@ async fn a_pre_pass_stored_in_an_older_shape_is_computed_again() {
         .await
         .expect("the new shape is stored");
     assert!(stored.is_some());
+}
 
-    // The plan of that build: h19/h20 (an in-file move, quiet then) were in no flow and not in `unassigned`.
-    let mut plan: Value = documents
-        .get(id, DocumentKind::Plan, "")
-        .await
-        .expect("read plan")
-        .expect("stored plan");
+/// The fixture plan as an earlier build wrote it: h19/h20 (an in-file move, quiet then) in no flow and not in
+/// `unassigned`.
+fn plan_of_an_earlier_build() -> Value {
+    let mut plan = agent_output("plan:1");
     plan["unassigned"]
         .as_array_mut()
         .expect("unassigned")
         .retain(|hunk| !["h19", "h20"].contains(&hunk["hunk_id"].as_str().unwrap_or_default()));
+    plan
+}
+
+/// Whether `tour`'s Unexplained lists `start..=end` of src/rpc/client.rs on `side`.
+fn unexplained_has(tour: &Value, side: &str, start: u64, end: u64) -> bool {
+    tour["quiet"]["unexplained"]
+        .as_array()
+        .expect("unexplained")
+        .iter()
+        .any(|item| {
+            item["file"] == "src/rpc/client.rs"
+                && item["side"] == side
+                && item["ranges"].as_array().expect("ranges").iter().any(|r| {
+                    r["start_line"].as_u64() <= Some(start) && r["end_line"].as_u64() >= Some(end)
+                })
+        })
+}
+
+/// The moved code of h19/h20 without its context-only doc comments (head 112, 145; base 173, 206).
+const H19_H20: [(&str, u64, u64); 2] = [("head", 113, 144), ("base", 174, 205)];
+
+#[tokio::test]
+async fn stored_plan_and_flow_missing_newly_mandatory_lines_leave_them_unexplained() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    h.wait_until_finished(&id.to_string()).await;
+    let documents = h.state.db.documents();
     documents
-        .put(id, DocumentKind::Plan, "", &plan, chrono::Utc::now())
+        .put(
+            id,
+            DocumentKind::Plan,
+            "",
+            &plan_of_an_earlier_build(),
+            Utc::now(),
+        )
         .await
         .expect("store the old plan");
+    // Flow f1 as if its step s9 (head 30-43: changed lines 35, 42 and removed base 41) had not been required.
+    let mut flow: Value = agent_output("flow:f1");
+    flow["steps"]
+        .as_array_mut()
+        .expect("steps")
+        .retain(|step| step["id"] != "s9");
+    flow["edges"]
+        .as_array_mut()
+        .expect("edges")
+        .retain(|edge| edge["from_step_id"] != "s9" && edge["to_step_id"] != "s9");
+    documents
+        .put(id, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .await
+        .expect("store the narrower flow");
     let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
     assert_eq!(status, StatusCode::OK, "{tour}");
     let flows = tour["flows"].as_array().expect("flows");
     assert_eq!(flows.len(), 5);
-    assert!(
-        flows
-            .iter()
-            .all(|flow| !flow["steps"].as_array().expect("steps").is_empty()),
-        "flows analysed"
-    );
-    let unexplained = &tour["quiet"]["unexplained"];
-    // The moved code of h19/h20, without its context-only doc comments (head 112, 145; base 173, 206).
-    for (side, start, end) in [("head", 113, 144), ("base", 174, 205)] {
-        let listed = unexplained
-            .as_array()
-            .expect("unexplained")
-            .iter()
-            .any(|item| {
-                item["file"] == "src/rpc/client.rs"
-                    && item["side"] == side
-                    && item["ranges"].as_array().expect("ranges").iter().any(|r| {
-                        r["start_line"].as_u64() <= Some(start)
-                            && r["end_line"].as_u64() >= Some(end)
-                    })
-            });
-        assert!(listed, "{side} {start}-{end} in Unexplained: {unexplained}");
+    for flow in flows {
+        assert_eq!(
+            flow["analysis_status"]["state"], "analysed",
+            "{}",
+            flow["id"]
+        );
+        assert!(
+            !flow["steps"].as_array().expect("steps").is_empty(),
+            "{}",
+            flow["id"]
+        );
     }
+    let f1 = flows.iter().find(|flow| flow["id"] == "f1").expect("f1");
+    assert_eq!(
+        f1["steps"].as_array().map(Vec::len),
+        Some(9),
+        "f1 keeps its other steps"
+    );
+    for (side, start, end) in
+        H19_H20
+            .into_iter()
+            .chain([("head", 35, 35), ("head", 42, 42), ("base", 41, 41)])
+    {
+        assert!(
+            unexplained_has(&tour, side, start, end),
+            "{side} {start}-{end} in Unexplained: {}",
+            tour["quiet"]["unexplained"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn resume_reads_a_stored_plan_as_stored() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let documents = h.state.db.documents();
+    documents
+        .put(
+            id,
+            DocumentKind::Plan,
+            "",
+            &plan_of_an_earlier_build(),
+            Utc::now(),
+        )
+        .await
+        .expect("old plan");
+    documents
+        .put(
+            id,
+            DocumentKind::PrContext,
+            "",
+            &agent_output("pr_context"),
+            Utc::now(),
+        )
+        .await
+        .expect("pr context");
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    let finished = h.wait_until_finished(&id.to_string()).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    for (side, start, end) in H19_H20 {
+        assert!(
+            unexplained_has(&tour, side, start, end),
+            "{side} {start}-{end}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn retry_reads_a_stored_plan_as_stored() {
+    let h = harness().await;
+    h.executor.script("pr_context", Script::Fail);
+    let id = h.create_fixture_analysis().await;
+    let ended = h.wait_until_ended(&id).await;
+    assert!(
+        matches!(ended.state, AnalysisState::Failed { .. }),
+        "{ended:?}"
+    );
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    h.state
+        .db
+        .documents()
+        .put(
+            analysis,
+            DocumentKind::Plan,
+            "",
+            &plan_of_an_earlier_build(),
+            Utc::now(),
+        )
+        .await
+        .expect("old plan");
+    h.executor.unscript("pr_context");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+}
+
+#[tokio::test]
+async fn a_stored_flow_failing_another_check_is_failed_with_its_lines_listed() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    h.wait_until_finished(&id.to_string()).await;
+    let mut flow: Value = agent_output("flow:f1");
+    flow["edges"]
+        .as_array_mut()
+        .expect("edges")
+        .push(json!({"from_step_id": "s1", "to_step_id": "s99", "label": null}));
+    h.state
+        .db
+        .documents()
+        .put(id, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .await
+        .expect("store a flow that fails a check");
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let f1 = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|flow| flow["id"] == "f1")
+        .expect("f1");
+    assert_eq!(f1["analysis_status"]["state"], "failed", "{f1}");
+    let message = f1["analysis_status"]["message"].as_str().expect("message");
+    assert!(message.contains("dangling_edge"), "{message}");
+    assert!(f1["steps"].as_array().expect("steps").is_empty());
+    let planned = f1["planned"]["ranges"].as_array().expect("planned ranges");
+    assert!(
+        planned
+            .iter()
+            .any(|r| r["file"] == "src/rpc/client.rs" && r["side"] == "head"),
+        "its lines are listed: {planned:?}"
+    );
 }
 
 #[tokio::test]

@@ -423,9 +423,22 @@ impl Driver<'_> {
             tracing::warn!(analysis = %self.analysis,
                 "move detection ran out of its work budget; some moved blocks have no move fact");
         }
-        if !verdict.repairs.is_empty() {
+        let coverage_only = verdict
+            .repairs
+            .iter()
+            .flat_map(|repair| &repair.issues)
+            .all(|issue| {
+                matches!(
+                    issue.kind,
+                    VerifyIssueKind::LineUnassigned | VerifyIssueKind::ChangedLineUncovered
+                )
+            });
+        if !verdict.repairs.is_empty() && coverage_only {
+            tracing::warn!(analysis = %self.analysis, repairs = verdict.repairs.len(),
+                "stored outputs leave lines uncovered that today's rules require; the Tour lists them as Unexplained");
+        } else if !verdict.repairs.is_empty() {
             tracing::error!(analysis = %self.analysis, repairs = verdict.repairs.len(),
-                "stored outputs fail the whole-analysis check; their flows are Unexplained in the Tour");
+                "stored outputs fail the whole-analysis check; the Tour shows their flows as failed with their lines");
         }
         let total = self.flow_total();
         self.set_state(AnalysisState::Finished { total }).await?;
@@ -433,9 +446,15 @@ impl Driver<'_> {
         Ok(())
     }
 
-    /// The plan is known (stored, merged or empty): verify it and recover accepted flow results.
+    /// The plan is known (stored, merged or empty): verify it and recover accepted flow results. A plan read from the
+    /// database (`store == false`) was accepted earlier: lines today's rules add are Unexplained, not a rejection.
     async fn plan_known(&mut self, plan: PlanOutput, store: bool) -> Result<(), PipelineError> {
-        let verified = match verdict::plan(&plan, &self.facts.listed)? {
+        let checked = if store {
+            verdict::plan(&plan, &self.facts.listed)?
+        } else {
+            verdict::stored_plan(&plan, &self.facts.listed)?
+        };
+        let verified = match checked {
             Ok(verified) => verified,
             Err(issues) => {
                 tracing::error!(analysis = %self.analysis, issues = issues.len(),

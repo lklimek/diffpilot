@@ -153,6 +153,14 @@ pub fn plan(
     checked(verify::plan(output, &DiffIndex::new(batch)?))
 }
 
+/// [`plan`] for a plan accepted and stored earlier, read again (`analysis::verify::stored_plan`).
+pub fn stored_plan(
+    output: &PlanOutput,
+    listed: &[FileDiff],
+) -> Result<Checked<VerifiedPlan>, VerdictError> {
+    checked(verify::stored_plan(output, &DiffIndex::new(listed)?))
+}
+
 /// Checks a `pr_context` output (its evidence lines are read from the mirror).
 pub async fn pr_context(
     facts: Arc<Facts>,
