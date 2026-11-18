@@ -177,7 +177,7 @@ export function FileDiffCode({ ctx, path, side }: { ctx: CodeContext; path: stri
         <DiffCode key={query.from} analysisId={ctx.analysisId} query={query} comments={ctx} />
       ))}
       {next && (
-        <Tooltip tip="Loads the next part of this file's classic diff; nothing is hidden by the comment, import and whitespace switch.">
+        <Tooltip tip="Loads the next part of this file's classic diff; nothing is hidden by the comment/import switch.">
           <button
             type="button"
             className="cursor-pointer text-accent underline"

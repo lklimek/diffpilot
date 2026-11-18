@@ -110,9 +110,10 @@ describe("CodeView", () => {
 
   it("puts a neutral gutter mark on every changed line, annotated or not", () => {
     render(<CodeView {...stepProps("f1.2")} />);
-    expect(lineNumbers(document, "[data-line][data-changed]")).toEqual([89, 91, 92, 93, 94, 95, 96]);
+    // 95 only moved into the new `loop` (whitespace only): unchanged code, no mark.
+    expect(lineNumbers(document, "[data-line][data-changed]")).toEqual([89, 91, 92, 93, 94, 96]);
     const marks = document.querySelectorAll("[data-mark=changed]");
-    expect([...marks].map(rowOf)).toEqual([89, 91, 92, 93, 94, 95, 96]);
+    expect([...marks].map(rowOf)).toEqual([89, 91, 92, 93, 94, 96]);
     for (const mark of marks) expect(mark).toHaveTextContent("changed line");
   });
 
@@ -259,9 +260,9 @@ describe("CodeView", () => {
     const blocks = screen.getAllByRole("group", { name: /^Removed code/ });
     expect(blocks.map((b) => b.getAttribute("aria-label"))).toEqual([
       "Removed code after line 88: 1 line from base line 99",
-      "Removed code after line 90: 3 lines from base line 101",
+      "Removed code after line 95: 2 lines from base line 102",
     ]);
-    expect(lineNumbers(blocks[1]!, "[data-line][data-removed]")).toEqual([101, 102, 103]);
+    expect(lineNumbers(blocks[1]!, "[data-line][data-removed]")).toEqual([102, 103]);
     expect(within(blocks[0]!).getByText("/// Sends a request.", { exact: false })).toBeInTheDocument();
     const order = [...document.querySelectorAll("[data-line]")].map((r) => r.getAttribute("data-line"));
     expect(order.slice(0, 3)).toEqual(["88", "99", "89"]);
@@ -313,7 +314,7 @@ describe("CodeView", () => {
     const onLineAction = vi.fn();
     render(<CodeView {...stepProps("f1.2")} onLineAction={onLineAction} />);
     const buttons = screen.getAllByRole("button", { name: /^Comment on / });
-    expect(buttons).toHaveLength(9 + 4);
+    expect(buttons).toHaveLength(9 + 3);
     expect(buttons.filter((b) => b.tabIndex === 0)).toHaveLength(1);
     act(() => buttons[0]!.focus());
     await userEvent.keyboard("{ArrowDown}");
@@ -662,7 +663,7 @@ it("pairs replacement code and hides rule-covered changes only in the main view"
   const { container, rerender } = render(<CodeView lines={lines} hideContextChanges />);
   expect(screen.getByText("Changed: 1 line replaced")).toBeVisible();
   expect(screen.queryByText(/Removed here/)).toBeNull();
-  expect(screen.getByText("1 comment, import or whitespace line hidden — in the classic diff")).toBeVisible();
+  expect(screen.getByText("1 comment/import line hidden — in the classic diff")).toBeVisible();
   expect(container.querySelector('[data-line="1"]')).toBeNull();
   expect(
     container.querySelector('[data-line="2"][data-side="head"] [data-mark="changed"]'),
@@ -686,5 +687,5 @@ it("hides rule-covered removed comments as well as head lines", () => {
   };
   render(<CodeView lines={lines} />);
   expect(screen.queryByText("// old note")).toBeNull();
-  expect(screen.getByText("1 comment, import or whitespace line hidden — in the classic diff")).toBeVisible();
+  expect(screen.getByText("1 comment/import line hidden — in the classic diff")).toBeVisible();
 });

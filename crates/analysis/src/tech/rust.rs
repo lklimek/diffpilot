@@ -8,6 +8,7 @@ use contracts::common::LineSide;
 use ra_ap_rustc_lexer::{FrontmatterAllowed, LiteralKind, TokenKind, strip_shebang, tokenize};
 
 use super::{FileSource, OtherSide};
+use crate::diff::Hunk;
 
 /// Deepest `{` nesting of a `use` tree the rules read; a deeper tree is unreadable.
 const MAX_USE_DEPTH: usize = 32;
@@ -130,8 +131,6 @@ pub(super) struct Covered {
     pub comments: Vec<u32>,
     /// Plain private `use` declarations.
     pub imports: Vec<u32>,
-    /// Lines that differ from their paired line on the other side only in whitespace.
-    pub whitespace: Vec<u32>,
 }
 
 /// The covered changed lines of `file`, whose text is `text`.
@@ -139,7 +138,6 @@ pub(super) fn covered<'a>(file: &FileSource<'a>, text: &'a str) -> Covered {
     let nothing = || Covered {
         comments: Vec::new(),
         imports: Vec::new(),
-        whitespace: Vec::new(),
     };
     let Some(this) = lex(text) else {
         return nothing();
@@ -153,18 +151,9 @@ pub(super) fn covered<'a>(file: &FileSource<'a>, text: &'a str) -> Covered {
         },
         OtherSide::Unknown => return nothing(),
     };
-    let comments = comment_lines(file, &this, &other);
-    let imports = import_lines(file, &this, &other);
-    let whitespace = whitespace_lines(file, &this, &other)
-        .into_iter()
-        .filter(|line| {
-            comments.binary_search(line).is_err() && imports.binary_search(line).is_err()
-        })
-        .collect();
     Covered {
-        comments,
-        imports,
-        whitespace,
+        comments: comment_lines(file, &this, &other),
+        imports: import_lines(file, &this, &other),
     }
 }
 
@@ -483,7 +472,7 @@ enum LineKey<'r, 'a> {
     Opaque(LineSide, u32),
 }
 
-/// Pairing work of one file side, in `(removed + added lines)²` per hunk (an upper bound of Myers); hunks beyond it
+/// Pairing work of one file, in `(removed + added lines)²` per hunk (an upper bound of Myers); hunks beyond it
 /// are not paired.
 const WHITESPACE_WORK_BUDGET: u64 = 64_000_000;
 
@@ -501,8 +490,8 @@ fn is_punct(kind: TokenKind) -> bool {
 }
 
 impl<'a> Lexed<'a> {
-    /// Per line (index = line - 1): its tokens; `None` for a line a multi-line token (string, block comment) or the
-    /// shebang touches: whitespace there may be content.
+    /// Per line (index = line - 1): its tokens; `None` for a line a multi-line token (string, block comment), the
+    /// shebang or a macro token tree touches: whitespace there may be content.
     fn line_tokens(&self) -> Vec<Option<Vec<LineToken<'a>>>> {
         let mut out: Vec<Option<Vec<LineToken<'a>>>> = vec![Some(Vec::new()); self.lines];
         if self.shebang
@@ -530,6 +519,12 @@ impl<'a> Lexed<'a> {
             }
             previous = Some(token);
         }
+        // Inside a macro token tree spacing is observable (`stringify!`, procedural macros).
+        for (line, inside) in out.iter_mut().zip(&self.in_macro) {
+            if *inside {
+                *line = None;
+            }
+        }
         out
     }
 }
@@ -555,22 +550,18 @@ fn line_keys<'r, 'a>(
     out
 }
 
-/// Changed lines whose tokens equal those of a paired changed line of the same hunk on the other side (comments
-/// included, literals as written): only indentation, trailing whitespace, line endings or spacing between tokens
-/// differ. Lines are paired by an exact diff of their token sequences, so re-indented code inside a new `if` pairs
-/// with its original while the wrapper lines stay changed.
-fn whitespace_lines(file: &FileSource<'_>, this: &Lexed<'_>, other: &Other<'_>) -> Vec<u32> {
-    let Other::Lexed(other) = other else {
+/// Pairs (base line, head line) of changed lines of one hunk whose tokens are equal (comments included, literals as
+/// written): only indentation, trailing whitespace, line endings or spacing between tokens differ. Lines are paired by
+/// an exact diff of their token sequences, so re-indented code inside a new `if` pairs with its original while the
+/// wrapper lines stay changed. Nothing pairs when either side is not readable by the lexer.
+pub(super) fn whitespace_pairs(base: &str, head: &str, hunks: &[Hunk]) -> Vec<(u32, u32)> {
+    let (Some(base), Some(head)) = (lex(base), lex(head)) else {
         return Vec::new();
     };
-    let (this_tokens, other_tokens) = (this.line_tokens(), other.line_tokens());
-    let (base_tokens, head_tokens) = match file.side {
-        LineSide::Head => (&other_tokens, &this_tokens),
-        LineSide::Base => (&this_tokens, &other_tokens),
-    };
+    let (base_tokens, head_tokens) = (base.line_tokens(), head.line_tokens());
     let mut budget = WHITESPACE_WORK_BUDGET;
     let mut out = Vec::new();
-    for hunk in file.hunks {
+    for hunk in hunks {
         if hunk.added.is_empty() || hunk.removed.is_empty() {
             continue;
         }
@@ -579,8 +570,8 @@ fn whitespace_lines(file: &FileSource<'_>, this: &Lexed<'_>, other: &Other<'_>) 
             continue;
         };
         budget = left;
-        let base = line_keys(LineSide::Base, &hunk.removed, base_tokens);
-        let head = line_keys(LineSide::Head, &hunk.added, head_tokens);
+        let base = line_keys(LineSide::Base, &hunk.removed, &base_tokens);
+        let head = line_keys(LineSide::Head, &hunk.added, &head_tokens);
         let base_keys: Vec<LineKey<'_, '_>> = base.iter().map(|(_, key)| *key).collect();
         let head_keys: Vec<LineKey<'_, '_>> = head.iter().map(|(_, key)| *key).collect();
         for op in similar::capture_diff_slices(similar::Algorithm::Myers, &base_keys, &head_keys) {
@@ -590,16 +581,12 @@ fn whitespace_lines(file: &FileSource<'_>, this: &Lexed<'_>, other: &Other<'_>) 
                 len,
             } = op
             {
-                let (lines, from) = match file.side {
-                    LineSide::Head => (&head, new_index),
-                    LineSide::Base => (&base, old_index),
-                };
-                out.extend(lines.iter().skip(from).take(len).map(|(line, _)| *line));
+                let base_lines = base.iter().skip(old_index).take(len);
+                let head_lines = head.iter().skip(new_index).take(len);
+                out.extend(base_lines.zip(head_lines).map(|((b, _), (h, _))| (*b, *h)));
             }
         }
     }
-    out.sort_unstable();
-    out.dedup();
     out
 }
 
@@ -767,6 +754,8 @@ struct Scope<'a> {
     items: HashSet<&'a str>,
     /// A glob import or an unreadable `use` tree: no binding is known for certain.
     unsure: bool,
+    /// Addresses of the bound-name tokens of every `use` tree (to tell a binding from a use of the name).
+    binding_tokens: HashSet<usize>,
 }
 
 /// A changed-line candidate: a plain private `use` alone on its line at the top level of the file.
@@ -800,6 +789,7 @@ fn scan<'a>(
                 };
                 scope.unsure |= tree.glob;
                 for &(bound, id) in &tree.bindings {
+                    scope.binding_tokens.insert(bound.as_ptr().addr());
                     scope
                         .bound
                         .entry(bound)
@@ -853,8 +843,8 @@ fn scan<'a>(
 
 /// Changed plain private `use` lines: alone on their line at the top level of the file after `;`, `}` or the start
 /// (no visibility, attribute or other token before them), no `as` or `*`, and every bound name bound to this one path
-/// on both sides, not declared as an item in the file and not a prelude name. A glob or an unreadable tree on either
-/// side covers nothing.
+/// on both sides, not declared as an item in the file, not a prelude name and used nowhere on the other side (the
+/// side without the import) except as a `use` binding. A glob or an unreadable tree on either side covers nothing.
 fn import_lines<'a>(file: &FileSource<'a>, this: &Lexed<'a>, other: &Other<'a>) -> Vec<u32> {
     let mut paths = Paths::default();
     let mut scope = Scope::default();
@@ -866,6 +856,19 @@ fn import_lines<'a>(file: &FileSource<'a>, this: &Lexed<'a>, other: &Other<'a>) 
     if scope.unsure {
         return Vec::new();
     }
+    // A name the side without the import already uses resolved to something else there (extern prelude, macro
+    // prelude, a derive, a constant in a pattern): the import re-points it. Its own binding there (a reordered
+    // import, bound to the same path on both sides) is no use.
+    let used_without: HashSet<&str> = match other {
+        Other::Lexed(lexed) => lexed
+            .tokens
+            .iter()
+            .filter(|token| is_ident(token.kind))
+            .map(|token| name(token.text))
+            .filter(|word| !scope.binding_tokens.contains(&word.as_ptr().addr()))
+            .collect(),
+        Other::Absent => HashSet::new(),
+    };
     plain
         .into_iter()
         .filter(|plain| {
@@ -873,6 +876,7 @@ fn import_lines<'a>(file: &FileSource<'a>, this: &Lexed<'a>, other: &Other<'a>) 
                 && plain.bindings.iter().all(|&(bound, id)| {
                     !scope.items.contains(bound)
                         && !PRELUDE.contains(&bound)
+                        && !used_without.contains(bound)
                         && scope.bound.get(bound) == Some(&Some(id))
                 })
         })
@@ -1251,9 +1255,14 @@ mod tests {
         );
     }
 
+    /// Whitespace-only pairs (base line, head line) of `base` -> `head` in a Rust file.
+    fn pairs(base: &[&str], head: &[&str]) -> Vec<(u32, u32)> {
+        crate::tech::whitespace_pairs("src/a.rs", &text(base), &text(head), &hunks(base, head))
+    }
+
     #[test]
-    fn whitespace_only_changes_are_covered_on_both_sides() {
-        // Wrapping code in `if`: the wrapper lines stay visible, the re-indented body is covered.
+    fn whitespace_only_lines_pair_exactly() {
+        // Wrapping code in `if`: the re-indented body pairs, the wrapper lines stay changed.
         let flat = ["fn f(ok: bool) {", "    a();", "    b(1, 2);", "}"];
         let wrapped = [
             "fn f(ok: bool) {",
@@ -1263,38 +1272,154 @@ mod tests {
             "    }",
             "}",
         ];
-        assert_eq!(head(&flat, &wrapped), [3, 4]);
-        assert_eq!(base(&flat, &wrapped), [2, 3]);
+        assert_eq!(pairs(&flat, &wrapped), [(2, 3), (3, 4)]);
+        // A swap inside a new `if`: one statement pairs, the other stays changed on both sides.
+        let base = [
+            "fn w() {",
+            "    ensure_authorised()?;",
+            "    debit()?;",
+            "}",
+        ];
+        let head = [
+            "fn w() {",
+            "    if enabled {",
+            "        debit()?;",
+            "        ensure_authorised()?;",
+            "    }",
+            "}",
+        ];
+        assert_eq!(pairs(&base, &head).len(), 1);
         // Trailing whitespace, spacing between tokens, CRLF.
         assert_eq!(
-            head(&["let x = 1;", "f();"], &["let x = 1;   ", "f();"]),
-            [1]
+            pairs(&["let x = 1;", "f();"], &["let x = 1;   ", "f();"]),
+            [(1, 1)]
         );
-        assert_eq!(head(&["g(a, b);"], &["g( a,b );"]), [1]);
+        assert_eq!(pairs(&["g(a, b);"], &["g( a,b );"]), [(1, 1)]);
         assert_eq!(
-            head(
+            pairs(
                 &["let x = 1;\r", "y(); // note\r"],
                 &["let x = 1;", "y(); // note"]
             ),
-            [1, 2]
+            [(1, 1), (2, 2)]
         );
         // A literal is compared as written: its inner whitespace is content.
-        assert_eq!(head(&["f(\"a  b\");"], &["    f(\"a  b\");"]), [1]);
-        assert_eq!(head(&["f(\"a b\");"], &["f(\"a  b\");"]), NONE);
+        assert_eq!(pairs(&["f(\"a  b\");"], &["    f(\"a  b\");"]), [(1, 1)]);
+        assert_eq!(pairs(&["f(\"a b\");"], &["f(\"a  b\");"]), []);
         // A multi-line string whose indentation changed is a changed value.
         let string = ["let s = \"first", "    second\";"];
         assert_eq!(
-            head(&string, &["let s = \"first", "        second\";"]),
-            NONE
+            pairs(&string, &["let s = \"first", "        second\";"]),
+            []
         );
         // Spacing between punctuation decides the tokens the parser sees (`&&` vs `& &`, `--` vs `- -`).
-        assert_eq!(head(&["let c = a && b;"], &["let c = a & & b;"]), NONE);
-        assert_eq!(head(&["let c = a - -b;"], &["let c = a--b;"]), NONE);
-        assert_eq!(head(&["let c = a + b;"], &["let c = a + c;"]), NONE);
-        // An unread other side covers nothing.
+        assert_eq!(pairs(&["let c = a && b;"], &["let c = a & & b;"]), []);
+        assert_eq!(pairs(&["let c = a - -b;"], &["let c = a--b;"]), []);
+        assert_eq!(pairs(&["let c = a + b;"], &["let c = a + c;"]), []);
+        // Not Rust: no pairs.
         assert_eq!(
-            covered_with(LineSide::Head, Some(&flat), Some(&wrapped), true),
-            NONE
+            crate::tech::whitespace_pairs(
+                "a.py",
+                "x = 1\n",
+                "x  = 1\n",
+                &hunks(&["x = 1"], &["x  = 1"])
+            ),
+            []
+        );
+    }
+
+    #[test]
+    fn spacing_inside_a_macro_token_tree_is_never_whitespace_only() {
+        // `stringify!` (and so `assert!` messages) and procedural macros see the spacing.
+        for (base, head) in [
+            (
+                "    assert!(limit>=amount);",
+                "    assert!(limit >= amount);",
+            ),
+            (
+                "    let key = field!(user . name);",
+                "    let key = field!(user.name);",
+            ),
+            (
+                "    let page = html!(<a href = \"x\">go</a>);",
+                "    let page = html!(<a href=\"x\">go</a>);",
+            ),
+            (
+                "macro_rules! k { ($e:expr) => { stringify!($e . id) }; }",
+                "macro_rules! k { ($e:expr) => { stringify!($e.id) }; }",
+            ),
+        ] {
+            assert_eq!(pairs(&[base], &[head]), [], "{head}");
+        }
+        let body = ["m! {", "    a b", "}"];
+        assert_eq!(
+            pairs(&body, &["m! {", "        a b", "}"]),
+            [],
+            "re-indented macro body"
+        );
+    }
+
+    #[test]
+    fn a_use_is_visible_when_its_name_occurs_on_the_side_without_it() {
+        // Names in scope without an import: extern prelude, macro prelude, derives, attributes.
+        let cases: [(&[&str], &[&str]); 5] = [
+            (
+                &["fn pid() -> u32 {", "    std::process::id()", "}"],
+                &[
+                    "use crate::shim::std;",
+                    "fn pid() -> u32 {",
+                    "    std::process::id()",
+                    "}",
+                ],
+            ),
+            (
+                &["async fn go() {", "    tokio::spawn(work());", "}"],
+                &[
+                    "use crate::shim::tokio;",
+                    "async fn go() {",
+                    "    tokio::spawn(work());",
+                    "}",
+                ],
+            ),
+            (
+                &["fn f() {", "    info!(\"paid\");", "}"],
+                &[
+                    "use crate::quiet::info;",
+                    "fn f() {",
+                    "    info!(\"paid\");",
+                    "}",
+                ],
+            ),
+            (
+                &["#[derive(Debug)]", "struct Secret(String);"],
+                &[
+                    "use redact::Debug;",
+                    "#[derive(Debug)]",
+                    "struct Secret(String);",
+                ],
+            ),
+            (
+                &["#[test]", "fn works() {}"],
+                &["use skipping::test;", "#[test]", "fn works() {}"],
+            ),
+        ];
+        for (base, head_file) in cases {
+            assert_eq!(head(base, head_file), NONE, "{}", head_file[0]);
+        }
+        // A removed constant import turns the unchanged pattern into a catch-all binding.
+        let with = [
+            "use limits::ADMIN;",
+            "fn is_admin(r: u8) -> bool {",
+            "    match r { ADMIN => true, _ => false }",
+            "}",
+        ];
+        assert_eq!(base(&with, &with[1..]), NONE);
+        // Control: a name only new code uses stays covered.
+        assert_eq!(
+            head(
+                &["fn a() {}"],
+                &["use crate::audit::Sink;", "fn a() {}", "fn b(s: Sink) {}"]
+            ),
+            [1]
         );
     }
 

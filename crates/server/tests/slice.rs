@@ -1118,6 +1118,28 @@ async fn lines_match_the_seed_for_whole_files() {
                     .contains(&json!(89))
             );
         }
+        // `let http = …` re-indented into the new `loop` (base 101, head 95): ordinary unchanged code, not hidden.
+        if seed["path"] == "src/rpc/client.rs" {
+            let (line, side) = if seed["side"] == "head" {
+                (95, "head")
+            } else {
+                (101, "base")
+            };
+            for field in ["changed", "context_only"] {
+                assert!(
+                    !lines[field].as_array().expect(field).contains(&json!(line)),
+                    "{side} {line} in {field}"
+                );
+            }
+            for block in lines["deleted"].as_array().expect("blocks") {
+                let start = block["base_start"].as_u64().expect("start");
+                let total = block["total_lines"].as_u64().expect("total");
+                assert!(
+                    !(start..start + total).contains(&101),
+                    "base 101 shown as removed"
+                );
+            }
+        }
         // The view hides exactly the lines the stored pre-pass covers by a line rule (one decision).
         let prepass: analysis::prepass::Prepass = h
             .state
@@ -1143,6 +1165,38 @@ async fn lines_match_the_seed_for_whole_files() {
         }
         assert_eq!(lines, seed, "{}", seed_path.display());
     }
+}
+
+#[tokio::test]
+async fn a_pre_pass_stored_in_an_older_shape_is_computed_again() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    let uri = format!("/api/v1/analyses/{id}/lines?path=src/rpc/client.rs&side=head&from=1&to=224");
+    let (status, fresh) = h.get(&uri).await;
+    assert_eq!(status, StatusCode::OK, "{fresh}");
+    let documents = h.state.db.documents();
+    let mut old: Value = documents
+        .get(id, DocumentKind::Prepass, "")
+        .await
+        .expect("read")
+        .expect("stored");
+    // The shape of 1525f6a: no quiet moves or whitespace pairs, identical moves as a hunk disposition.
+    let object = old.as_object_mut().expect("object");
+    object.remove("quiet_moves");
+    object.remove("whitespace");
+    old["hunks"][0]["disposition"] = json!({"kind": "identical_move"});
+    documents
+        .put(id, DocumentKind::Prepass, "", &old, chrono::Utc::now())
+        .await
+        .expect("store the old shape");
+    let (status, again) = h.get(&uri).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(again, fresh, "computed again from the stored diff");
+    let stored: Option<analysis::prepass::Prepass> = documents
+        .get(id, DocumentKind::Prepass, "")
+        .await
+        .expect("the new shape is stored");
+    assert!(stored.is_some());
 }
 
 #[tokio::test]
@@ -1174,7 +1228,8 @@ async fn lines_caps_the_range() {
 
     let (status, body) = h.get(&lines(95, 99)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["changed"], json!([95, 96, 97, 98, 99]));
+    // Line 95 only moved into the new `loop` (whitespace only): unchanged code.
+    assert_eq!(body["changed"], json!([96, 97, 98, 99]));
     assert_eq!(body["lines"].as_array().map(Vec::len), Some(5));
     assert_eq!(
         body["comments"]["line_thread_ranges"],

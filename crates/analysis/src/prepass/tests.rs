@@ -740,7 +740,8 @@ fn generated_files() -> impl Strategy<Value = Vec<(usize, u8, Vec<usize>, Vec<us
 }
 
 proptest! {
-    /// Every non-blank changed line is in exactly one of: the agent's lines, a Not analysed item, an identical move.
+    /// Every non-blank changed line is in exactly one of: the agent's lines, a Not analysed item, an identical move;
+    /// unless its only change is whitespace (it reads as unchanged code and is never the agent's).
     #[test]
     fn every_changed_line_has_exactly_one_disposition(specs in generated_files()) {
         let mut files = Vec::new();
@@ -779,6 +780,17 @@ proptest! {
                 }
             }
         }
+        for file in &result.whitespace {
+            for &(base, head) in &file.pairs {
+                count.remove(&(LineSide::Base, file.base.clone(), base));
+                count.remove(&(LineSide::Head, file.head.clone(), head));
+                for (side, path, line) in [(LineSide::Base, &file.base, base), (LineSide::Head, &file.head, head)] {
+                    prop_assert!(!result.agent_lines.iter().any(|r| r.side == side
+                        && &r.file == path
+                        && r.ranges.iter().any(|r| r.start_line <= line && line <= r.end_line)));
+                }
+            }
+        }
         let mut hit = |side: LineSide, file: &str, lines: &mut dyn Iterator<Item = u32>| {
             for line in lines {
                 if let Some(n) = count.get_mut(&(side, file.to_owned(), line)) {
@@ -806,6 +818,86 @@ proptest! {
             prop_assert_eq!(n, 1, "{:?}", line);
         }
     }
+}
+
+#[test]
+fn whitespace_only_lines_read_as_unchanged_code_and_stay_context() {
+    // Both statements are re-indented into a new `if` and swapped.
+    let base = [
+        "fn withdraw() {",
+        "    ensure_authorised()?;",
+        "    debit()?;",
+        "}",
+    ];
+    let head = [
+        "fn withdraw() {",
+        "    if enabled {",
+        "        debit()?;",
+        "        ensure_authorised()?;",
+        "    }",
+        "}",
+    ];
+    let mut next_id = 0;
+    let files = vec![file(
+        "src/pay.rs",
+        None,
+        FileStatus::Modified,
+        hunks_between(&base, &head, &mut next_id),
+    )];
+    let texts = Texts::from([
+        text(LineSide::Base, "src/pay.rs", &base),
+        text(LineSide::Head, "src/pay.rs", &head),
+    ]);
+    let result = run(&files, &[], &texts);
+    let (head_ws, base_ws) = (
+        result.whitespace_lines(LineSide::Head, "src/pay.rs"),
+        result.whitespace_lines(LineSide::Base, "src/pay.rs"),
+    );
+    assert_eq!(
+        (head_ws.len(), base_ws.len()),
+        (1, 1),
+        "one statement pairs"
+    );
+    // Not hidden: no line-rule context, no Not analysed entry.
+    assert!(result.view_context(LineSide::Head, "src/pay.rs").is_empty());
+    assert!(result.view_context(LineSide::Base, "src/pay.rs").is_empty());
+    assert!(result.not_analysed.is_empty());
+    // Context for the agent without coverage duty.
+    let context = result.context();
+    assert_eq!(
+        context.get(&(LineSide::Head, "src/pay.rs".into())),
+        Some(&head_ws)
+    );
+    assert_eq!(
+        context.get(&(LineSide::Base, "src/pay.rs".into())),
+        Some(&base_ws)
+    );
+
+    // The view: every head line is shown; the paired one is unchanged, the rest is marked; the other statement's
+    // base line is shown as removed, the paired base line is not.
+    let view = crate::lines::without_whitespace(&files[0], &result.whitespace_pairs(&files[0]));
+    let changed = crate::lines::changed_lines_within(
+        std::slice::from_ref(&view),
+        "src/pay.rs",
+        LineSide::Head,
+        1,
+        6,
+    );
+    let moved_statement = if head_ws == [4] { 3 } else { 4 };
+    assert_eq!(
+        changed,
+        [2, moved_statement, 5],
+        "the `if`, the moved statement and `}}` are marked"
+    );
+    let removed: Vec<u32> = crate::lines::deletion_markers(&view, 1, 6)
+        .iter()
+        .flat_map(|marker| marker.base.start..marker.base.start + marker.base.len)
+        .collect();
+    assert_eq!(removed.len(), 1);
+    assert!(
+        !base_ws.contains(&removed[0]),
+        "the paired base line is not shown as removed"
+    );
 }
 
 #[test]

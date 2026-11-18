@@ -36,6 +36,9 @@ pub struct Prepass {
     pub moves: MovesReport,
     /// Quiet moves (see [`Prepass::identical_moves`]).
     pub quiet_moves: Vec<IdenticalMove>,
+    /// Changed lines whose only change is whitespace, per file: shown as unchanged code, context for the agent
+    /// without coverage duty.
+    pub whitespace: Vec<WhitespacePairs>,
     /// Counters with their evidence.
     pub counters: CounterFacts,
     /// Same-organisation repositories referenced by the base Cargo files.
@@ -46,6 +49,17 @@ pub struct Prepass {
     pub agent_instruction_files: Vec<String>,
     /// File sides never rendered and never given to the agent.
     pub not_rendered: Vec<NotRendered>,
+}
+
+/// The whitespace-only changed lines of one file (see [`tech::whitespace_pairs`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WhitespacePairs {
+    /// Path at the base commit.
+    pub base: String,
+    /// Path at the head commit.
+    pub head: String,
+    /// (base line, head line), in diff order.
+    pub pairs: Vec<(u32, u32)>,
 }
 
 /// What happens to a hunk.
@@ -129,10 +143,19 @@ impl Prepass {
             .any(|quiet| quiet.from == block.from && quiet.to == block.to)
     }
 
-    /// Lines that are context for the agent without coverage duty, per side and path, sorted: line-rule lines and the
-    /// ranges of quiet moves.
+    /// Lines that are context for the agent without coverage duty, per side and path, sorted: line-rule lines,
+    /// whitespace-only lines and the ranges of quiet moves.
     pub fn context(&self) -> BTreeMap<(LineSide, String), Vec<u32>> {
         let mut out: BTreeMap<(LineSide, String), Vec<u32>> = BTreeMap::new();
+        for file in &self.whitespace {
+            for (side, path) in [(LineSide::Base, &file.base), (LineSide::Head, &file.head)] {
+                out.entry((side, path.clone())).or_default().extend(
+                    file.pairs
+                        .iter()
+                        .map(|&(base, head)| if side == LineSide::Base { base } else { head }),
+                );
+            }
+        }
         for item in self.not_analysed.iter().flat_map(|s| &s.items) {
             if let (true, Some(ranges)) = (is_line_rule_item(item), &item.ranges) {
                 out.entry((item.side, item.file.clone()))
@@ -152,6 +175,35 @@ impl Prepass {
             lines.dedup();
         }
         out
+    }
+
+    /// Whitespace-only changed lines of `path` on `side`, sorted: the code view shows them as unchanged lines.
+    pub fn whitespace_lines(&self, side: LineSide, path: &str) -> Vec<u32> {
+        let mut lines: Vec<u32> = self
+            .whitespace
+            .iter()
+            .filter(|file| match side {
+                LineSide::Base => file.base == path,
+                LineSide::Head => file.head == path,
+            })
+            .flat_map(|file| &file.pairs)
+            .map(|&(base, head)| if side == LineSide::Base { base } else { head })
+            .collect();
+        lines.sort_unstable();
+        lines.dedup();
+        lines
+    }
+
+    /// The whitespace-only pairs (base line, head line) of `file`, for [`crate::lines::without_whitespace`].
+    pub fn whitespace_pairs(&self, file: &FileDiff) -> Vec<(u32, u32)> {
+        self.whitespace
+            .iter()
+            .filter(|pairs| {
+                file.path_on(LineSide::Base) == Some(pairs.base.as_str())
+                    && file.path_on(LineSide::Head) == Some(pairs.head.as_str())
+            })
+            .flat_map(|pairs| pairs.pairs.iter().copied())
+            .collect()
     }
 
     /// Changed lines of `path` on `side` a line rule covers: the main code view may hide them.
@@ -416,7 +468,21 @@ pub fn prepass<'t>(
         .into_iter()
         .filter(|block| quiet_move(files, &block.from.file, &block.to.file))
         .collect();
-    let lines = Lines::new(files, &classified, &moves, text);
+    let whitespace: Vec<WhitespacePairs> = files
+        .iter()
+        .filter(|file| !file.binary)
+        .filter_map(|file| {
+            let (base, head) = (file.path_on(LineSide::Base)?, file.path_on(LineSide::Head)?);
+            let (base_text, head_text) = (text(LineSide::Base, base)?, text(LineSide::Head, head)?);
+            let pairs = tech::whitespace_pairs(head, base_text, head_text, &file.hunks);
+            (!pairs.is_empty()).then(|| WhitespacePairs {
+                base: base.to_owned(),
+                head: head.to_owned(),
+                pairs,
+            })
+        })
+        .collect();
+    let lines = Lines::new(files, &classified, &moves, &whitespace, text);
     let not_analysed = sections(files, &lines.classified(&classified));
     let counters = counters::compute(files, &classified, text);
     let related_repos = related::from_cargo(pr_repo, base_paths, text);
@@ -435,6 +501,7 @@ pub fn prepass<'t>(
         not_analysed,
         moves,
         quiet_moves,
+        whitespace,
         counters,
         related_repos,
         profile_file,
@@ -443,10 +510,12 @@ pub fn prepass<'t>(
     })
 }
 
-/// Quiet disposition of a changed line; by priority (`rank`): whole-file rule, identical move, line rule.
+/// Quiet disposition of a changed line; by priority (`rank`): whole-file rule, identical move, whitespace only, line
+/// rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Quiet {
     LineRule,
+    Whitespace,
     Move,
     WholeFile(NotAnalysedCategory),
 }
@@ -455,8 +524,9 @@ impl Quiet {
     fn rank(self) -> u8 {
         match self {
             Self::LineRule => 0,
-            Self::Move => 1,
-            Self::WholeFile(_) => 2,
+            Self::Whitespace => 1,
+            Self::Move => 2,
+            Self::WholeFile(_) => 3,
         }
     }
 }
@@ -481,6 +551,7 @@ impl Lines {
         files: &[FileDiff],
         classified: &[Classified],
         moves: &MovesReport,
+        whitespace: &[WhitespacePairs],
         text: &dyn Fn(LineSide, &str) -> Option<&'t str>,
     ) -> Self {
         let mut quiet: BTreeMap<(LineSide, &str), BTreeMap<u32, Quiet>> = BTreeMap::new();
@@ -526,6 +597,22 @@ impl Lines {
                 let mut lines = range.range.start_line..=range.range.end_line;
                 mark(range.side, range.file.as_str(), &mut lines, Quiet::Move);
             }
+        }
+        for file in whitespace {
+            let mut base = file.pairs.iter().map(|&(base, _)| base);
+            mark(
+                LineSide::Base,
+                file.base.as_str(),
+                &mut base,
+                Quiet::Whitespace,
+            );
+            let mut head = file.pairs.iter().map(|&(_, head)| head);
+            mark(
+                LineSide::Head,
+                file.head.as_str(),
+                &mut head,
+                Quiet::Whitespace,
+            );
         }
 
         let mut hunks = Vec::new();
@@ -590,7 +677,9 @@ impl Lines {
                     id: hunk.id.clone(),
                     disposition: match disposition {
                         None => Disposition::Agent,
-                        Some(Quiet::Move | Quiet::LineRule) => Disposition::Agent,
+                        Some(Quiet::Move | Quiet::Whitespace | Quiet::LineRule) => {
+                            Disposition::Agent
+                        }
                         Some(Quiet::WholeFile(category)) => Disposition::NotAnalysed(category),
                     },
                 });

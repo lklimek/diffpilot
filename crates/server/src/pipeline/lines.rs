@@ -7,7 +7,7 @@ use std::path::Path;
 use analysis::diff::FileDiff;
 use analysis::lines::{
     DiffTexts, DiffTooLarge, LineWindow, changed_lines_within, classic_diff, deleted_blocks,
-    deletion_markers, line_window, thread_ranges,
+    deletion_markers, line_window, thread_ranges, without_whitespace,
 };
 use analysis::prepass::Prepass;
 use contracts::api::analyses::AnalysisSummary;
@@ -102,16 +102,18 @@ pub async fn read(
     let file = files
         .iter()
         .find(|file| file.path_on(query.side) == Some(query.path.as_str()));
-    let changed = changed_lines_within(&files, &query.path, query.side, from, to);
+    // Whitespace-only lines read as unchanged code: not marked, not removed.
+    let view = file.map(|file| without_whitespace(file, &prepass.whitespace_pairs(file)));
+    let changed = changed_lines_within(view.as_slice(), &query.path, query.side, from, to);
     // The pre-pass decided which lines are context; the view hides exactly those.
     let context_only = prepass
         .view_context(query.side, &query.path)
         .into_iter()
         .filter(|line| (from..=to).contains(line))
         .collect();
-    let deleted = match (query.side, file) {
-        (LineSide::Head, Some(file)) => {
-            removed_code(&mirror, &summary.pr.base_sha, file, &prepass, from, to).await?
+    let deleted = match (query.side, &view) {
+        (LineSide::Head, Some(view)) => {
+            removed_code(&mirror, &summary.pr.base_sha, view, &prepass, from, to).await?
         }
         _ => Vec::new(),
     };

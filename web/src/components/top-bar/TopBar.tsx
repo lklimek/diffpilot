@@ -119,14 +119,14 @@ export function TopBar({
         </Tooltip>
       )}
       {onHideContextChanges && (
-        <Tooltip tip="Hides Rust comment, import and whitespace changes in the main code view. The classic diff always shows them. Other languages are unchanged.">
+        <Tooltip tip="Hides Rust comment and import changes in the main code view. The classic diff always shows them. Other languages are unchanged.">
           <label className="flex cursor-pointer items-center gap-1 text-xs whitespace-normal">
             <input
               type="checkbox"
               checked={hideContextChanges}
               onChange={(e) => onHideContextChanges(e.target.checked)}
             />
-            Hide comment, import and whitespace changes
+            Hide comment and import changes
           </label>
         </Tooltip>
       )}

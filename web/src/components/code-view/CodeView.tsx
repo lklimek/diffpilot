@@ -601,7 +601,7 @@ export function CodeView({
       )}
       {hiddenCount > 0 && (
         <p className="px-2 text-xs text-muted">
-          {plural(hiddenCount, "comment, import or whitespace line")} hidden — in the classic diff
+          {plural(hiddenCount, "comment/import line")} hidden — in the classic diff
         </p>
       )}
       {unchangedContext && (

@@ -32,6 +32,7 @@ use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
 use crate::memcan::profile;
 use crate::model::{ModelContext, select_model};
 use crate::pipeline::context::{StoredResults, pack};
+use crate::pipeline::prepass::PrepassRunError;
 use crate::pipeline::{self, CREDENTIAL_ID, PrDiffError};
 use crate::prompts::{
     self, AnsweredQuestion, AskContext, AskInput, JobContext, Profile, PromptError,
@@ -59,9 +60,9 @@ pub(super) enum FollowError {
     /// The asked step is no longer stored.
     #[error("the asked step is not stored")]
     UnknownStep,
-    /// The analysis has no stored pre-pass.
-    #[error("the analysis has no stored pre-pass")]
-    NoPrepass,
+    /// The pre-pass could not be read or computed.
+    #[error("the pre-pass of the analysis is not available")]
+    Prepass(#[from] PrepassRunError),
     /// The diff of the analysis is not available.
     #[error("the diff of the analysis is not available")]
     Diff(#[from] PrDiffError),
@@ -340,11 +341,9 @@ async fn submit(
     let (_, step) = stored_step(&state.db, summary.id, &question.step_id)
         .await?
         .ok_or(FollowError::UnknownStep)?;
-    let prepass = pipeline::prepass::stored(state, summary.id)
-        .await?
-        .ok_or(FollowError::NoPrepass)?;
+    let (mirror_dir, files) = pipeline::pr_diff(state, summary).await?;
+    let prepass = pipeline::prepass::ensure_for_read(state, summary, &mirror_dir, &files).await?;
     let memcan_profile = profile::stored(&state.db, summary.id).await?;
-    let (_, files) = pipeline::pr_diff(state, summary).await?;
     let pr = &summary.pr;
     let prompt = prompts::ask(&AskInput {
         job: JobContext {

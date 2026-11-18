@@ -217,7 +217,7 @@ pub fn project(input: &Projection<'_>) -> Tour {
             planned,
             verified,
             position,
-            input.files,
+            (input.files, input.prepass),
             &links,
         ));
     }
@@ -422,7 +422,7 @@ fn project_flow(
     planned: &PlannedFlow,
     verified: &VerifiedFlow,
     position: u32,
-    files: &[FileDiff],
+    (files, prepass): (&[FileDiff], &Prepass),
     links: &Links,
 ) -> Flow {
     let output = &verified.output;
@@ -455,13 +455,15 @@ fn project_flow(
                 start_line: step.start_line,
                 end_line: step.end_line,
             };
-            let inside = changed_lines_within(
+            let whitespace = prepass.whitespace_lines(step.side, &step.file);
+            let mut inside = changed_lines_within(
                 files,
                 &step.file,
                 step.side,
                 range.start_line,
                 range.end_line,
             );
+            inside.retain(|line| whitespace.binary_search(line).is_err());
             let annotations = step
                 .annotations
                 .iter()
