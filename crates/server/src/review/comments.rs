@@ -1542,6 +1542,7 @@ mod github_tests {
         let running = AnalysisState::Running {
             done: u32::try_from(kept.len()).expect("count"),
             total: 5,
+            idle: false,
             stage: None,
         };
         f.state

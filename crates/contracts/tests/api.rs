@@ -357,9 +357,10 @@ fn tagged_wire_formats() {
             serde_json::to_value(AnalysisState::Running {
                 done: 2,
                 total: 5,
+                idle: false,
                 stage: None,
             }),
-            json!({"state": "running", "done": 2, "total": 5}),
+            json!({"state": "running", "done": 2, "total": 5, "idle": false}),
         ),
         (
             serde_json::to_value(AnalysisState::Planning { stage: None }),
@@ -380,6 +381,7 @@ fn tagged_wire_formats() {
             serde_json::to_value(AnalysisState::Running {
                 done: 1,
                 total: 5,
+                idle: true,
                 stage: Some(AnalysisStage {
                     part: None,
                     kind: StageKind::Flow,
@@ -390,7 +392,7 @@ fn tagged_wire_formats() {
                     started_at: Some(stage_started()),
                 }),
             }),
-            json!({"state": "running", "done": 1, "total": 5, "stage": {
+            json!({"state": "running", "done": 1, "total": 5, "idle": true, "stage": {
                 "kind": "flow", "flow": {"index": 2, "title": "t"}, "started_at": "2026-11-17T09:30:00Z"}}),
         ),
         (
@@ -802,6 +804,26 @@ fn usage_and_size_warning_are_additive_json_numbers() {
             .size_warning,
         None
     );
+    // The size and the planning estimate are optional fields of their own: absent in older responses.
+    let resolved = serde_json::from_value::<ResolvePrResponse>(wire.clone()).unwrap();
+    assert_eq!((resolved.size, resolved.planning_estimate), (None, None));
+    assert_eq!(serde_json::to_value(&resolved).unwrap().get("size"), None);
+    wire["size"] = json!({"changed_lines":238,"changed_files":13});
+    wire["planning_estimate"] = json!({"remaining_seconds":720,"basis":"lines_only","rough":true});
+    let resolved = serde_json::from_value::<ResolvePrResponse>(wire.clone()).unwrap();
+    assert_eq!(resolved.size.unwrap().changed_lines, 238);
+    assert_eq!(resolved.planning_estimate.unwrap().remaining_seconds, 720);
+    assert_eq!(
+        serde_json::to_value(&resolved).unwrap()["size"],
+        wire["size"]
+    );
+    // `idle` is absent in older running states.
+    let running: AnalysisState =
+        serde_json::from_value(json!({"state":"running","done":2,"total":5})).unwrap();
+    assert!(matches!(
+        running,
+        AnalysisState::Running { idle: false, .. }
+    ));
     wire["size_warning"] = json!({"changed_lines":27081,"changed_files":371,"estimate":null});
     assert_eq!(
         serde_json::from_value::<ResolvePrResponse>(wire)

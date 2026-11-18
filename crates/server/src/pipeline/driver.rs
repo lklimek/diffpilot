@@ -428,6 +428,11 @@ impl Driver<'_> {
     /// analysis off): the analysis stays `running` without a stage, and a flow request, background analysis
     /// switched on or a restart with admitted work starts a driver again.
     async fn park(&self) -> Result<DriverEnd, PipelineError> {
+        // `idle` can change without a state write (a repair refused after the demand changed): open pages hear it.
+        self.state
+            .progress
+            .publish_analysis(&self.state.db, self.analysis)
+            .await?;
         let (done, total) = self.progress();
         tracing::info!(analysis = %self.analysis, done, total,
             "no flow work is admitted; the analysis waits for a flow request or background analysis");
@@ -1161,6 +1166,7 @@ impl Driver<'_> {
             ((done, Some(total)), true) => AnalysisState::Running {
                 done,
                 total,
+                idle: false,
                 stage: None,
             },
             ((_, None), true) => AnalysisState::Planning { stage: None },

@@ -1705,6 +1705,7 @@ async fn ready_answer_checked_after_a_cancel_is_not_published() {
     let running = AnalysisState::Running {
         done: 5,
         total: 5,
+        idle: false,
         stage: None,
     };
     f.state
@@ -1812,6 +1813,7 @@ async fn question_cancelled_with_its_analysis_says_what_happened() {
     let running = AnalysisState::Running {
         done: 5,
         total: 5,
+        idle: false,
         stage: None,
     };
     f.state

@@ -287,6 +287,7 @@ async fn check_lists_match_contract_enums() {
         AnalysisState::Running {
             done: 0,
             total: 0,
+            idle: false,
             stage: None,
         },
         AnalysisState::Paused {

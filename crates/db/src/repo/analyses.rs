@@ -194,6 +194,7 @@ fn state_from_row(row: &SqliteRow) -> Result<AnalysisState, DbError> {
         "running" => AnalysisState::Running {
             done: row.try_get("flows_done")?,
             total: total.ok_or(corrupt)?,
+            idle: false,
             stage: None,
         },
         "paused" => AnalysisState::Paused {
@@ -281,7 +282,8 @@ fn record_from_row(row: &SqliteRow) -> Result<AnalysisRecord, DbError> {
 }
 
 impl Analyses<'_> {
-    /// Creates an analysis in state `planning`; `Conflict` if a live one exists for the head and language.
+    /// Creates an analysis in state `planning` with background analysis off (flows are analysed on request);
+    /// `Conflict` if a live one exists for the head and language.
     pub async fn create(
         &self,
         analysis: NewAnalysis,
@@ -289,8 +291,8 @@ impl Analyses<'_> {
     ) -> Result<AnalysisRecord, DbError> {
         sqlx::query(
             "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by,
-                 created_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'planning', ?, ?)",
+                 created_at, background_analysis)
+             VALUES (?, ?, ?, ?, ?, ?, 'planning', ?, ?, 0)",
         )
         .bind(analysis.id.to_string())
         .bind(&analysis.tenant_id)
@@ -348,6 +350,12 @@ impl Analyses<'_> {
         {
             *stage = self.live_stage(id).await?;
         }
+        if let AnalysisState::Running { idle, .. } = &mut record.state {
+            let db = super::Db {
+                pool: self.pool.clone(),
+            };
+            *idle = db.flow_work().parked(id).await?;
+        }
         let mut summary = AnalysisSummary {
             review_ready: Some(sqlx::query_scalar("SELECT state <> 'cancelled' AND EXISTS(SELECT 1 FROM documents WHERE analysis_id=a.id AND kind='plan' AND key='') AND EXISTS(SELECT 1 FROM documents WHERE analysis_id=a.id AND kind='pr_context' AND key='') FROM analyses a WHERE id=?").bind(id.to_string()).fetch_one(self.pool).await?),
             background_analysis: Some(sqlx::query_scalar("SELECT background_analysis FROM analyses WHERE id=?").bind(id.to_string()).fetch_one(self.pool).await?),
@@ -380,10 +388,17 @@ impl Analyses<'_> {
         self.add_progress(&mut summary).await?;
         let awaiting_retry: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM flow_work WHERE analysis_id=? AND error IS NOT NULL AND requested_at IS NULL)")
             .bind(id.to_string()).fetch_one(self.pool).await?;
-        if (summary.background_analysis == Some(false) || awaiting_retry)
-            && let Some(progress) = &mut summary.progress
-        {
-            progress.estimate = None;
+        // With flows on request the wait ends when the review is ready: no whole-run figure afterwards.
+        let on_request = summary.background_analysis == Some(false)
+            && summary.review_ready == Some(true)
+            && !matches!(summary.state, AnalysisState::Finished { .. });
+        if let Some(progress) = &mut summary.progress {
+            if on_request || awaiting_retry {
+                progress.estimate = None;
+            }
+            if on_request {
+                progress.percent = None;
+            }
         }
         Ok(summary)
     }
@@ -843,6 +858,22 @@ mod tests {
         }
     }
 
+    /// Nothing is analysed until the user asks: a new analysis has background analysis off, whatever the
+    /// column's default.
+    #[tokio::test]
+    async fn new_analysis_starts_with_background_analysis_off() {
+        let db = db().await;
+        seed_analysis(&db).await.expect("seed");
+        let created = db
+            .analyses()
+            .create(new_analysis("a"), at(1))
+            .await
+            .expect("create");
+        assert!(!db.flow_work().background(created.id).await.expect("read"));
+        let summary = db.analyses().summary(created.id).await.expect("summary");
+        assert_eq!(summary.background_analysis, Some(false));
+    }
+
     #[tokio::test]
     async fn create_starts_planning_and_conflicts_for_a_live_head() {
         let db = db().await;
@@ -1000,6 +1031,7 @@ mod tests {
                 AnalysisState::Running {
                     done: 2,
                     total: 5,
+                    idle: false,
                     stage: None,
                 },
                 false,
@@ -1299,6 +1331,7 @@ mod tests {
                 &AnalysisState::Running {
                     done: 0,
                     total: 2,
+                    idle: false,
                     stage: None,
                 },
                 at(3),
@@ -1384,6 +1417,7 @@ mod tests {
                 &AnalysisState::Running {
                     done: 0,
                     total: 1,
+                    idle: false,
                     stage: None,
                 },
                 at(2),
@@ -1409,6 +1443,7 @@ mod tests {
                 &AnalysisState::Running {
                     done: 1,
                     total: 3,
+                    idle: false,
                     stage: None,
                 },
                 at(2),
@@ -1423,7 +1458,8 @@ mod tests {
             AnalysisState::Running {
                 done: 1,
                 total: 3,
-                stage: None
+                idle: false,
+                stage: None,
             }
         );
         assert_eq!(summary.pr.repo.owner, "acme");

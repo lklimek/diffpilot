@@ -15,6 +15,7 @@ use axum::response::Response;
 use chrono::{TimeDelta, Utc};
 use contracts::agent::JobKind;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
+use contracts::api::events::AnalysisEvent;
 use contracts::api::pr::PrSummary;
 use contracts::ids::{AnalysisId, CommitSha, JobId};
 use contracts::job::protocol::{Claim, ClaimResponse};
@@ -562,8 +563,30 @@ impl Harness {
         json_of(self.send("POST", uri, Auth::SessionCsrf, Some(body)).await).await
     }
 
-    /// Resolves the fixture PR and creates its analysis through the API; returns the analysis id.
+    /// [`Harness::create_fixture_analysis_on_request`] with background analysis switched on at once: every flow
+    /// is analysed without a request.
     async fn create_fixture_analysis(&self) -> String {
+        let id = self.create_fixture_analysis_on_request().await;
+        self.set_background(&id, true).await;
+        id
+    }
+
+    /// Switches background analysis of `id` on or off.
+    async fn set_background(&self, id: &str, enabled: bool) {
+        let response = self
+            .send(
+                "PUT",
+                &format!("/api/v1/analyses/{id}/background"),
+                Auth::SessionCsrf,
+                Some(json!({ "enabled": enabled })),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// Resolves the fixture PR and creates its analysis through the API, as a user does (flows on request);
+    /// returns the analysis id.
+    async fn create_fixture_analysis_on_request(&self) -> String {
         let (status, resolved) = self
             .post("/api/v1/pr/resolve", json!({ "url": PR_URL }))
             .await;
@@ -712,6 +735,16 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         panic!("the analysis did not reach the expected state in time");
+    }
+
+    /// Switches background analysis of a stored analysis on: its driver analyses every flow without a request.
+    async fn background_on(&self, id: AnalysisId) {
+        self.state
+            .db
+            .flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .expect("background on");
     }
 
     /// An analysis of the fixture PR stored directly (no pipeline run).
@@ -935,7 +968,9 @@ async fn slice_pipeline() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     assert_eq!(created["state"], json!({ "state": "planning" }));
+    assert_eq!(created["background_analysis"], json!(false));
     let id = created["id"].as_str().expect("id").to_owned();
+    h.set_background(&id, true).await;
 
     let finished = h.wait_until_finished(&id).await;
     assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
@@ -983,6 +1018,7 @@ async fn slice_pipeline() {
 async fn pipeline_resumes_unfinished_analysis_from_stored_documents() {
     let h = harness().await;
     let id = h.seed_analysis().await;
+    h.background_on(id).await;
     let documents = h.state.db.documents();
     let now = Utc::now();
     documents
@@ -1105,6 +1141,7 @@ async fn restart_keeps_demand_and_background_off_with_partial_results() {
 async fn memcan_profile_lookup_reaches_every_prompt_and_the_tour() {
     let h = harness().await;
     let id = h.seed_analysis().await;
+    h.background_on(id).await;
     let profile = "MemCan-profile-CANARY: payments service; risk lives in src/ledger.";
     h.state
         .db
@@ -2430,6 +2467,10 @@ async fn huge_pull_request_is_planned_in_batches() {
         resolved["size_warning"],
         json!({"changed_lines": 27081, "changed_files": 371, "estimate": null})
     );
+    assert_eq!(
+        resolved["size"],
+        json!({"changed_lines": 27081, "changed_files": 371})
+    );
     let (status, created) = h
         .post(
             "/api/v1/analyses",
@@ -2438,6 +2479,7 @@ async fn huge_pull_request_is_planned_in_batches() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().expect("id").to_owned();
+    h.set_background(&id, true).await;
     // Each flow fails for good after its first turn and two automatic retries (three runs each).
     settled_runs(&h, &id, "flow:f1", 9).await;
     settled_runs(&h, &id, "flow:f2", 9).await;
@@ -2674,6 +2716,7 @@ async fn flow_too_large_for_a_prompt_stays_failed_with_its_reason() {
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().expect("id").to_owned();
+    h.set_background(&id, true).await;
     let tour = wait_for_failed_flow(&h, &id, "f2").await;
     assert!(!h.executor.submitted().contains(&"flow:f2".to_owned()));
     let flow = tour["flows"]
@@ -3461,6 +3504,171 @@ async fn analysis_without_admitted_work_parks_and_a_flow_request_restarts_it() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let next = h.claim_next(&id).await;
     assert_eq!(h.stage_of(&next).await, ("flow:f4".to_owned(), 0));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// The lookup carries the size of any pull request, not only of a large one, and makes no time claim without
+/// history.
+#[tokio::test]
+async fn resolve_carries_the_size_of_any_pull_request() {
+    let h = harness().await;
+    let (status, resolved) = h.post("/api/v1/pr/resolve", json!({ "url": PR_URL })).await;
+    assert_eq!(status, StatusCode::OK, "{resolved}");
+    assert_eq!(
+        resolved["size"],
+        json!({ "changed_lines": 238, "changed_files": 13 })
+    );
+    assert_eq!(resolved["size_warning"], Value::Null);
+    assert_eq!(resolved.get("planning_estimate"), None);
+}
+
+/// Waits for an `analysis` event of a running analysis whose `idle` is as given; returns its state.
+async fn idle_event(
+    events: &mut tokio::sync::broadcast::Receiver<AnalysisEvent>,
+    idle: bool,
+) -> Value {
+    let wait = async {
+        loop {
+            if let AnalysisEvent::Analysis { summary } = events.recv().await.expect("event") {
+                let state = serde_json::to_value(&summary.state).expect("state");
+                if state["state"] == "running" && state["idle"] == idle {
+                    return state;
+                }
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), wait)
+        .await
+        .expect("no analysis event with the expected idle value")
+}
+
+/// Nothing is analysed until the user asks: a new analysis plans, describes the PR context and waits (review
+/// ready, idle, no flow job); reading the Tour requests nothing; a requested flow runs and the analysis waits
+/// again; background analysis on runs the rest. Each change of `idle` is an `analysis` event.
+#[tokio::test]
+async fn new_analysis_waits_after_plan_and_context_until_flows_are_requested() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis_on_request().await;
+    let analysis = analysis_id(&id);
+    let mut events = h.state.progress.subscribe(analysis);
+    h.open_review(&id).await;
+    let state = idle_event(&mut events, true).await;
+    assert_eq!((&state["done"], &state["total"]), (&json!(0), &json!(5)));
+    wait_parked(analysis).await;
+    let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(summary["state"]["idle"], true, "{summary}");
+    assert_eq!(summary["state"]["stage"], Value::Null, "{summary}");
+    assert_eq!(summary["review_ready"], true, "{summary}");
+    assert_eq!(summary["background_analysis"], false, "{summary}");
+    assert_eq!(summary["progress"]["estimate"], Value::Null, "{summary}");
+    assert_eq!(summary["progress"]["percent"], Value::Null, "{summary}");
+    // Reading requests nothing.
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let flows = tour["flows"].as_array().expect("flows");
+    assert_eq!(flows.len(), 5);
+    for flow in flows {
+        assert_eq!(flow["analysis_status"]["state"], "not_analysed", "{flow}");
+        assert!(
+            !flow["planned"]["ranges"]
+                .as_array()
+                .expect("ranges")
+                .is_empty(),
+            "the planned lines give the flow's size: {flow}"
+        );
+    }
+    assert!(
+        h.runner_claim().await.is_none(),
+        "no flow job without a request"
+    );
+    // A restart leaves it waiting.
+    assert_eq!(
+        server::pipeline::resume_unfinished(&h.state)
+            .await
+            .expect("resume"),
+        0
+    );
+    let (status, requested) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f3/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{requested}");
+    assert_eq!(requested["state"]["idle"], false, "{requested}");
+    idle_event(&mut events, false).await;
+    let claim = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&claim).await, ("flow:f3".to_owned(), 0));
+    h.complete(
+        &claim,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&claim.spec, "flow:f3"),
+        },
+    )
+    .await;
+    let state = idle_event(&mut events, true).await;
+    assert_eq!(state["done"], 1);
+    wait_parked(analysis).await;
+    assert!(
+        h.runner_claim().await.is_none(),
+        "only the requested flow ran"
+    );
+    h.set_background(&id, true).await;
+    idle_event(&mut events, false).await;
+    for _ in 0..4 {
+        let claim = h.claim_next(&id).await;
+        let (stage, _) = h.stage_of(&claim).await;
+        h.complete(
+            &claim,
+            JobOutcome::Succeeded {
+                output: tagged_flow_output(&claim.spec, &stage),
+            },
+        )
+        .await;
+    }
+    assert_eq!(
+        h.wait_until_finished(&id).await.state,
+        AnalysisState::Finished { total: 5 }
+    );
+}
+
+/// With background analysis off a requested flow that fails is retried automatically twice and then waits for
+/// the user; no other flow runs.
+#[tokio::test]
+async fn requested_flow_that_fails_is_retried_automatically_and_nothing_else_runs() {
+    let h = harness().await;
+    h.executor
+        .script("flow:f2", Script::FailKind(JobFailureKind::Timeout));
+    let id = h.create_fixture_analysis_on_request().await;
+    wait_parked(analysis_id(&id)).await;
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f2/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    settled_runs(&h, &id, "flow:f2", 3).await;
+    let flows: Vec<String> = h
+        .executor
+        .submitted()
+        .into_iter()
+        .filter(|stage| stage.starts_with("flow:"))
+        .collect();
+    assert_eq!(flows, ["flow:f2", "flow:f2", "flow:f2"]);
+    let tour = wait_for_failed_flow(&h, &id, "f2").await;
+    let flow = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|f| f["id"] == "f2")
+        .expect("f2");
+    assert_eq!(
+        flow["analysis_status"]["message"],
+        "The flow analysis failed. The LLM call took too long and was stopped. Retry this flow."
+    );
+    assert_eq!(tour["analysis"]["state"]["idle"], true);
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;
 }

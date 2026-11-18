@@ -471,11 +471,13 @@ mod tests {
             AnalysisState::Running {
                 done: 0,
                 total: 2,
+                idle: false,
                 stage: None,
             },
             AnalysisState::Running {
                 done: 1,
                 total: 2,
+                idle: false,
                 stage: None,
             },
             AnalysisState::Finished { total: 2 },

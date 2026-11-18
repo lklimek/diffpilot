@@ -66,11 +66,13 @@ fn per_line(samples: &[Timing], kind: JobKind) -> Option<f64> {
     (lines > 0).then(|| matching.iter().map(|s| s.seconds).sum::<f64>() / lines as f64)
 }
 
+/// Remaining time of plan parts and PR context, and of the flows only when they run without a request (`flows`).
 fn estimate(
     progress: &AnalysisProgress,
     current: &[Timing],
     history: &[Timing],
     lines: u64,
+    flows: bool,
 ) -> Option<AnalysisEstimate> {
     let parts_left = progress
         .planning
@@ -97,6 +99,7 @@ fn estimate(
     }
     let rough = progress.flows.total.is_none();
     match progress.flows.total {
+        _ if !flows => {}
         Some(total) => {
             let left = total.saturating_sub(progress.flows.done);
             if left > 0 {
@@ -144,7 +147,8 @@ fn stage(done: u32, total: Option<u32>, current: bool) -> RunStage {
 }
 
 impl Analyses<'_> {
-    /// A rough pre-start estimate from the same history and formula as waiting progress.
+    /// A rough pre-start estimate from the same history and formula as waiting progress: plan and PR context
+    /// (a new analysis analyses its flows on request).
     pub async fn estimate_for_size(
         &self,
         tenant: &str,
@@ -160,7 +164,7 @@ impl Analyses<'_> {
             estimate: None,
             percent: None,
         };
-        Ok(estimate(&progress, &[], &history, lines))
+        Ok(estimate(&progress, &[], &history, lines, false))
     }
 
     async fn recent_timings(
@@ -300,6 +304,8 @@ impl Analyses<'_> {
                 .map(|(index, total)| PlanPart { index, total });
         }
         let finished = matches!(summary.state, AnalysisState::Finished { .. });
+        // Whether the flows run without a request (background analysis on): then they are part of the wait.
+        let scheduled = summary.background_analysis != Some(false);
         let planning_done = flow_total.is_some();
         let finishing = planning_done && context_done == 1 && flow_total == Some(flow_done);
         let mut progress = AnalysisProgress {
@@ -319,17 +325,21 @@ impl Analyses<'_> {
             summary.state,
             AnalysisState::Planning { .. } | AnalysisState::Running { .. }
         ) {
-            progress.estimate = estimate(&progress, &current, &history, lines);
+            progress.estimate = estimate(&progress, &current, &history, lines, scheduled);
         }
         progress.percent = if finished {
             Some(100)
         } else if let (Some(parts), Some(flows)) = (total, flow_total) {
-            let all = u64::from(parts) + u64::from(flows) + 2;
-            Some(
-                ((u64::from(plan_done) + u64::from(context_done) + u64::from(flow_done)) * 100
-                    / all)
-                    .min(99) as u8,
-            )
+            let prepared = u64::from(plan_done) + u64::from(context_done);
+            let (done, all) = if scheduled {
+                (
+                    prepared + u64::from(flow_done),
+                    u64::from(parts) + u64::from(flows) + 2,
+                )
+            } else {
+                (prepared, u64::from(parts) + 1)
+            };
+            Some((done * 100 / all).min(99) as u8)
         } else if let Some(estimate) = progress.estimate {
             let done: f64 = current.iter().map(|sample| sample.seconds).sum();
             let all = done + f64::from(estimate.remaining_seconds);
@@ -424,23 +434,23 @@ mod tests {
             count: 1,
             lines: 1000,
         }];
-        assert_eq!(estimate(&progress(), &current, &[], 1000), None);
-        let e = estimate(&progress(), &current, &history(), 1000).unwrap();
+        assert_eq!(estimate(&progress(), &current, &[], 1000, true), None);
+        let e = estimate(&progress(), &current, &history(), 1000, true).unwrap();
         assert_eq!(e.remaining_seconds, 18 * 300 + 120 + 1800);
         assert_eq!(e.basis, EstimateBasis::ThisAnalysis);
         assert!(e.rough);
-        let e = estimate(&progress(), &[], &history(), 1000).unwrap();
+        let e = estimate(&progress(), &[], &history(), 1000, true).unwrap();
         assert_eq!(e.basis, EstimateBasis::LinesOnly);
         assert!(e.rough);
         let mut p = progress();
         p.planning = stage(23, Some(23), false);
         p.flows = stage(2, Some(6), true);
-        let e = estimate(&p, &[], &history(), 1000).unwrap();
+        let e = estimate(&p, &[], &history(), 1000, true).unwrap();
         assert_eq!(e.remaining_seconds, 120 + 4 * 300);
         assert_eq!(e.basis, EstimateBasis::RecentRuns);
         assert!(!e.rough);
         p.flows.total = Some(u32::MAX);
-        assert_eq!(estimate(&p, &[], &history(), 1000), None);
+        assert_eq!(estimate(&p, &[], &history(), 1000, true), None);
     }
 
     #[test]
@@ -608,13 +618,29 @@ mod tests {
             "SQLite floating-point time rounding: {eta:?}"
         );
         assert_eq!(progress.percent, Some(0));
-        assert_eq!(
-            db.analyses()
-                .estimate_for_size("default", 1000)
-                .await
-                .unwrap(),
-            Some(eta)
+        // Flows on request: only plan and PR context are waited for, before the start and while planning.
+        let before_start = db
+            .analyses()
+            .estimate_for_size("default", 1000)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(before_start.basis, EstimateBasis::LinesOnly);
+        assert!(
+            (720..=721).contains(&before_start.remaining_seconds),
+            "600 s of planning and 120 s of PR context: {before_start:?}"
         );
+        db.flow_work()
+            .set_background(id, false, Utc::now())
+            .await
+            .unwrap();
+        let on_request = db.analyses().summary(id).await.unwrap().progress.unwrap();
+        assert_eq!(on_request.estimate, Some(before_start));
+        assert_eq!(on_request.percent, Some(0));
+        db.flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .unwrap();
         assert_eq!(
             db.analyses()
                 .estimate_for_size("other-tenant", 1000)
@@ -786,6 +812,7 @@ mod tests {
                 &AnalysisState::Running {
                     done: 1,
                     total: 2,
+                    idle: false,
                     stage: None,
                 },
                 Utc::now(),
@@ -806,15 +833,11 @@ mod tests {
             .set_background(id, false, Utc::now())
             .await
             .unwrap();
-        assert!(
-            db.analyses()
-                .summary(id)
-                .await
-                .unwrap()
-                .progress
-                .unwrap()
-                .estimate
-                .is_none()
+        let on_request = db.analyses().summary(id).await.unwrap().progress.unwrap();
+        assert_eq!(
+            (on_request.estimate, on_request.percent),
+            (None, None),
+            "the review is open and flows run on request: no whole-run figure"
         );
         db.flow_work()
             .set_background(id, true, Utc::now())

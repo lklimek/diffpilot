@@ -11,14 +11,15 @@ use contracts::api::tour::{FlowAnalysisState, FlowAnalysisStatus};
 use contracts::ids::{AnalysisId, FlowId};
 use sqlx::Row;
 
-/// Automatic retries of a failed flow; after them it stays failed until a user requests it.
+/// Automatic retries of a failed flow, requested or analysed in the background; after them it stays failed until
+/// a user requests it.
 pub const AUTO_FLOW_RETRIES: u32 = 2;
 
 /// Last sentence of the stored message of a failed flow that a retry can help.
 pub const RETRY_BY_USER: &str = "Retry this flow.";
 
-/// Shown in place of [`RETRY_BY_USER`] while the analysis is live, an automatic retry of the flow is left and
-/// background analysis is on.
+/// Shown in place of [`RETRY_BY_USER`] while the analysis is live and the flow runs again by itself: it is
+/// requested, or an automatic retry is left and background analysis is on.
 const RETRY_AUTOMATICALLY: &str = "It will be tried again automatically.";
 
 /// What the driver does next for the flows of an analysis ([`FlowWork::next`]).
@@ -180,11 +181,29 @@ impl FlowWork<'_> {
             .bind(id.to_string()).fetch_all(&self.db.pool).await?;
         Ok(flows.into_iter().map(FlowId).collect())
     }
-    /// Mark a flow failed, retaining the accepted plan and other flow outputs. A `message` that ends with
-    /// [`RETRY_BY_USER`] is shown with the automatic retry instead while one is left ([`FlowWork::status`]).
+    /// Mark a flow failed, retaining the accepted plan and other flow outputs. A requested flow keeps its demand
+    /// while an automatic retry is left (using one), unless it was too large to send; otherwise the demand ends.
+    /// A `message` that ends with [`RETRY_BY_USER`] is shown with the automatic retry instead while the flow
+    /// will run again by itself ([`FlowWork::status`]).
     pub async fn fail(&self, id: AnalysisId, flow: &FlowId, message: &str) -> Result<(), DbError> {
-        sqlx::query("INSERT INTO flow_work(tenant_id,analysis_id,flow_id,error) SELECT tenant_id,id,?,? FROM analyses WHERE id=? ON CONFLICT(analysis_id,flow_id) DO UPDATE SET error=excluded.error, requested_at=NULL")
-            .bind(&flow.0).bind(message).bind(id.to_string()).execute(&self.db.pool).await?;
+        // Every assignment reads the row as it was before the update.
+        macro_rules! retried {
+            () => {
+                "(requested_at IS NOT NULL AND auto_retries < ?4 AND NOT EXISTS(SELECT 1 FROM documents u WHERE u.analysis_id=flow_work.analysis_id AND u.kind='unsent' AND u.key=flow_work.flow_id))"
+            };
+        }
+        sqlx::query(concat!(
+            "INSERT INTO flow_work(tenant_id,analysis_id,flow_id,error) SELECT tenant_id,id,?1,?2 FROM analyses WHERE id=?3 ON CONFLICT(analysis_id,flow_id) DO UPDATE SET error=excluded.error, requested_at=CASE WHEN ",
+            retried!(),
+            " THEN requested_at END, auto_retries=auto_retries+",
+            retried!()
+        ))
+        .bind(&flow.0)
+        .bind(message)
+        .bind(id.to_string())
+        .bind(AUTO_FLOW_RETRIES)
+        .execute(&self.db.pool)
+        .await?;
         Ok(())
     }
     /// Recheck admission under the progress lock immediately before enqueue.
@@ -213,7 +232,8 @@ impl FlowWork<'_> {
         };
         if let Some(row) = sqlx::query(
             "SELECT w.requested_at, w.error,
-                    a.state IN ('planning','running','paused') AND a.background_analysis=1 AND w.auto_retries < ? AS retried
+                    a.state IN ('planning','running','paused')
+                    AND (w.requested_at IS NOT NULL OR (a.background_analysis=1 AND w.auto_retries < ?)) AS retried
              FROM flow_work w JOIN analyses a ON a.id=w.analysis_id WHERE w.analysis_id=? AND w.flow_id=?",
         )
         .bind(AUTO_FLOW_RETRIES)
@@ -223,15 +243,17 @@ impl FlowWork<'_> {
         .await?
         {
             status.message = row.try_get("error")?;
+            // The stored message names the user's Retry; while the server runs the flow again by itself it says
+            // that.
+            if row.try_get::<bool, _>("retried")?
+                && let Some(message) = &mut status.message
+                && let Some(failure) = message.strip_suffix(RETRY_BY_USER)
+            {
+                *message = format!("{failure}{RETRY_AUTOMATICALLY}");
+            }
             status.state = if row.try_get::<Option<String>, _>("requested_at")?.is_some() {
                 FlowAnalysisState::Queued
-            } else if let Some(message) = &mut status.message {
-                // The stored message names the user's Retry; while the server retries by itself it says that.
-                if row.try_get::<bool, _>("retried")?
-                    && let Some(failure) = message.strip_suffix(RETRY_BY_USER)
-                {
-                    *message = format!("{failure}{RETRY_AUTOMATICALLY}");
-                }
+            } else if status.message.is_some() {
                 FlowAnalysisState::Failed
             } else {
                 FlowAnalysisState::NotAnalysed
@@ -375,6 +397,17 @@ mod tests {
             db.flow_work().next(id).await.unwrap(),
             NextFlow::Run(FlowId("f3".into()))
         );
+        // The requested flow keeps its demand through its automatic retries, a new job round each.
+        for _ in 0..AUTO_FLOW_RETRIES {
+            db.flow_work()
+                .fail(id, &FlowId("f3".into()), "Failed")
+                .await
+                .unwrap();
+            assert_eq!(
+                db.flow_work().next(id).await.unwrap(),
+                NextFlow::Run(FlowId("f3".into()))
+            );
+        }
         db.flow_work()
             .fail(id, &FlowId("f3".into()), "Failed")
             .await
@@ -418,7 +451,7 @@ mod tests {
             .fetch_one(&db.pool)
             .await
             .unwrap();
-        assert_eq!(round, 1);
+        assert_eq!(round, i64::from(AUTO_FLOW_RETRIES) + 1);
     }
 
     /// A plan of `count` flows `f1..`, ranked in that order.
@@ -614,9 +647,17 @@ mod tests {
         );
         assert!(db.flow_work().parked(id).await.unwrap());
         assert_eq!(testing::retries(&db, id, &f2).await.unwrap(), (0, 0));
-        // The user's Retry still tries it (the model's budget may have changed).
+        // The user's Retry still tries it (the model's budget may have changed), once.
         db.flow_work().request(id, &f2, now).await.unwrap();
-        assert_eq!(db.flow_work().next(id).await.unwrap(), NextFlow::Run(f2));
+        assert_eq!(
+            db.flow_work().next(id).await.unwrap(),
+            NextFlow::Run(f2.clone())
+        );
+        db.flow_work()
+            .fail(id, &f2, "This flow is too large for the agent request.")
+            .await
+            .unwrap();
+        assert_eq!(db.flow_work().next(id).await.unwrap(), NextFlow::Idle);
     }
 
     #[tokio::test]
@@ -653,6 +694,52 @@ mod tests {
                 .is_none(),
             "the retried flow starts with a new first run"
         );
+    }
+
+    /// The automatic retries belong to a flow the user asked for as well: its demand stands while one is left,
+    /// also with background analysis off. A flow nobody asked for is never run.
+    #[tokio::test]
+    async fn requested_flow_that_fails_is_retried_automatically_without_background_analysis() {
+        let db = Db::in_memory().await.unwrap();
+        let id = planned(&db, 2).await;
+        let f1 = FlowId("f1".into());
+        let now = Utc::now();
+        let failure = "The flow analysis failed. The LLM call took too long and was stopped.";
+        let by_user = format!("{failure} Retry this flow.");
+        let work = db.flow_work();
+        work.set_background(id, false, now).await.unwrap();
+        work.request(id, &f1, now).await.unwrap();
+        assert_eq!(work.next(id).await.unwrap(), NextFlow::Run(f1.clone()));
+        for retry in 1..=AUTO_FLOW_RETRIES {
+            work.fail(id, &f1, &by_user).await.unwrap();
+            let status = work.status(id, &f1).await.unwrap();
+            assert_eq!(status.state, FlowAnalysisState::Queued, "retry {retry}");
+            assert_eq!(
+                status.message,
+                Some(format!("{failure} It will be tried again automatically."))
+            );
+            assert!(!work.parked(id).await.unwrap());
+            assert_eq!(work.next(id).await.unwrap(), NextFlow::Run(f1.clone()));
+            assert_eq!(
+                testing::retries(&db, id, &f1).await.unwrap(),
+                (retry, retry)
+            );
+        }
+        work.fail(id, &f1, &by_user).await.unwrap();
+        let status = work.status(id, &f1).await.unwrap();
+        assert_eq!(status.state, FlowAnalysisState::Failed);
+        assert_eq!(status.message, Some(by_user.clone()));
+        assert_eq!(
+            work.next(id).await.unwrap(),
+            NextFlow::Idle,
+            "f2 was never requested"
+        );
+        assert!(work.parked(id).await.unwrap());
+        // The user's Retry runs it once more; no automatic retry is left.
+        work.request(id, &f1, now).await.unwrap();
+        assert_eq!(work.next(id).await.unwrap(), NextFlow::Run(f1.clone()));
+        work.fail(id, &f1, &by_user).await.unwrap();
+        assert_eq!(work.next(id).await.unwrap(), NextFlow::Idle);
     }
 
     #[tokio::test]

@@ -64,11 +64,13 @@ flows: RunStage,
  */
 finishing: RunStage,
 /**
- * Estimated remaining time; null without sufficient observations, or while paused/terminal.
+ * Estimated remaining time; null without sufficient observations, or while paused/terminal. With background
+ * analysis off it covers plan and PR context only and is null once the review is ready.
  */
 estimate: AnalysisEstimate | null,
 /**
- * Overall waiting progress, 0..=100; null until a denominator can be estimated or counted.
+ * Overall waiting progress, 0..=100; null until a denominator can be estimated or counted. With background
+ * analysis off it covers plan and PR context only and is null once the review is ready (until finished).
  */
 percent: number | null, };
 
@@ -110,6 +112,11 @@ done: number,
  * Flows in total.
  */
 total: number,
+/**
+ * True when flows remain but none is admitted (none requested, background analysis off or the rest
+ * failed for good): nothing is analysed until a flow is requested or background analysis is switched on.
+ */
+idle?: boolean,
 /**
  * The current stage; absent when no job of the analysis is queued, running or paused.
  */
@@ -1800,6 +1807,19 @@ repo: RepoRef,
 number: number, };
 
 /**
+ * Size of a pull request as GitHub reports it.
+ */
+export type PrSize = {
+/**
+ * Additions plus deletions.
+ */
+changed_lines: number,
+/**
+ * Changed files.
+ */
+changed_files: number, };
+
+/**
  * A pull request as GitHub reports it.
  */
 export type PrSummary = {
@@ -2018,6 +2038,16 @@ export type ResolvePrResponse = {
  */
 size_warning: SizeWarning | null,
 /**
+ * The pull request's size from this same GitHub metadata response, whatever its size; absent when GitHub
+ * did not report it.
+ */
+size?: PrSize,
+/**
+ * Rough estimate of what starting the analysis runs: plan and PR context (flows are analysed on request).
+ * From recent local runs; absent without the size or enough history.
+ */
+planning_estimate?: AnalysisEstimate,
+/**
  * The pull request now.
  */
 pr: PrSummary,
@@ -2135,7 +2165,8 @@ changed_lines: number,
  */
 changed_files: number,
 /**
- * Rough estimate from recent local runs; null without enough history.
+ * Rough estimate of plan and PR context from recent local runs (the same as
+ * `ResolvePrResponse.planning_estimate`); null without enough history.
  */
 estimate: AnalysisEstimate | null, };
 
