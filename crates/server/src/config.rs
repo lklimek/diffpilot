@@ -87,8 +87,8 @@ pub struct Config {
     pub github: GithubConfig,
     /// MemCan endpoint and token.
     pub memcan: MemcanConfig,
-    /// MemCan web UI base for TODO links (default: none, no links).
-    pub memcan_ui_url: Option<Url>,
+    /// MemCan web UI base, no trailing slash; links are `<value>/tasks/<uuid>` (default: none, no links).
+    pub memcan_ui_url: Option<String>,
 }
 
 /// GitHub App credentials and GitHub base URLs (configurable for the fake GitHub).
@@ -335,7 +335,11 @@ impl Config {
             },
             memcan_ui_url: get(MEMCAN_UI_URL)?
                 .map(|value| parse_http_url(MEMCAN_UI_URL, &value))
-                .transpose()?,
+                .transpose()?
+                .map(|url| {
+                    let url = String::from(url);
+                    url.strip_suffix('/').map(str::to_owned).unwrap_or(url)
+                }),
         })
     }
 }
@@ -651,8 +655,19 @@ pub(crate) mod tests {
             MEMCAN_UI_URL,
             "http://memcan.example.test:8190/ui".to_owned(),
         );
-        let url = parse(&env).expect("valid").memcan_ui_url.expect("set");
-        assert_eq!(url.as_str(), "http://memcan.example.test:8190/ui");
+        let url = parse(&env).expect("valid").memcan_ui_url;
+        assert_eq!(url.as_deref(), Some("http://memcan.example.test:8190/ui"));
+        for (value, stored) in [
+            (
+                "http://memcan.example.test:8190/ui/",
+                "http://memcan.example.test:8190/ui",
+            ),
+            ("https://memcan.example.test", "https://memcan.example.test"),
+        ] {
+            env.insert(MEMCAN_UI_URL, value.to_owned());
+            let url = parse(&env).expect("valid").memcan_ui_url;
+            assert_eq!(url.as_deref(), Some(stored), "{value}");
+        }
         env.insert(MEMCAN_UI_URL, "memcan.example.test/ui".to_owned());
         assert!(matches!(
             parse(&env),

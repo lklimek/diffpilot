@@ -1,4 +1,4 @@
-//! Dashboard HTTP routes (plan §E.2); filled by WP11-REFRESH.
+//! Personal access tokens (R8–R10, ADR-019); filled by WP11-TOKENS.
 
 use axum::Router;
 
