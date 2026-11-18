@@ -38,6 +38,13 @@ the same attempt; 400 malformed body.
 - A claim with an empty `credentials` list gets no job but still its `drop_sessions`; the runner polls this way
   while its scratch disk is below the free-space reserve (ADR-013 "Scratch volumes").
 - The job token is for the runner only: never placed in the agent's environment, config, logs or events.
+- **Dashboard jobs** (`JobSpec.target` = `{"type":"dashboard","refresh_id":…}`, kind `judge_work`, ADR-018) get
+  nothing at claim: `access` stays empty (no installation token is minted, no MemCan endpoint), and `session`,
+  `working_session`, `context_pack` and `skills` are cleared. They are claimed only while their refresh is
+  `ranking`. The runner refuses (`internal`) a dashboard job that carries access, skills, a flow file or a session,
+  and a `judge_work` job of a pull request or another kind on a dashboard target; it runs one in an empty job
+  directory without fetch or checkout, starts a fresh provider session, keeps its session files inside the job
+  directory (removed with it) and reports no `session`.
 
 ## State machine
 `JobState::transition` is the single source (`crates/contracts/src/job/state.rs`):
@@ -146,7 +153,8 @@ The existing Ask tests cover early publication and reconciliation with cancellat
   apply to the stored result, `resumes_at` and the credential's pause.
 
 ## Agent session (ADR-004)
-- One analytic session per PR. `JobSpec.pull_request_id` is the stable PR database key.
+- One analytic session per PR. `JobSpec.target.pull_request_id` (target `{"type":"pull_request",
+  "analysis_id", "pull_request_id", "repo"}`) is the stable PR database key.
   `spec.session` names the analytic `{pull_request_id, thread_id}`, set at claim.
 - Additive `working_session`: null for analytic jobs; for Ask,
   `{"user_key":"<64 lowercase SHA-256 hex digits>","analytic_generation":7,"thread_id":null}`.
@@ -262,7 +270,7 @@ lookup is needed by the runner. `output_schema` is null for these jobs.
 `sr-check` is a separate binary built from `analysis`, installed on the agent PATH.
 `sr-check format` prints the grammar, `sr-check catalog out/flow.md` prints resolved
 file/hunk ids, and `sr-check flow out/flow.md` prints `ok` with exit 0 or line-numbered
-problems with nonzero exit. Git reads use the job's `repo` at pinned base/head.
+problems with nonzero exit. Git reads use the job's `target.repo` at pinned base/head.
 
 The model edits the file until the checker succeeds, then sends one completion line.
 No `--output-schema` is passed. After the process sweep, collection uses the existing

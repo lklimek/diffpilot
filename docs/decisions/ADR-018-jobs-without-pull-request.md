@@ -50,3 +50,13 @@ CHECK in place.
   `select_model`, settings); scheduled in a quiet window (plan §H.2.5).
 - The v1.1 deployment starts from a fresh database and an empty runner session store (runbook, WP11-DOCS).
 - A later `ContainerExecutor` gets non-PR jobs for free: the target travels in the spec.
+
+## Addendum (2026-11-18, WP11-JOB): in-place rebuild instead of discarding job history
+The coordinator required the migration to upgrade a v1 database in place. `0007_jobs_targets.sql` therefore builds
+`jobs_new`, `job_events_new` and `installation_tokens_new` in the migration's own transaction with foreign keys on,
+copies every row (each stored spec moves `analysis_id`, `pull_request_id` and `repo` into
+`target: {"type":"pull_request", …}`, the pull request id read from `analyses`), drops the old tables children
+first and renames the new ones (renaming rewrites the children's references). v1 jobs, usage, events and pending
+token revocations survive; the fresh database at deployment (OD8) stays allowed. `round` holds the refresh's
+ranking attempt for judge jobs, so the one-live-judge-job index is per (refresh, stage, generation, round) and
+Retry ranking can resubmit a batch. A judge job is claimed only while its refresh is `ranking`.
