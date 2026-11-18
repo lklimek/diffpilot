@@ -1,5 +1,5 @@
 import { setupServer } from "msw/node";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { routes, type RouteName } from "../../api/generated/routes";
 import type {
   AccessToken,
@@ -9,10 +9,13 @@ import type {
   ItemPage,
   LlmSelection,
   RefreshStatus,
+  ResolvePrResponse,
 } from "../../api/generated/types";
 import rankingJson from "../../../../fixtures/dashboard/api/refresh-ranking.json";
 import { handlers } from "./index";
-import { resetDashboard } from "./dashboard";
+import { setFixtureState } from "../fixtures";
+import { setScenario } from "../scenarios";
+import { DASHBOARD_SCENARIOS, SCRIPT_STEP_MS, resetDashboard, setDashboardScenario } from "./dashboard";
 import { resetDashboardSettings } from "./dashboard-settings";
 
 const BASE = location.origin;
@@ -20,6 +23,10 @@ const CSRF = { "X-CSRF-Token": "fixture-csrf-token-482", "Content-Type": "applic
 const server = setupServer(...handlers);
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => {
+  vi.useRealTimers();
+  setDashboardScenario("normal");
+  setScenario(null);
+  setFixtureState("default");
   resetDashboard();
   resetDashboardSettings();
 });
@@ -171,5 +178,151 @@ describe("msw handlers of the dashboard routes (fixtures/dashboard)", () => {
     const path = `/api/v1/settings/access-tokens/${created.body.access_token.id}`;
     expect((await call(path, { method: "DELETE", headers: CSRF })).status).toBe(204);
     expect((await call(path, { method: "DELETE", headers: CSRF })).status).toBe(404);
+  });
+});
+
+describe("dashboard scenarios (?dashboard=<name>, the mockup states)", () => {
+  const summary = async () => (await call<DashboardSummary>("/api/v1/dashboard")).body;
+  const items = async () => (await call<ItemPage>("/api/v1/dashboard/items?limit=500")).body;
+  const post = (path: string) =>
+    call<RefreshStatus & { code?: string }>(path, { method: "POST", headers: CSRF });
+
+  it("serve items of the summary's revision in every scenario", async () => {
+    for (const name of DASHBOARD_SCENARIOS) {
+      setDashboardScenario(name);
+      const s = await summary();
+      const page = await items();
+      expect(page.revision, name).toBe(s.revision);
+      expect(page.items.length, name).toBe(s.snapshot?.item_counts.total ?? 0);
+    }
+  });
+
+  it("show each mockup state through the latest refresh and its ranking", async () => {
+    const states: Record<string, unknown> = {};
+    for (const name of [
+      "normal",
+      "refreshing",
+      "provisional",
+      "waiting",
+      "error",
+      "empty",
+      "first-run",
+    ] as const) {
+      setDashboardScenario(name);
+      const s = await summary();
+      states[name] = [s.latest_refresh?.state ?? null, s.latest_refresh?.ranking?.state ?? null];
+    }
+    expect(states).toEqual({
+      normal: ["finished", "finished"],
+      refreshing: ["scanning", null],
+      provisional: ["ranking", "running"],
+      waiting: ["ranking", "waiting_for_analysis"],
+      error: ["failed", null],
+      empty: ["finished", "finished"],
+      "first-run": [null, null],
+    });
+    setDashboardScenario("provisional");
+    expect((await items()).items.filter((i) => i.score.state !== "final").map((i) => i.id)).toEqual([
+      "WUI-320",
+      "NC-482",
+      "CON-1534",
+      "PLAT-1210",
+    ]);
+  });
+
+  it("answer 304 to a matching If-None-Match", async () => {
+    const first = await fetch(`${BASE}/api/v1/dashboard/items`);
+    const etag = first.headers.get("ETag");
+    expect(etag).toMatch(/^W\/"/);
+    const again = await fetch(`${BASE}/api/v1/dashboard/items`, { headers: { "If-None-Match": etag! } });
+    expect(again.status).toBe(304);
+    const other = await fetch(`${BASE}/api/v1/dashboard/items?kind=issue`, {
+      headers: { "If-None-Match": etag! },
+    });
+    expect(other.status).toBe(200);
+  });
+
+  it("refuse a refresh before GitHub's rate-limit reset (error scenario)", async () => {
+    setDashboardScenario("error");
+    expect((await summary()).latest_refresh?.failure?.retry_at).not.toBeNull();
+    expect(await post("/api/v1/dashboard/refreshes")).toMatchObject({
+      status: 429,
+      body: { code: "github_rate_limited" },
+    });
+  });
+
+  it("run a started refresh through scanning, a provisional ranking and a final ranking", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const started = await post("/api/v1/dashboard/refreshes");
+    expect(started.body).toMatchObject({ state: "scanning", percent: 10 });
+    const before = await summary();
+    expect(before.snapshot?.refresh_id).not.toBe(started.body.id);
+
+    vi.advanceTimersByTime(5 * SCRIPT_STEP_MS);
+    const ranking = await summary();
+    expect(ranking.latest_refresh).toMatchObject({ id: started.body.id, state: "ranking" });
+    expect(ranking.snapshot).toMatchObject({ refresh_id: started.body.id, ranked_at: null });
+    expect((await items()).items.some((i) => i.score.state !== "final")).toBe(true);
+
+    vi.advanceTimersByTime(2 * SCRIPT_STEP_MS);
+    const done = await summary();
+    expect(done.latest_refresh).toMatchObject({
+      state: "finished",
+      ranking: { state: "finished", judged: 14 },
+    });
+    expect(done.revision).not.toBe(ranking.revision);
+    const final = await items();
+    expect(final.revision).toBe(done.revision);
+    expect(final.items.every((i) => i.score.state === "final")).toBe(true);
+  });
+
+  it("Rank again runs a failed ranking to its end", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    setDashboardScenario("ranking-failed");
+    const id = (await summary()).latest_refresh!.id;
+    expect(await post(`/api/v1/dashboard/refreshes/${id}/rank`)).toMatchObject({
+      status: 202,
+      body: { state: "ranking", ranking: { state: "running", message: null } },
+    });
+    vi.advanceTimersByTime(2 * SCRIPT_STEP_MS);
+    expect((await summary()).latest_refresh).toMatchObject({
+      id,
+      state: "finished",
+      ranking: { state: "finished" },
+    });
+  });
+
+  it("store the browser's time zone through R6b in the summary's schedule", async () => {
+    setDashboardScenario("no-time-zone");
+    expect((await summary()).schedule).toMatchObject({ time_zone: null, next_run_at: null });
+    const put = await call("/api/v1/settings/dashboard/time-zone", {
+      method: "PUT",
+      headers: CSRF,
+      body: JSON.stringify({ time_zone: "Europe/Warsaw" }),
+    });
+    expect(put.status).toBe(204);
+    expect((await summary()).schedule.time_zone).toBe("Europe/Warsaw");
+    expect((await summary()).schedule.next_run_at).not.toBeNull();
+  });
+
+  it("review scenarios: NC-482's review link and the review start page agree (new, found, moved)", async () => {
+    const nc482 = async () => (await items()).items.find((i) => i.id === "NC-482")!.review;
+    const resolve = async () =>
+      (
+        await call<ResolvePrResponse>("/api/v1/pr/resolve", {
+          method: "POST",
+          headers: CSRF,
+          body: JSON.stringify({ url: "https://github.com/acme/node-client/pull/482" }),
+        })
+      ).body;
+    setDashboardScenario("review-new");
+    expect(await nc482()).toBeNull();
+    expect((await resolve()).analysis).toBeNull();
+    setDashboardScenario("review-found");
+    expect(await nc482()).toMatchObject({ head_moved: false });
+    expect(await resolve()).toMatchObject({ head_moved: false, analysis: { state: { state: "finished" } } });
+    setDashboardScenario("review-moved");
+    expect(await nc482()).toMatchObject({ head_moved: true });
+    expect((await resolve()).head_moved).toBe(true);
   });
 });

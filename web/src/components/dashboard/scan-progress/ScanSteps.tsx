@@ -36,7 +36,7 @@ export function ScanSteps({ steps }: { steps: ScanStep[] }) {
             key={step.key}
             data-step={step.key}
             data-state={step.state}
-            className={`min-w-[150px] flex-1 border border-l-0 border-border bg-surface px-2.5 py-1.5 text-[12.5px] first:rounded-l-md first:border-l last:rounded-r-md ${LOOK[step.state] ?? ""}`}
+            className={`min-w-[100px] flex-1 border border-l-0 border-border bg-surface px-2.5 py-1.5 text-[12.5px] first:rounded-l-md first:border-l last:rounded-r-md ${LOOK[step.state] ?? ""}`}
           >
             {step.state === "running" && <Spinner />} {label}
             <span className="sr-only"> ({step.state})</span>
