@@ -5,7 +5,7 @@ import { useMe } from "../../api/queries";
 import type { AppSection } from "../../components/app-shell/AppNav";
 import { MY_WORK_PATH, REVIEW_START_PATH, SETTINGS_PATH } from "./paths";
 import { ShellLayout } from "./ShellLayout";
-import { DashboardScreen } from "./DashboardScreen";
+import { DashboardScreen } from "../dashboard/DashboardScreen";
 
 /** What a page inside the shell may set: My work's count (kept while other pages show), help, top-bar actions. */
 export interface ShellSlots {
@@ -26,7 +26,8 @@ const PAGES: Record<string, { section: AppSection; crumb: string }> = {
 export function ShellRoute() {
   const { pathname } = useLocation();
   const me = useMe();
-  const page = PAGES[pathname] ?? PAGES[MY_WORK_PATH]!;
+  // The router matches `/review/` as `/review`.
+  const page = PAGES[pathname.replace(/(.)\/+$/, "$1")] ?? PAGES[MY_WORK_PATH]!;
   const [actions, setActions] = useState<HTMLElement | null>(null);
   const [count, setCount] = useState<number | null>(null);
   const [help, setHelp] = useState<{ open: () => void } | null>(null);

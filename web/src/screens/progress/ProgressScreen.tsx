@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router";
-import { MY_WORK_PATH, REVIEW_START_PATH } from "../dashboard/paths";
+import { MY_WORK_PATH, REVIEW_START_PATH } from "../shell/paths";
 import { ApiError } from "../../api/client";
 import {
   useAnalysisLive,

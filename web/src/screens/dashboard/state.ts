@@ -8,7 +8,7 @@ import type {
   SnapshotMeta,
   WorkItem,
 } from "../../api/generated/types";
-import { REVIEW_START_PATH } from "./paths";
+import { REVIEW_START_PATH } from "../shell/paths";
 
 /** The ranking banner of the shown snapshot (plan §B.3). */
 export interface RankingNotice {
