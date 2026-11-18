@@ -32,28 +32,28 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | GET | `/api/v1/me` | public | – | `MeResponse` |
 | POST | `/api/v1/pr/resolve` | session_csrf | `ResolvePrRequest` | `ResolvePrResponse` |
 | POST | `/api/v1/analyses` | session_csrf | `CreateAnalysisRequest` | 201 `AnalysisSummary` |
-| GET | `/api/v1/analyses/{id}` | session | – | `AnalysisSummary` |
-| GET | `/api/v1/analyses/{id}/events` | session | – | SSE (`sse-events.md`) |
+| GET | `/api/v1/analyses/{id}` | read | – | `AnalysisSummary` |
+| GET | `/api/v1/analyses/{id}/events` | read | – | SSE (`sse-events.md`) |
 | PUT | `/api/v1/settings/llm` | session_csrf | `ModelChoice` | `LlmSelection` |
 | POST | `/api/v1/analyses/{id}/pause` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/resume` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/cancel` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/retry` | session_csrf | – | `AnalysisSummary` |
-| GET | `/api/v1/analyses/{id}/tour` | session | – | `Tour` (409 `analysis_not_finished` until plan and PR context are accepted) |
-| GET | `/api/v1/analyses/{id}/lines` | session | `RangeQuery` | `LinesResponse` (409 `analysis_not_finished` before the analysis is ready) |
-| GET | `/api/v1/analyses/{id}/diff` | session | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis is ready) |
-| GET / PUT | `/api/v1/analyses/{id}/review-state` | session / session_csrf | – / `ReviewState` | `ReviewState` / 204 (PUT: 409 `analysis_not_finished` before `finished`) |
-| GET | `/api/v1/analyses/{id}/questions` | session | – | `AskQuestion[]` |
+| GET | `/api/v1/analyses/{id}/tour` | read | – | `Tour` (409 `analysis_not_finished` until plan and PR context are accepted) |
+| GET | `/api/v1/analyses/{id}/lines` | read | `RangeQuery` | `LinesResponse` (409 `analysis_not_finished` before the analysis is ready) |
+| GET | `/api/v1/analyses/{id}/diff` | read | `RangeQuery` | `DiffResponse` (409 `analysis_not_finished` before the analysis is ready) |
+| GET / PUT | `/api/v1/analyses/{id}/review-state` | read / session_csrf | – / `ReviewState` | `ReviewState` / 204 (PUT: 409 `analysis_not_finished` before `finished`) |
+| GET | `/api/v1/analyses/{id}/questions` | read | – | `AskQuestion[]` |
 | POST | `/api/v1/analyses/{id}/steps/{step_id}/questions` | session_csrf | `AskRequest` | 202 `AskQuestion` |
-| GET / POST | `/api/v1/analyses/{id}/feedback` | session / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
+| GET / POST | `/api/v1/analyses/{id}/feedback` | read / session_csrf | – / `FeedbackRequest` | `Feedback[]` / `Feedback` |
 | DELETE | `…/feedback/{feedback_id}` | session_csrf | – | 204 |
-| GET | `/api/v1/analyses/{id}/pending-review` | session | – | `PendingReview` |
+| GET | `/api/v1/analyses/{id}/pending-review` | read | – | `PendingReview` |
 | POST | `/api/v1/analyses/{id}/pending-review/comments` | session_csrf | `CreateCommentRequest` | 201 `CreateCommentResponse` |
 | PATCH | `…/pending-review/comments/{comment_id}` | session_csrf | `UpdateCommentRequest` | `PendingComment` |
 | DELETE | `…/pending-review/comments/{comment_id}` | session_csrf | – | 204 |
-| GET | `/api/v1/settings` | session | – | `Settings` |
+| GET | `/api/v1/settings` | read | – | `Settings` |
 | PUT | `/api/v1/settings/language` | session_csrf | `SetLanguageRequest` | 204 |
-| GET | `/api/v1/repos/{owner}/{name}/settings` | session | – | `RepoSettings` (read-only; 409 `analysis_not_finished` while not known) |
+| GET | `/api/v1/repos/{owner}/{name}/settings` | read | – | `RepoSettings` (read-only; 409 `analysis_not_finished` while not known) |
 
 ## Rules
 - **Ranges** (`lines`, `diff`): query `path`, `side` (`head` | `base`), `from`, `to`; `1 ≤ from ≤ to`,
@@ -561,8 +561,8 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 | R9 | POST | `/api/v1/settings/access-tokens` | session_csrf | `CreateAccessToken` | 201 `CreatedAccessToken`; 409 `token_limit_reached` |
 | R10 | DELETE | `/api/v1/settings/access-tokens/{id}` | session_csrf | – | 204 (404 for an unknown, revoked or another user's token) |
 
-Existing v1 `GET` routes with `session` auth become `read` in WP11-TOKENS (ADR-019 lists them; paths and shapes do
-not change). Until the token middleware exists, `read` routes accept the session only.
+Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and shapes unchanged); only R8 stays
+`session`. How an agent reads with a token: `agent-api.md`.
 
 ### Rules
 - **Scope.** Every response is the signed-in user's (or the token's user's) own: summary, items, refreshes, events

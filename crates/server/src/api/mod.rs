@@ -3,9 +3,10 @@
 
 use axum::Router;
 use axum::http::HeaderValue;
-use axum::middleware::map_response;
+use axum::middleware::{from_fn_with_state, map_response};
 use axum::response::Response;
 
+use crate::auth::{TokenGate, access_tokens};
 use crate::frontend::SECURITY_HEADERS;
 use crate::state::AppState;
 
@@ -55,6 +56,10 @@ pub fn router(state: AppState) -> Router {
         .merge(review_state::routes())
         .merge(settings::routes())
         .merge(tour::routes())
+        .route_layer(from_fn_with_state(
+            TokenGate::new(state.clone()),
+            access_tokens::check,
+        ))
         .layer(map_response(api_security_headers))
         .merge(crate::frontend::routes())
         .with_state(state)

@@ -902,21 +902,23 @@ mod tests {
     async fn route_auth_table() {
         let h = harness().await;
         let analysis = "00000000-0000-4000-8000-000000000000";
+        const READ: RouteAuth =
+            RouteAuth::SessionOrToken(contracts::api::access_tokens::TokenScope::Read);
         let table: [(Route, RouteAuth, Option<Value>); 6] = [
-            (GET_SETTINGS, RouteAuth::Session, None),
+            (GET_SETTINGS, READ, None),
             (
                 SET_LANGUAGE,
                 RouteAuth::SessionCsrf,
                 Some(json!({ "language": "pl" })),
             ),
-            (GET_REPO_SETTINGS, RouteAuth::Session, None),
-            (GET_REVIEW_STATE, RouteAuth::Session, None),
+            (GET_REPO_SETTINGS, READ, None),
+            (GET_REVIEW_STATE, READ, None),
             (
                 PUT_REVIEW_STATE,
                 RouteAuth::SessionCsrf,
                 Some(json!({ "ticked_steps": [], "last_viewed": null })),
             ),
-            (GET_DIFF, RouteAuth::Session, None),
+            (GET_DIFF, READ, None),
         ];
         for (route, auth, body) in table {
             assert_eq!(route.auth, auth, "{}", route.path);

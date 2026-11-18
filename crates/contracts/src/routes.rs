@@ -133,14 +133,10 @@ pub const RESOLVE_PR: Route = route("resolvePr", Post, "/api/v1/pr/resolve", Ses
 /// Starts (or returns) an analysis.
 pub const CREATE_ANALYSIS: Route = route("createAnalysis", Post, "/api/v1/analyses", SessionCsrf);
 /// An analysis.
-pub const GET_ANALYSIS: Route = route("getAnalysis", Get, "/api/v1/analyses/{id}", Session);
+pub const GET_ANALYSIS: Route = route("getAnalysis", Get, "/api/v1/analyses/{id}", READ);
 /// SSE stream of an analysis.
-pub const ANALYSIS_EVENTS: Route = route(
-    "analysisEvents",
-    Get,
-    "/api/v1/analyses/{id}/events",
-    Session,
-);
+pub const ANALYSIS_EVENTS: Route =
+    route("analysisEvents", Get, "/api/v1/analyses/{id}/events", READ);
 /// Pauses future jobs of an analysis.
 pub const PAUSE_ANALYSIS: Route = route(
     "pauseAnalysis",
@@ -170,17 +166,17 @@ pub const RETRY_ANALYSIS: Route = route(
     SessionCsrf,
 );
 /// The Tour of a finished analysis.
-pub const GET_TOUR: Route = route("getTour", Get, "/api/v1/analyses/{id}/tour", Session);
+pub const GET_TOUR: Route = route("getTour", Get, "/api/v1/analyses/{id}/tour", READ);
 /// Head lines by range.
-pub const GET_LINES: Route = route("getLines", Get, "/api/v1/analyses/{id}/lines", Session);
+pub const GET_LINES: Route = route("getLines", Get, "/api/v1/analyses/{id}/lines", READ);
 /// Classic diff by range.
-pub const GET_DIFF: Route = route("getDiff", Get, "/api/v1/analyses/{id}/diff", Session);
+pub const GET_DIFF: Route = route("getDiff", Get, "/api/v1/analyses/{id}/diff", READ);
 /// The user's review state.
 pub const GET_REVIEW_STATE: Route = route(
     "getReviewState",
     Get,
     "/api/v1/analyses/{id}/review-state",
-    Session,
+    READ,
 );
 /// Replaces the user's review state.
 pub const PUT_REVIEW_STATE: Route = route(
@@ -194,7 +190,7 @@ pub const LIST_QUESTIONS: Route = route(
     "listQuestions",
     Get,
     "/api/v1/analyses/{id}/questions",
-    Session,
+    READ,
 );
 /// Asks a question about a step.
 pub const ASK_QUESTION: Route = route(
@@ -204,12 +200,7 @@ pub const ASK_QUESTION: Route = route(
     SessionCsrf,
 );
 /// The user's feedback on the analysis.
-pub const LIST_FEEDBACK: Route = route(
-    "listFeedback",
-    Get,
-    "/api/v1/analyses/{id}/feedback",
-    Session,
-);
+pub const LIST_FEEDBACK: Route = route("listFeedback", Get, "/api/v1/analyses/{id}/feedback", READ);
 /// Records feedback.
 pub const POST_FEEDBACK: Route = route(
     "postFeedback",
@@ -229,7 +220,7 @@ pub const GET_PENDING_REVIEW: Route = route(
     "getPendingReview",
     Get,
     "/api/v1/analyses/{id}/pending-review",
-    Session,
+    READ,
 );
 /// Adds a comment to the pending review.
 pub const CREATE_COMMENT: Route = route(
@@ -255,7 +246,7 @@ pub const DELETE_COMMENT: Route = route(
 /// Saves the installation model and reasoning effort.
 pub const SET_LLM: Route = route("setLlm", Put, "/api/v1/settings/llm", SessionCsrf);
 /// Read settings.
-pub const GET_SETTINGS: Route = route("getSettings", Get, "/api/v1/settings", Session);
+pub const GET_SETTINGS: Route = route("getSettings", Get, "/api/v1/settings", READ);
 /// Sets the language of LLM texts.
 pub const SET_LANGUAGE: Route = route("setLanguage", Put, "/api/v1/settings/language", SessionCsrf);
 /// Read-only settings of a repository.
@@ -263,7 +254,7 @@ pub const GET_REPO_SETTINGS: Route = route(
     "getRepoSettings",
     Get,
     "/api/v1/repos/{owner}/{name}/settings",
-    Session,
+    READ,
 );
 /// Runner: claim a job.
 pub const RUNNER_CLAIM: Route = runner_route("runnerClaim", "/runner/v1/claim", RunnerSecret);
