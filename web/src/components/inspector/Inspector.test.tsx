@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlockRef, PendingReview, Step, Tour } from "../../api/generated/types";
@@ -465,5 +465,36 @@ describe("Inspector trust rules", () => {
       expectTrustWording(container.textContent ?? "");
       unmount();
     }
+  });
+});
+
+describe("Inspector: Show in Inspector from a code marker", () => {
+  it("opens a collapsed section, scrolls to the remark and highlights it briefly", async () => {
+    const { rerender } = render(<Inspector tour={tour} block={atStep("f1.5")} />);
+    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "false");
+    rerender(
+      <Inspector
+        tour={tour}
+        block={atStep("f1.5")}
+        flash={{ kind: "annotation", id: "f1.5.a3", nonce: 1 }}
+      />,
+    );
+    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "true");
+    const item = region(/^Questions to check/).querySelector('[data-annotation-id="f1.5.a3"]');
+    expect(item).not.toBeNull();
+    await waitFor(() => expect(item).toHaveAttribute("data-flash"));
+  });
+
+  it("highlights a GitHub thread of the step", async () => {
+    render(
+      <Inspector
+        tour={tour}
+        block={atStep("f1.5")}
+        flash={{ kind: "thread", id: "PRRT_fixture482_t1", nonce: 1 }}
+      />,
+    );
+    const item = region(/^GitHub threads/).querySelector('[data-thread-id="PRRT_fixture482_t1"]');
+    expect(item).not.toBeNull();
+    await waitFor(() => expect(item).toHaveAttribute("data-flash"));
   });
 });

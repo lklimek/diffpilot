@@ -49,7 +49,7 @@ export function BehaviourSection({
     <Collapsible sectionKey="behaviour" title="Behaviour: was → is" tone="llm" sections={sections}>
       <ul className="m-0 grid list-none gap-2 p-0">
         {behaviour.map((a) => (
-          <li key={a.id}>
+          <li key={a.id} data-annotation-id={a.id}>
             <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-2">
               <dt className="font-bold text-muted">Was</dt>
               <dd className="m-0">
@@ -85,7 +85,7 @@ function TextList({
   return (
     <ul className="m-0 list-disc pl-5">
       {annotations.map((a) => (
-        <li key={a.id}>
+        <li key={a.id} data-annotation-id={a.id}>
           <CodeText text={a.text ?? ""} />{" "}
           <BasisNote
             currentFile={currentFile}
@@ -199,7 +199,7 @@ export function QuestionsSection({
     >
       <ul className="m-0 grid list-none gap-2 p-0">
         {questions.map((a) => (
-          <li key={a.id}>
+          <li key={a.id} data-annotation-id={a.id}>
             <Tooltip tip="Open the step and source lines this question concerns.">
               <button
                 type="button"
@@ -300,7 +300,10 @@ function Thread({ thread }: { thread: GithubThread }) {
     thread.is_outdated && "outdated",
   ].filter(Boolean);
   return (
-    <li className="grid gap-0.5 rounded-md border border-border bg-surface-2 px-2.5 py-1.5">
+    <li
+      data-thread-id={thread.id}
+      className="grid gap-0.5 rounded-md border border-border bg-surface-2 px-2.5 py-1.5"
+    >
       <p>
         <strong>@{thread.author}</strong> on{" "}
         <code>

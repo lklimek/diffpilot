@@ -26,7 +26,7 @@ import { AskForm } from "../../components/ask/AskForm";
 import { CommentComposer, type UnresolvedPosts } from "../../components/comment/CommentComposer";
 import { commentPlacement, isChangedLine } from "../../components/comment/placement";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
-import { Inspector } from "../../components/inspector/Inspector";
+import { Inspector, type InspectorProps } from "../../components/inspector/Inspector";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { DiffCode, errorText } from "./code";
 import { stepQuery } from "./sequence";
@@ -45,6 +45,8 @@ interface InspectorPaneProps {
   /** The current step, when the block is one. */
   step: Step | undefined;
   annotationId: AnnotationId | null;
+  /** Remark or thread to scroll to and highlight ("Show in Inspector"). */
+  flash?: InspectorProps["flash"];
   onBackToStep: () => void;
   onSelectStep: (step: StepId) => void;
   onEvidence: (evidence: Evidence) => void;
@@ -157,6 +159,7 @@ export function InspectorPane(props: InspectorPaneProps) {
       tour={tour}
       block={block}
       annotationId={annotationId}
+      flash={props.flash}
       diff={diff}
       pendingReview={pending.data ?? null}
       onBackToStep={props.onBackToStep}

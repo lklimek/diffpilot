@@ -25,6 +25,8 @@ import {
 } from "../../api/queries";
 import { useReviewStateStore } from "../../api/review-state";
 import { BlockNav } from "../../components/block-nav/BlockNav";
+import type { MarkerTarget } from "../../components/code-view/markers";
+import { hiddenLines } from "../../components/code-view/visibility";
 import type { UnresolvedPosts } from "../../components/comment/CommentComposer";
 import { FlowIntroBlock } from "../../components/flow-intro/FlowIntroBlock";
 import { isFlowReviewed } from "../../components/flow-intro/progress";
@@ -188,6 +190,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     location.hash || current.block === "pr_context" ? null : current,
   );
   const [annotationId, setAnnotationId] = useState<AnnotationId | null>(null);
+  // "Show in Inspector": the remark or thread the Inspector scrolls to and highlights; `nonce` only grows.
+  const [inspectorFlash, setInspectorFlash] = useState<(MarkerTarget & { nonce: number }) | null>(null);
   const [oldCode, setOldCode] = useState(false);
   const [commentLine, setCommentLine] = useState<CommentLineState | null>(null);
   // A pending comment opened from the pending-review list, shown open at its line.
@@ -219,6 +223,16 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     found?.flow ??
     (current.block === "flow_intro" ? tour.flows.find((f) => f.id === current.flow_id) : undefined);
   const stepLines = useLines(analysisId, step && stepQuery(step));
+  // Lines of the step the code view hides ("hide comment and import changes"); `c` and the reveal skip them.
+  const stepHidden =
+    step && stepLines.data
+      ? hiddenLines(stepLines.data, hideContextChanges, {
+          annotations: step.llm.annotations,
+          threads: tour.threads,
+          comments: pending.data?.comments,
+        }).rows
+      : new Set<number>();
+  const firstShownChange = stepLines.data?.changed.find((line) => !stepHidden.has(line));
   const offersOldCode =
     step !== undefined && (step.facts.changed_lines.length > 0 || step.facts.side === "base");
 
@@ -323,9 +337,18 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
       openInspector();
       setFocusNext("comment");
     } else if (step && stepLines.data) {
-      const line = step.facts.changed_lines[0]?.start_line ?? step.facts.range.start_line;
+      const { from, lines } = stepLines.data;
+      const line = firstShownChange ?? lines.map((_, i) => from + i).find((l) => !stepHidden.has(l));
+      if (line === undefined) return;
       comment({ path: step.facts.file, side: step.facts.side, start_line: null, line }, stepLines.data);
     }
+  };
+  const showInInspector = (target: MarkerTarget) => {
+    const owner = target.kind === "thread" ? tour.threads.find((t) => t.id === target.id)?.step_id : null;
+    if (owner && owner !== step?.id) go({ block: "step", step_id: owner });
+    else if (!(target.kind === "annotation" && target.id === annotationId)) setAnnotationId(null);
+    setInspectorFlash((last) => ({ ...target, nonce: (last?.nonce ?? 0) + 1 }));
+    openInspector();
   };
 
   useEffect(() => {
@@ -386,6 +409,8 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
     revealComment,
     onEditComment: comments.edit,
     onDeleteComment: comments.remove,
+    flash: evidence ?? null,
+    onShowInInspector: showInInspector,
   };
   // The step that shows a pending comment's line; a file comment without a shown line: the first step of its file.
   const placeOf = (c: PendingComment) => {
@@ -450,12 +475,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
             <LinesCode
               key={location.key}
               ctx={ctx}
-              revealLine={
-                evidence?.line ??
-                stepLines.data?.changed.find(
-                  (line) => !hideContextChanges || !stepLines.data?.context_only?.includes(line),
-                )
-              }
+              revealLine={evidence?.line ?? firstShownChange}
               lines={stepLines}
               annotations={step.llm.annotations}
               band={step.llm.assessment?.risk ?? null}
@@ -667,6 +687,7 @@ function TourView({ analysisId, tour, review, login }: TourViewProps) {
             block={current}
             step={step}
             annotationId={annotationId}
+            flash={inspectorFlash}
             onBackToStep={() => setAnnotationId(null)}
             onSelectStep={selectStep}
             onEvidence={showEvidence}
