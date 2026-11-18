@@ -218,6 +218,20 @@ pub(super) fn flow(
     Ok(verified(output, context, &changes, confirmed))
 }
 
+/// The flow's planned changed lines outside every step of `output`.
+pub(super) fn uncovered_lines(
+    output: &FlowAnalysisOutput,
+    context: FlowContext<'_>,
+) -> BTreeMap<(LineSide, String), Vec<Span>> {
+    let changes = Changes::new(context.diff.files());
+    let confirmed: Vec<Option<ConfirmedMove>> = output
+        .steps
+        .iter()
+        .map(|step| confirm(context.moves, step))
+        .collect();
+    uncovered(output, context, &changes, &confirmed)
+}
+
 fn check_step(
     issues: &mut Issues,
     context: FlowContext<'_>,

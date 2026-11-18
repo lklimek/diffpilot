@@ -45,6 +45,7 @@ struct Fixture {
     flows: Vec<FlowAnalysisOutput>,
     aliases: BTreeMap<FlowId, Vec<String>>,
     moves: MovesReport,
+    stored: bool,
 }
 
 impl Fixture {
@@ -103,6 +104,7 @@ impl Fixture {
             flows,
             aliases: BTreeMap::from([(id("f1"), vec!["t1".to_owned(), "t2".to_owned()])]),
             moves: MovesReport::default(),
+            stored: false,
         }
     }
 
@@ -136,6 +138,7 @@ impl Fixture {
             pr_context: &self.pr_context,
             flows: &self.flows,
             thread_aliases: &self.aliases,
+            stored: self.stored,
         })
         .expect("verdict")
     }
@@ -181,6 +184,48 @@ fn fixture_pr_482_output_is_accepted_and_ordered() {
     let steps: usize = tour.flows.iter().map(|flow| flow.step_ids.len()).sum();
     assert_eq!(steps, 17);
     assert!(!verdict.moves_incomplete);
+}
+
+#[test]
+fn stored_outputs_read_under_stricter_rules_leave_new_lines_unexplained() {
+    let mut fixture = Fixture::new();
+    let facts = fixture.facts();
+    // Written under earlier rules: the plan left out h19/h20 (then quiet), flow f1 has no step on lines 35 and 42.
+    fixture
+        .plan
+        .unassigned
+        .retain(|hunk| !["h19", "h20"].contains(&hunk.hunk_id.0.as_str()));
+    let f1 = &mut fixture.flows[0];
+    f1.steps.retain(|step| step.id != "s9");
+    f1.edges
+        .retain(|edge| edge.from_step_id != "s9" && edge.to_step_id != "s9");
+
+    let fresh = fixture.verdict(&facts);
+    assert!(fresh.tour.is_none(), "a new plan stays strict");
+
+    fixture.stored = true;
+    let verdict = fixture.verdict(&facts);
+    assert_eq!(
+        verdict.repairs,
+        [],
+        "a stored, accepted output is not rejected for coverage"
+    );
+    let tour = verdict.tour.expect("tour");
+    assert_eq!(flow_ids(&tour.flows), ["f1", "f2", "f3", "f4", "f5"]);
+    assert!(tour.unanalysed.is_empty());
+    assert_eq!(
+        tour.coverage.unexplained,
+        [
+            file_ranges(
+                "src/rpc/client.rs",
+                LineSide::Head,
+                &[(35, 35), (42, 42), (112, 152)]
+            ),
+            file_ranges("src/rpc/client.rs", LineSide::Base, &[(41, 41), (173, 214)]),
+            file_ranges("src/rpc/metrics.rs", LineSide::Head, &[(40, 46)]),
+        ],
+        "h19/h20 and the lines step s9 covered (head 35, 42, removed base 41)"
+    );
 }
 
 #[test]
@@ -244,6 +289,7 @@ fn foreign_pr_output_is_rejected() {
             pr_context: &fixture.pr_context,
             flows: &fixture.flows,
             thread_aliases: &fixture.aliases,
+            stored: false,
         })
         .expect("verdict")
     };
@@ -690,6 +736,7 @@ fn each_output_is_verified_with_its_own_bounded_read() {
         },
         flows: &outputs,
         thread_aliases: &BTreeMap::new(),
+        stored: false,
     })
     .expect("verdict");
     assert_eq!(verdict.repairs, Vec::<Repair>::new());
@@ -907,6 +954,7 @@ proptest::proptest! {
             },
             flows: &outputs,
             thread_aliases: &BTreeMap::new(),
+            stored: false,
         })
         .expect("verdict");
         proptest::prop_assert_eq!(&verdict.repairs, &Vec::<Repair>::new());

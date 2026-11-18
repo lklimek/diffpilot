@@ -843,16 +843,21 @@ fn scan<'a>(
 
 /// Changed plain private `use` lines: alone on their line at the top level of the file after `;`, `}` or the start
 /// (no visibility, attribute or other token before them), no `as` or `*`, and every bound name bound to this one path
-/// on both sides, not declared as an item in the file, not a prelude name and used nowhere on the other side (the
-/// side without the import) except as a `use` binding. A glob or an unreadable tree on either side covers nothing.
+/// on both sides, not declared as an item in the file, not a prelude name, and either bound by a plain `use` of the
+/// same path on the other side (a moved import) or used nowhere there except as a `use` binding. A glob or an unreadable tree on either side covers nothing.
 fn import_lines<'a>(file: &FileSource<'a>, this: &Lexed<'a>, other: &Other<'a>) -> Vec<u32> {
     let mut paths = Paths::default();
     let mut scope = Scope::default();
-    let mut plain = Vec::new();
+    let (mut plain, mut other_plain) = (Vec::new(), Vec::new());
     scan(this, &mut paths, &mut scope, Some(&mut plain));
     if let Other::Lexed(lexed) = other {
-        scan(lexed, &mut paths, &mut scope, None);
+        scan(lexed, &mut paths, &mut scope, Some(&mut other_plain));
     }
+    // Bound by a plain import of the same path on the other side too: a moved import re-points nothing.
+    let moved: HashSet<(&str, u32)> = other_plain
+        .iter()
+        .flat_map(|plain| plain.bindings.iter().copied())
+        .collect();
     if scope.unsure {
         return Vec::new();
     }
@@ -876,7 +881,7 @@ fn import_lines<'a>(file: &FileSource<'a>, this: &Lexed<'a>, other: &Other<'a>) 
                 && plain.bindings.iter().all(|&(bound, id)| {
                     !scope.items.contains(bound)
                         && !PRELUDE.contains(&bound)
-                        && !used_without.contains(bound)
+                        && (moved.contains(&(bound, id)) || !used_without.contains(bound))
                         && scope.bound.get(bound) == Some(&Some(id))
                 })
         })
@@ -1032,6 +1037,24 @@ mod tests {
         assert_eq!(head(&base_file, &reordered), [1], "a reordered import");
         let grouped = ["use std::fmt;", "use std::sync::{Arc, Mutex};", "fn f() {}"];
         assert_eq!(head(&base_file, &grouped), [2], "same paths");
+        // The same with the names in use: a moved import binds the same path on both sides, it re-points nothing.
+        let used = [
+            "use std::fmt;",
+            "use std::sync::Mutex;",
+            "fn f(m: Mutex<fmt::Error>) {}",
+        ];
+        let reordered = ["use std::sync::Mutex;", "use std::fmt;", used[2]];
+        assert_eq!(
+            head(&used, &reordered),
+            [1],
+            "a reordered import of a used name"
+        );
+        let grouped = ["use std::fmt;", "use std::sync::{Arc, Mutex};", used[2]];
+        assert_eq!(
+            head(&used, &grouped),
+            [2],
+            "a regrouped import of a used name"
+        );
     }
 
     #[test]

@@ -1171,6 +1171,10 @@ async fn lines_match_the_seed_for_whole_files() {
 async fn a_pre_pass_stored_in_an_older_shape_is_computed_again() {
     let h = harness().await;
     let id = h.seed_analysis().await;
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    h.wait_until_finished(&id.to_string()).await;
     let uri = format!("/api/v1/analyses/{id}/lines?path=src/rpc/client.rs&side=head&from=1&to=224");
     let (status, fresh) = h.get(&uri).await;
     assert_eq!(status, StatusCode::OK, "{fresh}");
@@ -1197,6 +1201,48 @@ async fn a_pre_pass_stored_in_an_older_shape_is_computed_again() {
         .await
         .expect("the new shape is stored");
     assert!(stored.is_some());
+
+    // The plan of that build: h19/h20 (an in-file move, quiet then) were in no flow and not in `unassigned`.
+    let mut plan: Value = documents
+        .get(id, DocumentKind::Plan, "")
+        .await
+        .expect("read plan")
+        .expect("stored plan");
+    plan["unassigned"]
+        .as_array_mut()
+        .expect("unassigned")
+        .retain(|hunk| !["h19", "h20"].contains(&hunk["hunk_id"].as_str().unwrap_or_default()));
+    documents
+        .put(id, DocumentKind::Plan, "", &plan, chrono::Utc::now())
+        .await
+        .expect("store the old plan");
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let flows = tour["flows"].as_array().expect("flows");
+    assert_eq!(flows.len(), 5);
+    assert!(
+        flows
+            .iter()
+            .all(|flow| !flow["steps"].as_array().expect("steps").is_empty()),
+        "flows analysed"
+    );
+    let unexplained = &tour["quiet"]["unexplained"];
+    // The moved code of h19/h20, without its context-only doc comments (head 112, 145; base 173, 206).
+    for (side, start, end) in [("head", 113, 144), ("base", 174, 205)] {
+        let listed = unexplained
+            .as_array()
+            .expect("unexplained")
+            .iter()
+            .any(|item| {
+                item["file"] == "src/rpc/client.rs"
+                    && item["side"] == side
+                    && item["ranges"].as_array().expect("ranges").iter().any(|r| {
+                        r["start_line"].as_u64() <= Some(start)
+                            && r["end_line"].as_u64() >= Some(end)
+                    })
+            });
+        assert!(listed, "{side} {start}-{end} in Unexplained: {unexplained}");
+    }
 }
 
 #[tokio::test]

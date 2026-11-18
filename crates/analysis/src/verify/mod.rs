@@ -403,6 +403,9 @@ pub struct AnalysisInput<'a> {
     pub flows: &'a [FlowAnalysisOutput],
     /// Thread aliases listed in each flow's prompt; a flow without an entry lists none.
     pub thread_aliases: &'a BTreeMap<FlowId, Vec<String>>,
+    /// The outputs were accepted earlier and are read again: lines today's rules add that the plan or a flow does
+    /// not cover are Unexplained, not a rejection. A new output is checked with `false`.
+    pub stored: bool,
 }
 
 impl std::fmt::Debug for AnalysisInput<'_> {
@@ -479,7 +482,12 @@ pub fn analysis(input: AnalysisInput<'_>) -> Result<AnalysisVerdict, VerifyError
     };
     warn(OutputRef::Plan, wording::plan(input.plan));
     warn(OutputRef::PrContext, wording::pr_context(input.pr_context));
-    let verified_plan = match rejected(plan(input.plan, input.listed))? {
+    let checked = if input.stored {
+        check_plan::stored_plan(input.plan, input.listed)
+    } else {
+        plan(input.plan, input.listed)
+    };
+    let verified_plan = match rejected(checked)? {
         Ok(verified) => Some(verified),
         Err(issues) => {
             repairs.push(Repair {
@@ -532,7 +540,23 @@ pub fn analysis(input: AnalysisInput<'_>) -> Result<AnalysisVerdict, VerifyError
                     moves: input.moves,
                     thread_aliases: aliases,
                 };
-                rejected(flow(output, context))?
+                let missing = if input.stored {
+                    check_flow::uncovered_lines(output, context)
+                } else {
+                    BTreeMap::new()
+                };
+                if missing.is_empty() {
+                    rejected(flow(output, context))?
+                } else {
+                    let reduced = without_lines(&verified_plan, id, &missing);
+                    rejected(flow(
+                        output,
+                        FlowContext {
+                            plan: &reduced,
+                            ..context
+                        },
+                    ))?
+                }
             }
         };
         match result {
@@ -567,6 +591,22 @@ pub fn analysis(input: AnalysisInput<'_>) -> Result<AnalysisVerdict, VerifyError
         }),
         moves_incomplete: input.moves.incomplete,
     })
+}
+
+/// `plan` with the `missing` lines taken out of flow `id`'s lines.
+fn without_lines(
+    plan: &VerifiedPlan,
+    id: &FlowId,
+    missing: &BTreeMap<(LineSide, String), Vec<spans::Span>>,
+) -> VerifiedPlan {
+    let mut reduced = plan.clone();
+    for ranges in reduced.flow_lines.get_mut(id).into_iter().flatten() {
+        if let Some(gone) = missing.get(&(ranges.side, ranges.file.clone())) {
+            let kept = spans::subtract(&spans::from_ranges(&ranges.ranges), gone);
+            ranges.ranges = spans::to_ranges(&kept);
+        }
+    }
+    reduced
 }
 
 /// Splits a verification result into accepted or rejected-with-issues; other errors pass through.

@@ -414,7 +414,7 @@ impl Driver<'_> {
             flows: self.results.flows.clone(),
         });
         let aliases = self.aliases(&outputs.plan);
-        let verdict = verdict::analysis(Arc::clone(&self.facts), outputs, aliases).await?;
+        let verdict = verdict::analysis(Arc::clone(&self.facts), outputs, aliases, false).await?;
         for (output, warning) in &verdict.warnings {
             tracing::warn!(analysis = %self.analysis, ?output, phrase = %warning.phrase,
                 location = %warning.location, "LLM text uses wording the trust rules ban");

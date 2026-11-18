@@ -137,7 +137,7 @@ pub async fn load(state: &AppState, summary: &AnalysisSummary) -> Result<Tour, T
         pr_context: pr_context.clone(),
         flows: results.flows,
     });
-    let verdict = verdict::analysis(Arc::clone(&facts), outputs, aliases.clone())
+    let verdict = verdict::analysis(Arc::clone(&facts), outputs, aliases.clone(), true)
         .await
         .map_err(TourError::from)?;
     let skeleton = verdict.tour.ok_or(TourError::PlanRejected)?;
