@@ -86,15 +86,24 @@ pub async fn checkout(
     if has_commits(mirror, commits).await? {
         phases.word("mirror", "hit");
     } else {
-        // Packed even when small, so the per-job copy stays a few large files.
-        let mut args = vec![
-            os("-c"),
-            os("fetch.unpackLimit=1"),
+        // Packed even when small, so the per-job copy stays a few large files; never repacked (no automatic
+        // gc or maintenance, detached or not), so no pack disappears while `copy_objects` copies it.
+        let mut args = Vec::new();
+        for setting in [
+            "fetch.unpackLimit=1",
+            "gc.auto=0",
+            "maintenance.auto=false",
+            "gc.autoDetach=false",
+            "maintenance.autoDetach=false",
+        ] {
+            args.extend([os("-c"), os(setting)]);
+        }
+        args.extend([
             os("fetch"),
             os("--quiet"),
             os("--no-tags"),
             os("--no-recurse-submodules"),
-        ];
+        ]);
         args.extend([os("--"), os(clone_url)]);
         args.extend(
             commits
@@ -426,6 +435,43 @@ mod tests {
                 Some(commits.head.as_str())
             );
         }
+    }
+
+    /// A fetch never repacks the mirror (no automatic gc or maintenance, detached or not), so the packs listed by
+    /// `copy_objects` stay in place while they are copied.
+    #[tokio::test]
+    async fn mirror_fetches_never_repack_the_mirror() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let mirror = dir.path().join("m.git");
+        let commits = crate::test_support::commits();
+        let log = PhaseLog::default();
+        checkout(
+            &mirror,
+            &fixture_url(),
+            &[&commits.base],
+            &dir.path().join("a"),
+            &log,
+        )
+        .await
+        .unwrap();
+        // Any second pack would make git gc consolidate the packs.
+        assert!(git_out(&mirror, &["config", "gc.autoPackLimit", "1"]).is_some());
+        let pinned = [commits.head.as_str(), commits.base.as_str()];
+        checkout(
+            &mirror,
+            &fixture_url(),
+            &pinned,
+            &dir.path().join("b"),
+            &log,
+        )
+        .await
+        .unwrap();
+        let packs = std::fs::read_dir(mirror.join("objects/pack"))
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".pack"))
+            .count();
+        assert_eq!(packs, 2, "one pack per fetch, none repacked");
     }
 
     #[tokio::test]
