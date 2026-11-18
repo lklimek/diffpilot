@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PendingReview",
+  "description": "The user's pending review on GitHub, merged over every pending review of the user.",
+  "type": "object",
+  "properties": {
+    "commenting_available": {
+      "description": "False when the GitHub App is not installed on the repository.",
+      "type": "boolean"
+    },
+    "comments": {
+      "description": "Pending comments; the count is their number.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PendingComment"
+      }
+    },
+    "incomplete": {
+      "description": "The server stopped reading at its cap (more pending comments or reviews exist on GitHub than listed).",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "commenting_available",
+    "comments",
+    "incomplete"
+  ],
+  "$defs": {
+    "PendingComment": {
+      "description": "A comment in the pending review.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "GitHub comment node id.",
+          "type": "string"
+        },
+        "thread_id": {
+          "description": "GitHub thread node id.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Repository-relative path.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Line or file-level comment.",
+          "$ref": "#/$defs/CommentKind"
+        },
+        "side": {
+          "description": "Diff side of a line comment (GitHub LEFT = base, RIGHT = head).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineSide"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "start_line": {
+          "description": "First line of a multi-line comment; for a file-level comment, of the linked range.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "line": {
+          "description": "Last line; for a file-level comment, of the linked range.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "body": {
+          "description": "Comment text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "thread_id",
+        "path",
+        "kind",
+        "body"
+      ]
+    },
+    "CommentKind": {
+      "description": "Where a pending comment sits on GitHub.",
+      "oneOf": [
+        {
+          "description": "A line thread inside the diff.",
+          "type": "string",
+          "const": "line"
+        },
+        {
+          "description": "A file-level thread of a file in the PR diff whose body links to lines outside the diff hunks.",
+          "type": "string",
+          "const": "file"
+        }
+      ]
+    },
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    }
+  }
+}

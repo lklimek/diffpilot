@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DiffResponse",
+  "description": "Classic diff of a range.",
+  "type": "object",
+  "properties": {
+    "path": {
+      "description": "Repository-relative path.",
+      "type": "string"
+    },
+    "side": {
+      "description": "Side the requested range refers to.",
+      "$ref": "#/$defs/LineSide"
+    },
+    "hunks": {
+      "description": "Hunks overlapping the range.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/DiffHunk"
+      }
+    }
+  },
+  "required": [
+    "path",
+    "side",
+    "hunks"
+  ],
+  "$defs": {
+    "LineSide": {
+      "description": "Commit a line number refers to. Head is the common case (final code); base only for code that no longer\nexists at the head commit (a deleted file, an emptied file, removed lines without a head line to anchor to).",
+      "oneOf": [
+        {
+          "description": "Lines of the head commit.",
+          "type": "string",
+          "const": "head"
+        },
+        {
+          "description": "Lines of the base commit (removed code).",
+          "type": "string",
+          "const": "base"
+        }
+      ]
+    },
+    "DiffHunk": {
+      "description": "A diff hunk.",
+      "type": "object",
+      "properties": {
+        "header": {
+          "description": "The `@@ … @@` header.",
+          "type": "string"
+        },
+        "lines": {
+          "description": "Lines.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DiffLine"
+          }
+        }
+      },
+      "required": [
+        "header",
+        "lines"
+      ]
+    },
+    "DiffLine": {
+      "description": "A line of a diff hunk.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Kind.",
+          "$ref": "#/$defs/DiffLineKind"
+        },
+        "old_line": {
+          "description": "Line number at the base commit.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "new_line": {
+          "description": "Line number at the head commit.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "text": {
+          "description": "Text without the diff marker and line ending.",
+          "type": "string"
+        },
+        "eol": {
+          "description": "Line ending when it is not LF: `crlf`, or `no_newline` for a last line without one; null for LF.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineEnding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ]
+    },
+    "DiffLineKind": {
+      "description": "Kind of a diff line.",
+      "oneOf": [
+        {
+          "description": "Unchanged.",
+          "type": "string",
+          "const": "context"
+        },
+        {
+          "description": "Added.",
+          "type": "string",
+          "const": "added"
+        },
+        {
+          "description": "Removed.",
+          "type": "string",
+          "const": "removed"
+        }
+      ]
+    },
+    "LineEnding": {
+      "description": "A line ending other than LF.",
+      "oneOf": [
+        {
+          "description": "CR LF.",
+          "type": "string",
+          "const": "crlf"
+        },
+        {
+          "description": "The file's last line has no line ending.",
+          "type": "string",
+          "const": "no_newline"
+        }
+      ]
+    }
+  }
+}
