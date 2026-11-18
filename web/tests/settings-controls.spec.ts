@@ -20,7 +20,8 @@ for (const width of [1280, 2560])
     await page.setViewportSize({ width, height: 800 });
     await page.goto("/settings?scenario=many-repos");
     await expect(page.getByText(/last success/)).toContainText("17 Nov 2026, 18:04");
-    await expect(page.getByRole("table")).toHaveCount(0);
+    const repoTables = page.getByRole("region", { name: /^Repository / }).getByRole("table");
+    await expect(repoTables).toHaveCount(0);
     const combo = page.getByRole("combobox", { name: "Repository", exact: true });
     await combo.fill("repo-25");
     await combo.press("ArrowDown");
@@ -34,7 +35,7 @@ for (const width of [1280, 2560])
     await combo.press("ArrowDown");
     await combo.press("Enter");
     await page.getByText("Show the 4 built-in rules").click();
-    await expect(page.getByRole("table")).toBeVisible();
+    await expect(repoTables).toBeVisible();
     for (const title of ["LLM status", "Memory", "Language of LLM texts", "GitHub App"]) {
       const extra = await page.getByRole("region", { name: title, exact: true }).evaluate((el) => {
         const last = el.lastElementChild!.getBoundingClientRect();

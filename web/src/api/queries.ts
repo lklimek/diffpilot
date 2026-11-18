@@ -6,7 +6,9 @@ import type {
   AnalysisId,
   AnalysisSummary,
   AskQuestion,
+  CreateAccessToken,
   CreateCommentRequest,
+  DashboardSettings,
   Feedback,
   FeedbackId,
   FeedbackRequest,
@@ -431,6 +433,57 @@ export function useSetLlm() {
     },
   });
 }
+
+/** The user's dashboard settings (R6). */
+export const useDashboardSettings = () =>
+  useQuery({ queryKey: ["dashboard-settings"], queryFn: api.getDashboardSettings });
+
+/** Saves the dashboard settings; the answer replaces the cached view. */
+export function useSaveDashboardSettings() {
+  const client = useQueryClient();
+  return (settings: DashboardSettings) =>
+    api.setDashboardSettings(settings).then((view) => {
+      client.setQueryData(["dashboard-settings"], view);
+      return view;
+    });
+}
+
+/** Saves the installation-wide ranking effort and refreshes its audit details. */
+export function useSetJudgeEffort() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.setJudgeEffort,
+    onSuccess: (selection) =>
+      client.setQueryData<import("./generated/types").Settings>(
+        ["settings"],
+        (old) => old && { ...old, llm_selection: selection },
+      ),
+  });
+}
+
+/** The user's access tokens (R8). */
+export const useAccessTokens = () => useQuery({ queryKey: ["access-tokens"], queryFn: api.listAccessTokens });
+
+/**
+ * Create and revoke access tokens. Plain calls, no mutation cache: the created secret goes only to the caller
+ * (ADR-019) and the list is refetched.
+ */
+export function useAccessTokenActions() {
+  const client = useQueryClient();
+  const refetch = () => client.invalidateQueries({ queryKey: ["access-tokens"] });
+  return {
+    create: async (body: CreateAccessToken) => {
+      const created = await api.createAccessToken(body);
+      void refetch();
+      return created;
+    },
+    revoke: async (id: string) => {
+      await api.revokeAccessToken(id);
+      await refetch();
+    },
+  };
+}
+
 /** Signs out of this session. */
 export const useSignOut = () => useMutation({ mutationFn: () => api.logout({ everywhere: false }) });
 
