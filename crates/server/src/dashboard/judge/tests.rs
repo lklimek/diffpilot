@@ -6,17 +6,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
-use contracts::agent::judge_work::{JudgeWorkInput, part_values};
+use contracts::agent::judge_work::{JudgeWorkInput, LinkedIssue, part_values};
 use contracts::api::dashboard::{
-    DashboardSettings, ItemKey, ItemTarget, KindCounts, RankingState, RefreshState, RefreshStatus,
-    RefreshTrigger, ScoreComponent, ScoreState, Tier, TodosState, TodosStatus,
+    DashboardSettings, ItemKey, ItemTarget, KindCounts, PartStatus, RankingState, RefreshState,
+    RefreshStatus, RefreshTrigger, ScoreComponent, ScoreState, Tier, TodosState, TodosStatus,
 };
 use contracts::common::RepoRef;
 use contracts::ids::RefreshId;
 use contracts::job::result::{JobOutcome, JobResult};
 use contracts::job::spec::{CredentialKind, JobPriority, LlmCredentialRef};
 use contracts::job::state::JobState;
-use db::repo::dashboard::{JudgeCounts, StartOutcome};
+use db::repo::dashboard::{JudgeCounts, SendCaps, SendReservation, StartOutcome};
 use db::repo::jobs::{ClaimParams, JobRecord, JobStage};
 use db::repo::users::GithubProfile;
 use db::repo::{DEFAULT_TENANT, Db};
@@ -32,7 +32,9 @@ use crate::dashboard::score::{
     CiEffective, IssueFacts, Mergeable, MilestoneContext, OwnedChange, PrFacts, Relation,
     TodoFacts, TodoStatus,
 };
-use crate::dashboard::snapshot::{SNAPSHOT_VERSION, StoredIssue, StoredPr, StoredTodo};
+use crate::dashboard::snapshot::{
+    SNAPSHOT_VERSION, StoredIssue, StoredLinkedIssue, StoredPr, StoredTodo,
+};
 
 /// Bound of every wait (real time; a judge job round trip takes well under a second).
 const WAIT: Duration = Duration::from_secs(20);
@@ -95,6 +97,7 @@ fn pr(number: u32, title: &str) -> StoredPr {
         created_at: now() - TimeDelta::days(3),
         ci_red: Vec::new(),
         ci_pending: Vec::new(),
+        linked_issues: Vec::new(),
     }
 }
 
@@ -447,6 +450,47 @@ impl Harness {
         ended.expect("the judge jobs end")
     }
 
+    /// Answers every judge job of the refresh with `answer` until its ranking ended; returns the items sent and the
+    /// jobs run.
+    async fn serve_until_ended(
+        &self,
+        user: &str,
+        id: RefreshId,
+        answer: impl Fn(&JudgeWorkInput) -> JobOutcome,
+    ) -> (u32, u32) {
+        let served = tokio::time::timeout(WAIT, async {
+            let (mut sent, mut jobs) = (0, 0);
+            loop {
+                let now = Utc::now();
+                let job = self
+                    .db()
+                    .jobs()
+                    .claim(ClaimParams {
+                        credential_ids: &[CREDENTIAL_ID.to_owned()],
+                        job_token_hash: b"hash",
+                        lease_until: now + TimeDelta::hours(1),
+                        now,
+                    })
+                    .await
+                    .expect("claim");
+                if let Some(job) = job {
+                    let input = JudgeWorkInput::from_prompt(&job.spec.prompt).expect("judge input");
+                    sent += count(input.items.len());
+                    jobs += 1;
+                    self.complete(&job, answer(&input)).await;
+                } else if self.status(user, id).await.state != RefreshState::Ranking
+                    && !self.state.dashboard.is_running(id)
+                {
+                    return (sent, jobs);
+                } else {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        })
+        .await;
+        served.expect("the ranking ends")
+    }
+
     /// Ranks `snapshot` for `user` answering every job neutrally; returns the finished status.
     async fn rank_all(&self, user: &str, snapshot: &Snapshot) -> (RefreshId, RefreshStatus) {
         let id = self.rank(user, snapshot).await;
@@ -566,6 +610,61 @@ fn judge_input_shows_no_age_and_only_plan_facts() {
     )));
 }
 
+/// Plan §B.1 J8: an unsure human-waiting default is sent with its value and the scorer's age class, never an age.
+#[test]
+fn unsure_human_waiting_default_is_sent_with_its_age_class() {
+    let mut p = pr(3, "feat: y");
+    p.facts.author = Some("carol".to_owned());
+    p.facts.relations = vec![Relation::ReviewRequested];
+    p.facts.review_pending_for_us = true;
+    p.facts.review_request_age_is_approx = true;
+    p.facts.review_requested_at = Some(now() - TimeDelta::days(1));
+    let snap = snapshot(vec![p], vec![], vec![]);
+    let items = candidates(&snap);
+    let item = &items[0].item;
+    assert!(item.asks.contains(&ScoreComponent::HumanWaiting), "premise");
+    let default = item
+        .known
+        .iter()
+        .find(|k| k.component == ScoreComponent::HumanWaiting)
+        .expect("the default is sent");
+    assert_eq!(
+        (default.points_tenths, default.status),
+        (Some(150), PartStatus::Estimated)
+    );
+    assert_eq!(
+        default.basis,
+        "default to confirm: a request within 2 days → 15; unsure: a team review request, an approximate request \
+         date or an unanswered comment"
+    );
+}
+
+/// Plan §B.2, §B.4: the issues a pull request closes are judged inputs; a snapshot stored before they were kept
+/// still loads (none known).
+#[test]
+fn closing_issues_are_judged_inputs_and_old_snapshots_load() {
+    let mut p = pr(4, "fix: z");
+    let without = fingerprints(&snapshot(vec![p.clone()], vec![], vec![]));
+    p.linked_issues = vec![StoredLinkedIssue {
+        number: 9,
+        title: "Crash on start".to_owned(),
+    }];
+    let snap = snapshot(vec![p.clone()], vec![], vec![]);
+    let items = candidates(&snap);
+    assert_eq!(
+        items[0].item.facts.linked_issues,
+        vec![LinkedIssue {
+            reference: "acme/wallet-ui#9".to_owned(),
+            title: "Crash on start".to_owned(),
+        }]
+    );
+    assert_ne!(fingerprints(&snap), without);
+    let mut old = serde_json::to_value(&p).expect("json");
+    old.as_object_mut().expect("object").remove("linked_issues");
+    let loaded: StoredPr = serde_json::from_value(old).expect("an old stored pull request loads");
+    assert!(loaded.linked_issues.is_empty());
+}
+
 #[test]
 fn todo_naming_a_pull_request_is_a_suggested_merge() {
     let snap = snapshot(
@@ -631,33 +730,56 @@ fn golden_input() -> JudgeWorkInput {
     }
 }
 
-/// The rendered prompt is pinned, and the template with the output schema is recorded under the current
-/// `JUDGE_PROMPT_VERSION`: `UPDATE_GOLDEN=1` rewrites the prompt and records the edit under the current version
-/// (non-semantic); a semantic edit bumps the version first.
+/// Message of a prompt or schema edit without a version decision.
+fn undecided(version: u32, hash: &str) -> String {
+    format!(
+        "the judge prompt template or output schema changed (hash {hash}) and is not recorded under \
+         JUDGE_PROMPT_VERSION {version} in prompts/golden/judge_work.versions. Decide: (a) a semantic change \
+         (stored judgements should be re-judged): bump JUDGE_PROMPT_VERSION, then run with RECORD_PROMPT_HASH=1 to \
+         record the hash under the new version; (b) a non-semantic edit (wording that cannot change an answer): run \
+         with RECORD_PROMPT_HASH=1 to record it under version {version}. UPDATE_GOLDEN=1 never records a version."
+    )
+}
+
+/// The version check of the golden test: the versions file to write (`record` = `RECORD_PROMPT_HASH`), nothing
+/// when the hash is recorded, or the failure when no decision was made.
+fn version_decision(
+    versions: &str,
+    version: u32,
+    hash: &str,
+    record: bool,
+) -> Result<Option<String>, String> {
+    if recorded(versions, version, hash) {
+        Ok(None)
+    } else if record {
+        Ok(Some(format!("{versions}{version} {hash}\n")))
+    } else {
+        Err(undecided(version, hash))
+    }
+}
+
+/// The template with the output schema is recorded under the current `JUDGE_PROMPT_VERSION` (checked first:
+/// `RECORD_PROMPT_HASH=1` records it), and the rendered prompt is pinned (`UPDATE_GOLDEN=1` rewrites it).
 #[test]
 fn golden_judge_work_prompt() {
     let prompt = prompt::render(&golden_input()).expect("prompt");
     let path = golden_dir().join("judge_work.txt");
     let versions_path = golden_dir().join("judge_work.versions");
     let hash = prompt_hash(prompt::TEMPLATE);
+    let versions = std::fs::read_to_string(&versions_path).unwrap_or_default();
+    let record = std::env::var_os("RECORD_PROMPT_HASH").is_some();
+    match version_decision(&versions, JUDGE_PROMPT_VERSION, &hash, record) {
+        Ok(Some(updated)) => std::fs::write(&versions_path, updated).expect("write versions"),
+        Ok(None) => {}
+        Err(message) => panic!("{message}"),
+    }
     if std::env::var_os("UPDATE_GOLDEN").is_some() {
         std::fs::write(&path, &prompt).expect("write golden");
-        let mut versions = std::fs::read_to_string(&versions_path).unwrap_or_default();
-        if !recorded(&versions, JUDGE_PROMPT_VERSION, &hash) {
-            versions.push_str(&format!("{JUDGE_PROMPT_VERSION} {hash}\n"));
-            std::fs::write(&versions_path, versions).expect("write versions");
-        }
     }
     let golden = std::fs::read_to_string(&path).unwrap_or_default();
     assert_eq!(
         golden, prompt,
         "prompts/golden/judge_work.txt differs (UPDATE_GOLDEN=1)"
-    );
-    let versions = std::fs::read_to_string(&versions_path).unwrap_or_default();
-    assert!(
-        recorded(&versions, JUDGE_PROMPT_VERSION, &hash),
-        "the judge prompt or schema changed without a version decision: bump JUDGE_PROMPT_VERSION or record the \
-         edit as non-semantic (UPDATE_GOLDEN=1)"
     );
 }
 
@@ -665,12 +787,21 @@ fn golden_judge_work_prompt() {
 fn prompt_text_change_without_version_decision_fails_golden() {
     let versions =
         std::fs::read_to_string(golden_dir().join("judge_work.versions")).unwrap_or_default();
-    let edited = prompt::TEMPLATE.replace("help rank", "rank");
-    assert!(!recorded(
-        &versions,
-        JUDGE_PROMPT_VERSION,
-        &prompt_hash(&edited)
-    ));
+    let edited = prompt_hash(&prompt::TEMPLATE.replace("help rank", "rank"));
+    let failure = version_decision(&versions, JUDGE_PROMPT_VERSION, &edited, false)
+        .expect_err("an unrecorded edit fails");
+    assert!(failure.contains("bump JUDGE_PROMPT_VERSION"), "{failure}");
+    assert!(failure.contains("RECORD_PROMPT_HASH=1"), "{failure}");
+    // Only the explicit switch records, under the current version; a recorded hash needs nothing.
+    let updated = version_decision(&versions, JUDGE_PROMPT_VERSION, &edited, true)
+        .expect("recorded")
+        .expect("versions to write");
+    assert!(updated.starts_with(&versions));
+    assert!(recorded(&updated, JUDGE_PROMPT_VERSION, &edited));
+    assert_eq!(
+        version_decision(&updated, JUDGE_PROMPT_VERSION, &edited, false),
+        Ok(None)
+    );
 }
 
 #[test]
@@ -826,9 +957,27 @@ async fn prompt_version_bump_marks_older_judgements_inherited() {
     assert!(!h.judgements("u1", &snap).await[&key(1)].older_prompt);
 }
 
-/// A finished refresh of `user` started now that judged `judged` items (the daily cap counts it).
-async fn judged_earlier(h: &Harness, user: &str, judged: u32) {
+/// A finished refresh of `user` started now that sent `sent` items to the judge (the daily cap counts it).
+async fn sent_earlier(h: &Harness, user: &str, sent: u32) {
     let id = h.stored(user, &snapshot(vec![], vec![], vec![])).await;
+    let reserved = h
+        .db()
+        .dashboard()
+        .reserve_sends(
+            DEFAULT_TENANT,
+            user,
+            id,
+            0,
+            sent,
+            SendCaps {
+                per_refresh: sent,
+                per_day: DAILY_CAP,
+            },
+            h.state.dashboard.now(),
+        )
+        .await
+        .expect("reserve");
+    assert_eq!(reserved, SendReservation::Reserved);
     let ended = h
         .db()
         .dashboard()
@@ -839,7 +988,7 @@ async fn judged_earlier(h: &Harness, user: &str, judged: u32) {
             0,
             RankingState::Finished,
             JudgeCounts {
-                judged,
+                judged: sent,
                 reused: 0,
                 left_provisional: 0,
             },
@@ -853,7 +1002,7 @@ async fn judged_earlier(h: &Harness, user: &str, judged: u32) {
 #[tokio::test]
 async fn daily_cap_leaves_rest_provisional_with_note() {
     let h = harness().await;
-    judged_earlier(&h, "u1", DAILY_CAP - 3).await;
+    sent_earlier(&h, "u1", DAILY_CAP - 3).await;
     let snap = snapshot(prs(5), vec![], vec![]);
     let (_, done) = h.rank_all("u1", &snap).await;
     assert_eq!((done.judged, done.left_provisional), (3, 2));
@@ -1037,6 +1186,38 @@ async fn alarm_raises_p0_only_for_asked_items() {
     );
 }
 
+/// An eligibility answer counts only where the scorer asks for it: #1 (ownership unchecked, asked) is left out by
+/// the judge's `false`, #2 (eligible by the computed rules) stays ranked although its answer says `false` too.
+#[tokio::test]
+async fn eligibility_answer_hides_an_item_only_when_asked() {
+    let h = harness().await;
+    let mut unchecked = pr(1, "fix: owned paths unknown");
+    unchecked.facts.owned_change = OwnedChange::Unknown;
+    let snap = snapshot(vec![unchecked, pr(2, "fix: y")], vec![], vec![]);
+    let id = h.rank("u1", &snap).await;
+    let (_, input) = h
+        .serve(|i| {
+            let mut answer = neutral(i);
+            for item in answer["items"].as_array_mut().expect("items") {
+                item["eligibility"] = json!({"eligible": false, "reason": "Generated code only."});
+            }
+            succeeded(answer)
+        })
+        .await;
+    assert_eq!(
+        input
+            .items
+            .iter()
+            .map(|i| (i.key.clone(), i.asks_eligibility))
+            .collect::<Vec<_>>(),
+        [(key(1), true), (key(2), false)]
+    );
+    h.ranked("u1", id).await;
+    let view = snapshot::build(&snap, &h.judgements("u1", &snap).await, None);
+    let ids: Vec<&str> = view.items.iter().map(|i| i.item.id.as_str()).collect();
+    assert_eq!(ids, ["wallet-ui#2"]);
+}
+
 #[test]
 fn unasked_eligibility_answer_is_dropped() {
     let answer = contracts::agent::judge_work::ValidAnswer {
@@ -1082,6 +1263,59 @@ async fn usage_limit_pauses_ranking() {
         .expect("cancel");
     let jobs = h.jobs_ended(id).await;
     assert!(jobs.iter().all(|j| j.state == JobState::Cancelled));
+}
+
+/// A judge job no runner claims ends the ranking `failed` after [`UNCLAIMED_LIMIT`]; a paused credential does not
+/// count towards it.
+#[tokio::test]
+async fn unclaimed_judge_job_ends_the_ranking() {
+    let h = harness().await;
+    let snap = snapshot(prs(1), vec![], vec![]);
+    let id = h.stored("u1", &snap).await;
+    let run = RankRun {
+        scope: scope("u1"),
+        refresh_id: id,
+        attempt: 0,
+    };
+    let long_ago = tokio::time::Instant::now()
+        .checked_sub(UNCLAIMED_LIMIT)
+        .expect("uptime");
+    let mut ranking = Ranking {
+        state: &h.state,
+        run: &run,
+        counts: JudgeCounts::default(),
+        live: RankingState::Running,
+        zone: Tz::UTC,
+        day: now(),
+        unclaimed_since: Some(long_ago),
+    };
+    let input = JudgeWorkInput {
+        items: vec![candidates(&snap)[0].item.clone()],
+    };
+    let job = ranking.submit(1, 0, &input).await.expect("submit").job_id;
+    // Paused for the usage limit: the wait does not count, and starts again after the pause.
+    h.db()
+        .llm_credentials()
+        .pause(CREDENTIAL_ID, Utc::now() + TimeDelta::hours(1))
+        .await
+        .expect("pause");
+    ranking.observe(job).await.expect("paused, not timed out");
+    assert_eq!(ranking.live, RankingState::Paused);
+    assert_eq!(ranking.unclaimed_since, None);
+    h.db()
+        .llm_credentials()
+        .pause(CREDENTIAL_ID, Utc::now() - TimeDelta::hours(1))
+        .await
+        .expect("resume");
+    ranking
+        .observe(job)
+        .await
+        .expect("queued, within the limit");
+    assert_eq!(ranking.live, RankingState::Running);
+    ranking.unclaimed_since = Some(long_ago);
+    let error = ranking.observe(job).await.expect_err("unclaimed too long");
+    assert!(matches!(error, RankError::Unclaimed));
+    assert_eq!(error.message(), "No runner picked up the ranking job");
 }
 
 #[tokio::test]
@@ -1168,6 +1402,82 @@ async fn stale_attempt_results_are_dropped() {
         (RefreshState::Ranking, 1)
     );
     assert_eq!(record.ranking_state, Some(RankingState::Running));
+}
+
+/// A ranking attempt's notes and judgements are written only while it is the current attempt: an earlier attempt's
+/// failure text never reaches the log of the attempt that replaced it, and its answer is not stored.
+#[tokio::test]
+async fn stale_attempt_writes_neither_notes_nor_judgements() {
+    let h = harness().await;
+    let snap = snapshot(prs(1), vec![], vec![]);
+    let id = h.stored("u1", &snap).await;
+    let run = RankRun {
+        scope: scope("u1"),
+        refresh_id: id,
+        attempt: 0,
+    };
+    let mut old = Ranking {
+        state: &h.state,
+        run: &run,
+        counts: JudgeCounts::default(),
+        live: RankingState::Running,
+        zone: Tz::UTC,
+        day: now(),
+        unclaimed_since: None,
+    };
+    let dashboard = h.db().dashboard();
+    let cancelled = dashboard
+        .cancel_ranking(DEFAULT_TENANT, "u1", id, 0, h.state.dashboard.now())
+        .await
+        .expect("cancel");
+    assert_eq!(cancelled, RankingUpdate::Applied);
+    dashboard
+        .restart_ranking(DEFAULT_TENANT, "u1", id)
+        .await
+        .expect("restart");
+    let log = |record: RefreshRecord| record.log;
+    let before = log(dashboard
+        .refresh(DEFAULT_TENANT, "u1", id)
+        .await
+        .expect("refresh"));
+    assert!(matches!(
+        old.note(None, Some("stale"), &["ranking failed: stale".to_owned()])
+            .await,
+        Err(RankError::Stale)
+    ));
+    assert_eq!(
+        log(dashboard
+            .refresh(DEFAULT_TENANT, "u1", id)
+            .await
+            .expect("refresh")),
+        before
+    );
+    let candidates = candidates(&snap);
+    let queued = Queued {
+        item: candidates[0].item.clone(),
+        fingerprint: candidates[0].fingerprint.clone(),
+        new: true,
+        points: 0.0,
+    };
+    let input = JudgeWorkInput {
+        items: vec![queued.item.clone()],
+    };
+    let job = old.submit(1, 0, &input).await.expect("submit").job_id;
+    let result = JobResult {
+        job_id: job,
+        attempt: 0,
+        outcome: succeeded(neutral(&input)),
+        session: None,
+        usage: None,
+        skills_commit: None,
+        llm_call: None,
+    };
+    assert!(matches!(
+        old.apply(result.job_id, &input, vec![&queued], result)
+            .await,
+        Err(RankError::Stale)
+    ));
+    assert!(h.judgements("u1", &snap).await.is_empty());
 }
 
 #[tokio::test]
@@ -1346,5 +1656,134 @@ fn day_start_is_local_midnight() {
         Utc.with_ymd_and_hms(2026, 11, 17, 23, 0, 0)
             .single()
             .expect("t")
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Review reproductions (plan §B.1, §B.2, §B.4)
+
+/// Plan §B.4: the milestone title is a judged input, the repository's newest release tag is not; a new release that
+/// leaves the computed milestone bonus unchanged must not re-judge the item.
+#[test]
+fn release_tag_that_keeps_the_milestone_bonus_keeps_the_fingerprint() {
+    let at = |tags: &[&str]| {
+        let mut p = pr(1, "fix(sync): retry");
+        p.facts.milestone = crate::dashboard::score::Milestone::Assigned("v1.8.0".into());
+        p.facts.milestone_context = MilestoneContext {
+            release_tags: Some(tags.iter().map(|t| (*t).to_owned()).collect()),
+            milestone_titles: Some(vec!["v1.8.0".into()]),
+        };
+        let snap = snapshot(vec![p], vec![], vec![]);
+        let items = candidates(&snap);
+        let bonus = items[0]
+            .item
+            .known
+            .iter()
+            .find(|k| k.component == ScoreComponent::MilestoneBonus)
+            .and_then(|k| k.points_tenths);
+        assert_eq!(
+            bonus,
+            Some(200),
+            "premise: v1.8.0 is a past release in both scans"
+        );
+        fingerprints(&snap)
+    };
+    assert_eq!(at(&["v1.8.2"]), at(&["v1.8.3", "v1.8.2"]));
+}
+
+/// Plan §B.1 J6/J13 and §B.2 ("computed parts with basis"): the judge confirms or replaces a provisional computed
+/// default, so the data block must show that default.
+#[test]
+fn judge_sees_the_computed_default_it_confirms() {
+    let snap = snapshot(vec![], vec![issue(7, "Crash")], vec![]);
+    let items = candidates(&snap);
+    let item = &items[0].item;
+    assert!(
+        item.asks.contains(&ScoreComponent::HumanWaiting),
+        "premise: human waiting is a default to confirm"
+    );
+    let block = JudgeWorkInput {
+        items: vec![item.clone()],
+    }
+    .data_block()
+    .expect("block");
+    assert!(
+        block.contains("no outstanding human request known"),
+        "the default and its rule are not in the judge input: {block}"
+    );
+}
+
+/// Plan §B.4 / OD19 (hard rule): the caps count the items SENT to the judge, retries included: a failing attempt
+/// stops after its first batch ran out of retries, Retry ranking keeps the refresh's count, and new refreshes of the
+/// same day share the daily count.
+#[tokio::test]
+async fn failing_rankings_stay_within_the_daily_cap() {
+    let h = harness().await;
+    let snap = snapshot(prs(REFRESH_CAP), vec![], vec![]);
+    let broken = |_: &JudgeWorkInput| succeeded(json!({"items": "not a list"}));
+    let id = h.rank("u1", &snap).await;
+    // Attempt 0: batch 1 (8 items) runs 3 times and the attempt ends: 24 sent.
+    let (first, jobs) = h.serve_until_ended("u1", id, broken).await;
+    assert_eq!((first, jobs), (24, 3));
+    let ended = h.status("u1", id).await;
+    assert_eq!(
+        ended.ranking.as_ref().map(|r| r.state),
+        Some(RankingState::Failed)
+    );
+    assert_eq!(
+        ended.left_provisional, 40,
+        "the unsent batches stay provisional"
+    );
+    assert!(
+        ended
+            .log
+            .iter()
+            .any(|l| l.ends_with("40 items left provisional: a batch could not be judged")),
+        "{:?}",
+        ended.log
+    );
+    // Retry ranking: the refresh has 48 - 24 = 24 left.
+    refresh::rank_again(&h.state, &scope("u1"), id)
+        .await
+        .expect("Retry ranking");
+    assert_eq!(h.serve_until_ended("u1", id, broken).await, (24, 3));
+    // Retry ranking again: nothing left for this refresh.
+    refresh::rank_again(&h.state, &scope("u1"), id)
+        .await
+        .expect("Retry ranking");
+    assert_eq!(h.serve_until_ended("u1", id, broken).await, (0, 0));
+    let capped = h.status("u1", id).await;
+    assert_eq!(capped.left_provisional, 48);
+    // New refreshes of the same day: 120 - 48 = 72 left for the day, 24 per failing refresh.
+    let mut day = 48;
+    for _ in 0..4 {
+        let next = h.rank("u1", &snap).await;
+        day += h.serve_until_ended("u1", next, broken).await.0;
+    }
+    assert_eq!(day, 120, "items sent to the judge today");
+}
+
+/// A judge item reserved against the caps before its job: a retry the refresh cap no longer allows is not run.
+#[tokio::test]
+async fn a_retry_beyond_the_cap_is_not_sent() {
+    let h = harness().await;
+    sent_earlier(&h, "u1", DAILY_CAP - 10).await;
+    let snap = snapshot(prs(8), vec![], vec![]);
+    let id = h.rank("u1", &snap).await;
+    let (sent, jobs) = h
+        .serve_until_ended("u1", id, |_: &JudgeWorkInput| {
+            succeeded(json!({"items": "not a list"}))
+        })
+        .await;
+    assert_eq!((sent, jobs), (8, 1), "8 + 8 would exceed the day's 10");
+    let done = h.status("u1", id).await;
+    let ranking = done.ranking.expect("ranking");
+    assert_eq!(ranking.state, RankingState::Failed);
+    assert!(
+        ranking
+            .message
+            .as_deref()
+            .is_some_and(|m| m.starts_with("8 items could not be judged (")),
+        "{ranking:?}"
     );
 }

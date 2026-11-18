@@ -71,6 +71,18 @@ pub struct StoredPr {
     pub ci_red: Vec<String>,
     /// Running build, test and lint checks.
     pub ci_pending: Vec<String>,
+    /// Issues it closes (`closingIssuesReferences`, first 5); empty in a snapshot stored before they were kept.
+    #[serde(default)]
+    pub linked_issues: Vec<StoredLinkedIssue>,
+}
+
+/// An issue a pull request closes. The scan reads no repository for it: it is shown under the pull request's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredLinkedIssue {
+    /// Number.
+    pub number: u32,
+    /// Title (capped like other titles).
+    pub title: String,
 }
 
 /// An issue of the snapshot.
