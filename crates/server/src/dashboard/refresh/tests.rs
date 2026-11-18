@@ -1278,6 +1278,51 @@ async fn refresh_without_a_github_sign_in_fails_with_sign_in_required() {
     );
 }
 
+/// Review repro: a GitHub search outage (every search 502) must not replace the previous snapshot with an empty
+/// one (Refresh states: a failed scan keeps the previous snapshot; `github_unavailable`).
+#[tokio::test]
+async fn review_search_outage_keeps_previous_snapshot() {
+    let w = world().await;
+    let first = w.refreshed().await;
+    w.faults(json!([{"on": "search", "times": 1000, "answer": {"kind": "server_error"}}]))
+        .await;
+    let second = w.refreshed().await;
+    let summary = w.summary(ALICE).await;
+    let meta = summary.snapshot.expect("snapshot");
+    assert_eq!(
+        (second.state, meta.refresh_id, meta.item_counts.pr),
+        (RefreshState::Failed, first.id, 10),
+        "outage refresh: {:?}; current snapshot items {:?}",
+        second.failure,
+        meta.item_counts
+    );
+}
+
+/// Review repro: T19 `todos_hidden_when_switched_off` (TODOs shown only while `include_todos`).
+#[tokio::test]
+async fn review_todos_hidden_when_switched_off() {
+    let w = world().await;
+    w.refreshed().await;
+    let mut off = settings();
+    off.include_todos = false;
+    w.state
+        .db
+        .dashboard()
+        .save_settings(DEFAULT_TENANT, "u1", &off, Utc::now())
+        .await
+        .expect("settings");
+    let page = w.items("").await;
+    let todos = page
+        .items
+        .iter()
+        .filter(|i| i.kind == ItemKind::Todo)
+        .count();
+    assert_eq!(
+        todos, 0,
+        "TODOs still served after include_todos was switched off"
+    );
+}
+
 #[tokio::test]
 async fn scan_over_the_time_limit_fails_as_timed_out() {
     let w = world_with(Arc::new(NoopRanker), Duration::from_millis(300)).await;

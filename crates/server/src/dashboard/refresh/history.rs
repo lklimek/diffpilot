@@ -195,6 +195,21 @@ mod tests {
         );
     }
 
+    /// Review repro: Chile starts DST at local midnight (2026-09-06 00:00 does not exist in America/Santiago);
+    /// the window must still start at that date's first instant, never at `now`.
+    #[test]
+    fn review_window_start_survives_a_midnight_dst_gap() {
+        let now = at("2026-11-29T15:00:00Z");
+        let (first, start) = window_start(now, chrono_tz::America::Santiago);
+        assert_eq!(first, NaiveDate::from_ymd_opt(2026, 9, 6).expect("date"));
+        assert!(start < now, "window start fell back to now: {start}");
+        assert_eq!(
+            start,
+            at("2026-09-06T04:00:00Z"),
+            "01:00 -03 is the first instant"
+        );
+    }
+
     #[test]
     fn details_give_one_event_per_pull_request_and_kind_for_scanned_logins() {
         let settings = DashboardSettings {
