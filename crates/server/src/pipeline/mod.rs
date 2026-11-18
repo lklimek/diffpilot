@@ -264,7 +264,12 @@ async fn release(state: &AppState, analysis: AnalysisId, end: DriverEnd) -> Resu
     let work = match end {
         DriverEnd::Unstored => return Ok(false),
         DriverEnd::Parked => state.db.flow_work().has_work(analysis).await?,
-        DriverEnd::Finished | DriverEnd::Failed => true,
+        // A flow discarded for a new run while the driver finished (flow request): the analysis runs again.
+        DriverEnd::Finished => {
+            state.db.flow_work().reopen(analysis).await?;
+            true
+        }
+        DriverEnd::Failed => true,
     };
     Ok(work && control::is_live(&state.db.analyses().summary(analysis).await?.state))
 }

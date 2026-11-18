@@ -191,6 +191,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const now = useNow();
   const requested = useRef<string | null>(null);
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
+  // A finished analysis takes a request only for a flow shown failed (a stored flow today's checks reject).
+  const finished = tour.analysis.state.state === "finished";
   const pending = usePendingReview(analysisId);
   const comments = useCommentActions(analysisId);
   const ticked = state.ticked_steps;
@@ -521,7 +523,11 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         flow={flow}
         analysis={tour.analysis.state}
         now={now}
-        onRequest={workAllowed ? () => work.request.mutate(flow.id) : undefined}
+        onRequest={
+          workAllowed || (finished && flow.analysis_status?.state === "failed")
+            ? () => work.request.mutate(flow.id)
+            : undefined
+        }
         busy={work.request.isPending}
         dependencies={tour.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
         ticked={ticked}

@@ -463,7 +463,17 @@ States: `not_analysed`, `queued`, `analysing`, `analysed`, `failed`. A claimed j
 repository preparation. Unaccepted planned ranges appear under their flow, not as accepted coverage.
 
 POST `/api/v1/analyses/{id}/flows/{flow}/request` has no body and returns `AnalysisSummary`. Unknown flow
-is 404. PUT `/api/v1/analyses/{id}/background` takes `{"enabled":false}` and returns `AnalysisSummary`.
+is 404. It is accepted while the analysis is planning, running or paused and review-ready, and when it is
+`finished` (else 409 `conflict`). A flow whose stored document passes today's checks is left as it is (no
+change). A stored flow that today's checks reject (other than for lines they newly require: those lines are
+Unexplained and the flow stays analysed) is shown `failed` with `The stored analysis of this flow does not pass
+the server's current checks, so its changes are listed as not analysed. Analyse this flow again.` (in a `failed`
+analysis: `Retry the analysis; then analyse this flow again.`); the problem codes go to the server log only.
+Requesting it discards that document and requests the flow in one transaction: it runs in a new job round like
+a failed flow (the rejected output is never repaired), with the automatic retries of any requested flow, and is
+then a flow like any other (background analysis covers it too). A `finished` analysis becomes `running` again
+and finishes when the flow is analysed. Resume and Retry read a plan accepted earlier (whole, or the batch plans
+of an analysis that was planning in batches) with the same stored-reading rule. PUT `/api/v1/analyses/{id}/background` takes `{"enabled":false}` and returns `AnalysisSummary`.
 Both require session/CSRF and tenant access; requesting work or enabling background checks the current PR
 head. Latest requested flow runs first, then background flows by plan rank. Already claimed work finishes;
 queued work may be withdrawn; a repair run refused because the demand changed waits for its flow's next turn

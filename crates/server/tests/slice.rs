@@ -1479,7 +1479,7 @@ async fn retry_reads_a_stored_plan_as_stored() {
 }
 
 #[tokio::test]
-async fn a_stored_flow_failing_another_check_is_failed_with_its_lines_listed() {
+async fn a_stored_flow_failing_another_check_is_failed_and_can_be_analysed_again() {
     let h = harness().await;
     let id = h.seed_analysis().await;
     h.background_on(id).await;
@@ -1508,7 +1508,11 @@ async fn a_stored_flow_failing_another_check_is_failed_with_its_lines_listed() {
         .expect("f1");
     assert_eq!(f1["analysis_status"]["state"], "failed", "{f1}");
     let message = f1["analysis_status"]["message"].as_str().expect("message");
-    assert!(message.contains("dangling_edge"), "{message}");
+    assert!(
+        !message.contains('_'),
+        "no problem code in user text: {message}"
+    );
+    assert!(message.ends_with("Analyse this flow again."), "{message}");
     assert!(f1["steps"].as_array().expect("steps").is_empty());
     let planned = f1["planned"]["ranges"].as_array().expect("planned ranges");
     assert!(
@@ -1517,6 +1521,45 @@ async fn a_stored_flow_failing_another_check_is_failed_with_its_lines_listed() {
             .any(|r| r["file"] == "src/rpc/client.rs" && r["side"] == "head"),
         "its lines are listed: {planned:?}"
     );
+
+    // An accepted stored flow of the finished analysis: the request changes nothing.
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f2/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["state"]["state"], "finished", "{body}");
+    // The rejected one is discarded and analysed again: the finished analysis runs again, then finishes.
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f1/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_ne!(body["state"]["state"], "finished", "{body}");
+    let finished = h.wait_until_finished(&id.to_string()).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    let runs = h.executor.specs_of("flow:f1");
+    assert_eq!(
+        runs.iter()
+            .map(|(generation, _)| *generation)
+            .collect::<Vec<_>>(),
+        [0, 0],
+        "a new first run, never a repair of the rejected output"
+    );
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let f1 = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|flow| flow["id"] == "f1")
+        .expect("f1");
+    assert_eq!(f1["analysis_status"]["state"], "analysed", "{f1}");
+    assert!(!f1["steps"].as_array().expect("steps").is_empty());
 }
 
 #[tokio::test]
@@ -2662,10 +2705,9 @@ async fn tour_has_no_uncomputed_fact_with_the_app_installed() {
     );
 }
 
-/// A pull request over the plan batch limit is planned in directory batches whose plans are merged.
-#[tokio::test]
-async fn huge_pull_request_is_planned_in_batches() {
-    let h = harness().await;
+/// Creates the analysis of a pull request over the plan batch limit (two directory batches): each batch's plan,
+/// one flow over all its hunks, is scripted by `plan_script(batch, plan)`; both flows' outputs are rejected.
+async fn huge_analysis(h: &Harness, mut plan_script: impl FnMut(usize, Value) -> Script) -> String {
     let (base, head) = h.remote_repo("huge", |repo| {
         let base = commit(repo, &[("README.txt", "readme\n")], "base");
         for dir in ["a", "b"] {
@@ -2710,7 +2752,7 @@ async fn huge_pull_request_is_planned_in_batches() {
             "unassigned": []
         });
         h.executor
-            .script(&format!("plan:{}", index + 1), Script::Output(plan));
+            .script(&format!("plan:{}", index + 1), plan_script(index + 1, plan));
     }
     let mut context = agent_output("pr_context");
     context["fit_questions"] = json!([]);
@@ -2759,7 +2801,14 @@ async fn huge_pull_request_is_planned_in_batches() {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
-    let id = created["id"].as_str().expect("id").to_owned();
+    created["id"].as_str().expect("id").to_owned()
+}
+
+/// A pull request over the plan batch limit is planned in directory batches whose plans are merged.
+#[tokio::test]
+async fn huge_pull_request_is_planned_in_batches() {
+    let h = harness().await;
+    let id = huge_analysis(&h, |_, plan| Script::Output(plan)).await;
     h.set_background(&id, true).await;
     // Each flow fails for good after its first turn and two automatic retries (three runs each).
     settled_runs(&h, &id, "flow:f1", 9).await;
@@ -2833,6 +2882,73 @@ async fn huge_pull_request_is_planned_in_batches() {
         })
         .collect();
     assert_eq!(pending, ["a/big.txt", "b/big.txt"]);
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// An analysis planning in batches when the server was upgraded: Retry merges the stored batch plans, whose
+/// lines today's rules may find missing; they are read as stored (those lines Unexplained), never failed for good.
+#[tokio::test]
+async fn retry_reads_stored_batch_plans_as_stored() {
+    let h = harness().await;
+    let mut planned = Vec::new();
+    let id = huge_analysis(&h, |batch, plan| {
+        planned.push(plan.clone());
+        if batch == 2 {
+            Script::Fail
+        } else {
+            Script::Output(plan)
+        }
+    })
+    .await;
+    let ended = h.wait_until_ended(&id).await;
+    assert!(
+        matches!(ended.state, AnalysisState::Failed { .. }),
+        "{ended:?}"
+    );
+    // Batch 2's plan of an earlier build: it leaves lines 2001-2500 of b/big.txt in no flow and not unassigned.
+    let mut earlier = planned[1].clone();
+    let selection = &mut earlier["flows"][0]["hunks"][0];
+    selection["head_start"] = json!(1);
+    selection["head_end"] = json!(2000);
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    h.state
+        .db
+        .documents()
+        .put(analysis, DocumentKind::Plan, "2", &earlier, Utc::now())
+        .await
+        .expect("stored batch plan");
+    h.executor.unscript("plan:2");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let summary = h
+        .wait_for_state(&id, |state| {
+            matches!(
+                state,
+                AnalysisState::Failed { .. } | AnalysisState::Running { idle: true, .. }
+            )
+        })
+        .await;
+    assert!(
+        matches!(summary.state, AnalysisState::Running { .. }),
+        "{:?}",
+        summary.state
+    );
+    assert_eq!(h.executor.specs_of("plan:2").len(), 1, "not planned again");
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let unexplained = tour["quiet"]["unexplained"]
+        .as_array()
+        .expect("unexplained");
+    assert!(
+        unexplained.iter().any(|rows| rows["file"] == "b/big.txt"
+            && rows["ranges"]
+                .as_array()
+                .expect("ranges")
+                .iter()
+                .any(|r| r["start_line"] == 2001 && r["end_line"] == 2500)),
+        "{unexplained:?}"
+    );
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;
 }

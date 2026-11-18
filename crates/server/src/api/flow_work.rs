@@ -2,7 +2,7 @@
 use crate::{
     api::analyses::{AnalysisApiError, ApiResult, failure, visible_analysis},
     auth::SessionCsrf,
-    pipeline::{self, control, ingest},
+    pipeline::{self, control, ingest, tour},
     state::AppState,
 };
 use axum::extract::rejection::{JsonRejection, PathRejection};
@@ -13,7 +13,7 @@ use axum::{
 };
 use contracts::{
     api::{
-        analyses::{AnalysisSummary, BackgroundAnalysisRequest},
+        analyses::{AnalysisState, AnalysisSummary, BackgroundAnalysisRequest},
         events::AnalysisEvent,
     },
     ids::{AnalysisId, FlowId},
@@ -33,8 +33,12 @@ async fn request(
     path: Result<Path<(AnalysisId, String)>, PathRejection>,
 ) -> ApiResult<Json<AnalysisSummary>> {
     let Path((id, flow)) = path.map_err(failure)?;
+    let flow = FlowId(flow);
     let summary = visible_analysis(&state, &session, id).await?;
-    if summary.review_ready != Some(true) || !control::is_live(&summary.state) {
+    // A finished analysis takes a request too: only a stored flow today's checks reject is analysed again there.
+    let open =
+        control::is_live(&summary.state) || matches!(summary.state, AnalysisState::Finished { .. });
+    if summary.review_ready != Some(true) || !open {
         return Err(failure(AnalysisApiError::StateConflict {
             action: "scheduled",
         }));
@@ -42,23 +46,30 @@ async fn request(
     ingest::check_head(&state, &session, &summary)
         .await
         .map_err(failure)?;
+    // Verified outside the write: a stored flow document is never replaced, only discarded here.
+    let rejected = tour::stored_flow_rejected(&state, &summary, &flow)
+        .await
+        .map_err(failure)?;
     state
         .progress
         .update(id, || async {
-            state
-                .db
-                .flow_work()
-                .request(id, &FlowId(flow), chrono::Utc::now())
-                .await?;
+            let now = chrono::Utc::now();
+            let work = state.db.flow_work();
+            if !(rejected && work.request_again(id, &flow, now).await?) {
+                work.request(id, &flow, now).await?;
+            }
             Ok::<_, DbError>(AnalysisEvent::Analysis {
                 summary: state.db.analyses().summary(id).await?,
             })
         })
         .await
         .map_err(failure)?;
-    // The driver ends while no flow is admitted: the request starts one again.
-    pipeline::start(&state, id);
-    Ok(Json(visible_analysis(&state, &session, id).await?))
+    let summary = visible_analysis(&state, &session, id).await?;
+    // The driver ends while no flow is admitted: the request starts one again (a finished analysis has none).
+    if control::is_live(&summary.state) {
+        pipeline::start(&state, id);
+    }
+    Ok(Json(summary))
 }
 async fn background(
     State(state): State<AppState>,

@@ -19,6 +19,11 @@ pub const AUTO_FLOW_RETRIES: u32 = 2;
 /// Last sentence of the stored message of a failed flow that a retry can help.
 pub const RETRY_BY_USER: &str = "Retry this flow.";
 
+/// Stored for a flow whose stored document today's checks reject when a user requests it again
+/// ([`FlowWork::request_again`]); shown like any failed flow's message.
+const REJECTED_STORED: &str =
+    "The stored analysis of this flow did not pass the server's current checks. Retry this flow.";
+
 /// Shown in place of [`RETRY_BY_USER`] while the analysis is live and the flow runs again by itself: it is
 /// requested, or an automatic retry is left and background analysis is on.
 const RETRY_AUTOMATICALLY: &str = "It will be tried again automatically.";
@@ -126,11 +131,50 @@ impl FlowWork<'_> {
         let mut tx = super::write_tx(&self.db.pool).await?;
         sqlx::query("INSERT INTO flow_work (tenant_id,analysis_id,flow_id,requested_at) SELECT tenant_id,id,?,? FROM analyses WHERE id=? ON CONFLICT(analysis_id,flow_id) DO UPDATE SET requested_at=excluded.requested_at")
             .bind(&flow.0).bind(ts(now)).bind(id.to_string()).execute(&mut *tx).await?;
-        let rows = sqlx::query("SELECT id,attempt FROM jobs WHERE analysis_id=? AND kind='analyse_flow' AND state='queued' AND flow_id<>?")
-            .bind(id.to_string()).bind(&flow.0).fetch_all(&mut *tx).await?;
-        withdraw(&mut tx, rows, now).await?;
+        demanded(&mut tx, id, flow, now).await?;
         tx.commit().await?;
         Ok(())
+    }
+    /// Discards the stored document of `flow`, which today's checks reject, and requests the flow, in one
+    /// transaction: it runs like a failed flow in a new job round (its earlier output is never replayed), with the
+    /// automatic retries of a requested flow, and a `finished` analysis is `running` again. `false` (nothing
+    /// changed) when no document is stored.
+    pub async fn request_again(
+        &self,
+        id: AnalysisId,
+        flow: &FlowId,
+        now: DateTime<Utc>,
+    ) -> Result<bool, DbError> {
+        let mut tx = super::write_tx(&self.db.pool).await?;
+        let deleted =
+            sqlx::query("DELETE FROM documents WHERE analysis_id=? AND kind='flow' AND key=?")
+                .bind(id.to_string())
+                .bind(&flow.0)
+                .execute(&mut *tx)
+                .await?;
+        if deleted.rows_affected() == 0 {
+            return Ok(false);
+        }
+        sqlx::query("INSERT INTO flow_work (tenant_id,analysis_id,flow_id,requested_at,error) SELECT tenant_id,id,?,?,? FROM analyses WHERE id=? ON CONFLICT(analysis_id,flow_id) DO UPDATE SET requested_at=excluded.requested_at, error=excluded.error")
+            .bind(&flow.0).bind(ts(now)).bind(REJECTED_STORED).bind(id.to_string()).execute(&mut *tx).await?;
+        // The flows analysed are the flow documents left (`finished` stores no count).
+        sqlx::query("UPDATE analyses SET flows_done=(SELECT COUNT(*) FROM documents WHERE analysis_id=?1 AND kind='flow') WHERE id=?1")
+            .bind(id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        demanded(&mut tx, id, flow, now).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+    /// Makes a `finished` analysis `running` again when a requested flow has no document (discarded by
+    /// [`FlowWork::request_again`] while its driver finished); whether it did.
+    pub async fn reopen(&self, id: AnalysisId) -> Result<bool, DbError> {
+        Ok(sqlx::query("UPDATE analyses SET state='running', finished_at=NULL WHERE id=?1 AND state='finished' AND EXISTS(SELECT 1 FROM flow_work w WHERE w.analysis_id=?1 AND w.requested_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM documents d WHERE d.analysis_id=?1 AND d.kind='flow' AND d.key=w.flow_id))")
+            .bind(id.to_string())
+            .execute(&self.db.pool)
+            .await?
+            .rows_affected()
+            > 0)
     }
     /// The flow the driver works on next: the one a runner holds, else the newest demand, else by plan rank the
     /// flows not analysed yet and then failed ones with an automatic retry left ([`AUTO_FLOW_RETRIES`]; never a
@@ -313,6 +357,26 @@ async fn due(
     }))
 }
 
+/// After `flow` was requested: other flows' queued jobs withdrawn, and a `finished` analysis `running` again (it
+/// has a flow to analyse).
+async fn demanded(
+    tx: &mut sqlx::SqliteConnection,
+    id: AnalysisId,
+    flow: &FlowId,
+    now: DateTime<Utc>,
+) -> Result<(), DbError> {
+    let rows = sqlx::query("SELECT id,attempt FROM jobs WHERE analysis_id=? AND kind='analyse_flow' AND state='queued' AND flow_id<>?")
+        .bind(id.to_string()).bind(&flow.0).fetch_all(&mut *tx).await?;
+    withdraw(&mut *tx, rows, now).await?;
+    sqlx::query(
+        "UPDATE analyses SET state='running', finished_at=NULL WHERE id=? AND state='finished'",
+    )
+    .bind(id.to_string())
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
 /// Withdraw only unclaimed work inside the same write transaction as the demand change.
 async fn withdraw(
     tx: &mut sqlx::SqliteConnection,
@@ -356,6 +420,7 @@ mod tests {
     use super::*;
     use crate::repo::analyses::testing::seed_analysis;
     use contracts::agent::plan::PlannedFlow;
+    use contracts::api::analyses::AnalysisState;
     use contracts::common::Classification;
     #[tokio::test]
     async fn demand_is_durable_newest_first_and_background_is_ranked() {
@@ -877,6 +942,122 @@ mod tests {
             message(db.flow_work().status(id, &f1).await.unwrap()),
             by_user,
             "no automatic retry is left"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_stored_flow_is_discarded_and_runs_again_in_a_new_round() {
+        let db = Db::in_memory().await.unwrap();
+        let id = planned(&db, 2).await;
+        for flow in ["f1", "f2"] {
+            db.documents()
+                .put(
+                    id,
+                    DocumentKind::Flow,
+                    flow,
+                    &serde_json::json!({}),
+                    Utc::now(),
+                )
+                .await
+                .unwrap();
+        }
+        db.analyses()
+            .set_state(id, &AnalysisState::Finished { total: 2 }, Utc::now())
+            .await
+            .unwrap();
+        let f1 = FlowId("f1".into());
+        assert!(
+            db.flow_work()
+                .request_again(id, &f1, Utc::now())
+                .await
+                .unwrap()
+        );
+        assert!(
+            db.documents()
+                .get::<serde_json::Value>(id, DocumentKind::Flow, "f1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            db.analyses().summary(id).await.unwrap().state,
+            AnalysisState::Running {
+                done: 1,
+                total: 2,
+                ..
+            }
+        ));
+        let status = db.flow_work().status(id, &f1).await.unwrap();
+        assert_eq!(status.state, FlowAnalysisState::Queued);
+        assert!(status.message.is_some_and(|m| !m.ends_with(RETRY_BY_USER)));
+        assert_eq!(
+            db.flow_work().next(id).await.unwrap(),
+            NextFlow::Run(f1.clone())
+        );
+        assert_eq!(
+            testing::retries(&db, id, &f1).await.unwrap(),
+            (1, 0),
+            "a new round, no automatic retry used"
+        );
+        assert!(
+            !db.flow_work()
+                .request_again(id, &f1, Utc::now())
+                .await
+                .unwrap(),
+            "nothing stored any more"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_finished_analysis_with_a_requested_flow_left_runs_again() {
+        let db = Db::in_memory().await.unwrap();
+        let id = planned(&db, 2).await;
+        for flow in ["f1", "f2"] {
+            db.documents()
+                .put(
+                    id,
+                    DocumentKind::Flow,
+                    flow,
+                    &serde_json::json!({}),
+                    Utc::now(),
+                )
+                .await
+                .unwrap();
+        }
+        let f1 = FlowId("f1".into());
+        // Discarded while the driver, which had read every flow, finished the analysis.
+        assert!(
+            db.flow_work()
+                .request_again(id, &f1, Utc::now())
+                .await
+                .unwrap()
+        );
+        db.analyses()
+            .set_state(id, &AnalysisState::Finished { total: 2 }, Utc::now())
+            .await
+            .unwrap();
+        assert!(db.flow_work().reopen(id).await.unwrap());
+        assert!(matches!(
+            db.analyses().summary(id).await.unwrap().state,
+            AnalysisState::Running { .. }
+        ));
+        db.documents()
+            .put(
+                id,
+                DocumentKind::Flow,
+                "f1",
+                &serde_json::json!({}),
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        db.analyses()
+            .set_state(id, &AnalysisState::Finished { total: 2 }, Utc::now())
+            .await
+            .unwrap();
+        assert!(
+            !db.flow_work().reopen(id).await.unwrap(),
+            "every flow analysed"
         );
     }
 }

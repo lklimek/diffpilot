@@ -93,6 +93,8 @@ struct Driver<'a> {
     /// Agent hunks of files too large for any plan prompt: added to the plan as unassigned (Unexplained).
     unfit: Vec<UnassignedHunk>,
     batch_plans: BTreeMap<u32, PlanOutput>,
+    /// A batch plan was read from the database (accepted by an earlier run, maybe under older rules).
+    stored_batch_plan: bool,
     verified_plan: Option<Arc<VerifiedPlan>>,
     /// Stored results: the plan, the PR context and the accepted flows (context packs).
     results: StoredResults,
@@ -188,6 +190,7 @@ pub(super) async fn drive(
         batches: fitted.batches,
         unfit: fitted.unfit,
         batch_plans: BTreeMap::new(),
+        stored_batch_plan: false,
         verified_plan: None,
         results,
         ended: BTreeMap::new(),
@@ -220,6 +223,17 @@ async fn snapshot(
     Ok(review::ingest_github_snapshot(state, summary, &creator).await?)
 }
 
+/// Where a known plan comes from: whether it is stored and which rules verify it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PlanFrom {
+    /// Written in this run (one batch, merged batch plans of this run, or empty): stored, checked strictly.
+    Agent,
+    /// Merged from batch plans of which one at least was read from the database: stored, read as stored.
+    MergedWithStored,
+    /// The plan read from the database.
+    Database,
+}
+
 impl Driver<'_> {
     async fn run(&mut self) -> Result<DriverEnd, PipelineError> {
         let mut events = self.state.progress.subscribe(self.analysis);
@@ -233,6 +247,7 @@ impl Driver<'_> {
                 match stored {
                     Some(plan) if self.batches.len() > 1 => {
                         self.batch_plans.insert(batch, plan);
+                        self.stored_batch_plan = true;
                     }
                     _ => self.waiting.push_back(JobStage::Plan { batch }),
                 }
@@ -242,7 +257,7 @@ impl Driver<'_> {
             self.waiting.push_back(JobStage::PrContext);
         }
         if let Some(plan) = self.results.plan.clone() {
-            self.plan_known(plan, false).await?;
+            self.plan_known(plan, PlanFrom::Database).await?;
         } else if self.batches.is_empty() {
             // Nothing for the agent to plan: every change is quiet material or fits no prompt.
             let empty = PlanOutput {
@@ -250,7 +265,7 @@ impl Driver<'_> {
                 unassigned: Vec::new(),
             };
             let plan = self.with_unfit(empty);
-            self.plan_known(plan, true).await?;
+            self.plan_known(plan, PlanFrom::Agent).await?;
         } else {
             self.merge_when_planned().await?;
         }
@@ -349,6 +364,8 @@ impl Driver<'_> {
                 match self.state.db.flow_work().next(self.analysis).await? {
                     NextFlow::Run(id) => {
                         self.ended.remove(&id);
+                        // A stored flow a user discarded meanwhile (rejected by today's checks) runs again.
+                        self.results.flows.retain(|flow| flow.flow_id != id);
                         JobStage::Flow(id)
                     }
                     next => {
@@ -493,10 +510,12 @@ impl Driver<'_> {
         Ok(())
     }
 
-    /// The plan is known (stored, merged or empty): verify it and recover accepted flow results. A plan read from the
-    /// database (`store == false`) was accepted earlier: lines today's rules add are Unexplained, not a rejection.
-    async fn plan_known(&mut self, plan: PlanOutput, store: bool) -> Result<(), PipelineError> {
-        let checked = if store {
+    /// The plan is known (stored, merged or empty): verify it and recover accepted flow results. A plan accepted
+    /// earlier, wholly or in a batch ([`PlanFrom`]), is read as stored: lines today's rules add are Unexplained, not
+    /// a rejection.
+    async fn plan_known(&mut self, plan: PlanOutput, from: PlanFrom) -> Result<(), PipelineError> {
+        let store = from != PlanFrom::Database;
+        let checked = if from == PlanFrom::Agent {
             verdict::plan(&plan, &self.facts.listed)?
         } else {
             verdict::stored_plan(&plan, &self.facts.listed)?
@@ -545,7 +564,13 @@ impl Driver<'_> {
         let merged = self.with_unfit(merge_plans(&plans));
         tracing::info!(analysis = %self.analysis, batches = plans.len(), flows = merged.flows.len(),
             "batch plans merged");
-        self.plan_known(merged, true).await
+        // A batch plan read from the database was accepted earlier: the merged plan is read as stored.
+        let from = if self.stored_batch_plan {
+            PlanFrom::MergedWithStored
+        } else {
+            PlanFrom::Agent
+        };
+        self.plan_known(merged, from).await
     }
 
     /// Handles a job's result: schema, verification, then storage, a repair run or the stage's end. The PR
@@ -751,7 +776,7 @@ impl Driver<'_> {
     async fn plan_accepted(&mut self, batch: u32, plan: PlanOutput) -> Result<(), PipelineError> {
         if self.batches.len() < 2 {
             let plan = self.with_unfit(plan);
-            return self.plan_known(plan, true).await;
+            return self.plan_known(plan, PlanFrom::Agent).await;
         }
         self.put(DocumentKind::Plan, &batch.to_string(), &plan)
             .await?;

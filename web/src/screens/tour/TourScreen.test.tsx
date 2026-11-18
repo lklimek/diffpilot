@@ -147,6 +147,31 @@ describe("Tour screen (brief §4.3)", () => {
     }
   });
 
+  it("a finished analysis offers Retry for a stored flow that fails today's checks", async () => {
+    const tour = structuredClone(seedFor("default", "tour") as Tour);
+    expect(tour.analysis.state.state).toBe("finished");
+    const f2 = tour.flows.find((f) => f.id === "f2")!;
+    f2.steps = [];
+    f2.analysis_status = {
+      state: "failed",
+      started_at: null,
+      message:
+        "The stored analysis of this flow does not pass the server's current checks, so its changes are listed as not analysed. Analyse this flow again.",
+    };
+    const requested: string[] = [];
+    server.use(
+      http.get("/api/v1/analyses/:id/tour", () => HttpResponse.json(tour)),
+      http.post("/api/v1/analyses/:id/flows/:flow/request", ({ params }) => {
+        requested.push(String(params.flow));
+        return HttpResponse.json(tour.analysis);
+      }),
+    );
+    await open();
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 2:/ }));
+    await user().click(await within(main()).findByRole("button", { name: "Retry this flow" }));
+    await waitFor(() => expect(requested).toEqual(["f2"]));
+  });
+
   it("a GitHub thread of another step offers Show in step N.M, which switches to that step", async () => {
     const tour = structuredClone(seedFor("default", "tour") as Tour);
     tour.threads = tour.threads.map((t) => (t.id === "PRRT_fixture482_t1" ? { ...t, step_id: "f1.4" } : t));

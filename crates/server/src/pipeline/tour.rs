@@ -164,10 +164,13 @@ pub async fn load_from(
     for planned in &skeleton.plan.output.flows {
         let accepted = skeleton.flows.iter().any(|flow| flow.flow_id == planned.id);
         if !accepted && !waiting.contains_key(&planned.id) {
+            let codes = rejected_codes(&repairs, &planned.id);
+            tracing::warn!(analysis = %summary.id, flow = %planned.id, issues = ?codes,
+                "a stored flow fails today's checks; the Tour shows it failed with its lines");
             let status = FlowAnalysisStatus {
                 state: FlowAnalysisState::Failed,
                 started_at: None,
-                message: Some(rejected_message(&repairs, &planned.id)),
+                message: Some(rejected_message(&summary.state)),
             };
             waiting.insert(planned.id.clone(), status);
         }
@@ -202,8 +205,8 @@ pub async fn load_from(
     }))
 }
 
-/// Plain failure text of a stored flow that today's checks reject, with the server's issue codes (never agent text).
-fn rejected_message(repairs: &[Repair], flow: &FlowId) -> String {
+/// The server's issue codes of a stored flow that today's checks reject (for the log, never user text).
+fn rejected_codes<'a>(repairs: &'a [Repair], flow: &FlowId) -> Vec<&'a str> {
     let mut codes: Vec<&str> = repairs
         .iter()
         .filter(|repair| repair.output == OutputRef::Flow(flow.clone()))
@@ -212,11 +215,40 @@ fn rejected_message(repairs: &[Repair], flow: &FlowId) -> String {
         .collect();
     codes.sort_unstable();
     codes.dedup();
+    codes
+}
+
+/// Plain failure text of a stored flow that today's checks reject, naming the action that works in `state`.
+fn rejected_message(state: &AnalysisState) -> String {
+    let action = if matches!(state, AnalysisState::Failed { .. }) {
+        "Retry the analysis; then analyse this flow again."
+    } else {
+        "Analyse this flow again."
+    };
     format!(
-        "The stored analysis of this flow does not pass today's checks ({}). Its changes are listed here as not \
-         analysed; read them yourself or analyse the pull request again.",
-        codes.join(", ")
+        "The stored analysis of this flow does not pass the server's current checks, so its changes are listed \
+         as not analysed. {action}"
     )
+}
+
+/// Whether the stored document of `flow` fails today's checks (the Tour shows it failed); `false` without one.
+pub async fn stored_flow_rejected(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    flow: &FlowId,
+) -> Result<bool, TourLoadError> {
+    let results = StoredResults::load(&state.db, summary.id).await?;
+    if !results.flows.iter().any(|stored| stored.flow_id == *flow) {
+        return Ok(false);
+    }
+    let tour = load_from(state, summary, results).await?;
+    Ok(tour.flows.iter().any(|shown| {
+        shown.id == *flow
+            && shown
+                .analysis_status
+                .as_ref()
+                .is_some_and(|status| status.state == FlowAnalysisState::Failed)
+    }))
 }
 
 /// Everything the Tour is projected from.
