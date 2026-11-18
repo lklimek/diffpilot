@@ -394,7 +394,7 @@ mod tests {
                 .await;
             assert_eq!(
                 status,
-                StatusCode::UNAUTHORIZED,
+                StatusCode::FORBIDDEN,
                 "{path}: a bearer token never writes"
             );
         }
