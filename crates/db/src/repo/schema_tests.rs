@@ -2,11 +2,14 @@
 
 use contracts::agent::JobKind;
 use contracts::api::analyses::AnalysisState;
+use contracts::api::dashboard::{
+    RankingState, RefreshFailureCode, RefreshState, RefreshTrigger, ScheduledOutcome,
+};
 use contracts::api::feedback::FeedbackValue;
 use contracts::api::questions::AskState;
 use contracts::common::LlmLanguage;
 use contracts::job::result::JobFailureKind;
-use contracts::job::spec::CredentialKind;
+use contracts::job::spec::{CredentialKind, ReasoningEffort};
 use contracts::job::state::JobState;
 use serde::Serialize;
 
@@ -190,7 +193,10 @@ async fn flow_auto_retries_migration_keeps_the_rows_of_an_existing_database() {
             .fetch_all(&db.pool)
             .await
             .expect("versions");
-    assert_eq!(versions, [1, 2]);
+    assert_eq!(
+        versions,
+        (1..=i64::try_from(MIGRATIONS.len()).expect("count")).collect::<Vec<_>>()
+    );
     // Running the migrator again changes nothing (the checksum of 0001 still matches).
     migrate(&db.pool, MIGRATIONS.len())
         .await
@@ -376,7 +382,79 @@ async fn check_lists_match_contract_enums() {
             ),
         ),
     ];
-    for (table, list) in cases {
+    let dashboard_cases = [
+        (
+            "dashboard_refreshes",
+            in_list([RefreshTrigger::Manual, RefreshTrigger::Scheduled].map(wire_name)),
+        ),
+        (
+            "dashboard_refreshes",
+            in_list(
+                [
+                    RefreshState::Scanning,
+                    RefreshState::Ranking,
+                    RefreshState::Finished,
+                    RefreshState::Failed,
+                    RefreshState::Cancelled,
+                ]
+                .map(wire_name),
+            ),
+        ),
+        (
+            "dashboard_refreshes",
+            in_list(
+                [
+                    RankingState::WaitingForAnalysis,
+                    RankingState::Running,
+                    RankingState::Paused,
+                    RankingState::Failed,
+                    RankingState::Interrupted,
+                    RankingState::Finished,
+                ]
+                .map(wire_name),
+            ),
+        ),
+        (
+            "dashboard_refreshes",
+            in_list(
+                [
+                    RefreshFailureCode::GithubRateLimited,
+                    RefreshFailureCode::GithubUnavailable,
+                    RefreshFailureCode::SignInRequired,
+                    RefreshFailureCode::TimedOut,
+                    RefreshFailureCode::Interrupted,
+                    RefreshFailureCode::Internal,
+                ]
+                .map(wire_name),
+            ),
+        ),
+        (
+            "dashboard_settings",
+            in_list(
+                [
+                    ScheduledOutcome::Started,
+                    ScheduledOutcome::Skipped,
+                    ScheduledOutcome::NeedsSignIn,
+                    ScheduledOutcome::Failed,
+                ]
+                .map(wire_name),
+            ),
+        ),
+        (
+            "llm_selection",
+            format!(
+                "judge_effort IN ({})",
+                [
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High
+                ]
+                .map(|effort| format!("'{}'", wire_name(effort)))
+                .join(", ")
+            ),
+        ),
+    ];
+    for (table, list) in cases.into_iter().chain(dashboard_cases) {
         let sql = table_sql(&db, table).await;
         assert!(sql.contains(&list), "{table}: expected {list}");
     }
@@ -689,4 +767,155 @@ async fn one_running_job_per_pull_request_across_credentials() {
             .await
             .is_err()
     );
+}
+
+/// Migrations 0003 and 0004 upgrade a v1 database in place: the stored model choice is kept and gains the
+/// default ranking effort `low`; the new tables start empty (plan §D.1, OD8 keeps them append-only).
+#[tokio::test]
+async fn dashboard_migrations_upgrade_a_v1_database() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    migrate(&pool, 2).await.expect("v1 schema");
+    sqlx::raw_sql(
+        "INSERT INTO llm_selection (singleton, model, reasoning_effort, changed_by, changed_at)
+           VALUES (1, 'gpt-6-astra', 'medium', 'lklimek', 't');",
+    )
+    .execute(&pool)
+    .await
+    .expect("v1 row");
+    migrate(&pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    let row: (String, String, String) =
+        sqlx::query_as("SELECT model, reasoning_effort, judge_effort FROM llm_selection")
+            .fetch_one(&pool)
+            .await
+            .expect("selection");
+    assert_eq!(
+        row,
+        (
+            "gpt-6-astra".to_owned(),
+            "medium".to_owned(),
+            "low".to_owned()
+        )
+    );
+    let invalid = sqlx::query("UPDATE llm_selection SET judge_effort = 'ultra'")
+        .execute(&pool)
+        .await;
+    assert!(invalid.is_err(), "judge_effort is low, medium or high");
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT (SELECT COUNT(*) FROM dashboard_settings) + (SELECT COUNT(*) FROM dashboard_refreshes)
+           + (SELECT COUNT(*) FROM dashboard_judgements) + (SELECT COUNT(*) FROM access_tokens)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("new tables");
+    assert_eq!(rows, 0);
+}
+
+/// A defaults row needs only its keys; a refresh is live while scanning or ranking, at most one per user.
+#[tokio::test]
+async fn one_live_dashboard_refresh_per_user() {
+    let db = db().await;
+    seed(&db).await;
+    sqlx::raw_sql(
+        "INSERT INTO users (id, github_id, login, created_at, updated_at) VALUES ('u2', 2, 'bob', 't', 't');
+         INSERT INTO dashboard_settings (user_id, tenant_id, updated_at) VALUES ('u1', 'default', 't');",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("users");
+    let defaults: (String, i64, i64, String) = sqlx::query_as(
+        "SELECT skip_authors, include_todos, schedule_enabled, schedule_time FROM dashboard_settings",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("defaults");
+    assert_eq!(
+        defaults,
+        (
+            r#"["dependabot","dependabot[bot]"]"#.to_owned(),
+            1,
+            1,
+            "06:00".to_owned()
+        )
+    );
+    let start = |id: &'static str, user: &'static str, state: &'static str| {
+        sqlx::query(
+            "INSERT INTO dashboard_refreshes (id, tenant_id, user_id, trigger, state, started_at)
+             VALUES (?, 'default', ?, 'manual', ?, 't')",
+        )
+        .bind(id)
+        .bind(user)
+        .bind(state)
+        .execute(&db.pool)
+    };
+    start("r1", "u1", "scanning").await.expect("first");
+    let second = start("r2", "u1", "ranking").await.map_err(DbError::from);
+    assert!(matches!(second, Err(DbError::Conflict)), "{second:?}");
+    start("r3", "u2", "scanning").await.expect("another user");
+    start("r4", "u1", "cancelled")
+        .await
+        .expect("ended ones are not live");
+    let failed_without_code = start("r5", "u1", "failed").await;
+    assert!(
+        failed_without_code.is_err(),
+        "a failed refresh names its failure"
+    );
+}
+
+/// Tokens store a 32-byte hash, unique names among a user's tokens that are not revoked, and go with their user.
+#[tokio::test]
+async fn access_tokens_keep_hashes_and_live_names_unique() {
+    let db = db().await;
+    sqlx::query(
+        "INSERT INTO users (id, github_id, login, created_at, updated_at) VALUES ('u1', 1, 'alice', 't', 't')",
+    )
+    .execute(&db.pool)
+    .await
+    .expect("user");
+    let insert = |id: &'static str, name: &'static str, hash: Vec<u8>| {
+        sqlx::query(
+            "INSERT INTO access_tokens (id, tenant_id, user_id, name, token_hash, scopes, created_at, expires_at)
+             VALUES (?, 'default', 'u1', ?, ?, '[\"read\"]', 't', 't')",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(hash)
+        .execute(&db.pool)
+    };
+    insert("Ab3dE5gH", "agent", vec![1; 32])
+        .await
+        .expect("token");
+    let short = insert("Zq9xW2vB", "other", vec![2; 16]).await;
+    assert!(short.is_err(), "the hash is SHA-256");
+    let same_name = insert("Zq9xW2vB", "agent", vec![2; 32])
+        .await
+        .map_err(DbError::from);
+    assert!(matches!(same_name, Err(DbError::Conflict)), "{same_name:?}");
+    sqlx::query("UPDATE access_tokens SET revoked_at = 't' WHERE id = 'Ab3dE5gH'")
+        .execute(&db.pool)
+        .await
+        .expect("revoke");
+    insert("Zq9xW2vB", "agent", vec![2; 32])
+        .await
+        .expect("a revoked token's name is free");
+    sqlx::query("DELETE FROM users WHERE id = 'u1'")
+        .execute(&db.pool)
+        .await
+        .expect("user removed");
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM access_tokens")
+        .fetch_one(&db.pool)
+        .await
+        .expect("count");
+    assert_eq!(left, 0);
 }
