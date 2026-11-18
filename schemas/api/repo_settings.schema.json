@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RepoSettings",
+  "description": "Response of `GET /api/v1/repos/{owner}/{name}/settings` (read-only).",
+  "type": "object",
+  "properties": {
+    "repo": {
+      "description": "Repository.",
+      "$ref": "#/$defs/RepoRef"
+    },
+    "rules": {
+      "description": "Built-in \"not analysed\" rules.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/NotAnalysedRule"
+      }
+    },
+    "related_repos": {
+      "description": "Related repositories, auto-detected from Cargo files on the base ref.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RepoRef"
+      }
+    },
+    "project_profile": {
+      "description": "Project profile source.",
+      "$ref": "#/$defs/ProjectProfileStatus"
+    }
+  },
+  "required": [
+    "repo",
+    "rules",
+    "related_repos",
+    "project_profile"
+  ],
+  "$defs": {
+    "RepoRef": {
+      "description": "A GitHub repository.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Owner (user or organisation) login.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Repository name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner",
+        "name"
+      ]
+    },
+    "NotAnalysedRule": {
+      "description": "A built-in \"not analysed\" rule.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Detector used to classify the material.",
+          "$ref": "#/$defs/RuleKind"
+        },
+        "pattern": {
+          "description": "The pattern or detector description.",
+          "type": "string"
+        },
+        "category": {
+          "description": "Section it fills.",
+          "$ref": "#/$defs/NotAnalysedCategory"
+        }
+      },
+      "required": [
+        "kind",
+        "pattern",
+        "category"
+      ]
+    },
+    "RuleKind": {
+      "description": "Kind of rule.",
+      "oneOf": [
+        {
+          "description": "Matches file paths.",
+          "type": "string",
+          "const": "path_glob"
+        },
+        {
+          "description": "Matches lines.",
+          "type": "string",
+          "const": "line_regex"
+        },
+        {
+          "description": "Comment-only lines recognised by a language lexer.",
+          "type": "string",
+          "const": "lexer"
+        },
+        {
+          "description": "A generated-file marker in the header.",
+          "type": "string",
+          "const": "header"
+        },
+        {
+          "description": "Git's binary-content detection.",
+          "type": "string",
+          "const": "binary"
+        }
+      ]
+    },
+    "NotAnalysedCategory": {
+      "description": "Section of material that is not analysed.",
+      "oneOf": [
+        {
+          "description": "Tests.",
+          "type": "string",
+          "const": "tests"
+        },
+        {
+          "description": "Docs and comments.",
+          "type": "string",
+          "const": "docs_comments"
+        },
+        {
+          "description": "Mechanical and generated material, lockfiles included.",
+          "type": "string",
+          "const": "generated_mechanical"
+        }
+      ]
+    },
+    "ProjectProfileStatus": {
+      "description": "Sources of the project profile; empty with MemCan `checked` means no profile (ratings are component-level).",
+      "type": "object",
+      "properties": {
+        "sources": {
+          "description": "Where the profile came from.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProfileSource"
+          }
+        },
+        "memcan": {
+          "description": "Whether MemCan was searched for a `type: project-profile` memory; `not_checked` means a MemCan profile\nmay exist that `sources` does not list.",
+          "$ref": "#/$defs/SourceCheck"
+        }
+      },
+      "required": [
+        "sources",
+        "memcan"
+      ]
+    },
+    "ProfileSource": {
+      "description": "A source of the project profile.",
+      "oneOf": [
+        {
+          "description": "`.claudius/project-profile.md` on the base ref.",
+          "type": "string",
+          "const": "repository_file"
+        },
+        {
+          "description": "MemCan memory `type: project-profile`.",
+          "type": "string",
+          "const": "memcan"
+        }
+      ]
+    },
+    "SourceCheck": {
+      "description": "Whether a source was checked.",
+      "oneOf": [
+        {
+          "description": "The source was read.",
+          "type": "string",
+          "const": "checked"
+        },
+        {
+          "description": "The source was not read; nothing is claimed about it.",
+          "type": "string",
+          "const": "not_checked"
+        }
+      ]
+    }
+  }
+}

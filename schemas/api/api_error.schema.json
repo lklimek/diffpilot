@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiError",
+  "description": "Body of every API error response.",
+  "type": "object",
+  "properties": {
+    "code": {
+      "description": "Machine-readable code.",
+      "$ref": "#/$defs/ApiErrorCode"
+    },
+    "message": {
+      "description": "Plain message for the user.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "$defs": {
+    "ApiErrorCode": {
+      "description": "Machine-readable API error code.",
+      "oneOf": [
+        {
+          "description": "Server configuration requires administrator action.",
+          "type": "string",
+          "const": "configuration"
+        },
+        {
+          "description": "Not signed in.",
+          "type": "string",
+          "const": "unauthenticated"
+        },
+        {
+          "description": "The GitHub login is not allowed to sign in.",
+          "type": "string",
+          "const": "login_not_allowed"
+        },
+        {
+          "description": "Missing or wrong CSRF token.",
+          "type": "string",
+          "const": "csrf_rejected"
+        },
+        {
+          "description": "The resource does not exist or is not visible.",
+          "type": "string",
+          "const": "not_found"
+        },
+        {
+          "description": "Malformed request.",
+          "type": "string",
+          "const": "invalid_request"
+        },
+        {
+          "description": "The URL is not a GitHub pull request URL.",
+          "type": "string",
+          "const": "not_a_pr_url"
+        },
+        {
+          "description": "The repository is private (v1 supports public repositories only).",
+          "type": "string",
+          "const": "private_repository"
+        },
+        {
+          "description": "The GitHub App is not installed where it is needed.",
+          "type": "string",
+          "const": "app_not_installed"
+        },
+        {
+          "description": "The analysis has not finished yet.",
+          "type": "string",
+          "const": "analysis_not_finished"
+        },
+        {
+          "description": "The request conflicts with the current state.",
+          "type": "string",
+          "const": "conflict"
+        },
+        {
+          "description": "The pull request head moved since the analysis.",
+          "type": "string",
+          "const": "pr_head_changed"
+        },
+        {
+          "description": "GitHub rejected the comment position.",
+          "type": "string",
+          "const": "position_rejected"
+        },
+        {
+          "description": "The pending comment was published on GitHub meanwhile; the edit or deletion applied to the published one.",
+          "type": "string",
+          "const": "comment_published"
+        },
+        {
+          "description": "The requested line range is too large.",
+          "type": "string",
+          "const": "range_too_large"
+        },
+        {
+          "description": "The file is not rendered (generated material).",
+          "type": "string",
+          "const": "not_rendered"
+        },
+        {
+          "description": "GitHub did not answer as expected.",
+          "type": "string",
+          "const": "github_unavailable"
+        },
+        {
+          "description": "An internal error.",
+          "type": "string",
+          "const": "internal"
+        },
+        {
+          "description": "The server is busy (e.g. its database is locked); retry after `Retry-After`.",
+          "type": "string",
+          "const": "unavailable"
+        },
+        {
+          "description": "A dashboard refresh of the user is already scanning (R2), or live (R4).",
+          "type": "string",
+          "const": "refresh_running"
+        },
+        {
+          "description": "GitHub's rate limit for the user's token is reached; the message names the reset time.",
+          "type": "string",
+          "const": "github_rate_limited"
+        },
+        {
+          "description": "Dashboard settings break a rule; the message names the field and the rule.",
+          "type": "string",
+          "const": "invalid_dashboard_settings"
+        },
+        {
+          "description": "The list changed since the cursor was issued; read it again from the start.",
+          "type": "string",
+          "const": "cursor_expired"
+        },
+        {
+          "description": "The access token lacks the scope the route needs.",
+          "type": "string",
+          "const": "insufficient_scope"
+        },
+        {
+          "description": "The route does not accept access tokens.",
+          "type": "string",
+          "const": "token_not_accepted"
+        },
+        {
+          "description": "The user has the maximum number of live access tokens.",
+          "type": "string",
+          "const": "token_limit_reached"
+        },
+        {
+          "description": "Too many requests; retry after `Retry-After`.",
+          "type": "string",
+          "const": "rate_limited"
+        }
+      ]
+    }
+  }
+}

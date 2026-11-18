@@ -176,6 +176,8 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
+        // A personal access token (ADR-019) is never a runner credential: refused before any lookup.
+        .filter(|token| !token.starts_with(crate::auth::access_tokens::TOKEN_PREFIX))
 }
 
 fn authorize_runner(state: &AppState, headers: &HeaderMap) -> Result<(), RunnerError> {

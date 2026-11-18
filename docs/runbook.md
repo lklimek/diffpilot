@@ -104,7 +104,9 @@ disk for images and build cache, plus the scratch volumes. Check: `docker versio
 8. Codex sign-in (once; see "LLM credential"). Then the owner's reverse proxy routes `review.klimek.ws` to
    `127.0.0.1:3000` (`SR_PUBLISH_ADDR`:`SR_HTTP_PORT`); with Docker's userland proxy (the default), requests
    enter the server from the public network's gateway `172.29.73.1`, which `SR_TRUSTED_PROXIES` trusts for
-   `X-Forwarded-For`.
+   `X-Forwarded-For`. The reverse proxy must append the client address to `X-Forwarded-For` (nginx:
+   `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`): the failed access-token attempt limit counts
+   per client address, and without it all clients share one.
 
 9. Sign-in allowlist: the database starts with `lklimek` and `Claudius-Maginificent`. Adding a login (server
    stopped; the helper container needs Internet for `apt`):
