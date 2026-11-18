@@ -73,6 +73,8 @@ pub struct UserEvent {
     pub action: Option<String>,
     /// For a closing `PullRequestEvent`: merged.
     pub merged: Option<bool>,
+    /// Author of the pull request (the event's actor may be someone else).
+    pub author: Option<String>,
     /// When.
     pub created_at: DateTime<Utc>,
 }
@@ -186,6 +188,7 @@ impl<T: TokenSource> WorkClient<T> {
                     item: ItemRef::parse(&event.repo.name, number)?,
                     action: event.payload["action"].as_str().map(str::to_owned),
                     merged: pull["merged"].as_bool(),
+                    author: pull["user"]["login"].as_str().map(str::to_owned),
                     created_at: event.created_at,
                 })
             })

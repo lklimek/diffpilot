@@ -6,6 +6,7 @@ use serde_json::Value;
 
 pub mod analyse_flow;
 pub mod ask;
+pub mod judge_work;
 pub mod plan;
 pub mod pr_context;
 pub mod strict;
@@ -24,11 +25,19 @@ pub enum JobKind {
     AnalyseFlow,
     /// Answer a reviewer's question about a step.
     Ask,
+    /// Judge dashboard items (no pull request, ADR-017).
+    JudgeWork,
 }
 
 impl JobKind {
-    /// Every job kind, in pipeline order.
-    pub const ALL: [JobKind; 4] = [Self::Plan, Self::PrContext, Self::AnalyseFlow, Self::Ask];
+    /// Every job kind, in pipeline order, then the dashboard's.
+    pub const ALL: [JobKind; 5] = [
+        Self::Plan,
+        Self::PrContext,
+        Self::AnalyseFlow,
+        Self::Ask,
+        Self::JudgeWork,
+    ];
 
     /// The snake_case name used on the wire and in file names.
     pub fn as_str(self) -> &'static str {
@@ -37,6 +46,7 @@ impl JobKind {
             Self::PrContext => "pr_context",
             Self::AnalyseFlow => "analyse_flow",
             Self::Ask => "ask",
+            Self::JudgeWork => "judge_work",
         }
     }
 }
@@ -63,5 +73,6 @@ pub fn output_schema(kind: JobKind) -> Result<Value, StrictSchemaError> {
             Ok(schema)
         }
         JobKind::Ask => strict::output_schema_for::<ask::AskOutput>(),
+        JobKind::JudgeWork => judge_work::output_schema(),
     }
 }

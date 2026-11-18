@@ -152,6 +152,8 @@ pub struct PrSearch {
     pub unsearchable: Vec<String>,
     /// Searches that failed otherwise.
     pub notes: Vec<ScanNote>,
+    /// Searches GitHub answered.
+    pub answered: u32,
 }
 
 /// Issue candidates (Q10).
@@ -161,6 +163,8 @@ pub struct IssueSearch {
     pub candidates: Candidates,
     /// Searches that failed.
     pub notes: Vec<ScanNote>,
+    /// Searches GitHub answered.
+    pub answered: u32,
 }
 
 /// Pull requests of a login's history window (Q12).
@@ -308,6 +312,7 @@ impl<T: TokenSource> WorkClient<T> {
                         continue;
                     }
                 };
+                found.answered += 1;
                 found.notes.extend(cut_short(&what, &page));
                 for item in page.items {
                     if let Some(key) = item.item() {
@@ -365,6 +370,7 @@ impl<T: TokenSource> WorkClient<T> {
             let q = format!("is:issue is:open archived:false {qualifier}");
             match self.search::<SearchItem>(&q).await {
                 Ok(page) => {
+                    found.answered += 1;
                     found.notes.extend(cut_short(&what, &page));
                     for item in page.items {
                         if let Some(key) = item.item() {

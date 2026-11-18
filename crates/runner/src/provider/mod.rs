@@ -78,6 +78,9 @@ pub struct ProviderCall {
     pub access: AgentAccess,
     /// claudius skills exposed read-only.
     pub skills: Vec<String>,
+    /// The agent only reads its prompt and answers: no command, web or image tool, read-only sandbox (dashboard
+    /// jobs, whose prompt holds private titles and untrusted text; ADR-018).
+    pub answer_only: bool,
     /// Compact the restored session before this turn's answer (the first turn of an Ask working session forked
     /// from the analytic one; ADR-004 addendum 2026-11-18).
     pub compact_on_start: bool,

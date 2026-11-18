@@ -28,7 +28,8 @@ pub trait JobExecutor: Send + Sync + Debug {
 
     /// Requests cancellation of every unfinished pipeline job of `analysis`, including jobs submitted before a
     /// server restart; used when the analysis ends. Its `ask` jobs are cancelled too only once the analysis is
-    /// cancelled or its PR session is removed (a failed pipeline leaves open questions alone).
+    /// cancelled or its PR session is removed (a failed pipeline leaves open questions alone). Dashboard jobs
+    /// belong to no analysis and are never touched.
     fn cancel_analysis(&self, analysis: AnalysisId) -> BoxFuture<'_, Result<(), ExecutorError>>;
 }
 
@@ -46,8 +47,8 @@ pub struct JobRequest {
     /// the previous generation. Idempotency is per (stage, generation).
     pub generation: u32,
     /// The pull request's repository: the only repository an installation token is minted for (ADR-005); no
-    /// token when the GitHub App is not installed on it.
-    pub pr_repo: RepoRef,
+    /// token when the GitHub App is not installed on it. None for dashboard jobs, which never get one (ADR-018).
+    pub pr_repo: Option<RepoRef>,
 }
 
 /// Handle of a submitted job; persisted by callers, so it survives a restart.

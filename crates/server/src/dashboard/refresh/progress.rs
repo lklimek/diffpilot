@@ -20,6 +20,11 @@ const STEPS: [(ScanStepKey, u32); 7] = [
     (ScanStepKey::Ranking, 0),
 ];
 
+/// The refresh ended (cancelled) while its scan ran: the scan stops.
+#[derive(Debug, thiserror::Error)]
+#[error("the refresh ended while its scan ran")]
+pub(super) struct Ended;
+
 /// Progress of one refresh's scan.
 pub(super) struct Progress {
     state: AppState,
@@ -75,25 +80,36 @@ impl Progress {
             .push(format!("{} {}", at.format("%H:%M:%S"), line.as_ref()));
     }
 
-    /// Sets a step and records the progress.
+    /// Sets a step (a step that is not running loses its detail) and records the progress; [`Ended`] once the
+    /// refresh is no longer scanning.
     pub(super) async fn step(
         &mut self,
         key: ScanStepKey,
         state: StepState,
         done: Option<u32>,
         total: Option<u32>,
-    ) {
+    ) -> Result<(), Ended> {
         if let Some(step) = self.steps.iter_mut().find(|s| s.key == key) {
             step.state = state;
             step.done = done;
             step.total = total;
+            if state != StepState::Running {
+                step.detail = None;
+            }
         }
-        self.record().await;
+        self.record().await
     }
 
-    /// Writes the progress and log, then publishes the refresh's status. A failed write is logged: the refresh
-    /// goes on and its next write carries the progress.
-    pub(super) async fn record(&self) {
+    /// Sets the detail of a step (the item it works on); recorded with the next [`Self::step`].
+    pub(super) fn detail(&mut self, key: ScanStepKey, detail: String) {
+        if let Some(step) = self.steps.iter_mut().find(|s| s.key == key) {
+            step.detail = Some(detail);
+        }
+    }
+
+    /// Writes the progress and log, then publishes the refresh's status. [`Ended`] when the refresh ended
+    /// meanwhile; another failed write is logged (the next write carries the progress).
+    pub(super) async fn record(&self) -> Result<(), Ended> {
         let progress = RefreshProgress {
             steps: self.steps.clone(),
             percent: self.percent(),
@@ -112,10 +128,12 @@ impl Progress {
             .await;
         match written {
             Ok(()) => super::publish(&self.state, &self.scope, self.id).await,
+            Err(db::error::DbError::Conflict) => return Err(Ended),
             Err(error) => {
                 tracing::debug!(%error, refresh = %self.id, "dashboard scan progress not recorded");
             }
         }
+        Ok(())
     }
 
     /// The server state.
@@ -136,6 +154,7 @@ impl Progress {
                 step.detail = Some(detail.to_owned());
             }
         }
-        self.record().await;
+        // An ended refresh keeps its stored progress.
+        let _ = self.record().await;
     }
 }

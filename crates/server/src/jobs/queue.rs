@@ -5,7 +5,8 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use contracts::ids::{AnalysisId, JobId};
+use contracts::ids::{AnalysisId, JobId, RefreshId};
+use contracts::job::spec::JobTarget;
 use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::Db;
@@ -34,6 +35,47 @@ impl QueueExecutor {
     }
 }
 
+impl QueueExecutor {
+    /// Enqueues a dashboard job: idempotent per (refresh, stage, generation) in the refresh's ranking attempt, with
+    /// the model from `select_model`; no analysis to serialise on, pause or supersede.
+    async fn submit_dashboard(
+        &self,
+        refresh: RefreshId,
+        request: JobRequest,
+    ) -> Result<JobHandle, ExecutorError> {
+        let (stage, generation) = (request.stage.clone(), request.generation);
+        let current = || async {
+            Ok::<_, ExecutorError>(
+                self.db
+                    .jobs()
+                    .current_for_judge_stage(refresh, &stage, generation)
+                    .await?
+                    .map(|job| JobHandle { job_id: job.id }),
+            )
+        };
+        if let Some(existing) = current().await? {
+            return Ok(existing);
+        }
+        let mut job = NewJob {
+            spec: request.spec,
+            priority: request.priority,
+            stage: request.stage,
+            generation,
+        };
+        let saved = self.db.settings().llm_selection().await?;
+        job.spec.model = crate::model::select_model(
+            job.spec.kind,
+            &crate::model::ModelContext::default(),
+            saved.as_ref(),
+        );
+        match self.db.jobs().enqueue(job, Utc::now()).await {
+            Ok(job) => Ok(JobHandle { job_id: job.id }),
+            Err(DbError::Conflict) => current().await?.ok_or(ExecutorError::Db(DbError::Conflict)),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 /// Ends expired leases (requeue, fail or cancel); run before claims and by followers of a job past its lease.
 pub async fn expire_leases(db: &Db, now: DateTime<Utc>) -> Result<Vec<ExpiredLease>, DbError> {
     let expired = db.jobs().expire_leases(now).await?;
@@ -52,7 +94,12 @@ impl JobExecutor for QueueExecutor {
     fn submit(&self, request: JobRequest) -> BoxFuture<'_, Result<JobHandle, ExecutorError>> {
         Box::pin(async move {
             tracing::info!(job = %request.spec.job_id, skills = ?request.spec.skills, "job agent skills requested");
-            let analysis = request.spec.analysis_id;
+            let analysis = match &request.spec.target {
+                JobTarget::PullRequest(target) => target.analysis_id,
+                JobTarget::Dashboard { refresh_id } => {
+                    return self.submit_dashboard(*refresh_id, request).await;
+                }
+            };
             let stage = request.stage.clone();
             let generation = request.generation;
             let job = NewJob {
@@ -269,8 +316,11 @@ impl Follower {
         } = snapshot;
         // Every state change of the job (submit, claim, requeue, pause, resume, end) can change the analysis's
         // stage: the one place it is published for all of them.
-        if self.last_state != Some(job.state) || job.attempt != self.attempt {
-            self.publish_stage(job.analysis_id).await;
+        // A dashboard job's ranking progress is published by its submitter from these updates.
+        if let Some(analysis) = job.analysis_id
+            && (self.last_state != Some(job.state) || job.attempt != self.attempt)
+        {
+            self.publish_stage(analysis).await;
         }
         if self.last_state.is_none() && job.state.is_terminal() {
             return self.finish(job.result, job.github_access_granted);
@@ -396,10 +446,10 @@ mod tests {
             priority: JobPriority::Batch,
             stage: JobStage::Flow(FlowId(flow.to_owned())),
             generation: 0,
-            pr_repo: RepoRef {
+            pr_repo: Some(RepoRef {
                 owner: "acme".to_owned(),
                 name: "node-client".to_owned(),
-            },
+            }),
         }
     }
 

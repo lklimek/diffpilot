@@ -69,6 +69,20 @@ struct Inner {
     ranker: Arc<dyn Ranker>,
     tasks: Mutex<Tasks>,
     events: broadcast::Sender<RefreshStatus>,
+    stopped: broadcast::Sender<RefreshId>,
+}
+
+/// Announces the end of a refresh's task, also when it is aborted (dropped at an await).
+struct StopSignal {
+    hub: DashboardHub,
+    id: RefreshId,
+}
+
+impl Drop for StopSignal {
+    fn drop(&mut self) {
+        // No subscriber is fine: only tests wait for it.
+        let _ = self.hub.inner.stopped.send(self.id);
+    }
 }
 
 /// The task of each live refresh, with the generation that started it (a restarted ranking replaces it).
@@ -124,6 +138,7 @@ impl DashboardHub {
                 ranker,
                 tasks: Mutex::new(Tasks::default()),
                 events: broadcast::channel(EVENTS_CAPACITY).0,
+                stopped: broadcast::channel(EVENTS_CAPACITY).0,
             }),
         }
     }
@@ -172,7 +187,12 @@ impl DashboardHub {
         tasks.next += 1;
         let generation = tasks.next;
         let hub = self.clone();
+        let signal = StopSignal {
+            hub: self.clone(),
+            id,
+        };
         let handle = tokio::spawn(async move {
+            let _signal = signal;
             task.await;
             let mut tasks = hub.tasks();
             if tasks
@@ -195,6 +215,11 @@ impl DashboardHub {
             handle.abort();
         }
         stopped.is_some()
+    }
+
+    /// Ids of refresh tasks as they end, completed or aborted.
+    pub fn stopped(&self) -> broadcast::Receiver<RefreshId> {
+        self.inner.stopped.subscribe()
     }
 
     /// Whether a task of refresh `id` runs.

@@ -67,6 +67,21 @@ file:line locations. Verification rejects HTML, Markdown links (including GitHub
 emphasis and external URLs; bare HTTPS GitHub URLs remain accepted by the URL allow-list.
 Evidence buttons open the cited lines in the review; free text is never parsed for destinations.
 
+## `judge_work` (dashboard, v1.1)
+Not bound by the review module's common rules (OD2, ADR-016): it scores by design. Types and validation:
+`crates/contracts/src/agent/judge_work.rs`. Input: 1–8 items (`JudgeWorkInput`), embedded in the prompt as one data
+block opened by the line ```` ```json judge-work-input ```` (`JudgeWorkInput::data_block`); untrusted text stays
+inside JSON strings (U+0085, U+2028 and U+2029 escaped too), so it cannot start a line or close the fence. Output
+per item: `key` (as given), `defect` (`likelihood`, `impact` 0–10 and `basis`; required when `defect_severity` is
+asked, 0/0 for no pre-existing problem), `parts[]` (`component`, `points` from the component's closed set, `basis`),
+`eligibility` (`eligible`, `reason`; required when asked), `also_keys` (only from the item's `suggested_merges`),
+`alarm` (text or null), `why`, `next`. `JudgeWorkOutput::validate` re-checks everything server-side: answers for
+keys outside the batch are dropped, an item answered twice, missing an asked part or eligibility, with a part or
+defect neither asked nor known for the item, outside a closed set, with an empty basis or reason, an unsuggested
+merge, or text over its cap (basis/reason 200, why 300, next 200, alarm 300 characters) or with control, format
+(bidirectional, zero-width, tag) or line/paragraph separator characters is rejected and stays provisional. Defect
+severity points = likelihood + impact.
+
 ## Verify rules (`analysis::verify`, issues feed one repair prompt)
 Inputs cover both sides: `diff::DiffIndex` resolves hunk ids to their file's base and head paths (renames,
 equal line numbers in different files) and removed base lines to head deletion markers; `verify::LineFacts`

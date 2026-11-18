@@ -189,7 +189,13 @@ export function FlagsSection({
   onEvidence,
   step,
   currentFile,
-}: { annotations: readonly Annotation[]; step: Step } & Sections) {
+  onUseAsComment,
+}: {
+  annotations: readonly Annotation[];
+  step: Step;
+  /** "Use as review comment" on a flag; no button without it. */
+  onUseAsComment?: (flag: Annotation) => void;
+} & Sections) {
   const flags = sortedFlags(annotations).filter((a) => a.text?.trim());
   if (flags.length === 0) return null;
   return (
@@ -205,6 +211,7 @@ export function FlagsSection({
               onEvidence &&
               (() => onEvidence({ file: step.facts.file, side: step.facts.side, line: a.range.start_line }))
             }
+            onUseAsComment={onUseAsComment && (() => onUseAsComment(a))}
           />
         ))}
       </ul>

@@ -1,5 +1,5 @@
 //! The generated per-job `config.toml` (S1a lean config, ADR-002, ADR-005, S5, S6, threat model T2, T3c, T5,
-//! T6): sandbox off (T1–T4 compensate), no project docs, hooks, plugins, analytics, sub-agents or bundled
+//! T6): sandbox off (T1–T4 compensate) except for answer-only jobs, no project docs, hooks, plugins, analytics, sub-agents or bundled
 //! skills; the project is never trusted. The job turn gets the MCP servers its access allows: the official
 //! `github-mcp-server` read-only with the job's installation token in that server's environment only, and
 //! MemCan with its bearer in a static header (never in Codex's environment).
@@ -48,26 +48,44 @@ pub(crate) const AUTO_COMPACT_TOKEN_LIMIT: u32 = 400_000;
 /// the deployed Codex with a ~300k-token fork: measure compaction time and per-request input on the real stack.
 pub(crate) const FORK_COMPACT_TOKEN_LIMIT: u32 = 80_000;
 
-/// The per-job configuration; `github_mcp` is the GitHub MCP binary, `no_proxy` the bypass hosts and
-/// `compact_limit` the context size at which Codex compacts.
+/// Settings of an answer-only job (dashboard ranking), checked against the pinned Codex 0.167: `shell_tool`
+/// off removes `exec_command` and `write_stdin` (its `unified_exec` opt-out is ignored but kept should a later
+/// version honour it), `view_image` off; with `web_search = "disabled"` (a full-access sandbox defaults it to
+/// live) and a read-only sandbox for what remains (`apply_patch`, which no key removes). The code-mode `exec`
+/// tool stays: a V8 isolate without network or file system. A tool item still fails the job (`CodexStream`).
+const ANSWER_ONLY_FEATURES: &str = "shell_tool = false\nunified_exec = false\nview_image = false\n";
+
+/// The per-job configuration; `github_mcp` is the GitHub MCP binary, `no_proxy` the bypass hosts,
+/// `compact_limit` the context size at which Codex compacts and `answer_only` drops every tool that reaches
+/// the network or runs commands.
 pub(crate) fn config_toml(
     model: &ModelChoice,
     access: &AgentAccess,
     github_mcp: &Path,
     no_proxy: &str,
     compact_limit: u32,
+    answer_only: bool,
 ) -> String {
     let effort = match model.reasoning_effort {
         ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
     };
+    let (sandbox, web_search, extra_features) = if answer_only {
+        (
+            "read-only",
+            "web_search = \"disabled\"\n",
+            ANSWER_ONLY_FEATURES,
+        )
+    } else {
+        ("danger-full-access", "", "")
+    };
     let mut config = format!(
         r#"model = {model}
 model_reasoning_effort = "{effort}"
 model_auto_compact_token_limit = {compact_limit}
-sandbox_mode = "danger-full-access"
-approval_policy = "never"
+sandbox_mode = "{sandbox}"
+{web_search}approval_policy = "never"
 project_doc_max_bytes = 0
 
 [analytics]
@@ -89,7 +107,7 @@ tool_suggest = false
 goals = false
 daemon_auto_start = false
 multi_agent = false
-"#,
+{extra_features}"#,
         model = toml_string(&model.model),
     );
     if let Some(token) = &access.github {
@@ -243,6 +261,7 @@ mod tests {
             Path::new("/opt/github-mcp/github-mcp-server"),
             NO_PROXY,
             AUTO_COMPACT_TOKEN_LIMIT,
+            false,
         )
     }
 
@@ -256,6 +275,7 @@ mod tests {
             Path::new("/x"),
             NO_PROXY,
             FORK_COMPACT_TOKEN_LIMIT,
+            false,
         );
         assert!(fork.contains("model_auto_compact_token_limit = 80000\n"));
     }
@@ -327,6 +347,68 @@ required = false
             "the project is never trusted"
         );
         assert!(!config.contains("[projects"));
+    }
+
+    #[test]
+    fn answer_only_config_offers_no_command_web_or_image_tool() {
+        let config = config_toml(
+            &model(),
+            &AgentAccess::default(),
+            Path::new("/x"),
+            NO_PROXY,
+            AUTO_COMPACT_TOKEN_LIMIT,
+            true,
+        );
+        for line in [
+            "sandbox_mode = \"read-only\"",
+            "web_search = \"disabled\"",
+            "approval_policy = \"never\"",
+            "shell_tool = false",
+            "unified_exec = false",
+            "view_image = false",
+            "multi_agent = false",
+        ] {
+            assert!(
+                config.lines().any(|l| l == line),
+                "missing {line}:\n{config}"
+            );
+        }
+        assert!(!config.contains("danger-full-access"), "{config}");
+        assert!(!config.contains("mcp_servers"), "{config}");
+        let features = config.find("\n[features]\n").expect("a features table");
+        let web_search = config.find("\nweb_search").expect("web_search");
+        assert!(
+            web_search < config.find("\n[").unwrap_or(0),
+            "web_search is a top-level key:\n{config}"
+        );
+        let after_features = &config[features..];
+        let next_table = after_features[1..]
+            .find("\n[")
+            .map_or(after_features.len(), |i| i + 1);
+        for key in [
+            "shell_tool = false",
+            "unified_exec = false",
+            "view_image = false",
+        ] {
+            assert!(
+                after_features[..next_table].lines().any(|l| l == key),
+                "{key} in [features]:\n{config}"
+            );
+        }
+    }
+
+    #[test]
+    fn analysis_config_keeps_its_tools() {
+        let config = job_config(&AgentAccess::default());
+        for absent in [
+            "web_search",
+            "shell_tool",
+            "unified_exec",
+            "view_image",
+            "read-only",
+        ] {
+            assert!(!config.contains(absent), "{absent}:\n{config}");
+        }
     }
 
     #[test]

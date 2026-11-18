@@ -693,6 +693,45 @@ impl Dashboard<'_> {
         Ok(update)
     }
 
+    /// Cancels the ranking of a refresh `ranking` in `attempt` (R3, superseding): the refresh becomes `finished`
+    /// with ranking `cancelled` and its stored judgement counts untouched (a report racing the cancel is kept).
+    /// [`RankingUpdate::Stale`] for an earlier attempt or an ended ranking; `Conflict` for a newer attempt or a
+    /// refresh that never ranked.
+    pub async fn cancel_ranking(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        id: RefreshId,
+        attempt: u32,
+        now: DateTime<Utc>,
+    ) -> Result<RankingUpdate, DbError> {
+        let mut tx = write_tx(self.pool).await?;
+        let rows = sqlx::query(
+            "UPDATE dashboard_refreshes SET state = 'finished', ranking_state = 'cancelled', finished_at = ?
+             WHERE id = ? AND tenant_id = ? AND user_id = ? AND state = 'ranking' AND ranking_attempt = ?",
+        )
+        .bind(ts(now))
+        .bind(id.to_string())
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(i64::from(attempt))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let update = ranking_update(
+            &mut tx,
+            tenant_id,
+            user_id,
+            id,
+            attempt,
+            JudgeCounts::default(),
+            rows,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(update)
+    }
+
     /// Retry ranking (R4), in one write transaction: a `finished` refresh holding the current snapshot whose
     /// ranking ended `failed`, `interrupted` or `cancelled` goes back to `ranking` (ranking state `running`, counts
     /// kept) in its next ranking attempt. `NotFound` for an unknown id or another user's refresh.
@@ -1235,6 +1274,54 @@ mod tests {
 
     async fn record(db: &Db, user: &str, id: RefreshId) -> RefreshRecord {
         db.dashboard().refresh(T, user, id).await.expect("refresh")
+    }
+
+    #[tokio::test]
+    async fn cancel_ranking_keeps_the_stored_counts() {
+        let db = db().await;
+        let id = ranking(&db, "u1", 1).await;
+        let dash = db.dashboard();
+        assert_eq!(
+            dash.set_ranking(T, "u1", id, 0, RankingState::Running, COUNTS)
+                .await
+                .expect("report"),
+            RankingUpdate::Applied
+        );
+        assert_eq!(
+            dash.cancel_ranking(T, "u1", id, 0, at(2))
+                .await
+                .expect("cancel"),
+            RankingUpdate::Applied
+        );
+        let stored = record(&db, "u1", id).await;
+        assert_eq!(
+            (
+                stored.state,
+                stored.ranking_state,
+                stored.counts,
+                stored.finished_at
+            ),
+            (
+                RefreshState::Finished,
+                Some(RankingState::Cancelled),
+                COUNTS,
+                Some(at(2))
+            )
+        );
+        assert_eq!(
+            dash.cancel_ranking(T, "u1", id, 0, at(3))
+                .await
+                .expect("again"),
+            RankingUpdate::Stale
+        );
+        assert!(matches!(
+            dash.cancel_ranking(T, "u1", id, 1, at(3)).await,
+            Err(DbError::Conflict)
+        ));
+        assert!(matches!(
+            dash.cancel_ranking(T, "u2", id, 0, at(3)).await,
+            Err(DbError::NotFound)
+        ));
     }
 
     /// The current snapshot's refresh and its `n`.
@@ -3158,7 +3245,8 @@ mod tests {
         .fetch_all(&db.pool)
         .await
         .expect("versions");
-        assert_eq!(versions, [1, 2, 3, 4, 5, 6]);
+        let all = i64::try_from(super::super::MIGRATIONS.len()).expect("count");
+        assert_eq!(versions, (1..=all).collect::<Vec<_>>());
     }
 
     /// Migration 0005 upgrades a database with dashboard rows in place: refreshes, settings and judgements are kept,

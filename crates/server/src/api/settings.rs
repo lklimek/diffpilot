@@ -13,10 +13,14 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::settings::AppInstallation;
-use contracts::api::settings::{RepoSettings, SetAskEffortRequest, SetLanguageRequest, Settings};
+use contracts::api::settings::{
+    RepoSettings, SetAskEffortRequest, SetJudgeEffortRequest, SetLanguageRequest, Settings,
+};
 use contracts::common::RepoRef;
 use contracts::job::result::{JobFailureKind, LlmCallOutcome, LlmCallStatus};
-use contracts::routes::{GET_REPO_SETTINGS, GET_SETTINGS, SET_ASK_EFFORT, SET_LANGUAGE, SET_LLM};
+use contracts::routes::{
+    GET_REPO_SETTINGS, GET_SETTINGS, SET_ASK_EFFORT, SET_JUDGE_EFFORT, SET_LANGUAGE, SET_LLM,
+};
 use db::error::DbError;
 use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 
@@ -100,6 +104,7 @@ pub fn routes() -> Router<AppState> {
         .route(SET_LANGUAGE.path, put(set_language))
         .route(SET_LLM.path, put(set_llm))
         .route(SET_ASK_EFFORT.path, put(set_ask_effort))
+        .route(SET_JUDGE_EFFORT.path, put(set_judge_effort))
         .route(GET_REPO_SETTINGS.path, get(read_repo))
 }
 
@@ -175,6 +180,36 @@ async fn set_ask_effort(
         .map_err(failure)?;
     let old = crate::model::selection(old).ask_effort;
     tracing::info!(login = %user.profile.login, ?old, new = ?request.reasoning_effort, "installation Ask effort changed");
+    Ok(Json(crate::model::selection(Some(saved))))
+}
+
+/// R7: the installation-wide dashboard ranking effort; the model choice and other efforts are kept.
+async fn set_judge_effort(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    body: Result<Json<SetJudgeEffortRequest>, JsonRejection>,
+) -> SettingsResult<Json<contracts::api::settings::LlmSelection>> {
+    let Json(request) = body.map_err(failure)?;
+    let user = state
+        .db
+        .users()
+        .get(&session.user_id)
+        .await
+        .map_err(failure)?;
+    let default_choice = crate::model::selection(None).current;
+    let (old, saved) = state
+        .db
+        .settings()
+        .set_judge_effort(
+            request.reasoning_effort,
+            &default_choice,
+            &user.profile.login,
+            Utc::now(),
+        )
+        .await
+        .map_err(failure)?;
+    let old = crate::model::selection(old).judge_effort;
+    tracing::info!(login = %user.profile.login, ?old, new = ?request.reasoning_effort, "installation dashboard ranking effort changed");
     Ok(Json(crate::model::selection(Some(saved))))
 }
 
@@ -1053,5 +1088,49 @@ mod tests {
         let (_, read) = h.get(GET_SETTINGS.path).await;
         assert_eq!(read["llm_selection"], saved);
         assert!(logs.text().contains("installation Ask effort changed"));
+    }
+
+    #[tokio::test]
+    async fn judge_effort_validates_csrf_keeps_the_other_efforts_and_records_the_changer() {
+        let h = harness().await;
+        let (_, initial) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(initial["llm_selection"]["judge_effort"], "low");
+        let route = "/api/v1/settings/llm/judge-effort";
+        let body = json!({"reasoning_effort":"medium"});
+        let (status, _) = h
+            .send("PUT", route, Some(&h.cookie), false, Some(body.clone()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = h.send("PUT", route, None, false, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = h
+            .send(
+                "PUT",
+                route,
+                Some(&h.cookie),
+                true,
+                Some(json!({"reasoning_effort":"ultra"})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let logs = LogCapture::start();
+        let (status, saved) = h
+            .send("PUT", route, Some(&h.cookie), true, Some(body))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["judge_effort"], "medium");
+        assert_eq!(saved["ask_effort"], "medium", "the Ask effort is kept");
+        assert_eq!(
+            saved["current"],
+            json!({"model":"gpt-6.1-sol","reasoning_effort":"high"}),
+            "the analysis jobs keep their effort"
+        );
+        assert_eq!(saved["changed_by"], "lklimek");
+        let (_, read) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(read["llm_selection"], saved);
+        assert!(
+            logs.text()
+                .contains("installation dashboard ranking effort changed")
+        );
     }
 }

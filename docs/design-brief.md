@@ -756,3 +756,9 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   hover and on keyboard focus; Tab from the line's comment action reaches it, arrow keys move between lines). It
   puts `path:line` (`path:start-end` when the line is inside a selection of several lines; " (old code)" for a
   removed line) into the Ask field at the cursor, opens Ask and focuses the field; nothing is sent.
+- **Use as review comment.** A flag card and an Ask answer asked on the open step offer "Use as review comment"
+  (only while commenting is available). It opens the existing comment composer: a flag on its line range, an
+  answer on the open comment's line, else the step's first changed line; placement falls back as for any
+  comment (file comment, not in the diff). The draft starts with "LLM-suggested — review before posting", then
+  the flag's title, numbered scenario and not-checked line, or the answer as written; a draft already there keeps
+  its text and gets this after a blank line. It stays an editable draft; nothing is posted until the user adds it.
