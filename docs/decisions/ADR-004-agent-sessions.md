@@ -76,3 +76,22 @@ of archive. Explicit PR removal and the existing 14-day retention remove the who
 Removing sessions when a user is deleted or removed from the allowlist is out of scope; references have
 foreign-key cleanup, but archive retention remains PR-wide. Existing databases must be recreated (the single
 rewritable migration); old analytic references must not be reused because they may contain earlier Ask text.
+
+## Addendum 2026-11-18: one compaction when an Ask working session is forked (owner decision)
+
+- **Decision.** The first turn of a new working session — the lazy fork on a user's first question, and every
+  re-fork after the analytic generation advanced or the working archive was lost — runs with
+  `model_auto_compact_token_limit = 80000` instead of 400000. Codex then compacts the forked analytic history
+  before it answers (pre-turn compaction, S1b finding 3) and answers within the same turn: no extra turn. The
+  compacted session is what the working archive keeps. Later Ask turns use the 400000 limit (automatic
+  compaction only); analytic jobs never use the lower limit. 80000 lies above a compacted context (17–24k in S7)
+  plus one Ask turn, so the turn does not compact again.
+- **Visibility.** The runner posts the activity line "Preparing the conversation (first question on this pull
+  request)" before that turn; the Ask panel tells the reviewer that a first question takes longer.
+- **Fallback.** If the compacting turn fails (provider failure), the runner answers once more from the
+  uncompacted fork with the 400000 limit; a fork without an analytic archive starts from the context pack and
+  is not compacted.
+- **Reason.** Ask turns resumed the full analytic history: on a large pull request (dashpay/platform, plan +
+  PR context + 2 flows) every model request re-read about 300k tokens, and answers took 70–115 s against about
+  30 s on a 100k-token session. The removal of forced compaction above stays valid for analytic jobs (35–147 s per
+  job); one compaction per working fork is paid once per user and analytic generation.

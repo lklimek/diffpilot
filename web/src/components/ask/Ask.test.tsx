@@ -300,7 +300,10 @@ describe("AskAnswers", () => {
 
   it.each([
     ["pending", /Waiting for the LLM/],
-    ["answering", /The LLM is working on the answer; it appears here whole when it is ready/],
+    [
+      "answering",
+      /The LLM is working on the answer; it appears here whole when it is ready\. The first question on a pull request takes longer: the conversation is prepared first\./,
+    ],
   ] as const)("shows the %s state as a status", (state, text) => {
     render(<AskAnswers questions={[question({ state })]} />);
     expect(screen.getByRole("status")).toHaveTextContent(text);

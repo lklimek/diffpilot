@@ -78,6 +78,9 @@ pub struct ProviderCall {
     pub access: AgentAccess,
     /// claudius skills exposed read-only.
     pub skills: Vec<String>,
+    /// Compact the restored session before this turn's answer (the first turn of an Ask working session forked
+    /// from the analytic one; ADR-004 addendum 2026-11-18).
+    pub compact_on_start: bool,
     /// The job attempt's phase log, written by the provider too.
     pub phases: crate::phases::PhaseLog,
 }

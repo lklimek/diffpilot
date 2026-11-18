@@ -40,12 +40,21 @@ pub(crate) const MEMCAN_TOOLS: [&str; 5] = [
 /// Variables Codex forwards from its own environment to `github-mcp-server` (S6 finding 10).
 const GITHUB_PROXY_VARS: [&str; 4] = ["HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"];
 
-/// The per-job configuration; `github_mcp` is the GitHub MCP binary and `no_proxy` the bypass hosts.
+/// Context size at which Codex compacts a session by itself (ADR-004).
+pub(crate) const AUTO_COMPACT_TOKEN_LIMIT: u32 = 400_000;
+/// Limit of the first turn of an Ask working session forked from the analytic one: Codex compacts the fork before
+/// that turn (pre-turn compaction, S1b finding 3) and the turn continues on the compacted context; above the
+/// compacted size plus one turn, so the turn does not compact again (ADR-004 addendum 2026-11-18).
+pub(crate) const FORK_COMPACT_TOKEN_LIMIT: u32 = 80_000;
+
+/// The per-job configuration; `github_mcp` is the GitHub MCP binary, `no_proxy` the bypass hosts and
+/// `compact_limit` the context size at which Codex compacts.
 pub(crate) fn config_toml(
     model: &ModelChoice,
     access: &AgentAccess,
     github_mcp: &Path,
     no_proxy: &str,
+    compact_limit: u32,
 ) -> String {
     let effort = match model.reasoning_effort {
         ReasoningEffort::Low => "low",
@@ -55,7 +64,7 @@ pub(crate) fn config_toml(
     let mut config = format!(
         r#"model = {model}
 model_reasoning_effort = "{effort}"
-model_auto_compact_token_limit = 400000
+model_auto_compact_token_limit = {compact_limit}
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
 project_doc_max_bytes = 0
@@ -232,7 +241,22 @@ mod tests {
             access,
             Path::new("/opt/github-mcp/github-mcp-server"),
             NO_PROXY,
+            AUTO_COMPACT_TOKEN_LIMIT,
         )
+    }
+
+    #[test]
+    fn the_compaction_limit_is_the_given_one() {
+        let access = AgentAccess::default();
+        assert!(job_config(&access).contains("model_auto_compact_token_limit = 400000\n"));
+        let fork = config_toml(
+            &model(),
+            &access,
+            Path::new("/x"),
+            NO_PROXY,
+            FORK_COMPACT_TOKEN_LIMIT,
+        );
+        assert!(fork.contains("model_auto_compact_token_limit = 80000\n"));
     }
 
     /// The MCP part of the config: everything from the first `[mcp_servers.` table.

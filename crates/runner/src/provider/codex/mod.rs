@@ -379,6 +379,11 @@ impl CodexProvider {
             &call.access,
             &self.settings.github_mcp,
             AGENT_NO_PROXY,
+            if call.compact_on_start {
+                config::FORK_COMPACT_TOKEN_LIMIT
+            } else {
+                config::AUTO_COMPACT_TOKEN_LIMIT
+            },
         );
         replace_private(&call.codex_home.join(CONFIG_FILE), config.as_bytes())
     }

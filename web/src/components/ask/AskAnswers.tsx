@@ -66,7 +66,8 @@ function Answer({
     case "answering":
       return (
         <p role="status" className="text-muted">
-          The LLM is working on the answer; it appears here whole when it is ready.
+          The LLM is working on the answer; it appears here whole when it is ready. The first question on a
+          pull request takes longer: the conversation is prepared first.
         </p>
       );
     case "failed":

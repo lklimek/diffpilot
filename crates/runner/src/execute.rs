@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use contracts::ids::JobId;
+use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
     SessionReport,
@@ -39,6 +40,8 @@ impl EventSink {
     }
 }
 
+/// Activity line of the first turn of a new working session, which compacts the fork first and takes longer.
+const PREPARING_FORK: &str = "Preparing the conversation (first question on this pull request)";
 /// Events buffered between the provider and `execute`; small, as summaries are not clipped yet.
 const EVENT_BUFFER: usize = 16;
 /// Longest failure message in a result.
@@ -260,6 +263,7 @@ impl Executor {
             },
             access: spec.access.clone(),
             skills: spec.skills.clone(),
+            compact_on_start: false,
             phases: phases.clone(),
         };
         let (tx, rx) = mpsc::channel(EVENT_BUFFER);
@@ -339,11 +343,31 @@ impl Executor {
         }
         if let Some(session) = &spec.session {
             if session.pull_request_id == spec.pull_request_id {
-                match self
+                // A new working fork is compacted once, in its first turn (ADR-004 addendum 2026-11-18).
+                call.compact_on_start = spec.working_session.is_some();
+                if call.compact_on_start {
+                    let _ = events
+                        .send(ProviderEvent::Activity(JobEvent {
+                            seq: 0,
+                            at: Utc::now(),
+                            activity: ActivityKind::Reasoning,
+                            summary: PREPARING_FORK.to_owned(),
+                        }))
+                        .await;
+                }
+                let mut resumed = self
                     .provider
                     .resume(&session.thread_id, &call, events.clone())
-                    .await
-                {
+                    .await;
+                if call.compact_on_start && matches!(resumed, Err(ProviderError::Failed { .. })) {
+                    tracing::warn!(job = %spec.job_id, "the turn compacting the forked session failed; answering from the uncompacted fork");
+                    call.compact_on_start = false;
+                    resumed = self
+                        .provider
+                        .resume(&session.thread_id, &call, events.clone())
+                        .await;
+                }
+                match resumed {
                     Err(ProviderError::SessionUnavailable) => {
                         tracing::info!(job = %spec.job_id, "the pull request's agent session is unavailable; starting a new one with the context pack");
                     }
@@ -360,6 +384,8 @@ impl Executor {
             Some(_) => SessionOutcome::StartedAfterLoss,
             None => SessionOutcome::Started,
         };
+        // A new session holds only the context pack: nothing to compact.
+        call.compact_on_start = false;
         (self.provider.run(&call, events).await, outcome)
     }
 
