@@ -23,6 +23,9 @@ address, so the runner reaches only the server's runner listener and the proxy),
 Requirements: Docker Engine 28.0 or newer (bridge gateway mode `isolated` of the runner network; older engines
 ignore the option, and the runner's preflight then refuses to start with exit 78), Docker Compose 2.24.4 or newer (`!override` in the local variant), about 15 GB free
 disk for images and build cache, plus the codex-homes image. Check: `docker version -f '{{.Server.Version}}'`.
+Memory: the runner's job checkout lives in the RAM-backed `/work` (`SR_RUNNER_WORK_SIZE`, charged to
+`SR_RUNNER_MEM_LIMIT`); a full-history checkout of a large repository (for example `dashpay/platform`) takes about
+1.5 GB of it, so keep the runner limit at least 3 GB above the largest checkout.
 
 1. Checkout (any user with access to `/srv/smart-review`):
 
