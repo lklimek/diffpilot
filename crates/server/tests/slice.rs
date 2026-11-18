@@ -1623,16 +1623,16 @@ async fn lines_caps_deleted_blocks() {
     );
 }
 
-/// Pending and failed flow ranges stay explicitly unassessed in their planned flow.
-/// Waits until `stage` was submitted `runs` times, then checks that no further run follows.
-async fn settled_runs(h: &Harness, stage: &str, runs: usize) {
+/// Waits until `stage` was submitted `runs` times and the driver of analysis `id` ended (nothing can follow),
+/// then checks that no further run was submitted.
+async fn settled_runs(h: &Harness, id: &str, stage: &str, runs: usize) {
     for _ in 0..500 {
         if h.executor.specs_of(stage).len() >= runs {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    wait_parked(analysis_id(id)).await;
     assert_eq!(h.executor.specs_of(stage).len(), runs, "runs of {stage}");
 }
 
@@ -1691,6 +1691,7 @@ async fn failed_job_keeps_partial_review_and_can_be_requested_again() {
     );
 }
 
+/// A failed flow's ranges stay explicitly unassessed in its planned flow.
 #[tokio::test]
 async fn schema_invalid_flow_exhausts_repairs_and_stays_explicitly_failed() {
     let h = harness().await;
@@ -1698,7 +1699,7 @@ async fn schema_invalid_flow_exhausts_repairs_and_stays_explicitly_failed() {
         .script("flow:f2", Script::Output(json!({ "flow_id": "f2" })));
     let id = h.create_fixture_analysis().await;
     // Three runs (two repairs) per turn; the first turn and two automatic retries.
-    settled_runs(&h, "flow:f2", 9).await;
+    settled_runs(&h, &id, "flow:f2", 9).await;
     let tour = wait_for_failed_flow(&h, &id, "f2").await;
     let flow = tour["flows"]
         .as_array()
@@ -2438,8 +2439,8 @@ async fn huge_pull_request_is_planned_in_batches() {
     assert_eq!(status, StatusCode::CREATED, "{created}");
     let id = created["id"].as_str().expect("id").to_owned();
     // Each flow fails for good after its first turn and two automatic retries (three runs each).
-    settled_runs(&h, "flow:f1", 9).await;
-    settled_runs(&h, "flow:f2", 9).await;
+    settled_runs(&h, &id, "flow:f1", 9).await;
+    settled_runs(&h, &id, "flow:f2", 9).await;
     wait_for_failed_flow(&h, &id, "f1").await;
     wait_for_failed_flow(&h, &id, "f2").await;
     let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
@@ -2689,7 +2690,7 @@ async fn flow_too_large_for_a_prompt_stays_failed_with_its_reason() {
     );
     assert_eq!(flow["planned"]["ranges"][0]["file"], "b/two.txt");
     // Both flows failed for good: their lines stay listed as not explained, the unsent ones with the reason.
-    settled_runs(&h, "flow:f1", 9).await;
+    settled_runs(&h, &id, "flow:f1", 9).await;
     let tour = wait_for_failed_flow(&h, &id, "f1").await;
     let lines = json!([{ "start_line": 1, "end_line": 5 }]);
     assert_eq!(
@@ -2699,6 +2700,14 @@ async fn flow_too_large_for_a_prompt_stays_failed_with_its_reason() {
             { "file": "b/two.txt", "side": "head", "ranges": lines, "reason": "too_large_for_prompt" }
         ])
     );
+    // The flow that was sent used its automatic retries (a job round each); the unsent one used neither.
+    for (flow, expected) in [("f1", (2, 2)), ("f2", (2, 0))] {
+        let flow = contracts::ids::FlowId(flow.to_owned());
+        let retries = db::repo::flow_work::testing::retries(&h.state.db, analysis_id(&id), &flow)
+            .await
+            .expect("retries");
+        assert_eq!(retries, expected, "{flow:?}");
+    }
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;
 }
@@ -3357,7 +3366,7 @@ async fn failed_flow_is_retried_automatically_twice_then_waits_for_the_user() {
     let h = harness().await;
     h.executor.script("flow:f2", Script::Fail);
     let id = h.create_fixture_analysis().await;
-    settled_runs(&h, "flow:f2", 3).await;
+    settled_runs(&h, &id, "flow:f2", 3).await;
     let order: Vec<String> = h
         .executor
         .specs
@@ -3456,13 +3465,60 @@ async fn analysis_without_admitted_work_parks_and_a_flow_request_restarts_it() {
         .await;
 }
 
+/// A flow request stored while no driver ran (the server stopped before starting one) is picked up at start.
+#[tokio::test]
+async fn restart_starts_a_driver_for_a_stored_flow_request() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    let off = h
+        .send(
+            "PUT",
+            &format!("/api/v1/analyses/{id}/background"),
+            Auth::SessionCsrf,
+            Some(json!({ "enabled": false })),
+        )
+        .await;
+    assert_eq!(off.status(), StatusCode::OK);
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&first.spec, "flow:f1"),
+        },
+    )
+    .await;
+    wait_parked(analysis_id(&id)).await;
+    h.state
+        .db
+        .flow_work()
+        .request(
+            analysis_id(&id),
+            &contracts::ids::FlowId("f4".to_owned()),
+            Utc::now(),
+        )
+        .await
+        .expect("request");
+    assert!(h.runner_claim().await.is_none(), "no driver, no job");
+    assert_eq!(
+        server::pipeline::resume_unfinished(&h.state)
+            .await
+            .expect("resume"),
+        1
+    );
+    let next = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&next).await, ("flow:f4".to_owned(), 0));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
 #[tokio::test]
 async fn failed_flow_job_keeps_its_cause() {
     let h = harness().await;
     h.executor
         .script("flow:f2", Script::FailKind(JobFailureKind::Timeout));
     let id = h.create_fixture_analysis().await;
-    settled_runs(&h, "flow:f2", 3).await;
+    settled_runs(&h, &id, "flow:f2", 3).await;
     let tour = wait_for_failed_flow(&h, &id, "f2").await;
     let flow = tour["flows"]
         .as_array()
@@ -3473,6 +3529,37 @@ async fn failed_flow_job_keeps_its_cause() {
     assert_eq!(
         flow["analysis_status"]["message"],
         "The flow analysis failed. The LLM call took too long and was stopped. Retry this flow."
+    );
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// While an automatic retry of a failed flow is left, its message says so instead of asking for a Retry.
+#[tokio::test]
+async fn failed_flow_with_an_automatic_retry_left_says_so() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    h.complete(
+        &first,
+        JobOutcome::Failed {
+            kind: JobFailureKind::Timeout,
+            message: "the runtime cap was reached".to_owned(),
+        },
+    )
+    .await;
+    let tour = wait_for_failed_flow(&h, &id, "f1").await;
+    let flow = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|f| f["id"] == "f1")
+        .expect("f1");
+    assert_eq!(
+        flow["analysis_status"]["message"],
+        "The flow analysis failed. The LLM call took too long and was stopped. It will be tried again automatically."
     );
     h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
         .await;

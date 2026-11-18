@@ -1769,6 +1769,40 @@ async fn pipeline_failure_and_retry_keep_open_questions() {
     assert_ne!(f.question(id).await.state, AskState::Failed);
 }
 
+/// A ready answer of a job flagged for cancel (its analysis still live, the PR session kept) is not shown.
+#[tokio::test]
+async fn ready_answer_of_a_job_flagged_for_cancel_is_not_published() {
+    let f = fixture(true).await;
+    let (id, claim) = f.stopped_on_a_claimed_job().await;
+    let job = claim.spec.job_id;
+    let answer = || serde_json::from_value(good_answer()).expect("answer");
+    let shown = super::publish_provisional(&f.state, f.analysis, id, job, answer())
+        .await
+        .expect("publish");
+    assert!(shown.is_some_and(|question| question.answer.is_some()));
+    f.state
+        .db
+        .questions()
+        .update(id, &QuestionUpdate::Answering, Utc::now())
+        .await
+        .expect("withdrawn");
+    assert_eq!(
+        f.state
+            .db
+            .jobs()
+            .request_cancel(job, Utc::now())
+            .await
+            .expect("cancel"),
+        JobState::Claimed,
+        "a claimed job is only flagged"
+    );
+    let shown = super::publish_provisional(&f.state, f.analysis, id, job, answer())
+        .await
+        .expect("publish");
+    assert_eq!(shown, None);
+    assert_eq!(f.question(id).await.answer, None);
+}
+
 /// A question cancelled together with its analysis says so, not that the pull request was analysed again.
 #[tokio::test]
 async fn question_cancelled_with_its_analysis_says_what_happened() {

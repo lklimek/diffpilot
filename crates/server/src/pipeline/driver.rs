@@ -22,7 +22,7 @@ use contracts::job::spec::{
 };
 use db::error::DbError;
 use db::repo::documents::DocumentKind;
-use db::repo::flow_work::NextFlow;
+use db::repo::flow_work::{NextFlow, RETRY_BY_USER};
 use db::repo::jobs::{JobStage, MAX_REPAIR_RUNS};
 use db::repo::settings::CallFailure;
 use futures::StreamExt;
@@ -35,7 +35,9 @@ use super::batching;
 use super::context::StoredResults;
 use super::unsent::{self, Unsent};
 use super::verdict::{self, Facts, Outputs};
-use super::{CREDENTIAL_ID, PipelineError, control, diff_files, prepare, prepass, statistics};
+use super::{
+    CREDENTIAL_ID, DriverEnd, PipelineError, control, diff_files, prepare, prepass, statistics,
+};
 use crate::api::settings::plain_failure;
 use crate::github::oauth::endpoint;
 use crate::jobs::executor::{ExecutorError, JobHandle, JobRequest, JobUpdate};
@@ -115,11 +117,14 @@ struct Driver<'a> {
     paused: BTreeMap<String, Option<DateTime<Utc>>>,
 }
 
-/// Runs the analysis to its end; `Ok` once it is finished (or was not live).
-pub(super) async fn drive(state: &AppState, analysis: AnalysisId) -> Result<(), PipelineError> {
+/// Runs the analysis until it is finished (or was not live) or no flow work is admitted.
+pub(super) async fn drive(
+    state: &AppState,
+    analysis: AnalysisId,
+) -> Result<DriverEnd, PipelineError> {
     let mut summary = state.db.analyses().summary(analysis).await?;
     if !control::is_live(&summary.state) {
-        return Ok(());
+        return Ok(DriverEnd::Finished);
     }
     control::wait_for_resume(state, analysis).await?;
     let mirror = prepare(state, &mut summary).await?;
@@ -216,7 +221,7 @@ async fn snapshot(
 }
 
 impl Driver<'_> {
-    async fn run(&mut self) -> Result<(), PipelineError> {
+    async fn run(&mut self) -> Result<DriverEnd, PipelineError> {
         let mut events = self.state.progress.subscribe(self.analysis);
         let mut updates = Updates::new();
         self.set_progress().await?;
@@ -329,7 +334,8 @@ impl Driver<'_> {
                 None => {}
             }
         }
-        self.finish_analysis().await
+        self.finish_analysis().await?;
+        Ok(DriverEnd::Finished)
     }
 
     /// Submits the next waiting stage once no job runs; stages resolved meanwhile are skipped.
@@ -421,16 +427,16 @@ impl Driver<'_> {
     /// Ends the driver while flows remain but none is admitted (failed for good, or not requested with background
     /// analysis off): the analysis stays `running` without a stage, and a flow request, background analysis
     /// switched on or a restart with admitted work starts a driver again.
-    async fn park(&self) -> Result<(), PipelineError> {
+    async fn park(&self) -> Result<DriverEnd, PipelineError> {
         let (done, total) = self.progress();
         tracing::info!(analysis = %self.analysis, done, total,
             "no flow work is admitted; the analysis waits for a flow request or background analysis");
         let summary = self.state.db.analyses().summary(self.analysis).await?;
-        if let Err(error) = statistics::log_end(self.state, &summary).await {
+        if let Err(error) = statistics::log_parked(self.state, &summary).await {
             tracing::warn!(analysis = %self.analysis, ?error,
                 "analysis statistics unavailable when the flow work stopped");
         }
-        Ok(())
+        Ok(DriverEnd::Parked)
     }
 
     /// Final verification over every stored output (wording warnings logged, incomplete move detection
@@ -546,7 +552,7 @@ impl Driver<'_> {
                         .fail(
                             self.analysis,
                             id,
-                            &format!("The flow analysis failed. {cause} Retry this flow."),
+                            &format!("The flow analysis failed. {cause} {RETRY_BY_USER}"),
                         )
                         .await?;
                     self.ended.insert(id.clone(), FlowEnd::Failed);
@@ -697,7 +703,9 @@ impl Driver<'_> {
                     .fail(
                         self.analysis,
                         &id,
-                        "The flow output failed verification after repairs. Retry this flow.",
+                        &format!(
+                            "The flow output failed verification after repairs. {RETRY_BY_USER}"
+                        ),
                     )
                     .await?;
                 self.ended.insert(id, FlowEnd::Failed);

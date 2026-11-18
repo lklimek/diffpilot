@@ -57,7 +57,8 @@ pub enum ClaimError {
     /// The task minting the job's installation token ended abnormally.
     #[error("the task minting the job's GitHub installation token failed")]
     GithubTask(#[source] tokio::task::JoinError),
-    /// The job's context pack could not be built; the job was not handed out and stays queued.
+    /// The job's context pack could not be built; the job was not handed out and its claim is released with the
+    /// attempt spent (queued again, or failed once no attempt is left).
     #[error("the job's context pack could not be built")]
     ContextPack(#[source] ContextPackError),
 }
