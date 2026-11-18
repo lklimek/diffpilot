@@ -7,6 +7,7 @@
 mod execute;
 mod query;
 mod rest;
+mod schema;
 mod search;
 mod world;
 
@@ -530,7 +531,6 @@ impl Dashboard {
         doc: Result<&query::Document, &query::DocumentError>,
         request: &GraphqlRequest,
         headers: &HeaderMap,
-        oauth: &Oauth,
     ) -> Response {
         let mut record = self.new_record(Target::Graphql, "POST", "/graphql");
         if let Ok(doc) = doc {
@@ -541,7 +541,19 @@ impl Dashboard {
         } else {
             record.rate_limit_selected = Some(false);
         }
-        let response = self.graphql_answer(doc, request, headers, oauth, &mut record);
+        let response = self.graphql_answer(doc, request, headers, &mut record);
+        self.record(record, response.status());
+        response
+    }
+
+    /// GitHub's 401 for a GraphQL request without a valid token (checked before parsing).
+    fn unauthorized(&self) -> Response {
+        let record = self.new_record(Target::Graphql, "POST", "/graphql");
+        let response = (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"message": "Bad credentials", "documentation_url": "https://docs.github.com/graphql"})),
+        )
+            .into_response();
         self.record(record, response.status());
         response
     }
@@ -551,18 +563,10 @@ impl Dashboard {
         doc: Result<&query::Document, &query::DocumentError>,
         request: &GraphqlRequest,
         headers: &HeaderMap,
-        oauth: &Oauth,
         record: &mut RequestRecord,
     ) -> Response {
         if let Some(rejection) = require_user_agent(headers) {
             return rejection;
-        }
-        if oauth.credentials(headers) != Credentials::Valid {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({"message": "Bad credentials", "documentation_url": "https://docs.github.com/graphql"})),
-            )
-                .into_response();
         }
         let pulls = record.pull_requests.unwrap_or_default();
         let text = format!("{} {}", request.query, request.variables);
@@ -584,6 +588,14 @@ impl Dashboard {
                         .into_response();
                 }
             };
+            let problems = self.world.schema.validate(doc);
+            if !problems.is_empty() {
+                tracing::debug!(
+                    count = problems.len(),
+                    "fake-github refused a dashboard GraphQL document"
+                );
+                return (StatusCode::OK, Json(json!({ "errors": problems }))).into_response();
+            }
             if pulls >= HTML_ERROR_FROM {
                 record.fault = Some("oversized_batch");
                 tracing::info!(
@@ -760,6 +772,9 @@ pub(crate) async fn serve_graphql(
     if let Some(dashboard) = &state.dashboard
         && let Ok(request) = serde_json::from_slice::<GraphqlRequest>(&body)
     {
+        if state.oauth.credentials(&headers) != Credentials::Valid {
+            return dashboard.unauthorized();
+        }
         let doc = query::parse(&request.query)
             .map_err(query::DocumentError::from)
             .and_then(|mut doc| {
@@ -770,8 +785,8 @@ pub(crate) async fn serve_graphql(
             });
         match doc {
             Ok(doc) if execute::routes_to_v1(&doc, dashboard.recorded_pull.as_ref()) => {}
-            Ok(doc) => return dashboard.graphql(Ok(&doc), &request, &headers, &state.oauth),
-            Err(error) => return dashboard.graphql(Err(&error), &request, &headers, &state.oauth),
+            Ok(doc) => return dashboard.graphql(Ok(&doc), &request, &headers),
+            Err(error) => return dashboard.graphql(Err(&error), &request, &headers),
         }
     }
     crate::graphql::serve(State(state.graphql), headers, body).await

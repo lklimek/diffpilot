@@ -78,7 +78,7 @@ pub(crate) enum DocumentError {
         /// Fragment name.
         name: String,
     },
-    /// More than `MAX_FIELDS` field selections once fragments are expanded.
+    /// More than `MAX_FIELDS` selections once fragments are expanded.
     #[error("The query expands to more than {MAX_FIELDS} fields")]
     TooLarge,
 }
@@ -507,6 +507,9 @@ impl Parser {
     fn selection_set(&mut self) -> Result<Vec<Selection>, ParseError> {
         self.expect('{')?;
         self.descend()?;
+        if self.peek() == Some(&Token::Punct('}')) {
+            return Err(self.unexpected());
+        }
         let mut selections = Vec::new();
         while !self.eat('}') {
             if self.peek() == Some(&Token::Spread) {
@@ -713,8 +716,8 @@ impl Document {
         Ok(())
     }
 
-    /// Field selections of `selections` with fragments expanded, saturating; `path` holds the fragments being
-    /// expanded (a repeat is a loop), `sizes` the finished ones.
+    /// Selections of `selections` (fields, spreads, inline fragments) with fragments expanded, saturating;
+    /// `path` holds the fragments being expanded (a repeat is a loop), `sizes` the finished ones.
     fn size<'a>(
         &'a self,
         selections: &'a [Selection],
@@ -725,12 +728,12 @@ impl Document {
         for selection in selections {
             let size = match selection {
                 Selection::Field(field) => 1 + self.size(&field.selections, sizes, path)?,
-                Selection::Inline { selections, .. } => self.size(selections, sizes, path)?,
+                Selection::Inline { selections, .. } => 1 + self.size(selections, sizes, path)?,
                 Selection::Spread(name) => {
                     if path.contains(&name.as_str()) {
                         return Err(DocumentError::FragmentLoop { name: name.clone() });
                     }
-                    if let Some(size) = sizes.get(name.as_str()) {
+                    1 + if let Some(size) = sizes.get(name.as_str()) {
                         *size
                     } else {
                         let fragment = self

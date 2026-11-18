@@ -1446,3 +1446,110 @@ async fn primary_limit_status_is_configurable_and_graphql_needs_a_user_agent() {
         .unwrap();
     assert_eq!(anonymous_agent.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn nested_typos_are_refused_whatever_the_data() {
+    let fake = spawn().await;
+    let pull = |number: u32, selection: &str| {
+        format!(
+            "{{ rateLimit {{ cost }} p0: repository(owner: \"acme\", name: \"platform\") {{ pullRequest(number: {number}) {{ {selection} }} }} }}"
+        )
+    };
+    for (number, selection) in [
+        (1203, "milestone { titel }"),
+        (1203, "labels(first: 5) { nodes { nmae } }"),
+        (
+            1203,
+            "commits(last: 1) { nodes { commit { statusCheckRollup { stat } } } }",
+        ),
+        (1203, "baseRepository { defaultBranchRef { nam } }"),
+        (1203, "reviews(last: 5) { nodes { stat } }"),
+        (1203, "reviewThreads(first: 5) { nodes { isResolvd } }"),
+        (1203, "labels(first: 5) { edges { nod { name } } }"),
+        (1203, "title { length }"),
+        (1203, "milestone"),
+        (4040, "titel"),
+    ] {
+        let body = fake.graphql(&pull(number, selection)).await;
+        assert_eq!(refused(&body).len(), 1, "{selection}: {body}");
+    }
+    let hidden = fake
+        .graphql("{ rateLimit { cost } a: repository(owner: \"acme\", name: \"secret\") { pullRequest(number: 1) { titel } } }")
+        .await;
+    refused(&hidden);
+    let valid = fake
+        .graphql(&pull(1203, "milestone { title } labels(first: 5) { totalCount edges { cursor node { name } } pageInfo { hasNextPage } }"))
+        .await;
+    assert_eq!(
+        valid["data"]["p0"]["pullRequest"]["milestone"]["title"],
+        "v2.4"
+    );
+    assert_eq!(
+        valid["data"]["p0"]["pullRequest"]["labels"]["edges"][0]["node"]["name"],
+        "bug"
+    );
+}
+
+#[tokio::test]
+async fn empty_fragment_fan_out_is_refused_and_tokens_are_checked_first() {
+    let fake = spawn().await;
+    let mut fan_out = String::from("{ ...F0 } fragment F12 on Query { }");
+    for level in 0..12 {
+        fan_out.push_str(&format!(
+            " fragment F{level} on Query {{ {} }}",
+            format!("...F{} ", level + 1).repeat(8)
+        ));
+    }
+    let timed = || {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap()
+    };
+    let anonymous = timed()
+        .post(format!("{}/graphql", fake.base))
+        .header(USER_AGENT, "smart-review")
+        .json(&json!({"query": fan_out}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        anonymous.status(),
+        StatusCode::UNAUTHORIZED,
+        "no parsing before the token check"
+    );
+    let body: Value = timed()
+        .post(format!("{}/graphql", fake.base))
+        .header(USER_AGENT, "smart-review")
+        .header(AUTHORIZATION, format!("Bearer {}", fake.token))
+        .json(&json!({"query": fan_out}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        refused(&body)[0].starts_with("Parse error"),
+        "an empty selection set is not GraphQL"
+    );
+    let mut spreads_only = String::from("{ ...F0 } fragment F12 on Query { rateLimit { cost } }");
+    for level in 0..12 {
+        spreads_only.push_str(&format!(
+            " fragment F{level} on Query {{ {} }}",
+            format!("...F{} ", level + 1).repeat(8)
+        ));
+    }
+    let body: Value = timed()
+        .post(format!("{}/graphql", fake.base))
+        .header(USER_AGENT, "smart-review")
+        .header(AUTHORIZATION, format!("Bearer {}", fake.token))
+        .json(&json!({"query": spreads_only}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(refused(&body)[0].contains("more than"));
+}

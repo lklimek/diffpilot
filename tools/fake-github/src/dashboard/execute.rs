@@ -1,11 +1,8 @@
-//! Executes a resolved dashboard document against the world: root lookups (`repository`, `repositoryOwner`,
-//! `rateLimit`), a repository's `pullRequest`/`issue` lookups and `pullRequests`/`issues` listings, an owner's
-//! `repositories`, `reviews(author:, states:)`, `timelineItems(itemTypes:)`, and GitHub's connection rules
-//! (`first`/`last` within 1–100 when `nodes`/`edges` are selected, opaque cursors). Other fields are read from
-//! the node. Like GitHub, a document with an unknown field or argument, a wrongly typed or missing argument, or
-//! a pagination error is refused as a whole (`errors` only); lookups that find nothing are `null` with a
-//! `NOT_FOUND` error next to the data. Fields are known per type from the world's nodes (`World::fields`), so
-//! only objects reached during execution are checked.
+//! Executes a dashboard document `Schema::validate` accepted against the world: root lookups (`repository`,
+//! `repositoryOwner`, `rateLimit`), a repository's `pullRequest`/`issue` lookups and `pullRequests`/`issues`
+//! listings, an owner's `repositories`, `reviews(author:, states:)`, `timelineItems(itemTypes:)`, and connection
+//! pages (`first`/`last`/`after`, opaque cursors). Other fields are read from the node; lookups that find nothing
+//! are `null` with a `NOT_FOUND` error next to the data.
 
 use std::collections::HashMap;
 
@@ -35,8 +32,6 @@ const CONCRETE: &[&str] = &[
 ];
 /// Deepest fragment nesting followed (resolved documents have no fragment cycles).
 const MAX_FRAGMENT_DEPTH: usize = 64;
-/// GitHub's page-size limit of a connection.
-const MAX_PAGE: i64 = 100;
 
 /// Fields of `selections` that apply to an object of `typename`, fragments expanded, in document order.
 pub(crate) fn collect_fields<'a>(
@@ -127,91 +122,6 @@ pub(crate) fn batch_size(doc: &Document) -> (usize, usize, bool) {
 /// The pull request whose head moves with `POST /_fake/head`: (`owner/name`, number, current head).
 pub(crate) type MovedHead = Option<(String, u64, String)>;
 
-/// Expected argument type.
-#[derive(Clone, Copy)]
-enum Expect {
-    Str,
-    Int,
-    Bool,
-    /// An enum value or a list of them.
-    Enums,
-}
-
-impl Expect {
-    fn accepts(self, value: &Value) -> bool {
-        match self {
-            Self::Str => value.is_string(),
-            Self::Int => value.is_i64(),
-            Self::Bool => value.is_boolean(),
-            Self::Enums => {
-                value.is_string()
-                    || value
-                        .as_array()
-                        .is_some_and(|items| items.iter().all(Value::is_string))
-            }
-        }
-    }
-
-    fn name(self, required: bool) -> String {
-        let name = match self {
-            Self::Str => "String",
-            Self::Int => "Int",
-            Self::Bool => "Boolean",
-            Self::Enums => "[Enum!]",
-        };
-        format!("{name}{}", if required { "!" } else { "" })
-    }
-}
-
-/// Implemented arguments of a field: name, type, required.
-type ArgSpec = &'static [(&'static str, Expect, bool)];
-
-const STATES: (&str, Expect, bool) = ("states", Expect::Enums, false);
-const FIRST: (&str, Expect, bool) = ("first", Expect::Int, false);
-const LAST: (&str, Expect, bool) = ("last", Expect::Int, false);
-const AFTER: (&str, Expect, bool) = ("after", Expect::Str, false);
-
-/// The arguments the fake implements for a field; `connection` marks a field whose value is a connection.
-fn arg_spec(typename: &str, field: &str, connection: bool) -> ArgSpec {
-    match (typename, field) {
-        ("Query", "repository") => &[("owner", Expect::Str, true), ("name", Expect::Str, true)],
-        ("Query", "repositoryOwner") => &[("login", Expect::Str, true)],
-        ("Repository", "pullRequest" | "issue") => &[("number", Expect::Int, true)],
-        ("Repository", "pullRequests") => &[
-            STATES,
-            FIRST,
-            LAST,
-            AFTER,
-            ("baseRefName", Expect::Str, false),
-            ("headRefName", Expect::Str, false),
-        ],
-        ("Repository", "issues") => &[STATES, FIRST, LAST, AFTER],
-        ("Organization" | "User", "repositories") => {
-            &[FIRST, LAST, AFTER, ("isArchived", Expect::Bool, false)]
-        }
-        ("PullRequest", "reviews") => &[("author", Expect::Str, false), STATES, FIRST, LAST, AFTER],
-        (_, "timelineItems") if connection => {
-            &[FIRST, LAST, AFTER, ("itemTypes", Expect::Enums, false)]
-        }
-        _ if connection => &[FIRST, LAST, AFTER],
-        _ => &[],
-    }
-}
-
-/// Fields answered by a resolver rather than read from the node.
-fn is_resolver(typename: &str, field: &str) -> bool {
-    matches!(
-        (typename, field),
-        ("Query", "repository" | "repositoryOwner" | "rateLimit")
-            | (
-                "Repository",
-                "pullRequest" | "issue" | "pullRequests" | "issues"
-            )
-            | ("Organization" | "User", "repositories")
-            | ("PullRequest", "reviews")
-    )
-}
-
 /// `ReviewRequestedEvent` → `REVIEW_REQUESTED_EVENT`.
 fn item_type(typename: &str) -> String {
     let mut out = String::new();
@@ -231,12 +141,10 @@ struct Executor<'a> {
     moved_head: &'a MovedHead,
     /// Lookups that found nothing (answered next to the data).
     errors: Vec<Value>,
-    /// Problems GitHub finds before execution (the whole document is refused).
-    invalid: Vec<Value>,
 }
 
-/// Runs `doc` and returns GitHub's response body: `data` (and `errors` when a lookup failed), or `errors` only
-/// when the document is invalid.
+/// Runs a document `Schema::validate` accepted and returns GitHub's response body: `data`, and `errors` when a
+/// lookup failed.
 pub(crate) fn execute(
     doc: &Document,
     world: &World,
@@ -249,16 +157,13 @@ pub(crate) fn execute(
         rate_limit,
         moved_head,
         errors: Vec::new(),
-        invalid: Vec::new(),
     };
     let data = executor.object(
         &json!({"__typename": "Query"}),
         &doc.selections,
         &mut Vec::new(),
     );
-    if !executor.invalid.is_empty() {
-        json!({ "errors": executor.invalid })
-    } else if executor.errors.is_empty() {
+    if executor.errors.is_empty() {
         json!({ "data": data })
     } else {
         json!({ "data": data, "errors": executor.errors })
@@ -269,7 +174,8 @@ fn cursor(index: usize) -> String {
     STANDARD.encode(format!("cursor:{index}"))
 }
 
-fn cursor_index(cursor: &str) -> Option<usize> {
+/// The index an opaque cursor names.
+pub(crate) fn cursor_index(cursor: &str) -> Option<usize> {
     let decoded = STANDARD.decode(cursor).ok()?;
     std::str::from_utf8(&decoded)
         .ok()?
@@ -294,72 +200,6 @@ impl Executor<'_> {
         Value::Null
     }
 
-    fn reject(&mut self, kind: &str, path: &[String], message: String) -> Value {
-        self.invalid.push(
-            json!({"type": kind, "path": path, "locations": [], "message": message,
-            "extensions": {"code": kind}}),
-        );
-        Value::Null
-    }
-
-    /// Checks a field's arguments against `arg_spec`; records the problem and returns false when invalid.
-    fn args_ok(
-        &mut self,
-        typename: &str,
-        field: &Field,
-        connection: bool,
-        path: &[String],
-    ) -> bool {
-        let spec = arg_spec(typename, &field.name, connection);
-        let name = &field.name;
-        for (arg, value) in &field.args {
-            let Some((_, expect, required)) = spec.iter().find(|(known, _, _)| known == arg) else {
-                let implemented: Vec<&str> = spec.iter().map(|(known, _, _)| *known).collect();
-                let hint = if implemented.is_empty() {
-                    String::new()
-                } else {
-                    format!(" (fake-github implements: {})", implemented.join(", "))
-                };
-                self.reject(
-                    "argumentNotAccepted",
-                    path,
-                    format!("Field '{name}' doesn't accept argument '{arg}'{hint}"),
-                );
-                return false;
-            };
-            if !value.is_null() && !expect.accepts(value) {
-                self.reject(
-                    "argumentLiteralsIncompatible",
-                    path,
-                    format!(
-                        "Argument '{arg}' on Field '{name}' has an invalid value ({value}). Expected type '{}'.",
-                        expect.name(*required)
-                    ),
-                );
-                return false;
-            }
-        }
-        let missing: Vec<&str> = spec
-            .iter()
-            .filter(|(arg, _, required)| {
-                *required && field.args.get(*arg).is_none_or(Value::is_null)
-            })
-            .map(|(arg, _, _)| *arg)
-            .collect();
-        if !missing.is_empty() {
-            self.reject(
-                "missingRequiredArguments",
-                path,
-                format!(
-                    "Field '{name}' is missing required arguments: {}",
-                    missing.join(", ")
-                ),
-            );
-            return false;
-        }
-        true
-    }
-
     fn object(
         &mut self,
         parent: &Value,
@@ -367,8 +207,6 @@ impl Executor<'_> {
         path: &mut Vec<String>,
     ) -> Value {
         let typename = parent["__typename"].as_str();
-        let world = self.world;
-        let known = typename.and_then(|t| world.fields.get(t));
         let fields = collect_fields(selections, typename, self.fragments);
         let mut out = Map::new();
         for field in fields {
@@ -376,21 +214,8 @@ impl Executor<'_> {
                 continue;
             }
             path.push(field.key().to_owned());
-            let value =
-                if field.name != "__typename" && known.is_some_and(|k| !k.contains(&field.name)) {
-                    self.reject(
-                        "undefinedField",
-                        path,
-                        format!(
-                            "Field '{}' doesn't exist on type '{}'",
-                            field.name,
-                            typename.unwrap_or_default()
-                        ),
-                    )
-                } else {
-                    let value = self.resolve(parent, field, path);
-                    self.project(value, &field.selections, path)
-                };
+            let value = self.resolve(parent, field, path);
+            let value = self.project(value, &field.selections, path);
             path.pop();
             out.insert(field.key().to_owned(), value);
         }
@@ -427,9 +252,6 @@ impl Executor<'_> {
 
     fn resolve(&mut self, parent: &Value, field: &Field, path: &[String]) -> Value {
         let typename = parent["__typename"].as_str().unwrap_or_default();
-        if is_resolver(typename, &field.name) && !self.args_ok(typename, field, true, path) {
-            return Value::Null;
-        }
         let arg = |name: &str| field.args.get(name);
         let text = |name: &str| {
             arg(name)
@@ -487,7 +309,7 @@ impl Executor<'_> {
                     .map(|node| if field.name == "issues" { node.clone() } else { self.pull(node) })
                     .collect();
                 items.sort_by_key(|node| node["number"].as_u64());
-                self.connection(items, field, path)
+                connection(items, field)
             }
             ("Organization" | "User", "repositories") => {
                 let owner = parent["login"].as_str().unwrap_or_default();
@@ -498,7 +320,7 @@ impl Executor<'_> {
                     .filter(|r| allows(arg("isArchived"), &r["isArchived"]))
                     .cloned()
                     .collect();
-                self.connection(items, field, path)
+                connection(items, field)
             }
             ("PullRequest", "reviews") => {
                 let author = arg("author").and_then(Value::as_str);
@@ -514,15 +336,11 @@ impl Executor<'_> {
                     .filter(|review| allows(arg("states"), &review["state"]))
                     .cloned()
                     .collect();
-                self.connection(items, field, path)
+                connection(items, field)
             }
             _ => {
                 let value = parent.get(&field.name).cloned().unwrap_or(Value::Null);
-                let nodes = value.get("nodes").and_then(Value::as_array).cloned();
-                if !self.args_ok(typename, field, nodes.is_some(), path) {
-                    return Value::Null;
-                }
-                match nodes {
+                match value.get("nodes").and_then(Value::as_array).cloned() {
                     Some(nodes) => {
                         let types: Option<Vec<String>> = arg("itemTypes")
                             .and_then(Value::as_array)
@@ -535,91 +353,58 @@ impl Executor<'_> {
                                 })
                             })
                             .collect();
-                        self.connection(nodes, field, path)
+                        connection(nodes, field)
                     }
                     None => value,
                 }
             }
         }
     }
+}
 
-    /// A page of `items` following GitHub's connection arguments and limits.
-    fn connection(&mut self, items: Vec<Value>, field: &Field, path: &[String]) -> Value {
-        let name = &field.name;
-        let first = field.args.get("first").and_then(Value::as_i64);
-        let last = field.args.get("last").and_then(Value::as_i64);
-        let pages_nodes = collect_fields(&field.selections, None, self.fragments)
-            .iter()
-            .any(|f| matches!(f.name.as_str(), "nodes" | "edges"));
-        if pages_nodes && first.is_none() && last.is_none() {
-            return self.reject(
-                "MISSING_PAGINATION_BOUNDARIES",
-                path,
-                format!("You must provide a `first` or `last` value to properly paginate the `{name}` connection."),
-            );
-        }
-        for (bound, value) in [("first", first), ("last", last)] {
-            if let Some(n) = value.filter(|n| !(1..=MAX_PAGE).contains(n)) {
-                return self.reject(
-                    "EXCESSIVE_PAGE_SIZE",
-                    path,
-                    format!("Requesting {n} records on the `{name}` connection exceeds the `{bound}` limit of {MAX_PAGE} records."),
-                );
-            }
-        }
-        let start = match field.args.get("after") {
-            None | Some(Value::Null) => 0,
-            Some(after) => match after
-                .as_str()
-                .and_then(cursor_index)
-                .and_then(|i| i.checked_add(1))
-            {
-                Some(start) => start,
-                None => {
-                    return self.reject(
-                        "INVALID_CURSOR_ARGUMENTS",
-                        path,
-                        format!(
-                            "`{}` does not appear to be a valid cursor.",
-                            after.as_str().unwrap_or_default()
-                        ),
-                    );
-                }
-            },
-        };
-        let total = items.len();
-        let start = start.min(total);
-        let (begin, end) = match (first, last) {
-            (Some(n), _) => (
-                start,
-                (start + usize::try_from(n).unwrap_or_default()).min(total),
-            ),
-            (None, Some(n)) => (
-                total
-                    .saturating_sub(usize::try_from(n).unwrap_or_default())
-                    .max(start),
-                total,
-            ),
-            (None, None) => (start, total),
-        };
-        let nodes = &items[begin..end];
-        let edges: Vec<Value> = nodes
+/// A page of `items` following a connection's `first`/`last`/`after` (validated by `Schema::validate`).
+fn connection(items: Vec<Value>, field: &Field) -> Value {
+    let first = field.args.get("first").and_then(Value::as_i64);
+    let last = field.args.get("last").and_then(Value::as_i64);
+    let total = items.len();
+    let start = field
+        .args
+        .get("after")
+        .and_then(Value::as_str)
+        .and_then(cursor_index)
+        .and_then(|i| i.checked_add(1))
+        .unwrap_or(0)
+        .min(total);
+    let (begin, end) = match (first, last) {
+        (Some(n), _) => (
+            start,
+            (start + usize::try_from(n).unwrap_or_default()).min(total),
+        ),
+        (None, Some(n)) => (
+            total
+                .saturating_sub(usize::try_from(n).unwrap_or_default())
+                .max(start),
+            total,
+        ),
+        (None, None) => (start, total),
+    };
+    let nodes = &items[begin..end];
+    let edges: Vec<Value> = nodes
             .iter()
             .enumerate()
             .map(|(offset, node)| json!({"__typename": "Edge", "cursor": cursor(begin + offset), "node": node}))
             .collect();
-        let (start_cursor, end_cursor) = if nodes.is_empty() {
-            (Value::Null, Value::Null)
-        } else {
-            (json!(cursor(begin)), json!(cursor(end - 1)))
-        };
-        json!({
-            "__typename": "Connection",
-            "totalCount": total,
-            "nodes": nodes,
-            "edges": edges,
-            "pageInfo": {"__typename": "PageInfo", "hasNextPage": end < total, "hasPreviousPage": begin > 0,
-                "startCursor": start_cursor, "endCursor": end_cursor},
-        })
-    }
+    let (start_cursor, end_cursor) = if nodes.is_empty() {
+        (Value::Null, Value::Null)
+    } else {
+        (json!(cursor(begin)), json!(cursor(end - 1)))
+    };
+    json!({
+        "__typename": "Connection",
+        "totalCount": total,
+        "nodes": nodes,
+        "edges": edges,
+        "pageInfo": {"__typename": "PageInfo", "hasNextPage": end < total, "hasPreviousPage": begin > 0,
+            "startCursor": start_cursor, "endCursor": end_cursor},
+    })
 }
