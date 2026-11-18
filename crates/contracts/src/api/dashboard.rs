@@ -718,8 +718,8 @@ pub struct DashboardSettings {
     pub lookback_days: u32,
     /// Label that marks a pull request ready for a human.
     pub ready_label: String,
-    /// Excluded authors: items they author are left out unless a review is requested from one of the user's
-    /// logins or the item is assigned to one. Being listed does not make a login a bot.
+    /// Excluded authors: every pull request and issue they author is left out of the dashboard. Being listed
+    /// does not make a login a bot.
     pub skip_authors: Vec<String>,
     /// Logins treated as bots besides GitHub's `Bot` accounts and `[bot]` logins: never a waiting human.
     #[serde(default = "default_known_bots")]

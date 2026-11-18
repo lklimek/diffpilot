@@ -249,29 +249,17 @@ impl Eligibility {
     }
 }
 
-/// An excluded author's item is left out (K7) unless it is directed at a scanned login: a review requested from
-/// one (directly or through a team) or assigned to one. A mention does not keep it.
-fn skipped(
-    rules: &ScoreRules,
-    author: Option<&str>,
-    relations: &[Relation],
-) -> Option<Eligibility> {
-    let directed = relations
-        .iter()
-        .any(|r| matches!(r, Relation::ReviewRequested | Relation::Assigned));
+/// An excluded author's item is always left out (K7), whatever its relation to the user.
+fn skipped(rules: &ScoreRules, author: Option<&str>) -> Option<Eligibility> {
     author
-        .filter(|a| !directed && rules.is_skipped_author(a))
-        .map(|a| {
-            Eligibility::no(format!(
-                "author @{a} is excluded (not assigned to you or requested from you)"
-            ))
-        })
+        .filter(|a| rules.is_skipped_author(a))
+        .map(|a| Eligibility::no(format!("author @{a} is excluded")))
 }
 
 /// Skill `pr_eligibility` with the excluded authors (K7) and per-repository ownership policies (K4).
 pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
     let author = pr.author.as_deref().unwrap_or("?");
-    if let Some(no) = skipped(rules, pr.author.as_deref(), &pr.relations) {
+    if let Some(no) = skipped(rules, pr.author.as_deref()) {
         return no;
     }
     if pr.is_draft && !rules.is_scanned(author) {
@@ -293,10 +281,9 @@ pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
     }
 }
 
-/// Issues are ranked unless their author is excluded and they are not assigned to a scanned login (K7).
+/// Issues are ranked unless their author is excluded (K7).
 pub(super) fn issue_eligibility(rules: &ScoreRules, issue: &IssueFacts) -> Eligibility {
-    skipped(rules, issue.author.as_deref(), &issue.relations)
-        .unwrap_or_else(|| Eligibility::yes("open issue"))
+    skipped(rules, issue.author.as_deref()).unwrap_or_else(|| Eligibility::yes("open issue"))
 }
 
 fn advancement(rules: &ScoreRules, pr: &PrFacts) -> Part {

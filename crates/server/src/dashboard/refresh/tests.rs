@@ -709,21 +709,18 @@ async fn full_refresh_stores_the_expected_snapshot() {
     assert_eq!(
         meta.item_counts,
         ItemCounts {
-            total: 19,
-            pr: 11,
+            total: 18,
+            pr: 10,
             issue: 6,
             todo: 2,
             p0: 0,
             p1: 6,
-            p2: 5,
+            p2: 4,
             p3: 8,
-            not_judged: 19,
+            not_judged: 18,
         }
     );
-    assert_eq!(
-        meta.excluded, 3,
-        "three minor owned changes (the bot PR asks alice for a review)"
-    );
+    assert_eq!(meta.excluded, 4, "bot author and three minor owned changes");
     assert_eq!(
         meta.checked,
         KindCounts {
@@ -795,7 +792,6 @@ async fn full_refresh_stores_the_expected_snapshot() {
             "NC-476",
             "CON-1534",
             "OPS-14",
-            "NC-495",
             "PLAT-1187",
             "WUI-298",
             "NC-490",
@@ -1108,7 +1104,7 @@ async fn items_page_with_cursor_etag_and_expired_cursor() {
     let w = world().await;
     w.refreshed().await;
     let all = w.items("").await;
-    assert_eq!(all.items.len(), 19, "default limit 100");
+    assert_eq!(all.items.len(), 18, "default limit 100");
     let first = w.items("?limit=5").await;
     assert_eq!(alias_ids(&first.items), alias_ids(&all.items[..5]));
     let cursor = first.next_cursor.clone().expect("next page");
@@ -1198,7 +1194,7 @@ async fn items_filters() {
         "TODO items whatever kind says"
     );
     let prs = w.items("?kind=pr&todos=false").await;
-    assert_eq!(prs.items.len(), 11);
+    assert_eq!(prs.items.len(), 10);
     assert!(prs.items.iter().all(|i| i.kind == ItemKind::Pr));
     let wallet = w.items("?repo=ACME/wallet-ui").await;
     assert_eq!(
@@ -1513,7 +1509,7 @@ async fn search_outage_keeps_previous_snapshot() {
     let meta = summary.snapshot.expect("snapshot");
     assert_eq!(
         (second.state, meta.refresh_id, meta.item_counts.pr),
-        (RefreshState::Failed, first.id, 11),
+        (RefreshState::Failed, first.id, 10),
         "outage refresh: {:?}; current snapshot items {:?}",
         second.failure,
         meta.item_counts
