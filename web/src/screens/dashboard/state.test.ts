@@ -158,7 +158,7 @@ describe("dashboardView: schedule and limit notes", () => {
 
 describe("reviewHref (plan §F.1 PR row actions)", () => {
   const nc482 = ITEMS.find((i) => i.id === "NC-482")!;
-  const start = `/?pr=${encodeURIComponent("https://github.com/acme/node-client/pull/482")}`;
+  const start = `/review?pr=${encodeURIComponent("https://github.com/acme/node-client/pull/482")}`;
 
   it("head moved since the analysis: the review start page with the PR (it says the PR moved)", () => {
     expect(nc482.review?.head_moved).toBe(true);

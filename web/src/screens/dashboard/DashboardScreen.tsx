@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { useDashboardTabStatus } from "../../app/tabStatus";
 import { ApiError } from "../../api/client";
@@ -30,7 +30,7 @@ import {
   yesterday,
 } from "./history";
 import { REVIEW_START_PATH } from "./paths";
-import { ShellLayout } from "./ShellLayout";
+import { ShellActions, useShellSlots } from "./ShellRoute";
 import { reviewHref } from "./state";
 import { useDashboardPage } from "./useDashboardPage";
 
@@ -48,6 +48,15 @@ export function DashboardScreen() {
   const summary = page.summary.data;
   const snapshot = summary?.snapshot ?? null;
   useDashboardTabStatus(summary?.latest_refresh);
+  // The shell (layout route) shows My work's count, this page's help and its refresh control.
+  const { setCount, setHelp } = useShellSlots();
+  const count = snapshot?.item_counts.total ?? null;
+  useEffect(() => setCount(count), [count, setCount]);
+  const signedIn = user !== null;
+  useEffect(() => {
+    setHelp(signedIn ? () => setHelpOpen(true) : null);
+    return () => setHelp(null);
+  }, [signedIn, setHelp]);
 
   // Charts are bucketed by the browser's local day and week (plan §C.1).
   const charts = useMemo(() => {
@@ -161,14 +170,9 @@ export function DashboardScreen() {
   );
 
   return (
-    <ShellLayout
-      current="my-work"
-      crumb="My work"
-      login={user?.login ?? null}
-      myWorkCount={snapshot?.item_counts.total ?? null}
-      onHelp={user ? () => setHelpOpen(true) : undefined}
-      actions={
-        summary && (
+    <>
+      {summary && (
+        <ShellActions>
           <RefreshControl
             latest={summary.latest_refresh}
             snapshot={snapshot}
@@ -177,9 +181,8 @@ export function DashboardScreen() {
             starting={page.refresh.starting}
             now={now}
           />
-        )
-      }
-    >
+        </ShellActions>
+      )}
       {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
       {me.isError && <StatusMessage kind="error">{errorText(me.error)}</StatusMessage>}
       {me.isSuccess && !user && (
@@ -230,6 +233,6 @@ export function DashboardScreen() {
         {page.notice}
       </p>
       <KeyboardHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
-    </ShellLayout>
+    </>
   );
 }

@@ -35,7 +35,9 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
   );
   await expect(banner).toContainText("flows reviewed 0 / 5");
   await expect(page.getByRole("main").locator('[data-provenance="llm"]').first()).toBeVisible();
-  await expect(inspector(page)).toContainText("Unexplained: 85 changed lines in 2 files — read these yourself");
+  await expect(inspector(page)).toContainText(
+    "Unexplained: 85 changed lines in 2 files — read these yourself",
+  );
   await checkScreen(page);
 });
 
@@ -49,8 +51,11 @@ test("flows by importance, then quiet rows with Unexplained first; flow introduc
       buttons.map((b) => (b.getAttribute("aria-label") ?? b.textContent ?? "").trim()),
     );
   // The remark pills are their own buttons beside their flow or step (they lead to the first remark).
-  const pill = /^(\d+ LLM remarks? (in flow|on step) \d+|LLM flags (in flow|on step) \d+:|LLM rated step \d+)/;
-  expect(items.filter((name) => /^(\d+ LLM remarks?|LLM flags) in flow \d+/.test(name)).length).toBeGreaterThan(0);
+  const pill =
+    /^(\d+ LLM remarks? (in flow|on step) \d+|LLM flags (in flow|on step) \d+:|LLM rated step \d+)/;
+  expect(
+    items.filter((name) => /^(\d+ LLM remarks?|LLM flags) in flow \d+/.test(name)).length,
+  ).toBeGreaterThan(0);
   const entries = items.filter((name) => !/column$/.test(name) && !pill.test(name));
   expect(entries.slice(0, 6)).toEqual([
     "PR context",
@@ -102,7 +107,9 @@ test("quiet rows: Unexplained and not analysed sections, deterministic only", as
   }
 });
 
-test("hard case 3: a step without flags has no Flags section; the low assessment stays collapsed", async ({ page }) => {
+test("hard case 3: a step without flags has no Flags section; the low assessment stays collapsed", async ({
+  page,
+}) => {
   await finishedReview(page);
   await openStep(page, 1, 2);
   await expect(inspector(page).getByRole("button", { name: /^Flags/ })).toHaveCount(0);
@@ -144,7 +151,7 @@ test("resume where left off: the tick and the last viewed block survive a reload
   await expect(heading(page)).toContainText("Default timeout");
   await expect(ticked).toBeVisible();
 
-  await page.goto("/");
+  await page.goto("/review");
   await checkPr(page);
   const found = page.getByRole("status").filter({ hasText: "Analysis found." });
   await expect(found).toContainText("Your ticks, answers and last viewed block are kept");

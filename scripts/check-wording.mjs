@@ -174,7 +174,12 @@ function scan(file) {
   return found;
 }
 
-const files = readFileSync(0, "utf8").split("\0").filter(Boolean);
+// Directories outside the rules (My work, ADR-016), relative to the source root.
+const EXCLUDED = RULES.exclude ?? [];
+const files = readFileSync(0, "utf8")
+  .split("\0")
+  .filter(Boolean)
+  .filter((file) => !EXCLUDED.some((dir) => relative(srcDir, file).replaceAll("\\", "/").startsWith(dir)));
 for (const file of files) {
   for (const violation of scan(file)) process.stdout.write(`${violation}\n`);
 }

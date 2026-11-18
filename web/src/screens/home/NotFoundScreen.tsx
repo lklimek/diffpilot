@@ -8,7 +8,7 @@ export function NotFoundScreen() {
       <TopBar login={null} />
       <main id="main" className="grid content-start gap-3 px-8 py-5">
         <StatusMessage kind="error">This page does not exist.</StatusMessage>
-        <a href="/">Back to Home</a>
+        <a href="/">My work</a>
       </main>
     </div>
   );

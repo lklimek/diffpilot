@@ -228,7 +228,7 @@ describe("Tour: a background refresh that cannot succeed", () => {
     );
     expect(await screen.findByText(message)).toBeVisible();
     expect(screen.queryByRole("navigation", { name: "Flows and steps" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Back to Home" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "My work" })).toHaveAttribute("href", "/");
   });
 });
 

@@ -49,9 +49,6 @@ describe("msw dashboard settings (plan §F.6) and access tokens (ADR-019)", () =
     setDashboardSettingsScenario("load-fails");
     expect((await call(SETTINGS)).status).toBe(503);
     expect((await call(TOKENS)).status).toBe(503);
-    setDashboardSettingsScenario("not-deployed");
-    expect((await call(SETTINGS)).status).toBe(404);
-    expect((await call(TOKENS)).status).toBe(404);
     expect(() => setDashboardSettingsScenario("nope" as "defaults")).toThrow(/unknown settings scenario/);
   });
 

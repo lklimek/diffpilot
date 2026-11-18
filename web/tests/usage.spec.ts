@@ -22,13 +22,13 @@ test("usage appears in progress, PR-context facts and Settings with its provider
 });
 
 test("large PR warns in the check card and starts only on Start analysis anyway", async ({ page }) => {
-  await page.goto("/?scenario=large-pr");
+  await page.goto("/review?scenario=large-pr");
   await analyze(page);
   await expect(page.getByRole("note")).toContainText("Large PR: 27 081 changed lines in 371 files.");
   await expect(page.getByRole("note")).toContainText("rough estimate from changed lines in recent runs");
   await expect(page.getByRole("dialog")).toHaveCount(0);
   // Nothing has started yet; an edited URL clears the card, so its warning and Start never apply to another PR.
-  await expect(page).toHaveURL(/\/\?scenario=large-pr$/);
+  await expect(page).toHaveURL(/\/review\?scenario=large-pr$/);
   const field = page.getByLabel("GitHub pull request URL");
   await field.fill("https://github.com/acme/other/pull/1");
   await expect(page.getByRole("note")).toHaveCount(0);
@@ -41,7 +41,7 @@ test("large PR warns in the check card and starts only on Start analysis anyway"
 });
 
 test("without history the large-PR note makes no timing claim", async ({ page }) => {
-  await page.goto("/?scenario=large-pr-no-history");
+  await page.goto("/review?scenario=large-pr-no-history");
   await analyze(page);
   await expect(page.getByRole("note")).toContainText("No time estimate yet.");
   await expect(page.getByRole("note")).not.toContainText("Based on recent runs");

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Link, useNavigate, useParams } from "react-router";
+import { MY_WORK_PATH, REVIEW_START_PATH } from "../dashboard/paths";
 import { ApiError } from "../../api/client";
 import {
   useAnalysisLive,
@@ -40,7 +41,7 @@ export function ProgressScreen() {
   useEffect(() => {
     if (cancelledPrUrl === null) return;
     const state: HomeState = { cancelledPrUrl };
-    void navigate("/", { replace: true, state });
+    void navigate(REVIEW_START_PATH, { replace: true, state });
   }, [cancelledPrUrl, navigate]);
 
   const failure = cancel.error ?? retry.error ?? pause.error ?? resume.error ?? work.background.error;
@@ -53,7 +54,7 @@ export function ProgressScreen() {
         {live.error !== undefined && (
           <>
             <StatusMessage kind="error">{errorText(live.error)}</StatusMessage>
-            <Link to="/">Back to Home</Link>
+            <Link to={MY_WORK_PATH}>My work</Link>
           </>
         )}
         {summary && (
@@ -79,7 +80,7 @@ export function ProgressScreen() {
               cancel.mutate(analysisId, {
                 onSuccess: (cancelled) => {
                   const state: HomeState = { cancelledPrUrl: cancelled.pr.html_url };
-                  void navigate("/", { replace: true, state });
+                  void navigate(REVIEW_START_PATH, { replace: true, state });
                 },
               })
             }

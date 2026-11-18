@@ -36,7 +36,7 @@ async function banner(title: string, role: "status" | "alert") {
 describe("Home (brief §4.1)", () => {
   it("signed out: the sign-in card with a primary button, no URL form", async () => {
     setScenario("signed-out");
-    renderRoute("/");
+    renderRoute("/review");
     expect(await screen.findByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute(
       "href",
       "/auth/github/login",
@@ -52,7 +52,7 @@ describe("Home (brief §4.1)", () => {
     ["<script>", "Sign-in failed."],
   ])("login error %s is explained in plain words", async (code, title) => {
     setScenario("signed-out");
-    renderRoute(`/?login_error=${encodeURIComponent(code)}`);
+    renderRoute(`/review?login_error=${encodeURIComponent(code)}`);
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(title);
     expect(alert).not.toHaveTextContent("<script>");
@@ -60,7 +60,7 @@ describe("Home (brief §4.1)", () => {
   });
 
   it("signed in: URL form with an example and the 'What happens after Start analysis' aside", async () => {
-    renderRoute("/");
+    renderRoute("/review");
     expect(await screen.findByRole("heading", { level: 1, name: "Which pull request?" })).toBeVisible();
     expect(screen.getByLabelText("GitHub pull request URL")).toHaveAccessibleDescription(
       /Example: https:\/\/github\.com/,
@@ -75,7 +75,7 @@ describe("Home (brief §4.1)", () => {
     server.events.on("request:start", ({ request }) => {
       if (request.method === "POST" && new URL(request.url).pathname === "/api/v1/analyses") created += 1;
     });
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze();
     const result = await card();
     expect(result).toHaveTextContent("#482 feat(rpc): retry with backoff on timeout");
@@ -83,7 +83,7 @@ describe("Home (brief §4.1)", () => {
     const start = within(result).getByRole("button", { name: "Start analysis" });
     await waitFor(() => expect(start).toHaveFocus());
     expect(created).toBe(0);
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/review");
     // The card reads as a whole: its findings describe the primary button, in a live region that is a real box.
     expect(start).toHaveAccessibleDescription(/#482|Starts the analysis/);
     expect(start.getAttribute("aria-describedby")?.split(" ")).toHaveLength(2);
@@ -103,7 +103,7 @@ describe("Home (brief §4.1)", () => {
         return HttpResponse.json(seedFor("default", "pr-resolve") as ResolvePrResponse);
       }),
     );
-    renderRoute("/");
+    renderRoute("/review");
     await analyze();
     const field = screen.getByLabelText("GitHub pull request URL");
     expect(field).toHaveAttribute("aria-busy", "true");
@@ -113,7 +113,7 @@ describe("Home (brief §4.1)", () => {
   });
 
   it("editing the field after a check clears the card: Start analysis never starts another PR", async () => {
-    renderRoute("/");
+    renderRoute("/review");
     await analyze();
     await card();
     const field = screen.getByLabelText("GitHub pull request URL");
@@ -131,7 +131,7 @@ describe("Home (brief §4.1)", () => {
     server.events.on("request:start", ({ request }) => {
       if (request.method === "POST" && new URL(request.url).pathname === "/api/v1/analyses") created += 1;
     });
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze();
     const result = await card();
     expect(within(result).getByText("PL")).toHaveAccessibleDescription(
@@ -149,7 +149,7 @@ describe("Home (brief §4.1)", () => {
 
   it("an existing analysis in the user's language offers no second analysis", async () => {
     setFixtureState("resume");
-    renderRoute("/");
+    renderRoute("/review");
     await analyze();
     const result = await card();
     expect(within(result).getByText("EN")).toBeVisible();
@@ -166,7 +166,7 @@ describe("Home (brief §4.1)", () => {
         }),
       ),
     );
-    renderRoute("/");
+    renderRoute("/review");
     await analyze();
     expect(await card()).toHaveTextContent(
       "412 changed lines in 9 files. Planning: about 5 min (rough estimate from changed lines in recent runs).",
@@ -174,7 +174,7 @@ describe("Home (brief §4.1)", () => {
   });
 
   it("Cancel clears the card and returns to the field", async () => {
-    renderRoute("/");
+    renderRoute("/review");
     await analyze();
     await userEvent.click(within(await card()).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("region", { name: "Pull request check" })).toBeNull();
@@ -183,7 +183,7 @@ describe("Home (brief §4.1)", () => {
 
   it("a large PR: the size warning above Start analysis anyway; nothing starts without it", async () => {
     setScenario("large-pr");
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze();
     const result = await card();
     expect(within(result).getByRole("note")).toHaveTextContent(
@@ -193,7 +193,7 @@ describe("Home (brief §4.1)", () => {
     expect(
       within(result).getByRole("note").compareDocumentPosition(start) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/review");
     await userEvent.click(start);
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
   });
@@ -202,17 +202,17 @@ describe("Home (brief §4.1)", () => {
     ["https://github.com/acme/node-client/issues/5", "This is not a GitHub pull request URL."],
     ["https://github.com/acme/private-repo/pull/1", "This repository is private."],
   ])("error for %s", async (url, message) => {
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze(url);
     const alert = within(await card()).getByRole("alert");
     expect(alert).toHaveTextContent("Cannot open this pull request.");
     expect(alert).toHaveTextContent(message);
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/review");
   });
 
   it("does not promise personal progress for an existing shared analysis", async () => {
     setFixtureState("resume");
-    renderRoute("/");
+    renderRoute("/review");
     await analyze();
     const message = await banner("Analysis found.", "status");
     expect(message).toHaveTextContent("This PR head is already analysed.");
@@ -221,7 +221,7 @@ describe("Home (brief §4.1)", () => {
 
   it("an existing finished analysis is resumed, nothing is analysed again", async () => {
     setFixtureState("resume");
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze();
     const found = await banner("Analysis found.", "status");
     expect(found).toHaveTextContent("This PR head is already analysed.");
@@ -231,12 +231,12 @@ describe("Home (brief §4.1)", () => {
       "href",
       `/analyses/${analysis.id}`,
     );
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/review");
   });
 
   it("head moved: banner with both heads, Start analysis starts a fresh analysis, the old one stays reachable", async () => {
     setScenario("head-moved");
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze();
     const moved = await banner("The PR has moved.", "alert");
     expect(moved).toHaveTextContent(
@@ -259,7 +259,7 @@ describe("Home (brief §4.1)", () => {
 
   it("an analysis in progress is shown, not started again", async () => {
     setScenario("existing-running");
-    renderRoute("/");
+    renderRoute("/review");
     await analyze();
     const found = await banner("An analysis of this PR is in progress.", "status");
     expect(within(found).getByRole("link", { name: "Show progress" })).toHaveAttribute("href", PROGRESS);
@@ -270,7 +270,7 @@ describe("Home (brief §4.1)", () => {
     vi.setSystemTime(new Date("2026-11-17T14:20:00Z"));
     try {
       setScenario("existing-paused");
-      renderRoute("/");
+      renderRoute("/review");
       await analyze();
       const found = await banner("An analysis of this PR is in progress.", "status");
       expect(found).toHaveTextContent(/Paused until \d\d:\d\d — 2 of 5\./);
@@ -281,7 +281,7 @@ describe("Home (brief §4.1)", () => {
 
   it("a failed analysis shows its plain description and leads to Retry", async () => {
     setScenario("existing-failed");
-    renderRoute("/");
+    renderRoute("/review");
     await analyze();
     const failed = await banner("The last analysis of this PR failed.", "alert");
     expect(failed).toHaveTextContent("The analysis stopped because of a server error. Retry the analysis.");
@@ -293,7 +293,7 @@ describe("Home (brief §4.1)", () => {
 
   it("a cancelled analysis is analysed again", async () => {
     setScenario("existing-cancelled");
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze();
     await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
@@ -301,35 +301,36 @@ describe("Home (brief §4.1)", () => {
 
   it("without the GitHub App: says what does not work and analyses on request", async () => {
     setScenario("no-app");
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze();
     const noApp = await banner("Commenting is not available for acme/node-client right now.", "alert");
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/review");
     expect(noApp).not.toHaveTextContent(/App is not installed/);
     // Neither the cause nor what else is affected is known when the check failed.
     expect(noApp).not.toHaveTextContent(/works without the App|related work/i);
     expect(noApp).toHaveTextContent("The analysis still runs");
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/review");
     await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis anyway" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
   });
 
-  it("a PR given in the address (from a refused comment) fills the field without analysing it", async () => {
-    const router = renderRoute(`/?pr=${encodeURIComponent(PR_URL)}`);
+  it("a PR given in the address (a dashboard row, a refused comment) is checked on arrival, never started", async () => {
+    const router = renderRoute(`/review?pr=${encodeURIComponent(PR_URL)}`);
     expect(await screen.findByLabelText("GitHub pull request URL")).toHaveValue(PR_URL);
+    expect(within(await card()).getByRole("button", { name: "Start analysis" })).toBeVisible();
     expect(screen.queryByText("Analysis cancelled. Check the PR to start again.")).toBeNull();
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/review");
   });
 
   it("after a cancelled analysis: 'Analysis cancelled. Check the PR to start again.' with the URL filled in", async () => {
-    renderRoute({ pathname: "/", state: { cancelledPrUrl: PR_URL } });
+    renderRoute({ pathname: "/review", state: { cancelledPrUrl: PR_URL } });
     await banner("Analysis cancelled. Check the PR to start again.", "status");
     expect(screen.getByLabelText("GitHub pull request URL")).toHaveValue(PR_URL);
   });
 
   it("server down: plain error", async () => {
     server.use(http.get("/api/v1/me", () => HttpResponse.error()));
-    renderRoute("/");
+    renderRoute("/review");
     expect(await screen.findByRole("alert")).toHaveTextContent("Cannot reach the smart-review server.");
   });
 
@@ -340,7 +341,7 @@ describe("Home (brief §4.1)", () => {
         return HttpResponse.json(analysis, { status: 201 });
       }),
     );
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze();
     await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis" }));
     await userEvent.type(screen.getByLabelText("GitHub pull request URL"), "9");
@@ -356,13 +357,13 @@ describe("Home (brief §4.1)", () => {
         ),
       ),
     );
-    const router = renderRoute("/");
+    const router = renderRoute("/review");
     await analyze();
     await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis" }));
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Cannot start the analysis.");
     expect(alert).toHaveTextContent("An analysis of this head is already running.");
-    expect(router.state.location.pathname).toBe("/");
+    expect(router.state.location.pathname).toBe("/review");
   });
 });
 
@@ -377,7 +378,7 @@ it("only promises personal state when the server confirms it exists", async () =
       }),
     ),
   );
-  renderRoute("/");
+  renderRoute("/review");
   await analyze();
   const found = await banner("Analysis found.", "status");
   expect(found).toHaveTextContent("Your ticks, answers and last viewed block are kept");
@@ -406,7 +407,7 @@ it.each([
       }),
     ),
   );
-  renderRoute("/");
+  renderRoute("/review");
   await analyze();
   const found = await banner("An analysis of this PR is in progress.", "status");
   expect(within(found).getByRole("link", { name: label })).toHaveAttribute(

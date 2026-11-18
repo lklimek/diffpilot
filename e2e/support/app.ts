@@ -16,16 +16,22 @@ export const heading = (page: Page) => page.locator("main h2:not([data-column-ti
 export const nav = (page: Page) => page.getByRole("navigation", { name: "Flows and steps" });
 export const inspector = (page: Page) => page.getByRole("complementary", { name: "Inspector" });
 
-/** Signs in as the fake user `alice` through fake GitHub and waits for Home. */
+/** Signs in as the fake user `alice` through fake GitHub and waits for the first screen, My work at `/`. */
 export async function signIn(page: Page): Promise<void> {
   await page.goto("/");
   await page.getByRole("link", { name: "Sign in with GitHub" }).click();
-  await expect(page.getByLabel("GitHub pull request URL")).toBeVisible();
+  await expect(
+    page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: /^My work/ }),
+  ).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("banner")).toContainText("alice");
 }
 
-/** Pastes the PR URL on Home and presses Check: the result card opens; nothing starts. */
+/**
+ * Pastes the PR URL on the review start page (`/review`, opened unless shown) and presses Check: the result card
+ * opens; nothing starts.
+ */
 export async function checkPr(page: Page): Promise<void> {
+  if (new URL(page.url()).pathname !== "/review") await page.goto("/review");
   await page.getByLabel("GitHub pull request URL").fill(PR_URL);
   await page.getByRole("button", { name: "Check" }).click();
   await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
@@ -51,7 +57,7 @@ export async function startAnalysis(page: Page): Promise<string> {
   return id;
 }
 
-/** Checks the PR on Home and starts its analysis: returns the new analysis id (progress screen open). */
+/** Checks the PR on the review start page and starts its analysis: returns the new analysis id (progress open). */
 export async function analyze(page: Page): Promise<string> {
   await checkPr(page);
   return startAnalysis(page);
@@ -154,9 +160,10 @@ const PROGRESS_SECTION = 'section[aria-label="Analysis progress"]';
 /**
  * Brief §1 / plan §12.4 on the rendered page: no banned phrase and no percentage in the page text (hidden tooltip
  * text included; the progress section of the analysis waiting screen may show its percentage), and no `%` at all
- * in the top bar.
+ * in the top bar. My work (route `/`, ADR-016, v1.1 plan §F.5) is outside these rules and not checked.
  */
 export async function expectTrustWording(page: Page): Promise<void> {
+  if (new URL(page.url()).pathname === "/") return;
   // Text nodes joined by spaces (hidden text too; block boundaries keep word boundaries) and the rendered text
   // (inline markup inside a word); the second pair leaves the progress section out.
   const [text, withoutProgress] = await page.locator("body").evaluate((body, progress) => {

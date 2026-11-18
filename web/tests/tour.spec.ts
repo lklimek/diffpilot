@@ -5,7 +5,7 @@ const heading = (page: import("@playwright/test").Page) =>
   page.locator("main h2:not([data-column-title])").first();
 
 test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/review");
   await page.getByLabel("GitHub pull request URL").fill("https://github.com/acme/node-client/pull/482");
   await page.getByRole("button", { name: "Check" }).click();
   await page.getByRole("button", { name: "Start analysis", exact: true }).click();
@@ -50,7 +50,7 @@ test("Previous / Next walk the sequence; after a flow's last step comes the next
 });
 
 test("j / k are ignored while typing in a field", async ({ page }) => {
-  await page.goto("/");
+  await page.goto("/review");
   const field = page.getByLabel("GitHub pull request URL");
   await field.fill("j");
   await field.press("j");

@@ -34,22 +34,10 @@ import { RepoList } from "../../components/settings/RepoList";
 import { RepoSettingsCard } from "../../components/settings/RepoSettingsCard";
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
-import { TopBar } from "../../components/top-bar/TopBar";
 import { clearCommentDrafts } from "../tour/drafts";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
-
-// TODO(WP11-SWITCH): remove the dark-launch hide once the dashboard routes ship.
-/**
- * The server has no such route yet (dashboard dark launch, plan §H.2.2): a 404 without the API's error body
- * (the client reads it as `internal`); its block stays hidden. A 404 from a deployed handler is an error.
- */
-const notDeployed = (query: { isError: boolean; error: unknown }) =>
-  query.isError &&
-  query.error instanceof ApiError &&
-  query.error.status === 404 &&
-  query.error.code === "internal";
 
 /** Dashboard settings (plan §F.6) and access tokens (ADR-019), each in its own card. */
 function DashboardSection({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
@@ -57,20 +45,17 @@ function DashboardSection({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
   const save = useSaveDashboardSettings();
   const tokens = useAccessTokens();
   const tokenActions = useAccessTokenActions();
-  if (notDeployed(settings) && notDeployed(tokens)) return null;
   return (
     <div className="grid w-full max-w-[1800px] items-start gap-4">
       {settings.data ? (
         <DashboardSettingsCard view={settings.data} onSave={save} onDirtyChange={onDirtyChange} />
       ) : (
-        !notDeployed(settings) && (
-          <SettingsCard title="Dashboard">
-            {settings.isPending && (
-              <StatusMessage kind="loading">Loading the dashboard settings…</StatusMessage>
-            )}
-            {settings.isError && <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>}
-          </SettingsCard>
-        )
+        <SettingsCard title="Dashboard">
+          {settings.isPending && (
+            <StatusMessage kind="loading">Loading the dashboard settings…</StatusMessage>
+          )}
+          {settings.isError && <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>}
+        </SettingsCard>
       )}
       <div className="max-w-[1100px]">
         {tokens.data ? (
@@ -80,12 +65,10 @@ function DashboardSection({ onDirtyChange }: { onDirtyChange: (dirty: boolean) =
             onRevoke={tokenActions.revoke}
           />
         ) : (
-          !notDeployed(tokens) && (
-            <SettingsCard title="Access tokens">
-              {tokens.isPending && <StatusMessage kind="loading">Loading your access tokens…</StatusMessage>}
-              {tokens.isError && <StatusMessage kind="error">{errorText(tokens.error)}</StatusMessage>}
-            </SettingsCard>
-          )
+          <SettingsCard title="Access tokens">
+            {tokens.isPending && <StatusMessage kind="loading">Loading your access tokens…</StatusMessage>}
+            {tokens.isError && <StatusMessage kind="error">{errorText(tokens.error)}</StatusMessage>}
+          </SettingsCard>
         )}
       </div>
     </div>
@@ -188,7 +171,6 @@ function SettingsContent({
   const setLlm = useSetLlm();
   const setJudgeEffort = useSetJudgeEffort();
   const setAskEffort = useSetAskEffort();
-  const dashboard = useDashboardSettings();
   const settings = useSettings();
   const setLanguage = useSetLanguage();
   if (settings.isPending) return <StatusMessage kind="loading">Loading the settings…</StatusMessage>;
@@ -216,17 +198,14 @@ function SettingsContent({
                 error={setAskEffort.isError ? errorText(setAskEffort.error) : undefined}
                 onChange={(effort) => setAskEffort.mutate(effort)}
               />
-              {/* Shown with the dashboard settings, so not before the server has them (dark launch). */}
-              {dashboard.isSuccess && (
-                <JudgeEffortSelect
-                  effort={settings.data.llm_selection.judge_effort}
-                  efforts={settings.data.llm_selection.efforts}
-                  busy={setJudgeEffort.isPending}
-                  saved={setJudgeEffort.isSuccess}
-                  error={setJudgeEffort.isError ? errorText(setJudgeEffort.error) : undefined}
-                  onChange={(effort) => setJudgeEffort.mutate(effort)}
-                />
-              )}
+              <JudgeEffortSelect
+                effort={settings.data.llm_selection.judge_effort}
+                efforts={settings.data.llm_selection.efforts}
+                busy={setJudgeEffort.isPending}
+                saved={setJudgeEffort.isSuccess}
+                error={setJudgeEffort.isError ? errorText(setJudgeEffort.error) : undefined}
+                onChange={(effort) => setJudgeEffort.mutate(effort)}
+              />
             </LlmSelectionCard>
           )}
           <LlmStatusCard status={llm_status} usage={settings.data.llm_usage} />
@@ -288,34 +267,31 @@ export function SettingsScreen() {
       },
     });
   return (
-    <div className="flex min-h-screen flex-col">
-      <TopBar login={user?.login ?? null} />
-      <main id="main" className="grid flex-1 content-start gap-4 px-8 py-5">
-        <h1 className="text-[22px] font-bold">Settings</h1>
-        {blocker.state === "blocked" && (
-          <div className="max-w-[900px]">
-            <UnsavedChangesPrompt onStay={blocker.reset} onLeave={blocker.proceed} />
-          </div>
-        )}
-        {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
-        {me.isError && <StatusMessage kind="error">{errorText(me.error)}</StatusMessage>}
-        {me.isSuccess && !user && (
-          <div className="max-w-[900px]">
-            <SignInCard loginHref="/auth/github/login" />
-          </div>
-        )}
-        {user && (
-          <div className="max-w-[900px]">
-            <AccountCard
-              login={user.login}
-              busy={signOut.isPending}
-              error={signOut.isError ? errorText(signOut.error) : undefined}
-              onSignOut={() => leave(user.login)}
-            />
-          </div>
-        )}
-        {user && <SettingsContent userId={user.login} onDirtyChange={setDirty} />}
-      </main>
+    <div className="grid content-start gap-4">
+      <h1 className="text-[22px] font-bold">Settings</h1>
+      {blocker.state === "blocked" && (
+        <div className="max-w-[900px]">
+          <UnsavedChangesPrompt onStay={blocker.reset} onLeave={blocker.proceed} />
+        </div>
+      )}
+      {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
+      {me.isError && <StatusMessage kind="error">{errorText(me.error)}</StatusMessage>}
+      {me.isSuccess && !user && (
+        <div className="max-w-[900px]">
+          <SignInCard loginHref="/auth/github/login" />
+        </div>
+      )}
+      {user && (
+        <div className="max-w-[900px]">
+          <AccountCard
+            login={user.login}
+            busy={signOut.isPending}
+            error={signOut.isError ? errorText(signOut.error) : undefined}
+            onSignOut={() => leave(user.login)}
+          />
+        </div>
+      )}
+      {user && <SettingsContent userId={user.login} onDirtyChange={setDirty} />}
     </div>
   );
 }

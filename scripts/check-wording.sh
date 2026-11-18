@@ -9,7 +9,8 @@
 #
 # Checks string literal values, template literal static parts and JSX text (scripts/check-wording.mjs,
 # TypeScript 6 parser) in .ts/.tsx/.js/.jsx/.mjs/.cjs/.mts/.cts/.json files; property names, type
-# positions, module paths, test files (*.test.*, *.spec.*, __tests__/) and prompts/ (which must name the
+# positions, module paths, test files (*.test.*, *.spec.*, __tests__/), the directories in `exclude` of
+# scripts/wording-rules.json (My work, ADR-016) and prompts/ (which must name the
 # banned words) are not checked. Files that do not parse fail the check (exit 2).
 # `// wording-check: allow <reason>` (or a block comment) exempts percentages on its line, never words.
 # Needs node and TypeScript 6: CHECK_WORDING_TYPESCRIPT=<package dir>, else web/node_modules/@typescript/typescript6
@@ -127,6 +128,10 @@ self_test() {
   expect_fail "execution claim"    a.tsx '<span title="Read the code; nothing was executed.">x</span>' "a.tsx:1: \"nothing was executed\""
   expect_fail "short execution claim" a.ts "const s = 'Nothing executed';"          "a.ts:1: \"Nothing executed\""
   expect_pass "agent output data"  mocks/a.json '{"answer": "Nothing was executed."}'
+  # My work is outside the review's trust rules (ADR-016, v1.1 plan §F.5): its components and screen are excluded.
+  expect_pass "dashboard component" components/dashboard/x/a.tsx '<p>42% of your PRs</p>'
+  expect_pass "dashboard screen"   screens/dashboard/a.ts "const s = '42% done';"
+  expect_fail "near the dashboard" components/dashboards/a.tsx '<p>42% done</p>'     "components/dashboards/a.tsx:1:"
   expect_pass "told not to run"    a.tsx '<span title="The agent was told not to run code.">x</span>'
 
   # Allow marker: only in a comment, only with a reason, only for the percentage rule.

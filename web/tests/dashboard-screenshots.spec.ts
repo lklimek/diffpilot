@@ -25,7 +25,7 @@ const SCENARIOS = [
 const NC482 = "feat(rpc): retry with backoff on timeout";
 
 async function openDashboard(page: Page, scenario: string) {
-  await page.goto(`/my-work?dashboard=${scenario}`);
+  await page.goto(`/?dashboard=${scenario}`);
   await expect(page.getByRole("heading", { name: "My work", level: 1 })).toBeVisible();
   await expect(page.getByText(/^Loading/)).toHaveCount(0);
   await page.waitForTimeout(300);
@@ -80,7 +80,8 @@ for (const [width, height] of [
       await expandAll(page);
       await shoot(page, `dashboard-normal-expanded-${colorScheme}-${width}`);
       if (colorScheme === "light") {
-        // Where the NC-482 row leads: review start (new, moved, after Check) or the review itself (found).
+        // Where the NC-482 row leads: review start at /review (new, moved; checked on arrival) or the review
+        // itself (found).
         for (const [scenario, link] of [
           ["review-new", "Review"],
           ["review-moved", "Open review"],
@@ -92,7 +93,8 @@ for (const [width, height] of [
             .filter({ hasText: NC482 })
             .getByRole("link", { name: link })
             .click();
-          if (scenario !== "review-found") await page.getByRole("button", { name: "Check" }).click();
+          if (scenario !== "review-found")
+            await expect(page.getByRole("region", { name: "Pull request check" })).toBeVisible();
           await page.waitForTimeout(800);
           await shoot(page, `review-start-${scenario.slice("review-".length)}-${colorScheme}-${width}`);
         }

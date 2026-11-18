@@ -72,7 +72,7 @@ test("finished: n of n and Open review", async ({ page }) => {
 test("unknown analysis: plain error and a way back", async ({ page }) => {
   await page.goto("/analyses/00000000-0000-0000-0000-000000000000/progress");
   await expect(page.getByRole("alert")).toContainText("This analysis does not exist.");
-  await expect(page.getByRole("link", { name: "Back to Home" })).toHaveAttribute("href", "/");
+  await expect(page.getByRole("link", { name: "My work" })).toHaveAttribute("href", "/");
 });
 
 // Owner: a one-flow PR stayed at "0 of 1 flow analysed" for minutes and looked frozen. Stage and heartbeat come

@@ -26,7 +26,7 @@ const ENTRIES: { section: AppSection; name: string; tip: string }[] = [
 interface AppNavProps {
   /** The section shown; null on other pages. */
   current: AppSection | null;
-  /** In-app hrefs (My work is `/my-work` until the switch, then `/`). */
+  /** In-app hrefs. */
   hrefs: Record<AppSection, string>;
   /** Ranked items of the latest snapshot; no count when null. */
   myWorkCount: number | null;

@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { expectAccessible, expectKeyboardTooltips, PR_URL } from "./screens-support";
 import { ANALYSIS_ID } from "./support";
 
-// My work at the dark route `/my-work` (plan §F, §H.2.2) against the msw dashboard scenarios
+// My work at `/` (plan §F) against the msw dashboard scenarios
 // (`?dashboard=<name>`, src/mocks/handlers/dashboard.ts).
 
 /** One step of the mock's scripted refresh (`SCRIPT_STEP_MS` of src/mocks/handlers/dashboard.ts). */
@@ -10,7 +10,7 @@ const SCRIPT_STEP_MS = 500;
 
 test.describe("My work (msw)", () => {
   const open = async (page: Page, scenario = "normal", extra = "") => {
-    await page.goto(`/my-work?dashboard=${scenario}${extra}`);
+    await page.goto(`/?dashboard=${scenario}${extra}`);
     await expect(page.getByRole("heading", { name: "My work", level: 1 })).toBeVisible();
   };
   const main = (page: Page) => page.getByRole("main");
@@ -153,7 +153,7 @@ test.describe("My work (msw)", () => {
   });
 
   test("signed out: the sign-in card", async ({ page }) => {
-    await page.goto("/my-work?scenario=signed-out");
+    await page.goto("/?scenario=signed-out");
     await expect(page.getByRole("link", { name: "Sign in with GitHub" })).toHaveAttribute(
       "href",
       "/auth/github/login",
@@ -221,27 +221,26 @@ test.describe("review start from a PR row (msw)", () => {
   const row = (page: Page) =>
     page.getByRole("listitem").filter({ hasText: "feat(rpc): retry with backoff on timeout" });
 
-  test("new: Review opens the review start page with the PR; Check offers Start analysis", async ({
+  test("new: Review opens the review start page with the PR, checked on arrival: Start analysis", async ({
     page,
   }) => {
-    await page.goto("/my-work?dashboard=review-new");
+    await page.goto("/?dashboard=review-new");
     await row(page).getByRole("link", { name: "Review" }).click();
+    await expect(page).toHaveURL(/\/review\?pr=/);
     await expect(page.getByLabel(/pull request URL/i)).toHaveValue(PR_URL);
-    await page.getByRole("button", { name: "Check" }).click();
     await expect(page.getByRole("button", { name: "Start analysis", exact: true })).toBeVisible();
   });
 
   test("found: the row opens the review of the current head", async ({ page }) => {
-    await page.goto("/my-work?dashboard=review-found");
+    await page.goto("/?dashboard=review-found");
     await row(page).getByRole("link", { name: "Resume review" }).click();
     await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}`));
   });
 
   test("moved: the review start page says the PR has moved", async ({ page }) => {
-    await page.goto("/my-work?dashboard=review-moved");
+    await page.goto("/?dashboard=review-moved");
     await row(page).getByRole("link", { name: "Open review" }).click();
     await expect(page.getByLabel(/pull request URL/i)).toHaveValue(PR_URL);
-    await page.getByRole("button", { name: "Check" }).click();
     await expect(page.getByText("The PR has moved.")).toBeVisible();
   });
 });
