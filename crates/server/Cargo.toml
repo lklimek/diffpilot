@@ -50,6 +50,7 @@ db = { workspace = true, features = ["test-util"] }
 fake-github = { path = "../../tools/fake-github" }
 wiremock.workspace = true
 http-body-util.workspace = true
+proptest.workspace = true
 regex.workspace = true
 # The fake MemCan of the tests is a real MCP server.
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
