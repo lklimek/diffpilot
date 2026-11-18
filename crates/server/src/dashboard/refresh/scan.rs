@@ -13,10 +13,11 @@ use contracts::api::dashboard::{
 use contracts::common::RepoRef;
 use futures::future::join_all;
 
+use super::RunError;
 use super::facts::{self, PrContext};
 use super::history;
 use super::owned;
-use super::progress::Progress;
+use super::progress::{Ended, Progress};
 use crate::dashboard::score::{MilestoneContext, OwnedChange, ScoreRules, TodoFacts};
 use crate::dashboard::settings::memcan_projects;
 use crate::dashboard::snapshot::{SNAPSHOT_VERSION, Snapshot, StoredTodo};
@@ -56,12 +57,13 @@ fn count(n: usize) -> u32 {
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// Runs the scan; `Err` only for an error that ends the refresh.
+/// Runs the scan; `Err` for an error that ends the refresh, when no candidate search was answered (GitHub
+/// down: a failed scan, never an empty snapshot), or when the refresh ended meanwhile.
 pub(super) async fn scan<T: TokenSource>(
     client: &WorkClient<T>,
     input: &ScanInput<'_>,
     progress: &mut Progress,
-) -> Result<Snapshot, WorkError> {
+) -> Result<Snapshot, RunError> {
     let settings = input.settings;
     let mut notes = Vec::new();
     let logins: Vec<String> = std::iter::once(input.own_login.to_owned())
@@ -70,7 +72,7 @@ pub(super) async fn scan<T: TokenSource>(
 
     progress
         .step(ScanStepKey::SearchPrs, StepState::Running, None, None)
-        .await;
+        .await?;
     let found = client.search_pull_requests(&logins).await?;
     notes.extend(found.notes);
     let mut candidates = found.candidates;
@@ -102,11 +104,11 @@ pub(super) async fn scan<T: TokenSource>(
             Some(prs),
             Some(prs),
         )
-        .await;
+        .await?;
 
     progress
         .step(ScanStepKey::Issues, StepState::Running, None, None)
-        .await;
+        .await?;
     let watched: Vec<RepoRef> = settings
         .repositories
         .iter()
@@ -114,6 +116,10 @@ pub(super) async fn scan<T: TokenSource>(
         .map(|row| row.repo.clone())
         .collect();
     let issues = client.search_issues(&watched, &searchable).await?;
+    let attempted = !searchable.is_empty() || !watched.is_empty();
+    if attempted && found.answered == 0 && issues.answered == 0 {
+        return Err(RunError::SearchUnavailable);
+    }
     notes.extend(issues.notes);
     candidates.merge(issues.candidates);
     let issue_count = count(candidates.issues.len());
@@ -125,7 +131,7 @@ pub(super) async fn scan<T: TokenSource>(
             Some(issue_count),
             Some(issue_count),
         )
-        .await;
+        .await?;
 
     let pulls: Vec<ItemRef> = candidates.pull_requests.keys().cloned().collect();
     let total = count(pulls.len());
@@ -136,7 +142,7 @@ pub(super) async fn scan<T: TokenSource>(
             Some(0),
             Some(total),
         )
-        .await;
+        .await?;
     let repos: Vec<RepoRef> = pulls
         .iter()
         .map(|pr| pr.repo.clone())
@@ -151,6 +157,9 @@ pub(super) async fn scan<T: TokenSource>(
             all.found.extend(fetched.found);
             all.notes.extend(fetched.notes);
             done += count(chunk.len());
+            if let Some(last) = chunk.last() {
+                progress.detail(ScanStepKey::PrDetails, last.to_string());
+            }
             progress
                 .step(
                     ScanStepKey::PrDetails,
@@ -158,11 +167,12 @@ pub(super) async fn scan<T: TokenSource>(
                     Some(done),
                     Some(total),
                 )
-                .await;
+                .await?;
         }
-        Ok::<_, WorkError>(all)
+        Ok::<_, RunError>(all)
     };
-    let (mut details, listing) = tokio::try_join!(details, client.open_pr_refs(&repos))?;
+    let refs = async { client.open_pr_refs(&repos).await.map_err(RunError::from) };
+    let (mut details, listing) = tokio::try_join!(details, refs)?;
     notes.append(&mut details.notes);
     notes.extend(listing.notes.iter().cloned());
     details.found.retain(|_, detail| detail.state == "OPEN");
@@ -177,11 +187,11 @@ pub(super) async fn scan<T: TokenSource>(
             Some(total),
             Some(total),
         )
-        .await;
+        .await?;
 
     progress
         .step(ScanStepKey::Context, StepState::Running, None, None)
-        .await;
+        .await?;
     let owned = owned_changes(client, input, &details.found, &mut notes).await?;
     let with_milestone: BTreeSet<RepoRef> = details
         .found
@@ -197,16 +207,25 @@ pub(super) async fn scan<T: TokenSource>(
         )
         .collect();
     let milestones = milestone_contexts(client, &with_milestone, &mut notes).await?;
-    let rows: Vec<RepoRef> = settings
+    // The settings' rows and the issues' repositories (their privacy: issue search does not tell it).
+    let mut looked_up: Vec<RepoRef> = Vec::new();
+    for repo in settings
         .repositories
         .iter()
-        .map(|row| row.repo.clone())
-        .collect();
-    let reach = client.reach(&rows, &settings.enumerate_owners).await?;
+        .map(|row| &row.repo)
+        .chain(candidates.issues.keys().map(|item| &item.repo))
+    {
+        if !looked_up.iter().any(|seen| same_repo(seen, repo)) {
+            looked_up.push(repo.clone());
+        }
+    }
+    let reach = client.reach(&looked_up, &settings.enumerate_owners).await?;
     notes.extend(reach.notes);
+    let rows: Vec<&RepoRef> = settings.repositories.iter().map(|row| &row.repo).collect();
     let unreachable: Vec<String> = reach
         .invisible_repositories
         .iter()
+        .filter(|repo| rows.iter().any(|row| same_repo(row, repo)))
         .map(repo_name)
         .chain(reach.invisible_owners.iter().cloned())
         .collect();
@@ -218,11 +237,11 @@ pub(super) async fn scan<T: TokenSource>(
     ));
     progress
         .step(ScanStepKey::Context, StepState::Done, None, None)
-        .await;
+        .await?;
 
     progress
         .step(ScanStepKey::History, StepState::Running, None, None)
-        .await;
+        .await?;
     let (first, start) = history::window_start(progress.now(), input.zone);
     let (history, history_notes) =
         history::collect(client, input.rules, &logins, first, start).await?;
@@ -236,17 +255,16 @@ pub(super) async fn scan<T: TokenSource>(
             Some(events),
             Some(events),
         )
-        .await;
+        .await?;
 
-    let (todos, todos_state) = read_todos(input, progress, &mut notes).await;
+    let (todos, todos_state) = read_todos(input, progress, &mut notes).await?;
 
-    let private: HashMap<RepoRef, bool> = details
+    let private: Vec<&RepoRef> = details
         .found
         .iter()
-        .map(|(item, d)| {
-            let private = d.base_repository.as_ref().is_some_and(|r| r.is_private);
-            (item.repo.clone(), private)
-        })
+        .filter(|(_, d)| d.base_repository.as_ref().is_some_and(|r| r.is_private))
+        .map(|(item, _)| &item.repo)
+        .chain(&reach.private_repositories)
         .collect();
     let pull_requests: Vec<_> = details
         .found
@@ -274,7 +292,7 @@ pub(super) async fn scan<T: TokenSource>(
                 item,
                 candidate,
                 milestones.get(&item.repo).cloned().unwrap_or_default(),
-                private.get(&item.repo).copied().unwrap_or(false),
+                private.iter().any(|repo| same_repo(repo, &item.repo)),
             )
         })
         .collect();
@@ -296,6 +314,7 @@ pub(super) async fn scan<T: TokenSource>(
         notes,
         unreachable,
         checked,
+        todos_hidden: false,
     })
 }
 
@@ -431,7 +450,7 @@ async fn read_todos(
     input: &ScanInput<'_>,
     progress: &mut Progress,
     notes: &mut Vec<ScanNote>,
-) -> (Vec<StoredTodo>, TodosState) {
+) -> Result<(Vec<StoredTodo>, TodosState), Ended> {
     let skipped = |status| TodosState {
         status,
         read_at: None,
@@ -440,18 +459,18 @@ async fn read_todos(
     if !input.settings.include_todos {
         progress
             .step(ScanStepKey::Todos, StepState::Skipped, None, None)
-            .await;
-        return (Vec::new(), skipped(TodosStatus::Off));
+            .await?;
+        return Ok((Vec::new(), skipped(TodosStatus::Off)));
     }
     if !input.memcan {
         progress
             .step(ScanStepKey::Todos, StepState::Skipped, None, None)
-            .await;
-        return (Vec::new(), skipped(TodosStatus::NotConfigured));
+            .await?;
+        return Ok((Vec::new(), skipped(TodosStatus::NotConfigured)));
     }
     progress
         .step(ScanStepKey::Todos, StepState::Running, None, None)
-        .await;
+        .await?;
     let projects = memcan_projects(input.settings);
     let now = progress.now();
     let previous: HashMap<_, _> = input
@@ -500,27 +519,27 @@ async fn read_todos(
                     Some(read_count),
                     Some(read_count),
                 )
-                .await;
+                .await?;
             let state = TodosState {
                 status: TodosStatus::Read,
                 read_at: Some(now),
                 failed_at: None,
             };
-            (rows, state)
+            Ok((rows, state))
         }
         TodosRead::Unavailable { note: text } => {
             notes.push(note(text));
             progress.log("TODOs: MemCan unavailable, previous rows kept");
             progress
                 .step(ScanStepKey::Todos, StepState::Failed, None, None)
-                .await;
+                .await?;
             let (rows, read_at) = kept_todos(input.previous);
             let state = TodosState {
                 status: TodosStatus::NotRefreshed,
                 read_at,
                 failed_at: Some(now),
             };
-            (rows, state)
+            Ok((rows, state))
         }
     }
 }

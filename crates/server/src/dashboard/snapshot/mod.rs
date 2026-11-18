@@ -7,7 +7,7 @@ mod view;
 
 use chrono::{DateTime, Utc};
 use contracts::api::dashboard::{
-    DashboardSettings, HistoryEvent, KindCounts, ScanNote, TodosState,
+    DashboardSettings, HistoryEvent, KindCounts, ScanNote, TodosState, TodosStatus,
 };
 use db::error::DbError;
 use db::repo::dashboard::RefreshRecord;
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::score::{IssueFacts, PrFacts, TodoFacts};
+use super::settings;
 use crate::state::AppState;
 
 pub use page::{CursorError, NO_SNAPSHOT, etag, etag_matches, page, revision};
@@ -50,6 +51,9 @@ pub struct Snapshot {
     pub unreachable: Vec<String>,
     /// What the scan read before exclusion.
     pub checked: KindCounts,
+    /// TODO rows hidden because the current settings hide TODOs (read time only, never stored).
+    #[serde(skip)]
+    pub todos_hidden: bool,
 }
 
 /// A pull request of the snapshot.
@@ -98,7 +102,8 @@ pub struct StoredTodo {
 }
 
 /// The user's current snapshot with its refresh; `None` before the first scan, and for a document of an unknown
-/// version or shape (logged; the next refresh stores a readable one).
+/// version or shape (logged; the next refresh stores a readable one). TODO rows are left out while the user's
+/// current settings hide TODOs (T19), whatever the scan stored.
 pub async fn load(
     state: &AppState,
     tenant_id: &str,
@@ -112,7 +117,28 @@ pub async fn load(
     else {
         return Ok(None);
     };
-    Ok(readable(document).map(|snapshot| (record, snapshot)))
+    let Some(mut snapshot) = readable(document) else {
+        return Ok(None);
+    };
+    if !settings::effective(&state.db, tenant_id, user_id)
+        .await?
+        .include_todos
+    {
+        hide_todos(&mut snapshot);
+    }
+    Ok(Some((record, snapshot)))
+}
+
+/// Drops the TODO rows, as a scan with TODOs off stores them.
+fn hide_todos(snapshot: &mut Snapshot) {
+    snapshot.todos_hidden = true;
+    snapshot.todos.clear();
+    snapshot.checked.todo = 0;
+    snapshot.todos_state = TodosState {
+        status: TodosStatus::Off,
+        read_at: None,
+        failed_at: None,
+    };
 }
 
 /// The snapshot in `document`, if it has this version and shape.
