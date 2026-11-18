@@ -6,6 +6,7 @@ import { useAction } from "../../inspector/action";
 import { SettingsCard } from "../../settings/Card";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { CreateTokenDialog } from "./CreateTokenDialog";
+import { HelpTip } from "../../settings/HelpTip";
 
 /** Most live tokens per user (`CreateAccessToken::MAX_LIVE_PER_USER`). */
 const MAX_LIVE = 10;
@@ -57,7 +58,7 @@ export function AccessTokensCard({ tokens, onCreate, onRevoke, now = new Date() 
   const live = tokens.filter((t) => !expired(t)).length;
   const full = live >= MAX_LIVE;
   return (
-    <SettingsCard title="Access tokens">
+    <SettingsCard title="Access tokens" help={<HelpTip topic="access_tokens" />}>
       <p>
         A personal access token lets your agents read over HTTP what you can read here: My work, reviews and
         their questions. Tokens are <b>read-only</b>: they cannot change anything, start a refresh or an

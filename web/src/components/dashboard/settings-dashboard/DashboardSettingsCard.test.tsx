@@ -33,7 +33,7 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(screen.getByLabelText("Release branches of acme/consensus")).toHaveValue("release/*, vX.Y-dev");
     expect(screen.getByLabelText("Release branches of acme/platform")).toHaveAttribute(
       "placeholder",
-      "main, master, release/*, hotfix/*, vX.Y, vX.Y-dev",
+      "empty = main, master, release/*, hotfix/*, vX.Y, vX.Y-dev",
     );
     expect(screen.getByLabelText("Policy path of acme/platform")).toHaveValue("policies/platform.json");
     expect(screen.getByLabelText("Watch issues of acme/node-client")).not.toBeChecked();
@@ -56,9 +56,12 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
   it("explains the ownership policy: column help, placeholders and a visible hint under the fields", () => {
     const { card } = renderCard();
     const table = within(card).getByRole("table", { name: "Repositories" });
-    const header = within(table).getByText("Ownership policy");
-    expect(header).toHaveAccessibleDescription(
-      "Optional. A JSON file listing the paths you own in this repository (the format of dashpay/stale_prs_are_bad). Pull requests by others that only touch other paths are left out of Needs you. Leave both fields empty when the repository has no such file. Example: repository dashpay/stale_prs_are_bad, path policies/platform.json.",
+    const help = within(table).getByRole("link", { name: "Help: Ownership policy" });
+    expect(help).toHaveAccessibleDescription(
+      /What: Optional\. A JSON file listing the paths you own in this repository/,
+    );
+    expect(help).toHaveAccessibleDescription(
+      /Example: Repository dashpay\/stale_prs_are_bad, path policies\/platform\.json\./,
     );
     const repo = screen.getByLabelText("Policy repository of acme/consensus");
     const path = screen.getByLabelText("Policy path of acme/consensus");
@@ -67,6 +70,36 @@ describe("DashboardSettingsCard (plan §F.6)", () => {
     expect(repo).toHaveAccessibleDescription("Optional — leave empty if there is no policy file");
     expect(path).toHaveAccessibleDescription("Optional — leave empty if there is no policy file");
     expect(within(table).getAllByText("Optional — leave empty if there is no policy file")[0]).toBeVisible();
+  });
+
+  it("release branches: built-ins shown for an empty field, X.Y and * explained, a list replaces the built-ins", () => {
+    renderCard();
+    const empty = screen.getByLabelText("Release branches of acme/platform");
+    expect(empty).toHaveValue("");
+    expect(empty).toHaveAttribute("placeholder", "empty = main, master, release/*, hotfix/*, vX.Y, vX.Y-dev");
+    expect(empty).toHaveAccessibleDescription(
+      "Leave empty for the built-ins. X.Y stands for a version (v1.8-dev matches vX.Y-dev); * matches any text. Your list replaces the built-ins.",
+    );
+    const row = empty.closest("td")!;
+    expect(
+      within(row).getByText("Built-ins: main, master, release/*, hotfix/*, vX.Y, vX.Y-dev"),
+    ).toBeVisible();
+    const set = screen.getByLabelText("Release branches of acme/consensus");
+    expect(within(set.closest("td")!).queryByText(/^Built-ins:/)).toBeNull();
+    expect(
+      screen.getByText(
+        "Leave empty for the built-ins. X.Y stands for a version (v1.8-dev matches vX.Y-dev); * matches any text. Your list replaces the built-ins.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("bot authors to skip say what is left out and where", () => {
+    renderCard();
+    expect(
+      screen.getByText(
+        "Their pull requests and issues are left out of My work unless you or a linked login are a requested reviewer or an assignee; they count as bots there. Only My work uses this list.",
+      ),
+    ).toBeVisible();
   });
 
   it("refuses a list entry that breaks its rule and adds a valid one", async () => {

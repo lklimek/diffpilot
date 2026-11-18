@@ -19,7 +19,7 @@ test("stored settings: rows, fallbacks as placeholders, unreachable mark, access
   );
   await expect(card.getByLabel("Release branches of acme/wallet-ui")).toHaveAttribute(
     "placeholder",
-    "main, master, release/*, hotfix/*, vX.Y, vX.Y-dev",
+    "empty = main, master, release/*, hotfix/*, vX.Y, vX.Y-dev",
   );
   const mark = card.getByText("not visible to your GitHub token");
   await expect(mark).toHaveCount(1);
@@ -155,4 +155,31 @@ test("unsaved changes are marked and leaving the page asks first", async ({ page
   await dialog.dismiss();
   await expect(page).toHaveURL(/\/settings/);
   await expect(card.getByLabel("Watch issues of acme/node-client")).toBeChecked();
+});
+
+test("each option has a ? help; the guide opens in-app at the option and passes the a11y sweeps", async ({
+  page,
+}) => {
+  await page.goto("/settings");
+  const help = dashboard(page).getByRole("link", { name: "Help: Release branches" });
+  await help.focus();
+  await expect(page.getByRole("tooltip")).toContainText("vX.Y-dev matches v1.8-dev and v5.1-dev");
+  await expect(help).toHaveAttribute("href", "/settings/help#branch_patterns");
+  await expect(page.getByRole("group", { name: "When GitHub search refuses an account" })).toContainText(
+    "Example: dashpay",
+  );
+
+  await page.goto("/settings/help#ownership_policy");
+  await expect(page.getByRole("heading", { level: 1, name: "Settings guide" })).toBeVisible();
+  const policy = page.locator("section#ownership_policy");
+  await expect(policy).toBeInViewport();
+  await expect(
+    policy.getByRole("link", { name: "https://github.com/dashpay/stale_prs_are_bad" }),
+  ).toHaveAttribute("target", "_blank");
+  await expectTooltips(page);
+  await expectKeyboardTooltips(page);
+  await expectTrustWording(page);
+  await expectAccessible(page);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expectAccessible(page);
 });

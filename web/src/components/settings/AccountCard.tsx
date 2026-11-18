@@ -1,6 +1,7 @@
 import { busyTip, buttonClass } from "../button/button";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SettingsCard } from "./Card";
+import { HelpTip } from "./HelpTip";
 
 interface Props {
   /** Signed-in GitHub login. */
@@ -15,7 +16,7 @@ interface Props {
 /** The signed-in account and Sign out. */
 export function AccountCard({ login, busy, error, onSignOut }: Props) {
   return (
-    <SettingsCard title="Account">
+    <SettingsCard title="Account" help={<HelpTip topic="sign_out" />}>
       <p>Signed in as {login}</p>
       <p>
         <Tooltip

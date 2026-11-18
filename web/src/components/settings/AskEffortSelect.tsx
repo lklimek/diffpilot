@@ -2,6 +2,7 @@ import { useId } from "react";
 import type { ReasoningEffort } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { Tooltip } from "../tooltip/Tooltip";
+import { HelpTip } from "./HelpTip";
 
 interface AskEffortSelectProps {
   /** Current Ask effort; absent = the default, medium. */
@@ -20,7 +21,10 @@ export function AskEffortSelect({ effort, efforts, busy, saved, error, onChange 
   const id = useId();
   return (
     <div className="mt-1 grid gap-2 border-t border-border pt-3">
-      <label htmlFor={id}>Ask effort</label>
+      <span className="flex items-center gap-2">
+        <label htmlFor={id}>Ask effort</label>
+        <HelpTip topic="ask_effort" />
+      </span>
       <Tooltip
         tip={busyTip(
           "How much reasoning the LLM does when it answers a question about a step. Lower effort answers sooner.",

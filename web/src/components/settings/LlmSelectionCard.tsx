@@ -4,6 +4,7 @@ import { SettingsCard } from "./Card";
 import { Tooltip } from "../tooltip/Tooltip";
 import { buttonClass } from "../button/button";
 import { dateTimeText } from "../format/time";
+import { HelpTip } from "./HelpTip";
 
 /** One installation choice, passed in by Settings; saving never starts an analysis. */
 export function LlmSelectionCard({
@@ -26,7 +27,10 @@ export function LlmSelectionCard({
   const [choice, setChoice] = useState(selection.current);
   return (
     <SettingsCard title="LLM model">
-      <label htmlFor={`${id}-model`}>Model</label>
+      <span className="flex items-center gap-2">
+        <label htmlFor={`${id}-model`}>Model</label>
+        <HelpTip topic="llm_model" />
+      </span>
       <Tooltip
         tip={
           busy
@@ -48,7 +52,10 @@ export function LlmSelectionCard({
           ))}
         </select>
       </Tooltip>
-      <label htmlFor={`${id}-effort`}>Reasoning effort</label>
+      <span className="flex items-center gap-2">
+        <label htmlFor={`${id}-effort`}>Reasoning effort</label>
+        <HelpTip topic="llm_effort" />
+      </span>
       <Tooltip
         tip={
           busy

@@ -7,6 +7,7 @@ import type {
 } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SettingsCard } from "./Card";
+import { HelpTip } from "./HelpTip";
 
 const SECTION: Record<NotAnalysedCategory, string> = {
   tests: "Tests",
@@ -42,6 +43,7 @@ export function RepoSettingsCard({ settings }: { settings: RepoSettings }) {
   const { repo, rules, related_repos, project_profile } = settings;
   return (
     <SettingsCard
+      help={<HelpTip topic="repository_settings" />}
       title={
         <>
           Repository <code>{`${repo.owner}/${repo.name}`}</code>{" "}

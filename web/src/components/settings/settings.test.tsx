@@ -126,7 +126,12 @@ describe("RepoSettingsCard (read-only)", () => {
       expect(within(header).getByText(name)).toHaveAccessibleDescription(/.+/);
     }
     expect(within(region).getByText("acme/node-sdk")).toBeVisible();
-    expect(within(region).queryAllByRole("link")).toEqual([]);
+    // Read-only: no links besides the ? help.
+    expect(
+      within(region)
+        .queryAllByRole("link")
+        .filter((link) => !link.textContent?.includes("Help: ")),
+    ).toEqual([]);
     expect(region).toHaveTextContent(".claudius/project-profile.md on the base ref");
     expect(region).toHaveTextContent("MemCan");
     expect(region).toHaveTextContent("the repository file wins");

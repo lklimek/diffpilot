@@ -2,6 +2,7 @@ import type { AppInstallation } from "../../api/generated/types";
 import { buttonClass } from "../button/button";
 import { Tooltip } from "../tooltip/Tooltip";
 import { SettingsCard } from "./Card";
+import { HelpTip } from "./HelpTip";
 
 /** GitHub App installation status (brief §4.4); `null` = not checked (cause unknown), never "none installed". */
 export function AppInstallationsCard({
@@ -13,7 +14,7 @@ export function AppInstallationsCard({
   signInHref: string;
 }) {
   return (
-    <SettingsCard title="GitHub App">
+    <SettingsCard title="GitHub App" help={<HelpTip topic="app_installations" />}>
       {installations === null ? (
         <p>
           GitHub App installations: not checked. Signing in again may help.{" "}
