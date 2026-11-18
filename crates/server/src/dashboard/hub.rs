@@ -14,7 +14,10 @@ use contracts::ids::RefreshId;
 use tokio::sync::broadcast;
 use tokio::task::AbortHandle;
 
-use super::refresh::rank::{NoopRanker, Ranker};
+use super::judge::JudgeRanker;
+#[cfg(test)]
+use super::refresh::rank::NoopRanker;
+use super::refresh::rank::Ranker;
 use crate::github::work::SEARCH_INTERVAL;
 
 /// A whole scan may take this long (plan §A.3); then the refresh fails as "took too long".
@@ -103,7 +106,7 @@ impl fmt::Debug for DashboardHub {
 
 impl Default for DashboardHub {
     fn default() -> Self {
-        Self::new(Clock::System, SCAN_LIMIT, Arc::new(NoopRanker))
+        Self::new(Clock::System, SCAN_LIMIT, Arc::new(JudgeRanker))
     }
 }
 
@@ -158,7 +161,7 @@ impl DashboardHub {
         self.inner.search_interval
     }
 
-    /// The ranking step (WP11-JUDGE).
+    /// The ranking step.
     pub fn ranker(&self) -> Arc<dyn Ranker> {
         Arc::clone(&self.inner.ranker)
     }

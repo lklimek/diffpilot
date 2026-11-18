@@ -36,8 +36,9 @@ use tokio::time::MissedTickBehavior;
 
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf};
+use crate::dashboard::judge;
 use crate::dashboard::refresh::rank::ItemJudgement;
-use crate::dashboard::refresh::{self, ControlError, Scope, StartError, status_of};
+use crate::dashboard::refresh::{self, ControlError, Scope, StartError};
 use crate::dashboard::snapshot::{self, CursorError, Snapshot, View};
 use crate::state::AppState;
 
@@ -166,11 +167,21 @@ fn scope(session: &Session) -> Scope {
     }
 }
 
-/// The current snapshot scored with the judgements present now; `None` without a readable snapshot.
+/// The current snapshot scored with the judgements present now, and how many of those judgements an older ranking
+/// prompt made; `None` without a readable snapshot.
 async fn current_view(
     state: &AppState,
     scope: &Scope,
-) -> Result<Option<(String, Snapshot, View, db::repo::dashboard::RefreshRecord)>, DbError> {
+) -> Result<
+    Option<(
+        String,
+        Snapshot,
+        View,
+        db::repo::dashboard::RefreshRecord,
+        u32,
+    )>,
+    DbError,
+> {
     let Some((record, snapshot)) = snapshot::load(state, &scope.tenant_id, &scope.user_id).await?
     else {
         return Ok(None);
@@ -180,6 +191,7 @@ async fn current_view(
         .ranker()
         .judgements(state, scope, &snapshot)
         .await?;
+    let older = judgements.values().filter(|j| j.older_prompt).count();
     let view = snapshot::build(
         &snapshot,
         &judgements,
@@ -190,6 +202,7 @@ async fn current_view(
         snapshot,
         view,
         record,
+        u32::try_from(older).unwrap_or(u32::MAX),
     )))
 }
 
@@ -199,14 +212,18 @@ async fn summary(
 ) -> DashboardResult<Json<DashboardSummary>> {
     let scope = scope(&session);
     let dashboard = state.db.dashboard();
-    let latest_refresh = dashboard
+    let latest_refresh = match dashboard
         .latest_refresh(&scope.tenant_id, &scope.user_id)
         .await?
-        .as_ref()
-        .map(status_of);
-    let (revision, meta) = match current_view(&state, &scope).await? {
-        Some((revision, snapshot, view, record)) => (revision, Some(view.meta(&snapshot, &record))),
-        None => (snapshot::NO_SNAPSHOT.to_owned(), None),
+    {
+        Some(record) => Some(judge::status(&state, &record).await),
+        None => None,
+    };
+    let (revision, meta, older_prompt_judgements) = match current_view(&state, &scope).await? {
+        Some((revision, snapshot, view, record, older)) => {
+            (revision, Some(view.meta(&snapshot, &record)), older)
+        }
+        None => (snapshot::NO_SNAPSHOT.to_owned(), None, 0),
     };
     let stored = dashboard.settings(&scope.tenant_id, &scope.user_id).await?;
     Ok(Json(DashboardSummary {
@@ -214,8 +231,7 @@ async fn summary(
         latest_refresh,
         snapshot: meta,
         schedule: schedule_status(stored.as_ref()),
-        // TODO(WP11-JUDGE): count the snapshot's judgements made with an older ranking prompt.
-        older_prompt_judgements: 0,
+        older_prompt_judgements,
     }))
 }
 
@@ -257,7 +273,7 @@ async fn items(
     let Query(query) = query?;
     let scope = scope(&session);
     let (revision, page, next_cursor) = match current_view(&state, &scope).await? {
-        Some((revision, _, view, _)) => {
+        Some((revision, _, view, _, _)) => {
             let (page, next) = snapshot::page(&view.items, &query, &revision)?;
             (revision, page, next)
         }
@@ -364,7 +380,7 @@ async fn refresh_status(
         .dashboard()
         .refresh(&session.tenant_id, &session.user_id, id)
         .await?;
-    Ok(Json(status_of(&record)))
+    Ok(Json(judge::status(&state, &record).await))
 }
 
 async fn cancel(
@@ -423,7 +439,7 @@ async fn refresh_events(
         .dashboard()
         .refresh(&session.tenant_id, &session.user_id, id)
         .await?;
-    let first = Next::Status(Box::new(status_of(&record)));
+    let first = Next::Status(Box::new(judge::status(&state, &record).await));
     let changes = stream::unfold(live, move |mut live| async move {
         loop {
             match live.recv().await {
@@ -455,18 +471,20 @@ async fn refresh_events(
             async move {
                 match next {
                     Next::Status(status) => Some(DashboardEvent::Refresh { status: *status }),
-                    Next::Reread => state
+                    Next::Reread => match state
                         .db
                         .dashboard()
                         .refresh(&session.tenant_id, &session.user_id, id)
                         .await
-                        .inspect_err(|error| {
-                            tracing::debug!(%error, "dashboard SSE status re-read failed; closing stream");
-                        })
-                        .ok()
-                        .map(|record| DashboardEvent::Refresh {
-                            status: status_of(&record),
+                    {
+                        Ok(record) => Some(DashboardEvent::Refresh {
+                            status: judge::status(&state, &record).await,
                         }),
+                        Err(error) => {
+                            tracing::debug!(%error, "dashboard SSE status re-read failed; closing stream");
+                            None
+                        }
+                    },
                     Next::Heartbeat => session_live(&state, &session)
                         .await
                         .then(|| DashboardEvent::Heartbeat {
