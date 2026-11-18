@@ -20,7 +20,8 @@ test("sign in → analyze → progress → resume review", async ({ page }) => {
   const start = page.getByRole("button", { name: "Start analysis", exact: true });
   await expect(start).toBeFocused();
   await expectTooltips(page);
-  // A deliberate second Enter on the focused button (keys in the moment the card appears are ignored).
+  // A deliberate second Enter on the focused button; keys in the moment the card appears are ignored.
+  await page.waitForTimeout(500);
   await start.focus();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(PROGRESS);
