@@ -61,6 +61,9 @@ pub(crate) struct CodexStream {
     failure: Option<String>,
     last_error: Option<String>,
     unparsed_lines: usize,
+    /// The job may use no tool (dashboard jobs, ADR-018); `tool_used` names the first tool it used anyway.
+    answer_only: bool,
+    tool_used: Option<&'static str>,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +77,8 @@ enum Line {
     TurnFailed { error: RawError },
     #[serde(rename = "error")]
     Error { message: String },
+    #[serde(rename = "item.started")]
+    ItemStarted { item: Item },
     #[serde(rename = "item.completed")]
     ItemCompleted { item: Item },
     #[serde(other)]
@@ -113,11 +118,41 @@ enum Item {
         tool: String,
         status: Option<String>,
     },
+    FileChange {},
+    WebSearch {},
+    CollabToolCall {},
     #[serde(other)]
     Other,
 }
 
+impl Item {
+    /// The item type when the item is a tool call.
+    fn tool(&self) -> Option<&'static str> {
+        match self {
+            Self::CommandExecution { .. } => Some("command_execution"),
+            Self::McpToolCall { .. } => Some("mcp_tool_call"),
+            Self::FileChange {} => Some("file_change"),
+            Self::WebSearch {} => Some("web_search"),
+            Self::CollabToolCall {} => Some("collab_tool_call"),
+            Self::AgentMessage { .. } | Self::Reasoning { .. } | Self::Other => None,
+        }
+    }
+}
+
 impl CodexStream {
+    /// The stream of a job that may use no tool: a tool item, started or completed, fails it.
+    pub(crate) fn answer_only(answer_only: bool) -> Self {
+        Self {
+            answer_only,
+            ..Self::default()
+        }
+    }
+
+    /// The first tool an answer-only job used, if any; the caller stops Codex at once.
+    pub(crate) fn tool_used(&self) -> Option<&'static str> {
+        self.tool_used
+    }
+
     /// Takes one JSONL line; returns the activity it represents, with an unscrubbed and unclipped summary.
     /// Only completed items are activities; command output, MCP results and file contents never are.
     pub(crate) fn line(&mut self, line: &str) -> Option<(ActivityKind, String)> {
@@ -140,10 +175,20 @@ impl CodexStream {
             }
             Line::TurnFailed { error } => self.failure = Some(error.message),
             Line::Error { message } => self.last_error = Some(message),
-            Line::ItemCompleted { item } => return self.item(item),
+            Line::ItemStarted { item } => self.note_tool(&item),
+            Line::ItemCompleted { item } => {
+                self.note_tool(&item);
+                return self.item(item);
+            }
             Line::Other => {}
         }
         None
+    }
+
+    fn note_tool(&mut self, item: &Item) {
+        if self.answer_only && self.tool_used.is_none() {
+            self.tool_used = item.tool();
+        }
     }
 
     fn item(&mut self, item: Item) -> Option<(ActivityKind, String)> {
@@ -179,7 +224,9 @@ impl CodexStream {
                     format!("{server}.{tool} ({status})"),
                 ))
             }
-            Item::Other => None,
+            Item::FileChange {} | Item::WebSearch {} | Item::CollabToolCall {} | Item::Other => {
+                None
+            }
         }
     }
 
@@ -228,6 +275,9 @@ impl CodexStream {
     /// Whether the turn completed once the process exited with `exit`, whatever its answer;
     /// returns the thread's cumulative usage.
     pub(crate) fn finish_turn(self, exit: Exit) -> Result<Usage, ProviderError> {
+        if let Some(tool) = self.tool_used {
+            return Err(tool_used_error(tool));
+        }
         if let Some(message) = self.failure {
             return Err(classify_failure(&message));
         }
@@ -251,6 +301,13 @@ impl CodexStream {
                 describe(exit)
             ),
         })
+    }
+}
+
+/// The failure of an answer-only job that used a tool.
+pub(crate) fn tool_used_error(tool: &str) -> ProviderError {
+    ProviderError::Failed {
+        message: format!("the dashboard job used a tool ({tool}); its Codex run must answer only"),
     }
 }
 
@@ -550,5 +607,67 @@ mod tests {
         );
         assert!(stream.line("not json").is_none());
         assert_eq!(stream.unparsed_lines(), 1);
+    }
+
+    const ANSWER: &str =
+        r#"{"type":"item.completed","item":{"id":"a","type":"agent_message","text":"{}"}}"#;
+    const DONE: &str = r#"{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}"#;
+
+    #[test]
+    fn answer_only_stream_fails_at_the_first_tool_item() {
+        for (line, tool) in [
+            (
+                r#"{"type":"item.started","item":{"id":"c","type":"command_execution","command":"curl x","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+                "command_execution",
+            ),
+            (
+                r#"{"type":"item.completed","item":{"id":"m","type":"mcp_tool_call","server":"s","tool":"t","status":"completed"}}"#,
+                "mcp_tool_call",
+            ),
+            (
+                r#"{"type":"item.started","item":{"id":"w","type":"web_search","query":"q"}}"#,
+                "web_search",
+            ),
+            (
+                r#"{"type":"item.completed","item":{"id":"f","type":"file_change","changes":[],"status":"completed"}}"#,
+                "file_change",
+            ),
+            (
+                r#"{"type":"item.started","item":{"id":"k","type":"collab_tool_call","tool":"spawn_agent"}}"#,
+                "collab_tool_call",
+            ),
+        ] {
+            let mut stream = CodexStream::answer_only(true);
+            stream.line(line);
+            assert_eq!(stream.tool_used(), Some(tool), "{line}");
+            stream.line(ANSWER);
+            stream.line(DONE);
+            let error = stream.finish(Exit::Code(0)).unwrap_err();
+            assert!(
+                matches!(&error, ProviderError::Failed { message } if message.contains(tool)),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn answer_only_stream_accepts_messages_reasoning_and_plans() {
+        let mut stream = CodexStream::answer_only(true);
+        stream.line(r#"{"type":"item.completed","item":{"id":"r","type":"reasoning","text":"t"}}"#);
+        stream.line(r#"{"type":"item.completed","item":{"type":"todo_list","items":[]}}"#);
+        stream.line(ANSWER);
+        stream.line(DONE);
+        assert_eq!(stream.tool_used(), None);
+        assert!(stream.finish(Exit::Code(0)).is_ok());
+    }
+
+    #[test]
+    fn other_jobs_keep_their_tools() {
+        let mut stream = CodexStream::answer_only(false);
+        stream.line(r#"{"type":"item.completed","item":{"id":"c","type":"command_execution","command":"ls","exit_code":0}}"#);
+        stream.line(ANSWER);
+        stream.line(DONE);
+        assert_eq!(stream.tool_used(), None);
+        assert!(stream.finish(Exit::Code(0)).is_ok());
     }
 }

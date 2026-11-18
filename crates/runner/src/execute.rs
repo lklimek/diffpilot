@@ -276,6 +276,7 @@ impl Executor {
             },
             access: spec.access.clone(),
             skills: spec.skills.clone(),
+            answer_only: spec.target.pull_request().is_none(),
             compact_on_start: false,
             phases: phases.clone(),
         };

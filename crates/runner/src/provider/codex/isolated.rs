@@ -417,7 +417,7 @@ impl CodexProvider {
         });
         let stderr = tokio::spawn(stderr_tail(process.stderr));
         let mut lines = Lines::new(BufReader::new(process.stdout));
-        let mut parsed = CodexStream::default();
+        let mut parsed = CodexStream::answer_only(call.answer_only);
         let stop_at = deadline
             .checked_sub(self.settings.term_grace + STOP_MARGIN)
             .unwrap_or_else(Instant::now);

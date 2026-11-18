@@ -40,11 +40,14 @@ the same attempt; 400 malformed body.
 - The job token is for the runner only: never placed in the agent's environment, config, logs or events.
 - **Dashboard jobs** (`JobSpec.target` = `{"type":"dashboard","refresh_id":…}`, kind `judge_work`, ADR-018) get
   nothing at claim: `access` stays empty (no installation token is minted, no MemCan endpoint), and `session`,
-  `working_session`, `context_pack` and `skills` are cleared. They are claimed only while their refresh is
-  `ranking`. The runner refuses (`internal`) a dashboard job that carries access, skills, a flow file or a session,
-  and a `judge_work` job of a pull request or another kind on a dashboard target; it runs one in an empty job
-  directory without fetch or checkout, starts a fresh provider session, keeps its session files inside the job
-  directory (removed with it) and reports no `session`.
+  `working_session`, `context_pack` and `skills` are cleared. They are claimed only while their refresh is `ranking`
+  in the job's ranking attempt (`round`); a superseded attempt's jobs stay unclaimed. The runner refuses (`internal`)
+  a dashboard job that carries access, skills, a flow file or a session, and a `judge_work` job of a pull request or
+  another kind on a dashboard target; it runs one in an empty job directory without fetch or checkout, starts a fresh
+  provider session, keeps its session files inside the job directory (removed with it) and reports no `session`. Codex
+  runs it answer-only: `shell_tool` and `view_image` off, `web_search = "disabled"`, read-only sandbox, no MCP server;
+  the code-mode `exec` isolate has no network; any tool item (command, MCP, web search, file change, sub-agent) fails
+  the job.
 
 ## State machine
 `JobState::transition` is the single source (`crates/contracts/src/job/state.rs`):

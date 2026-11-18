@@ -39,6 +39,7 @@ struct Seen {
     prompt: String,
     session_dir: PathBuf,
     access: AgentAccess,
+    answer_only: bool,
 }
 
 enum Behaviour {
@@ -110,6 +111,7 @@ impl LlmProvider for Stub {
                 prompt: call.prompt.clone(),
                 session_dir: call.session_dir.clone(),
                 access: call.access.clone(),
+                answer_only: call.answer_only,
             });
             let activity = |summary: String| {
                 ProviderEvent::Activity(JobEvent {
@@ -254,6 +256,7 @@ async fn work_dir_removed_on_success() {
         "head checked out at job_dir/repo"
     );
     assert!(seen.base_present, "base commit fetched for diffs");
+    assert!(!seen.answer_only, "pull request jobs keep their tools");
     assert!(
         seen.codex_home
             .starts_with(root.path().join("state/codex-homes"))
@@ -1214,6 +1217,7 @@ async fn judge_job_runs_without_checkout_or_session() {
     assert!(!seen.job_dir.join("repo").exists() && seen.head.is_empty() && !seen.base_present);
     assert!(seen.session_dir.starts_with(&seen.job_dir), "{seen:?}");
     assert_eq!(seen.access, AgentAccess::default());
+    assert!(seen.answer_only, "no command, web or image tool");
     assert!(!seen.prompt.contains("never used"));
     assert!(stub.resumed.lock().unwrap().is_empty());
     assert_removed(&seen);

