@@ -53,6 +53,8 @@ enum StartError {
     Resume(#[source] DbError),
     #[error("could not follow the open questions")]
     ResumeQuestions(#[source] DbError),
+    #[error("could not end the dashboard refreshes the restart interrupted")]
+    RecoverDashboard(#[source] DbError),
     #[error("the HTTP server stopped with an I/O error")]
     Serve(#[source] std::io::Error),
 }
@@ -117,6 +119,9 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
     server::ask::resume_unanswered(&state)
         .await
         .map_err(StartError::ResumeQuestions)?;
+    server::dashboard::refresh::recover(&state)
+        .await
+        .map_err(StartError::RecoverDashboard)?;
 
     let (stop, stopped) = (state.stopping.clone(), state.stopping.subscribe());
     tokio::spawn(async move {

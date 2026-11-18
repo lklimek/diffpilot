@@ -19,6 +19,7 @@ use db::error::DbError;
 use crate::api::error::{ApiErrorSource, ApiFailure};
 use crate::auth::{Session, SessionCsrf};
 use crate::dashboard::settings::{self, InvalidSettings};
+use crate::dashboard::snapshot;
 use crate::state::AppState;
 
 /// A dashboard settings request failed.
@@ -75,7 +76,7 @@ async fn read(
         .await
         .map_err(failure)?;
     let own_login = own_login(&state, &session).await?;
-    Ok(Json(view(&state, settings, own_login)))
+    Ok(Json(view(&state, &session, settings, own_login).await?))
 }
 
 async fn save(
@@ -93,7 +94,7 @@ async fn save(
         .await
         .map_err(failure)?;
     tracing::info!(user_id = %session.user_id, "dashboard settings saved");
-    Ok(Json(view(&state, settings, own_login)))
+    Ok(Json(view(&state, &session, settings, own_login).await?))
 }
 
 async fn set_time_zone(
@@ -132,12 +133,22 @@ async fn own_login(state: &AppState, session: &Session) -> SettingsResult<String
     Ok(user.profile.login)
 }
 
-fn view(state: &AppState, settings: DashboardSettings, own_login: String) -> DashboardSettingsView {
+async fn view(
+    state: &AppState,
+    session: &Session,
+    settings: DashboardSettings,
+    own_login: String,
+) -> SettingsResult<DashboardSettingsView> {
     let memcan_configured = state.config.memcan.status().state != MemcanState::NotConfigured;
-    // TODO(WP11-REFRESH): pass the latest snapshot's unreachable repositories and owners (plan §A.1 reach
-    // diagnostic) once the stored snapshot document exists; until then no row carries the mark.
-    let reported_unreachable: &[String] = &[];
-    settings::view(settings, own_login, memcan_configured, reported_unreachable)
+    let reported = snapshot::unreachable(state, &session.tenant_id, &session.user_id)
+        .await
+        .map_err(failure)?;
+    Ok(settings::view(
+        settings,
+        own_login,
+        memcan_configured,
+        &reported,
+    ))
 }
 
 #[cfg(test)]
