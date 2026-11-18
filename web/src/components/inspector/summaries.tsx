@@ -47,7 +47,7 @@ export function FlowSummary({
         sections={sections}
       >
         <ul className="m-0 list-none p-0">
-          {flow.facts.files.map((f) => (
+          {[...new Set(flow.facts.files)].map((f) => (
             <li key={f}>
               <code>{f}</code>
             </li>

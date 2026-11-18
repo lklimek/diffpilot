@@ -13,6 +13,7 @@ import type {
 } from "../../api/generated/types";
 import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
 import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
+import { FlowWorkLabel } from "../flow-intro/status";
 import { rangeText } from "../section/format";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Collapsible } from "./Collapsible";
@@ -214,7 +215,11 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
         provenance: LLM_LINE,
         meta: (
           <>
-            <RiskLabel risk={flow.llm.risk} />
+            {flow.analysis_status && flow.analysis_status.state !== "analysed" ? (
+              <FlowWorkLabel status={flow.analysis_status} analysis={tour.analysis.state} />
+            ) : (
+              <RiskLabel risk={flow.llm.risk} />
+            )}
             <GroupLabel group={flow.group} />
           </>
         ),
