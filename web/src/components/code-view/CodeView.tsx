@@ -26,7 +26,7 @@ import { useFlashTarget } from "../flash/useFlashTarget";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { Highlight, Token } from "./highlight";
 import { Mark, RemarkMarker, ThreadMarker, type MarkerTarget } from "./markers";
-import { CHANGE_LOOK, REMARK_LOOK } from "./changeLook";
+import { CHANGE_LOOK, changeLineText, REMARK_LOOK } from "./changeLook";
 import { foldRuns, type Piece } from "./fold";
 import { buildSegments, type Segment, type Row } from "./rows";
 import { CodeText, useTokens } from "./tokens";
@@ -181,8 +181,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
               <Mark
                 mark="changed"
                 glyph={CHANGE_LOOK[side === "base" ? "removed" : "added"].sign}
-                text="changed line"
-                tip={side === "base" ? "Removed line (from the diff)." : "Added line (from the diff)."}
+                text={changeLineText(side === "base" ? "removed" : "added")}
                 className={`font-bold ${CHANGE_LOOK[side === "base" ? "removed" : "added"].signLook}`}
               />
             )}
@@ -191,8 +190,7 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
             <Mark
               mark="removed"
               glyph="−"
-              text="removed line"
-              tip="Removed line: deleted by this pull request, shown from the base commit (from the diff)."
+              text={changeLineText("removed")}
               className="text-[13px] font-bold text-high"
             />
           )}
@@ -201,7 +199,6 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
               mark="differs"
               glyph="≠"
               text="differs from the moved original"
-              tip="This moved line differs from the moved original: it was moved and also edited (from the diff)."
               className="text-[13px] font-bold"
             />
           )}

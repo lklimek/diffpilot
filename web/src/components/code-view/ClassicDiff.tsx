@@ -10,7 +10,7 @@ import type {
 import { CommentMarker, CommentPanel, commentsByLine, lineKey, lineName } from "../comment/LineComments";
 import type { Highlight, Token } from "./highlight";
 import { CodeText, useTokens } from "./tokens";
-import { CHANGE_LOOK } from "./changeLook";
+import { CHANGE_LOOK, changeLineText } from "./changeLook";
 
 /** Props of the classic diff ("Show old code", inspector section 1). */
 export interface ClassicDiffProps {
@@ -91,7 +91,7 @@ function Hunk({
               <span className="pr-1 text-right text-muted select-none">{l.new_line}</span>
               <span className={`text-center font-bold select-none ${kind.signLook}`}>
                 <span aria-hidden>{kind.sign}</span>
-                <span className="sr-only">{kind.text}</span>
+                <span className="sr-only">{l.kind === "context" ? kind.text : changeLineText(l.kind)}</span>
               </span>
               <code className="pr-4 whitespace-pre">
                 <CodeText text={l.text} tokens={tokens?.[i]} />

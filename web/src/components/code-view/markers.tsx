@@ -9,27 +9,26 @@ import { Tooltip } from "../tooltip/Tooltip";
 /** A remark or GitHub thread a marker's popover can show in the Inspector. */
 export type MarkerTarget = { kind: "annotation"; id: AnnotationId } | { kind: "thread"; id: string };
 
-/** A non-interactive gutter mark (`−`, `≠`) with a project tooltip; its text is also read with the line. */
+/**
+ * A non-interactive gutter mark (`+`, `−`, `≠`): its text is read with the line. No tooltip: a trigger on every
+ * line could not take keyboard focus without hundreds of tab stops; the `?` legend explains the marks.
+ */
 export function Mark({
   mark,
   glyph,
   text,
-  tip,
   className = "",
 }: {
   mark: string;
   glyph: string;
   text: string;
-  tip: string;
   className?: string;
 }) {
   return (
-    <Tooltip tip={tip} className="inline-flex">
-      <span data-mark={mark} className={`cursor-help leading-none ${className}`}>
-        <span aria-hidden>{glyph}</span>
-        <span className="sr-only">{text}</span>
-      </span>
-    </Tooltip>
+    <span data-mark={mark} className={`inline-flex leading-none ${className}`}>
+      <span aria-hidden>{glyph}</span>
+      <span className="sr-only">{text}</span>
+    </span>
   );
 }
 

@@ -29,8 +29,8 @@ describe("ClassicDiff", () => {
     expect(rows.map((r) => r.getAttribute("data-diff-line"))).toEqual(["context", "removed", "added"]);
     expect(rows.map((r) => r.textContent)).toEqual([
       "5396 unchanged    let timeout = t;",
-      "54−removed    send(http).await?;",
-      "97+added    match send(http).await {",
+      "54−removed line    send(http).await?;",
+      "97+added line    match send(http).await {",
     ]);
   });
 
@@ -53,10 +53,10 @@ describe("ClassicDiff", () => {
     render(<ClassicDiff diff={endings} />);
     const rows = [...document.querySelectorAll("[data-diff-line]")].map((r) => r.textContent);
     expect(rows).toEqual([
-      "1−removedx(CRLF)",
-      "1+addedx",
-      "2−removedlast(no newline at end of file)",
-      "2+addedlast",
+      "1−removed linex(CRLF)",
+      "1+added linex",
+      "2−removed linelast(no newline at end of file)",
+      "2+added linelast",
     ]);
   });
 
