@@ -249,16 +249,17 @@ export function CommentComposer(props: CommentComposerProps) {
   const [revision, setRevision] = useState(0);
   const prefilled = useRef<{ text: string } | null>(null);
   const prefillKey = line && identity(line.target);
+  // Unconfirmed posts live with the screen (props): after a failure the server may have created the comment,
+  // so the only ways on are Retry with the same key and payload, or Discard — also after a remount.
+  const inFlight = useRef(new Set<string>());
   useEffect(() => {
     if (!prefill || !prefillKey || prefilled.current === prefill) return;
     prefilled.current = prefill;
     drafts.set(prefillKey, appendDraft(drafts.get(prefillKey), prefill.text));
-    setRevision((n) => n + 1);
+    // While a post is unsettled the field shows the post; the kept draft joins the text once it settles.
+    if (!inFlight.current.has(prefillKey) && !unresolved[prefillKey]) setRevision((n) => n + 1);
     onPrefilled?.();
-  }, [prefill, prefillKey, drafts, onPrefilled]);
-  // Unconfirmed posts live with the screen (props): after a failure the server may have created the comment,
-  // so the only ways on are Retry with the same key and payload, or Discard — also after a remount.
-  const inFlight = useRef(new Set<string>());
+  }, [prefill, prefillKey, drafts, onPrefilled, unresolved]);
 
   const heading = (
     <h3 id={`${id}-h`} className="text-[10.5px] font-bold tracking-wide text-muted uppercase">
@@ -290,9 +291,10 @@ export function CommentComposer(props: CommentComposerProps) {
       // The registry blocks a target in flight across remounts; the ref also catches a second click in one tick.
       if (inFlight.current.has(key) || unresolved[key]?.error === null) return null;
       inFlight.current.add(key);
+      // While the outcome is unknown no draft is stored: a reload must not offer the text for a second Add. A retry
+      // keeps what arrived meanwhile (a prefill).
+      if (!unresolved[key]) drafts.set(key, "");
       setUnresolved((all) => ({ ...all, [key]: { request, error: null } }));
-      // While the outcome is unknown no draft is stored: a reload must not offer the text for a second Add.
-      drafts.set(key, "");
       try {
         const response = await onCreate(request);
         setUnresolved((all) => without(all, key));
@@ -302,7 +304,7 @@ export function CommentComposer(props: CommentComposerProps) {
         const code = codeOf(error) ?? "";
         if (DEFINITE_REFUSALS.has(code)) {
           setUnresolved((all) => without(all, key));
-          drafts.set(key, request.body);
+          drafts.set(key, appendDraft(request.body, drafts.get(key)));
           return { settled: messageOf(error), headMoved: code === "pr_head_changed" };
         }
         setUnresolved((all) => ({ ...all, [key]: { request, error: messageOf(error) } }));
@@ -320,6 +322,7 @@ export function CommentComposer(props: CommentComposerProps) {
         line={line}
         post={unresolved[key] ?? null}
         draft={drafts.get(key)}
+        kept={() => drafts.get(key)}
         onDraft={(text) => drafts.set(key, text)}
         send={send}
         discard={discard}
@@ -343,6 +346,8 @@ interface DraftProps extends Omit<CommentComposerProps, "unresolved" | "drafts">
   post: UnresolvedPost | null;
   /** The kept unsent text of this target. */
   draft: string;
+  /** The kept text now (a prefill may arrive while a post is unsettled). */
+  kept: () => string;
   onDraft: (text: string) => void;
   send: (request: CreateCommentRequest) => Promise<SendResult>;
   discard: () => void;
@@ -358,6 +363,7 @@ function Draft({
   reanalyseHref,
   post: unresolved,
   draft,
+  kept,
   onDraft,
   send,
   discard,
@@ -415,12 +421,13 @@ function Draft({
   };
   const settle = (response: SendResult) => {
     if (response && "settled" in response) {
+      setText(kept());
       setSettled(response.settled);
       setHeadMoved(response.headMoved);
     } else if (response) finish(response);
   };
   const finish = (response: CreateCommentResponse) => {
-    setText("");
+    setText(kept());
     setDone(response);
     requestAnimationFrame(() => growField(field.current));
   };
@@ -529,7 +536,7 @@ function Draft({
                 <button
                   type="button"
                   onClick={() => {
-                    setText(unresolved.request.body);
+                    setText(appendDraft(unresolved.request.body, kept()));
                     discard();
                   }}
                   className={BUTTON}
