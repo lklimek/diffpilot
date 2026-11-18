@@ -116,6 +116,21 @@ describe("Tour: unsent comment drafts survive navigation", () => {
 });
 
 describe("Tour: a background refresh that cannot succeed", () => {
+  it("an event stream that ended and cannot reopen (session over) leads to the error page, not stale data", async () => {
+    await open(null, "#f1.2");
+    server.use(
+      http.get("/api/v1/analyses/:id/tour", () =>
+        HttpResponse.json(
+          { code: "unauthenticated", message: "Sign in again to continue." },
+          { status: 401 },
+        ),
+      ),
+    );
+    act(() => FakeEventSource.latest().fail());
+    expect(await screen.findByText("Sign in again to continue.")).toBeVisible();
+    expect(screen.queryByRole("navigation", { name: "Flows and steps" })).toBeNull();
+  });
+
   it.each([
     [401, "unauthenticated", "Sign in again to continue."],
     [404, "not_found", "This analysis does not exist."],

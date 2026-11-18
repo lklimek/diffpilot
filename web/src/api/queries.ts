@@ -137,9 +137,14 @@ export function useQuestionEvents(id: AnalysisId): { lost: boolean } {
             );
           }
         },
+        // The stream ended and could not reopen: re-read the tour too, so a refusal (session over, analysis
+        // gone) leads to its normal page instead of stale data.
         onClosed: () => {
           setLost(true);
-          return client.refetchQueries({ queryKey: ["questions", id] }).catch(() => {});
+          return client
+            .refetchQueries({ queryKey: ["questions", id] })
+            .then(() => client.refetchQueries({ queryKey: ["tour", id] }))
+            .catch(() => {});
         },
       }),
     [client, id],

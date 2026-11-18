@@ -230,7 +230,9 @@ describe("AnalysisProgress (brief §4.2)", () => {
         { state: "planning", stage: { kind: "plan", started_at: null } },
         "Waiting for the runner; next: planning the review.",
       ],
-      [{ state: "running", done: 1, total: 4 }, "Between two jobs: the server starts the next one."],
+      // Parked: no flow job runs and none is admitted; nothing claims the server is working.
+      [{ state: "running", done: 1, total: 4 }, "No flow job is running."],
+      [{ state: "planning" }, "Between two jobs: the server starts the next one."],
     ] as [AnalysisState, string][])("names the stage from the server: %j", (state, text) => {
       show(state, false, activity());
       const line = screen.getByText(text);
@@ -268,7 +270,7 @@ describe("AnalysisProgress (brief §4.2)", () => {
         show(state, false, activity());
         expect(
           screen.queryByText(
-            /^(Planning the review|Reading the PR context|Analysing|Waiting for the runner|Between two jobs)/,
+            /^(Planning the review|Reading the PR context|Analysing|Waiting for the runner|Between two jobs|No flow job)/,
           ),
         ).toBeNull();
         expect(indicator()).toBeNull();

@@ -5,7 +5,7 @@ import { ANALYSIS_ID, expectTrustWording } from "./support";
 const open = (page: Page, scenario: string) =>
   page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=${scenario}`);
 const bar = (page: Page) => page.getByRole("progressbar", { name: "Analysis progress" });
-const openReview = (page: Page) => page.getByRole("link", { name: "Resume review" });
+const openReview = (page: Page) => page.getByRole("link", { name: /^(Resume|Open) review$/ });
 
 test("planning: indeterminate bar, Planning flows…, Cancel analysis, no Resume review", async ({ page }) => {
   await open(page, "planning");
@@ -107,13 +107,13 @@ test.describe("stage and liveness", () => {
     await expect(page.getByText(/No signal from the server/)).toHaveCount(0);
   });
 
-  test("waiting for the runner, and between two jobs", async ({ page }) => {
+  test("waiting for the runner, and no flow job running", async ({ page }) => {
     await open(page, "waiting");
     await expect(page.getByText("Waiting for the runner; next: planning the review.")).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
     await expectTrustWording(page);
     await open(page, "between-jobs");
-    await expect(page.getByText("Between two jobs: the server starts the next one.")).toBeVisible();
+    await expect(page.getByText("No flow job is running.")).toBeVisible();
     await expect(indicator(page)).toHaveCount(0);
   });
 

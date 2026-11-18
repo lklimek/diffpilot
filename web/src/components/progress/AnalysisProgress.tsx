@@ -102,7 +102,11 @@ function stageWork(stage: AnalysisStage, done: number | null, total: number | nu
 function stageText(state: AnalysisState): string | null {
   if (state.state !== "planning" && state.state !== "running") return null;
   const { stage } = state;
-  if (!stage) return "Between two jobs: the server starts the next one.";
+  // A running analysis without a stage may be parked (nothing admitted): no claim that work goes on.
+  if (!stage)
+    return state.state === "running"
+      ? "No flow job is running."
+      : "Between two jobs: the server starts the next one.";
   const [done, total] = state.state === "running" ? [state.done, state.total] : [null, null];
   const work = stageWork(stage, done, total);
   if (stage.started_at === null) return `Waiting for the runner; next: ${work}`;
