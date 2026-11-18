@@ -3609,9 +3609,11 @@ mod tests {
             }
         );
         // A Retry ranking keeps the refresh's count: the room does not come back.
-        dash.finish_ranking(T, "u1", id, 0, RankingState::Failed, COUNTS, at(2))
+        let applied = dash
+            .finish_ranking(T, "u1", id, 0, RankingState::Failed, COUNTS, at(2))
             .await
             .expect("finish");
+        assert_eq!(applied, RankingUpdate::Applied);
         assert!(matches!(
             dash.restart_ranking(T, "u1", id).await.expect("restart"),
             RestartOutcome::Restarted(_)
@@ -3625,9 +3627,11 @@ mod tests {
             SendReservation::OverRefreshCap
         );
         // A new refresh of the same day: its own room, the day's sum caps it.
-        dash.finish_ranking(T, "u1", id, 1, RankingState::Finished, COUNTS, at(3))
+        let applied = dash
+            .finish_ranking(T, "u1", id, 1, RankingState::Finished, COUNTS, at(3))
             .await
             .expect("finish");
+        assert_eq!(applied, RankingUpdate::Applied);
         let next = ranking(&db, "u1", 4).await;
         let reserve = |items| dash.reserve_sends(T, "u1", next, 0, items, CAPS, at(0));
         assert_eq!(
@@ -3677,9 +3681,11 @@ mod tests {
             4,
             "started before the day, still ranking"
         );
-        dash.finish_ranking(T, "u1", id, 0, RankingState::Finished, COUNTS, at(30))
+        let applied = dash
+            .finish_ranking(T, "u1", id, 0, RankingState::Finished, COUNTS, at(30))
             .await
             .expect("finish");
+        assert_eq!(applied, RankingUpdate::Applied);
         assert_eq!(
             dash.sent_totals(T, "u1", id, day)
                 .await
@@ -3694,20 +3700,24 @@ mod tests {
         let db = db().await;
         let dash = db.dashboard();
         let first = ranking(&db, "u1", 0).await;
-        dash.reserve_sends(T, "u1", first, 0, 3, CAPS, at(0))
+        let applied = dash
+            .reserve_sends(T, "u1", first, 0, 3, CAPS, at(0))
             .await
             .expect("reserve");
-        dash.finish_ranking(
-            T,
-            "u1",
-            first,
-            0,
-            RankingState::Failed,
-            JudgeCounts::default(),
-            at(1),
-        )
-        .await
-        .expect("finish");
+        assert_eq!(applied, SendReservation::Reserved);
+        let applied = dash
+            .finish_ranking(
+                T,
+                "u1",
+                first,
+                0,
+                RankingState::Failed,
+                JudgeCounts::default(),
+                at(1),
+            )
+            .await
+            .expect("finish");
+        assert_eq!(applied, RankingUpdate::Applied);
         for minute in 2..(2 + i64::from(REFRESHES_KEPT) + 2) {
             finished(&db, "u1", minute, RankingState::Finished).await;
         }
@@ -3749,9 +3759,11 @@ mod tests {
         );
         assert_eq!(record(&db, "u1", id).await.log, log);
         assert_eq!(record(&db, "u1", id).await.counts, COUNTS);
-        dash.cancel_ranking(T, "u1", id, 0, at(3))
+        let applied = dash
+            .cancel_ranking(T, "u1", id, 0, at(3))
             .await
             .expect("cancel");
+        assert_eq!(applied, RankingUpdate::Applied);
         let late = RankingWrite {
             judgements: &[judgement(2, "f2", at(4))],
             progress: Some((&progress, &[])),
