@@ -471,7 +471,8 @@ the server's current checks, so its changes are listed as not analysed. Analyse 
 analysis: `Retry the analysis; then analyse this flow again.`); the problem codes go to the server log only.
 Requesting it discards that document and requests the flow in one transaction: it runs in a new job round like
 a failed flow (the rejected output is never repaired), with the automatic retries of any requested flow, and is
-then a flow like any other (background analysis covers it too). A `finished` analysis becomes `running` again
+then a flow like any other. Switching background analysis on ("Analyse all remaining flows") discards and
+requests every such flow the same way, in the transaction that switches it on. A `finished` analysis becomes `running` again
 and finishes when the flow is analysed. Resume and Retry read a plan accepted earlier (whole, or the batch plans
 of an analysis that was planning in batches) with the same stored-reading rule. PUT `/api/v1/analyses/{id}/background` takes `{"enabled":false}` and returns `AnalysisSummary`.
 Both require session/CSRF and tenant access; requesting work or enabling background checks the current PR

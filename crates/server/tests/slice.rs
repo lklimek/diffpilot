@@ -1562,6 +1562,66 @@ async fn a_stored_flow_failing_another_check_is_failed_and_can_be_analysed_again
     assert!(!f1["steps"].as_array().expect("steps").is_empty());
 }
 
+/// "Analyse all remaining flows" also runs again a stored flow that today's checks reject.
+#[tokio::test]
+async fn analysing_all_remaining_flows_reruns_a_rejected_stored_flow() {
+    let h = harness().await;
+    let id = h.create_fixture_analysis_on_request().await;
+    h.wait_for_state(&id, |state| {
+        matches!(state, AnalysisState::Running { idle: true, .. })
+    })
+    .await;
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f1/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.wait_for_state(&id, |state| {
+        matches!(
+            state,
+            AnalysisState::Running {
+                done: 1,
+                idle: true,
+                ..
+            }
+        )
+    })
+    .await;
+    let analysis: AnalysisId = serde_json::from_value(json!(id)).expect("id");
+    let mut flow: Value = agent_output("flow:f1");
+    flow["edges"]
+        .as_array_mut()
+        .expect("edges")
+        .push(json!({"from_step_id": "s1", "to_step_id": "s99", "label": null}));
+    h.state
+        .db
+        .documents()
+        .put(analysis, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .await
+        .expect("store a flow that fails a check");
+    h.set_background(&id, true).await;
+    let finished = h.wait_until_finished(&id).await;
+    assert_eq!(finished.state, AnalysisState::Finished { total: 5 });
+    let runs = h.executor.specs_of("flow:f1");
+    assert_eq!(
+        runs.iter()
+            .map(|(generation, _)| *generation)
+            .collect::<Vec<_>>(),
+        [0, 0],
+        "a new first run, never a repair of the rejected output"
+    );
+    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    let f1 = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|flow| flow["id"] == "f1")
+        .expect("f1");
+    assert_eq!(f1["analysis_status"]["state"], "analysed", "{f1}");
+}
+
 #[tokio::test]
 async fn lines_caps_the_range() {
     let h = harness().await;

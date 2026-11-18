@@ -231,24 +231,33 @@ fn rejected_message(state: &AnalysisState) -> String {
     )
 }
 
-/// Whether the stored document of `flow` fails today's checks (the Tour shows it failed); `false` without one.
-pub async fn stored_flow_rejected(
+/// Flows whose stored document fails today's checks (the Tour shows them failed).
+pub async fn rejected_stored_flows(
     state: &AppState,
     summary: &AnalysisSummary,
-    flow: &FlowId,
-) -> Result<bool, TourLoadError> {
+) -> Result<Vec<FlowId>, TourLoadError> {
     let results = StoredResults::load(&state.db, summary.id).await?;
-    if !results.flows.iter().any(|stored| stored.flow_id == *flow) {
-        return Ok(false);
+    let stored: Vec<FlowId> = results
+        .flows
+        .iter()
+        .map(|flow| flow.flow_id.clone())
+        .collect();
+    if stored.is_empty() {
+        return Ok(Vec::new());
     }
     let tour = load_from(state, summary, results).await?;
-    Ok(tour.flows.iter().any(|shown| {
-        shown.id == *flow
-            && shown
-                .analysis_status
-                .as_ref()
-                .is_some_and(|status| status.state == FlowAnalysisState::Failed)
-    }))
+    Ok(tour
+        .flows
+        .into_iter()
+        .filter(|shown| {
+            stored.contains(&shown.id)
+                && shown
+                    .analysis_status
+                    .as_ref()
+                    .is_some_and(|status| status.state == FlowAnalysisState::Failed)
+        })
+        .map(|shown| shown.id)
+        .collect())
 }
 
 /// Everything the Tour is projected from.

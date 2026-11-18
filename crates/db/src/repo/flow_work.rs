@@ -146,25 +146,28 @@ impl FlowWork<'_> {
         now: DateTime<Utc>,
     ) -> Result<bool, DbError> {
         let mut tx = super::write_tx(&self.db.pool).await?;
-        let deleted =
-            sqlx::query("DELETE FROM documents WHERE analysis_id=? AND kind='flow' AND key=?")
-                .bind(id.to_string())
-                .bind(&flow.0)
-                .execute(&mut *tx)
-                .await?;
-        if deleted.rows_affected() == 0 {
-            return Ok(false);
-        }
-        sqlx::query("INSERT INTO flow_work (tenant_id,analysis_id,flow_id,requested_at,error) SELECT tenant_id,id,?,?,? FROM analyses WHERE id=? ON CONFLICT(analysis_id,flow_id) DO UPDATE SET requested_at=excluded.requested_at, error=excluded.error")
-            .bind(&flow.0).bind(ts(now)).bind(REJECTED_STORED).bind(id.to_string()).execute(&mut *tx).await?;
-        // The flows analysed are the flow documents left (`finished` stores no count).
-        sqlx::query("UPDATE analyses SET flows_done=(SELECT COUNT(*) FROM documents WHERE analysis_id=?1 AND kind='flow') WHERE id=?1")
+        let discarded = rerun(&mut tx, id, flow, now).await?;
+        tx.commit().await?;
+        Ok(discarded)
+    }
+    /// "Analyse all remaining flows": background analysis on, and every flow of `rejected` (stored documents
+    /// today's checks reject) discarded and requested as by [`FlowWork::request_again`], in one transaction.
+    pub async fn analyse_remaining(
+        &self,
+        id: AnalysisId,
+        rejected: &[FlowId],
+        now: DateTime<Utc>,
+    ) -> Result<(), DbError> {
+        let mut tx = super::write_tx(&self.db.pool).await?;
+        sqlx::query("UPDATE analyses SET background_analysis=1 WHERE id=?")
             .bind(id.to_string())
             .execute(&mut *tx)
             .await?;
-        demanded(&mut tx, id, flow, now).await?;
+        for flow in rejected {
+            rerun(&mut tx, id, flow, now).await?;
+        }
         tx.commit().await?;
-        Ok(true)
+        Ok(())
     }
     /// Makes a `finished` analysis `running` again when a requested flow has no document (discarded by
     /// [`FlowWork::request_again`] while its driver finished); whether it did.
@@ -355,6 +358,33 @@ async fn due(
         failed: row.try_get("failed")?,
         requested: row.try_get("requested")?,
     }))
+}
+
+/// [`FlowWork::request_again`] inside `tx`: `false` (nothing written) when `flow` has no stored document.
+async fn rerun(
+    tx: &mut sqlx::SqliteConnection,
+    id: AnalysisId,
+    flow: &FlowId,
+    now: DateTime<Utc>,
+) -> Result<bool, DbError> {
+    let deleted =
+        sqlx::query("DELETE FROM documents WHERE analysis_id=? AND kind='flow' AND key=?")
+            .bind(id.to_string())
+            .bind(&flow.0)
+            .execute(&mut *tx)
+            .await?;
+    if deleted.rows_affected() == 0 {
+        return Ok(false);
+    }
+    sqlx::query("INSERT INTO flow_work (tenant_id,analysis_id,flow_id,requested_at,error) SELECT tenant_id,id,?,?,? FROM analyses WHERE id=? ON CONFLICT(analysis_id,flow_id) DO UPDATE SET requested_at=excluded.requested_at, error=excluded.error")
+        .bind(&flow.0).bind(ts(now)).bind(REJECTED_STORED).bind(id.to_string()).execute(&mut *tx).await?;
+    // The flows analysed are the flow documents left (`finished` stores no count).
+    sqlx::query("UPDATE analyses SET flows_done=(SELECT COUNT(*) FROM documents WHERE analysis_id=?1 AND kind='flow') WHERE id=?1")
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    demanded(&mut *tx, id, flow, now).await?;
+    Ok(true)
 }
 
 /// After `flow` was requested: other flows' queued jobs withdrawn, and a `finished` analysis `running` again (it
@@ -1058,6 +1088,58 @@ mod tests {
         assert!(
             !db.flow_work().reopen(id).await.unwrap(),
             "every flow analysed"
+        );
+    }
+
+    #[tokio::test]
+    async fn analysing_all_remaining_flows_reruns_rejected_stored_flows() {
+        let db = Db::in_memory().await.unwrap();
+        let id = planned(&db, 3).await;
+        for flow in ["f1", "f2"] {
+            db.documents()
+                .put(
+                    id,
+                    DocumentKind::Flow,
+                    flow,
+                    &serde_json::json!({}),
+                    Utc::now(),
+                )
+                .await
+                .unwrap();
+        }
+        let f2 = FlowId("f2".into());
+        db.flow_work()
+            .analyse_remaining(id, std::slice::from_ref(&f2), Utc::now())
+            .await
+            .unwrap();
+        assert!(db.flow_work().background(id).await.unwrap());
+        assert!(
+            db.documents()
+                .get::<serde_json::Value>(id, DocumentKind::Flow, "f2")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.documents()
+                .get::<serde_json::Value>(id, DocumentKind::Flow, "f1")
+                .await
+                .unwrap()
+                .is_some(),
+            "an accepted stored flow stays"
+        );
+        assert_eq!(
+            db.flow_work().status(id, &f2).await.unwrap().state,
+            FlowAnalysisState::Queued
+        );
+        assert_eq!(
+            db.flow_work().next(id).await.unwrap(),
+            NextFlow::Run(f2.clone())
+        );
+        assert_eq!(
+            testing::retries(&db, id, &f2).await.unwrap(),
+            (1, 0),
+            "a new round, like a single request"
         );
     }
 }

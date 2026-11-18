@@ -47,9 +47,10 @@ async fn request(
         .await
         .map_err(failure)?;
     // Verified outside the write: a stored flow document is never replaced, only discarded here.
-    let rejected = tour::stored_flow_rejected(&state, &summary, &flow)
+    let rejected = tour::rejected_stored_flows(&state, &summary)
         .await
-        .map_err(failure)?;
+        .map_err(failure)?
+        .contains(&flow);
     state
         .progress
         .update(id, || async {
@@ -85,19 +86,28 @@ async fn background(
             action: "scheduled",
         }));
     }
+    // Analysing all remaining flows includes stored flows today's checks reject (verified outside the write).
+    let mut rejected = Vec::new();
     if body.enabled {
         ingest::check_head(&state, &session, &summary)
             .await
             .map_err(failure)?;
+        if summary.review_ready == Some(true) {
+            rejected = tour::rejected_stored_flows(&state, &summary)
+                .await
+                .map_err(failure)?;
+        }
     }
     state
         .progress
         .update(id, || async {
-            state
-                .db
-                .flow_work()
-                .set_background(id, body.enabled, chrono::Utc::now())
-                .await?;
+            let now = chrono::Utc::now();
+            let work = state.db.flow_work();
+            if body.enabled {
+                work.analyse_remaining(id, &rejected, now).await?;
+            } else {
+                work.set_background(id, false, now).await?;
+            }
             Ok::<_, DbError>(AnalysisEvent::Analysis {
                 summary: state.db.analyses().summary(id).await?,
             })
