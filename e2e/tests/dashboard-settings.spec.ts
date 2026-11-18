@@ -241,7 +241,26 @@ test("a second user sees none of the first user's dashboard, refreshes, events o
   } finally {
     await context.close();
   }
-  // Alice's token still reads her own dashboard.
+  // Alice's token still reads her own dashboard, and her refresh's events (one stream, closed at once).
+  const events = new AbortController();
+  const stream = await fetch(`${stack.url}/api/v1/dashboard/refreshes/${refresh.id}/events`, {
+    headers: { authorization: `Bearer ${token}` },
+    signal: events.signal,
+  });
+  try {
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get("content-type")).toMatch(/^text\/event-stream/);
+    const reader = stream.body!.getReader();
+    let received = "";
+    while (!received.includes(refresh.id)) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += new TextDecoder().decode(value);
+    }
+    expect(received).toContain(refresh.id);
+  } finally {
+    events.abort();
+  }
   const mine = await fetch(`${stack.url}/api/v1/dashboard`, {
     headers: { authorization: `Bearer ${token}` },
   });

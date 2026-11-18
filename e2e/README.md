@@ -33,6 +33,7 @@ job tokens are known only by that shape: the server keeps just their hash) and a
 | `dashboard.spec.ts`               | My work: Refresh → scan steps → provisional → ranked, tab title busy → ready; TODOs off; Review link, `/?pr=`; cancel scan; MemCan down |
 | `dashboard-ranking.spec.ts`       | the ranking waits for a running review analysis; a cancelled ranking → Retry ranking                                  |
 | `dashboard-failures.spec.ts`      | GitHub rate limit: failed with "Retry at HH:MM", 429 until then; GitHub down: a plain message; the previous list stays |
+| `dashboard-text.spec.ts`          | hostile TODO and LLM text (markup, markdown and `javascript:` links) renders as text (`dashboard_llm_text_renders_as_text`) |
 | `dashboard-settings.spec.ts`      | Dashboard settings validation and save, ranking effort; access token: bearer reads, writes 403, revoked 401; second user |
 
 ## Run

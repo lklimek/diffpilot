@@ -22,9 +22,11 @@ test("a review analysis running first: the ranking waits for it, then ranks", as
     !stack.script || !stack.memcan,
     "needs the fake provider's script and fake MemCan (a local stack)",
   );
+  test.setTimeout(240_000);
   stack.secrets.push(...JUDGE_DATA);
-  // The plan job holds the LLM credential for about 30 s (10 recorded lines).
-  stack.script?.([{ id: "slow-plan", job: "plan", action: { replay: { step_delay_ms: 3000 } } }]);
+  // The plan job holds the LLM credential for about 100 s (10 recorded lines), well past the scan; it is cancelled
+  // once the waiting ranking is seen.
+  stack.script?.([{ id: "slow-plan", job: "plan", action: { replay: { step_delay_ms: 10_000 } } }]);
   await signIn(page);
   await saveSettings(page, worldSettings());
   await seedTodos(page, stack);

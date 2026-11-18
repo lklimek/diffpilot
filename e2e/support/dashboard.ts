@@ -3,7 +3,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 import type { Stack } from "./stack";
 
 const repo = (name: string, alias: string, watchIssues = false) => ({
@@ -148,9 +148,9 @@ export const ranked = (refresh: Refresh) =>
 /** The list section "Needs you". */
 export const workList = (page: Page) => page.getByRole("region", { name: "Needs you" });
 
-/** The display ids of the listed rows, in the order shown. */
-export function rowIds(page: Page): Promise<string[]> {
-  return workList(page)
+/** The display ids of the rows under `scope`, in the order shown. */
+const ids = (scope: Locator): Promise<string[]> =>
+  scope
     .locator("li[data-item]")
     .evaluateAll((rows) =>
       rows.map((row) =>
@@ -159,22 +159,17 @@ export function rowIds(page: Page): Promise<string[]> {
         ),
       ),
     );
-}
+
+/** The display ids of the listed rows, in the order shown. */
+export const rowIds = (page: Page) => ids(workList(page));
 
 /** The rows of the list group headed `name` (a tier, or "Not judged yet"), in order. */
-export function groupIds(page: Page, name: string): Promise<string[]> {
-  return workList(page)
-    .locator("div", { has: page.getByRole("heading", { name: new RegExp(`^${name}\\b`) }) })
-    .last()
-    .locator("li[data-item]")
-    .evaluateAll((rows) =>
-      rows.map((row) =>
-        (row.querySelector("[aria-label^='Details of ']")?.getAttribute("aria-label") ?? "").slice(
-          "Details of ".length,
-        ),
-      ),
-    );
-}
+export const groupIds = (page: Page, name: string) =>
+  ids(
+    workList(page)
+      .locator("div", { has: page.getByRole("heading", { name: new RegExp(`^${name}\\b`) }) })
+      .last(),
+  );
 
 /** The top bar's Refresh button. */
 export const refreshButton = (page: Page) => page.getByRole("button", { name: "Refresh", exact: true });
