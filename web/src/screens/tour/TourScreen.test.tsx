@@ -444,12 +444,12 @@ describe("Tour screen (brief §4.3)", () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
     const flowPill = await within(main()).findByRole("button", { name: "19 LLM remarks in this flow" });
-    expect(flowPill).toHaveTextContent(/^19 remarks$/);
+    expect(flowPill).toHaveTextContent(/^$/);
     await user().click(flowPill);
     expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
-    expect(within(main()).getByRole("button", { name: /^LLM rated this step HIGH/ })).toHaveTextContent(
-      "▲ HIGH · 3 remarks",
-    );
+    const stepPill = within(main()).getByRole("button", { name: "LLM rated this step HIGH (not checked)" });
+    expect(stepPill).toHaveTextContent(/^▲ HIGH$/);
+    expect(stepPill).toHaveAccessibleDescription(/^3 LLM remarks on this step\./);
     // The code line of the first remark and its Inspector entry flash.
     await waitFor(() => expect(main().querySelector("[data-flash]")).not.toBeNull());
     await waitFor(() => expect(inspector().querySelector("[data-flash]")).not.toBeNull());

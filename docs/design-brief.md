@@ -702,15 +702,16 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
 
 ### Owner-approved amendment — 2026-11-18: LLM rating and remark pills in navigation
 
-- On the wire a remark has no severity of its own; only its step has the LLM's rating. A pill therefore shows two
-  separate facts: the step's LLM rating and the number of its LLM remarks ("▲ HIGH · 5 remarks"; name "LLM rated
-  this step HIGH (not checked) · 5 LLM remarks"). Remark counts are never split by rating.
+- On the wire a remark has no severity of its own; only its step has the LLM's rating. A pill shows the step's LLM
+  rating only ("▲ HIGH"; name "LLM rated this step HIGH (not checked)"); the number of its LLM remarks is in the
+  tooltip ("5 LLM remarks on this step"). Remark counts are never split by rating (amended 2026-11-18, F27).
 - The navigation shows one pill per step and per flow row (also collapsed); the flow introduction and the step
   (above the code) show the same. A flow's rating on the wire is its highest step rating, already shown by the flow's
-  LLM label, so the flow pill shows only the flow's total remarks ("11 remarks"); its tooltip lists the steps per
-  rating.
-- Remarks on an unrated step get a neutral pill ("5 remarks"); a rated step without remarks shows its rating alone;
-  a step with neither shows nothing, never an all-clear. Remarks with the user's feedback dim the pill.
+  LLM label, so a flow with remarks gets a small neutral marker (a dot, name "11 LLM remarks in flow 2"); its
+  tooltip has the remark count and lists the steps per rating.
+- Remarks on an unrated step get the same neutral marker ("5 LLM remarks on step 3"); a rated step without remarks
+  shows its rating alone; a step with neither shows nothing, never an all-clear. Remarks with the user's feedback
+  dim the pill.
 - A pill leads to the first remark (on a step at the highest rating for a flow) and flashes its code line and
   Inspector entry. `r` goes to the next step with remarks after the current position (from a flow introduction:
   that flow's first step), wraps around, and says "No more steps with remarks" when there are none.
