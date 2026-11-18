@@ -15,7 +15,7 @@ sessions. A 06:00 run after a quiet weekend would find no pair.
    per local date; a missed run is caught up once at the first tick on the same local date unless a refresh already
    succeeded after the scheduled instant. Scheduled runs use the manual refresh pipeline and its one-live-refresh
    rule (a start supersedes a ranking; only a scanning refresh blocks; `docs/contracts/http-api.md` "Refresh states"); at most one scheduled refresh runs server-wide, users ordered by due instant plus a per-user 0–9 min offset.
-2. **Time zone** per user (IANA, `chrono-tz`), stored from the browser at the first dashboard visit, editable in
+2. **Time zone** per user (IANA; jiff's bundled tz database, addendum "Time library"), stored from the browser at the first dashboard visit, editable in
    Settings; without it the schedule does not run. DST: gap → first valid instant after; overlap → first occurrence.
 3. **Token pair lifetime:** the pair is kept while the user has a live session **or** the schedule is on. Sign-out of
    the last session keeps it when the schedule is on (Settings says so); "sign out everywhere", removal from the
@@ -53,3 +53,17 @@ sessions. A 06:00 run after a quiet weekend would find no pair.
   recorded `started` whose refresh never started or whose scan the restart interrupted is recorded `failed`
   ("interrupted by a server restart"); that record does not count for its date, so the day's catch-up rule decides
   again.
+
+## Addendum (2026-11-18): time library
+- **Decision.** chrono and chrono-tz are replaced by jiff 0.2 workspace-wide. RustSec marks both unmaintained
+  (RUSTSEC-2026-0543, RUSTSEC-2026-0555) and recommends jiff, which also covers IANA zones and DST in one crate.
+- **Zones.** jiff's bundled IANA database only (feature `tzdb-bundle-always`, no system tzdata), so zone names and
+  rules do not depend on the minimal server image. `server::dashboard::zone` accepts exact names only (jiff's lookup
+  is case-insensitive; chrono-tz was not), links included, `Etc/Unknown` refused. The DST rules above, the chart
+  window (midnight gaps such as America/Santiago) and the local-day judge cap keep their behaviour and tests.
+- **Wire and storage unchanged.** `contracts::time::Timestamp` wraps `jiff::Timestamp` and serialises as before:
+  RFC 3339 with `Z` and the fewest of 0, 3, 6 or 9 fraction digits (jiff's own serde drops trailing zeros).
+  Stored columns keep fixed-width microseconds with `Z`; installation token expiries keep the `+00:00` form. No
+  migration; JSON Schemas and TS types are unchanged (`date-time` strings).
+- **Remaining chrono.** `rmcp` (MemCan client) depends on chrono, so it stays in `Cargo.lock`; no workspace code
+  uses it.

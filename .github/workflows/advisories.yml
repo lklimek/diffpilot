@@ -30,15 +30,10 @@ jobs:
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-audit@0.23.0
-      # Ignored, with the reason (re-check when the lock file changes):
-      # RUSTSEC-2026-0459 (libsqlite3-sys 0.37.0 via sqlx 0.9; bundled SQLite < 3.54 returns uninitialised memory
-      #   for a crafted -wal file of another page size): not reachable. The only database is the server's own file
-      #   on its private volume; neither the runner nor the agent mounts it, so no less trusted party can write the
-      #   file pair. Drop the ignore once sqlx allows libsqlite3-sys >= 0.39.
-      # Warnings (unmaintained or yanked crates, such as chrono's notice) are printed but do not fail the job, by
-      # design: only vulnerabilities do.
+      # Warnings (unmaintained or yanked crates, such as chrono's notice; chrono comes only through rmcp) are
+      # printed but do not fail the job, by design: only vulnerabilities do.
       - name: cargo audit
-        run: cargo audit --ignore RUSTSEC-2026-0459
+        run: cargo audit
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
