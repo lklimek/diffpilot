@@ -610,18 +610,28 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
 - **No-questions sentence.** "The LLM raised no questions. That is not evidence of no defects." is no longer
   rendered; an empty Questions section is hidden like every other empty explanatory section. Supersedes that
   sentence in §1 (Silence is not safety) and §4.3 (Inspector, section 6).
-- **Provenance tags.** The caption "LLM analysis unless marked otherwise" is removed everywhere. Content written
-  by the LLM carries a small "LLM" tag (tooltip: written by the LLM, not checked); content taken from GitHub
-  review threads carries a "GitHub" tag. A tag names the source, never correctness; deterministic facts keep
+- **Provenance tags.** The caption "LLM analysis unless marked otherwise" is removed everywhere. Explanatory
+  text written by the LLM (sections, the decision sentence, pattern descriptions, thread status, marker
+  popovers) carries a small "LLM" tag (tooltip: written by the LLM, not checked); LLM-written titles and labels
+  carry no tag and keep their own labels and tooltips (§3: no badge means LLM analysis). Content taken from
+  GitHub review threads carries a "GitHub" tag. A tag names the source, never correctness; deterministic facts keep
   their fact badges. The step's decision sentence under its title carries the "LLM" tag. Supersedes the
   one-line-per-panel rule in §1 (A badge names exactly what was checked) and the caption in the flow
   introduction block of §4.3.
 - **Ask.** Answers render below the question field, newest first, with pending and failed states in the same
   place; each keeps its LLM answer label and its author label ("Asked by you"). Its tooltip says the agent was told
-  not to run code, never that nothing was executed. Supersedes "answers stay pinned above" (§4.3 Dock, Ask).
+  not to run code, never that nothing was executed. The answers block has its own scroll in the dock, so
+  Feedback and Comment stay in view. Supersedes "answers stay pinned to the step" (§4.3 Dock, Ask) as to their
+  place.
 - **Context code.** In the context part of a step (impact outside the diff), each code block starts collapsed
   behind a one-line header naming its file and lines; its explanation stays visible. The expanded state is not
   carried to another step. Supersedes "impact outside the diff inline under the step as real code" (§4.3 Step
   block).
-- **Resume.** The button that returns to a review already started reads "Resume review" (as §4.1); "Open
-  review" remains only for a review not yet opened. Supersedes "Open review" for a started review in §4.2.
+- **Resume.** The button that returns to a review the user has already started (saved review state) reads
+  "Resume review" (as §4.1), on Home and on the progress screen; "Open review" remains for a review the user has
+  not started. Supersedes "Open review" for a started review in §4.2.
+- **Comment drafts.** An unsent comment text is kept per line in the browser tab (sessionStorage, per user and
+  analysis) so navigation and a reload do not lose it; it is dropped when the comment is added or its text is
+  cleared, and all drafts are removed when nobody is signed in or the session ends. While a post's outcome is
+  unknown no draft is kept (it may already be in the pending review). The composer's Close and Escape keep the
+  draft. Supersedes "No local drafts" (§2 v1, Comments) and "Local comment drafts" (§2 Non-goals).
