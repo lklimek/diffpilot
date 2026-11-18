@@ -274,19 +274,31 @@ sudo systemctl daemon-reload && sudo systemctl enable --now smart-review-backup.
 systemctl list-timers smart-review-backup.timer; journalctl -u smart-review-backup.service -n 20
 ```
 
+A failed run exits non-zero, leaves only a `.partial-<stamp>` directory (removed by the next run) and never pushes
+out complete backups. Check daily (or add `OnFailure=` with your own notification unit to the service); both lines
+print nothing when all is well:
+
+```sh
+systemctl is-failed --quiet smart-review-backup.service && echo "the last online backup FAILED (journalctl -u smart-review-backup)"
+sudo find /srv/smart-review/backup -mindepth 2 -maxdepth 2 -name SHA256SUMS -mmin -1560 | grep -q . || echo "no complete backup in the last 26 h"
+```
+
 **Off-site, encrypted** (the backup holds the Codex credential, `SR_SECRET_KEY` and the App key): encrypt on this
 host to a key whose private half is not on it, then copy, e.g. with `age` (`apt-get install age`; `age-keygen` on
 another machine gives the recipient `age1...`):
 
 ```sh
-B=/srv/smart-review/backup; S="$(ls "$B" | tail -n 1)"
-sudo tar -C "$B" -cf - "$S" | age -r age1REPLACE_WITH_RECIPIENT | ssh backup-host "cat > smart-review/$S.tar.age"
+B=/srv/smart-review/backup
+S="$(sudo find "$B" -mindepth 2 -maxdepth 2 -name SHA256SUMS -path "$B/[0-9]*T[0-9]*Z/*" -printf '%h\n' | sort | tail -n 1)"
+if [ -z "$S" ]; then echo "no complete online backup in $B" >&2; else S="$(basename "$S")"
+  sudo tar -C "$B" -cf - "$S" | age -r age1REPLACE_WITH_RECIPIENT | ssh backup-host "cat > smart-review/$S.tar.age"; fi
 ```
 
 Restore an online backup (server and runner stopped; the script refuses otherwise). It checks `SHA256SUMS` and the
-database's integrity, replaces the database (and drops its stale `-wal`/`-shm`), `credentials/` and `sessions/`;
-`.env` and the secrets stay as they are (copy them by hand when the host is new). Test a restore now and then on a
-spare host or a copy of the volumes.
+database's integrity, unpacks first, then moves the current database (with its `-wal`/`-shm`), `credentials/` and
+`sessions/` to `pre-restore-<UTC>/` in the same volume and puts the backed-up ones in place; delete those
+directories once the service works. `.env` and the secrets stay as they are (copy them by hand when the host is
+new). Test a restore now and then on a spare host or a copy of the volumes.
 
 ```sh
 sr stop server runner
