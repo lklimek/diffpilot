@@ -178,7 +178,7 @@ CREATE TABLE jobs (
     job_token_hash          BLOB,
     cancel_requested        INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
     resumes_at              TEXT,
-    ready_output            TEXT CHECK (ready_output IS NULL OR json_valid(ready_output)), -- posted before session archival
+    ready_output            TEXT CHECK (ready_output IS NULL OR json_valid(ready_output)), -- posted before compaction
     ready_output_attempt    INTEGER CHECK ((ready_output IS NULL) = (ready_output_attempt IS NULL)),
     result                  TEXT CHECK (result IS NULL OR json_valid(result)),
     stage                   TEXT NOT NULL CHECK ((kind = 'plan' AND stage LIKE 'plan:%')

@@ -64,7 +64,7 @@ pub(super) fn fill(document: &mut FlowAnalysisOutput) {
     for step in &mut document.steps {
         if let Some((called_by, next)) = texts.remove(&step.id) {
             for (text, derived) in [(&mut step.called_by, called_by), (&mut step.next, next)] {
-                if text.is_empty() {
+                if text.trim().is_empty() || text.trim() == derived {
                     *text = derived;
                 } else if !derived.is_empty() {
                     *text = format!("{derived}; {text}");

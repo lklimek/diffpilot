@@ -358,6 +358,15 @@ fn explicit_edges_derive_connections_including_labels_and_loops() {
 }
 
 #[test]
+fn connection_prose_that_only_restates_the_derived_target_is_not_doubled() {
+    let text = connections_fixture("", "next: Step 2\n");
+    let doc = parse(&text, &Catalog::default()).unwrap();
+    assert_eq!(doc.steps[0].next, "Step 2");
+    let encoded = encode(&doc, &Catalog::default()).unwrap();
+    assert_eq!(parse(&encoded, &Catalog::default()).unwrap(), doc);
+}
+
+#[test]
 fn explicit_connection_prose_adds_to_the_derived_step_targets() {
     let text = connections_fixture(
         "",
