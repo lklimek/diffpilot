@@ -237,6 +237,9 @@ const EVENTS_KEPT: i64 = 500;
 pub const PAUSE_WITHOUT_RESET: TimeDelta = TimeDelta::minutes(30);
 
 /// Message of the server-built result of a job whose leases expired on every attempt.
+/// Result text of a job that failed because no claim could prepare its context.
+const CONTEXT_UNPREPARED_MESSAGE: &str =
+    "the job's session or context pack could not be prepared at any claim";
 const RUNNER_LOST_MESSAGE: &str =
     "The runner stopped reporting progress on every attempt, so the job was given up.";
 
@@ -854,21 +857,53 @@ impl Jobs<'_> {
         Ok(())
     }
 
-    /// Undoes the claim of `attempt` before anything was handed out: back to `queued` with the attempt unspent,
-    /// no lease and no job token. `false` when the attempt is no longer claimed (nothing changes).
-    pub async fn release_claim(&self, job: JobId, attempt: u32) -> Result<bool, DbError> {
-        let released = sqlx::query(
-            "UPDATE jobs SET state = 'queued', attempt = attempt - 1,
-                 spec = json_set(spec, '$.attempt', attempt - 1), lease_expires_at = NULL,
-                 job_token_hash = NULL
-             WHERE id = ? AND attempt = ? AND state = 'claimed'",
+    /// Ends the claim of `attempt` before anything was handed out (its context could not be prepared), like an
+    /// expired lease: the attempt stays spent and the job is `queued` again without lease and job token,
+    /// `failed` with an internal cause once no attempt is left, or `cancelled` when that was requested. `None`
+    /// when the attempt is no longer claimed (nothing changes).
+    pub async fn release_claim(
+        &self,
+        job: JobId,
+        attempt: u32,
+        now: DateTime<Utc>,
+    ) -> Result<Option<JobState>, DbError> {
+        let mut tx = super::write_tx(self.pool).await?;
+        let (current, row) = current(&mut tx, job).await?;
+        if current.state != JobState::Claimed || current.attempt != attempt {
+            return Ok(None);
+        }
+        let max_attempts: u32 = row.try_get("max_attempts")?;
+        let next = current
+            .state
+            .transition(JobTransition::LeaseExpired {
+                exhausted: attempt >= max_attempts,
+                cancel_requested: current.cancel_requested,
+            })
+            .map_err(|_| DbError::Conflict)?;
+        let result = match next {
+            JobState::Cancelled => Some(server_result(job, attempt, JobOutcome::Cancelled)),
+            JobState::Failed => Some(server_result(
+                job,
+                attempt,
+                JobOutcome::Failed {
+                    kind: JobFailureKind::Internal,
+                    message: CONTEXT_UNPREPARED_MESSAGE.to_owned(),
+                },
+            )),
+            _ => None,
+        };
+        sqlx::query(
+            "UPDATE jobs SET state = ?, result = ?, finished_at = ?, lease_expires_at = NULL, job_token_hash = NULL
+             WHERE id = ?",
         )
+        .bind(wire_name(next)?)
+        .bind(result.as_ref().map(serde_json::to_string).transpose()?)
+        .bind(next.is_terminal().then(|| ts(now)))
         .bind(job.to_string())
-        .bind(attempt)
-        .execute(self.pool)
-        .await?
-        .rows_affected();
-        Ok(released == 1)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(Some(next))
     }
 
     /// The live or succeeded job of `stage` and `generation` in the analysis's current round, if any: the job an

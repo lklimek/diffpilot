@@ -161,13 +161,15 @@ pub async fn claim(
                 "runner claimed a job"
             );
             // Session and pack first: a job whose context cannot be prepared is released before any token is
-            // minted, so it stays claimable and nothing needs revoking.
+            // minted, so nothing needs revoking. The attempt stays spent: a job that can never be prepared fails
+            // after its attempts instead of blocking the queue.
             let mut spec = match prepare_spec(db, packs, &job).await {
                 Ok(spec) => spec,
                 Err(error) => {
+                    let released = db.jobs().release_claim(job.id, job.attempt, now).await?;
                     tracing::warn!(job = %job.id, attempt = job.attempt, %error,
-                        "the job's context could not be prepared; the claim is released");
-                    db.jobs().release_claim(job.id, job.attempt).await?;
+                        state = released.map(contracts::job::state::JobState::as_str),
+                        "the job's context could not be prepared; the claim is released with its attempt spent");
                     return Err(error);
                 }
             };
@@ -468,9 +470,9 @@ mod tests {
     }
 
     /// A pack that cannot be built fails the claim before any installation token is minted (the mock allows
-    /// exactly one mint, for the later claim); the job stays queued with its attempt unspent.
+    /// exactly one mint, for the later claim); the job is queued again with the attempt spent.
     #[tokio::test]
-    async fn failed_context_pack_fails_the_claim_and_keeps_the_job_claimable() {
+    async fn failed_context_pack_fails_the_claim_and_spends_the_attempt() {
         let s = setup().await;
         let job = enqueue(&s.db).await;
         let now = Utc::now();
@@ -482,13 +484,66 @@ mod tests {
         );
         let stored = s.db.jobs().get(job).await.expect("job");
         assert_eq!(stored.state, contracts::job::state::JobState::Queued);
-        assert_eq!(stored.attempt, 0, "the attempt is not spent");
+        assert_eq!(stored.attempt, 1, "the attempt is spent");
         assert_eq!(stored.lease_expires_at, None);
         assert_eq!(s.db.jobs().token_hash(job).await.expect("read"), None);
         assert_eq!(s.db.jobs().github_token(job, 1).await.expect("read"), None);
         let claimed = claim_one(&s, now).await;
         assert_eq!(claimed.spec.job_id, job);
-        assert_eq!(claimed.spec.attempt, 1);
+        assert_eq!(claimed.spec.attempt, 2);
+    }
+
+    /// A job whose context can never be prepared fails once its attempts are spent, with a cause, and no
+    /// longer blocks the queue: the next job is claimed.
+    #[tokio::test]
+    async fn job_whose_context_cannot_be_prepared_fails_after_its_attempts() {
+        use contracts::job::result::{JobFailureKind, JobOutcome};
+        use contracts::job::state::JobState;
+        let s = setup().await;
+        let job = enqueue(&s.db).await;
+        let now = Utc::now();
+        let attempts = s.db.jobs().get(job).await.expect("job").max_attempts;
+        for attempt in 1..=attempts {
+            let result = claim(&s.db, &s.config, &FailingPacks, &request(), now).await;
+            assert!(
+                matches!(result, Err(ClaimError::ContextPack(_))),
+                "attempt {attempt}: {result:?}"
+            );
+        }
+        let stored = s.db.jobs().get(job).await.expect("job");
+        assert_eq!(stored.state, JobState::Failed);
+        assert!(
+            matches!(
+                stored.result.map(|result| result.outcome),
+                Some(JobOutcome::Failed {
+                    kind: JobFailureKind::Internal,
+                    ..
+                })
+            ),
+            "the failed job carries its cause"
+        );
+        let other = seed_analysis(&s.db).await.expect("seed");
+        installed(&s, now).await;
+        let next =
+            s.db.jobs()
+                .enqueue(
+                    NewJob {
+                        spec: job_spec(other, JobKind::AnalyseFlow),
+                        priority: JobPriority::Batch,
+                        stage: JobStage::Flow(FlowId("f1".to_owned())),
+                        generation: 0,
+                    },
+                    now,
+                )
+                .await
+                .expect("enqueue")
+                .id;
+        let claimed = claim(&s.db, &s.config, &no_packs(), &request(), now)
+            .await
+            .expect("claim")
+            .claim
+            .expect("the next job");
+        assert_eq!(claimed.spec.job_id, next);
     }
 
     fn agent_fixture(name: &str) -> serde_json::Value {
