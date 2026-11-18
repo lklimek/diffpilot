@@ -1,4 +1,4 @@
-import { signed } from "../common/format";
+import { netTone, signed } from "../common/format";
 import { AsideSection } from "../side-panel/AsideSection";
 
 interface YesterdayProps {
@@ -18,7 +18,11 @@ export function Yesterday({ label, prs, reviews }: YesterdayProps) {
       title="Yesterday"
       summary={
         <>
-          PRs net <b>{signed(net)}</b> · {reviews} reviews
+          PRs net{" "}
+          <b>
+            <span className={netTone(net)}>{signed(net)}</span>
+          </b>{" "}
+          · {reviews} reviews
         </>
       }
     >
@@ -43,7 +47,7 @@ export function Yesterday({ label, prs, reviews }: YesterdayProps) {
             <td>{prs.closed}</td>
             <td>{prs.opened}</td>
             <td>
-              <b>{signed(net)}</b>
+              <b className={netTone(net)}>{signed(net)}</b>
             </td>
             <td className="text-xs text-muted">{prs.merged} merged</td>
           </tr>

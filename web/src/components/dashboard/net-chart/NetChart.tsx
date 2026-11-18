@@ -252,6 +252,7 @@ export function NetChart({ points, unit }: NetChartProps) {
             <br />
             closed {hover.closed} · opened {hover.opened}
             <br />
+            {/* Neutral: the inverted tooltip gives the net tokens under 2.3:1 in both themes. */}
             net <b>{signed(hover.net)}</b> · running <b>{signed(hover.running)}</b>
           </div>
         )}
