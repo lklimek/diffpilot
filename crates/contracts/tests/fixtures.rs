@@ -176,7 +176,12 @@ fn agent_fixtures_validate_and_round_trip() {
     files.push((JobKind::PrContext, "agent/pr_context.json".to_owned()));
     files.extend((1..=5).map(|n| (JobKind::AnalyseFlow, format!("agent/flow-{n}.json"))));
     for (kind, file) in files {
-        let schema = output_schema(kind).expect("strict schema");
+        // Flow JSON is the stored canonical projection; the model writes tagged Markdown (ADR-014).
+        let schema = match kind {
+            JobKind::AnalyseFlow => serde_json::to_value(schemars::schema_for!(FlowAnalysisOutput))
+                .expect("canonical flow schema"),
+            _ => output_schema(kind).expect("strict schema"),
+        };
         let validator = jsonschema::validator_for(&schema).expect("valid schema");
         let value = json(&file);
         let errors: Vec<String> = validator
@@ -314,14 +319,24 @@ fn flow_outputs_follow_the_agent_output_rules() {
             let what = format!("{f}/{}", step.id);
             kinds.insert((step.side, step.kind));
             assert_lines_exist(step.side, &step.file, step.start_line, step.end_line, &what);
-            for text in [
-                &step.title,
-                &step.called_by,
-                &step.decides,
-                &step.next,
-                &step.why,
-            ] {
+            for text in [&step.title, &step.decides, &step.why] {
                 assert!(!text.trim().is_empty(), "{what}: empty text");
+            }
+            let has_edge = |incoming: bool| {
+                flow.edges.iter().any(|e| {
+                    let end = if incoming {
+                        &e.to_step_id
+                    } else {
+                        &e.from_step_id
+                    };
+                    *end == step.id
+                })
+            };
+            for (incoming, text) in [(true, &step.called_by), (false, &step.next)] {
+                assert!(
+                    !text.trim().is_empty() || !has_edge(incoming),
+                    "{what}: connection empty although an edge carries it"
+                );
             }
             if step.side == LineSide::Base {
                 assert_eq!(

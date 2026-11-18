@@ -78,23 +78,10 @@ fn checker_accepts_fixture_file_and_reports_line_numbered_rejections() {
     std::fs::remove_file(&path).unwrap();
     assert!(!check().status.success());
 
-    let concise = |text: &str| {
-        let mut start = text.find("risk: low").unwrap();
-        start = text[..start].rfind("headline:").unwrap();
-        let end = text[start..]
-            .find("blocking: no_action_proposed\n")
-            .unwrap()
-            + start
-            + "blocking: no_action_proposed\n".len();
-        format!(
-            "{}risk: low\nreason: This caller requests a large batch; assessed in the preceding step.\n{}",
-            &text[..start],
-            &text[end..]
-        )
-    };
-    let low = concise(&text);
-    assert!(!low.contains("basis_note: Read src/sync/mod.rs"));
-    std::fs::write(&path, &low).unwrap();
+    // The fixture itself uses the concise low-risk grammar.
+    assert!(text.contains("risk: low\nreason:"));
+    assert!(!text.contains("basis_note: Read src/sync/mod.rs"));
+    std::fs::write(&path, &text).unwrap();
     let accepted = check();
     assert!(
         accepted.status.success(),

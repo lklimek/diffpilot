@@ -18,7 +18,7 @@
       "moved_from": null,
       "called_by": "RpcClient::new (src/rpc/client.rs:40)",
       "decides": "Sets the default per-attempt timeout.",
-      "next": "every send call",
+      "next": "Step 2; every send call",
       "why": "The wallet UI froze for 30 s on an unreachable peer (issue #470).",
       "annotations": [
         {
@@ -96,7 +96,7 @@
       "symbol": "sync::fetch_headers",
       "kind": "context",
       "moved_from": null,
-      "called_by": "the sync loop (src/sync/mod.rs:41)",
+      "called_by": "Step 1; the sync loop (src/sync/mod.rs:41)",
       "decides": "Requests up to 2000 headers in one reply.",
       "next": "decodes the headers",
       "why": "Shown because the default timeout reaches it, although the file is not in the diff.",
@@ -134,13 +134,8 @@
         }
       ],
       "assessment": {
-        "headline": "Header sync may fail on slow links.",
         "risk": "low",
         "reason": "This caller requests a large batch; the timeout change that reaches it is assessed in the preceding step.",
-        "basis_note": "Read src/sync/mod.rs and the flow's caller context; nothing executed.",
-        "not_checked": "Production peer response times.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     }

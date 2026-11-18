@@ -71,15 +71,6 @@ describe("FlowIntroBlock", () => {
     expect(screen.getByText("Problem (before this PR)")).toBeVisible();
   });
 
-  it("labels LLM-classified tests and shows them like any flow", () => {
-    const flow = structuredClone(f1);
-    flow.group = "llm_classified_tests";
-    flow.llm.classification = "test";
-    render(<FlowIntroBlock flow={flow} dependencies={[]} ticked={[]} />);
-    expect(screen.getByText("LLM-classified tests")).toBeInTheDocument();
-    expect(screen.getByText("Change (what this PR does)")).toBeVisible();
-  });
-
   it.each(FIXTURE_STATES)("renders every flow and keeps the wording rules in state %s", (state) => {
     const stateTour = seedFor(state, "tour") as Tour;
     const { ticked_steps } = seedFor(state, "review-state") as ReviewState;

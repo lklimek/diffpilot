@@ -53,15 +53,8 @@ evidence: p15:head:63 p15:head:65
 text: Is a 2000-header reply from a slow peer expected to arrive within 5 s?
 
 ### assessment
-headline: Header sync may fail on slow links.
 risk: low
 reason: This caller requests a large batch; the timeout change that reaches it is assessed in the preceding step.
-basis_note: Read src/sync/mod.rs and the flow's caller context; nothing executed.
-not_checked: Production peer response times.
-origin: introduced
-blocking: no_action_proposed
-
-## edge s1 s2
 
 ## impact s1 p14:head:8-14
 symbol: slow_peer_2000_headers

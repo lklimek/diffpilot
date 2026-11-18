@@ -317,10 +317,6 @@ fn flow_groups_follow_classification() {
         FlowGroup::LlmClassifiedRefactor
     );
     assert_eq!(
-        FlowGroup::from(Classification::Test),
-        FlowGroup::LlmClassifiedTests
-    );
-    assert_eq!(
         FlowGroup::from(Classification::Behavioural),
         FlowGroup::Behaviour
     );

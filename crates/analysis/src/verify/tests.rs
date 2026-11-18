@@ -1106,6 +1106,81 @@ fn tagged_checker_rejects_the_same_semantic_violations_as_canonical_flow_verific
 }
 
 #[test]
+fn omitted_boundary_connections_pass_the_full_check() {
+    let fixture = Fixture::new();
+    let context = |output: &FlowAnalysisOutput| crate::tagged::Context {
+        version: 1,
+        base: fixture.base.clone(),
+        head: fixture.head.clone(),
+        files: fixture.files.clone(),
+        listed: fixture.listed.clone(),
+        plan: fixture.plan.clone(),
+        flow_id: output.flow_id.clone(),
+        moves: fixture.moves.clone(),
+        thread_aliases: vec![],
+    };
+    let blank = |mut output: FlowAnalysisOutput| {
+        for step in &mut output.steps {
+            step.called_by.clear();
+            step.next.clear();
+        }
+        output
+    };
+    let single = blank(fixture.flows[3].clone());
+    let mut walk = blank(fixture.flows[1].clone());
+    walk.edges.clear();
+    let mut isolated = walk.clone();
+    isolated.edges = vec![contracts::agent::analyse_flow::AgentEdge {
+        from_step_id: "s1".into(),
+        to_step_id: "s1".into(),
+        label: Some("retry".into()),
+    }];
+    // Per step: (called_by empty, next empty) after the check.
+    let cases = [
+        ("single step", single, vec![(true, true)]),
+        (
+            "entry and terminal",
+            walk,
+            vec![(true, false), (false, true)],
+        ),
+        (
+            "isolated step",
+            isolated,
+            vec![(false, false), (true, true)],
+        ),
+    ];
+    for (name, output, expected) in cases {
+        let context = context(&output);
+        let text = crate::tagged::encode(&output, &context.catalog()).unwrap();
+        assert!(
+            !text.contains("\ncalled_by:") && !text.contains("\nnext:"),
+            "{name}"
+        );
+        let checked = match context.check(&text, &fixture.repo) {
+            Ok(checked) => checked,
+            Err(errors) => panic!("{name}: {errors:?}"),
+        };
+        let empty: Vec<_> = checked
+            .steps
+            .iter()
+            .map(|step| (step.called_by.is_empty(), step.next.is_empty()))
+            .collect();
+        assert_eq!(empty, expected, "{name}");
+    }
+    let mut present = fixture.flows[3].clone();
+    present.steps[0].next = "The required skill was unavailable.".into();
+    let context = context(&present);
+    let text = crate::tagged::encode(&present, &context.catalog()).unwrap();
+    let errors = context.check(&text, &fixture.repo).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.kind == VerifyIssueKind::AgentLimitation),
+        "{errors:?}"
+    );
+}
+
+#[test]
 fn plan_rejects_flow_with_only_test_locations() {
     let files = vec![FileDiff {
         path: "tests/retry.rs".into(),

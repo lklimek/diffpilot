@@ -1845,13 +1845,12 @@ async fn missing_step_assessments_trigger_repair_and_restore_flow_risk() {
         let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
         for flow in tour["flows"].as_array().unwrap() {
             assert!(flow["llm"]["risk"].is_string());
-            assert!(
-                flow["steps"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|step| step["llm"]["assessment"]["basis_note"].is_string())
-            );
+            assert!(flow["steps"].as_array().unwrap().iter().all(|step| {
+                let assessment = &step["llm"]["assessment"];
+                assessment["risk"].is_string()
+                    && assessment["reason"].is_string()
+                    && (assessment["risk"] == "low" || assessment["basis_note"].is_string())
+            }));
         }
     }
 }
@@ -3130,23 +3129,21 @@ async fn lazy_review_opens_after_context_before_any_flow() {
 }
 
 #[tokio::test]
-async fn test_subject_plan_is_repaired_before_flow_jobs() {
+async fn test_classification_is_rejected_before_flow_jobs() {
     let h = harness().await;
     let mut output = agent_output("plan:1");
     output["flows"][0]["classification"] = json!("test");
     output["flows"][0]["title"] = json!("Test retry helpers");
     h.executor.script("plan:1#0", Script::Output(output));
     let id = h.create_fixture_analysis().await;
-    h.wait_until_finished(&id).await;
-    let runs = h.executor.specs_of("plan:1");
-    assert_eq!(runs.len(), 2);
-    assert!(runs[1].1.prompt.contains("test-only flows"));
-    let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    let ended = h.wait_until_ended(&id).await;
+    assert!(matches!(ended.state, AnalysisState::Failed { message, .. }
+        if message == "The agent's answer did not have the expected structure."));
+    assert_eq!(h.executor.specs_of("plan:1").len(), 1);
     assert!(
-        tour["flows"]
-            .as_array()
-            .expect("flows")
+        h.executor
+            .submitted()
             .iter()
-            .all(|flow| flow["llm"]["classification"] != "test")
+            .all(|stage| stage.starts_with("plan:"))
     );
 }

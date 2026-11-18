@@ -310,3 +310,76 @@ fn assessment_still_requires_risk_and_reason() {
     let error = parse(&text.replacen(reason, "", 1), &Catalog::default()).unwrap_err();
     assert!(error.message.contains("has no `reason:` line"), "{error}");
 }
+
+fn connections_fixture(edges: &str, extra: &str) -> String {
+    format!(
+        "# flow f1\nfile p1: src/lib.rs\n\n## introduction\nproblem_before: Before.\nchange: After.\nexample_before_after: Example.\n\n## step entry p1:head:1-2 modified\ntitle: Enter\ndecides: Read.\nwhy: Dispatch.\n{extra}\n### assessment\nrisk: low\nreason: Limited to dispatch.\n\n## step exit p1:head:3-4 modified\ntitle: Leave\ndecides: Return.\nwhy: Finish.\n\n### assessment\nrisk: low\nreason: Limited to return.\n{edges}"
+    )
+}
+
+#[test]
+fn omitted_connections_follow_reading_order_and_keep_boundaries_empty() {
+    let text = connections_fixture("", "");
+    let doc = parse(&text, &Catalog::default()).expect("connections are optional");
+    assert_eq!(doc.edges.len(), 1);
+    assert_eq!(doc.edges[0].from_step_id, "entry");
+    assert_eq!(doc.edges[0].to_step_id, "exit");
+    assert_eq!(doc.steps[0].called_by, "");
+    assert_eq!(doc.steps[0].next, "Step 2");
+    assert_eq!(doc.steps[1].called_by, "Step 1");
+    assert_eq!(doc.steps[1].next, "");
+    let encoded = encode(&doc, &Catalog::default()).unwrap();
+    assert!(!encoded.contains("called_by:"));
+    assert!(!encoded.contains("next:"));
+    assert!(!encoded.contains("## edge"));
+    assert_eq!(parse(&encoded, &Catalog::default()).unwrap(), doc);
+}
+
+#[test]
+fn explicit_edges_derive_connections_including_labels_and_loops() {
+    let text = connections_fixture(
+        "\n## edge entry exit\nlabel: ready\n\n## edge exit entry\nlabel: retry\n",
+        "",
+    );
+    let doc = parse(&text, &Catalog::default()).unwrap();
+    assert_eq!(doc.edges.len(), 2);
+    assert_eq!(doc.steps[0].called_by, "Step 2 (retry)");
+    assert_eq!(doc.steps[0].next, "Step 2 (ready)");
+    assert_eq!(doc.steps[1].called_by, "Step 1 (ready)");
+    assert_eq!(doc.steps[1].next, "Step 1 (retry)");
+    assert_eq!(
+        parse(
+            &encode(&doc, &Catalog::default()).unwrap(),
+            &Catalog::default()
+        )
+        .unwrap(),
+        doc
+    );
+}
+
+#[test]
+fn connection_prose_that_only_restates_the_derived_target_is_not_doubled() {
+    let text = connections_fixture("", "next: Step 2\n");
+    let doc = parse(&text, &Catalog::default()).unwrap();
+    assert_eq!(doc.steps[0].next, "Step 2");
+    let encoded = encode(&doc, &Catalog::default()).unwrap();
+    assert_eq!(parse(&encoded, &Catalog::default()).unwrap(), doc);
+}
+
+#[test]
+fn explicit_connection_prose_adds_to_the_derived_step_targets() {
+    let text = connections_fixture(
+        "",
+        "called_by: Worker::run outside this flow.\nnext: Leave only after committing.\n",
+    );
+    let doc = parse(&text, &Catalog::default()).unwrap();
+    assert_eq!(doc.steps[0].called_by, "Worker::run outside this flow.");
+    assert_eq!(doc.steps[0].next, "Step 2; Leave only after committing.");
+    assert_eq!(doc.steps[1].called_by, "Step 1");
+    let encoded = encode(&doc, &Catalog::default()).unwrap();
+    assert!(
+        encoded.contains("\nnext: Leave only after committing.\n"),
+        "{encoded}"
+    );
+    assert_eq!(parse(&encoded, &Catalog::default()).unwrap(), doc);
+}

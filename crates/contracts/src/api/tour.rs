@@ -261,7 +261,6 @@ impl From<Classification> for FlowGroup {
     fn from(classification: Classification) -> Self {
         match classification {
             Classification::RefactorPure | Classification::Rename => Self::LlmClassifiedRefactor,
-            Classification::Test => Self::LlmClassifiedTests,
             _ => Self::Behaviour,
         }
     }

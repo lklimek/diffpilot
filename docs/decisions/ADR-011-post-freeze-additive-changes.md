@@ -185,3 +185,14 @@ another analysis job round at a serial boundary, preserving accepted documents a
 | `DeletedBlock.context_only?: number[]` | Rule-covered base lines within removed/replaced blocks; applies the same main-view preference. |
 
 No stored document or database schema changes. Step ids and numbers remain unchanged; the top-to-bottom diagram follows the persisted walk order at every viewport width.
+
+### 2026-11-18 — concise flow connections and production-only classifications (owner approved)
+
+| Change | Purpose |
+|---|---|
+| Tagged flow `called_by` / `next` optional; absent edges mean reading order | The shared parser reconstructs Inspector connections from edge endpoints, step numbers and labels; explicit extra prose is kept. Stored/Tour field shapes are unchanged. |
+| Remove `test` from `Classification`, plan schema and generated browser type | Test-only flows are outside review scope; the model must not be offered an always-rejected value. No compatibility requirement before deployment. |
+
+The early-output route is retained: Ask publishes a checked answer before session archival
+and runner cleanup finish. `Finished` remains authoritative, including cancellation and
+attempt requeue reconciliation; this does not require a forced compaction turn.

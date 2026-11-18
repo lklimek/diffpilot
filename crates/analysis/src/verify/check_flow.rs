@@ -233,7 +233,13 @@ fn check_step(
         ("why", &step.why),
     ];
     for (field, text) in texts {
-        issues.text(&format!("{at}.{field}"), text);
+        let at = format!("{at}.{field}");
+        // Connections stay empty at a flow boundary: no edge to derive them from.
+        if matches!(field, "called_by" | "next") {
+            issues.reviewer_text(&at, text);
+        } else {
+            issues.text(&at, text);
+        }
     }
     let (start, end) = (step.start_line, step.end_line);
     let located = issues.location(context.facts, at, step.side, &step.file, (start, end));

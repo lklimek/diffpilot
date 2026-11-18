@@ -61,7 +61,7 @@ pub struct JobHandle {
 pub enum JobUpdate {
     /// Agent activity.
     Event(JobEvent),
-    /// The final output arrived before compaction (provisional: publish it as ready, persist only on
+    /// The final output arrived before session archival and runner cleanup (provisional: publish it as ready, persist only on
     /// [`JobUpdate::Finished`], which carries the same output or supersedes it).
     OutputReady(serde_json::Value),
     /// Usage limit reached; the job waits and is queued again later.
