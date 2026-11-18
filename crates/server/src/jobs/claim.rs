@@ -61,6 +61,17 @@ pub enum ClaimError {
     /// attempt spent (queued again, or failed once no attempt is left).
     #[error("the job's context pack could not be built")]
     ContextPack(#[source] ContextPackError),
+    /// A flow job was queued with another flow file format version (before an upgrade); it is not handed out, so
+    /// no agent run is spent on it, and its claim is released like an unprepared context.
+    #[error(
+        "the flow job was queued for flow file format {found:?}; this server checks format {current}"
+    )]
+    StaleFlowContext {
+        /// The version in the queued job's context, if readable.
+        found: Option<u64>,
+        /// The version this server and its checker use.
+        current: u32,
+    },
 }
 
 /// SHA-256 of a bearer value; only this hash of a job token is stored.
@@ -232,6 +243,16 @@ async fn prepare_spec(
     job: &JobRecord,
 ) -> Result<contracts::job::spec::JobSpec, ClaimError> {
     let mut spec = job.spec.clone();
+    if let Some(file) = &spec.flow_file {
+        let found = file
+            .context
+            .get("version")
+            .and_then(serde_json::Value::as_u64);
+        let current = analysis::tagged::VERSION;
+        if found != Some(u64::from(current)) {
+            return Err(ClaimError::StaleFlowContext { found, current });
+        }
+    }
     spec.session = analysis_session(db, job.analysis_id).await?;
     spec.working_session = if let JobStage::Ask(question) = job.stage {
         let record = db.questions().get(question, Utc::now()).await?;
@@ -492,6 +513,46 @@ mod tests {
         let claimed = claim_one(&s, now).await;
         assert_eq!(claimed.spec.job_id, job);
         assert_eq!(claimed.spec.attempt, 2);
+    }
+
+    /// A flow job queued with another flow file format version (before an upgrade) is never handed to a runner:
+    /// no agent run is spent on a checker that rejects every file. Its claim is released like an unprepared
+    /// context, so it fails after its attempts and the flow can be analysed again with a current context.
+    #[tokio::test]
+    async fn flow_job_with_another_flow_file_version_is_not_handed_out() {
+        let s = setup().await;
+        let analysis = seed_analysis(&s.db).await.expect("seed");
+        let mut spec = job_spec(analysis, JobKind::AnalyseFlow);
+        spec.flow_file = Some(contracts::job::spec::FlowFile {
+            context: serde_json::json!({"version": analysis::tagged::VERSION - 1}),
+            previous: None,
+        });
+        let job =
+            s.db.jobs()
+                .enqueue(
+                    NewJob {
+                        spec,
+                        priority: JobPriority::Batch,
+                        stage: JobStage::Flow(FlowId("f1".to_owned())),
+                        generation: 0,
+                    },
+                    Utc::now(),
+                )
+                .await
+                .expect("enqueue")
+                .id;
+        let now = Utc::now();
+        let result = claim(&s.db, &s.config, &no_packs(), &request(), now).await;
+        assert!(
+            matches!(
+                result,
+                Err(ClaimError::StaleFlowContext { found: Some(1), .. })
+            ),
+            "{result:?}"
+        );
+        let stored = s.db.jobs().get(job).await.expect("job");
+        assert_eq!(stored.attempt, 1, "the attempt is spent");
+        assert_eq!(s.db.jobs().token_hash(job).await.expect("read"), None);
     }
 
     /// A job whose context can never be prepared fails once its attempts are spent, with a cause, and no
