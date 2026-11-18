@@ -502,7 +502,7 @@ fn requested_by(author: &str, settings: &DashboardSettings) -> Scored {
             author: Some(author.into()),
             relations: vec![Relation::ReviewRequested],
             review_pending_for_us: true,
-            review_requested_at: Some(now() - Duration::days(1)),
+            review_requested_at: Some(now() - SignedDuration::from_hours(24)),
             ..pr()
         },
         None,

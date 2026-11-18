@@ -1545,7 +1545,7 @@ async fn refused_search_without_owners_says_where_to_add_them() {
     w.state
         .db
         .dashboard()
-        .save_settings(DEFAULT_TENANT, "u1", &none, Utc::now())
+        .save_settings(DEFAULT_TENANT, "u1", &none, Timestamp::now())
         .await
         .expect("settings");
     let done = w.refreshed().await;
