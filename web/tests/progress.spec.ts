@@ -182,6 +182,9 @@ test("plan parts retain the whole-run clock, counters and estimate", async ({ pa
   await expect(page.getByText(/this stage started 5 min ago/)).toBeVisible();
   await page.clock.runFor(46_000);
   await expect(page.getByText("Planning the review, part 7 of 23.")).toBeVisible();
+  // The heartbeats fired inside runFor arrive (and set the server clock offset) only after it returns; one more
+  // tick then reads the elapsed time with that offset, whatever the page's load time.
+  await page.clock.runFor(10_000);
   await expect(page.getByText("Analysis started 41 min ago")).toBeVisible();
   await expect(page.getByText(/this stage started less than a minute ago/)).toBeVisible();
   await expect(stages).toContainText("Planning: 6 / 23 · current");

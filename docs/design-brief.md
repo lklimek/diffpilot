@@ -656,7 +656,8 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
 - **Flows on request.** Flows are analysed only when the user asks: "Analyse this flow" on a flow not analysed
   yet (opening it requests nothing), or "Analyse all remaining flows", the one opt-in for everything (the
   analysis's background switch; shown as "Analysing all remaining flows — Stop" while on), in the Tour's left
-  panel and on the progress screen. The web reads the switch from the analysis and assumes no default. With
+  panel and on the progress screen (which shows the number of remaining flows only, no changed lines). The web
+  reads the switch from the analysis and assumes no default. With
   nothing queued or running: "Nothing is being analysed. Choose a flow to analyse, or analyse all remaining
   flows."; the progress screen says the plan is ready and offers "Open review". Supersedes "Opening a pending
   flow requests it" and "the background switch defaults on" in the 2026-11-17 amendment of §4.2.
@@ -668,8 +669,9 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
 
 - **Change colours.** The code view draws changes exactly like the classic diff, in both themes and from one
   shared definition: an added line has the classic diff's green fill and `+`, a removed line its red fill and
-  `−` (deterministic, from the diff). Supersedes "neutral mark on every changed line" (§3 and §4.3 Code view)
-  and the legend row "Neutral gutter bar = changed line".
+  `−` (deterministic, from the diff). A moved line is added code in the classic diff and has the same green
+  fill; its double bar says it moved. Supersedes "neutral mark on every changed line" (§3 and §4.3 Code view),
+  the legend row "Neutral gutter bar = changed line" and the muted fill of moved blocks.
 - **Remark bars.** An LLM remark never fills code lines and draws no box: its range is a thin bar in the
   reserved gutter column (solid / dashed / dotted by the LLM's rating, not checked; a thin neutral line when
   unrated) with one label at its top and one `◆` marker. Unchanged lines inside the range look exactly like
@@ -677,8 +679,8 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
   or removed block is one range: the label sits above the block, so the removed and replacing lines stay
   together. "A changed line without a bar has no LLM remark." Supersedes "LLM colouring is laid on top" (§3)
   and "No colour on a changed line" in the §4.3 legend. The `?` legend describes exactly these drawings.
-- **Folds.** Hidden comment and import lines leave a fold row where they were ("3 comment lines hidden ·
-  Show"; removed ones "2 removed comment lines hidden"); Show opens just that run in place with its signs and
+- **Folds.** Hidden comment and import lines leave a fold row where they were ("3 comment/import lines hidden ·
+  Show"; removed ones "2 removed comment/import lines hidden"; the diff does not say which line is which); Show opens just that run in place with its signs and
   offers Hide; the top-bar switch still shows or hides all; the total note stays. Only the first line of a
   remark range is never hidden (it carries the marker); the rest may fold inside the bar.
 - **Ask** is a collapsible Inspector section like the others (remembered with them; the header keeps the

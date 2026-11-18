@@ -38,13 +38,13 @@ for (const colorScheme of ["light", "dark"] as const) {
 
     // Hidden comment lines fold in place, inside the remark's bar, and open there.
     await expect(line(page, "head", 93)).toHaveCount(0);
-    const show = main.getByRole("button", { name: "Show 2 hidden comment lines" });
+    const show = main.getByRole("button", { name: "Show 2 hidden comment/import lines" });
     await expect(show).toBeVisible();
     expect((await show.boundingBox())!.height).toBeGreaterThanOrEqual(24);
     await page.screenshot({ path: info.outputPath(`remark-layout-${colorScheme}.png`) });
     await show.click();
     await expect(line(page, "head", 93).locator("[data-mark=changed]")).toContainText("+");
-    await main.getByRole("button", { name: "Hide 2 comment lines" }).click();
+    await main.getByRole("button", { name: "Hide 2 comment/import lines" }).click();
     await expect(line(page, "head", 93)).toHaveCount(0);
 
     // The changed sign and the remark marker sit apart, each explained.

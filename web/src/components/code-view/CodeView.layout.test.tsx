@@ -109,15 +109,15 @@ describe("CodeView: hidden comment and import lines fold in place", () => {
   it("shows a fold row where lines are hidden, inside the remark's bar; Show and Hide toggle that run only", async () => {
     render(<CodeView lines={LINES} annotations={[REMARK]} band="low" hideContextChanges />);
     for (const line of [366, 367, 368]) expect(row("head", line)).toBeNull();
-    const fold = screen.getByText("3 comment lines hidden").closest<HTMLElement>("[data-fold]")!;
+    const fold = screen.getByText("3 comment/import lines hidden").closest<HTMLElement>("[data-fold]")!;
     expect(before(row("head", 365)!, fold)).toBe(true);
     expect(before(fold, row("head", 369)!)).toBe(true);
     expect(document.querySelector("[data-highlight]")).toContainElement(fold);
-    const show = within(fold).getByRole("button", { name: "Show 3 hidden comment lines" });
+    const show = within(fold).getByRole("button", { name: "Show 3 hidden comment/import lines" });
     expect(show.className).toMatch(/min-h-6/);
     expect(show).toHaveAccessibleDescription(/classic diff/);
     // The removed comment lines of the second block fold the same way; the total stays.
-    expect(screen.getByText("2 removed comment lines hidden")).toBeVisible();
+    expect(screen.getByText("2 removed comment/import lines hidden")).toBeVisible();
     expect(screen.getByText("5 comment/import lines hidden — in the classic diff")).toBeVisible();
 
     await userEvent.click(show);
@@ -125,33 +125,63 @@ describe("CodeView: hidden comment and import lines fold in place", () => {
       expect(row("head", line)!.querySelector("[data-mark=changed]")).toHaveTextContent("+");
     }
     expect(row("base", 368)).toBeNull();
-    const shown = screen.getByText("3 comment lines shown").closest<HTMLElement>("[data-fold]")!;
-    await userEvent.click(within(shown).getByRole("button", { name: "Hide 3 comment lines" }));
+    const shown = screen.getByText("3 comment/import lines shown").closest<HTMLElement>("[data-fold]")!;
+    await userEvent.click(within(shown).getByRole("button", { name: "Hide 3 comment/import lines" }));
     expect(row("head", 366)).toBeNull();
   });
 
   it("is reachable by keyboard", async () => {
     render(<CodeView lines={LINES} annotations={[REMARK]} band="low" hideContextChanges />);
-    const show = screen.getByRole("button", { name: "Show 3 hidden comment lines" });
+    const show = screen.getByRole("button", { name: "Show 3 hidden comment/import lines" });
     act(() => show.focus());
     await userEvent.keyboard("{Enter}");
     expect(row("head", 366)).not.toBeNull();
   });
 
-  it.each([
-    [["use std::fmt;", "use std::io;"], "2 import lines hidden"],
-    [["use std::fmt;", "// a note"], "2 comment and import lines hidden"],
-  ])("names what is hidden: %j", (texts, text) => {
+  it("names hidden lines neutrally: the diff does not say which are comments and which imports", () => {
     const lines: LinesResponse = {
       ...LINES,
       from: 1,
       to: 3,
-      lines: [...texts, "work();"],
+      lines: ["mod tests;", "use the cache only once", "work();"],
       changed: [1, 2],
       context_only: [1, 2],
       deleted: [],
     };
     render(<CodeView lines={lines} hideContextChanges />);
-    expect(screen.getByText(text)).toBeVisible();
+    expect(screen.getByText("2 comment/import lines hidden")).toBeVisible();
+  });
+
+  it("closes runs opened with Show when the top-bar switch is turned off and on", async () => {
+    const { rerender } = render(
+      <CodeView lines={LINES} annotations={[REMARK]} band="low" hideContextChanges />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Show 3 hidden comment/import lines" }));
+    expect(row("head", 366)).not.toBeNull();
+    rerender(<CodeView lines={LINES} annotations={[REMARK]} band="low" hideContextChanges={false} />);
+    rerender(<CodeView lines={LINES} annotations={[REMARK]} band="low" hideContextChanges />);
+    expect(row("head", 366)).toBeNull();
+    expect(screen.getByRole("button", { name: "Show 3 hidden comment/import lines" })).toBeVisible();
+  });
+});
+
+describe("CodeView: a remark starting inside a replacement", () => {
+  // Line 362 is replaced by 363-365; the remark starts on the second replacing line, 364. Line 363 is a changed
+  // comment line that folds.
+  const lines: LinesResponse = {
+    ...LINES,
+    changed: [363, 364, 365],
+    context_only: [363],
+    deleted: [{ ...LINES.deleted[0]!, replacement: { start_line: 363, end_line: 365 } }],
+  };
+  const remark: Annotation = { ...REMARK, range: { start_line: 364, end_line: 366 } };
+
+  it("puts the marker on the remark's first line, which never folds", () => {
+    render(<CodeView lines={lines} annotations={[remark]} band="low" hideContextChanges />);
+    const markers = document.querySelectorAll("[data-mark=remark]");
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toHaveAccessibleName("LLM remark at line 364");
+    expect(row("head", 364)).toContainElement(markers[0] as HTMLElement);
+    expect(row("head", 363)).toBeNull();
   });
 });

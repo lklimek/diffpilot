@@ -123,20 +123,13 @@ export function InspectorPane(props: InspectorPaneProps) {
       <StatusMessage kind="error">Cannot read the questions: {errorText(questions.error)}</StatusMessage>
     ) : questions.isPending ? (
       <StatusMessage kind="loading">Loading the questions…</StatusMessage>
-    ) : !props.streamLost && !questions.data.some((q) => q.step_id === step.id) ? null : (
-      <>
-        {props.streamLost && (
-          <p role="status" className="mb-1 text-[12px] text-high">
-            The connection that delivers answers was lost. Reconnecting; answers already given are read again.
-          </p>
-        )}
-        <AskAnswers
-          onEvidence={props.onEvidence}
-          currentFile={step.facts.file}
-          questions={questions.data.filter((q) => q.step_id === step.id)}
-          onAskAgain={onAsk}
-        />
-      </>
+    ) : !questions.data.some((q) => q.step_id === step.id) ? null : (
+      <AskAnswers
+        onEvidence={props.onEvidence}
+        currentFile={step.facts.file}
+        questions={questions.data.filter((q) => q.step_id === step.id)}
+        onAskAgain={onAsk}
+      />
     ));
 
   const comment = pending.isSuccess ? (
@@ -191,6 +184,11 @@ export function InspectorPane(props: InspectorPaneProps) {
             inputRef={props.askRef}
             answers={answers}
             sections={props.sections}
+            notice={
+              props.streamLost
+                ? "The connection that delivers answers was lost. Reconnecting; answers already given are read again."
+                : null
+            }
             count={
               step && questions.data ? questions.data.filter((q) => q.step_id === step.id).length : undefined
             }

@@ -27,7 +27,7 @@ import { Tooltip } from "../tooltip/Tooltip";
 import type { Highlight, Token } from "./highlight";
 import { Mark, RemarkMarker, ThreadMarker, type MarkerTarget } from "./markers";
 import { CHANGE_LOOK, REMARK_LOOK } from "./changeLook";
-import { foldKind, foldRuns, type Piece } from "./fold";
+import { foldRuns, type Piece } from "./fold";
 import { buildSegments, type Segment, type Row } from "./rows";
 import { CodeText, useTokens } from "./tokens";
 import { hiddenLines } from "./visibility";
@@ -128,16 +128,15 @@ function Line({ ctx, side, line, text, tokens, row, removed = false, remarks }: 
   const commenting = ctx.activeKey === key;
   const changed = row?.changed ?? false;
   const removedLine = removed || (side === "base" && changed);
-  // The classic diff's colours: green added, red removed; a moved line keeps its own tint.
+  // The classic diff's colours: green added, red removed. A moved line is added code there, so it gets the
+  // same fill; its double bar says it moved.
   const background = commenting
     ? "bg-accent-bg outline-3 -outline-offset-3 outline-accent"
     : removedLine
       ? CHANGE_LOOK.removed.fill
-      : row?.moved
-        ? "bg-mv-bg"
-        : changed
-          ? CHANGE_LOOK.added.fill
-          : "";
+      : changed
+        ? CHANGE_LOOK.added.fill
+        : "";
   const label = `Comment on ${removedLine ? "removed line" : "line"} ${line}`;
   const mine = ctx.comments.get(key);
   const open = mine !== undefined && ctx.isOpen(key);
@@ -374,18 +373,17 @@ function DeletedRun({ block, rows, anchor, nested = false, onLoadDeleted, paired
 /** Where rule-covered lines are hidden: what and how many, with Show (or Hide once shown) for just that run. */
 function FoldRow({
   count,
-  kind,
   removed,
   shown,
   onToggle,
 }: {
   count: number;
-  kind: string;
   removed: boolean;
   shown: boolean;
   onToggle: () => void;
 }) {
-  const what = `${removed ? "removed " : ""}${kind} ${count === 1 ? "line" : "lines"}`;
+  // The diff marks these lines as rule-covered only, not whether each is a comment or an import.
+  const what = `${removed ? "removed " : ""}comment/import ${count === 1 ? "line" : "lines"}`;
   return (
     <div
       data-fold
@@ -431,8 +429,9 @@ function moveLineFocus(event: KeyboardEvent<HTMLElement>) {
 }
 
 /**
- * Line renderer of one range (brief §4.3 Code view): neutral mark on every changed line, LLM bar by risk band
- * only on annotated ranges (hover: was → is only), `≠` on differing moved lines, markers, removed code inline.
+ * Line renderer of one range (brief §4.3 Code view): green/red fill and +/− on changed lines (`CHANGE_LOOK`), a
+ * remark bar in its own column (`REMARK_LOOK`; hover: was → is only), `≠` on differing moved lines, markers,
+ * removed code inline, hidden comment/import lines folded in place.
  */
 export function CodeView({
   lines,
@@ -489,8 +488,15 @@ export function CodeView({
   });
   if (revealLine !== undefined) hidden.delete(revealLine);
   if (flashLine !== undefined) hidden.delete(flashLine);
-  // Hidden lines the reader showed in place (per view, not stored), by line key.
-  const [shownLines, setShownLines] = useState<ReadonlySet<string>>(new Set());
+  // Hidden lines the reader showed in place (per view, not stored), by line key; the top-bar switch resets them.
+  const [opened, setOpened] = useState<{ hide: boolean; lines: ReadonlySet<string> }>({
+    hide: hideContextChanges,
+    lines: new Set(),
+  });
+  if (opened.hide !== hideContextChanges) setOpened({ hide: hideContextChanges, lines: new Set() });
+  const shownLines = opened.hide === hideContextChanges ? opened.lines : new Set<string>();
+  const setShownLines = (update: (all: ReadonlySet<string>) => ReadonlySet<string>) =>
+    setOpened((s) => ({ hide: s.hide, lines: update(s.lines) }));
   const isHidden = (ref: LineRef) =>
     (ref.side === lines.side ? hidden : hiddenBase).has(ref.line) && !shownLines.has(keyOf(ref));
   const hiddenRemoved = lines.deleted.reduce(
@@ -579,10 +585,14 @@ export function CodeView({
     const key = keyOf({ side: t.side, line: t.line });
     ctx.threads.set(key, [...(ctx.threads.get(key) ?? []), t]);
   }
-  // The remark marker sits on the first line of each run.
+  // The remark marker sits on the first line of each run its remarks cover (the line that never folds).
   const firstOf = (run: Run) => {
     const part = run.parts[0]!;
-    return part.kind === "deleted" ? part.paired[0] : part.kind === "highlight" ? part.rows[0] : undefined;
+    if (part.kind === "highlight") return part.rows[0];
+    if (part.kind !== "deleted") return undefined;
+    const covered = (r: Row) =>
+      run.annotations.some((a) => a.range.start_line <= r.line && r.line <= a.range.end_line);
+    return part.paired.find(covered) ?? part.paired[0];
   };
   const remarkKeys = new Set(
     items.flatMap((item) => {
@@ -626,7 +636,6 @@ export function CodeView({
         <div key={`fold:${refs[0]}`} className="contents">
           <FoldRow
             count={piece.items.length}
-            kind={foldKind(piece.items.map((r) => r.text))}
             removed={side === "base" && !(lines.side === "base")}
             shown={shown}
             onToggle={() =>

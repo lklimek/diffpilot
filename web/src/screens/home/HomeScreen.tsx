@@ -79,7 +79,9 @@ export function HomeScreen() {
   };
   const field = useRef<HTMLInputElement>(null);
   // The card belongs to the checked URL: an edit of the field clears it, so Start never takes another PR.
+  // While a start or resume is on its way the card stays: resetting it would drop its navigation.
   const edited = (url: string) => {
+    if (create.isPending || resume.isPending) return;
     if (!resolve.isIdle && url !== resolve.variables) {
       resolve.reset();
       create.reset();

@@ -333,6 +333,20 @@ describe("Home (brief §4.1)", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Cannot reach the smart-review server.");
   });
 
+  it("an edit of the field while the start is on its way does not lose the started analysis", async () => {
+    server.use(
+      http.post("/api/v1/analyses", async () => {
+        await delay(300);
+        return HttpResponse.json(analysis, { status: 201 });
+      }),
+    );
+    const router = renderRoute("/");
+    await analyze();
+    await userEvent.click(within(await card()).getByRole("button", { name: "Start analysis" }));
+    await userEvent.type(screen.getByLabelText("GitHub pull request URL"), "9");
+    await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
+  });
+
   it("the analysis cannot be started: plain error, stays on Home", async () => {
     server.use(
       http.post("/api/v1/analyses", () =>

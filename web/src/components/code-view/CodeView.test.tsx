@@ -216,6 +216,14 @@ describe("CodeView", () => {
     expect(differing[0]).toHaveTextContent("differs from the moved original");
   });
 
+  it("fills moved changed lines like the classic diff (green), the double bar marks them as moved", () => {
+    render(<CodeView {...stepProps("f5.1")} />);
+    const moved = [...document.querySelectorAll<HTMLElement>("[data-line][data-moved]")];
+    expect(moved.some((el) => el.className.includes("bg-mv-bg"))).toBe(false);
+    for (const el of moved.filter((m) => m.hasAttribute("data-changed")))
+      expect(el.className).toMatch(/(^|\s)bg-ad-bg(\s|$)/);
+  });
+
   it("marks an existing GitHub thread and the reviewer's own pending comment on their lines", () => {
     const { unmount } = render(<CodeView {...stepProps("f1.5")} />);
     const threads = document.querySelectorAll("[data-mark=thread]");

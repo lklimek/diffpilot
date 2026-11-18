@@ -52,7 +52,8 @@ const LEGEND: ReactNode[] = [
   <>A changed line without a bar has no LLM remark. An unchanged line inside a bar is unchanged.</>,
   <>
     <Swatch look="border-l-[6px] border-double border-mv-bd" />
-    moved, text identical: double bar · <b>≠</b> line differs from the moved original
+    moved, text identical: double bar · <b>≠</b> line differs from the moved original · moved lines keep the
+    change fill, as in the classic diff
   </>,
   <>
     <Swatch look="border-l-4 border-dotted border-mv-bd bg-[image:repeating-linear-gradient(135deg,transparent_0_3px,rgb(120_130_150/0.3)_3px_4px)]" />
@@ -67,7 +68,7 @@ const LEGEND: ReactNode[] = [
   </>,
   <>
     <span className="mr-1.5 rounded border border-border px-1 text-[11px]">
-      N comment lines hidden · Show
+      N comment/import lines hidden · Show
     </span>
     comment and import lines folded in place; Show opens them there, the classic diff always has them
   </>,

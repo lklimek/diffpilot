@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type ReactNode, type Ref } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from "react";
 import type { StepId } from "../../api/generated/types";
 import { busyTip } from "../button/button";
 import { assignRef, growField, useAction } from "../inspector/action";
@@ -19,10 +19,12 @@ export interface AskFormProps {
   sections?: SectionControl;
   /** Questions asked about this step, shown in the header (also collapsed). */
   count?: number;
+  /** A problem with the answers (e.g. the lost answer stream), announced above them; opens a collapsed Ask. */
+  notice?: string | null;
 }
 
 /** One-line question field that grows while typing; Enter sends, Shift+Enter adds a line. */
-export function AskForm({ step, onAsk, inputRef, answers, sections, count }: AskFormProps) {
+export function AskForm({ step, onAsk, inputRef, answers, sections, count, notice }: AskFormProps) {
   if (step === null) {
     return (
       <section aria-label="Ask">
@@ -41,6 +43,7 @@ export function AskForm({ step, onAsk, inputRef, answers, sections, count }: Ask
       answers={answers}
       sections={sections}
       count={count}
+      notice={notice}
     />
   );
 }
@@ -52,6 +55,7 @@ function AskDraft({
   answers,
   sections,
   count,
+  notice,
 }: AskFormProps & { step: { id: StepId; label: string } }) {
   const open = sections ? sections.isOpen("ask") : true;
   const subject = step.label;
@@ -81,6 +85,12 @@ function AskDraft({
   const error = empty
     ? "Write a question first."
     : action.error && `The question was not sent: ${action.error}`;
+  // A failure is never left behind a collapsed header: Ask opens and the alert is inserted (so announced) then.
+  const alerting = Boolean(action.error) || Boolean(notice);
+  const reveal = sections?.reveal;
+  useEffect(() => {
+    if (alerting && !open) reveal?.("ask");
+  }, [alerting, open, reveal]);
   return (
     <section aria-labelledby={`${id}-h`}>
       <h3 id={`${id}-h`} className="m-0 text-[10.5px] font-bold tracking-wide text-muted uppercase">
@@ -146,9 +156,14 @@ function AskDraft({
             </button>
           </Tooltip>
         </form>
-        {error && (
+        {error && open && (
           <p id={`${id}-e`} role="alert" className="mt-1 text-[12px] text-high">
             {error}
+          </p>
+        )}
+        {notice && open && (
+          <p role="alert" className="mt-1 text-[12px] text-high">
+            {notice}
           </p>
         )}
         {answers && (
