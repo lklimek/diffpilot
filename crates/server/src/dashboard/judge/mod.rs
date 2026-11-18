@@ -32,8 +32,8 @@ use contracts::job::state::JobState;
 use db::error::DbError;
 use db::repo::Db;
 use db::repo::dashboard::{
-    JUDGEMENT_RETENTION_DAYS, JudgeCounts, RankingUpdate, RefreshRecord, SendCaps, SendReservation,
-    StoredJudgement,
+    JUDGEMENT_RETENTION_DAYS, JudgeCounts, RankingUpdate, RankingWrite, RefreshProgress,
+    RefreshRecord, SendCaps, SendReservation, StoredJudgement,
 };
 use db::repo::jobs::{JobStage, MAX_REPAIR_RUNS};
 use futures::StreamExt;
@@ -620,35 +620,43 @@ impl<'a> Ranking<'a> {
                 })
             })
             .collect::<Result<Vec<_>, serde_json::Error>>()?;
-        self.counts.judged += count(judgements.len());
-        self.live = RankingState::Running;
-        // The count first: it fails as stale once the ranking moved on, so a late answer is never stored.
-        self.write_state().await?;
-        let (tenant, user) = self.scope();
-        self.state
-            .db
-            .dashboard()
-            .save_judgements(tenant, user, &judgements)
+        let mut counts = self.counts;
+        counts.judged += count(judgements.len());
+        // Counts and judgements in one transaction fenced by the attempt: a late answer is never stored.
+        self.write(RankingState::Running, counts, &judgements, None)
             .await?;
+        self.counts = counts;
+        self.live = RankingState::Running;
         self.publish().await;
         Ok(again)
     }
 
     /// Records the live state and counts; `Stale` once the refresh is no longer ranking in this attempt.
     async fn write_state(&self) -> Result<(), RankError> {
+        self.write(self.live, self.counts, &[], None).await
+    }
+
+    /// One fenced ranking write (see `Dashboard::write_ranking`); `Stale` once the refresh is no longer ranking in
+    /// this attempt, and then nothing is written.
+    async fn write(
+        &self,
+        state: RankingState,
+        counts: JudgeCounts,
+        judgements: &[StoredJudgement],
+        progress: Option<(&RefreshProgress, &[String])>,
+    ) -> Result<(), RankError> {
         let (tenant, user) = self.scope();
+        let write = RankingWrite {
+            state,
+            counts,
+            judgements,
+            progress,
+        };
         let update = self
             .state
             .db
             .dashboard()
-            .set_ranking(
-                tenant,
-                user,
-                self.run.refresh_id,
-                self.run.attempt,
-                self.live,
-                self.counts,
-            )
+            .write_ranking(tenant, user, self.run.refresh_id, self.run.attempt, &write)
             .await;
         match update {
             Ok(RankingUpdate::Applied) => Ok(()),
@@ -694,14 +702,8 @@ impl<'a> Ranking<'a> {
                 .iter()
                 .map(|line| format!("{} {line}", at.format("%H:%M:%S"))),
         );
-        match dashboard
-            .record_progress(tenant, user, self.run.refresh_id, &progress, &log)
+        self.write(self.live, self.counts, &[], Some((&progress, &log)))
             .await
-        {
-            Ok(()) => Ok(()),
-            Err(DbError::Conflict) => Err(RankError::Stale),
-            Err(error) => Err(error.into()),
-        }
     }
 
     async fn publish(&self) {

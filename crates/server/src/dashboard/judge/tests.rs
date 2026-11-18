@@ -1319,6 +1319,81 @@ async fn stale_attempt_results_are_dropped() {
     assert_eq!(record.ranking_state, Some(RankingState::Running));
 }
 
+/// A ranking attempt's notes and judgements are written only while it is the current attempt: an earlier attempt's
+/// failure text never reaches the log of the attempt that replaced it, and its answer is not stored.
+#[tokio::test]
+async fn stale_attempt_writes_neither_notes_nor_judgements() {
+    let h = harness().await;
+    let snap = snapshot(prs(1), vec![], vec![]);
+    let id = h.stored("u1", &snap).await;
+    let run = RankRun {
+        scope: scope("u1"),
+        refresh_id: id,
+        attempt: 0,
+    };
+    let mut old = Ranking {
+        state: &h.state,
+        run: &run,
+        counts: JudgeCounts::default(),
+        live: RankingState::Running,
+        zone: Tz::UTC,
+        day: now(),
+    };
+    let dashboard = h.db().dashboard();
+    let cancelled = dashboard
+        .cancel_ranking(DEFAULT_TENANT, "u1", id, 0, h.state.dashboard.now())
+        .await
+        .expect("cancel");
+    assert_eq!(cancelled, RankingUpdate::Applied);
+    dashboard
+        .restart_ranking(DEFAULT_TENANT, "u1", id)
+        .await
+        .expect("restart");
+    let log = |record: RefreshRecord| record.log;
+    let before = log(dashboard
+        .refresh(DEFAULT_TENANT, "u1", id)
+        .await
+        .expect("refresh"));
+    assert!(matches!(
+        old.note(None, Some("stale"), &["ranking failed: stale".to_owned()])
+            .await,
+        Err(RankError::Stale)
+    ));
+    assert_eq!(
+        log(dashboard
+            .refresh(DEFAULT_TENANT, "u1", id)
+            .await
+            .expect("refresh")),
+        before
+    );
+    let candidates = candidates(&snap);
+    let queued = Queued {
+        item: candidates[0].item.clone(),
+        fingerprint: candidates[0].fingerprint.clone(),
+        new: true,
+        points: 0.0,
+    };
+    let input = JudgeWorkInput {
+        items: vec![queued.item.clone()],
+    };
+    let job = old.submit(1, 0, &input).await.expect("submit").job_id;
+    let result = JobResult {
+        job_id: job,
+        attempt: 0,
+        outcome: succeeded(neutral(&input)),
+        session: None,
+        usage: None,
+        skills_commit: None,
+        llm_call: None,
+    };
+    assert!(matches!(
+        old.apply(result.job_id, &input, vec![&queued], result)
+            .await,
+        Err(RankError::Stale)
+    ));
+    assert!(h.judgements("u1", &snap).await.is_empty());
+}
+
 #[tokio::test]
 async fn supersede_and_cancel_end_the_judge_jobs() {
     let h = harness().await;
