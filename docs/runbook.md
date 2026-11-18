@@ -204,6 +204,7 @@ Never delete the database to upgrade.
 2. Stop, back up (section "Backup and restore", full backup), start the new version; migrations run now:
 
    ```sh
+   # export the analysis statistics first (section "Logs"): the new server container starts with an empty log
    sr stop
    # full backup here
    sr up -d
@@ -373,7 +374,19 @@ sr logs --since 24h egress-proxy | grep -E '^[0-9]{10}\.'   # proxy access log o
 
 More detail: set `RUST_LOG=debug` (or `info,runner=debug`) in `.env`, then `sr up -d server runner`. The
 supervisor's messages are in the runner's log. All containers log through Docker's `local` driver with size-based
-rotation (10 MB x 5 for server and runner).
+rotation (server 50 MB x 10, runner 10 MB x 5, proxy 50 MB x 5; `deploy/compose.yaml`); a re-created container
+(`sr up -d` after a change, an upgrade) starts with an empty log.
+
+**Analysis statistics** (one `analysis statistics` line per finished analysis, section "Usage and analysis
+statistics logs"): export them before the server is re-created, and from time to time; the file only grows by new
+lines.
+
+```sh
+sudo install -d -m 0750 /srv/smart-review/stats
+f=/srv/smart-review/stats/analysis-statistics.log
+sr logs --no-log-prefix --timestamps server | grep -F 'analysis statistics' | sudo tee -a "$f" > /dev/null
+sudo sort -u -o "$f" "$f"
+```
 
 ## Egress proxy
 

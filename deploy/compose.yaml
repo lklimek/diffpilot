@@ -61,6 +61,11 @@ services:
     tmpfs: ["/tmp:size=256m,mode=1777"]
     mem_limit: ${SR_SERVER_MEM_LIMIT:-2g}
     pids_limit: 512
+    logging:
+      # Up to 500 MB of server history (rotated files compressed), "analysis statistics" lines included; lost when
+      # the container is re-created, so export them first (runbook, "Logs").
+      driver: local
+      options: { max-size: "50m", max-file: "10" }
     ports:
       # Only to the reverse proxy: loopback by default (owner's proxy on this host), or SR_PUBLISH_ADDR.
       - "${SR_PUBLISH_ADDR:-127.0.0.1}:${SR_HTTP_PORT:-3000}:3000"
