@@ -7,6 +7,7 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
 - `docs/design-brief.md` — the approved design; authoritative. Mockups: `docs/mockups/` (brief wins).
 - `docs/implementation-plan.md` — stages, work packages, contracts, architecture guard. Coordinators start at its §1.
 - `docs/contracts/`, `docs/decisions/` (ADRs), `docs/spikes/` — once they exist.
+- `docs/v1.1-dashboard-plan.md` — stage v1.1 (GitHub work dashboard, ADR-016..020); mirrors the implementation plan's rules.
 
 ## Architecture rules (never break; details in plan §3–§5)
 - Crates: `contracts` (wire types, no IO) <- `analysis`, `db`, `runner`; `server` -> `contracts`, `analysis`, `db`.
