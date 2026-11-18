@@ -570,8 +570,6 @@ fn ask_rejects_markup_and_links_outside_github() {
         "See [PR 470](https://github.com/acme/node-client/pull/470).",
         "See the [upstream definition](https://github.com/emilk/egui/blob/0.36.2/crates/epaint/src/text/text_layout_types.rs).",
         "[PR 470]: https://github.com/acme/node-client/pull/470",
-        "- First point\n- Second point",
-        "1. First point\n2. Second point",
         "**Important** detail",
         "# Heading",
         "> Quoted answer",
@@ -598,6 +596,9 @@ fn ask_rejects_markup_and_links_outside_github() {
         "The handle_light_block function returns the response.",
         "This code is literal: `- item` and `[text](url)`.",
         "Closed with spaces?\n```rust\nlet v: Vec<u8> = vec![];\n```   \nDone?",
+        // Requested lists and scenario steps are plain lines (the answer is shown with its line breaks).
+        "Potential TOCTOU race:\n1. Claim A reads index 3.\n2) Claim B reads index 3.\n- A then B submit.",
+        "* Not checked: the node-side handling.",
     ];
     for answer in allowed {
         assert_eq!(
