@@ -35,6 +35,7 @@ mapping, query rules and the endpoint × fixture-state inventory.
 | GET | `/api/v1/analyses/{id}` | session | – | `AnalysisSummary` |
 | GET | `/api/v1/analyses/{id}/events` | session | – | SSE (`sse-events.md`) |
 | PUT | `/api/v1/settings/llm` | session_csrf | `ModelChoice` | `LlmSelection` |
+| PUT | `/api/v1/settings/llm/ask-effort` | session_csrf | `SetAskEffortRequest` | `LlmSelection` (Ask jobs' reasoning effort, default `medium`; every other job uses `current`; `LlmSelection.ask_effort` reports it; `changed_by`/`changed_at` are shared with the model choice) |
 | POST | `/api/v1/analyses/{id}/pause` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/resume` | session_csrf | – | `AnalysisSummary` |
 | POST | `/api/v1/analyses/{id}/cancel` | session_csrf | – | `AnalysisSummary` |

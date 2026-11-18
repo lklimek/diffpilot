@@ -1016,13 +1016,7 @@ impl Driver<'_> {
             model: select_model(
                 kind,
                 &ModelContext { changed_lines },
-                self.state
-                    .db
-                    .settings()
-                    .llm_selection()
-                    .await?
-                    .as_ref()
-                    .map(|s| &s.choice),
+                self.state.db.settings().llm_selection().await?.as_ref(),
             ),
             limits: JobLimits::default(),
             credential: LlmCredentialRef {

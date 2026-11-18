@@ -353,6 +353,13 @@ pub const SET_DASHBOARD_TIME_ZONE: Route = route(
     "/api/v1/settings/dashboard/time-zone",
     SessionCsrf,
 );
+/// Saves the installation-wide reasoning effort of Ask jobs.
+pub const SET_ASK_EFFORT: Route = route(
+    "setAskEffort",
+    Put,
+    "/api/v1/settings/llm/ask-effort",
+    SessionCsrf,
+);
 /// R7: saves the installation-wide reasoning effort of the dashboard ranking.
 pub const SET_JUDGE_EFFORT: Route = route(
     "setJudgeEffort",
@@ -416,6 +423,7 @@ pub const ROUTES: &[Route] = &[
     GET_SETTINGS,
     SET_LANGUAGE,
     SET_LLM,
+    SET_ASK_EFFORT,
     GET_REPO_SETTINGS,
     GET_DASHBOARD,
     LIST_DASHBOARD_ITEMS,

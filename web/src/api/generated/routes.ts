@@ -34,6 +34,7 @@ export const routes = {
   getSettings: { method: "GET", path: "/api/v1/settings", auth: "session" },
   setLanguage: { method: "PUT", path: "/api/v1/settings/language", auth: "session_csrf" },
   setLlm: { method: "PUT", path: "/api/v1/settings/llm", auth: "session_csrf" },
+  setAskEffort: { method: "PUT", path: "/api/v1/settings/llm/ask-effort", auth: "session_csrf" },
   getRepoSettings: { method: "GET", path: "/api/v1/repos/{owner}/{name}/settings", auth: "session" },
   getDashboard: { method: "GET", path: "/api/v1/dashboard", auth: "read" },
   listDashboardItems: { method: "GET", path: "/api/v1/dashboard/items", auth: "read" },

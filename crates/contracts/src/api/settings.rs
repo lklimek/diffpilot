@@ -128,7 +128,12 @@ pub struct LlmSelection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub judge_effort: Option<crate::job::spec::ReasoningEffort>,
-    /// Login of the last editor of the model, effort or ranking effort; null for the default.
+    /// Reasoning effort of Ask jobs (default medium); every other job uses `current`. Optional on the wire;
+    /// absent on older servers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub ask_effort: Option<crate::job::spec::ReasoningEffort>,
+    /// Login of the last editor of the model, effort, ranking effort or Ask effort; null for the default.
     pub changed_by: Option<String>,
     /// Time of the last save; null for the default.
     pub changed_at: Option<DateTime<Utc>>,
@@ -141,6 +146,13 @@ pub struct LlmModelOption {
     pub id: String,
     /// Plain display name.
     pub label: String,
+}
+
+/// Body of `PUT /api/v1/settings/llm/ask-effort`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SetAskEffortRequest {
+    /// Reasoning effort of Ask jobs.
+    pub reasoning_effort: crate::job::spec::ReasoningEffort,
 }
 
 /// Body of `PUT /api/v1/settings/llm/judge-effort`.
