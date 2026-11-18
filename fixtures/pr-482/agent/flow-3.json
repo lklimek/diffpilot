@@ -140,7 +140,7 @@
           "end_line": 121,
           "was": "",
           "is": "",
-          "text": "Same risk as the flag on step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.",
+          "text": "Same risk as step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.",
           "evidence": [],
           "flag": null
         }

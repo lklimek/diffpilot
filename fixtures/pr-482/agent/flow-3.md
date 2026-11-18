@@ -57,7 +57,7 @@ text: The user message differs from the Timeout case.
 evidence: p15:head:120 p15:head:121
 
 ### annotation note inference 121-121
-text: Same risk as the flag on step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.
+text: Same risk as step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.
 
 ### assessment
 risk: low

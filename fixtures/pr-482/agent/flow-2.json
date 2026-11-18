@@ -142,7 +142,7 @@
           "end_line": 64,
           "was": "",
           "is": "",
-          "text": "Same risk as the red flag on step 1: a 2000-header reply from a slow peer may take longer than 5 s.",
+          "text": "Same risk as step 1: a 2000-header reply from a slow peer may take longer than 5 s.",
           "evidence": [],
           "flag": null
         }

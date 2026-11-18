@@ -1457,7 +1457,7 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Same risk as the red flag on step 1: a 2000-header reply from a slow peer may take longer than 5 s.",
+                "text": "Same risk as step 1: a 2000-header reply from a slow peer may take longer than 5 s.",
                 "evidence": []
               }
             ],
@@ -1722,7 +1722,7 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Same risk as the flag on step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.",
+                "text": "Same risk as step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.",
                 "evidence": []
               }
             ],

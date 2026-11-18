@@ -58,7 +58,7 @@ text: A reply that needs 10-20 s now times out on every attempt.
 evidence: p15:head:63 p15:head:65
 
 ### annotation note inference 64-64
-text: Same risk as the red flag on step 1: a 2000-header reply from a slow peer may take longer than 5 s.
+text: Same risk as step 1: a 2000-header reply from a slow peer may take longer than 5 s.
 
 ### assessment
 risk: low
