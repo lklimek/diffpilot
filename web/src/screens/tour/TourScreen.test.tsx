@@ -418,10 +418,8 @@ describe("Tour screen (brief §4.3)", () => {
   it("rating pills: the flow intro and step show them; a pill jumps to the first remark and flashes it", async () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
-    const flowPill = await within(main()).findByRole("button", {
-      name: /^LLM rated 1 step in this flow HIGH/,
-    });
-    expect(flowPill).toHaveTextContent("▲ HIGH ×1 · 19 remarks");
+    const flowPill = await within(main()).findByRole("button", { name: "19 LLM remarks in this flow" });
+    expect(flowPill).toHaveTextContent(/^19 remarks$/);
     await user().click(flowPill);
     expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
     expect(within(main()).getByRole("button", { name: /^LLM rated this step HIGH/ })).toHaveTextContent(

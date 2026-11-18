@@ -121,6 +121,8 @@ export const ATTACH_STEP = 10;
 export const PARALLEL_STEP = 24;
 /** Gap between a line and its label, and between the outermost lane and the labels beyond it, px. */
 const LABEL_GAP = 8;
+/** Length of a leader's last, slanted part into its label, px. */
+const LEADER_BEND = 16;
 
 /** Drawn lines and size of a step's node. */
 function sizeNode(node: GraphNode, branching: boolean, measure: Measure) {
@@ -561,7 +563,7 @@ function routeEdges(
         o.y < box.y + box.height + 2,
     );
   const outer = (forward: boolean) => LANE_FIRST + LANE_STEP * Math.max(0, laneCount[`${forward}`] - 1);
-  for (const p of laned) {
+  const lanedRoutes = laned.map((p) => {
     const forward = isForward(p);
     const laneC = forward
       ? cMax + LANE_FIRST + LANE_STEP * laneOf.get(p.key)!
@@ -572,20 +574,29 @@ function routeEdges(
     const m1 = attach(p.edge.from, forward, `${p.key}:s`);
     const m2 = attach(p.edge.to, forward, `${p.key}:e`);
     const points = [at(m1, edgeC(from)), at(m1, laneC), at(m2, laneC), at(m2, edgeC(to))];
-    let labelBox: Box | null = null;
-    let leader: Point[] | null = null;
-    if (p.label !== null) {
-      const near = forward ? cMax + outer(true) + LABEL_GAP : cMin - outer(false) - LABEL_GAP;
+    edges.set(p.key, result(p, points, null));
+    return { p, forward, laneC, m1, points };
+  });
+  // Labels per side in the order of their source ends, each level with its source end or just below the one
+  // before: leaders never cross.
+  for (const forward of [true, false]) {
+    // The leader bends beyond the outermost lane.
+    const gap = LEADER_BEND + LABEL_GAP;
+    const near = forward ? cMax + outer(true) + gap : cMin - outer(false) - gap;
+    let next = -Infinity;
+    for (const { p, laneC, m1, points } of lanedRoutes
+      .filter((r) => r.forward === forward && r.p.label !== null)
+      .sort((a, b) => a.m1 - b.m1)) {
       const c = forward ? near : near - across(p.size);
-      const centre = m1 - along(p.size) / 2;
-      const tries = Array.from({ length: 41 }, (_, k) => centre + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 6);
-      labelBox = boxAt(tries.find((m) => free(boxAt(m, c, p.size))) ?? centre, c, p.size);
+      let m = Math.max(m1 - along(p.size) / 2, next);
+      while (!free(boxAt(m, c, p.size))) m += 2;
+      const labelBox = boxAt(m, c, p.size);
       taken.push(labelBox);
-      const labelMid = mOf(labelBox).start + along(p.size) / 2;
-      const into = forward ? near - 4 : near + 4;
-      leader = [at(m1, laneC), at(m1, into), at(labelMid, near)];
+      next = m + along(p.size) + 2;
+      const labelMid = m + along(p.size) / 2;
+      const bend = forward ? near - LEADER_BEND : near + LEADER_BEND;
+      edges.set(p.key, result(p, points, labelBox, [at(m1, laneC), at(m1, bend), at(labelMid, near)]));
     }
-    edges.set(p.key, result(p, points, labelBox, leader));
   }
 
   // Move everything so the drawing starts at the margin.

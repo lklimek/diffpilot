@@ -84,6 +84,38 @@ it("a flow: the highest step rating ×steps at it and all remarks; the tooltip l
   expect(pill).toHaveAccessibleDescription(/All 11 have your feedback/);
 });
 
+it("next to the flow's own rating label it shows the remarks only; the tooltip keeps the steps per rating", () => {
+  const flow: RemarkSummary = {
+    rating: "high",
+    rated: 1,
+    remarks: 11,
+    handled: 0,
+    ratings: [
+      { rating: "high", steps: 1 },
+      { rating: "low", steps: 2 },
+    ],
+  };
+  const { rerender, container } = render(
+    <RemarkPill summary={flow} scope="flow" subject="flow 2" withRating={false} onSelect={() => {}} />,
+  );
+  const pill = screen.getByRole("button");
+  expect(pill).toHaveTextContent(/^11 remarks$/);
+  expect(pill).toHaveAccessibleName("11 LLM remarks in flow 2");
+  expect(pill).toHaveAccessibleDescription(
+    /Steps by LLM rating: HIGH 1, LOW 2 \(the flow's rating is its highest step rating\)\./,
+  );
+  rerender(
+    <RemarkPill
+      summary={{ ...flow, remarks: 0 }}
+      scope="flow"
+      subject="flow 2"
+      withRating={false}
+      onSelect={() => {}}
+    />,
+  );
+  expect(container).toBeEmptyDOMElement();
+});
+
 it("shows nothing without a rating and without remarks: never an all-clear", () => {
   const { container } = render(
     <RemarkPill summary={null} scope="step" subject="this step" onSelect={() => {}} />,
