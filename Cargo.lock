@@ -2668,6 +2668,7 @@ dependencies = [
  "contracts",
  "db",
  "dotenvy",
+ "fake-github",
  "futures",
  "getrandom 0.4.3",
  "http-body-util",

@@ -21,6 +21,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Rules. Dependencies of every kind (normal, dev, build) count.
 # A1: workspace crates a member may depend on; any other member (tools/*) may depend only on contracts.
+#     One exception, dev dependencies only: server's tests run the real client against tools/fake-github.
 # A2/§3: crate families only one member may use, matched by name pattern:
 #   db only:     sqlx and sqlx-*, diesel*, sea-orm*, sea-query*, SQLite/PostgreSQL/MySQL drivers;
 #   server only: GitHub API clients (names containing "octo", "github" or "hubcaps": octocrab, octorust,
@@ -36,6 +37,7 @@ RULES='
     server: ["contracts", "analysis", "db"]
   };
   def default_allowed: ["contracts"];
+  def dev_allowed: { server: ["fake-github"] };
   def owner:
     if test("^(sqlx|diesel|sea-orm|sea-query)([-_].*)?$")
       or test("^(rusqlite|tokio-rusqlite|libsqlite3-sys|postgres|tokio-postgres|mysql|mysql_async)$")
@@ -52,6 +54,7 @@ RULES='
       | (.kind // "normal") as $kind
       | .name as $d
       | (select($members | index($d)) | select((allowed[$p.name] // default_allowed) | index($d) | not)
+          | select($kind != "dev" or ((dev_allowed[$p.name] // []) | index($d) | not))
           | "A1: \($p.name) must not depend on workspace crate \($d) (\($kind))"),
         (($d | owner) as $owner | select($owner != null and $owner != $p.name)
           | "A2: \($d) is allowed only in crate \($owner), found in \($p.name) (\($kind))"),
@@ -189,6 +192,10 @@ self_test() {
   with_dep server eyre dev > "$tmp/12.json";          expect_fail "eyre (dev)" "$tmp/12.json" "server depends on eyre"
   with_member fake-github server > "$tmp/13.json";    expect_fail "tool -> server" "$tmp/13.json" "fake-github must not depend on workspace crate server"
   with_member fake-github contracts > "$tmp/14.json"; expect_pass "tool -> contracts" "$tmp/14.json"
+  with_dep server fake-github dev > "$tmp/25.json";   expect_pass "server -> fake-github (dev)" "$tmp/25.json"
+  with_dep server fake-github normal > "$tmp/26.json"; expect_fail "server -> fake-github (normal)" "$tmp/26.json" "server must not depend on workspace crate fake-github (normal)"
+  with_dep server fake-github build > "$tmp/27.json"; expect_fail "server -> fake-github (build)" "$tmp/27.json" "server must not depend on workspace crate fake-github (build)"
+  with_dep runner fake-github dev > "$tmp/28.json";   expect_fail "runner -> fake-github (dev)" "$tmp/28.json" "runner must not depend on workspace crate fake-github (dev)"
   jq 'del(.packages[] | select(.name == "db"))' "$real" > "$tmp/15.json"
   expect_fail "missing crate" "$tmp/15.json" "expected workspace crate db is missing"
 

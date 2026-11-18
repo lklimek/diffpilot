@@ -1,0 +1,1032 @@
+//! The scan client against the real fake GitHub (`tools/fake-github` with `fixtures/dashboard/github`),
+//! in-process: its request log runs on tokio's clock, so paused time asserts pacing and retry waits.
+
+use std::collections::BTreeSet;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use chrono::{DateTime, NaiveDate};
+use contracts::common::RepoRef;
+use reqwest::header::{ACCEPT, LOCATION};
+use secrecy::{ExposeSecret, SecretString};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use url::Url;
+use wiremock::matchers::{method, path, query_param_contains};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+use super::enumerate::mentions;
+use super::*;
+use crate::auth::UserTokenError;
+use crate::test_support::logs::LogCapture;
+
+const VERIFIER: &str = "work-client-verifier-0123456789-0123456789-0123456789";
+const STALE: &str = "ghu_stale_token_of_the_test";
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Starts the fake with the dashboard world; returns its base URL.
+async fn spawn_fake() -> String {
+    let config = fake_github::Config {
+        fixture_dir: repo_root().join("fixtures/pr-482/github"),
+        app_url: Url::parse("http://app.test:3000").unwrap(),
+        user_login: None,
+        user_id: None,
+        app_id: None,
+        app_public_key_file: None,
+        dashboard_fixture_dir: Some(repo_root().join("fixtures/dashboard/github")),
+    };
+    let router = fake_github::router(&config).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr: SocketAddr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    format!("http://{addr}")
+}
+
+fn http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+}
+
+/// The fake's OAuth web flow; returns the access token.
+async fn sign_in(base: &str) -> String {
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(VERIFIER.as_bytes()));
+    let mut authorize = Url::parse(&format!("{base}/login/oauth/authorize")).unwrap();
+    authorize.query_pairs_mut().extend_pairs([
+        ("client_id", "fixture-app-client-id"),
+        ("redirect_uri", "http://app.test:3000/auth/github/callback"),
+        ("state", "s"),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+    ]);
+    let response = http().get(authorize).send().await.unwrap();
+    let location = Url::parse(response.headers()[LOCATION].to_str().unwrap()).unwrap();
+    let code = location
+        .query_pairs()
+        .find(|(k, _)| k == "code")
+        .unwrap()
+        .1
+        .into_owned();
+    let body: Value = http()
+        .post(format!("{base}/login/oauth/access_token"))
+        .header(ACCEPT, "application/json")
+        .form(&[
+            ("client_id", "fixture-app-client-id"),
+            ("client_secret", "fixture-client-secret"),
+            ("code", &code),
+            ("redirect_uri", "http://app.test:3000/auth/github/callback"),
+            ("code_verifier", VERIFIER),
+        ])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    body["access_token"].as_str().unwrap().to_owned()
+}
+
+/// A token source: `current` until rejected, then `refreshed` (if any).
+#[derive(Clone, Default)]
+struct TestTokens(Arc<TokenState>);
+
+#[derive(Default)]
+struct TokenState {
+    current: Mutex<String>,
+    refreshed: Mutex<Option<String>>,
+    rejected: AtomicUsize,
+}
+
+impl TestTokens {
+    fn new(current: &str, refreshed: Option<&str>) -> Self {
+        let tokens = Self::default();
+        *tokens.0.current.lock().unwrap() = current.to_owned();
+        *tokens.0.refreshed.lock().unwrap() = refreshed.map(str::to_owned);
+        tokens
+    }
+
+    fn rejections(&self) -> usize {
+        self.0.rejected.load(Ordering::SeqCst)
+    }
+}
+
+impl TokenSource for TestTokens {
+    async fn token(&self) -> Result<SecretString, UserTokenError> {
+        Ok(SecretString::from(self.0.current.lock().unwrap().clone()))
+    }
+
+    async fn rejected(&self, token: &SecretString) {
+        self.0.rejected.fetch_add(1, Ordering::SeqCst);
+        let mut current = self.0.current.lock().unwrap();
+        if *current == token.expose_secret()
+            && let Some(next) = self.0.refreshed.lock().unwrap().take()
+        {
+            *current = next;
+        }
+    }
+}
+
+struct Fake {
+    base: String,
+    token: String,
+}
+
+impl Fake {
+    async fn start() -> Self {
+        let base = spawn_fake().await;
+        let token = sign_in(&base).await;
+        Self { base, token }
+    }
+
+    fn client(&self) -> WorkClient<TestTokens> {
+        self.client_with(TestTokens::new(&self.token, None))
+    }
+
+    fn client_with(&self, tokens: TestTokens) -> WorkClient<TestTokens> {
+        WorkClient::new(Url::parse(&self.base).unwrap(), tokens).unwrap()
+    }
+
+    async fn faults(&self, faults: Value) {
+        let status = http()
+            .post(format!("{}/_fake/dashboard/faults", self.base))
+            .json(&json!({ "faults": faults }))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, 204);
+    }
+
+    async fn requests(&self) -> Vec<Value> {
+        http()
+            .get(format!("{}/_fake/dashboard/requests", self.base))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap()
+    }
+
+    async fn requests_on(&self, on: &str) -> Vec<Value> {
+        self.requests()
+            .await
+            .into_iter()
+            .filter(|r| r["on"] == on)
+            .collect()
+    }
+}
+
+fn item(text: &str) -> ItemRef {
+    let (repo, number) = text.split_once('#').unwrap();
+    ItemRef::parse(repo, number.parse().unwrap()).unwrap()
+}
+
+fn repo(text: &str) -> RepoRef {
+    parse_repo(text).unwrap()
+}
+
+fn logins(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
+fn at_ms(record: &Value) -> u64 {
+    record["at_ms"].as_u64().unwrap()
+}
+
+#[tokio::test(start_paused = true)]
+async fn search_is_paced_and_retried_on_secondary_limit() {
+    let fake = Fake::start().await;
+    fake.faults(json!([
+        {"on": "search", "matching": "author:alice", "times": 1,
+         "answer": {"kind": "secondary_rate_limit", "retry_after": 7}},
+        {"on": "search", "matching": "assignee:alice", "times": 1,
+         "answer": {"kind": "secondary_rate_limit"}},
+        {"on": "search", "matching": "review-requested:alice", "times": 2,
+         "answer": {"kind": "secondary_rate_limit", "status": 429}},
+    ]))
+    .await;
+
+    let found = fake
+        .client()
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap();
+
+    let searches = fake.requests_on("search").await;
+    let faulted: Vec<bool> = searches.iter().map(|r| r["fault"].is_string()).collect();
+    assert_eq!(faulted, [true, false, true, false, true, true, false]);
+    let gaps: Vec<u64> = searches
+        .windows(2)
+        .map(|pair| at_ms(&pair[1]) - at_ms(&pair[0]))
+        .collect();
+    assert!(gaps.iter().all(|gap| *gap >= 3_000), "{gaps:?}");
+    // retry-after 7 s; then the ladder: 60 s, and 60 s then 120 s for the twice-limited search.
+    assert!((7_000..60_000).contains(&gaps[0]), "{gaps:?}");
+    assert!(
+        gaps[2] >= 60_000 && gaps[4] >= 60_000 && gaps[5] >= 120_000,
+        "{gaps:?}"
+    );
+
+    assert!(found.unsearchable.is_empty() && found.notes.is_empty());
+    let prs = &found.candidates.pull_requests;
+    let relations = |key: &str| prs[&item(key)].relations["alice"].clone();
+    assert_eq!(
+        relations("acme/wallet-ui#311"),
+        BTreeSet::from([PrRelation::Authored])
+    );
+    assert_eq!(
+        relations("acme/ops-runbooks#14"),
+        BTreeSet::from([PrRelation::Assigned])
+    );
+    assert_eq!(
+        relations("acme/platform#1203"),
+        BTreeSet::from([PrRelation::ReviewRequested])
+    );
+    assert!(!prs.contains_key(&item("acme/legacy-wallet#9")), "archived");
+    assert!(!prs.contains_key(&item("acme/platform#1190")), "merged");
+}
+
+#[tokio::test(start_paused = true)]
+async fn third_secondary_hit_fails_the_search() {
+    let fake = Fake::start().await;
+    fake.faults(json!([{"on": "search", "times": 3,
+        "answer": {"kind": "secondary_rate_limit"}}]))
+        .await;
+
+    let error = fake
+        .client()
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, WorkError::SecondaryRateLimit { .. }),
+        "{error:?}"
+    );
+    assert!(error.ends_refresh());
+    assert_eq!(fake.requests_on("search").await.len(), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn primary_limit_fails_with_retry_at() {
+    let fake = Fake::start().await;
+    let reset = 1_795_000_000;
+    fake.faults(json!([
+        {"on": "search", "answer": {"kind": "primary_rate_limit", "reset": reset}},
+        {"on": "graphql", "answer": {"kind": "primary_rate_limit", "reset": reset}},
+    ]))
+    .await;
+    let client = fake.client();
+
+    let search = client.search_pull_requests(&logins(&["alice"])).await;
+    let details = client.pull_requests(&[item("acme/platform#1203")]).await;
+
+    let expected = DateTime::from_timestamp(reset, 0);
+    for error in [search.unwrap_err(), details.unwrap_err()] {
+        assert!(
+            matches!(error, WorkError::PrimaryRateLimit { reset } if reset == expected),
+            "{error:?}"
+        );
+        assert!(error.ends_refresh());
+    }
+    assert_eq!(
+        fake.requests().await.len(),
+        2,
+        "no retry after a primary limit"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn unsearchable_login_falls_back_to_enumeration() {
+    let fake = Fake::start().await;
+    let client = fake.client();
+
+    let searched = client
+        .search_pull_requests(&logins(&["alice", "alice-helper"]))
+        .await
+        .unwrap();
+    assert_eq!(searched.unsearchable, ["alice-helper"]);
+    let helper_searches = fake
+        .requests_on("search")
+        .await
+        .into_iter()
+        .filter(|r| r["q"].as_str().unwrap().contains("alice-helper"))
+        .count();
+    assert_eq!(
+        helper_searches, 1,
+        "the first refusal ends the login's searches"
+    );
+
+    let enumerated = client
+        .enumerate_owners(&logins(&["acme"]), &searched.unsearchable)
+        .await
+        .unwrap();
+
+    assert!(enumerated.notes.is_empty(), "{:?}", enumerated.notes);
+    let found = &enumerated.candidates;
+    assert_eq!(
+        found.pull_requests.keys().cloned().collect::<Vec<_>>(),
+        [item("acme/consensus#1541")]
+    );
+    assert_eq!(
+        found.pull_requests[&item("acme/consensus#1541")].relations["alice-helper"],
+        BTreeSet::from([PrRelation::Authored])
+    );
+    assert_eq!(
+        found.issues.keys().cloned().collect::<Vec<_>>(),
+        [item("acme/consensus#1525")]
+    );
+    assert_eq!(
+        found.issues[&item("acme/consensus#1525")].relations,
+        BTreeSet::from([IssueRelation::Assigned])
+    );
+    let graphql = fake.requests_on("graphql").await;
+    assert!(graphql.iter().all(|r| r["rate_limit_selected"] == true));
+}
+
+#[tokio::test(start_paused = true)]
+async fn issue_search_merges_relations_of_watched_repositories_and_logins() {
+    let fake = Fake::start().await;
+
+    let found = fake
+        .client()
+        .search_issues(&[repo("acme/platform")], &logins(&["alice"]))
+        .await
+        .unwrap();
+
+    assert!(found.notes.is_empty());
+    let issues = &found.candidates.issues;
+    let relations = |key: &str| issues[&item(key)].relations.clone();
+    assert_eq!(
+        relations("acme/platform#1187"),
+        BTreeSet::from([
+            IssueRelation::RepoOpen,
+            IssueRelation::Assigned,
+            IssueRelation::Mentioned
+        ])
+    );
+    assert_eq!(
+        relations("acme/platform#1215"),
+        BTreeSet::from([IssueRelation::RepoOpen])
+    );
+    assert_eq!(
+        relations("acme/wallet-ui#305"),
+        BTreeSet::from([IssueRelation::Mentioned])
+    );
+    assert!(!issues.contains_key(&item("acme/platform#1150")), "closed");
+    let platform = &issues[&item("acme/platform#1187")];
+    assert_eq!(platform.milestone.as_ref().unwrap().title, "v2.4");
+    assert_eq!(platform.assignees, ["alice"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn pr_details_are_batched_by_ten() {
+    let fake = Fake::start().await;
+    let world: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo_root().join("fixtures/dashboard/github/pull-requests.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let mut pulls: Vec<ItemRef> = world
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|pr| {
+            ItemRef::parse(
+                pr["repository"]["nameWithOwner"].as_str().unwrap(),
+                u32::try_from(pr["number"].as_u64().unwrap()).unwrap(),
+            )
+            .unwrap()
+        })
+        .collect();
+    assert_eq!(pulls.len(), 21);
+    pulls.extend([item("acme/platform#9999"), item("acme/secret#1")]);
+
+    let fetched = fake.client().pull_requests(&pulls).await.unwrap();
+
+    let graphql = fake.requests_on("graphql").await;
+    let mut sizes: Vec<u64> = graphql
+        .iter()
+        .map(|r| r["pull_requests"].as_u64().unwrap())
+        .collect();
+    sizes.sort_unstable();
+    assert_eq!(sizes, [3, 10, 10]);
+    assert!(graphql.iter().all(|r| r["rate_limit_selected"] == true));
+    assert!(sizes.iter().all(|size| *size <= MAX_PR_BATCH as u64));
+
+    assert_eq!(fetched.found.len(), 21);
+    let noted: Vec<_> = fetched.notes.iter().map(|n| n.item.clone()).collect();
+    assert_eq!(
+        noted,
+        [
+            item("acme/platform#9999").pr_key(),
+            item("acme/secret#1").pr_key()
+        ]
+    );
+    let fix = &fetched.found[&item("acme/platform#1203")];
+    assert_eq!(fix.closing_issues_references.nodes[0].number, 1187);
+    let rollup = fix.commits.nodes[0]
+        .commit
+        .status_check_rollup
+        .as_ref()
+        .unwrap();
+    assert_eq!(rollup.state, "SUCCESS");
+    assert_eq!(rollup.contexts.nodes[0].workflow.as_deref(), Some("ci"));
+    assert!(fix.review_requests.nodes.iter().any(|r| {
+        r.requested_reviewer
+            .as_ref()
+            .and_then(|r| r.login.as_deref())
+            == Some("alice")
+    }));
+    assert_eq!(
+        fetched.found[&item("acme/wallet-ui#298")].base_ref_name,
+        "feat/pending-withdrawals"
+    );
+    let runbooks = &fetched.found[&item("acme/ops-runbooks#14")];
+    assert!(runbooks.base_repository.as_ref().unwrap().is_private);
+    assert!(fetched.found[&item("acme/node-client#490")].is_draft);
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_batch_retries_as_two_halves() {
+    let fake = Fake::start().await;
+    let pulls: Vec<ItemRef> = [
+        "acme/platform#1203",
+        "acme/platform#1199",
+        "acme/platform#1176",
+        "acme/wallet-ui#320",
+        "acme/wallet-ui#311",
+        "acme/wallet-ui#298",
+        "acme/node-client#482",
+        "acme/node-client#490",
+        "acme/node-client#476",
+        "acme/docs-site#77",
+    ]
+    .map(item)
+    .to_vec();
+    fake.faults(json!([{"on": "graphql", "answer": {"kind": "server_error"}}]))
+        .await;
+
+    let fetched = fake.client().pull_requests(&pulls).await.unwrap();
+
+    let sizes: Vec<u64> = fake
+        .requests_on("graphql")
+        .await
+        .iter()
+        .map(|r| r["pull_requests"].as_u64().unwrap())
+        .collect();
+    assert_eq!(sizes, [10, 5, 5]);
+    assert_eq!(fetched.found.len(), 10);
+    assert!(fetched.notes.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_half_failing_again_is_left_out_with_notes() {
+    let fake = Fake::start().await;
+    let pulls: Vec<ItemRef> = [
+        "acme/platform#1203",
+        "acme/platform#1199",
+        "acme/wallet-ui#320",
+        "acme/wallet-ui#311",
+    ]
+    .map(item)
+    .to_vec();
+    fake.faults(json!([{"on": "graphql", "times": 2,
+        "answer": {"kind": "server_error", "status": 504, "html": false}}]))
+        .await;
+
+    let fetched = fake.client().pull_requests(&pulls).await.unwrap();
+
+    assert_eq!(
+        fake.requests_on("graphql").await.len(),
+        3,
+        "batch, then each half once"
+    );
+    assert_eq!(
+        fetched.found.keys().cloned().collect::<Vec<_>>(),
+        [item("acme/wallet-ui#311"), item("acme/wallet-ui#320")]
+    );
+    let noted: Vec<_> = fetched.notes.iter().map(|n| n.item.clone()).collect();
+    assert_eq!(
+        noted,
+        [
+            item("acme/platform#1203").pr_key(),
+            item("acme/platform#1199").pr_key()
+        ]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn blocker_relations_from_one_ref_listing_per_repository() {
+    let fake = Fake::start().await;
+    let repos = [
+        "acme/wallet-ui",
+        "acme/consensus",
+        "acme/node-client",
+        "acme/docs-site",
+        "acme/secret",
+    ]
+    .map(repo);
+
+    let listing = fake.client().open_pr_refs(&repos).await.unwrap();
+
+    let graphql = fake.requests_on("graphql").await;
+    assert_eq!(graphql.len(), 1);
+    assert_eq!(graphql[0]["lookups"], 5);
+    let blockers = |key: &str| listing.blockers(&item(key)).unwrap();
+    assert_eq!(blockers("acme/wallet-ui#311").dependents, [298]);
+    assert_eq!(blockers("acme/wallet-ui#298").stacked_on, [311]);
+    assert_eq!(blockers("acme/consensus#1541").stacked_on, [1534]);
+    assert_eq!(blockers("acme/consensus#1534").dependents, [1541]);
+    assert_eq!(blockers("acme/node-client#482"), Blockers::default());
+    // A fork's `main` is no branch of the base repository: nothing there is based on it or stacked under it.
+    assert_eq!(blockers("acme/docs-site#80"), Blockers::default());
+    assert_eq!(blockers("acme/docs-site#77"), Blockers::default());
+    assert_eq!(
+        listing.blockers(&item("acme/secret#1")),
+        None,
+        "listing failed"
+    );
+    assert_eq!(listing.notes.len(), 1);
+    assert!(listing.notes[0].text.contains("acme/secret"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn invisible_repository_is_reported() {
+    let fake = Fake::start().await;
+
+    let reach = fake
+        .client()
+        .reach(
+            &[
+                repo("acme/platform"),
+                repo("acme/secret"),
+                repo("acme/ops-runbooks"),
+            ],
+            &logins(&["acme", "ghost-org"]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(reach.invisible_repositories, [repo("acme/secret")]);
+    assert_eq!(reach.invisible_owners, ["ghost-org"]);
+    let texts: Vec<&str> = reach.notes.iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "Not visible to your GitHub token: acme/secret — install the GitHub App there or grant it access",
+            "Not visible to your GitHub token: ghost-org — install the GitHub App there or grant it access",
+        ]
+    );
+    assert_eq!(fake.requests_on("graphql").await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn rejected_token_is_refreshed_once() {
+    let fake = Fake::start().await;
+    let tokens = TestTokens::new(STALE, Some(&fake.token));
+    let client = fake.client_with(tokens.clone());
+    let pulls: Vec<ItemRef> = (0..20)
+        .map(|n| item(&format!("acme/platform#{}", 1190 + n)))
+        .collect();
+
+    let fetched = client.pull_requests(&pulls).await.unwrap();
+    let search = client
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap();
+
+    assert!(fetched.found.contains_key(&item("acme/platform#1203")));
+    assert!(!search.candidates.pull_requests.is_empty());
+    assert_eq!(tokens.rejections(), 1, "concurrent 401s refresh once");
+}
+
+#[tokio::test(start_paused = true)]
+async fn token_rejected_after_refresh_fails() {
+    let fake = Fake::start().await;
+    let tokens = TestTokens::new(STALE, None);
+
+    let error = fake
+        .client_with(tokens.clone())
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, WorkError::Unauthorized), "{error:?}");
+    assert!(error.ends_refresh());
+    assert_eq!(tokens.rejections(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn rest_reads_answer_q3_q4_q7_q8_q14() {
+    let fake = Fake::start().await;
+    let mut client = fake.client();
+    client.page_size = 2;
+    let platform = repo("acme/platform");
+
+    let policy = client
+        .file_contents(&repo("acme/review-policies"), "policies/platform.json")
+        .await
+        .unwrap();
+    let files = client
+        .pull_files(&item("acme/platform#1203"))
+        .await
+        .unwrap();
+    let latest = client.latest_release(&platform).await.unwrap();
+    let none = client
+        .latest_release(&repo("acme/docs-site"))
+        .await
+        .unwrap();
+    let releases = client.releases(&platform).await.unwrap();
+    let milestones = client.milestones(&platform).await.unwrap();
+    let events = client.user_events("alice-helper").await.unwrap();
+    let mut refused = Vec::new();
+    for path in [
+        "../secret/policy.json",
+        "policies/%2e%2e/%2e%2e/%2e%2e/%2e%2e/user/installations",
+        "policies/.%2e/x.json",
+        "policies\\..\\x.json",
+        "./policies/platform.json",
+        "policies//platform.json",
+        "policies/plat form.json",
+    ] {
+        refused.push((path, client.file_contents(&platform, path).await));
+    }
+
+    let policy: Value = serde_json::from_str(&policy).unwrap();
+    assert_eq!(policy["areas"][0]["paths"][0], "packages/sync/");
+    assert_eq!(files.len(), 3);
+    assert_eq!(files[0].filename, "packages/sync/src/header_sync.rs");
+    assert_eq!(latest.unwrap().tag_name, "v2.3.0");
+    assert_eq!(none, None);
+    assert_eq!(releases.len(), 3);
+    assert_eq!(
+        milestones
+            .iter()
+            .map(|m| (m.title.as_str(), m.state.as_str()))
+            .collect::<Vec<_>>(),
+        [("v2.3", "closed"), ("v2.4", "open"), ("v3.0", "open")]
+    );
+    assert!(!events.is_empty());
+    assert!(events.iter().all(|e| e.kind.starts_with("PullRequest")));
+    assert!(
+        events
+            .iter()
+            .any(|e| e.item == item("acme/consensus#1541") && e.action.as_deref() == Some("opened"))
+    );
+    for (path, answer) in &refused {
+        assert!(
+            matches!(answer, Err(WorkError::NotFound)),
+            "{path}: {answer:?}"
+        );
+    }
+    let paths: Vec<String> = fake
+        .requests_on("rest")
+        .await
+        .iter()
+        .map(|r| r["path"].as_str().unwrap().to_owned())
+        .collect();
+    let read = |part: &str| paths.iter().filter(|p| p.contains(part)).count();
+    assert_eq!(
+        read("/contents/"),
+        1,
+        "only the valid policy path: {paths:?}"
+    );
+    assert_eq!(read("installations"), 0, "{paths:?}");
+    let file_pages = fake
+        .requests_on("rest")
+        .await
+        .into_iter()
+        .filter(|r| r["path"].as_str().unwrap().ends_with("/pulls/1203/files"))
+        .count();
+    assert_eq!(file_pages, 2, "three files at two per page");
+}
+
+#[tokio::test(start_paused = true)]
+async fn history_searches_and_details_answer_q9_q12_q13() {
+    let fake = Fake::start().await;
+    let client = fake.client();
+    let since = NaiveDate::from_ymd_opt(2026, 8, 26).unwrap();
+
+    let history = client.search_history("alice", since).await.unwrap();
+    let details = client
+        .history_details(
+            &[
+                "acme/platform#1190",
+                "acme/wallet-ui#300",
+                "acme/platform#1195",
+            ]
+            .map(item),
+            &logins(&["alice"]),
+        )
+        .await
+        .unwrap();
+    let milestones = client
+        .issue_milestones(
+            &[
+                "acme/platform#1187",
+                "acme/platform#1215",
+                "acme/consensus#1520",
+            ]
+            .map(item),
+        )
+        .await
+        .unwrap();
+
+    assert!(history.opened.contains(&item("acme/platform#1190")));
+    assert!(
+        !history.opened.contains(&item("acme/platform#1100")),
+        "outside the window"
+    );
+    assert_eq!(
+        history.closed,
+        BTreeSet::from([item("acme/platform#1190"), item("acme/wallet-ui#300")])
+    );
+    assert_eq!(
+        history.reviewed,
+        BTreeSet::from([item("acme/platform#1195"), item("acme/consensus#1510")])
+    );
+    let merged = &details.found[&item("acme/platform#1190")];
+    assert!(merged.merged_at.is_some() && merged.author.as_deref() == Some("alice"));
+    let closed = &details.found[&item("acme/wallet-ui#300")];
+    assert!(closed.closed_at.is_some() && closed.merged_at.is_none());
+    assert_eq!(
+        details.found[&item("acme/platform#1195")].reviews["alice"].len(),
+        2
+    );
+    let title = |key: &str| {
+        milestones.found[&item(key)]
+            .as_ref()
+            .map(|m| m.title.clone())
+    };
+    assert_eq!(title("acme/platform#1187").as_deref(), Some("v2.4"));
+    assert_eq!(title("acme/platform#1215"), None);
+    assert_eq!(title("acme/consensus#1520").as_deref(), Some("1.9"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn work_client_sends_no_mutation_and_never_logs_the_token() {
+    let capture = LogCapture::start();
+    let fake = Fake::start().await;
+    let client = fake.client_with(TestTokens::new(STALE, Some(&fake.token)));
+    fake.faults(
+        json!([{"on": "graphql", "answer": {"kind": "server_error"}},
+        {"on": "rest", "answer": {"kind": "server_error", "status": 500, "html": false}}]),
+    )
+    .await;
+
+    let refused = client.graphql("mutation { deleteRepository { id } }").await;
+    let searched = client
+        .search_pull_requests(&logins(&["alice", "alice-helper"]))
+        .await
+        .unwrap();
+    client
+        .search_issues(&[repo("acme/platform")], &logins(&["alice"]))
+        .await
+        .unwrap();
+    client
+        .enumerate_owners(&logins(&["acme"]), &searched.unsearchable)
+        .await
+        .unwrap();
+    let pulls: Vec<ItemRef> = searched.candidates.pull_requests.keys().cloned().collect();
+    client.pull_requests(&pulls).await.unwrap();
+    client
+        .open_pr_refs(&[repo("acme/wallet-ui")])
+        .await
+        .unwrap();
+    client.reach(&[repo("acme/secret")], &[]).await.unwrap();
+    let mut errors = Vec::new();
+    errors.extend(client.pull_files(&item("acme/platform#1203")).await.err());
+    errors.extend(client.user_events("alice-helper").await.err());
+    errors.extend(
+        fake.client_with(TestTokens::new(STALE, None))
+            .latest_release(&repo("acme/platform"))
+            .await
+            .err(),
+    );
+
+    assert!(matches!(refused, Err(WorkError::NotAQuery)));
+    let requests = fake.requests().await;
+    assert!(
+        requests
+            .iter()
+            .all(|r| r["method"] == "GET" || (r["method"] == "POST" && r["path"] == "/graphql")),
+        "{requests:?}"
+    );
+    assert!(
+        matches!(
+            errors[..],
+            [WorkError::ServerError(_), WorkError::Unauthorized]
+        ),
+        "{errors:?}"
+    );
+    let logged = capture.text();
+    for secret in [fake.token.as_str(), STALE] {
+        assert!(!logged.contains(secret), "token in the log");
+        for error in &errors {
+            assert!(
+                !format!("{error:?} {error}").contains(secret),
+                "token in an error"
+            );
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_after_beyond_the_ladder_ends_the_search_at_once() {
+    let fake = Fake::start().await;
+    fake.faults(json!([{"on": "search",
+        "answer": {"kind": "secondary_rate_limit", "retry_after": 86_400}}]))
+        .await;
+    let started = tokio::time::Instant::now();
+
+    let error = fake
+        .client()
+        .search_pull_requests(&logins(&["alice"]))
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, WorkError::SecondaryRateLimit { retry_after: Some(wait) }
+            if wait == Duration::from_secs(86_400)),
+        "{error:?}"
+    );
+    assert!(error.ends_refresh());
+    assert!(started.elapsed() < Duration::from_secs(1), "no wait");
+    assert_eq!(fake.requests_on("search").await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn invalid_logins_and_repositories_never_reach_a_search() {
+    let fake = Fake::start().await;
+    let client = fake.client();
+    let odd_repo = RepoRef {
+        owner: "acme".to_owned(),
+        name: "platform is:closed".to_owned(),
+    };
+    let since = NaiveDate::from_ymd_opt(2026, 8, 26).unwrap();
+
+    let prs = client
+        .search_pull_requests(&logins(&["alice repo:acme/secret", "alice"]))
+        .await
+        .unwrap();
+    let issues = client
+        .search_issues(&[odd_repo], &logins(&["bob OR x"]))
+        .await
+        .unwrap();
+    let history = client.search_history("x y", since).await.unwrap();
+
+    let searches = fake.requests_on("search").await;
+    assert_eq!(searches.len(), 3, "only alice's searches: {searches:?}");
+    assert!(
+        searches
+            .iter()
+            .all(|r| !r["q"].as_str().unwrap().contains("repo:"))
+    );
+    assert!(!prs.candidates.pull_requests.is_empty());
+    let texts = |notes: &[contracts::api::dashboard::ScanNote]| {
+        notes.iter().map(|n| n.text.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        texts(&prs.notes),
+        ["`alice repo:acme/secret` is not a valid GitHub login; its searches are skipped"]
+    );
+    assert_eq!(
+        texts(&issues.notes),
+        [
+            "`acme/platform is:closed` is not a valid repository name; its searches are skipped",
+            "`bob OR x` is not a valid GitHub login; its searches are skipped",
+        ]
+    );
+    assert_eq!(
+        texts(&history.notes),
+        ["`x y` is not a valid GitHub login; its searches are skipped"]
+    );
+}
+
+/// A client of a wiremock server, for answers the fake cannot produce.
+fn mock_client(server: &MockServer) -> WorkClient<TestTokens> {
+    WorkClient::new(
+        Url::parse(&server.uri()).unwrap(),
+        TestTokens::new("ghu_mock_token", None),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn incomplete_or_capped_search_results_leave_a_note() {
+    let server = MockServer::start().await;
+    for (repo, total, incomplete) in [("acme/big", 1500, false), ("acme/slow", 3, true)] {
+        Mock::given(method("GET"))
+            .and(path("/search/issues"))
+            .and(query_param_contains("q", format!("repo:{repo}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"total_count": total, "incomplete_results": incomplete, "items": []}),
+            ))
+            .mount(&server)
+            .await;
+    }
+
+    // One client per search: no pacing wait.
+    let big = mock_client(&server)
+        .search_issues(&[repo("acme/big")], &[])
+        .await
+        .unwrap();
+    let slow = mock_client(&server)
+        .search_issues(&[repo("acme/slow")], &[])
+        .await
+        .unwrap();
+
+    let text = |found: &IssueSearch| {
+        found
+            .notes
+            .iter()
+            .map(|n| n.text.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        text(&big),
+        ["GitHub found more than 1000 matches for issues of acme/big; the rest is not shown"]
+    );
+    assert_eq!(
+        text(&slow),
+        ["GitHub returned an incomplete result for issues of acme/slow; some items may be missing"]
+    );
+}
+
+#[tokio::test]
+async fn graphql_execution_timeout_retries_as_two_halves() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": null, "errors": [
+            {"message": "Something went wrong while executing your query. This may be the result of a timeout."}
+        ]})))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+        .mount(&server)
+        .await;
+    let pulls: Vec<ItemRef> = (1..=10)
+        .map(|n| item(&format!("acme/platform#{n}")))
+        .collect();
+
+    mock_client(&server).pull_requests(&pulls).await.unwrap();
+
+    let sizes: Vec<usize> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| {
+            String::from_utf8_lossy(&r.body)
+                .matches("pullRequest(")
+                .count()
+        })
+        .collect();
+    assert_eq!(sizes, [10, 5, 5]);
+}
+
+#[tokio::test]
+async fn refused_graphql_document_is_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/graphql"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"errors": [{"message": "Parse error on \"}\""}]})),
+        )
+        .mount(&server)
+        .await;
+    let pulls: Vec<ItemRef> = (1..=4)
+        .map(|n| item(&format!("acme/platform#{n}")))
+        .collect();
+
+    let fetched = mock_client(&server).pull_requests(&pulls).await.unwrap();
+
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(fetched.notes.len(), 4);
+}
+
+#[test]
+fn mentions_respect_login_boundaries() {
+    assert!(mentions("ping @alice, please", "alice"));
+    assert!(mentions("@Alice.", "alice"));
+    assert!(!mentions("ping @alice-helper", "alice"));
+    assert!(!mentions("mail bob@alice.dev", "alice"));
+    assert!(!mentions("no mention", "alice"));
+}
