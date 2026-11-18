@@ -2,9 +2,11 @@
 //! flow, `GET /user`, the recorded REST endpoints, the GitHub App endpoints (installation, installation token) and
 //! a GraphQL endpoint with review threads and an in-memory pending review. Deterministic; never contacts GitHub.
 //! Tests move the pull request's head with `POST /_fake/head` (`{"sha": "<40 hex>"}`) and read the App JWTs and
-//! installation tokens issued with `GET /_fake/app-credentials`.
+//! installation tokens issued with `GET /_fake/app-credentials`. With `--dashboard-fixture-dir` it also serves the
+//! dashboard scan's searches, REST reads and GraphQL alias batches over a synthetic world (`dashboard`).
 
 mod app;
+mod dashboard;
 mod fixtures;
 mod graphql;
 mod oauth;
@@ -46,6 +48,9 @@ pub struct Config {
     /// Public key (PEM) of the App's private key the App JWTs must verify against.
     #[arg(long, env = "FAKE_GITHUB_APP_PUBLIC_KEY_FILE")]
     pub app_public_key_file: Option<PathBuf>,
+    /// Dashboard world (e.g. `fixtures/dashboard/github`); without it the dashboard endpoints answer 404.
+    #[arg(long, env = "FAKE_GITHUB_DASHBOARD_FIXTURE_DIR")]
+    pub dashboard_fixture_dir: Option<PathBuf>,
 }
 
 /// The fake GitHub could not start.
@@ -162,23 +167,44 @@ pub fn router(config: &Config) -> Result<Router, StartError> {
         dir = %config.fixture_dir.display(),
         "fake-github loaded the recordings"
     );
-    Ok(Router::new()
-        .fallback(serve_recorded)
-        .with_state(Arc::new(RecordedState {
-            endpoints: recorded,
-            oauth: Arc::clone(&oauth),
-            graphql: Arc::clone(&graphql),
-            pull_path,
-            recorded_head,
-        }))
+    let dashboard = config
+        .dashboard_fixture_dir
+        .as_deref()
+        .map(|dir| dashboard::Dashboard::load(dir, Arc::clone(&graphql), &pull_path))
+        .transpose()?
+        .map(Arc::new);
+    let mut router = Router::new()
+        .fallback(dashboard::serve_rest)
+        .with_state(dashboard::RestState {
+            recorded: Arc::new(RecordedState {
+                endpoints: recorded,
+                oauth: Arc::clone(&oauth),
+                graphql: Arc::clone(&graphql),
+                pull_path,
+                recorded_head,
+            }),
+            dashboard: dashboard.clone(),
+        })
+        .merge(
+            Router::new()
+                .route("/graphql", post(dashboard::serve_graphql))
+                .with_state(dashboard::GraphqlState {
+                    graphql: Arc::clone(&graphql),
+                    oauth: Arc::clone(&oauth),
+                    dashboard: dashboard.clone(),
+                }),
+        )
         .merge(oauth::routes(oauth))
         .merge(app::routes(Arc::new(app::App::load(config)?)))
         .merge(
             Router::new()
-                .route("/graphql", post(graphql::serve))
                 .route("/_fake/head", post(move_head))
                 .with_state(graphql),
-        ))
+        );
+    if let Some(dashboard) = dashboard {
+        router = router.merge(dashboard::control_routes(dashboard));
+    }
+    Ok(router)
 }
 
 /// A JSON response with a pre-serialised body.

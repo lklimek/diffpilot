@@ -1,0 +1,122 @@
+[
+  {
+    "id": "R_acme_platform",
+    "name": "platform",
+    "nameWithOwner": "acme/platform",
+    "owner": {
+      "__typename": "Organization",
+      "login": "acme"
+    },
+    "url": "https://github.com/acme/platform",
+    "isPrivate": false,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  },
+  {
+    "id": "R_acme_wallet_ui",
+    "name": "wallet-ui",
+    "nameWithOwner": "acme/wallet-ui",
+    "owner": {
+      "__typename": "Organization",
+      "login": "acme"
+    },
+    "url": "https://github.com/acme/wallet-ui",
+    "isPrivate": false,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  },
+  {
+    "id": "R_acme_node_client",
+    "name": "node-client",
+    "nameWithOwner": "acme/node-client",
+    "owner": {
+      "__typename": "Organization",
+      "login": "acme"
+    },
+    "url": "https://github.com/acme/node-client",
+    "isPrivate": false,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  },
+  {
+    "id": "R_acme_docs_site",
+    "name": "docs-site",
+    "nameWithOwner": "acme/docs-site",
+    "owner": {
+      "__typename": "Organization",
+      "login": "acme"
+    },
+    "url": "https://github.com/acme/docs-site",
+    "isPrivate": false,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  },
+  {
+    "id": "R_acme_consensus",
+    "name": "consensus",
+    "nameWithOwner": "acme/consensus",
+    "owner": {
+      "__typename": "Organization",
+      "login": "acme"
+    },
+    "url": "https://github.com/acme/consensus",
+    "isPrivate": false,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  },
+  {
+    "id": "R_acme_review_policies",
+    "name": "review-policies",
+    "nameWithOwner": "acme/review-policies",
+    "owner": {
+      "__typename": "Organization",
+      "login": "acme"
+    },
+    "url": "https://github.com/acme/review-policies",
+    "isPrivate": false,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  },
+  {
+    "id": "R_acme_ops_runbooks",
+    "name": "ops-runbooks",
+    "nameWithOwner": "acme/ops-runbooks",
+    "owner": {
+      "__typename": "Organization",
+      "login": "acme"
+    },
+    "url": "https://github.com/acme/ops-runbooks",
+    "isPrivate": true,
+    "isArchived": false,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  },
+  {
+    "id": "R_acme_legacy_wallet",
+    "name": "legacy-wallet",
+    "nameWithOwner": "acme/legacy-wallet",
+    "owner": {
+      "__typename": "Organization",
+      "login": "acme"
+    },
+    "url": "https://github.com/acme/legacy-wallet",
+    "isPrivate": false,
+    "isArchived": true,
+    "defaultBranchRef": {
+      "name": "main"
+    }
+  }
+]

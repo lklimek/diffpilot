@@ -63,6 +63,7 @@ fn config(verified: bool) -> Config {
         user_id: None,
         app_id: verified.then_some(APP_ID),
         app_public_key_file: verified.then(|| KEYS.1.clone()),
+        dashboard_fixture_dir: None,
     }
 }
 
