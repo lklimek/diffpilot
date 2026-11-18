@@ -619,4 +619,17 @@ describe("edge routing (owner's rule: straight between neighbours, small side la
       expect(y > box.x && y < box.x + box.width).toBe(false);
     }
   });
+
+  it("orders lane labels on each side like their leaders, so no two leaders cross, with a clear bend", () => {
+    const layout = layoutFlow(large, "TB");
+    const led = layout.edges.filter((e) => e.leader && e.leader.length === 3);
+    for (const left of [true, false]) {
+      const side = led
+        .filter((e) => e.leader![2]!.x < e.leader![0]!.x === left)
+        .sort((a, b) => a.leader![0]!.y - b.leader![0]!.y);
+      const labelYs = side.map((e) => e.labelBox!.y);
+      expect(labelYs).toEqual([...labelYs].sort((a, b) => a - b));
+      for (const e of side) expect(Math.abs(e.leader![2]!.x - e.leader![1]!.x)).toBeGreaterThanOrEqual(16);
+    }
+  });
 });

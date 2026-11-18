@@ -15,6 +15,11 @@ interface RemarkPillProps {
   subject: string;
   /** Text before the pill. */
   label?: string;
+  /**
+   * Whether the pill shows the rating; false next to a flow's own rating label (the flow's rating is its highest
+   * step rating on the wire, so it is shown once): the pill shows the remarks only.
+   */
+  withRating?: boolean;
   /** Goes to the first remark (or the rated step). */
   onSelect: () => void;
 }
@@ -23,13 +28,15 @@ interface RemarkPillProps {
  * The LLM's rating of a step (or a flow's highest step rating) and the number of LLM remarks, as one LLM-styled
  * pill: two separate facts, never remark counts per severity. Nothing without either: never an all-clear.
  */
-export function RemarkPill({ summary, scope, subject, label, onSelect }: RemarkPillProps) {
-  if (!summary) return null;
+export function RemarkPill({ summary, scope, subject, label, withRating = true, onSelect }: RemarkPillProps) {
+  if (!summary || (!withRating && summary.remarks === 0)) return null;
   const { rating, rated, remarks, handled } = summary;
-  const look = REMARK_LOOK[rating ?? "none"];
+  const look = REMARK_LOOK[withRating ? (rating ?? "none") : "none"];
   const done = remarks > 0 && handled === remarks;
   const ratingText =
-    rating && `${look.label?.split(" ")[0] ?? ""} ${WORD[rating]}${scope === "flow" ? ` ×${rated}` : ""}`;
+    withRating &&
+    rating &&
+    `${look.label?.split(" ")[0] ?? ""} ${WORD[rating]}${scope === "flow" ? ` ×${rated}` : ""}`;
   const countText = remarks > 0 ? plural(remarks, "remark") : null;
   const ratingName = rating
     ? scope === "flow"
@@ -38,10 +45,12 @@ export function RemarkPill({ summary, scope, subject, label, onSelect }: RemarkP
     : scope === "flow"
       ? `LLM rated no step in ${subject}`
       : `LLM did not rate ${subject}`;
-  const name = `${ratingName}${remarks > 0 ? ` · ${plural(remarks, "LLM remark")}` : ""}`;
+  const name = withRating
+    ? `${ratingName}${remarks > 0 ? ` · ${plural(remarks, "LLM remark")}` : ""}`
+    : `${plural(remarks, "LLM remark")} in ${subject}`;
   const breakdown =
     scope === "flow"
-      ? `Steps by LLM rating: ${summary.ratings.map((r) => `${r.rating ? WORD[r.rating] : "not rated"} ${r.steps}`).join(", ")}. `
+      ? `Steps by LLM rating: ${summary.ratings.map((r) => `${r.rating ? WORD[r.rating] : "not rated"} ${r.steps}`).join(", ")}${withRating ? "" : " (the flow's rating is its highest step rating)"}. `
       : "";
   const action =
     remarks === 0

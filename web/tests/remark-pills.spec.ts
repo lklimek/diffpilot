@@ -5,17 +5,15 @@ import { ANALYSIS_ID } from "./support";
 test("rating and remark pills in the list and above the code lead to the first remark", async ({ page }) => {
   await page.goto(`/analyses/${ANALYSIS_ID}?scenario=remark-pills#f1.4`);
   const nav = page.getByRole("navigation");
-  // A flow row: its highest step rating ×steps at it and all its remarks, also while collapsed (flow 2 has an
-  // unrated step whose remarks still count).
-  await expect(nav.getByRole("button", { name: /^LLM rated 1 step in flow 2 MEDIUM/ })).toHaveText(
-    "◆ MEDIUM ×1 · 5 remarks",
-  );
+  // A flow row: its rating once (its label) and all its remarks, also while collapsed (flow 2 has an unrated step
+  // whose remarks still count).
+  await expect(nav.getByRole("button", { name: "5 LLM remarks in flow 2" })).toHaveText("5 remarks");
   // A rated step without remarks shows its rating alone; step 5 its rating and remarks as separate facts.
   await expect(nav.getByRole("button", { name: "LLM rated step 3 LOW (not checked)" })).toHaveText("● LOW");
   await expect(
     nav.getByRole("button", { name: "LLM rated step 5 HIGH (not checked) · 3 LLM remarks" }),
   ).toHaveText("▲ HIGH · 3 remarks");
-  const flow1 = nav.getByRole("button", { name: /^LLM rated 1 step in flow 1 HIGH/ });
+  const flow1 = nav.getByRole("button", { name: "18 LLM remarks in flow 1" });
   expect((await flow1.boundingBox())!.height).toBeGreaterThanOrEqual(24);
   await flow1.focus();
   await page.keyboard.press("Enter");
@@ -34,7 +32,9 @@ test("rating and remark pills in the list and above the code lead to the first r
     "2 remarks",
   );
   // Every pill explains itself (the code view's line buttons are outside this check).
-  for (const pill of await page.getByRole("button", { name: /^LLM (rated|did not rate)/ }).all())
+  for (const pill of await page
+    .getByRole("button", { name: /^(LLM (rated|did not rate)|\d+ LLM remarks? in)/ })
+    .all())
     expect(await pill.getAttribute("aria-describedby")).toBeTruthy();
   await expectAccessible(page);
 });

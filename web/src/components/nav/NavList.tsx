@@ -169,6 +169,7 @@ export function NavList({
                       summary={summariseRemarks(flow.steps, handledRemarks)}
                       scope="flow"
                       subject={`flow ${flow.position}`}
+                      withRating={false}
                       onSelect={() => onRemark(flow.steps)}
                     />
                   )}

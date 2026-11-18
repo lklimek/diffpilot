@@ -58,7 +58,7 @@ describe("HelpDialog", () => {
       "fading frame: the line an evidence link jumped to",
       "▲ HIGH · 5 remarks",
       "the LLM's rating of a step (not checked) and the number of its LLM remarks, two separate facts",
-      "a flow shows its highest step rating ×the steps at it and all its remarks",
+      "a flow shows its rating once (its label: the highest step rating) and a pill with all its remarks",
       "remarks on an unrated step: a neutral pill",
       "no pill means neither, not that the code is safe",
     ]) {

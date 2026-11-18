@@ -79,8 +79,9 @@ const LEGEND: ReactNode[] = [
       </span>
     </span>
     pills in the list and above the code: the LLM&apos;s rating of a step (not checked) and the number of its
-    LLM remarks, two separate facts; a flow shows its highest step rating ×the steps at it and all its
-    remarks; remarks on an unrated step: a neutral pill; no pill means neither, not that the code is safe
+    LLM remarks, two separate facts; a flow shows its rating once (its label: the highest step rating) and a
+    pill with all its remarks; remarks on an unrated step: a neutral pill; no pill means neither, not that the
+    code is safe
   </>,
   <>
     <Swatch look="outline-2 -outline-offset-2 outline-med-bd" />

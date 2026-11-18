@@ -693,8 +693,9 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
   separate facts: the step's LLM rating and the number of its LLM remarks ("▲ HIGH · 5 remarks"; name "LLM rated
   this step HIGH (not checked) · 5 LLM remarks"). Remark counts are never split by rating.
 - The navigation shows one pill per step and per flow row (also collapsed); the flow introduction and the step
-  (above the code) show the same. A flow row shows its highest step rating with the number of steps at it and the
-  flow's total remarks ("▲ HIGH ×2 · 11 remarks"); its tooltip lists the steps per rating.
+  (above the code) show the same. A flow's rating on the wire is its highest step rating, already shown by the flow's
+  LLM label, so the flow pill shows only the flow's total remarks ("11 remarks"); its tooltip lists the steps per
+  rating.
 - Remarks on an unrated step get a neutral pill ("5 remarks"); a rated step without remarks shows its rating alone;
   a step with neither shows nothing, never an all-clear. Remarks with the user's feedback dim the pill.
 - A pill leads to the first remark (on a step at the highest rating for a flow) and flashes its code line and

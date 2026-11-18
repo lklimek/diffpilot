@@ -561,7 +561,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           summary={summariseRemarks(flow.steps, handledRemarks)}
           scope="flow"
           subject="this flow"
-          label="LLM rating and remarks:"
+          withRating={false}
+          label="LLM remarks:"
           onSelect={() => jumpToRemark(flow.steps)}
         />
         <FlowIntroBlock
