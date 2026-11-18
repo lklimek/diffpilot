@@ -14,7 +14,8 @@ use jiff::{SignedDuration, Span};
 use crate::dashboard::score::ScoreRules;
 use crate::dashboard::zone;
 use crate::github::work::{
-    AUTHORED_PAGES, Fetched, HistoryPr, ItemRef, TokenSource, WorkClient, WorkError, repo_name,
+    AUTHORED_PAGES, AuthoredPulls, Fetched, HistoryPr, ItemRef, TokenSource, WorkClient, WorkError,
+    repo_name,
 };
 
 /// The chart window.
@@ -82,7 +83,8 @@ fn from_details(
     events: &mut Events,
 ) {
     for (item, pr) in details {
-        if pr.author.as_deref().is_some_and(|a| rules.is_scanned(a)) {
+        let own = pr.author.as_deref().is_some_and(|a| rules.is_scanned(a));
+        if own {
             events.add(HistoryKind::PrOpened, item, pr.created_at, start);
             match (pr.merged_at, pr.closed_at) {
                 (Some(merged), _) => events.add(HistoryKind::PrMerged, item, merged, start),
@@ -91,6 +93,9 @@ fn from_details(
                 }
                 (None, None) => {}
             }
+            // Reviews count on other people's pull requests only: GitHub lists an author's thread replies as
+            // reviews, and a scanned login reviewing another's pull request is the user reviewing their own work.
+            continue;
         }
         for (login, times) in &pr.reviews {
             if rules.is_scanned(login) {
@@ -133,7 +138,7 @@ pub(super) async fn collect<T: TokenSource>(
     let mut notes = Vec::new();
     let mut searched: BTreeSet<ItemRef> = BTreeSet::new();
     let mut from_feeds: BTreeSet<ItemRef> = BTreeSet::new();
-    let mut refused: Vec<(String, Option<Timestamp>)> = Vec::new();
+    let mut refused: Vec<(String, FeedReach)> = Vec::new();
     for login in logins {
         match client.search_history(login, first).await {
             Ok(found) => {
@@ -144,24 +149,23 @@ pub(super) async fn collect<T: TokenSource>(
             }
             Err(WorkError::Unsearchable) => match client.user_events(login).await {
                 Ok(feed) => {
-                    for event in feed.events.into_iter().filter(|e| e.created_at >= start) {
-                        // The login's own review event is its review; other events only name a pull request.
-                        if event.kind == "PullRequestReviewEvent" {
-                            events.add(
-                                HistoryKind::ReviewGiven,
-                                &event.item,
-                                event.created_at,
-                                start,
-                            );
-                        }
-                        from_feeds.insert(event.item);
-                    }
-                    refused.push((login.clone(), feed.reaches_back_to.filter(|at| *at > start)));
+                    // An event only names a pull request; its details tell authorship and review times.
+                    from_feeds.extend(
+                        feed.events
+                            .into_iter()
+                            .filter(|e| e.created_at >= start)
+                            .map(|e| e.item),
+                    );
+                    let reach = match feed.reaches_back_to {
+                        Some(at) if at > start => FeedReach::Since(at),
+                        _ => FeedReach::Whole,
+                    };
+                    refused.push((login.clone(), reach));
                 }
                 Err(error) if error.ends_refresh() => return Err(error),
                 Err(error) => {
                     notes.push(skipped(format!("The public events of {login}"), &error));
-                    refused.push((login.clone(), Some(start)));
+                    refused.push((login.clone(), FeedReach::Unread));
                 }
             },
             Err(error) if error.ends_refresh() => return Err(error),
@@ -171,12 +175,12 @@ pub(super) async fn collect<T: TokenSource>(
     let mut listed = BTreeMap::new();
     if !refused.is_empty() {
         let authors: Vec<String> = refused.iter().map(|(login, _)| login.clone()).collect();
-        let found = client
+        let mut found = client
             .authored_pull_requests(refused_from.repos, refused_from.owners, &authors, start)
             .await?;
-        notes.extend(found.notes);
-        for (login, feed_since) in &refused {
-            notes.push(refused_note(login, found.repositories.len(), *feed_since));
+        notes.append(&mut found.notes);
+        for (login, reach) in &refused {
+            notes.push(refused_note(login, &found, *reach));
         }
         for (repo, since) in &found.cut_short {
             notes.push(ScanNote {
@@ -223,18 +227,47 @@ fn utc_date(at: Timestamp) -> Date {
     at.to_zoned(TimeZone::UTC).date()
 }
 
+/// How much of a refused login's public events the refresh read.
+#[derive(Clone, Copy)]
+enum FeedReach {
+    /// Every event since the window start.
+    Whole,
+    /// Cut at the feed's cap: events before this time are unknown.
+    Since(Timestamp),
+    /// Not read.
+    Unread,
+}
+
 /// What the charts know of a login search refuses, and how to complete them.
-fn refused_note(login: &str, repositories: usize, feed_since: Option<Timestamp>) -> ScanNote {
-    let reach = match feed_since {
-        Some(at) => format!(", which reach back to {} only", utc_date(at)),
-        None => String::new(),
+fn refused_note(login: &str, listed: &AuthoredPulls, reach: FeedReach) -> ScanNote {
+    let elsewhere = match reach {
+        FeedReach::Whole => "come from its public events".to_owned(),
+        FeedReach::Since(at) => format!(
+            "come from its public events, which reach back to {} only",
+            utc_date(at)
+        ),
+        FeedReach::Unread => "are missing (its public events could not be read)".to_owned(),
+    };
+    let unreadable = if listed.unreadable.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " ({} could not be read with your access)",
+            listed
+                .unreadable
+                .iter()
+                .map(repo_name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     };
     ScanNote {
         text: format!(
-            "GitHub search refuses {login}: the charts count its pull requests in {repositories} repositories of \
-             your settings; its reviews and its pull requests in other repositories come from its public \
-             events{reach} and may be incomplete. To count them, add those repositories in Settings → Dashboard, \
-             or their owners under \"When GitHub search refuses an account\"."
+            "GitHub search refuses {login}: the charts count its pull requests in {} repositories of your \
+             settings{unreadable}; its reviews and its pull requests in other repositories {elsewhere} and may be \
+             incomplete. To count them, add those repositories in Settings → Dashboard, or their owners under \
+             \"When GitHub search refuses an account\".",
+            listed.repositories.len()
         ),
         item: None,
     }
