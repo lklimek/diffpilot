@@ -1,6 +1,7 @@
 // Screen scenarios of the msw mocks (Home, progress, Settings), selected with `?scenario=<name>`; orthogonal to
 // the fixture states of fixtures.ts. Default settings come from the api-seed; repository settings have none yet.
 import type {
+  FlowGraph,
   UsageTotals,
   AnalysisProgress,
   EstimateBasis,
@@ -19,6 +20,7 @@ import type {
   ThreadsStatus,
   Tour,
 } from "../api/generated/types";
+import largeGraphs from "./diagrams/large-flow-graphs.json";
 import { seedFor, seedNow } from "./fixtures";
 import { REAL_QUESTIONS, REAL_TOURS } from "./real";
 
@@ -303,6 +305,17 @@ const SCENARIOS = {
       const steps = tour.flows.flatMap((f) => f.steps);
       steps.find((s) => s.id === "f1.3")!.llm.annotations = [];
       steps.find((s) => s.id === "f2.2")!.llm.assessment = null;
+      return tour;
+    },
+  },
+  // Larger flow diagrams (fictional): 27 steps with branches, joins, a back edge, skip edges and detached chains
+  // in flow 1; 12 steps in flow 2.
+  "large-diagram": {
+    tour: (seed) => {
+      const tour = structuredClone(seed);
+      const graphs = largeGraphs as Record<string, FlowGraph>;
+      tour.flows[0]!.graph = graphs.large!;
+      tour.flows[1]!.graph = graphs.medium!;
       return tour;
     },
   },

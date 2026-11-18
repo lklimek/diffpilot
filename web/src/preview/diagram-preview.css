@@ -1,0 +1,3 @@
+/* The app's styles; class detection covers the components (the preview's Vite root is outside src). */
+@import "../index.css";
+@source "../";
