@@ -1348,3 +1348,86 @@ fn day_start_is_local_midnight() {
             .expect("t")
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Review reproductions (plan §B.1, §B.2, §B.4)
+
+/// Plan §B.4: the milestone title is a judged input, the repository's newest release tag is not; a new release that
+/// leaves the computed milestone bonus unchanged must not re-judge the item.
+#[test]
+fn release_tag_that_keeps_the_milestone_bonus_keeps_the_fingerprint() {
+    let at = |tags: &[&str]| {
+        let mut p = pr(1, "fix(sync): retry");
+        p.facts.milestone = crate::dashboard::score::Milestone::Assigned("v1.8.0".into());
+        p.facts.milestone_context = MilestoneContext {
+            release_tags: Some(tags.iter().map(|t| (*t).to_owned()).collect()),
+            milestone_titles: Some(vec!["v1.8.0".into()]),
+        };
+        let snap = snapshot(vec![p], vec![], vec![]);
+        let items = candidates(&snap);
+        let bonus = items[0]
+            .item
+            .known
+            .iter()
+            .find(|k| k.component == ScoreComponent::MilestoneBonus)
+            .and_then(|k| k.points_tenths);
+        assert_eq!(
+            bonus,
+            Some(200),
+            "premise: v1.8.0 is a past release in both scans"
+        );
+        fingerprints(&snap)
+    };
+    assert_eq!(at(&["v1.8.2"]), at(&["v1.8.3", "v1.8.2"]));
+}
+
+/// Plan §B.1 J6/J13 and §B.2 ("computed parts with basis"): the judge confirms or replaces a provisional computed
+/// default, so the data block must show that default.
+#[test]
+fn judge_sees_the_computed_default_it_confirms() {
+    let snap = snapshot(vec![], vec![issue(7, "Crash")], vec![]);
+    let items = candidates(&snap);
+    let item = &items[0].item;
+    assert!(
+        item.asks.contains(&ScoreComponent::HumanWaiting),
+        "premise: human waiting is a default to confirm"
+    );
+    let block = JudgeWorkInput {
+        items: vec![item.clone()],
+    }
+    .data_block()
+    .expect("block");
+    assert!(
+        block.contains("no outstanding human request known"),
+        "the default and its rule are not in the judge input: {block}"
+    );
+}
+
+/// Plan §B.4 / OD19 (hard rule): caps bound the LLM work of a day. Even counting every retry run, the items sent to
+/// the judge in one local day stay within `DAILY_CAP × (1 + RETRIES)`, however often a failing ranking is retried.
+#[tokio::test]
+async fn failing_rankings_stay_within_the_daily_cap() {
+    let h = harness().await;
+    let snap = snapshot(prs(REFRESH_CAP), vec![], vec![]);
+    let id = h.rank("u1", &snap).await;
+    let jobs_per_attempt = REFRESH_CAP.div_ceil(count(MAX_ITEMS)) * (1 + RETRIES);
+    let mut sent = 0u32;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            refresh::rank_again(&h.state, &scope("u1"), id)
+                .await
+                .expect("Retry ranking");
+        }
+        for _ in 0..jobs_per_attempt {
+            let (_, input) = h.serve(|_| succeeded(json!({"items": "not a list"}))).await;
+            sent += count(input.items.len());
+        }
+        let ended = h.ranked("u1", id).await;
+        assert_eq!(ended.ranking.map(|r| r.state), Some(RankingState::Failed));
+    }
+    assert!(
+        sent <= DAILY_CAP * (1 + RETRIES),
+        "{sent} item judgements requested today, {} jobs, none counted against the daily cap",
+        3 * jobs_per_attempt
+    );
+}
