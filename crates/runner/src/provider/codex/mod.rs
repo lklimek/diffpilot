@@ -471,7 +471,7 @@ impl CodexProvider {
             .take()
             .ok_or_else(|| io::Error::other("Codex stdout was not captured"))?;
         let mut lines = Lines::new(BufReader::new(stdout));
-        let mut parsed = CodexStream::answer_only(call.answer_only);
+        let mut parsed = CodexStream::for_job(call.job_id, call.answer_only);
         let status = read_until_exit(
             &mut child,
             &mut group,

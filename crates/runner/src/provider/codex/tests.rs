@@ -413,6 +413,7 @@ async fn per_job_codex_home_has_lean_config_and_private_files() {
         "hooks = false",
         "multi_agent = false",
         "approval_policy = \"never\"",
+        "web_search = \"disabled\"",
     ] {
         assert!(config.lines().any(|l| l == line), "missing {line}");
     }

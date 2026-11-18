@@ -1,6 +1,7 @@
 //! Parser of the `codex exec --json` event stream (S1a finding 3): normalised activities while it runs, the
 //! final structured output or a typed error at the end.
 
+use contracts::ids::JobId;
 use contracts::job::event::ActivityKind;
 use contracts::job::result::Usage;
 use serde::Deserialize;
@@ -61,9 +62,13 @@ pub(crate) struct CodexStream {
     failure: Option<String>,
     last_error: Option<String>,
     unparsed_lines: usize,
+    /// The job whose stream this is (for logs).
+    job: Option<JobId>,
     /// The job may use no tool (dashboard jobs, ADR-018); `tool_used` names the first tool it used anyway.
     answer_only: bool,
     tool_used: Option<&'static str>,
+    /// Hosted web search ran although every config disables it (the caller warns).
+    web_search_used: bool,
 }
 
 #[derive(Deserialize)]
@@ -140,9 +145,10 @@ impl Item {
 }
 
 impl CodexStream {
-    /// The stream of a job that may use no tool: a tool item, started or completed, fails it.
-    pub(crate) fn answer_only(answer_only: bool) -> Self {
+    /// The stream of `job`; when `answer_only`, a tool item, started or completed, fails it.
+    pub(crate) fn for_job(job: JobId, answer_only: bool) -> Self {
         Self {
+            job: Some(job),
             answer_only,
             ..Self::default()
         }
@@ -151,6 +157,12 @@ impl CodexStream {
     /// The first tool an answer-only job used, if any; the caller stops Codex at once.
     pub(crate) fn tool_used(&self) -> Option<&'static str> {
         self.tool_used
+    }
+
+    /// Whether Codex ran its hosted web search, which bypasses the egress proxy.
+    #[cfg(test)]
+    pub(crate) fn web_search_used(&self) -> bool {
+        self.web_search_used
     }
 
     /// Takes one JSONL line; returns the activity it represents, with an unscrubbed and unclipped summary.
@@ -186,6 +198,13 @@ impl CodexStream {
     }
 
     fn note_tool(&mut self, item: &Item) {
+        if matches!(item, Item::WebSearch {}) && !self.web_search_used {
+            self.web_search_used = true;
+            tracing::warn!(
+                job = %self.job.map_or_else(String::new, |job| job.to_string()),
+                "Codex ran its hosted web search although the config disables it; that traffic bypasses the egress proxy"
+            );
+        }
         if self.answer_only && self.tool_used.is_none() {
             self.tool_used = item.tool();
         }
@@ -637,7 +656,7 @@ mod tests {
                 "collab_tool_call",
             ),
         ] {
-            let mut stream = CodexStream::answer_only(true);
+            let mut stream = CodexStream::for_job(JobId::new_random(), true);
             stream.line(line);
             assert_eq!(stream.tool_used(), Some(tool), "{line}");
             stream.line(ANSWER);
@@ -652,7 +671,7 @@ mod tests {
 
     #[test]
     fn answer_only_stream_accepts_messages_reasoning_and_plans() {
-        let mut stream = CodexStream::answer_only(true);
+        let mut stream = CodexStream::for_job(JobId::new_random(), true);
         stream.line(r#"{"type":"item.completed","item":{"id":"r","type":"reasoning","text":"t"}}"#);
         stream.line(r#"{"type":"item.completed","item":{"type":"todo_list","items":[]}}"#);
         stream.line(ANSWER);
@@ -662,8 +681,28 @@ mod tests {
     }
 
     #[test]
+    fn hosted_web_search_is_noted_in_every_job() {
+        let search =
+            r#"{"type":"item.completed","item":{"id":"w","type":"web_search","query":"q"}}"#;
+        let mut stream = CodexStream::for_job(JobId::new_random(), false);
+        assert!(!stream.web_search_used());
+        stream.line(search);
+        stream.line(ANSWER);
+        stream.line(DONE);
+        assert!(stream.web_search_used());
+        assert!(
+            stream.finish(Exit::Code(0)).is_ok(),
+            "a review job only warns"
+        );
+        let mut judge = CodexStream::for_job(JobId::new_random(), true);
+        judge.line(search);
+        assert!(judge.web_search_used());
+        assert_eq!(judge.tool_used(), Some("web_search"));
+    }
+
+    #[test]
     fn other_jobs_keep_their_tools() {
-        let mut stream = CodexStream::answer_only(false);
+        let mut stream = CodexStream::for_job(JobId::new_random(), false);
         stream.line(r#"{"type":"item.completed","item":{"id":"c","type":"command_execution","command":"ls","exit_code":0}}"#);
         stream.line(ANSWER);
         stream.line(DONE);

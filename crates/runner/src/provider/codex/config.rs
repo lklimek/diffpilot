@@ -1,6 +1,7 @@
 //! The generated per-job `config.toml` (S1a lean config, ADR-002, ADR-005, S5, S6, threat model T2, T3c, T5,
-//! T6): sandbox off (T1–T4 compensate) except for answer-only jobs, no project docs, hooks, plugins, analytics, sub-agents or bundled
-//! skills; the project is never trusted. The job turn gets the MCP servers its access allows: the official
+//! T6): sandbox off (T1–T4 compensate) except for answer-only jobs, hosted web search off (it would bypass the
+//! egress proxy), no project docs, hooks, plugins, analytics, sub-agents or bundled skills; the project is never
+//! trusted. The job turn gets the MCP servers its access allows: the official
 //! `github-mcp-server` read-only with the job's installation token in that server's environment only, and
 //! MemCan with its bearer in a static header (never in Codex's environment).
 
@@ -50,8 +51,8 @@ pub(crate) const FORK_COMPACT_TOKEN_LIMIT: u32 = 80_000;
 
 /// Settings of an answer-only job (dashboard ranking), checked against the pinned Codex 0.167: `shell_tool`
 /// off removes `exec_command` and `write_stdin` (its `unified_exec` opt-out is ignored but kept should a later
-/// version honour it), `view_image` off; with `web_search = "disabled"` (a full-access sandbox defaults it to
-/// live) and a read-only sandbox for what remains (`apply_patch`, which no key removes). The code-mode `exec`
+/// version honour it), `view_image` off; with a read-only sandbox for what remains (`apply_patch`, which no key
+/// removes). The code-mode `exec`
 /// tool stays: a V8 isolate without network or file system. A tool item still fails the job (`CodexStream`).
 const ANSWER_ONLY_FEATURES: &str = "shell_tool = false\nunified_exec = false\nview_image = false\n";
 
@@ -71,21 +72,18 @@ pub(crate) fn config_toml(
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
     };
-    let (sandbox, web_search, extra_features) = if answer_only {
-        (
-            "read-only",
-            "web_search = \"disabled\"\n",
-            ANSWER_ONLY_FEATURES,
-        )
+    let (sandbox, extra_features) = if answer_only {
+        ("read-only", ANSWER_ONLY_FEATURES)
     } else {
-        ("danger-full-access", "", "")
+        ("danger-full-access", "")
     };
     let mut config = format!(
         r#"model = {model}
 model_reasoning_effort = "{effort}"
 model_auto_compact_token_limit = {compact_limit}
 sandbox_mode = "{sandbox}"
-{web_search}approval_policy = "never"
+web_search = "disabled"
+approval_policy = "never"
 project_doc_max_bytes = 0
 
 [analytics]
@@ -400,14 +398,43 @@ required = false
     #[test]
     fn analysis_config_keeps_its_tools() {
         let config = job_config(&AgentAccess::default());
-        for absent in [
-            "web_search",
-            "shell_tool",
-            "unified_exec",
-            "view_image",
-            "read-only",
-        ] {
+        for absent in ["shell_tool", "unified_exec", "view_image", "read-only"] {
             assert!(!config.contains(absent), "{absent}:\n{config}");
+        }
+    }
+
+    /// Hosted web search runs at the provider, around the egress proxy and its log: off for every job kind.
+    #[test]
+    fn every_job_kind_config_disables_hosted_web_search() {
+        use contracts::agent::JobKind;
+        for kind in JobKind::ALL {
+            let answer_only = kind == JobKind::JudgeWork;
+            let access = match kind {
+                JobKind::JudgeWork => AgentAccess::default(),
+                JobKind::Ask => access_with("http://agentic.lan:8190/mcp", false),
+                JobKind::Plan | JobKind::PrContext | JobKind::AnalyseFlow => {
+                    access("http://agentic.lan:8190/mcp")
+                }
+            };
+            for limit in [AUTO_COMPACT_TOKEN_LIMIT, FORK_COMPACT_TOKEN_LIMIT] {
+                let config = config_toml(
+                    &model(),
+                    &access,
+                    Path::new("/x"),
+                    NO_PROXY,
+                    limit,
+                    answer_only,
+                );
+                let top_level = &config[..config.find("\n[").unwrap_or(config.len())];
+                assert_eq!(
+                    top_level
+                        .lines()
+                        .filter(|l| l.starts_with("web_search"))
+                        .collect::<Vec<_>>(),
+                    ["web_search = \"disabled\""],
+                    "{kind:?}:\n{config}"
+                );
+            }
         }
     }
 
