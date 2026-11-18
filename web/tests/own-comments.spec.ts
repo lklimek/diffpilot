@@ -60,14 +60,11 @@ test("… by keyboard, and after a reload", async ({ page }) => {
     code(page).getByRole("list", { name: "Your pending comments at line 96" }).getByText(TEXT),
   ).toBeVisible();
   await page.keyboard.press("Space");
-  await expect(page.getByText(TEXT)).toHaveCount(0);
+  await expect(code(page).getByRole("list", { name: "Your pending comments at line 96" })).toHaveCount(0);
 });
 
-// Product defect, open: the 12 px marker is partly covered by the remark band above line 91 and has no room to its
-// neighbours (WCAG 2.5.8); the fix is a design decision (row height vs target size).
-test.fixme("the marker of a comment on a line under an LLM remark is a large enough target", async ({
-  page,
-}) => {
+// A line under an LLM remark band carries the remark marker and the comment marker: both 24 px targets (WCAG 2.5.8).
+test("the marker of a comment on a line under an LLM remark is a large enough target", async ({ page }) => {
   await openTour(page);
   await openStep(page, 1, 2);
   await page.getByRole("button", { name: "Comment on line 91" }).click();
@@ -117,7 +114,9 @@ for (const colorScheme of ["light", "dark"] as const) {
     await page.screenshot({ path: `${dir}/marker-tooltip-${colorScheme}-1440.png` });
     await marker.click();
     await page.mouse.move(0, 0);
-    await expect(code(page).getByText(TEXT)).toBeVisible();
+    await expect(
+      code(page).getByRole("list", { name: "Your pending comments at line 96" }).getByText(TEXT),
+    ).toBeVisible();
     await page.screenshot({ path: `${dir}/comment-open-${colorScheme}-1440.png` });
     await nav(page)
       .getByRole("button", { name: /^Pending review on GitHub/ })

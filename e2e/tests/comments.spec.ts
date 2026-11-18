@@ -59,19 +59,16 @@ test("hard case 2: a comment on a changed line without LLM remark reaches GitHub
   await checkScreen(page);
 });
 
-// Not under an LLM remark band: the comment marker there is too small a target (web/tests/own-comments.spec.ts).
-const SECOND_LINE = 93;
-
 test("a second comment joins the same pending review; edit and delete act on GitHub", async ({ page }) => {
   const id = await finishedReview(page);
   await openStep(page, 1, 2);
-  await comment(page, SECOND_LINE, `src/rpc/client.rs:${SECOND_LINE}`, "Rebuilt on every turn: intended?");
+  await comment(page, 91, "src/rpc/client.rs:91", "Rebuilt on every turn: intended?");
   const done = inspector(page).getByRole("status").filter({ hasText: "Added to your GitHub pending review" });
   await expect(done).toContainText("as a line comment");
   await expect(done).not.toContainText("missed by the LLM");
   await expect(pendingButton(page)).toContainText("2");
   const both = await pending(page, id);
-  expect(both.comments.map((c) => c.line).sort()).toEqual([SECOND_LINE, 96]);
+  expect(both.comments.map((c) => c.line).sort()).toEqual([91, 96]);
 
   const mine = inspector(page).getByRole("listitem").filter({ hasText: "Rebuilt on every turn: intended?" });
   await mine.getByRole("button", { name: "Edit", exact: true }).click();
