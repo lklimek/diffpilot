@@ -1652,6 +1652,17 @@ async fn history_counts_merges_of_a_refused_login_whoever_merged_them() {
             "{item} opened missing: {history:?}"
         );
     }
+    // The note says where the history may be incomplete and which setting completes it.
+    let note = meta
+        .notes
+        .iter()
+        .map(|n| n.text.as_str())
+        .find(|n| n.contains("alice-helper") && n.contains("public events"))
+        .expect("history note");
+    assert!(
+        note.contains("Settings") && note.contains("\"When GitHub search refuses an account\""),
+        "{note}"
+    );
 }
 
 /// Look-back days (G9, K5) mark an issue opened within them, counted back from the scan, as new (the reference
