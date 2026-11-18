@@ -1,15 +1,20 @@
 // The only fetch layer of the web app: typed calls to the routes of crates/contracts.
 import { routes, type RouteName } from "./generated/routes";
 import type {
+  AccessToken,
   AnalysisEvent,
   AnalysisId,
   AnalysisSummary,
   ApiErrorCode,
   AskQuestion,
   AskRequest,
+  CreateAccessToken,
   CreateAnalysisRequest,
   CreateCommentRequest,
   CreateCommentResponse,
+  CreatedAccessToken,
+  DashboardSettings,
+  DashboardSettingsView,
   DiffResponse,
   Feedback,
   FeedbackId,
@@ -20,6 +25,7 @@ import type {
   PendingComment,
   PendingReview,
   RangeQuery,
+  ReasoningEffort,
   ResolvePrRequest,
   ResolvePrResponse,
   RepoRef,
@@ -195,6 +201,15 @@ export function createApiClient(baseUrl = "") {
     setLanguage: (body: SetLanguageRequest) => call<void>("setLanguage", { body }),
     getRepoSettings: (repo: RepoRef) =>
       call<RepoSettings>("getRepoSettings", { params: { owner: repo.owner, name: repo.name } }),
+    getDashboardSettings: () => call<DashboardSettingsView>("getDashboardSettings"),
+    setDashboardSettings: (body: DashboardSettings) =>
+      call<DashboardSettingsView>("setDashboardSettings", { body }),
+    setJudgeEffort: (reasoning_effort: ReasoningEffort) =>
+      call<import("./generated/types").LlmSelection>("setJudgeEffort", { body: { reasoning_effort } }),
+    listAccessTokens: () => call<AccessToken[]>("listAccessTokens"),
+    /** The only call whose answer carries a token secret (ADR-019); callers must not cache or store it. */
+    createAccessToken: (body: CreateAccessToken) => call<CreatedAccessToken>("createAccessToken", { body }),
+    revokeAccessToken: (id: string) => call<void>("revokeAccessToken", { params: { id } }),
     /** Opens the analysis event stream (docs/contracts/sse-events.md); returns a function that closes it. */
     subscribeAnalysis(id: AnalysisId, handlers: AnalysisStreamHandlers): () => void {
       const source = new EventSource(baseUrl + routePath("analysisEvents", { id }));

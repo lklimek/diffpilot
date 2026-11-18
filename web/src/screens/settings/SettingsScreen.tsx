@@ -7,13 +7,21 @@ import { ApiError } from "../../api/client";
 import { routes } from "../../api/generated/routes";
 import type { RepoRef } from "../../api/generated/types";
 import {
+  useAccessTokenActions,
+  useAccessTokens,
+  useDashboardSettings,
   useMe,
   useRepoSettings,
+  useSaveDashboardSettings,
+  useSetJudgeEffort,
   useSetLanguage,
   useSettings,
   useSetLlm,
   useSignOut,
 } from "../../api/queries";
+import { AccessTokensCard } from "../../components/dashboard/settings-access-tokens/AccessTokensCard";
+import { DashboardSettingsCard } from "../../components/dashboard/settings-dashboard/DashboardSettingsCard";
+import { JudgeEffortSelect } from "../../components/dashboard/settings-judge-effort/JudgeEffortSelect";
 import { AccountCard } from "../../components/settings/AccountCard";
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
 import { LanguageCard } from "../../components/settings/LanguageCard";
@@ -28,6 +36,50 @@ import { clearCommentDrafts } from "../tour/drafts";
 
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
+
+/** The server has no such route yet (dashboard dark launch, plan §H.2.2): its block stays hidden. */
+const notDeployed = (query: { isError: boolean; error: unknown }) =>
+  query.isError && query.error instanceof ApiError && query.error.status === 404;
+
+/** Dashboard settings (plan §F.6) and access tokens (ADR-019), each in its own card. */
+function DashboardSection() {
+  const settings = useDashboardSettings();
+  const save = useSaveDashboardSettings();
+  const tokens = useAccessTokens();
+  const tokenActions = useAccessTokenActions();
+  return (
+    <div className="grid w-full max-w-[1800px] items-start gap-4">
+      {settings.data ? (
+        <DashboardSettingsCard view={settings.data} onSave={save} />
+      ) : (
+        !notDeployed(settings) && (
+          <SettingsCard title="Dashboard">
+            {settings.isPending && (
+              <StatusMessage kind="loading">Loading the dashboard settings…</StatusMessage>
+            )}
+            {settings.isError && <StatusMessage kind="error">{errorText(settings.error)}</StatusMessage>}
+          </SettingsCard>
+        )
+      )}
+      <div className="max-w-[1100px]">
+        {tokens.data ? (
+          <AccessTokensCard
+            tokens={tokens.data}
+            onCreate={tokenActions.create}
+            onRevoke={tokenActions.revoke}
+          />
+        ) : (
+          !notDeployed(tokens) && (
+            <SettingsCard title="Access tokens">
+              {tokens.isPending && <StatusMessage kind="loading">Loading your access tokens…</StatusMessage>}
+              {tokens.isError && <StatusMessage kind="error">{errorText(tokens.error)}</StatusMessage>}
+            </SettingsCard>
+          )
+        )}
+      </div>
+    </div>
+  );
+}
 
 function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
   const [params, setParams] = useSearchParams();
@@ -117,6 +169,8 @@ function RepoSection({ repos, userId }: { repos: RepoRef[]; userId: string }) {
 
 function SettingsContent({ userId }: { userId: string }) {
   const setLlm = useSetLlm();
+  const setJudgeEffort = useSetJudgeEffort();
+  const dashboard = useDashboardSettings();
   const settings = useSettings();
   const setLanguage = useSetLanguage();
   if (settings.isPending) return <StatusMessage kind="loading">Loading the settings…</StatusMessage>;
@@ -134,7 +188,19 @@ function SettingsContent({ userId }: { userId: string }) {
               saved={setLlm.isSuccess}
               error={setLlm.isError ? errorText(setLlm.error) : undefined}
               onSave={(choice) => setLlm.mutate(choice)}
-            />
+            >
+              {/* Shown with the dashboard settings, so not before the server has them (dark launch). */}
+              {dashboard.isSuccess && (
+                <JudgeEffortSelect
+                  effort={settings.data.llm_selection.judge_effort}
+                  efforts={settings.data.llm_selection.efforts}
+                  busy={setJudgeEffort.isPending}
+                  saved={setJudgeEffort.isSuccess}
+                  error={setJudgeEffort.isError ? errorText(setJudgeEffort.error) : undefined}
+                  onChange={(effort) => setJudgeEffort.mutate(effort)}
+                />
+              )}
+            </LlmSelectionCard>
           )}
           <LlmStatusCard status={llm_status} usage={settings.data.llm_usage} />
           <SettingsCard title="Memory">
@@ -151,6 +217,7 @@ function SettingsContent({ userId }: { userId: string }) {
         </div>
         <RepoSection repos={repos} userId={userId} />
       </div>
+      <DashboardSection />
       {setLanguage.isError && (
         <StatusMessage kind="error">The language was not saved: {errorText(setLanguage.error)}</StatusMessage>
       )}
