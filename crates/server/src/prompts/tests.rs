@@ -12,7 +12,7 @@ use contracts::agent::plan::{HunkSelection, PlanOutput, PlannedFlow};
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::api::pr::PrSummary;
 use contracts::api::tour::GithubThread;
-use contracts::common::{Classification, LineSide, LlmLanguage};
+use contracts::common::{LineSide, LlmLanguage};
 use contracts::ids::{CommitSha, FlowId, HunkId, StepId};
 use regex::RegexBuilder;
 
@@ -931,7 +931,7 @@ fn test_code_is_evidence_only_never_a_flow() {
     let (instructions, _) = split(&plan(&input).expect("plan"));
     assert!(instructions.contains("Never create a flow whose subject is tests"));
     assert!(instructions.contains("Test code may be read only as evidence for a production step"));
-    let mut flow = f.plan.flows[0].clone();
+    let flow = f.plan.flows[0].clone();
     let render = |flow: &PlannedFlow| {
         let input = FlowInput {
             job: job(f, LlmLanguage::En),
@@ -943,10 +943,9 @@ fn test_code_is_evidence_only_never_a_flow() {
         };
         split(&analyse_flow(&input).expect("analyse_flow")).0
     };
-    let label = "Do not produce LLM-classified tests.";
-    assert!(!render(&flow).contains(label));
-    flow.classification = Classification::Test;
-    assert!(render(&flow).contains(label));
+    assert!(!instructions.contains("`test`"));
+    assert!(!render(&flow).contains("unless this flow is test code"));
+    assert!(render(&flow).contains("Never create a flow whose subject is tests"));
 }
 
 #[test]

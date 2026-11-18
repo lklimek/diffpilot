@@ -99,6 +99,11 @@ Constants: `LeaseTiming::V1` (`crates/contracts/src/job/protocol.rs`; a test che
 - `EventsAck.cancel_requested`: stop the agent (`LlmProvider::cancel`) and post `cancelled`.
 
 ## Output before archival
+
+This phase keeps Ask answers visible while session archives are copied and runner cleanup finishes.
+There is no forced compaction turn; archive size and cleanup can still delay the terminal result.
+The existing Ask tests cover early publication and reconciliation with cancellation/requeue.
+
 - When the model turn ends, the provider emits `ProviderEvent::OutputReady` and the runner posts
   `OutputReady {attempt, output}` **before** session archival, for every job kind. `output` is the parsed final JSON for JSON jobs, or a JSON string containing the collected tagged file for flow jobs (ADR-014); the server validates and verifies it exactly as a result.
 - Ordering: after every event of that turn; at most once per attempt; before the result.

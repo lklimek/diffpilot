@@ -30,8 +30,12 @@ Maximum document size is 1 MiB.
   deletion-only hunk uses base. A head hunk without removals is `added`, otherwise
   `modified`. When a step connects/combines ranges that are not a single planned
   hunk, use `## step <id> <file-id>:<head|base>:<first>-<last> <kind>`.
-  Required: `title`, `called_by`, `decides`, `next`, `why`.
-  Optional: `symbol`, `moved_from: <file-id>:base:<first>-<last>`.
+  Required: `title`, `decides`, `why`.
+  Optional: `called_by`, `next`, `symbol`, `moved_from: <file-id>:base:<first>-<last>`.
+  Write `called_by` / `next` only for information absent from the graph (an external
+  caller, an external destination or an additional condition). Omitted values are
+  derived from incoming/outgoing edges, including step numbers and edge labels;
+  a boundary with no such edge stays empty. Explicit prose is preserved.
 - `### annotation <type> <basis> <first>-<last>` under its step. Optional `was`, `is`,
   `text`, `evidence`. Behaviour requires nonempty `was`/`is`; other types require
   `text`. Evidence is space-separated `<file-id>:<side>:<line>` references.
@@ -40,7 +44,9 @@ Maximum document size is 1 MiB.
   Above low also required: `headline`, `basis_note`, `not_checked`, `origin`,
   `blocking`. Optional: `smallest_correction`. Flow risk is the highest step risk;
   every step is assessed.
-- `## edge <from-step> <to-step>`; optional `label`.
+- `## edge <from-step> <to-step>`; optional `label`. Omit all edges for a walk in
+  reading order: the parser connects each adjacent pair. If any edge is supplied,
+  supply the complete graph, including branches and loops; no implicit edges are added.
 - `## impact <step> <file-id>:head:<first>-<last>`; required `reason`, `basis`;
   optional `symbol`.
 - `## repetition <explained-in-step>`; required `description`, `sites` (space-separated
@@ -84,19 +90,6 @@ was: A closed queue waited for another message.
 is: A closed queue returns Closed.
 evidence: p1:head:10 p1:head:12
 
-### assessment
-headline: The worker stops after closure
-risk: low
-reason: The change affects only the closed-queue branch.
-basis_note: Read receive and its caller; nothing was executed.
-not_checked: Whether shutdown drains messages already in the queue.
-origin: introduced
-blocking: no_action_proposed
-```
-
-A low-risk step may use the concise assessment instead:
-
-```text
 ### assessment
 risk: low
 reason: The change affects only the closed-queue branch.

@@ -12,7 +12,6 @@ title: Trigger: callers of send
 symbol: mempool::broadcast_tx
 called_by: a user action in the wallet or the relay (outside the diff)
 decides: Nothing here; it builds the request and calls client.send.
-next: step 2
 why: Shows who reaches the retry loop, in particular a call that is not safe to repeat.
 
 ### annotation consequence fact 130-130
@@ -24,20 +23,13 @@ text: Not visible in this repository: does the node reject a repeated broadcast_
 evidence: p15:head:129
 
 ### assessment
-headline: A caller may see a repeated request after a timeout.
 risk: low
 reason: This context step submits one request; repetition is introduced by the downstream retry decision.
-basis_note: Read src/mempool/mod.rs and the flow's caller context; nothing executed.
-not_checked: Downstream handling of repeated requests.
-origin: introduced
-blocking: no_action_proposed
 
 ## step s2 p6:head:88-96 modified
 title: Attempt: build the request and send once
 symbol: RpcClient::send
-called_by: step 1
 decides: Counts the attempt; rebuilds the request on every turn.
-next: step 3
 why: The counter feeds the retry decision; the request is rebuilt because execute consumes it.
 
 ### annotation behaviour fact 91-95
@@ -49,20 +41,13 @@ evidence: p6:head:91 p6:head:94 p6:head:95
 text: Every attempt gets the full per-attempt timeout, so the worst case is 3 × timeout plus delays.
 
 ### assessment
-headline: A rebuilt request may carry different data on a later attempt.
 risk: low
 reason: The attempt counter and request construction are local; the retry decision controls whether another request is sent.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
-not_checked: Request equality across attempts.
-origin: introduced
-blocking: no_action_proposed
 
 ## step s3 p6:head:97-97 modified
 title: Outcome of the attempt?
 symbol: RpcClient::send
-called_by: step 2
 decides: Branches on the result: Ok, Timeout, other error.
-next: step 4 (Ok), step 5 (Timeout), step 8 (other error)
 why: Only timeouts are retried; every other error keeps the old behaviour.
 
 ### annotation behaviour fact 97-97
@@ -71,18 +56,12 @@ is: match on the result with three outcomes.
 evidence: p6:head:97
 
 ### assessment
-headline: Callers receive the result selected by this branch.
 risk: low
 reason: Only timeouts take the new path; success and other errors return directly.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
-not_checked: Transport error classification at runtime.
-origin: introduced
-blocking: no_action_proposed
 
 ## step s4 p6:head:98-98 modified
 title: Return the response
 symbol: RpcClient::send
-called_by: step 3 (Ok)
 decides: Nothing; ends the call.
 next: back to the caller
 why: A successful attempt ends the loop at once.
@@ -93,20 +72,13 @@ is: Returns the response from any attempt.
 evidence: p6:head:98
 
 ### assessment
-headline: The caller receives the successful response.
 risk: low
 reason: This unchanged return exits the loop immediately without another send.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
-not_checked: Runtime response decoding.
-origin: introduced
-blocking: no_action_proposed
 
 ## step s5 p6:head:99-99 added
 title: Retry allowed?
 symbol: RpcClient::send
-called_by: step 3 (Timeout)
 decides: Asks RetryPolicy::should_retry(attempt); yes goes to step 6, no goes to step 7.
-next: step 6 or step 7
 why: The loop needs a rule for when to stop; the rule is a plain attempt limit.
 
 ### annotation behaviour fact 99-99
@@ -135,9 +107,7 @@ smallest_correction: Pass an idempotency input into should_retry (or skip retry 
 ## step s6 p6:head:100-103 added
 title: Wait, then try again
 symbol: RpcClient::send
-called_by: step 5 (yes)
 decides: Computes the delay and sleeps.
-next: step 2 (loop)
 why: Spaces the attempts so a briefly overloaded node can recover.
 
 ### annotation behaviour fact 100-102
@@ -150,19 +120,12 @@ text: With jitter applied after the cap, can one sleep exceed max_delay (4 s)?
 evidence: p9:head:30
 
 ### assessment
-headline: With the default policy the two waits stay at most 300 ms and 600 ms; a policy with more attempts could wait up to half longer than max_delay.
 risk: low
 reason: Latent: the 4 s cap is out of reach while every client uses the default of 3 attempts, and no setter can change it.
-basis_note: read 2 files (retry.rs, client.rs); nothing executed
-not_checked: the jitter range at run time
-origin: introduced
-blocking: follow_up
-smallest_correction: Apply the jitter before min(max_delay).
 
 ## step s7 p6:head:104-106 added
 title: Give up: Exhausted
 symbol: RpcClient::send
-called_by: step 5 (no)
 decides: Returns the new error instead of Timeout.
 next: back to the caller
 why: Callers need to tell a retried failure from a single timeout.
@@ -192,7 +155,6 @@ smallest_correction: Map Exhausted to the same wallet error as Timeout.
 ## step s8 p6:head:107-109 modified
 title: Other errors returned as before
 symbol: RpcClient::send
-called_by: step 3 (other error)
 decides: Nothing; ends the call.
 next: back to the caller
 why: Only timeouts are worth another attempt.
@@ -203,20 +165,14 @@ is: Returns any non-timeout error at once.
 evidence: p6:head:107
 
 ### assessment
-headline: The caller receives a transport error without another attempt.
 risk: low
 reason: The existing error return remains separate from the timeout retry path.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
-not_checked: Other transport error variants at runtime.
-origin: introduced
-blocking: no_action_proposed
 
 ## step s9 p6:head:30-43 modified
 title: Client holds a retry policy
 symbol: RpcClient::new
 called_by: every caller that builds an RpcClient
 decides: Stores RetryPolicy::default() in the new retry field.
-next: step 2 reads it as policy
 why: send needs a policy; new gives every client the default of 3 attempts.
 
 ### annotation behaviour fact 35-42
@@ -229,18 +185,12 @@ text: No setter or constructor argument takes a policy: how does a caller that m
 evidence: p6:head:42
 
 ### assessment
-headline: New clients use the default retry limits.
 risk: low
 reason: Policy construction is bounded to client setup; retry exposure is assessed at the decision step.
-basis_note: Read src/rpc/client.rs and the flow's caller context; nothing executed.
-not_checked: Configuration in downstream clients.
-origin: introduced
-blocking: no_action_proposed
 
 ## step s10 p9:head:3-32 added
 title: Retry policy: attempt limit and delays
 symbol: RetryPolicy
-called_by: step 5 (should_retry) and step 6 (backoff)
 decides: Allows attempts while attempt < max_attempts; computes the delay before the next attempt.
 next: back to step 5 or step 6
 why: The loop needs a rule for when to stop and how long to wait; both live in one policy value.
@@ -255,13 +205,8 @@ text: Jitter is applied after the cap, so one delay can exceed max_delay by up t
 evidence: p9:head:17 p9:head:30 p9:head:46 p9:head:54
 
 ### assessment
-headline: The policy controls how long the caller waits.
 risk: low
 reason: The default attempt limit bounds the loop; the send and jitter steps carry the concrete concerns.
-basis_note: Read src/rpc/retry.rs and the flow's caller context; nothing executed.
-not_checked: Runtime delays and custom policy use.
-origin: introduced
-blocking: no_action_proposed
 
 ## edge s1 s2
 

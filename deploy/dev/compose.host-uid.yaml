@@ -7,3 +7,9 @@
 services:
   server:
     user: "${SR_SERVER_UID:?set SR_SERVER_UID to the host uid that owns the App key}:${SR_SERVER_GID:?set SR_SERVER_GID}"
+    volumes:
+      - type: volume
+        source: server-data
+        target: /var/lib/smart-review
+        volume:
+          nocopy: true

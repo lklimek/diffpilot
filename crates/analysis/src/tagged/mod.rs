@@ -1,6 +1,7 @@
 //! Flow file grammar and verification shared by the server and `sr-check` (ADR-014).
 
 mod codec;
+mod connections;
 #[cfg(test)]
 mod tests;
 

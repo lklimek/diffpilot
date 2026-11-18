@@ -298,13 +298,16 @@ srl down               # remove containers and networks; volumes (database, Code
 ```
 
 For a fresh `server-data` volume, run this once as the host user whose uid/gid are configured in
-`compose.host-uid.yaml`, before starting the server. Docker otherwise creates a root-owned directory and SQLite
-fails with "unable to open database file". This changes only the volume directory's ownership:
+`compose.host-uid.yaml`, before the first `srl up -d`. The host-uid override sets `volume.nocopy: true`
+so Docker does not replace this ownership with the image's uid 10010 on first mount. Without the chown,
+the fresh directory belongs to root and SQLite fails with "unable to open database file".
+Order: create/chown the volume with this one-off container, then start the server with all three Compose
+files (including the host-uid override). This changes only the volume directory's ownership:
 
 ```sh
 docker run --rm --network none --user 0:0 \
-  -v smart-review-local_server-data:/var/lib/smart-review ubuntu:26.04 \
-  chown "$(id -u):$(id -g)" /var/lib/smart-review
+  --mount type=volume,source=smart-review-local_server-data,target=/var/lib/smart-review,volume-nocopy \
+  ubuntu:26.04 chown "$(id -u):$(id -g)" /var/lib/smart-review
 ```
 
 Codex login (once per runner-state volume): copy an existing login volume to volume, never from the host

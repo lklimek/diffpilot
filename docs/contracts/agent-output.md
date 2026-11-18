@@ -127,3 +127,16 @@ not-checked, origin and blocking remain mandatory, as do the existing concrete-a
 The agent JSON schema accepts both the concise closed object and the detailed object; the Rust fields
 are optional so a formal Markdown representation can omit them too. Existing full low assessments remain
 readable, but the UI renders only their band and reason. Wording checks apply to every supplied text.
+
+## Compact flow connections and session skills
+
+The tagged flow grammar makes `called_by` and `next` optional; the shared parser
+reconstructs omitted Inspector prose from edges and defaults an absent edge list
+to reading order. Explicit external callers or extra conditions are preserved.
+The canonical stored fields remain strings. See [the grammar](agent-output-format.md).
+
+`Classification` excludes `test`: test-only flows are outside review scope, including
+when labelled with another classification. The plan schema and decoder reject `test`.
+The runner instructs the first read of required skills only when starting a session,
+including a context-pack fallback. Resumed jobs apply the skill text already in the
+session; every job still receives the required skill files.

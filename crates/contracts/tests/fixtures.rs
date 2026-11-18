@@ -176,7 +176,12 @@ fn agent_fixtures_validate_and_round_trip() {
     files.push((JobKind::PrContext, "agent/pr_context.json".to_owned()));
     files.extend((1..=5).map(|n| (JobKind::AnalyseFlow, format!("agent/flow-{n}.json"))));
     for (kind, file) in files {
-        let schema = output_schema(kind).expect("strict schema");
+        // Flow JSON is the stored canonical projection; the model writes tagged Markdown (ADR-014).
+        let schema = match kind {
+            JobKind::AnalyseFlow => serde_json::to_value(schemars::schema_for!(FlowAnalysisOutput))
+                .expect("canonical flow schema"),
+            _ => output_schema(kind).expect("strict schema"),
+        };
         let validator = jsonschema::validator_for(&schema).expect("valid schema");
         let value = json(&file);
         let errors: Vec<String> = validator

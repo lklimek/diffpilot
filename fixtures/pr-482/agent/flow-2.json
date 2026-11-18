@@ -134,13 +134,8 @@
         }
       ],
       "assessment": {
-        "headline": "Header sync may fail on slow links.",
         "risk": "low",
         "reason": "This caller requests a large batch; the timeout change that reaches it is assessed in the preceding step.",
-        "basis_note": "Read src/sync/mod.rs and the flow's caller context; nothing executed.",
-        "not_checked": "Production peer response times.",
-        "origin": "introduced",
-        "blocking": "no_action_proposed",
         "smallest_correction": null
       }
     }

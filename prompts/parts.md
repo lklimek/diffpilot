@@ -38,8 +38,6 @@ Calibration examples: reviewers' feedback on earlier risk bands in this reposito
 No calibration examples were found for this repository.
 @@ calibration_not_checked
 Calibration examples could not be read for this job (not checked).
-@@ test_flow
-Do not produce LLM-classified tests. Test-only flows are outside review scope; use tests only as evidence for a production step.
 @@ clipped
 (The server clipped the block above: {{omitted}} more characters not shown.)
 @@ omitted

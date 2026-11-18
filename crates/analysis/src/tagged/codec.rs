@@ -266,11 +266,16 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
                 };
                 let fields = strings(
                     &mut section,
-                    &["title", "called_by", "decides", "next", "why"],
-                    &["symbol"],
+                    &["title", "decides", "why"],
+                    &["symbol", "called_by", "next"],
                 )?;
                 for (key, value_field) in fields.as_object().into_iter().flatten() {
                     value[key] = value_field.clone();
+                }
+                for key in ["called_by", "next"] {
+                    if value.get(key).is_none() {
+                        value[key] = json!("");
+                    }
                 }
                 value["id"] = json!(section.words[1]);
                 value["annotations"] = json!([]);
@@ -404,7 +409,10 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
         }
     }
     // All numeric and enum fields pass through their canonical typed definitions.
-    serde_json::from_value(root).map_err(|e| Problem::new(1, format!("invalid flow: {e}")))
+    let mut document: FlowAnalysisOutput =
+        serde_json::from_value(root).map_err(|e| Problem::new(1, format!("invalid flow: {e}")))?;
+    super::connections::fill(&mut document);
+    Ok(document)
 }
 
 fn array_mut<'a>(value: &'a mut Value, key: &str) -> Result<&'a mut Vec<Value>, Problem> {
@@ -462,6 +470,7 @@ fn loc(value: &Value, files: &mut BTreeMap<String, String>) -> String {
 /// Encodes an existing canonical document, used by fixtures and the byte measurement helper.
 pub fn encode(document: &FlowAnalysisOutput, catalog: &Catalog) -> Result<String, Problem> {
     let value = serde_json::to_value(document).map_err(|e| Problem::new(1, e.to_string()))?;
+    let connections = super::connections::descriptions(document);
     let mut files = catalog.files.clone();
     let mut body = "\n## introduction\n".to_owned();
     emit_fields(
@@ -485,11 +494,17 @@ pub fn encode(document: &FlowAnalysisOutput, catalog: &Catalog) -> Result<String
             "\n## step {} {at}\n",
             step["id"].as_str().unwrap_or("")
         ));
-        emit_fields(
-            &mut body,
-            step,
-            &["title", "symbol", "called_by", "decides", "next", "why"],
-        );
+        let derived = connections.get(step["id"].as_str().unwrap_or(""));
+        for key in ["title", "symbol", "called_by", "decides", "next", "why"] {
+            let redundant = derived.is_some_and(|(called_by, next)| match key {
+                "called_by" => step[key].as_str() == Some(called_by),
+                "next" => step[key].as_str() == Some(next),
+                _ => false,
+            });
+            if !redundant {
+                emit_fields(&mut body, step, &[key]);
+            }
+        }
         if !step["moved_from"].is_null() {
             let moved = &step["moved_from"];
             field(
@@ -547,7 +562,8 @@ pub fn encode(document: &FlowAnalysisOutput, catalog: &Catalog) -> Result<String
             );
         }
     }
-    for edge in &document.edges {
+    let default_edges = document.edges == super::connections::reading_order(&document.steps);
+    for edge in document.edges.iter().filter(|_| !default_edges) {
         body.push_str(&format!(
             "\n## edge {} {}\n",
             edge.from_step_id, edge.to_step_id

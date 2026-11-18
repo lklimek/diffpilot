@@ -261,7 +261,7 @@ pub const RUNNER_CLAIM: Route = runner_route("runnerClaim", "/runner/v1/claim", 
 /// Runner: post events (heartbeat).
 pub const RUNNER_EVENTS: Route =
     runner_route("runnerEvents", "/runner/v1/jobs/{id}/events", JobToken);
-/// Runner: post the final output before compaction.
+/// Runner: post the final output before session archival and runner cleanup.
 pub const RUNNER_OUTPUT: Route =
     runner_route("runnerOutput", "/runner/v1/jobs/{id}/output", JobToken);
 /// Runner: post the result.

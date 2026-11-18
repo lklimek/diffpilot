@@ -28,6 +28,7 @@ test("running: k of n, no Open review", async ({ page }) => {
 });
 
 test("paused: usage limit with resume time", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-11-17T14:20:00Z"));
   await open(page, "paused");
   await expect(page.getByText(/^Paused until \d\d:\d\d — 2 of 5$/)).toBeVisible();
   await expect(bar(page)).toHaveAttribute("aria-valuenow", "2");

@@ -545,7 +545,7 @@ statuses?: CiCounts, };
 /**
  * Classification of a flow (brief §3, closed list).
  */
-export type Classification = "behavioural" | "api_contract" | "new_code" | "refactor_pure" | "move" | "rename" | "test" | "docs_comments" | "generated_mechanical" | "config_build" | "dependency" | "other";
+export type Classification = "behavioural" | "api_contract" | "new_code" | "refactor_pure" | "move" | "rename" | "docs_comments" | "generated_mechanical" | "config_build" | "dependency" | "other";
 
 /**
  * Where a pending comment sits on GitHub.

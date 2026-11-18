@@ -1638,3 +1638,31 @@ async fn missing_flow_file_is_a_failed_attempt_with_a_repair_instruction() {
             .any(|event| matches!(event, ProviderEvent::OutputReady(_)))
     );
 }
+
+#[tokio::test]
+async fn required_skill_read_is_instructed_only_when_starting_a_session() {
+    let mut h = harness("plan.jsonl", 0);
+    configured_skills(&mut h).await;
+    run(&h).await.0.expect("first session");
+    let instruction = "Read the required skills once for this new session:";
+    let first = child_file(&h, "child-stdin.txt");
+    assert!(first.contains(instruction), "{first}");
+    assert!(first.contains("$HOME/.agents/skills/severity/SKILL.md"));
+    let mut resumed_job = harness("plan.jsonl", 0);
+    configured_skills(&mut resumed_job).await;
+    resumed_job.call.restore_dir = h.call.session_dir.clone();
+    let (tx, _rx) = mpsc::channel(1024);
+    resumed_job
+        .provider
+        .resume(THREAD, &resumed_job.call, tx)
+        .await
+        .expect("resume");
+    let resumed = child_file(&resumed_job, "child-stdin.txt");
+    assert!(!resumed.contains(instruction), "{resumed}");
+    // A context-pack fallback starts a new session through the same run entry point.
+    let mut fallback = harness("plan.jsonl", 0);
+    configured_skills(&mut fallback).await;
+    fallback.call.prompt = format!("Context pack: accepted plan.\n{}", fallback.call.prompt);
+    run(&fallback).await.0.expect("new session from pack");
+    assert!(child_file(&fallback, "child-stdin.txt").contains(instruction));
+}

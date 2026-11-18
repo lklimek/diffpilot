@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderRoute, startMockServer } from "../../__tests__/screen";
 import { expectTrustWording } from "../../__tests__/wording";
 import type { AnalysisSummary } from "../../api/generated/types";
@@ -138,11 +138,17 @@ describe("Home (brief §4.1)", () => {
   });
 
   it("a paused analysis says until when and how far it got", async () => {
-    setScenario("existing-paused");
-    renderRoute("/");
-    await analyze();
-    const found = await banner("An analysis of this PR is in progress.", "status");
-    expect(found).toHaveTextContent(/Paused until \d\d:\d\d — 2 of 5\./);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-17T14:20:00Z"));
+    try {
+      setScenario("existing-paused");
+      renderRoute("/");
+      await analyze();
+      const found = await banner("An analysis of this PR is in progress.", "status");
+      expect(found).toHaveTextContent(/Paused until \d\d:\d\d — 2 of 5\./);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a failed analysis shows its plain description and leads to Retry", async () => {
