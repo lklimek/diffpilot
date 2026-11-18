@@ -80,9 +80,9 @@ Personal access tokens keep working after Sign out.
 ### Language of LLM texts
 
 - **What:** The language of explanations, questions and assessments the LLM writes for you.
-- **When used:** Read when an analysis starts; an analysis keeps the language it started with, its Ask answers too.
+- **When used:** Read when an analysis starts; an analysis keeps the language it started with, its Ask answers too. Dashboard ranking texts follow it from the next refresh; until they are judged again they show as provisional.
 - **Empty or default:** English.
-- **Limits:** English or Polski.
+- **Limits:** English, Polski or Русский.
 - **Example:** Polski, then analyse the pull request again to get its texts in Polish.
 
 ## GitHub App

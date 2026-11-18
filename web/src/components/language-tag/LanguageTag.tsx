@@ -2,7 +2,7 @@ import type { LlmLanguage } from "../../api/generated/types";
 import { Tooltip } from "../tooltip/Tooltip";
 
 /** Name of an LLM language in English. */
-export const LANGUAGE_NAME: Record<LlmLanguage, string> = { en: "English", pl: "Polish" };
+export const LANGUAGE_NAME: Record<LlmLanguage, string> = { en: "English", pl: "Polish", ru: "Russian" };
 
 /** Small tag with the language of an analysis's LLM texts (provenance-tag style); nothing when not known. */
 export function LanguageTag({ language }: { language: LlmLanguage | undefined }) {

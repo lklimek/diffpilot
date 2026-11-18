@@ -3,7 +3,7 @@ import type { LlmLanguage } from "../../api/generated/types";
 import { SettingsCard } from "./Card";
 import { HelpTip } from "./HelpTip";
 
-const LANGUAGES: Record<LlmLanguage, string> = { en: "English", pl: "Polski" };
+const LANGUAGES: Record<LlmLanguage, string> = { en: "English", pl: "Polski", ru: "Русский" };
 
 interface LanguageCardProps {
   /** Current language of LLM texts. */

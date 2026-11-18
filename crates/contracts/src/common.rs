@@ -344,4 +344,6 @@ pub enum LlmLanguage {
     En,
     /// Polish.
     Pl,
+    /// Russian.
+    Ru,
 }

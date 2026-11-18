@@ -17,6 +17,7 @@ use contracts::agent::strict::StrictSchemaError;
 use contracts::api::dashboard::{
     ItemKey, RankingState, RefreshState, RefreshStatus, ScanStep, ScanStepKey, StepState,
 };
+use contracts::common::LlmLanguage;
 use contracts::ids::{JobId, RefreshId};
 use contracts::job::access::AgentAccess;
 use contracts::job::result::{JobOutcome, JobResult};
@@ -58,7 +59,7 @@ use crate::state::AppState;
 
 /// Version of the judge prompt and output schema (`prompts/judge_work.md`, pinned by its golden); a bump
 /// re-judges every item within the caps.
-pub const JUDGE_PROMPT_VERSION: u32 = 4;
+pub const JUDGE_PROMPT_VERSION: u32 = 5;
 /// Items sent to the judge per refresh at most, across its attempts and retries (plan §B.4).
 pub const REFRESH_CAP: u32 = 48;
 /// Items sent to the judge per user and local day at most, retries included (plan §B.4).
@@ -184,6 +185,7 @@ async fn rank(state: AppState, run: RankRun) {
         counts: JudgeCounts::default(),
         live: RankingState::Running,
         zone: TimeZone::UTC,
+        language: LlmLanguage::En,
         day: Timestamp::UNIX_EPOCH,
         unclaimed_since: None,
         provisional: None,
@@ -221,6 +223,8 @@ struct Ranking<'a> {
     counts: JudgeCounts,
     live: RankingState,
     zone: TimeZone,
+    /// The user's LLM text language, read when the ranking starts.
+    language: LlmLanguage,
     /// Start of the user's local day the ranking began in (the daily cap counts from it).
     day: Timestamp,
     /// Since when the followed job waits for a runner (queued, credential usable, no analysis job running).
@@ -251,7 +255,8 @@ impl<'a> Ranking<'a> {
             return Err(RankError::Stale);
         }
         self.zone = zone(&snapshot);
-        let candidates = input::candidates(&snapshot);
+        self.language = self.state.db.users().get(user).await?.language;
+        let candidates = input::candidates(&snapshot, self.language);
         let keys: Vec<ItemKey> = candidates.iter().map(|c| c.item.key.clone()).collect();
         let stored: HashMap<ItemKey, StoredJudgement> = dashboard
             .judgements(tenant, user, &keys)
@@ -469,7 +474,7 @@ impl<'a> Ranking<'a> {
             target: JobTarget::Dashboard {
                 refresh_id: self.run.refresh_id,
             },
-            prompt: prompt::render(input)?,
+            prompt: prompt::render(input, self.language)?,
             output_schema: contracts::agent::output_schema(JobKind::JudgeWork)?,
             flow_file: None,
             model: select_model(JobKind::JudgeWork, &ModelContext::default(), saved.as_ref()),
@@ -812,7 +817,8 @@ async fn judgements(
     scope: &Scope,
     snapshot: &Snapshot,
 ) -> Result<HashMap<ItemKey, ItemJudgement>, DbError> {
-    let candidates = input::candidates(snapshot);
+    let language = state.db.users().get(&scope.user_id).await?.language;
+    let candidates = input::candidates(snapshot, language);
     let asked: HashMap<&ItemKey, &Candidate<'_>> = candidates
         .iter()
         .filter(|c| c.asked())

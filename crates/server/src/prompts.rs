@@ -794,6 +794,7 @@ fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, Promp
     let language = match context.language {
         LlmLanguage::En => part("language_en")?,
         LlmLanguage::Pl => part("language_pl")?,
+        LlmLanguage::Ru => part("language_ru")?,
     };
     let sub_agents = if context.sub_agents {
         part("sub_agents_on")?

@@ -24,5 +24,6 @@ Answer rules:
 - `alarm`: only when the item must draw the user's attention now (an ongoing incident, data loss, a security exposure); state the concrete reason. A high score alone is no alarm. Else null.
 - Every `basis` and `reason` is short evidence from the data; never judge from the title alone. `why`: one or two sentences on why the item ranks where it does. `next`: one sentence naming the next concrete action.
 - Plain text only: no Markdown, links or line breaks.
+- Write `why`, `next`, `alarm`, every `basis` and every `reason` in {{language}}; keys, component names and enum values stay as they are.
 
 {{data}}

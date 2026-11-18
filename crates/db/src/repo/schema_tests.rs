@@ -316,7 +316,7 @@ async fn check_lists_match_contract_enums() {
         AnalysisState::Finished { total: 0 },
         AnalysisState::Cancelled,
     ];
-    let languages = [LlmLanguage::En, LlmLanguage::Pl].map(wire_name);
+    let languages = [LlmLanguage::En, LlmLanguage::Pl, LlmLanguage::Ru].map(wire_name);
     let cases = [
         (
             "jobs",
@@ -1234,4 +1234,94 @@ async fn jobs_targets_migration_applies_to_a_v1_database() {
         "stage of another kind"
     );
     assert_eq!(judge.kind, JobKind::JudgeWork);
+}
+
+/// Migration 0010 widens the language lists of `users` and `analyses` in place: stored rows, their children and
+/// every index survive, Russian is accepted and an unknown language is still refused.
+#[tokio::test]
+async fn russian_migration_keeps_the_data_and_accepts_ru() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    migrate(&pool, 9).await.expect("schema before 0010");
+    let db = Db { pool };
+    let analysis = crate::repo::analyses::testing::seed_analysis(&db)
+        .await
+        .expect("analysis");
+    migrate(&db.pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    let kept: (String, String) =
+        sqlx::query_as("SELECT a.language, u.login FROM analyses a JOIN users u ON u.id = a.created_by WHERE a.id = ?")
+            .bind(analysis.to_string())
+            .fetch_one(&db.pool)
+            .await
+            .expect("kept");
+    assert_eq!(kept, ("en".to_owned(), "lklimek".to_owned()));
+    sqlx::query("UPDATE users SET language = 'ru' WHERE id = 'u1'")
+        .execute(&db.pool)
+        .await
+        .expect("ru accepted");
+    sqlx::query("UPDATE analyses SET language = 'ru' WHERE id = ?")
+        .bind(analysis.to_string())
+        .execute(&db.pool)
+        .await
+        .expect("ru accepted");
+    assert!(
+        sqlx::query("UPDATE users SET language = 'de' WHERE id = 'u1'")
+            .execute(&db.pool)
+            .await
+            .is_err(),
+        "de is refused"
+    );
+    let check: String = sqlx::query_scalar("PRAGMA integrity_check")
+        .fetch_one(&db.pool)
+        .await
+        .expect("check");
+    assert_eq!(check, "ok");
+    let unique: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_schema WHERE name = 'analyses_one_live_per_head'",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .expect("index");
+    assert_eq!(unique, 1);
+}
+
+/// Another connection that read the old definitions before migration 0010 accepts Russian afterwards.
+#[tokio::test]
+async fn russian_migration_reaches_other_open_connections() {
+    let dir = tempfile::tempdir().expect("dir");
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(dir.path().join("db.sqlite"))
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    migrate(&pool, 9).await.expect("schema before 0010");
+    let mut other = pool.acquire().await.expect("connection");
+    sqlx::raw_sql(
+        "INSERT INTO users (id, github_id, login, created_at, updated_at) VALUES ('u1', 1, 'a', 't', 't')",
+    )
+    .execute(&mut *other)
+    .await
+    .expect("user");
+    migrate(&pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    sqlx::query("UPDATE users SET language = 'ru' WHERE id = 'u1'")
+        .execute(&mut *other)
+        .await
+        .expect("ru accepted on the older connection");
 }

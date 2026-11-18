@@ -25,6 +25,9 @@ test("language change is saved", async ({ page }) => {
   await select.selectOption("pl");
   await expect(select).toHaveValue("pl");
   await expect(select).toBeEnabled();
+  await select.selectOption("ru");
+  await expect(select).toHaveValue("ru");
+  await expect(select).toBeEnabled();
 });
 
 test("LLM not working: plain message", async ({ page }) => {
