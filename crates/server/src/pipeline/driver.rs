@@ -607,7 +607,8 @@ impl Driver<'_> {
             };
             match self.prompt(&stage, Some(&repair)) {
                 Ok(prompt) => {
-                    return self
+                    let repaired = stage.clone();
+                    return match self
                         .submit(
                             updates,
                             stage,
@@ -616,7 +617,19 @@ impl Driver<'_> {
                             &codes,
                             Some(&output),
                         )
-                        .await;
+                        .await
+                    {
+                        // The demand changed while the flow ran: its repair waits for the flow's next turn, when
+                        // the stored rejected output is replayed and repaired without a new first run.
+                        Err(PipelineError::Executor(ExecutorError::Superseded)) => {
+                            tracing::info!(analysis = %self.analysis, stage = %repaired.key(), generation,
+                                "repair run postponed: other flow work is admitted first");
+                            self.in_flight = None;
+                            self.live.remove(&repaired);
+                            Ok(())
+                        }
+                        other => other,
+                    };
                 }
                 // A rejected output too large to quote cannot be repaired: the stage ends as if exhausted.
                 Err(PipelineError::Prompt(PromptError::OverBudget {
@@ -626,11 +639,6 @@ impl Driver<'_> {
                 })) => {
                     tracing::warn!(analysis = %self.analysis, stage = %stage.key(), bytes,
                         "rejected agent output too large for a repair run");
-                }
-                Err(PipelineError::Executor(ExecutorError::Superseded)) => {
-                    self.in_flight = None;
-                    self.live.remove(&stage);
-                    return Ok(());
                 }
                 Err(error) => return Err(error),
             }

@@ -619,6 +619,73 @@ impl Harness {
             .claim
     }
 
+    /// Polls for the next claim; panics once the analysis has ended or nothing is claimable in time.
+    async fn claim_next(&self, id: &str) -> Claim {
+        for _ in 0..500 {
+            if let Some(claim) = self.runner_claim().await {
+                return claim;
+            }
+            let (_, body) = self.get(&format!("/api/v1/analyses/{id}")).await;
+            assert!(
+                !matches!(
+                    body["state"]["state"].as_str(),
+                    Some("failed" | "cancelled")
+                ),
+                "the analysis ended while a job was expected: {}",
+                body["state"]
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("no job became claimable in time");
+    }
+
+    /// The stage key and generation of a claimed job.
+    async fn stage_of(&self, claim: &Claim) -> (String, u32) {
+        let job = self
+            .state
+            .db
+            .jobs()
+            .get(claim.spec.job_id)
+            .await
+            .expect("job");
+        (job.stage.key(), job.generation)
+    }
+
+    /// Posts the claimed attempt's result as the runner does.
+    async fn complete(&self, claim: &Claim, outcome: JobOutcome) {
+        let result = JobResult {
+            job_id: claim.spec.job_id,
+            attempt: claim.spec.attempt,
+            outcome,
+            session: None,
+            usage: None,
+            skills_commit: None,
+            llm_call: None,
+        };
+        let uri = RUNNER_RESULT
+            .path
+            .replace("{id}", &claim.spec.job_id.to_string());
+        let (status, body) = self
+            .runner(&uri, claim.job_token.expose(), json!(result))
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+
+    /// Runs plan and PR context through the runner routes with their fixture outputs: the review is open.
+    async fn open_review(&self, id: &str) {
+        for stage in ["plan:1", "pr_context"] {
+            let claim = self.claim_next(id).await;
+            assert_eq!(self.stage_of(&claim).await.0, stage);
+            self.complete(
+                &claim,
+                JobOutcome::Succeeded {
+                    output: agent_output(stage),
+                },
+            )
+            .await;
+        }
+    }
+
     async fn post_empty(&self, uri: &str) -> (StatusCode, Value) {
         json_of(self.send("POST", uri, Auth::SessionCsrf, None).await).await
     }
@@ -3149,4 +3216,79 @@ async fn test_subject_plan_is_repaired_before_flow_jobs() {
             .iter()
             .all(|flow| flow["llm"]["classification"] != "test")
     );
+}
+
+/// A repair run refused because the demand changed is not a failure: the demanded flow runs next, and the
+/// rejected flow is repaired afterwards from its stored output (no second first run).
+#[tokio::test]
+async fn repair_run_superseded_by_a_flow_request_waits_for_its_turn() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f3/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: json!("not a flow file"),
+        },
+    )
+    .await;
+    let demanded = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&demanded).await, ("flow:f3".to_owned(), 0));
+    h.complete(
+        &demanded,
+        JobOutcome::Succeeded {
+            output: tagged_flow_output(&demanded.spec, "flow:f3"),
+        },
+    )
+    .await;
+    let repair = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&repair).await, ("flow:f1".to_owned(), 1));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
+}
+
+/// Background analysis switched off while a flow runs: its rejected output is not repaired until work is
+/// admitted again, and the analysis stays usable meanwhile.
+#[tokio::test]
+async fn repair_run_superseded_by_background_off_resumes_with_background_on() {
+    let h = harness().await.with_queue();
+    let id = h.create_fixture_analysis().await;
+    h.open_review(&id).await;
+    let first = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&first).await, ("flow:f1".to_owned(), 0));
+    let background = format!("/api/v1/analyses/{id}/background");
+    let switch = |enabled: bool| {
+        h.send(
+            "PUT",
+            &background,
+            Auth::SessionCsrf,
+            Some(json!({ "enabled": enabled })),
+        )
+    };
+    assert_eq!(switch(false).await.status(), StatusCode::OK);
+    h.complete(
+        &first,
+        JobOutcome::Succeeded {
+            output: json!("not a flow file"),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(h.runner_claim().await.is_none());
+    let (_, summary) = h.get(&format!("/api/v1/analyses/{id}")).await;
+    assert_eq!(summary["state"]["state"], "running", "{summary}");
+    assert_eq!(switch(true).await.status(), StatusCode::OK);
+    let repair = h.claim_next(&id).await;
+    assert_eq!(h.stage_of(&repair).await, ("flow:f1".to_owned(), 1));
+    h.post(&format!("/api/v1/analyses/{id}/cancel"), json!({}))
+        .await;
 }
