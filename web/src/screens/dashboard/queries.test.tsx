@@ -1,0 +1,238 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
+import { setupServer } from "msw/node";
+import type { ReactNode } from "react";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { FakeEventSource } from "../../__tests__/fake-event-source";
+import type { DashboardSummary, ItemPage, RefreshStatus, WorkItem } from "../../api/generated/types";
+import { handlers } from "../../mocks/handlers";
+import { resetDashboard, setDashboardScenario } from "../../mocks/handlers/dashboard";
+import { resetDashboardSettings } from "../../mocks/handlers/dashboard-settings";
+import itemsJson from "../../../../fixtures/dashboard/api/items.json";
+import scanningJson from "../../../../fixtures/dashboard/api/refresh-scanning.json";
+import {
+  REFRESH_RECONNECT_MS,
+  SUMMARY_KEY,
+  loadAllItems,
+  resetSentTimeZones,
+  useDashboardSummary,
+  useRefreshEvents,
+  useSaveBrowserTimeZone,
+  useStartRefresh,
+} from "./queries";
+
+const ITEMS = (itemsJson as unknown as ItemPage).items;
+const SCANNING = scanningJson as unknown as RefreshStatus;
+const server = setupServer(...handlers);
+beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
+beforeEach(() => {
+  FakeEventSource.reset();
+  vi.stubGlobal("EventSource", FakeEventSource);
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  server.resetHandlers();
+  setDashboardScenario("normal");
+  resetDashboard();
+  resetDashboardSettings();
+  resetSentTimeZones();
+});
+afterAll(() => server.close());
+
+function wrapper() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  return {
+    client,
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  };
+}
+
+const page = (items: WorkItem[], revision: string, next: string | null): ItemPage => ({
+  revision,
+  items,
+  next_cursor: next,
+});
+
+describe("loadAllItems (R1b: cursor paging, ETag)", () => {
+  it("follows next_cursor to the last page", async () => {
+    const queries: string[] = [];
+    server.use(
+      http.get("/api/v1/dashboard/items", ({ request }) => {
+        const url = new URL(request.url);
+        queries.push(url.search);
+        return url.searchParams.get("cursor") === "r1:2"
+          ? HttpResponse.json(page(ITEMS.slice(2, 3), "r1", null))
+          : HttpResponse.json(page(ITEMS.slice(0, 2), "r1", "r1:2"), { headers: { ETag: 'W/"a"' } });
+      }),
+    );
+    const loaded = await loadAllItems(undefined);
+    expect(loaded).toEqual({ revision: "r1", items: ITEMS.slice(0, 3), etag: 'W/"a"' });
+    expect(queries).toEqual(["?limit=500", "?limit=500&cursor=r1%3A2"]);
+  });
+
+  it("starts again from the first page when the revision changed under the cursor", async () => {
+    let calls = 0;
+    server.use(
+      http.get("/api/v1/dashboard/items", ({ request }) => {
+        calls += 1;
+        const cursor = new URL(request.url).searchParams.get("cursor");
+        if (cursor === "r1:1") {
+          return HttpResponse.json({ code: "cursor_expired", message: "The list changed." }, { status: 409 });
+        }
+        return calls === 1
+          ? HttpResponse.json(page(ITEMS.slice(0, 1), "r1", "r1:1"))
+          : HttpResponse.json(page(ITEMS.slice(0, 4), "r2", null));
+      }),
+    );
+    expect(await loadAllItems(undefined)).toMatchObject({ revision: "r2", items: ITEMS.slice(0, 4) });
+  });
+
+  it("keeps the previous list on 304 for its ETag (the mock's weak ETag)", async () => {
+    const first = await loadAllItems(undefined);
+    expect(first.items).toHaveLength(ITEMS.length);
+    expect(first.etag).toMatch(/^W\//);
+    let status = 0;
+    server.events.on("response:mocked", ({ response }) => {
+      status = response.status;
+    });
+    expect(await loadAllItems(first)).toBe(first);
+    expect(status).toBe(304);
+    server.events.removeAllListeners();
+  });
+});
+
+describe("useRefreshEvents (R5)", () => {
+  const summaryWith = (latest: RefreshStatus | null): DashboardSummary =>
+    ({ revision: "r", latest_refresh: latest, snapshot: null }) as DashboardSummary;
+
+  it("opens the live refresh's stream, applies its events and closes when it ends", async () => {
+    const { client, wrapper: w } = wrapper();
+    client.setQueryData(SUMMARY_KEY, summaryWith(SCANNING));
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const { rerender } = renderHook(({ refresh }) => useRefreshEvents(refresh), {
+      wrapper: w,
+      initialProps: { refresh: SCANNING as RefreshStatus | null },
+    });
+    const source = FakeEventSource.latest();
+    expect(source.url).toBe(`/api/v1/dashboard/refreshes/${SCANNING.id}/events`);
+
+    const progress = { ...SCANNING, percent: 60 };
+    act(() =>
+      source.emit({ event: "refresh", data: JSON.stringify({ event: "refresh", status: progress }) }),
+    );
+    expect(client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh?.percent).toBe(60);
+    // Progress alone keeps the revision: no re-read.
+    expect(invalidate).not.toHaveBeenCalled();
+
+    const other = { ...progress, id: "other", percent: 99 };
+    act(() => source.emit({ event: "refresh", data: JSON.stringify({ event: "refresh", status: other }) }));
+    expect(client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh?.percent).toBe(60);
+
+    const ranking = { ...progress, state: "ranking" as const, scanned_at: "2026-11-18T10:29:00Z" };
+    act(() => source.emit({ event: "refresh", data: JSON.stringify({ event: "refresh", status: ranking }) }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: SUMMARY_KEY });
+
+    rerender({ refresh: { ...ranking, state: "finished" } });
+    expect(source.readyState).toBe(FakeEventSource.CLOSED);
+    expect(FakeEventSource.instances).toHaveLength(1);
+  });
+
+  it("opens nothing for an ended refresh", () => {
+    renderHook(() => useRefreshEvents({ ...SCANNING, state: "failed" }), { wrapper: wrapper().wrapper });
+    expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
+  it("re-reads the summary and reopens the stream after the browser gave up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { client, wrapper: w } = wrapper();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    renderHook(() => useRefreshEvents(SCANNING), { wrapper: w });
+    act(() => FakeEventSource.latest().fail());
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: SUMMARY_KEY });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(REFRESH_RECONNECT_MS);
+    });
+    expect(FakeEventSource.instances).toHaveLength(2);
+  });
+});
+
+describe("useStartRefresh (R2)", () => {
+  it("shows the started scan at once", async () => {
+    const { client, wrapper: w } = wrapper();
+    const { result } = renderHook(() => ({ summary: useDashboardSummary(true), start: useStartRefresh() }), {
+      wrapper: w,
+    });
+    await waitFor(() => expect(result.current.summary.data).toBeDefined());
+    act(() => result.current.start.mutate());
+    await waitFor(() => expect(result.current.start.isSuccess).toBe(true));
+    expect(client.getQueryData<DashboardSummary>(SUMMARY_KEY)?.latest_refresh?.state).toBe("scanning");
+  });
+
+  it("409 refresh_running: the error is kept and the summary shows the running scan", async () => {
+    setDashboardScenario("refreshing");
+    const { client, wrapper: w } = wrapper();
+    client.setQueryData(SUMMARY_KEY, {
+      revision: "old",
+      latest_refresh: null,
+    } as unknown as DashboardSummary);
+    const { result } = renderHook(() => ({ summary: useDashboardSummary(true), start: useStartRefresh() }), {
+      wrapper: w,
+    });
+    act(() => result.current.start.mutate());
+    await waitFor(() => expect(result.current.start.isError).toBe(true));
+    expect(result.current.start.error).toMatchObject({ status: 409, code: "refresh_running" });
+    await waitFor(() => expect(result.current.summary.data?.latest_refresh?.state).toBe("scanning"));
+  });
+});
+
+describe("useSaveBrowserTimeZone (R6b)", () => {
+  it("sends the browser's zone once while none is stored, then reads the summary again", async () => {
+    setDashboardScenario("no-time-zone");
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const sent: unknown[] = [];
+    server.events.on("request:start", async ({ request }) => {
+      if (request.method === "PUT" && request.url.endsWith("/settings/dashboard/time-zone")) {
+        sent.push(await request.clone().json());
+      }
+    });
+    const useHook = () => {
+      const summary = useDashboardSummary(true);
+      useSaveBrowserTimeZone(summary.data);
+      return summary;
+    };
+    const first = renderHook(useHook, { wrapper: wrapper().wrapper });
+    await waitFor(() => expect(first.result.current.data?.schedule.time_zone).toBe(zone));
+    expect(sent).toEqual([{ time_zone: zone }]);
+
+    // Another visit in the same page load with the zone still missing sends nothing again.
+    resetDashboard();
+    const second = renderHook(useHook, { wrapper: wrapper().wrapper });
+    await waitFor(() => expect(second.result.current.data?.schedule.time_zone).toBeNull());
+    expect(sent).toHaveLength(1);
+    server.events.removeAllListeners();
+  });
+
+  it("sends nothing when a zone is stored", async () => {
+    let puts = 0;
+    server.events.on("request:start", ({ request }) => {
+      if (request.method === "PUT") puts += 1;
+    });
+    const { result } = renderHook(
+      () => {
+        const summary = useDashboardSummary(true);
+        useSaveBrowserTimeZone(summary.data);
+        return summary;
+      },
+      { wrapper: wrapper().wrapper },
+    );
+    await waitFor(() => expect(result.current.data?.schedule.time_zone).toBe("Europe/Warsaw"));
+    expect(puts).toBe(0);
+    server.events.removeAllListeners();
+  });
+});

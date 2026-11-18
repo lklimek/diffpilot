@@ -10,22 +10,29 @@ import type {
   CreateAnalysisRequest,
   CreateCommentRequest,
   CreateCommentResponse,
+  DashboardEvent,
+  DashboardSummary,
   DiffResponse,
   Feedback,
   FeedbackId,
   FeedbackRequest,
+  ItemPage,
+  ItemQuery,
   LinesResponse,
   LogoutRequest,
   MeResponse,
   PendingComment,
   PendingReview,
   RangeQuery,
+  RefreshId,
+  RefreshStatus,
   ResolvePrRequest,
   ResolvePrResponse,
   RepoRef,
   RepoSettings,
   ReviewState,
   SetLanguageRequest,
+  SetTimeZoneRequest,
   Settings,
   StepId,
   Tour,
@@ -69,6 +76,59 @@ interface CallOptions {
   params?: Record<string, string>;
   query?: Record<string, string | number>;
   body?: unknown;
+  headers?: Record<string, string>;
+}
+
+/** A conditional read (`If-None-Match`): `unchanged` on 304, else the body with its `ETag`. */
+export type Conditional<T> = { unchanged: true } | { unchanged: false; body: T; etag: string | null };
+
+/** The defined filters of an item query as query-string values. */
+const itemQueryParams = (query: ItemQuery): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(query)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [key, String(value)]),
+  );
+
+/**
+ * Opens the SSE stream at `path` and passes on the JSON events of `names` whose `event` tag matches their SSE
+ * name; anything else is dropped and the stream stays open. Returns the function that closes it.
+ */
+function openEventStream<E>(
+  path: string,
+  names: readonly string[],
+  onEvent: (event: E) => void,
+  onError: (closed: boolean) => void,
+): () => void {
+  const source = new EventSource(path);
+  const onMessage = (message: MessageEvent<string>) => {
+    let event: unknown;
+    try {
+      event = JSON.parse(message.data);
+    } catch {
+      return;
+    }
+    if (
+      typeof event !== "object" ||
+      event === null ||
+      (event as { event?: unknown }).event !== message.type
+    ) {
+      return;
+    }
+    onEvent(event as E);
+  };
+  // Named events only reach listeners of their name: any other type is ignored by the browser.
+  for (const name of names) source.addEventListener(name, onMessage);
+  source.onerror = () => onError(source.readyState === EventSource.CLOSED);
+  return () => source.close();
+}
+
+/** Callbacks of a dashboard refresh event stream (`sse-events.md` "Dashboard refresh events"). */
+export interface DashboardStreamHandlers {
+  /** One event: the full refresh status, or a heartbeat. */
+  onEvent: (event: DashboardEvent) => void;
+  /** The connection broke: `closed` when the browser gave up (HTTP error), else it is retrying. */
+  onError: (closed: boolean) => void;
 }
 
 function isErrorBody(value: unknown): value is { code: ApiErrorCode; message: string } {
@@ -96,7 +156,7 @@ export function createApiClient(baseUrl = "") {
     const route = routes[name];
     const url = new URL(baseUrl + routePath(name, options.params), globalThis.location?.origin);
     for (const [key, value] of Object.entries(options.query ?? {})) url.searchParams.set(key, String(value));
-    const headers = new Headers({ Accept: "application/json" });
+    const headers = new Headers({ Accept: "application/json", ...options.headers });
     if (options.body !== undefined) headers.set("Content-Type", "application/json");
     if (csrf !== null) headers.set(CSRF_HEADER, csrf);
     try {
@@ -140,6 +200,19 @@ export function createApiClient(baseUrl = "") {
     if (!response.ok) throw await errorOf(response);
     if (response.status === 204) return undefined as T;
     return (await response.json()) as T;
+  }
+
+  /** A read with `If-None-Match: etag` (none when null): 304 is `unchanged`. */
+  async function conditional<T>(
+    name: RouteName,
+    options: CallOptions,
+    etag: string | null,
+  ): Promise<Conditional<T>> {
+    const headers = etag === null ? undefined : { "If-None-Match": etag };
+    const response = await send(name, { ...options, headers }, null);
+    if (response.status === 304) return { unchanged: true };
+    if (!response.ok) throw await errorOf(response);
+    return { unchanged: false, body: (await response.json()) as T, etag: response.headers.get("ETag") };
   }
 
   async function getMe(): Promise<MeResponse> {
@@ -197,30 +270,31 @@ export function createApiClient(baseUrl = "") {
       call<RepoSettings>("getRepoSettings", { params: { owner: repo.owner, name: repo.name } }),
     /** Opens the analysis event stream (docs/contracts/sse-events.md); returns a function that closes it. */
     subscribeAnalysis(id: AnalysisId, handlers: AnalysisStreamHandlers): () => void {
-      const source = new EventSource(baseUrl + routePath("analysisEvents", { id }));
-      const onMessage = (message: MessageEvent<string>) => {
-        let event: unknown;
-        try {
-          event = JSON.parse(message.data);
-        } catch {
-          return;
-        }
-        // Only an object tagged like its SSE event name; anything else is dropped, the stream stays open.
-        if (
-          typeof event !== "object" ||
-          event === null ||
-          (event as { event?: unknown }).event !== message.type
-        ) {
-          return;
-        }
-        handlers.onEvent(event as AnalysisEvent);
-      };
-      // Named events only reach listeners of their name: any other type is ignored by the browser.
-      for (const name of ["analysis", "question", "heartbeat"] satisfies AnalysisEvent["event"][]) {
-        source.addEventListener(name, onMessage);
-      }
-      source.onerror = () => handlers.onError(source.readyState === EventSource.CLOSED);
-      return () => source.close();
+      return openEventStream<AnalysisEvent>(
+        baseUrl + routePath("analysisEvents", { id }),
+        ["analysis", "question", "heartbeat"] satisfies AnalysisEvent["event"][],
+        handlers.onEvent,
+        handlers.onError,
+      );
+    },
+    getDashboard: () => call<DashboardSummary>("getDashboard"),
+    /** One page of ranked items; `etag` of the same request's previous answer makes a 304 `unchanged`. */
+    listDashboardItems: (query: ItemQuery, etag: string | null = null) =>
+      conditional<ItemPage>("listDashboardItems", { query: itemQueryParams(query) }, etag),
+    startDashboardRefresh: () => call<RefreshStatus>("startDashboardRefresh"),
+    getDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("getDashboardRefresh", { params: { id } }),
+    cancelDashboardRefresh: (id: RefreshId) =>
+      call<RefreshStatus>("cancelDashboardRefresh", { params: { id } }),
+    rankDashboardRefresh: (id: RefreshId) => call<RefreshStatus>("rankDashboardRefresh", { params: { id } }),
+    setDashboardTimeZone: (body: SetTimeZoneRequest) => call<void>("setDashboardTimeZone", { body }),
+    /** Opens a refresh's event stream; returns a function that closes it. */
+    subscribeDashboardRefresh(id: RefreshId, handlers: DashboardStreamHandlers): () => void {
+      return openEventStream<DashboardEvent>(
+        baseUrl + routePath("dashboardRefreshEvents", { id }),
+        ["refresh", "heartbeat"] satisfies DashboardEvent["event"][],
+        handlers.onEvent,
+        handlers.onError,
+      );
     },
   };
 }

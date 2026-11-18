@@ -13,6 +13,7 @@ import tokensJson from "../../../../fixtures/dashboard/api/access-tokens.json";
 import createdJson from "../../../../fixtures/dashboard/api/access-token-created.json";
 import { SETTINGS } from "../scenarios";
 import { apiError, route } from "./common";
+import { noteDashboardTimeZone } from "./dashboard";
 
 // Dashboard settings, ranking effort and access tokens (R6–R10, docs/v1.1-dashboard-plan.md §E.2) answered from
 // fixtures/dashboard; WP11-WEB-SET adds the screen scenarios and the full validation of §F.6.
@@ -51,6 +52,7 @@ export const setDashboardSettings = route("setDashboardSettings", async ({ reque
 export const setDashboardTimeZone = route("setDashboardTimeZone", async ({ request }) => {
   const { time_zone } = (await request.json()) as SetTimeZoneRequest;
   view = { ...view, settings: { ...view.settings, time_zone } };
+  noteDashboardTimeZone(time_zone);
   return new HttpResponse(null, { status: 204 });
 });
 
