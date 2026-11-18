@@ -952,7 +952,7 @@ def plain_git_job(sup):
     file_diff = {"path": "README.md", "old_path": None, "status": "Modified", "binary": False,
                  "hunks": [{"id": "h1", "base": {"start": 1, "len": 0},
                             "head": {"start": 2, "len": 1}, "added": [2], "removed": []}]}
-    context = {"version": 1, "base": base, "head": head, "files": [file_diff], "listed": [file_diff],
+    context = {"version": 2, "base": base, "head": head, "files": [file_diff], "listed": [file_diff],
                "plan": {"flows": [{"id": "f1", "title": "Update readme", "classification": "docs_comments",
                                     "importance_rank": 1, "intent": "Describe the head", "depends_on": [],
                                     "hunks": [{"hunk_id": "h1", "head_start": None, "head_end": None}]}],
