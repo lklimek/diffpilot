@@ -86,9 +86,11 @@ jobs:
       - name: Install Python test dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends python3-pytest python3-jsonschema
+          sudo apt-get install -y --no-install-recommends python3-pytest python3-jsonschema sqlite3
       - name: Script tests
         run: python3 -m pytest -q scripts/tests
+      - name: Backup script self-test (online snapshot under a live writer, restore)
+        run: deploy/backup.sh --self-test
       - name: Architecture check self-test
         run: scripts/check-architecture.sh --self-test
       - name: Architecture check
