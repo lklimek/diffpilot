@@ -1,6 +1,8 @@
 import { AnalysisStateBanner } from "../../components/progress/AnalysisStateBanner";
 import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
+import { RemarkPills } from "../../components/remark-pills/RemarkPills";
+import { firstRemark, remarkCounts } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from "react-router";
@@ -15,6 +17,7 @@ import type {
   PendingComment,
   Step,
   StepId,
+  RiskBand,
   Tour,
 } from "../../api/generated/types";
 import {
@@ -24,6 +27,7 @@ import {
   useMe,
   usePendingReview,
   useTour,
+  useFeedback,
   useFlowWork,
   useQuestionEvents,
   useQuestions,
@@ -193,6 +197,14 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
   const now = useNow();
   const workAllowed = ["planning", "running", "paused"].includes(tour.analysis.state.state);
   const pending = usePendingReview(analysisId);
+  // Remarks the user gave feedback on dim their pills; nothing else is per-user state of a remark.
+  const feedback = useFeedback(analysisId);
+  const handledRemarks = new Set(
+    (feedback.data ?? []).flatMap((f) => (f.target.target === "annotation" ? [f.target.annotation_id] : [])),
+  );
+  const stepRemarks = Object.fromEntries(
+    tour.flows.flatMap((f) => f.steps).map((s) => [s.id, remarkCounts([s], handledRemarks)]),
+  );
   const comments = useCommentActions(analysisId);
   const ticked = state.ticked_steps;
 
@@ -285,11 +297,13 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     openFragment(blockFragment(block));
   };
 
-  const showEvidence = (item: Evidence) => {
+  // `owner`: the step the line belongs to, when known (a remark); else the first step covering the line.
+  const showEvidence = (item: Pick<Evidence, "file" | "side" | "line">, owner?: StepId) => {
     const found = tour.flows
       .flatMap((f) => f.steps)
       .find(
         (s) =>
+          (owner === undefined || s.id === owner) &&
           s.facts.file === item.file &&
           s.facts.side === item.side &&
           item.line >= s.facts.range.start_line &&
@@ -373,6 +387,19 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
       comment({ path: step.facts.file, side: step.facts.side, start_line: null, line }, stepLines.data);
     }
   };
+  // LLM remark pills and `r`: the remark's code line and its Inspector entry flash.
+  const jumpToRemark = ({ steps, band }: { steps: Step[]; band: RiskBand }) => {
+    const remark = firstRemark(steps, band, handledRemarks);
+    if (!remark) return;
+    const { step: owner, annotation } = remark;
+    showEvidence(
+      { file: owner.facts.file, side: owner.facts.side, line: annotation.range.start_line },
+      owner.id,
+    );
+    flashNonce.current += 1;
+    setInspectorFlash({ kind: "annotation", id: annotation.id, nonce: flashNonce.current });
+    openInspector();
+  };
   const showInInspector = (target: MarkerTarget) => {
     const owner = target.kind === "thread" ? tour.threads.find((t) => t.id === target.id)?.step_id : null;
     if (owner && owner !== step?.id) go({ block: "step", step_id: owner });
@@ -403,6 +430,13 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         case "comment":
           event.preventDefault();
           return commentOnCurrentLine();
+        case "next_remark": {
+          const order = tour.flows.flatMap((f) => f.steps);
+          const at = step ? order.findIndex((s) => s.id === step.id) : -1;
+          const next = order.slice(at + 1).find((s) => (stepRemarks[s.id] ?? []).length > 0);
+          if (next) jumpToRemark({ steps: [next], band: stepRemarks[next.id]![0]!.band });
+          return;
+        }
         case "ask":
           event.preventDefault();
           openInspector();
@@ -513,24 +547,34 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     );
   } else if (current.block === "flow_intro" && flow) {
     block = (
-      <FlowIntroBlock
-        flow={flow}
-        analysis={tour.analysis.state}
-        now={now}
-        onRequest={workAllowed ? () => work.request.mutate(flow.id) : undefined}
-        busy={work.request.isPending}
-        error={
-          work.request.error && work.request.variables === flow.id ? errorText(work.request.error) : undefined
-        }
-        dependencies={tour.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
-        ticked={ticked}
-        onSetReviewed={(on) =>
-          setTicks(
-            flow.steps.map((s) => s.id),
-            on,
-          )
-        }
-      />
+      <>
+        <RemarkPills
+          counts={remarkCounts(flow.steps, handledRemarks)}
+          subject="in this flow"
+          label="Remarks in this flow:"
+          onSelect={(band) => jumpToRemark({ steps: flow.steps, band })}
+        />
+        <FlowIntroBlock
+          flow={flow}
+          analysis={tour.analysis.state}
+          now={now}
+          onRequest={workAllowed ? () => work.request.mutate(flow.id) : undefined}
+          busy={work.request.isPending}
+          error={
+            work.request.error && work.request.variables === flow.id
+              ? errorText(work.request.error)
+              : undefined
+          }
+          dependencies={tour.flows.filter((f) => flow.llm.depends_on.includes(f.id))}
+          ticked={ticked}
+          onSetReviewed={(on) =>
+            setTicks(
+              flow.steps.map((s) => s.id),
+              on,
+            )
+          }
+        />
+      </>
     );
   } else if (step && found) {
     block = (
@@ -539,24 +583,32 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
         step={step}
         threadsStatus={tour.pr_context.facts.threads_status}
         code={
-          oldCode ? (
-            <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
-          ) : (
-            <LinesCode
-              key={location.key}
-              ctx={ctx}
-              revealLine={evidence?.line ?? firstShownChange}
-              lines={stepLines}
-              annotations={step.llm.annotations}
-              band={step.llm.assessment?.risk ?? null}
-              kind={step.llm.kind}
-              selectedAnnotation={annotationId}
-              onSelectAnnotation={(ids) => {
-                setAnnotationId(ids[0] ?? null);
-                openInspector();
-              }}
+          <>
+            <RemarkPills
+              counts={stepRemarks[step.id] ?? []}
+              subject="on this step"
+              label="Remarks on this step:"
+              onSelect={(band) => jumpToRemark({ steps: [step], band })}
             />
-          )
+            {oldCode ? (
+              <DiffCode analysisId={analysisId} query={stepQuery(step)} comments={ctx} />
+            ) : (
+              <LinesCode
+                key={location.key}
+                ctx={ctx}
+                revealLine={evidence?.line ?? firstShownChange}
+                lines={stepLines}
+                annotations={step.llm.annotations}
+                band={step.llm.assessment?.risk ?? null}
+                kind={step.llm.kind}
+                selectedAnnotation={annotationId}
+                onSelectAnnotation={(ids) => {
+                  setAnnotationId(ids[0] ?? null);
+                  openInspector();
+                }}
+              />
+            )}
+          </>
         }
         patterns={found.flow.llm.pattern_repetitions}
         impactCode={(impact) => (
@@ -784,6 +836,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
           <>
             {flowWork}
             <NavList
+              remarks={stepRemarks}
+              onRemark={jumpToRemark}
               flows={tour.flows}
               analysis={tour.analysis.state}
               quiet={tour.quiet}

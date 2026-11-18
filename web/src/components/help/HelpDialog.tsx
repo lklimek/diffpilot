@@ -72,6 +72,15 @@ const LEGEND: ReactNode[] = [
     comment and import lines folded in place; Show opens them there, the classic diff always has them
   </>,
   <>
+    <span className="mr-1.5 font-mono text-[11px] font-semibold">
+      <span className={REMARK_LOOK.high.text}>▲ HIGH 1</span>{" "}
+      <span className={REMARK_LOOK.medium.text}>◆ MED 2</span>{" "}
+      <span className={REMARK_LOOK.low.text}>● LOW 3</span>
+    </span>
+    pills in the list and above the code: LLM remarks by the LLM&apos;s rating, not checked; no pill means no
+    rated remark, not that the code is safe
+  </>,
+  <>
     <Swatch look="outline-2 -outline-offset-2 outline-med-bd" />
     fading frame: the line an evidence link jumped to
   </>,

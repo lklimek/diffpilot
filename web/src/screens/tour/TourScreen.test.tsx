@@ -415,6 +415,27 @@ describe("Tour screen (brief §4.3)", () => {
     expect(await within(answers).findByText("It is not.")).toBeInTheDocument();
   });
 
+  it("remark pills: the flow intro and step show them; a pill jumps to the first remark and flashes it", async () => {
+    await open();
+    await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
+    const flowLine = await within(main()).findByRole("group", { name: "LLM remarks in this flow" });
+    expect(flowLine).toHaveTextContent("Remarks in this flow:");
+    await user().click(within(flowLine).getByRole("button", { name: /HIGH 3/ }));
+    expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
+    const stepLine = within(main()).getByRole("group", { name: "LLM remarks on this step" });
+    expect(within(stepLine).getByRole("button")).toHaveTextContent("▲ HIGH 3");
+    // The code line of the first remark and its Inspector entry flash.
+    await waitFor(() => expect(main().querySelector("[data-flash]")).not.toBeNull());
+    await waitFor(() => expect(inspector().querySelector("[data-flash]")).not.toBeNull());
+  });
+
+  it("r goes to the next step with LLM remarks", async () => {
+    await open();
+    await openStep("1", "4");
+    await user().keyboard("r");
+    expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
+  });
+
   it("a collapsed Ask stays collapsed across steps; a expands it and focuses the field", async () => {
     await open();
     await openStep("1", "5");

@@ -684,3 +684,16 @@ Rust comment-only lines (including block/doc comments) and complete single-line 
 - **Ask** is a collapsible Inspector section like the others (remembered with them; the header keeps the
   step's question count); `a` opens it and focuses the field. Its caption says answers appear below the field,
   newest first.
+
+### Owner-approved amendment — 2026-11-18: LLM remark pills in navigation
+
+- The navigation lists, per step with LLM remarks, small pills by band with counts, highest first
+  ("▲ HIGH 1", "◆ MED 2", "● LOW 3"); each flow row shows its steps' total (also collapsed); the flow
+  introduction and the step (above the code) show the same pills. A pill leads to the first remark of its band
+  and flashes its code line and Inspector entry; `r` goes to the next step with remarks.
+- A remark's band is its step's LLM risk rating, as the code view's remark label shows it; remarks of an unrated
+  step are not counted. Remarks with the user's feedback dim their pill.
+- Amends §1 "badges only for deterministic facts": these pills are LLM judgements and are allowed in navigation
+  because they are styled as LLM content (the LLM tint, the remark bar's colour and pattern, a word label), say
+  "LLM remarks" in their tooltip, and are never shown as an all-clear: a step or flow without remarks shows no
+  pill, never a zero.

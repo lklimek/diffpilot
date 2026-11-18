@@ -29,6 +29,7 @@ describe("HelpDialog", () => {
       "dshow / hide old code of the current step",
       "ccomment on the current line",
       "aask about the current step",
+      "rnext step with LLM remarks (its first remark flashes)",
       "?this help",
       "Escclose",
     ]);
@@ -54,6 +55,7 @@ describe("HelpDialog", () => {
       "GitHub review thread (slate bubble)",
       "N comment lines hidden · Show",
       "fading frame: the line an evidence link jumped to",
+      "▲ HIGH 1 ◆ MED 2 ● LOW 3pills in the list and above the code: LLM remarks by the LLM's rating, not checked; no pill means no rated remark, not that the code is safe",
     ]) {
       expect(text).toContain(part);
     }

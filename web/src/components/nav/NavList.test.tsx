@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PendingReview, ReviewState, Tour } from "../../api/generated/types";
 import { expectTrustWording } from "../../__tests__/wording";
 import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
+import { remarkCounts } from "../remark-pills/remarks";
 import { NavList } from "./NavList";
 
 const tour = seedFor("default", "tour") as Tour;
@@ -237,5 +238,44 @@ describe("NavList: the user's questions", () => {
       "page",
     );
     expect(screen.getByRole("button", { name: "PR context" })).not.toHaveAttribute("aria-current");
+  });
+});
+
+describe("NavList: LLM remark pills", () => {
+  const remarks = Object.fromEntries(
+    tour.flows.flatMap((f) => f.steps).map((s) => [s.id, remarkCounts([s], new Set())]),
+  );
+  const props = {
+    flows: tour.flows,
+    quiet: tour.quiet,
+    ticked: [],
+    onSelect: () => {},
+    remarks,
+  };
+
+  it("each flow row shows its steps' remarks by band, also while collapsed; open steps show their own", () => {
+    render(<NavList {...props} current={{ block: "step", step_id: "f1.5" }} />);
+    const flow2 = screen.getByRole("group", { name: "LLM remarks in flow 2" });
+    expect(
+      within(flow2)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["◆ MED 3", "● LOW 2"]);
+    const step5 = screen.getByRole("group", { name: "LLM remarks on step 5" });
+    expect(within(step5).getByRole("button")).toHaveTextContent("▲ HIGH 3");
+  });
+
+  it("a pill leads to the first remark of its band", async () => {
+    const onRemark = vi.fn();
+    render(<NavList {...props} current={{ block: "pr_context" }} onRemark={onRemark} />);
+    const flow1 = screen.getByRole("group", { name: "LLM remarks in flow 1" });
+    await userEvent.click(within(flow1).getByRole("button", { name: /HIGH/ }));
+    expect(onRemark).toHaveBeenCalledWith({ steps: tour.flows[0]!.steps, band: "high" });
+  });
+
+  it("a step without rated remarks shows no pill", () => {
+    const none = { ...remarks, "f1.3": [] };
+    render(<NavList {...props} remarks={none} current={{ block: "step", step_id: "f1.3" }} />);
+    expect(screen.queryByRole("group", { name: "LLM remarks on step 3" })).toBeNull();
   });
 });

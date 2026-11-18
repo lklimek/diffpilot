@@ -296,6 +296,16 @@ const SCENARIOS = {
   "show-less": { showLess: true },
   // Owner screenshot: one remark over a replaced line, unchanged lines and added comment lines that fold.
   "remark-layout": { tour: remarkLayoutTour, lines: remarkLayoutLines },
+  // Remark pills: mixed bands, a step without remarks (f1.3) and an unrated one (f2.2, not counted).
+  "remark-pills": {
+    tour: (seed) => {
+      const tour = structuredClone(seed);
+      const steps = tour.flows.flatMap((f) => f.steps);
+      steps.find((s) => s.id === "f1.3")!.llm.annotations = [];
+      steps.find((s) => s.id === "f2.2")!.llm.assessment = null;
+      return tour;
+    },
+  },
   "lazy-flows": { lazy: true, analysis: { state: "running", done: 1, total: 5 } },
   "lazy-background": {
     lazy: true,

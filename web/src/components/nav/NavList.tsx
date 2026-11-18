@@ -5,12 +5,16 @@ import type {
   Flow,
   QuietRowRef,
   QuietRows,
+  RiskBand,
+  Step,
   StepId,
 } from "../../api/generated/types";
 import { GroupLabel, RiskLabel } from "../badge/LlmLabel";
 import { isFlowReviewed } from "../flow-intro/progress";
 import { FlowWorkLabel } from "../flow-intro/status";
 import { NOT_ANALYSED_LABEL, fileCount, lineCount, plural } from "../quiet/labels";
+import { RemarkPills } from "../remark-pills/RemarkPills";
+import type { RemarkCount } from "../remark-pills/remarks";
 import { Tooltip } from "../tooltip/Tooltip";
 
 interface NavListProps {
@@ -32,6 +36,24 @@ interface NavListProps {
   questionCounts?: Readonly<Record<StepId, number>>;
   /** The entry of the user's questions page; no entry when omitted. */
   questions?: { count: number | "loading" | "error"; open: boolean; onOpen: () => void };
+  /** LLM remarks per step by band (`remarkCounts`); steps without remarks have none. */
+  remarks?: Readonly<Record<StepId, RemarkCount[]>>;
+  /** A remark pill: go to the first remark of `band` among `steps`. */
+  onRemark?: (target: { steps: Step[]; band: RiskBand }) => void;
+}
+
+// Flow total of its steps' pills.
+function sum(counts: RemarkCount[][]): RemarkCount[] {
+  const all = new Map<RiskBand, RemarkCount>();
+  for (const c of counts.flat()) {
+    const had = all.get(c.band);
+    all.set(c.band, {
+      band: c.band,
+      count: (had?.count ?? 0) + c.count,
+      handled: (had?.handled ?? 0) + c.handled,
+    });
+  }
+  return (["high", "medium", "low"] as const).flatMap((b) => all.get(b) ?? []);
 }
 
 // Spoken count of the questions entry while it has no number.
@@ -105,6 +127,8 @@ export function NavList({
   onSelect,
   questionCounts = {},
   questions,
+  remarks = {},
+  onRemark,
 }: NavListProps) {
   const openFlow = currentFlowId(flows, shown);
   // The questions page replaces the block in the centre: no block row is current meanwhile.
@@ -154,6 +178,11 @@ export function NavList({
                     <RiskLabel risk={flow.llm.risk} />
                   )}
                   <GroupLabel group={flow.group} />
+                  <RemarkPills
+                    counts={sum(flow.steps.map((s) => remarks[s.id] ?? []))}
+                    subject={`in flow ${flow.position}`}
+                    onSelect={(band) => onRemark?.({ steps: flow.steps, band })}
+                  />
                 </span>
               </div>
               {flow.id === openFlow && (
@@ -162,10 +191,10 @@ export function NavList({
                     const done = ticked.includes(step.id);
                     const asked = questionCounts[step.id] ?? 0;
                     return (
-                      <li key={step.id}>
+                      <li key={step.id} className="flex items-start gap-1">
                         <button
                           type="button"
-                          className={`${ITEM} py-0.5 text-[12.5px]`}
+                          className={`${ITEM} flex-1 py-0.5 text-[12.5px]`}
                           aria-current={ariaCurrent(current?.block === "step" && current.step_id === step.id)}
                           onClick={() => onSelect({ block: "step", step_id: step.id })}
                           aria-label={`Step ${step.number}: ${step.llm.title}${asked > 0 ? `, ${plural(asked, "question")} asked` : ""}${done ? ", reviewed" : ""}`}
@@ -196,6 +225,13 @@ export function NavList({
                             </Tooltip>
                           )}
                         </button>
+                        <span className="pt-0.5">
+                          <RemarkPills
+                            counts={remarks[step.id] ?? []}
+                            subject={`on step ${step.number}`}
+                            onSelect={(band) => onRemark?.({ steps: [step], band })}
+                          />
+                        </span>
                       </li>
                     );
                   })}
