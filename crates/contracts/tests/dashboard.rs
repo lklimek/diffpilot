@@ -280,6 +280,14 @@ fn item_query_is_optional_and_bounded() {
         );
     }
     assert!(serde_json::from_value::<ItemQuery>(json!({"kind": "todo"})).is_err());
+    // TODOs are listed unless `todos=false`; there is no TODOs-only query.
+    assert_eq!(ItemQuery::default().todos, None);
+    let without: ItemQuery =
+        serde_json::from_value(json!({"kind": "pr", "todos": false})).expect("todos");
+    assert_eq!(
+        (without.kind, without.todos),
+        (Some(GithubKind::Pr), Some(false))
+    );
 }
 
 /// `judge_effort` is optional on the wire, so stored settings and older servers keep their JSON.
@@ -634,8 +642,6 @@ fn item_keys_have_one_normative_form() {
         name: "wallet-ui".to_owned(),
     };
     let uuid = uuid::Uuid::parse_str("3fa91c2e-0000-4000-8000-000000000000").expect("uuid");
-    let schema =
-        jsonschema::validator_for(&schemars::schema_for!(ItemKey).to_value()).expect("schema");
     for (target, text) in [
         (
             ItemTarget::PullRequest {
@@ -670,34 +676,6 @@ fn item_keys_have_one_normative_form() {
                 .all(|b| b.is_ascii_alphanumeric() || b"-_.~".contains(&b)),
             "URL-safe"
         );
-        assert!(schema.is_valid(&json!(text)), "schema rejects {text}");
-    }
-    for bad in [
-        "",
-        "acme~wallet-ui~pr~0",
-        "acme~wallet-ui~pr~0320",
-        "acme~wallet-ui~pull~320",
-        "acme~wallet ui~pr~320",
-        "acme~wallet-ui~pr~320~x",
-        "ac~me~wallet-ui~pr~320",
-        "acme_wallet-ui_pr_320",
-        "memcan~3FA91C2E-0000-4000-8000-000000000000",
-        "memcan~3fa91c2e000040008000000000000000",
-        "memcan~not-a-uuid",
-        "todo~3fa91c2e-0000-4000-8000-000000000000",
-    ] {
-        assert!(ItemKey::parse(bad).is_err(), "{bad} accepted");
-        let shape_only = [
-            "acme~wallet-ui~pr~0320",
-            "memcan~3FA91C2E-0000-4000-8000-000000000000",
-        ];
-        if !shape_only.contains(&bad) {
-            assert!(!schema.is_valid(&json!(bad)), "schema accepts {bad}");
-        }
-        assert!(
-            serde_json::from_value::<ItemKey>(json!(bad)).is_err(),
-            "{bad} deserialised"
-        );
     }
     let bad_owner = RepoRef {
         owner: "ac~me".to_owned(),
@@ -716,6 +694,94 @@ fn item_keys_have_one_normative_form() {
         serde_json::from_value::<WorkItem>(item).is_err(),
         "an item with a display alias as key"
     );
+}
+
+/// GitHub names are case-insensitive: one item has one key, owner and repository lowercased.
+#[test]
+fn item_keys_fold_github_name_case() {
+    let mixed = RepoRef {
+        owner: "Octo_EMU".to_owned(),
+        name: "Wallet.UI".to_owned(),
+    };
+    let built = ItemKey::new(&ItemTarget::PullRequest {
+        repo: mixed,
+        number: 7,
+    })
+    .expect("an Enterprise Managed User owner");
+    assert_eq!(built.as_str(), "octo_emu~wallet.ui~pr~7");
+    for text in ["Octo_EMU~Wallet.UI~pr~7", "octo_emu~wallet.ui~pr~7"] {
+        assert_eq!(ItemKey::parse(text), Ok(built.clone()), "{text}");
+        assert_eq!(
+            serde_json::from_value::<ItemKey>(json!(text)).expect("deserialises"),
+            built
+        );
+    }
+    let ItemTarget::PullRequest { repo, .. } = built.target() else {
+        panic!("a pull request key");
+    };
+    assert_eq!(
+        (repo.owner.as_str(), repo.name.as_str()),
+        ("octo_emu", "wallet.ui")
+    );
+}
+
+/// The JSON Schema pattern accepts exactly what `ItemKey::parse` accepts.
+#[test]
+fn item_key_schema_matches_the_parser() {
+    let schema =
+        jsonschema::validator_for(&schemars::schema_for!(ItemKey).to_value()).expect("schema");
+    let long_repo = "r".repeat(100);
+    let too_long_repo = "r".repeat(101);
+    let long_owner = "o".repeat(39);
+    let too_long_owner = "o".repeat(40);
+    let accepted = [
+        "acme~wallet-ui~pr~320".to_owned(),
+        "Acme~Wallet-UI~issue~1".to_owned(),
+        "octo_emu~x~pr~9".to_owned(),
+        "acme~.github~issue~3".to_owned(),
+        "acme~..x~pr~3".to_owned(),
+        "acme~a.b_c-d~pr~3".to_owned(),
+        "acme~wallet-ui~pr~4294967295".to_owned(),
+        "acme~wallet-ui~pr~999999999".to_owned(),
+        "acme~wallet-ui~pr~3999999999".to_owned(),
+        format!("{long_owner}~{long_repo}~pr~1"),
+        "memcan~3fa91c2e-0000-4000-8000-000000000000".to_owned(),
+    ];
+    let rejected = [
+        String::new(),
+        "acme~wallet-ui~pr~0".to_owned(),
+        "acme~wallet-ui~pr~0320".to_owned(),
+        "acme~wallet-ui~pr~4294967296".to_owned(),
+        "acme~wallet-ui~pr~9999999999".to_owned(),
+        "acme~wallet-ui~pr~42949672950".to_owned(),
+        "acme~wallet-ui~PR~320".to_owned(),
+        "acme~wallet-ui~pull~320".to_owned(),
+        "acme~wallet ui~pr~320".to_owned(),
+        "acme~wallet-ui~pr~320~x".to_owned(),
+        "ac~me~wallet-ui~pr~320".to_owned(),
+        "ac.me~wallet-ui~pr~320".to_owned(),
+        "acme~.~pr~1".to_owned(),
+        "acme~..~pr~1".to_owned(),
+        "acme_wallet-ui_pr_320".to_owned(),
+        format!("{too_long_owner}~x~pr~1"),
+        format!("acme~{too_long_repo}~pr~1"),
+        "memcan~3FA91C2E-0000-4000-8000-000000000000".to_owned(),
+        "memcan~3fa91c2e000040008000000000000000".to_owned(),
+        "memcan~not-a-uuid".to_owned(),
+        "todo~3fa91c2e-0000-4000-8000-000000000000".to_owned(),
+    ];
+    for text in &accepted {
+        assert!(ItemKey::parse(text).is_ok(), "parser rejects {text}");
+        assert!(schema.is_valid(&json!(text)), "schema rejects {text}");
+    }
+    for text in &rejected {
+        assert!(ItemKey::parse(text).is_err(), "parser accepts {text}");
+        assert!(
+            serde_json::from_value::<ItemKey>(json!(text)).is_err(),
+            "{text} deserialised"
+        );
+        assert!(!schema.is_valid(&json!(text)), "schema accepts {text}");
+    }
 }
 
 /// LLM-chosen merges are LLM content and carry item keys.

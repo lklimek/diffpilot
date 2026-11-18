@@ -55,7 +55,7 @@ pub enum ApiErrorCode {
     Internal,
     /// The server is busy (e.g. its database is locked); retry after `Retry-After`.
     Unavailable,
-    /// A dashboard refresh of the user is already running.
+    /// A dashboard refresh of the user is already scanning (R2), or live (R4).
     RefreshRunning,
     /// GitHub's rate limit for the user's token is reached; the message names the reset time.
     GithubRateLimited,

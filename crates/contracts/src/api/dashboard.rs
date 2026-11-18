@@ -232,7 +232,7 @@ pub struct ScheduledRun {
 pub enum ScheduledOutcome {
     /// A scheduled refresh was started (its result is that refresh's).
     Started,
-    /// Not needed: a refresh succeeded after the scheduled time, or one was live.
+    /// Not needed: a refresh succeeded after the scheduled time, or one was scanning (a ranking is superseded).
     Skipped,
     /// No usable GitHub sign-in; shown until a later refresh succeeds.
     NeedsSignIn,
@@ -391,10 +391,14 @@ pub struct ItemQuery {
     #[ts(optional)]
     pub tier: Option<Tier>,
     /// Only pull requests or only issues; absent = both. TODO items are listed whatever this filter says (while the
-    /// user shows MemCan TODOs, plan §G).
+    /// user shows MemCan TODOs, plan §G) unless `todos` is false.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub kind: Option<GithubKind>,
+    /// `false` leaves TODO items out; absent = true. A TODOs-only list is not supported in v1.1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub todos: Option<bool>,
     /// Only this repository, `owner/name`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -801,9 +805,16 @@ pub struct SetTimeZoneRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, TS)]
 pub struct ItemKey(String);
 
-/// JSON Schema pattern of [`ItemKey`].
-const ITEM_KEY_PATTERN: &str = "^(memcan~[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\
-                                [A-Za-z0-9-]{1,39}~[A-Za-z0-9._-]{1,100}~(pr|issue)~[1-9][0-9]{0,9})$";
+/// JSON Schema pattern of [`ItemKey`]: exactly what [`ItemKey::parse`] accepts (repository not `.` or `..`, number
+/// 1..=4294967295 without leading zeros).
+const ITEM_KEY_PATTERN: &str = concat!(
+    "^(memcan~[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    "|[A-Za-z0-9_-]{1,39}",
+    "~([A-Za-z0-9_-][A-Za-z0-9._-]{0,99}|\\.[A-Za-z0-9_-][A-Za-z0-9._-]{0,98}|\\.\\.[A-Za-z0-9._-]{1,98})",
+    "~(pr|issue)",
+    "~([1-9][0-9]{0,8}|[1-3][0-9]{9}|4[01][0-9]{8}|42[0-8][0-9]{7}|429[0-3][0-9]{6}|4294[0-8][0-9]{5}",
+    "|42949[0-5][0-9]{4}|429496[0-6][0-9]{3}|4294967[01][0-9]{2}|42949672[0-8][0-9]|429496729[0-5]))$",
+);
 
 /// What an [`ItemKey`] names.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -831,12 +842,12 @@ pub enum ItemTarget {
 #[error("`{0}` is not an item key (<owner>~<repo>~pr|issue~<number> or memcan~<uuid>)")]
 pub struct ItemKeyError(pub String);
 
-/// A GitHub login: 1–39 ASCII letters, digits or hyphens.
+/// A GitHub login: 1–39 ASCII letters, digits, `-` or `_` (Enterprise Managed Users).
 fn valid_owner(owner: &str) -> bool {
     (1..=39).contains(&owner.len())
         && owner
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
 /// A GitHub repository name: 1–100 ASCII letters, digits, `.`, `_` or `-`, not `.` or `..`.
@@ -850,14 +861,15 @@ fn valid_repo(name: &str) -> bool {
 }
 
 impl ItemKey {
-    /// The key of `target`; fails for an owner or repository name GitHub does not allow, or number 0.
+    /// The key of `target`, owner and repository lowercased (GitHub names are case-insensitive); fails for an
+    /// owner or repository name GitHub does not allow, or number 0.
     pub fn new(target: &ItemTarget) -> Result<Self, ItemKeyError> {
         let (repo, kind, number) = match target {
             ItemTarget::Todo(uuid) => return Ok(Self(format!("memcan~{}", uuid.hyphenated()))),
             ItemTarget::PullRequest { repo, number } => (repo, "pr", number),
             ItemTarget::Issue { repo, number } => (repo, "issue", number),
         };
-        let key = format!("{}~{}~{kind}~{number}", repo.owner, repo.name);
+        let key = format!("{}~{}~{kind}~{number}", repo.owner, repo.name).to_ascii_lowercase();
         if valid_owner(&repo.owner) && valid_repo(&repo.name) && *number > 0 {
             Ok(Self(key))
         } else {
@@ -865,11 +877,17 @@ impl ItemKey {
         }
     }
 
-    /// Parses a key in its normative form.
+    /// Parses a key in its normative form; owner and repository in any case (lowercased).
     pub fn parse(key: &str) -> Result<Self, ItemKeyError> {
         let target = Self::target_of(key).ok_or_else(|| ItemKeyError(key.to_owned()))?;
         let built = Self::new(&target)?;
-        if built.0 == key {
+        let canonical = match target {
+            ItemTarget::Todo(_) => built.0 == key,
+            ItemTarget::PullRequest { .. } | ItemTarget::Issue { .. } => {
+                built.0.eq_ignore_ascii_case(key)
+            }
+        };
+        if canonical {
             Ok(built)
         } else {
             Err(ItemKeyError(key.to_owned()))

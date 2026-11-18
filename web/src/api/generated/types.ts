@@ -1594,9 +1594,13 @@ export type ItemQuery = {
 tier?: Tier,
 /**
  * Only pull requests or only issues; absent = both. TODO items are listed whatever this filter says (while the
- * user shows MemCan TODOs, plan §G).
+ * user shows MemCan TODOs, plan §G) unless `todos` is false.
  */
 kind?: GithubKind,
+/**
+ * `false` leaves TODO items out; absent = true. A TODOs-only list is not supported in v1.1.
+ */
+todos?: boolean,
 /**
  * Only this repository, `owner/name`.
  */
