@@ -42,6 +42,12 @@ import { clearCommentDrafts } from "../tour/drafts";
 const errorText = (error: unknown) =>
   error instanceof ApiError ? error.message : "Something went wrong. Reload the page.";
 
+/** Why a sign-out failed; Sign out everywhere on an ended session revoked nothing and says how to retry. */
+const signOutError = (error: unknown, everywhere: boolean) =>
+  everywhere && error instanceof ApiError && error.status === 401
+    ? "your session had already ended, so nothing was revoked. Other sessions and personal access tokens still work; sign in and choose Sign out everywhere again."
+    : errorText(error);
+
 /** Dashboard settings (plan §F.6) and access tokens (ADR-019), each in its own card. */
 function DashboardSection({ onDirtyChange }: { onDirtyChange: (dirty: boolean) => void }) {
   const settings = useDashboardSettings();
@@ -265,9 +271,9 @@ export function SettingsScreen() {
   const leave = (login: string, everywhere: boolean) =>
     signOut.mutate(everywhere, {
       onSuccess: () => signedOut(login),
-      // 401: the session had already ended, so the user is signed out all the same.
+      // 401: the session had already ended. Sign out counts as done; Sign out everywhere revoked nothing.
       onError: (error) => {
-        if (error instanceof ApiError && error.status === 401) signedOut(login);
+        if (!everywhere && error instanceof ApiError && error.status === 401) signedOut(login);
       },
     });
   return (
@@ -297,7 +303,7 @@ export function SettingsScreen() {
           <AccountCard
             login={user.login}
             busy={signOut.isPending}
-            error={signOut.isError ? errorText(signOut.error) : undefined}
+            error={signOut.isError ? signOutError(signOut.error, signOut.variables === true) : undefined}
             onSignOut={() => leave(user.login, false)}
             onSignOutEverywhere={() => leave(user.login, true)}
           />

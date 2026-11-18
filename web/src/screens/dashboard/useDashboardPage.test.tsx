@@ -11,7 +11,7 @@ import { resetDashboard, setDashboardScenario } from "../../mocks/handlers/dashb
 import { resetDashboardSettings } from "../../mocks/handlers/dashboard-settings";
 import { setScenario } from "../../mocks/scenarios";
 import { resetSentTimeZones } from "./queries";
-import { FILTER_KEY, useDashboardPage } from "./useDashboardPage";
+import { FILTER_KEY, LEGACY_FILTER_KEY, useDashboardPage } from "./useDashboardPage";
 
 const server = setupServer(...handlers);
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
@@ -67,13 +67,35 @@ describe("useDashboardPage", () => {
 
   it("maps a stored single choice of the earlier switch to the matching toggles (TODOs were listed with each)", () => {
     const stored = (value: string) => {
-      localStorage.setItem(FILTER_KEY, value);
+      localStorage.setItem(LEGACY_FILTER_KEY, value);
       return renderPage().result.current.filter;
     };
     expect(stored("pr")).toEqual(["pr", "todo"]);
     expect(stored("issue")).toEqual(["issue", "todo"]);
     expect(stored("both")).toEqual(["pr", "issue", "todo"]);
     expect(stored("nonsense")).toEqual(["pr", "issue", "todo"]);
+    expect(stored("constructor")).toEqual(["pr", "issue", "todo"]);
+    // A saved choice replaces the earlier value.
+    const { result } = renderPage();
+    act(() => result.current.setFilter(["pr"]));
+    expect(localStorage.getItem(LEGACY_FILTER_KEY)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(FILTER_KEY) ?? "null")).toEqual(["pr"]);
+  });
+
+  it("remembers a single kind choice as chosen (PRs only, Issues only)", async () => {
+    for (const only of [["pr"], ["issue"]] as const) {
+      localStorage.clear();
+      const { result } = renderPage();
+      act(() => result.current.setFilter([...only]));
+      expect(renderPage().result.current.filter).toEqual(only);
+    }
+  });
+
+  it("a corrupt stored value naming an Object.prototype key falls back to every kind", () => {
+    for (const value of ["constructor", "toString", "__proto__"]) {
+      localStorage.setItem(FILTER_KEY, value);
+      expect(renderPage().result.current.filter).toEqual(["pr", "issue", "todo"]);
+    }
     localStorage.removeItem(FILTER_KEY);
   });
 

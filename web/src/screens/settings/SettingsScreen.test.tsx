@@ -180,6 +180,25 @@ it("Sign out of a session that already ended (401) still clears the drafts and s
   window.sessionStorage.clear();
 });
 
+it("Sign out everywhere on an ended session (401) does not pass for success: the tokens were not revoked", async () => {
+  server.use(
+    http.post("/auth/logout", () => {
+      setScenario("signed-out");
+      return HttpResponse.json({ code: "unauthenticated", message: "Sign in again." }, { status: 401 });
+    }),
+  );
+  renderRoute("/settings");
+  const account = await region("Account");
+  await userEvent.click(within(account).getByRole("button", { name: "Sign out everywhere" }));
+  await userEvent.click(within(account).getByRole("button", { name: "Yes, sign out everywhere" }));
+  // Whatever screen follows, the user must learn that nothing was revoked and how to retry.
+  expect(await screen.findByRole("alert")).toHaveTextContent(/sign in/i);
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "Not signed out: your session had already ended, so nothing was revoked. Other sessions and personal access tokens still work; sign in and choose Sign out everywhere again.",
+  );
+  window.sessionStorage.clear();
+});
+
 it("Sign out that fails otherwise keeps everything and says so", async () => {
   window.sessionStorage.setItem("smart-review.comment-drafts.alice.a1", JSON.stringify({ k: "mine" }));
   server.use(
