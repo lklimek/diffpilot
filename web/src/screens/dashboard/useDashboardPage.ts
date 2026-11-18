@@ -19,26 +19,38 @@ import {
 } from "./queries";
 import { dashboardView } from "./state";
 
-/** localStorage key of the list's kind filter. */
-export const FILTER_KEY = "sr.dashboard.kind";
+/** localStorage key of the kinds shown (a JSON array such as `["pr","todo"]`). */
+export const FILTER_KEY = "sr.dashboard.kinds";
+/** localStorage key of the earlier single-choice switch, read once when `FILTER_KEY` is absent. */
+export const LEGACY_FILTER_KEY = "sr.dashboard.kind";
 /** How long the "Ranking finished" notice stays. */
 export const NOTICE_MS = 6000;
 
-/** Stored values of the earlier single-choice switch (TODOs were listed with each). */
-const LEGACY: Record<string, ItemKind[]> = {
-  pr: ["pr", "todo"],
-  issue: ["issue", "todo"],
-  both: ALL_KINDS,
-};
+/** Values of the earlier switch and what they showed (TODOs were listed with each). */
+const LEGACY = new Map<string, ItemKind[]>([
+  ["pr", ["pr", "todo"]],
+  ["issue", ["issue", "todo"]],
+  ["both", ALL_KINDS],
+]);
 
-/** The stored kinds (`pr,todo`, or a value of the earlier switch); every kind when none or unreadable. */
+/** The known kinds of a stored JSON array, or null when it is not one or names none. */
+function parseKinds(value: string): ItemKind[] | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return null;
+    const kinds = ALL_KINDS.filter((kind) => parsed.includes(kind));
+    return kinds.length > 0 ? kinds : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The stored kinds, else the earlier switch's value, else every kind. */
 function storedFilter(): ItemKind[] {
   try {
-    const value = localStorage.getItem(FILTER_KEY) ?? "";
-    const legacy = LEGACY[value];
-    if (legacy) return legacy;
-    const kinds = ALL_KINDS.filter((kind) => value.split(",").includes(kind));
-    return kinds.length > 0 ? kinds : ALL_KINDS;
+    const value = localStorage.getItem(FILTER_KEY);
+    if (value !== null) return parseKinds(value) ?? ALL_KINDS;
+    return LEGACY.get(localStorage.getItem(LEGACY_FILTER_KEY) ?? "") ?? ALL_KINDS;
   } catch {
     return ALL_KINDS;
   }
@@ -50,7 +62,8 @@ function useKindFilter(): [ItemKind[], (filter: ItemKind[]) => void] {
   const set = useCallback((next: ItemKind[]) => {
     setFilter(next);
     try {
-      localStorage.setItem(FILTER_KEY, next.join(","));
+      localStorage.setItem(FILTER_KEY, JSON.stringify(next));
+      localStorage.removeItem(LEGACY_FILTER_KEY);
     } catch {
       // Not remembered without storage; the choice still applies.
     }
