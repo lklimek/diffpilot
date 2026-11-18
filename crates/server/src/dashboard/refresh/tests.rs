@@ -1588,3 +1588,5 @@ async fn scan_over_the_time_limit_fails_as_timed_out() {
     assert_eq!(failure.code, RefreshFailureCode::TimedOut);
     assert_eq!(w.summary(ALICE).await.snapshot, None);
 }
+
+mod judged;

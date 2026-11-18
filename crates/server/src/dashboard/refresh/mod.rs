@@ -244,8 +244,8 @@ pub async fn recover(state: &AppState) -> Result<(), DbError> {
     for refresh in &interrupted {
         tracing::info!(user_id = %refresh.user_id, refresh = %refresh.id, was = ?refresh.was,
             "dashboard refresh interrupted by the server restart");
+        super::judge::cancel_jobs(state, refresh.id, None).await;
     }
-    // TODO(WP11-JUDGE): cancel the unfinished judge jobs of the interrupted rankings (plan §A.4).
     Ok(())
 }
 
@@ -258,16 +258,22 @@ pub async fn publish(state: &AppState, scope: &Scope, id: RefreshId) {
         .refresh(&scope.tenant_id, &scope.user_id, id)
         .await
     {
-        Ok(record) => state.dashboard.publish(status_of(&record)),
+        Ok(record) => state
+            .dashboard
+            .publish(super::judge::status(state, &record).await),
         Err(error) => {
             tracing::debug!(%error, refresh = %id, "dashboard refresh status not published")
         }
     }
 }
 
-/// The wire status of a stored refresh. The ranking step follows the ranking state.
+/// The wire status of a stored refresh. The ranking step follows the ranking state; the ranking's total and
+/// failure text are the ranking step's (`judge`); `resumes_at` needs the jobs (`judge::status`).
 pub fn status_of(record: &RefreshRecord) -> RefreshStatus {
     let mut steps = record.progress.steps.clone();
+    let ranking_step = steps.iter().find(|s| s.key == ScanStepKey::Ranking);
+    let ranking_total = ranking_step.and_then(|s| s.total);
+    let ranking_detail = ranking_step.and_then(|s| s.detail.clone());
     if let Some(ranking) = record.ranking_state
         && let Some(step) = steps.iter_mut().find(|s| s.key == ScanStepKey::Ranking)
     {
@@ -299,15 +305,18 @@ pub fn status_of(record: &RefreshRecord) -> RefreshStatus {
         ranking: record.ranking_state.map(|state| RankingStatus {
             state,
             judged: record.counts.judged,
-            // TODO(WP11-JUDGE): the queued total, pause end and failure text come from the judge job.
-            total: record.counts.judged,
+            total: ranking_total.map_or(record.counts.judged, |total| {
+                total.max(record.counts.judged)
+            }),
             resumes_at: None,
             message: match state {
                 RankingState::Interrupted => Some(
                     "A server restart interrupted the ranking. Retry ranking to finish it."
                         .to_owned(),
                 ),
-                RankingState::Failed => Some("The LLM ranking failed.".to_owned()),
+                RankingState::Failed => {
+                    Some(ranking_detail.unwrap_or_else(|| "The LLM ranking failed.".to_owned()))
+                }
                 _ => None,
             },
         }),
