@@ -76,7 +76,7 @@ impl ScoreRules {
         label.to_lowercase() == self.ready_label
     }
 
-    /// Items this author wrote are left out of the ranking unless directed at the user (K7).
+    /// Everything this author wrote is left out of the dashboard (K7).
     pub fn is_skipped_author(&self, login: &str) -> bool {
         self.skip_authors.contains(&login.to_lowercase())
     }

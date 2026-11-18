@@ -816,8 +816,8 @@ lookback_days: number,
  */
 ready_label: string,
 /**
- * Excluded authors: items they author are left out unless a review is requested from one of the user's
- * logins or the item is assigned to one. Being listed does not make a login a bot.
+ * Excluded authors: every pull request and issue they author is left out of the dashboard. Being listed
+ * does not make a login a bot.
  */
 skip_authors: Array<string>,
 /**

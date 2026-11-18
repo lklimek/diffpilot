@@ -80,7 +80,7 @@
           "type": "string"
         },
         "skip_authors": {
-          "description": "Excluded authors: items they author are left out unless a review is requested from one of the user's\nlogins or the item is assigned to one. Being listed does not make a login a bot.",
+          "description": "Excluded authors: every pull request and issue they author is left out of the dashboard. Being listed\ndoes not make a login a bot.",
           "type": "array",
           "items": {
             "type": "string"

@@ -614,8 +614,8 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   refresh succeeds.
 - **Settings (R6, R6b, R7).** An absent settings row means `DashboardSettings::default()` (plan §F.6). PUT
   validates every rule of §F.6 server-side (the client mirrors them) and answers 422 `invalid_dashboard_settings`
-  naming the first failing field. `skip_authors` are excluded authors (their items are left out unless a review is
-  requested from one of the user's logins or the item is assigned to one; they are not bots); `known_bots` are the
+  naming the first failing field. `skip_authors` are excluded authors (every pull request and issue they author is left
+  out of the dashboard, whatever its relation to the user; they are not bots); `known_bots` are the
   logins treated as bots besides GitHub `Bot` accounts and `[bot]` logins (absent in a request: the defaults,
   `thepastaclaw`, `Claudius-Maginificent`, `DCG-Claude`). R6b stores the browser's IANA zone (sent once on the first dashboard visit
   while none is stored). R7 sets the installation-wide ranking effort (`low` default, `medium`, `high`);

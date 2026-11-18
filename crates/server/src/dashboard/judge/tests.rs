@@ -665,6 +665,25 @@ fn closing_issues_are_judged_inputs_and_old_snapshots_load() {
     assert!(loaded.linked_issues.is_empty());
 }
 
+/// An excluded author's item is never sent to the judge, even when its review is requested from the user, and
+/// no TODO is suggested as a merge into it.
+#[test]
+fn excluded_author_items_never_reach_the_judge() {
+    let mut banned = pr(9, "chore(deps): bump serde");
+    banned.facts.author = Some("dependabot".to_owned());
+    banned.facts.relations = vec![Relation::ReviewRequested];
+    banned.facts.review_pending_for_us = true;
+    let snap = snapshot(
+        vec![banned],
+        vec![],
+        vec![todo("Check acme/wallet-ui#9 before the release")],
+    );
+    let items = candidates(&snap);
+    let pr_item = items.iter().find(|c| c.item.key == key(9)).expect("scored");
+    assert!(!pr_item.asked());
+    assert!(pr_item.item.suggested_merges.is_empty());
+}
+
 #[test]
 fn todo_naming_a_pull_request_is_a_suggested_merge() {
     let snap = snapshot(

@@ -537,33 +537,39 @@ fn known_bots_decide_the_waiting_human() {
     );
 }
 
-/// An excluded human author: their undirected items are left out, but a review they request from the user is a
-/// human waiting (being excluded does not make a login a bot).
+/// An excluded author is banned, not a bot: everything they author is left out, also a review they request
+/// from the user or an item assigned to the user; their login still counts as a human elsewhere.
 #[test]
-fn excluded_human_author_is_left_out_but_still_a_waiting_human() {
+fn excluded_author_is_always_left_out_and_not_a_bot() {
     let settings = DashboardSettings {
         skip_authors: vec!["carol".into()],
         ..DashboardSettings::default()
     };
     let rules = ScoreRules::new("alice", &settings);
-    let mentioned = score_pr(
-        &rules,
-        &PrFacts {
-            author: Some("carol".into()),
-            relations: vec![Relation::Mentioned],
-            ..pr()
-        },
-        None,
-        now(),
-    )
-    .expect("scores");
-    assert_eq!(
-        mentioned.excluded.as_deref(),
-        Some("author @carol is excluded (not assigned to you or requested from you)")
-    );
-    let requested = requested_by("carol", &settings);
-    assert_eq!(requested.excluded, None);
-    assert_eq!(part(&requested, C::HumanWaiting).points_tenths, Some(150));
+    for relations in [
+        vec![Relation::ReviewRequested],
+        vec![Relation::Assigned],
+        vec![Relation::Mentioned],
+    ] {
+        let item = score_pr(
+            &rules,
+            &PrFacts {
+                author: Some("carol".into()),
+                relations: relations.clone(),
+                review_pending_for_us: relations == [Relation::ReviewRequested],
+                ..pr()
+            },
+            None,
+            now(),
+        )
+        .expect("scores");
+        assert_eq!(
+            item.excluded.as_deref(),
+            Some("author @carol is excluded"),
+            "{relations:?}"
+        );
+    }
+    assert!(!rules.is_bot("carol", false));
 }
 
 #[test]
@@ -1011,24 +1017,18 @@ fn dependabot(relations: Vec<Relation>) -> Scored {
     })
 }
 
-const SKIPPED_REASON: &str =
-    "author @dependabot[bot] is excluded (not assigned to you or requested from you)";
-
 #[test]
-fn skipped_bot_items_are_excluded_unless_directed_at_the_user() {
-    // Review requested from a scanned login (directly or through a team) or assigned to one: listed.
-    assert_eq!(dependabot(vec![Relation::ReviewRequested]).excluded, None);
-    assert_eq!(dependabot(vec![Relation::Assigned]).excluded, None);
-    // Only mentioned, only in a watched repository, or nothing directed at the user: left out.
+fn excluded_author_items_are_left_out_whatever_their_relation() {
     for relations in [
+        vec![Relation::ReviewRequested],
+        vec![Relation::Assigned],
         vec![Relation::Mentioned],
         vec![Relation::RepoOpen],
-        vec![Relation::Authored],
         vec![],
     ] {
         assert_eq!(
             dependabot(relations.clone()).excluded.as_deref(),
-            Some(SKIPPED_REASON),
+            Some("author @dependabot[bot] is excluded"),
             "{relations:?}"
         );
     }
@@ -1046,10 +1046,9 @@ fn skipped_bot_items_are_excluded_unless_directed_at_the_user() {
         .expect("scores")
         .excluded
     };
-    assert_eq!(issue_by(vec![Relation::Assigned]), None);
     assert_eq!(
-        issue_by(vec![Relation::Mentioned]).as_deref(),
-        Some("author @Dependabot is excluded (not assigned to you or requested from you)")
+        issue_by(vec![Relation::Assigned]).as_deref(),
+        Some("author @Dependabot is excluded")
     );
     let renovate = scored(&PrFacts {
         author: Some("renovate[bot]".into()),
@@ -1059,36 +1058,7 @@ fn skipped_bot_items_are_excluded_unless_directed_at_the_user() {
     });
     assert!(
         renovate.excluded.is_none(),
-        "only the configured bot authors are skipped"
-    );
-}
-
-/// A kept bot pull request whose review is requested from the user scores like any review request without the
-/// human-waiting part: the bot's request is no human waiting.
-#[test]
-fn kept_bot_review_request_scores_without_human_waiting() {
-    let request = |author: &str, author_is_bot| PrFacts {
-        title: "chore(deps): bump serde from 1.0.1 to 1.0.2".into(),
-        author: Some(author.into()),
-        author_is_bot,
-        relations: vec![Relation::ReviewRequested],
-        review_pending_for_us: true,
-        review_requested_at: Some(now() - Duration::days(1)),
-        additions: Some(4),
-        deletions: Some(4),
-        base_ref: Some("main".into()),
-        ..pr()
-    };
-    let item = scored(&request("dependabot[bot]", true));
-    assert_eq!(item.excluded, None);
-    assert_eq!(part(&item, C::HumanWaiting).points_tenths, Some(0));
-    assert_eq!((item.score.tier, item.score.total_tenths), (Tier::P2, 575));
-    // The same request from a human: 15 human-waiting points more.
-    let human = scored(&request("carol", false));
-    assert_eq!(part(&human, C::HumanWaiting).points_tenths, Some(150));
-    assert_eq!(
-        (human.score.tier, human.score.total_tenths),
-        (Tier::P1, 725)
+        "only the configured authors are excluded"
     );
 }
 
@@ -1752,6 +1722,30 @@ fn awaiting_others_lists_only_ready_prs_longest_wait_first() {
         .map(|p| p.number)
         .collect();
     assert_eq!(numbers, [2, 1, 3]);
+}
+
+/// A linked login listed as an excluded author: its pull requests are not shown as waiting on others either.
+#[test]
+fn awaiting_others_leaves_out_excluded_authors() {
+    let settings = DashboardSettings {
+        linked_logins: vec!["alice-ci".into()],
+        skip_authors: vec!["alice-ci".into()],
+        ..DashboardSettings::default()
+    };
+    let ready = |number, author: &str| PrFacts {
+        number,
+        author: Some(author.into()),
+        labels: vec!["ready-for-human".into()],
+        review_requested_from_others: vec!["bob".into()],
+        others_review_requested_at: Some(ago(1.0)),
+        ..pr()
+    };
+    let prs = vec![ready(1, "alice"), ready(2, "alice-ci")];
+    let numbers: Vec<u32> = awaiting_others(&ScoreRules::new("alice", &settings), &prs)
+        .iter()
+        .map(|p| p.number)
+        .collect();
+    assert_eq!(numbers, [1]);
 }
 
 // --- text rules -------------------------------------------------------------------------------------------
