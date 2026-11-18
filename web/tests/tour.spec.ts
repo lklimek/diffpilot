@@ -9,7 +9,7 @@ test("PR URL → PR context → flow 1 introduction → step 1 via j", async ({ 
   await page.getByLabel("GitHub pull request URL").fill("https://github.com/acme/node-client/pull/482");
   await page.getByRole("button", { name: "Analyze" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}/progress$`));
-  await page.getByRole("link", { name: /^(Resume|Open) review$/ }).click();
+  await page.getByRole("link", { name: "Open review" }).click();
   await expect(page).toHaveURL(new RegExp(`/analyses/${ANALYSIS_ID}#pr_context$`));
   await expect(heading(page)).toHaveText("PR context: acme/node-client #482");
 
