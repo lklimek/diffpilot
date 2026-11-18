@@ -1248,6 +1248,9 @@ async fn eligibility_answer_hides_an_item_only_when_asked() {
     let h = harness().await;
     let mut unchecked = pr(1, "fix: owned paths unknown");
     unchecked.facts.owned_change = OwnedChange::Unknown;
+    // Not directed at the user: the ownership policy applies (D19).
+    unchecked.facts.author = Some("bob".into());
+    unchecked.facts.relations = vec![Relation::Mentioned];
     let snap = snapshot(vec![unchecked, pr(2, "fix: y")], vec![], vec![]);
     let id = h.rank("u1", &snap).await;
     let (_, input) = h

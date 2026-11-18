@@ -196,10 +196,10 @@ async fn an_answer_raises_an_items_tier() {
         order(&page)[..5],
         [
             ("DOC-77", Tier::P1, 931),
+            ("PLAT-1203", Tier::P1, 746),
             ("WUI-320", Tier::P1, 674),
             ("NC-482", Tier::P1, 660),
             ("WUI-311", Tier::P1, 651),
-            ("CON-1534", Tier::P2, 604),
         ]
     );
 }
@@ -221,12 +221,12 @@ async fn an_override_of_a_fact_computed_part_changes_nothing() {
     assert_eq!(
         order(&page)[..3],
         [
+            ("PLAT-1203", Tier::P1, 746),
             ("WUI-320", Tier::P1, 674),
             ("NC-482", Tier::P1, 660),
-            ("WUI-311", Tier::P1, 651),
         ]
     );
-    let item = &page.items[1];
+    let item = &page.items[2];
     let waiting = item
         .score
         .parts
@@ -261,8 +261,8 @@ async fn an_estimated_default_is_changed_by_the_judge() {
         order(&page)[..3],
         [
             ("WUI-311", Tier::P1, 801),
+            ("PLAT-1203", Tier::P1, 746),
             ("WUI-320", Tier::P1, 674),
-            ("NC-482", Tier::P1, 660),
         ]
     );
     let waiting = page.items[0]
@@ -295,13 +295,16 @@ async fn invalid_output_leaves_the_provisional_order() {
     assert_eq!(
         order(&page),
         [
+            ("PLAT-1203", Tier::P1, 976),
             ("WUI-320", Tier::P1, 904),
             ("NC-482", Tier::P1, 760),
             ("WUI-311", Tier::P1, 751),
+            ("PLAT-1176", Tier::P1, 722),
             ("DOC-77", Tier::P1, 681),
             ("NC-476", Tier::P1, 678),
             ("CON-1534", Tier::P1, 654),
             ("OPS-14", Tier::P2, 550),
+            ("PLAT-1199", Tier::P2, 461),
             ("PLAT-1187", Tier::P2, 429),
             ("WUI-298", Tier::P2, 376),
             ("NC-490", Tier::P2, 356),

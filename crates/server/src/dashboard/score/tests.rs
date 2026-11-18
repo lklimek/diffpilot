@@ -949,6 +949,95 @@ fn ci_classification_matches_skill_vectors() {
 
 // --- eligibility --------------------------------------------------------------------------------------------
 
+/// D19: the ownership policy never drops a pull request directed at the user (authored by a scanned login,
+/// assigned to one, or a review requested from one directly); a team-only request or a mention stays filtered,
+/// and excluded authors still win.
+#[test]
+fn ownership_policy_keeps_pull_requests_directed_at_the_user() {
+    let r = rules();
+    let verdict = |facts: PrFacts| {
+        let item = score_pr(&r, &facts, None, now()).expect("scores");
+        (item.excluded, item.asks_eligibility)
+    };
+    let outside = |relations: Vec<Relation>, author: &str, direct: bool, owned| PrFacts {
+        author: Some(author.into()),
+        relations,
+        review_pending_for_us: direct,
+        owned_change: owned,
+        ..pr()
+    };
+    for (facts, why) in [
+        (
+            outside(
+                vec![Relation::ReviewRequested],
+                "bob",
+                true,
+                OwnedChange::None,
+            ),
+            "review requested from alice",
+        ),
+        (
+            outside(vec![Relation::Assigned], "bob", false, OwnedChange::Minor),
+            "assigned to alice",
+        ),
+        (
+            outside(
+                vec![Relation::Mentioned],
+                "alice-ci",
+                false,
+                OwnedChange::None,
+            ),
+            "authored by a linked login",
+        ),
+        (
+            outside(
+                vec![Relation::ReviewRequested],
+                "bob",
+                true,
+                OwnedChange::Unknown,
+            ),
+            "unknown policy, directed",
+        ),
+    ] {
+        assert_eq!(verdict(facts), (None, false), "{why}");
+    }
+    for (facts, reason) in [
+        (
+            outside(
+                vec![Relation::ReviewRequested],
+                "bob",
+                false,
+                OwnedChange::None,
+            ),
+            "no change in owned paths (ownership policy)",
+        ),
+        (
+            outside(vec![Relation::Mentioned], "bob", false, OwnedChange::Minor),
+            "only a minor change in owned paths (ownership policy)",
+        ),
+        (
+            outside(
+                vec![Relation::ReviewRequested],
+                "dependabot",
+                true,
+                OwnedChange::Significant,
+            ),
+            "author @dependabot is excluded",
+        ),
+    ] {
+        assert_eq!(verdict(facts), (Some(reason.to_owned()), false), "{reason}");
+    }
+}
+
+/// A pull request of someone else that is not directed at the user (only mentioned).
+fn undirected() -> PrFacts {
+    PrFacts {
+        author: Some("bob".into()),
+        relations: vec![Relation::Mentioned],
+        ..pr()
+    }
+}
+
 #[test]
 fn eligibility_ownership_policy_and_drafts() {
     let r = rules();
@@ -962,7 +1051,7 @@ fn eligibility_ownership_policy_and_drafts() {
             &r,
             &PrFacts {
                 owned_change: verdict,
-                ..pr()
+                ..undirected()
             },
             None,
             now(),
@@ -973,14 +1062,14 @@ fn eligibility_ownership_policy_and_drafts() {
     }
     let unknown = scored(&PrFacts {
         owned_change: OwnedChange::Unknown,
-        ..pr()
+        ..undirected()
     });
     assert!(unknown.excluded.is_none() && unknown.asks_eligibility);
     let confirmed = score_pr(
         &r,
         &PrFacts {
             owned_change: OwnedChange::Unknown,
-            ..pr()
+            ..undirected()
         },
         Some(&judged(&JUDGED)),
         now(),

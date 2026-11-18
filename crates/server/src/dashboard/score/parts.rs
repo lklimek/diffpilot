@@ -264,6 +264,22 @@ pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
     if pr.is_draft && !rules.is_scanned(author) {
         return Eligibility::no(format!("draft by @{author} (only our own drafts count)"));
     }
+    // The ownership policy filters only what is not directed at the user (D19): authored by, assigned to or a
+    // review requested directly from a scanned login. A team-only request stays filtered: like human waiting, the
+    // scorer treats it as a hint only.
+    let directed = rules.is_scanned(author)
+        || pr.relations.contains(&Relation::Assigned)
+        || pr.review_pending_for_us;
+    if directed
+        && matches!(
+            pr.owned_change,
+            OwnedChange::None | OwnedChange::Minor | OwnedChange::Unknown
+        )
+    {
+        return Eligibility::yes(
+            "directed at you (the ownership policy applies only to other pull requests)",
+        );
+    }
     match pr.owned_change {
         OwnedChange::Significant => Eligibility::yes("significant change in owned paths"),
         OwnedChange::None => Eligibility::no("no change in owned paths (ownership policy)".into()),

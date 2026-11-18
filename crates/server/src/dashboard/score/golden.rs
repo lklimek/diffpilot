@@ -1,7 +1,8 @@
 //! Golden: ~160 synthetic items (`testdata/make_golden.py`, seeded; invented repositories, people and values chosen
 //! to hit every rule branch and bucket edge) ranked as the daily-priorities skill's own Python reference ranks them.
 //! Expected rows come from the skill's `scoring.py`, `todos.py` and `score.py` merge, so the golden checks the port
-//! independently. Settings = the skill's defaults (no skipped bot authors).
+//! independently. Settings = the skill's defaults (no skipped bot authors); the generator applies the one deviation,
+//! D19 (the ownership policy keeps pull requests directed at the user).
 
 use std::collections::HashMap;
 
