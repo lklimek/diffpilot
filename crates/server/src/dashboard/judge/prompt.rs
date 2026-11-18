@@ -17,6 +17,6 @@ pub(super) fn render(input: &JudgeWorkInput, language: LlmLanguage) -> Result<St
         LlmLanguage::Ru => "Russian (русский)",
     };
     Ok(TEMPLATE
-        .replacen(LANGUAGE, name, 1)
+        .replace(LANGUAGE, name)
         .replacen(DATA, &input.data_block()?, 1))
 }

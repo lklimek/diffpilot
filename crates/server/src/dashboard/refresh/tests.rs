@@ -21,8 +21,9 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use contracts::api::dashboard::{
-    DashboardEvent, DashboardSettings, DashboardSummary, HistoryKind, ItemCounts, ItemKind,
-    ItemPage, KindCounts, PolicyRef, RankingState, RefreshFailureCode, RefreshState, RefreshStatus,
+    DashboardEvent, DashboardSettings, DashboardSummary, ExcludedItem, ExclusionCount,
+    ExclusionReason, Exclusions, HistoryKind, ItemCounts, ItemKey, ItemKind, ItemPage, ItemTarget,
+    KindCounts, PolicyRef, RankingState, RefreshFailureCode, RefreshState, RefreshStatus,
     RepositoryRule, ScanStepKey, ScoreState, StepState, Tier, TodosStatus, WorkItem,
 };
 use contracts::common::RepoRef;
@@ -597,7 +598,13 @@ impl World {
     }
 
     async fn summary(&self, cookie: &str) -> DashboardSummary {
-        let answer = self.send("GET", "/api/v1/dashboard", cookie, &[]).await;
+        self.summary_with(cookie, "").await
+    }
+
+    async fn summary_with(&self, cookie: &str, query: &str) -> DashboardSummary {
+        let answer = self
+            .send("GET", &format!("/api/v1/dashboard{query}"), cookie, &[])
+            .await;
         assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
         serde_json::from_value(answer.body).expect("summary")
     }
@@ -677,8 +684,9 @@ impl World {
     }
 }
 
-/// The dashboard world as the scan sees it on 2026-11-18 (`fixtures/dashboard/github/README.md`); the ownership
-/// policy of `acme/platform` leaves #1176, #1199 and #1203 out (their recorded patches touch few owned lines).
+/// The dashboard world as the scan sees it on 2026-11-18 (`fixtures/dashboard/github/README.md`). The ownership
+/// policy of `acme/platform` finds only minor owned changes in #1176, #1199 and #1203, but all three are directed
+/// at alice (authored by her, or her review requested directly), so the policy keeps them (D19).
 #[tokio::test]
 async fn full_refresh_stores_the_expected_snapshot() {
     let w = world().await;
@@ -704,22 +712,63 @@ async fn full_refresh_stores_the_expected_snapshot() {
     let summary = w.summary(ALICE).await;
     let meta = summary.snapshot.expect("snapshot");
     assert_eq!(meta.refresh_id, done.id);
+    assert_eq!(
+        meta.exclusions,
+        Some(Exclusions {
+            total: 1,
+            counts: vec![ExclusionCount {
+                reason: ExclusionReason::ExcludedAuthor,
+                count: 1
+            }],
+            items: None,
+        }),
+        "counts only without ?excluded=true"
+    );
+    let node_client = || RepoRef {
+        owner: "acme".to_owned(),
+        name: "node-client".to_owned(),
+    };
+    let listed = w.summary_with(ALICE, "?excluded=true").await;
+    let items = listed
+        .snapshot
+        .and_then(|s| s.exclusions)
+        .and_then(|e| e.items)
+        .expect("listed");
+    assert_eq!(
+        items,
+        [ExcludedItem {
+            key: ItemKey::new(&ItemTarget::PullRequest {
+                repo: node_client(),
+                number: 495
+            })
+            .expect("key"),
+            kind: ItemKind::Pr,
+            id: "NC-495".to_owned(),
+            repo: Some(node_client()),
+            number: Some(495),
+            url: Some("https://github.com/acme/node-client/pull/495".to_owned()),
+            title: "chore(deps): bump serde from 1.0.228 to 1.0.229".to_owned(),
+            author: Some("dependabot[bot]".to_owned()),
+            reason: ExclusionReason::ExcludedAuthor,
+            merged_into: None,
+        }]
+    );
     assert_eq!(summary.latest_refresh.as_ref().map(|r| r.id), Some(done.id));
     assert_eq!(
         meta.item_counts,
         ItemCounts {
-            total: 18,
-            pr: 10,
+            total: 21,
+            pr: 13,
             issue: 6,
             todo: 2,
             p0: 0,
-            p1: 6,
-            p2: 4,
+            p1: 8,
+            p2: 5,
             p3: 8,
-            not_judged: 18,
+            not_judged: 21,
         }
     );
-    assert_eq!(meta.excluded, 4, "bot author and three minor owned changes");
+    assert_eq!(meta.excluded, 1, "the excluded bot author");
     assert_eq!(
         meta.checked,
         KindCounts {
@@ -793,13 +842,16 @@ async fn full_refresh_stores_the_expected_snapshot() {
     assert_eq!(
         alias_ids(&page.items),
         [
+            "PLAT-1203",
             "WUI-320",
             "NC-482",
             "WUI-311",
+            "PLAT-1176",
             "DOC-77",
             "NC-476",
             "CON-1534",
             "OPS-14",
+            "PLAT-1199",
             "PLAT-1187",
             "WUI-298",
             "NC-490",
@@ -818,7 +870,7 @@ async fn full_refresh_stores_the_expected_snapshot() {
     assert_eq!(first.score.state, ScoreState::Unjudged);
     assert_eq!(
         first.url.as_deref(),
-        Some("https://github.com/acme/wallet-ui/pull/320")
+        Some("https://github.com/acme/platform/pull/1203")
     );
     let ops = page
         .items
@@ -1130,7 +1182,7 @@ async fn items_page_with_cursor_etag_and_expired_cursor() {
     let w = world().await;
     w.refreshed().await;
     let all = w.items("").await;
-    assert_eq!(all.items.len(), 18, "default limit 100");
+    assert_eq!(all.items.len(), 21, "default limit 100");
     let first = w.items("?limit=5").await;
     assert_eq!(alias_ids(&first.items), alias_ids(&all.items[..5]));
     let cursor = first.next_cursor.clone().expect("next page");
@@ -1201,7 +1253,14 @@ async fn items_filters() {
     assert_eq!(
         alias_ids(&p1.items),
         [
-            "WUI-320", "NC-482", "WUI-311", "DOC-77", "NC-476", "CON-1534"
+            "PLAT-1203",
+            "WUI-320",
+            "NC-482",
+            "WUI-311",
+            "PLAT-1176",
+            "DOC-77",
+            "NC-476",
+            "CON-1534"
         ]
     );
     let issues = w.items("?kind=issue").await;
@@ -1220,7 +1279,7 @@ async fn items_filters() {
         "TODO items whatever kind says"
     );
     let prs = w.items("?kind=pr&todos=false").await;
-    assert_eq!(prs.items.len(), 10);
+    assert_eq!(prs.items.len(), 13);
     assert!(prs.items.iter().all(|i| i.kind == ItemKind::Pr));
     let wallet = w.items("?repo=ACME/wallet-ui").await;
     assert_eq!(
@@ -1530,7 +1589,7 @@ async fn search_outage_keeps_previous_snapshot() {
     let meta = summary.snapshot.expect("snapshot");
     assert_eq!(
         (second.state, meta.refresh_id, meta.item_counts.pr),
-        (RefreshState::Failed, first.id, 10),
+        (RefreshState::Failed, first.id, 13),
         "outage refresh: {:?}; current snapshot items {:?}",
         second.failure,
         meta.item_counts

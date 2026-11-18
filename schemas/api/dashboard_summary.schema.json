@@ -482,7 +482,7 @@
           "$ref": "#/$defs/ItemCounts"
         },
         "excluded": {
-          "description": "Items left out of the ranking (drafts of others, skipped bot authors, no owned change).",
+          "description": "Items left out of the ranking (`exclusions.total`).",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
@@ -522,6 +522,17 @@
         "checked": {
           "description": "What the scan read before exclusion.",
           "$ref": "#/$defs/KindCounts"
+        },
+        "exclusions": {
+          "description": "Why the rules left items out, computed with the ranking; absent only from a response without it (a server\nolder than this field), which the web shows as not recorded.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Exclusions"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -867,6 +878,183 @@
         "pr",
         "issue",
         "todo"
+      ]
+    },
+    "Exclusions": {
+      "description": "The items the rules left out of the ranking, counted per reason (facts only, no LLM text).",
+      "type": "object",
+      "properties": {
+        "total": {
+          "description": "All left-out items.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "counts": {
+          "description": "Non-zero counts, in the order of [`ExclusionReason`].",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExclusionCount"
+          }
+        },
+        "items": {
+          "description": "With `?excluded=true` only: the items by reason, then display id, at most [`EXCLUDED_ITEMS_LIMIT`].",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/ExcludedItem"
+          }
+        }
+      },
+      "required": [
+        "total",
+        "counts"
+      ]
+    },
+    "ExclusionCount": {
+      "description": "How many items one rule left out.",
+      "type": "object",
+      "properties": {
+        "reason": {
+          "description": "The rule.",
+          "$ref": "#/$defs/ExclusionReason"
+        },
+        "count": {
+          "description": "Items it left out.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "reason",
+        "count"
+      ]
+    },
+    "ExclusionReason": {
+      "description": "The rule that left an item out of the ranking. Clients show an unknown value as a plain \"other rule\".",
+      "oneOf": [
+        {
+          "description": "Written by an excluded author (Settings → Excluded authors).",
+          "type": "string",
+          "const": "excluded_author"
+        },
+        {
+          "description": "A pull request of someone else not directed at the user, with no or only a minor change in the user's\nowned paths (Settings → Ownership policy).",
+          "type": "string",
+          "const": "outside_owned_areas"
+        },
+        {
+          "description": "A draft pull request of someone else (only the user's own drafts count).",
+          "type": "string",
+          "const": "draft"
+        },
+        {
+          "description": "The LLM, asked because the ownership policy could not be read, judged it outside the user's areas.",
+          "type": "string",
+          "const": "judged_not_eligible"
+        },
+        {
+          "description": "The LLM merged it into another item covering the same work.",
+          "type": "string",
+          "const": "merged_into_another"
+        }
+      ]
+    },
+    "ExcludedItem": {
+      "description": "One item the rules left out.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "Stable key.",
+          "$ref": "#/$defs/ItemKey"
+        },
+        "kind": {
+          "description": "Kind.",
+          "$ref": "#/$defs/ItemKind"
+        },
+        "id": {
+          "description": "Display id (`PLAT-1203`, `TODO-3fa91c2e`).",
+          "type": "string"
+        },
+        "repo": {
+          "description": "Repository; null for TODOs.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepoRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "number": {
+          "description": "Number; null for TODOs.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "url": {
+          "description": "Link: GitHub, or the MemCan UI for a TODO when configured.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Title, plain text.",
+          "type": "string"
+        },
+        "author": {
+          "description": "Author login; null for TODOs.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "description": "The rule.",
+          "$ref": "#/$defs/ExclusionReason"
+        },
+        "merged_into": {
+          "description": "Display id of the item it was merged into (`merged_into_another` only).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "id",
+        "title",
+        "reason"
+      ]
+    },
+    "ItemKind": {
+      "description": "Kind of a work item.",
+      "oneOf": [
+        {
+          "description": "A GitHub pull request.",
+          "type": "string",
+          "const": "pr"
+        },
+        {
+          "description": "A GitHub issue.",
+          "type": "string",
+          "const": "issue"
+        },
+        {
+          "description": "A MemCan TODO.",
+          "type": "string",
+          "const": "todo"
+        }
       ]
     },
     "ScheduleStatus": {

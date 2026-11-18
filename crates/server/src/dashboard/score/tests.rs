@@ -949,6 +949,95 @@ fn ci_classification_matches_skill_vectors() {
 
 // --- eligibility --------------------------------------------------------------------------------------------
 
+/// D19: the ownership policy never drops a pull request directed at the user (authored by a scanned login,
+/// assigned to one, or a review requested from one directly); a team-only request or a mention stays filtered,
+/// and excluded authors still win.
+#[test]
+fn ownership_policy_keeps_pull_requests_directed_at_the_user() {
+    let r = rules();
+    let verdict = |facts: PrFacts| {
+        let item = score_pr(&r, &facts, None, now()).expect("scores");
+        (item.excluded, item.asks_eligibility)
+    };
+    let outside = |relations: Vec<Relation>, author: &str, direct: bool, owned| PrFacts {
+        author: Some(author.into()),
+        relations,
+        review_pending_for_us: direct,
+        owned_change: owned,
+        ..pr()
+    };
+    for (facts, why) in [
+        (
+            outside(
+                vec![Relation::ReviewRequested],
+                "bob",
+                true,
+                OwnedChange::None,
+            ),
+            "review requested from alice",
+        ),
+        (
+            outside(vec![Relation::Assigned], "bob", false, OwnedChange::Minor),
+            "assigned to alice",
+        ),
+        (
+            outside(
+                vec![Relation::Mentioned],
+                "alice-ci",
+                false,
+                OwnedChange::None,
+            ),
+            "authored by a linked login",
+        ),
+        (
+            outside(
+                vec![Relation::ReviewRequested],
+                "bob",
+                true,
+                OwnedChange::Unknown,
+            ),
+            "unknown policy, directed",
+        ),
+    ] {
+        assert_eq!(verdict(facts), (None, false), "{why}");
+    }
+    for (facts, reason) in [
+        (
+            outside(
+                vec![Relation::ReviewRequested],
+                "bob",
+                false,
+                OwnedChange::None,
+            ),
+            "no change in owned paths (ownership policy)",
+        ),
+        (
+            outside(vec![Relation::Mentioned], "bob", false, OwnedChange::Minor),
+            "only a minor change in owned paths (ownership policy)",
+        ),
+        (
+            outside(
+                vec![Relation::ReviewRequested],
+                "dependabot",
+                true,
+                OwnedChange::Significant,
+            ),
+            "author @dependabot is excluded",
+        ),
+    ] {
+        assert_eq!(verdict(facts), (Some(reason.to_owned()), false), "{reason}");
+    }
+}
+
+/// A pull request of someone else that is not directed at the user (only mentioned).
+fn undirected() -> PrFacts {
+    PrFacts {
+        author: Some("bob".into()),
+        relations: vec![Relation::Mentioned],
+        ..pr()
+    }
+}
+
 #[test]
 fn eligibility_ownership_policy_and_drafts() {
     let r = rules();
@@ -962,7 +1051,7 @@ fn eligibility_ownership_policy_and_drafts() {
             &r,
             &PrFacts {
                 owned_change: verdict,
-                ..pr()
+                ..undirected()
             },
             None,
             now(),
@@ -973,14 +1062,14 @@ fn eligibility_ownership_policy_and_drafts() {
     }
     let unknown = scored(&PrFacts {
         owned_change: OwnedChange::Unknown,
-        ..pr()
+        ..undirected()
     });
     assert!(unknown.excluded.is_none() && unknown.asks_eligibility);
     let confirmed = score_pr(
         &r,
         &PrFacts {
             owned_change: OwnedChange::Unknown,
-            ..pr()
+            ..undirected()
         },
         Some(&judged(&JUDGED)),
         now(),
@@ -1453,6 +1542,80 @@ fn alarms_rank_first_and_merges_leave_items_out() {
         reasons,
         ["merged into wallet-ui#4", "merged into wallet-ui#4"]
     );
+}
+
+/// B4: every left-out item names the rule that left it out (one per rule) and, when merged, the item it went into.
+#[test]
+fn every_left_out_item_names_its_rule() {
+    use contracts::api::dashboard::ExclusionReason as R;
+    let r = rules();
+    let score = |facts: PrFacts, judgement: Option<&Judgement>| {
+        score_pr(&r, &facts, judgement, now()).expect("scores")
+    };
+    let mut not_eligible = judged(&JUDGED);
+    not_eligible.eligibility = Some(EligibilityJudgement {
+        eligible: false,
+        reason: "Generated code only.".into(),
+    });
+    let survivor = score(PrFacts { number: 6, ..pr() }, None);
+    let merged = score(PrFacts { number: 5, ..pr() }, None);
+    let items = vec![
+        score(
+            PrFacts {
+                number: 1,
+                author: Some("dependabot".into()),
+                ..pr()
+            },
+            None,
+        ),
+        score(
+            PrFacts {
+                number: 2,
+                owned_change: OwnedChange::Minor,
+                ..undirected()
+            },
+            None,
+        ),
+        score(
+            PrFacts {
+                number: 3,
+                is_draft: true,
+                ..undirected()
+            },
+            None,
+        ),
+        score(
+            PrFacts {
+                number: 4,
+                owned_change: OwnedChange::Unknown,
+                ..undirected()
+            },
+            Some(&not_eligible),
+        ),
+        merged.clone(),
+        Scored {
+            also: vec![merged.key.clone()],
+            ..survivor
+        },
+    ];
+    let ranking = rank(items);
+    let left_out: Vec<_> = ranking
+        .excluded
+        .iter()
+        .map(|e| (e.id.as_str(), e.rule, e.merged_into.as_deref()))
+        .collect();
+    assert_eq!(
+        left_out,
+        [
+            ("wallet-ui#1", R::ExcludedAuthor, None),
+            ("wallet-ui#2", R::OutsideOwnedAreas, None),
+            ("wallet-ui#3", R::Draft, None),
+            ("wallet-ui#4", R::JudgedNotEligible, None),
+            ("wallet-ui#5", R::MergedIntoAnother, Some("wallet-ui#6")),
+        ]
+    );
+    let ranked: Vec<_> = ranking.ranked.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ranked, ["wallet-ui#6"]);
 }
 
 #[test]

@@ -1,0 +1,176 @@
+import { useId, useState } from "react";
+import type { ExcludedItem, ExclusionCount, ExclusionReason, Exclusions } from "../../../api/generated/types";
+import { navigateOnClick, type Navigate } from "../common/navigate";
+import { Tooltip } from "../../tooltip/Tooltip";
+import { OpenExternal, openLabel } from "../common/OpenExternal";
+
+interface ExcludedItemsProps {
+  /** The snapshot's exclusions; absent when the snapshot did not record them. */
+  exclusions: Exclusions | null | undefined;
+  /** In-app href of Settings, linked from the rules that have a setting. */
+  settingsHref?: string;
+  onNavigate?: Navigate;
+}
+
+interface ReasonText {
+  /** Count phrase of the summary line. */
+  count: (n: number) => string;
+  title: string;
+  /** The rule as a fact. */
+  rule: string;
+  /** The setting that holds the rule, if one. */
+  setting?: string;
+}
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+const REASONS: Record<ExclusionReason, ReasonText> = {
+  excluded_author: {
+    count: (n) => plural(n, "excluded author", "excluded authors"),
+    title: "Excluded authors",
+    rule: "Pull requests and issues written by an excluded author.",
+    setting: "Settings → Excluded authors",
+  },
+  outside_owned_areas: {
+    count: (n) => `${n} outside your areas`,
+    title: "Outside your areas",
+    rule: "Pull requests of others not directed at you, with no or only a minor change in your owned paths.",
+    setting: "Settings → Ownership policy",
+  },
+  draft: {
+    count: (n) => plural(n, "draft", "drafts"),
+    title: "Drafts",
+    rule: "Draft pull requests of other authors; only your own drafts count.",
+  },
+  judged_not_eligible: {
+    count: (n) => `${n} judged outside your areas by the LLM`,
+    title: "Judged outside your areas (LLM)",
+    rule: "The ownership policy file could not be read; the LLM judged these outside your areas.",
+  },
+  merged_into_another: {
+    count: (n) => plural(n, "merged into another item", "merged into other items"),
+    title: "Merged into another item",
+    rule: "The LLM merged each into another item covering the same work.",
+  },
+};
+
+const OTHER: ReasonText = {
+  count: (n) => `${n} by another rule`,
+  title: "Another rule",
+  rule: "Left out by a rule this page does not know yet.",
+};
+
+// The server may add reasons; an unknown one reads as "another rule".
+const textOf = (reason: string): ReasonText =>
+  Object.hasOwn(REASONS, reason) ? REASONS[reason as ExclusionReason] : OTHER;
+
+/** Largest count first; equal counts keep the server's order. */
+const byCount = (counts: ExclusionCount[]) => [...counts].sort((a, b) => b.count - a.count);
+
+/**
+ * What the ranking rules left out of Needs you (B4): one quiet line with the counts per reason, and a disclosure
+ * listing the items by reason with links out. Facts only; titles are plain text.
+ */
+export function ExcludedItems({ exclusions, settingsHref, onNavigate }: ExcludedItemsProps) {
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
+  const quiet = "text-xs text-muted";
+  if (!exclusions) {
+    return <p className={quiet}>Excluded: not recorded for this snapshot — refresh to see it.</p>;
+  }
+  if (exclusions.total === 0) return <p className={quiet}>Excluded: none</p>;
+  const counts = byCount(exclusions.counts);
+  const line = `Excluded: ${exclusions.total} — ${counts.map((c) => textOf(c.reason).count(c.count)).join(" · ")}`;
+  const items = exclusions.items ?? [];
+  return (
+    <div className="mt-1">
+      <Tooltip
+        tip={open ? "Hide the excluded items" : "List the excluded items by reason, with links to GitHub"}
+      >
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((was) => !was)}
+          className={`${quiet} inline-flex min-h-6 items-center gap-1 rounded text-left hover:text-text focus-visible:outline-2 focus-visible:outline-accent`}
+        >
+          <span aria-hidden="true">{open ? "▾" : "▸"}</span>
+          <span>{line}</span>
+        </button>
+      </Tooltip>
+      {open && (
+        <div
+          id={panelId}
+          className="mt-1.5 flex flex-col gap-3 rounded-lg border border-border bg-surface p-3"
+        >
+          {counts.map(({ reason, count }) => (
+            <Group
+              key={reason}
+              text={textOf(reason)}
+              count={count}
+              items={items.filter((item) => item.reason === reason)}
+              settingsHref={settingsHref}
+              onNavigate={onNavigate}
+            />
+          ))}
+          {items.length < exclusions.total && (
+            <p className={quiet}>
+              Listed: the first {items.length} of {exclusions.total}.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Group({
+  text,
+  count,
+  items,
+  settingsHref,
+  onNavigate,
+}: {
+  text: ReasonText;
+  count: number;
+  items: ExcludedItem[];
+  settingsHref?: string;
+  onNavigate?: Navigate;
+}) {
+  const label = `${text.title}: ${count}`;
+  return (
+    <div role="group" aria-label={label} className="text-xs">
+      <p className="font-semibold text-text">{label}</p>
+      <p className="text-muted">
+        {text.rule}
+        {text.setting && settingsHref && (
+          <>
+            {" "}
+            <a
+              href={settingsHref}
+              onClick={navigateOnClick(settingsHref, onNavigate)}
+              className="text-accent underline"
+            >
+              {text.setting}
+            </a>
+          </>
+        )}
+      </p>
+      {items.length > 0 && (
+        <ul className="m-0 mt-1 flex list-none flex-col gap-1 p-0">
+          {items.map((item) => (
+            <li key={item.key} className="flex min-w-0 items-center gap-2">
+              <OpenExternal href={item.url} label={openLabel(item)} />
+              <span className="shrink-0 font-mono">{item.id}</span>
+              <span className="min-w-0 truncate">{item.title}</span>
+              {item.author && <span className="shrink-0 text-muted">by @{item.author}</span>}
+              {item.merged_into && (
+                <span className="shrink-0 text-muted">merged into {item.merged_into}</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}

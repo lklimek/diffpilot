@@ -1248,6 +1248,9 @@ async fn eligibility_answer_hides_an_item_only_when_asked() {
     let h = harness().await;
     let mut unchecked = pr(1, "fix: owned paths unknown");
     unchecked.facts.owned_change = OwnedChange::Unknown;
+    // Not directed at the user: the ownership policy applies (D19).
+    unchecked.facts.author = Some("bob".into());
+    unchecked.facts.relations = vec![Relation::Mentioned];
     let snap = snapshot(vec![unchecked, pr(2, "fix: y")], vec![], vec![]);
     let id = h.rank("u1", &snap).await;
     let (_, input) = h
@@ -1289,9 +1292,16 @@ fn unasked_eligibility_answer_is_dropped() {
     let snap = snapshot(vec![pr(1, "fix: x")], vec![], vec![]);
     let mut item = candidates(&snap, LlmLanguage::En)[0].item.clone();
     assert!(!item.asks_eligibility, "premise");
-    assert_eq!(store::Body::of(answer.clone(), &item).eligibility, None);
+    assert_eq!(
+        store::Body::of(answer.clone(), &item, LlmLanguage::En).eligibility,
+        None
+    );
     item.asks_eligibility = true;
-    assert!(store::Body::of(answer, &item).eligibility.is_some());
+    assert!(
+        store::Body::of(answer, &item, LlmLanguage::En)
+            .eligibility
+            .is_some()
+    );
 }
 
 /// A Polish user's judge job asks for Polish texts; after a switch back to English the stored Polish judgement is
@@ -1325,6 +1335,89 @@ async fn ranking_texts_follow_the_users_language() {
     assert_eq!(
         h.judgements("u1", &snap).await[&key(1)].judgement.freshness,
         Freshness::Inherited
+    );
+}
+
+/// After a language switch the judge gets the previous judgement's points without its old-language texts, so it
+/// cannot copy them into the new judgement.
+#[tokio::test]
+async fn previous_texts_are_not_sent_after_a_language_switch() {
+    let h = harness().await;
+    h.db()
+        .settings()
+        .set_language("u1", LlmLanguage::Pl, Timestamp::now())
+        .await
+        .expect("language");
+    let snap = snapshot(prs(1), vec![], vec![]);
+    let first = h.rank("u1", &snap).await;
+    h.serve(|i| succeeded(neutral(i))).await;
+    h.ranked("u1", first).await;
+    h.db()
+        .settings()
+        .set_language("u1", LlmLanguage::En, Timestamp::now())
+        .await
+        .expect("language");
+    let second = h.rank("u1", &snap).await;
+    let (_, input) = h.serve(|i| succeeded(neutral(i))).await;
+    let previous = input.items[0].previous.clone().expect("previous judgement");
+    assert_eq!(
+        (
+            previous.why.as_str(),
+            previous.next.as_str(),
+            previous.alarm
+        ),
+        ("", "", None)
+    );
+    assert!(!previous.parts.is_empty());
+    assert!(
+        previous
+            .parts
+            .iter()
+            .all(|p| p.basis.is_empty() && p.points_tenths.is_some())
+    );
+    h.ranked("u1", second).await;
+    // Judged again in English: its own texts are sent next time.
+    let third = h
+        .rank(
+            "u1",
+            &snapshot(vec![pr(1, "fix: renamed title")], vec![], vec![]),
+        )
+        .await;
+    let (_, input) = h.serve(|i| succeeded(neutral(i))).await;
+    let previous = input.items[0].previous.clone().expect("previous judgement");
+    assert_eq!(previous.why, "Judged for the test.");
+    h.ranked("u1", third).await;
+}
+
+/// B4: the excluded list is capped at 200 (by display id); the counts cover every left-out item.
+#[test]
+fn excluded_list_is_capped_and_counted_in_full() {
+    use contracts::api::dashboard::{ExclusionCount, ExclusionReason};
+    let prs = (1..=205)
+        .map(|n| {
+            let mut item = pr(n, &format!("chore(deps): bump {n}"));
+            item.facts.author = Some("dependabot".into());
+            item
+        })
+        .collect();
+    let view = snapshot::build(&snapshot(prs, vec![], vec![]), &HashMap::new(), None);
+    let exclusions = &view.exclusions;
+    assert_eq!(
+        (exclusions.total, exclusions.counts.as_slice()),
+        (
+            205,
+            [ExclusionCount {
+                reason: ExclusionReason::ExcludedAuthor,
+                count: 205
+            }]
+            .as_slice()
+        )
+    );
+    let items = exclusions.items.as_deref().expect("listed");
+    assert_eq!(items.len(), 200);
+    assert_eq!(
+        (items[0].id.as_str(), items[199].id.as_str()),
+        ("wallet-ui#1", "wallet-ui#200")
     );
 }
 

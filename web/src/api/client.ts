@@ -298,7 +298,8 @@ export function createApiClient(baseUrl = "") {
         handlers.onError,
       );
     },
-    getDashboard: () => call<DashboardSummary>("getDashboard"),
+    /** The summary with the excluded items listed (`?excluded=true`, B4). */
+    getDashboard: () => call<DashboardSummary>("getDashboard", { query: { excluded: "true" } }),
     /** One page of ranked items; `etag` of the same request's previous answer makes a 304 `unchanged`. */
     listDashboardItems: (query: ItemQuery, etag: string | null = null) =>
       conditional<ItemPage>("listDashboardItems", { query: itemQueryParams(query) }, etag),

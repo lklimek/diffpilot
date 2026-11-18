@@ -42,7 +42,7 @@ marked `read` in `routes.rs`; every other route answers 403 `token_not_accepted`
 | ID | Route | Response (`schemas/api/<file>`) |
 |---|---|---|
 | A1 | `GET /api/v1/me` | `MeResponse` (`me_response`) |
-| A2 | `GET /api/v1/dashboard` (R1) | `DashboardSummary` (`dashboard_summary`) |
+| A2 | `GET /api/v1/dashboard` (R1) | `DashboardSummary` (`dashboard_summary`); query `SummaryQuery` (`summary_query`) |
 | A3 | `GET /api/v1/dashboard/items` (R1b) | `ItemPage` (`item_page`); query `ItemQuery` (`item_query`) |
 | A4 | `GET /api/v1/dashboard/refreshes/{id}` (R2b) | `RefreshStatus` (`refresh_status`) |
 | A5 | `GET /api/v1/dashboard/refreshes/{id}/events` (R5) | SSE, data `DashboardEvent` (`dashboard_event`) |
@@ -76,7 +76,9 @@ JSON Schemas of every response above are checked in under `schemas/api/` (genera
 ## 4. Reading the priorities
 Cheap polling (plan §E.5 E5-5):
 
-1. `GET /api/v1/dashboard` → `revision`, `snapshot` (scan time, counts, notes), `latest_refresh`, `schedule`.
+1. `GET /api/v1/dashboard` → `revision`, `snapshot` (scan time, counts, notes, `exclusions`: what the rules left
+   out, counted per reason), `latest_refresh`, `schedule`. Add `?excluded=true` to list the left-out items too
+   (at most 200: id, URL, title, author, reason; facts only).
 2. Only when `revision` differs from the last one seen: read the items (step 3). The snapshot changes after a
    refresh (manual or the daily automatic one) and again when the LLM ranking lands.
 3. `GET /api/v1/dashboard/items?…` page by page (below). Keep the weak `ETag` of the answer and send it back as

@@ -138,7 +138,7 @@ Personal access tokens keep working after Sign out.
 
 ### Ownership policy
 
-- **What:** Optional. A JSON file listing the paths you own in this repository, in the format of dashpay/stale_prs_are_bad. In a repository with a policy, a pull request stays in Needs you only when it changes a fair amount of code in your paths.
+- **What:** Optional. A JSON file listing the paths you own in this repository, in the format of dashpay/stale_prs_are_bad. In a repository with a policy, a pull request of others stays in Needs you only when it changes a fair amount of code in your paths; pull requests directed at you always stay.
 - **When used:** Every refresh reads the file for the repository's pull requests.
 - **Empty or default:** Leave both fields empty when the repository has no such file: every open pull request counts.
 - **Limits:** Both fields or neither. The repository as owner/name; the path relative, ending with .json, without .., % or \\.
@@ -146,7 +146,7 @@ Personal access tokens keep working after Sign out.
 
 Format: the JSON files of https://github.com/dashpay/stale_prs_are_bad (folder policies/). The tool reads only areas: a list of objects with paths, owners and reviewers. The paths of every area that names you or a linked login as owner or reviewer are yours; a path matches every file that starts with it.
 
-What counts: a pull request whose changes in your paths are only comments or docs, or only a few code lines (fewer than 12 distinct code lines, or fewer than 8 in any one file), is left out of Needs you. This applies to your own pull requests as well as to those of others.
+What counts: a pull request whose changes in your paths are only comments or docs, or only a few code lines (fewer than 12 distinct code lines, or fewer than 8 in any one file), is left out of Needs you, unless it is directed at you: your own (or a linked login's), assigned to you, or with your review requested directly. A review requested only from one of your teams does not count as directed. Excluded authors are left out whatever the policy says.
 
 When the file cannot be read: its pull requests stay in the list with ownership unverified, the LLM is asked to confirm, and What the scan missed names the file.
 

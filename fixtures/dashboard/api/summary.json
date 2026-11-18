@@ -1473,6 +1473,70 @@
       "pr": 41,
       "issue": 23,
       "todo": 31
+    },
+    "exclusions": {
+      "total": 3,
+      "counts": [
+        {
+          "reason": "excluded_author",
+          "count": 1
+        },
+        {
+          "reason": "outside_owned_areas",
+          "count": 1
+        },
+        {
+          "reason": "draft",
+          "count": 1
+        }
+      ],
+      "items": [
+        {
+          "key": "acme~wallet-ui~pr~330",
+          "kind": "pr",
+          "id": "WUI-330",
+          "repo": {
+            "owner": "acme",
+            "name": "wallet-ui"
+          },
+          "number": 330,
+          "url": "https://github.com/acme/wallet-ui/pull/330",
+          "title": "chore(deps): bump vite from 7.1.2 to 7.1.3",
+          "author": "dependabot",
+          "reason": "excluded_author",
+          "merged_into": null
+        },
+        {
+          "key": "acme~platform~pr~1188",
+          "kind": "pr",
+          "id": "PLAT-1188",
+          "repo": {
+            "owner": "acme",
+            "name": "platform"
+          },
+          "number": 1188,
+          "url": "https://github.com/acme/platform/pull/1188",
+          "title": "docs(api): fix a link in the identity guide",
+          "author": "olek-d",
+          "reason": "outside_owned_areas",
+          "merged_into": null
+        },
+        {
+          "key": "acme~node-client~pr~493",
+          "kind": "pr",
+          "id": "NC-493",
+          "repo": {
+            "owner": "acme",
+            "name": "node-client"
+          },
+          "number": 493,
+          "url": "https://github.com/acme/node-client/pull/493",
+          "title": "feat(rpc): stream block headers",
+          "author": "dana",
+          "reason": "draft",
+          "merged_into": null
+        }
+      ]
     }
   },
   "schedule": {

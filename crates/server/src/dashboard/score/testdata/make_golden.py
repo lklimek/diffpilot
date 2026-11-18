@@ -121,6 +121,18 @@ def make_pr(rng, repo, number):
     return pr
 
 
+def eligibility(pr):
+    """The skill's `pr_eligibility`, with smart-review's one deviation (D19): the ownership policy never drops a
+    pull request directed at the user (authored by a scanned login, assigned to one, or a direct review request)."""
+    ok, reason = scoring.pr_eligibility(pr, USERS)
+    directed = (
+        (pr["author"] or "").lower() in USERS or "assigned" in pr["relations"] or bool(pr["reviewPendingFor"])
+    )
+    if not ok and "ownedChange" in reason and directed:
+        return True, "directed at you (the ownership policy applies only to other pull requests)"
+    return ok, reason
+
+
 def make_issue(rng, repo, number):
     milestone = pick(rng, ("absent", 1), ("none", 4), ("version", 3))
     issue = {
@@ -171,7 +183,7 @@ def main():
     scan = {"generated_at": NOW.isoformat(), "users": USERS, "prs": [], "issues": [], "errors": []}
     for pr in prs:
         ref = dict(pr, repo=POLICY_REPO if pr["repo"] == "acme/core" else pr["repo"])
-        ok, reason = scoring.pr_eligibility(ref, USERS)
+        ok, reason = eligibility(ref)
         parts = scoring.pr_score_parts(ref, USERS, pr["body"])
         scan["prs"].append(
             {

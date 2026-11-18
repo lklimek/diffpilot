@@ -556,7 +556,7 @@ HTTP type (the drift test covers them). Fixtures: `fixtures/dashboard/` (README 
 
 | ID | Method | Path | Auth | Request | Response |
 |---|---|---|---|---|---|
-| R1 | GET | `/api/v1/dashboard` | read | – | `DashboardSummary` |
+| R1 | GET | `/api/v1/dashboard` | read | `SummaryQuery` | `DashboardSummary` |
 | R1b | GET | `/api/v1/dashboard/items` | read | `ItemQuery` | `ItemPage`; weak `ETag`, `If-None-Match` → 304; 409 `cursor_expired` |
 | R2 | POST | `/api/v1/dashboard/refreshes` | session_csrf | – | 201 `RefreshStatus` (supersedes a ranking, Refresh states); 409 `refresh_running` while one scans; 429 `github_rate_limited` |
 | R2b | GET | `/api/v1/dashboard/refreshes/{id}` | read | – | `RefreshStatus` |
@@ -591,6 +591,14 @@ Every v1 `GET` route with session auth is `read` (ADR-019 lists them; paths and 
   (`ItemQuery::DEFAULT_LIMIT`, `MAX_LIMIT`; larger values are clamped); `cursor` is opaque, encodes the revision and
   position, and from an older revision answers 409 `cursor_expired` (the order changes when judgements land). No
   snapshot yet: an empty page.
+- **Excluded items (R1, B4).** `SnapshotMeta.exclusions` tells what the rules left out of the ranking, computed
+  with the ranking at read time from the stored scan facts (so every stored snapshot has it; the web shows "not
+  recorded for this snapshot" only when the field is absent): `total` (= `excluded`) and the non-zero `counts` per
+  `ExclusionReason` (`excluded_author`, `outside_owned_areas`, `draft`, `judged_not_eligible`,
+  `merged_into_another`; clients treat an unknown value as "another rule"). `?excluded=true` adds `items`: at most
+  200 (`EXCLUDED_ITEMS_LIMIT`) `ExcludedItem`s by reason, then display id (key, kind, display id, repository,
+  number, URL, plain title, author, reason, `merged_into`); no LLM text. Without the flag the summary carries the
+  counts only (a few hundred bytes; the list can reach tens of KB). Same scope as the rest of the summary.
 - **Item keys** (normative; `ItemKey` in `api/dashboard.rs` is the only constructor and parser, and rejects any
   other form on deserialisation): `<owner>~<repo>~pr~<number>`, `<owner>~<repo>~issue~<number>` (GitHub owner
   `[A-Za-z0-9-]{1,39}`, repository `[A-Za-z0-9._-]{1,100}`, number without leading zeros, > 0) and
