@@ -114,6 +114,35 @@ describe("Ask the LLM about a line: the classic diff", () => {
     expect(document.querySelector('[data-diff-line="added"]')).toHaveTextContent(/^97\+added line/);
   });
 
+  it("asks about the selected lines of one side when the clicked line is in the selection", async () => {
+    const onAskLine = vi.fn();
+    const added: DiffResponse = {
+      ...diff,
+      hunks: [
+        {
+          header: "@@ -54,1 +97,4 @@",
+          lines: [97, 98, 99, 100].map((n) => ({
+            kind: "added" as const,
+            old_line: null,
+            new_line: n,
+            text: `line ${n}`,
+            eol: null,
+          })),
+        },
+      ],
+    };
+    render(<ClassicDiff diff={added} onAskLine={onAskLine} />);
+    const code = (text: string) => screen.getByText(text);
+    window.getSelection()!.setBaseAndExtent(code("line 97").firstChild!, 0, code("line 99").firstChild!, 2);
+    await userEvent.click(screen.getByRole("button", { name: "Ask the LLM about line 98" }));
+    expect(onAskLine).toHaveBeenLastCalledWith({
+      path: "src/rpc/client.rs",
+      side: "head",
+      start_line: 97,
+      line: 99,
+    });
+  });
+
   it("offers no Ask action without its callback", () => {
     render(<ClassicDiff diff={diff} />);
     expect(screen.queryAllByRole("button", { name: /^Ask the LLM about / })).toHaveLength(0);

@@ -86,6 +86,8 @@ describe("AskThread: the analysis's Ask conversation as one thread", () => {
     expect(whole).toHaveAttribute("aria-pressed", "true");
     expect(here).toHaveAttribute("aria-pressed", "false");
     expect(whole).toHaveAccessibleDescription(/every question you asked in this analysis/);
+    // The thread is the user's conversation about this analysis; nothing is claimed about the LLM's memory.
+    expect(whole).not.toHaveAccessibleDescription(/remember/i);
     expect(here).toHaveAccessibleDescription(/only the questions asked on this step/);
     await userEvent.click(here);
     expect(here).toHaveAttribute("aria-pressed", "true");
@@ -107,7 +109,9 @@ describe("AskThread: the analysis's Ask conversation as one thread", () => {
 
   it("scrolls to the newest entry, but not while the user reads further up", () => {
     const { rerender } = render(<Harness />);
-    const box = screen.getByRole("region", { name: "Ask conversation" });
+    const box = screen.getByRole("region", { name: "Scrollable conversation" });
+    // One name each: the scroller and the list inside it are announced differently.
+    expect(screen.queryByRole("region", { name: "Ask conversation" })).toBeNull();
     expect(box.className).toMatch(/(^|\s)overflow-y-auto(\s|$)/);
     expect(box).toHaveAttribute("tabindex", "0");
     // jsdom has no layout: give the box a height and content size.

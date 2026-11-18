@@ -98,7 +98,8 @@ function AskDraft({
     }
     setEmpty(false);
     if (await action.run(() => onAsk(step.id, question))) {
-      setText("");
+      // Only the sent text goes: a line reference inserted meanwhile (appended, see below) stays.
+      setText((now) => (now.startsWith(text) ? now.slice(text.length).trimStart() : now));
       requestAnimationFrame(() => growField(field.current));
     }
   };
@@ -113,23 +114,24 @@ function AskDraft({
     if (alerting && !open) reveal?.("ask");
   }, [alerting, open, reveal]);
 
-  // Inserted text goes in at the cursor (the field keeps it while unfocused), spaced from its neighbours.
+  // Inserted text goes in at the cursor (the field keeps it while unfocused), spaced from its neighbours; while a
+  // question is being sent, after it, so clearing the sent text keeps it.
   const inserted = useRef<{ text: string } | null>(null);
   const caret = useRef<{ at: number; value: string } | null>(null);
   useEffect(() => {
     if (!insert || inserted.current === insert) return;
     inserted.current = insert;
     const element = field.current;
-    const from = element?.selectionStart ?? text.length;
+    const from = action.busy ? text.length : (element?.selectionStart ?? text.length);
     const before = text.slice(0, from);
-    const after = text.slice(element?.selectionEnd ?? from);
+    const after = text.slice(action.busy ? from : (element?.selectionEnd ?? from));
     const piece = `${before && !/\s$/.test(before) ? " " : ""}${insert.text}${/^\s/.test(after) ? "" : " "}`;
     caret.current = { at: before.length + piece.length, value: before + piece + after };
     setText(caret.current.value);
     setEmpty(false);
     if (!open) reveal?.("ask");
     onInserted?.();
-  }, [insert, text, open, reveal, onInserted]);
+  }, [insert, text, open, reveal, onInserted, action.busy]);
   useEffect(() => {
     const element = field.current;
     // Once the new text is rendered and Ask is open.
@@ -140,9 +142,9 @@ function AskDraft({
     growField(element);
   });
   return (
-    // `data-dock-grow`: in a resized Inspector dock, Ask takes the room.
-    <section aria-labelledby={`${id}-h`} data-dock-grow className="flex min-h-0 flex-col">
-      <h3 id={`${id}-h`} className="m-0 text-[10.5px] font-bold tracking-wide text-muted uppercase">
+    // `data-dock-grow`: in a resized Inspector dock, Ask takes the room; only its conversation gives room back.
+    <section aria-labelledby={`${id}-h`} data-dock-grow className="flex flex-1 flex-col">
+      <h3 id={`${id}-h`} className="m-0 shrink-0 text-[10.5px] font-bold tracking-wide text-muted uppercase">
         {sections ? (
           <button
             type="button"
@@ -157,10 +159,10 @@ function AskDraft({
           <AskCaption subject={subject} count={count} />
         )}
       </h3>
-      <div id={`${id}-b`} hidden={!open} className="flex min-h-0 flex-1 flex-col">
-        {answers && <div className="mt-1 flex min-h-0 flex-1 flex-col">{answers}</div>}
+      <div id={`${id}-b`} hidden={!open} className="flex flex-1 flex-col">
+        {answers && <div className="mt-1 flex flex-1 flex-col">{answers}</div>}
         <form
-          className="mt-1 flex items-start gap-2"
+          className="mt-1 flex shrink-0 items-start gap-2"
           onSubmit={(event) => {
             event.preventDefault();
             void send();

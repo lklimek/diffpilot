@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { AskForm, lineReference } from "./AskForm";
@@ -38,6 +38,27 @@ describe("AskForm: text inserted from a code line", () => {
     expect(field.selectionStart).toBe("Why does src/a.rs:12 ".length);
     expect(onInserted).toHaveBeenCalledOnce();
     expect(onAsk).not.toHaveBeenCalled();
+  });
+
+  it("keeps a reference inserted while a question is being sent; only the sent text is cleared", async () => {
+    let resolve: () => void = () => {};
+    const onAsk = vi.fn(() => new Promise<void>((r) => (resolve = r)));
+    const { rerender } = render(<AskForm step={step5} onAsk={onAsk} sections={sections(true)} />);
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox");
+    await userEvent.type(field, "Why?{Enter}");
+    expect(onAsk).toHaveBeenCalledWith("f1.5", "Why?");
+    field.setSelectionRange(1, 1);
+    rerender(
+      <AskForm
+        step={step5}
+        onAsk={onAsk}
+        sections={sections(true)}
+        insert={{ text: "src/a.rs:12" }}
+        onInserted={() => {}}
+      />,
+    );
+    await act(async () => resolve());
+    expect(field).toHaveValue("src/a.rs:12 ");
   });
 
   it("opens a collapsed Ask first", () => {

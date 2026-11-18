@@ -427,14 +427,27 @@ function FoldRow({
  * The line, or the lines of a selection over several lines of the same view and side that includes it (selected
  * with the mouse before "Ask about this line").
  */
-function selectedTarget(button: HTMLElement, path: string, side: LineSide, line: number): CommentTarget {
+export function selectedTarget(
+  button: HTMLElement,
+  path: string,
+  side: LineSide,
+  line: number,
+  // How a row names its line: the code view's `data-line` / `data-side`, or another view's attributes.
+  rows: { selector: string; side: string; line: string } = {
+    selector: "[data-line]",
+    side: "side",
+    line: "line",
+  },
+): CommentTarget {
   const single = { path, side, start_line: null, line };
   const selection = window.getSelection();
   const view = button.closest("[role=region]");
   if (!selection || selection.isCollapsed || !view) return single;
   const lineOf = (node: Node | null) => {
-    const row = (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>("[data-line]");
-    return row && view.contains(row) && row.dataset.side === side ? Number(row.dataset.line) : null;
+    const row = (node instanceof Element ? node : node?.parentElement)?.closest<HTMLElement>(rows.selector);
+    return row && view.contains(row) && row.dataset[rows.side] === side
+      ? Number(row.dataset[rows.line])
+      : null;
   };
   const a = lineOf(selection.anchorNode);
   const b = lineOf(selection.focusNode);

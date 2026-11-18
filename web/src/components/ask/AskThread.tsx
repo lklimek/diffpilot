@@ -31,7 +31,7 @@ const SCOPES: { scope: AskScope; label: string; tip: string }[] = [
   {
     scope: "conversation",
     label: "Whole conversation",
-    tip: "Shows every question you asked in this analysis, on any step, in the order asked: the conversation the LLM remembers.",
+    tip: "Shows every question you asked in this analysis, on any step, in the order asked: your conversation about this pull request's analysis.",
   },
   { scope: "step", label: "This step", tip: "Shows only the questions asked on this step." },
 ];
@@ -64,7 +64,7 @@ export function AskThread({
     if (element && (added || following.current)) element.scrollTop = element.scrollHeight;
   });
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-1.5">
+    <div className="flex flex-1 flex-col gap-1.5">
       <div role="group" aria-label="Show" className="flex flex-wrap gap-1 text-[12px]">
         {SCOPES.map((s) => (
           <Tooltip key={s.scope} tip={s.tip}>
@@ -87,7 +87,7 @@ export function AskThread({
         <div
           ref={box}
           role="region"
-          aria-label="Ask conversation"
+          aria-label="Scrollable conversation"
           tabIndex={0}
           onScroll={(event) => {
             const e = event.currentTarget;

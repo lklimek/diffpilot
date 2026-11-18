@@ -36,7 +36,13 @@ beforeEach(() => {
   window.localStorage.clear();
   // jsdom has no layout: the Inspector is 800 px tall, the dock 300 px.
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    const height = this.matches("[data-inspector]") ? 800 : this.matches("[data-dock]") ? 300 : 0;
+    // A stored dock height is drawn, but never above what the Inspector leaves it (flex shrinks it).
+    const sized = Number.parseFloat(this.style.height) || 300;
+    const height = this.matches("[data-inspector]")
+      ? 800
+      : this.matches("[data-dock]")
+        ? Math.min(sized, 680)
+        : 0;
     return {
       height,
       width: 300,
@@ -93,6 +99,15 @@ describe("Inspector: the Ask area resizes from its top edge", () => {
     fireEvent.pointerUp(handle(), { pointerId: 1 });
     fireEvent.pointerMove(handle(), { clientY: 100, pointerId: 1 });
     expect(onDockHeight).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports and steps from the drawn height, within its limits, when a stored height no longer fits", async () => {
+    const { onDockHeight } = renderDock({ height: 900 });
+    expect(handle()).toHaveAttribute("aria-valuenow", "680");
+    expect(handle()).toHaveAttribute("aria-valuemax", "680");
+    handle().focus();
+    await userEvent.keyboard("{ArrowDown}");
+    expect(onDockHeight).toHaveBeenLastCalledWith(680 - DOCK_KEY_STEP_PX);
   });
 
   it("with Ask collapsed the dock keeps its natural height and has no handle", () => {

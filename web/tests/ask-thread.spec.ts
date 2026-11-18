@@ -26,7 +26,7 @@ test("Ask shows the analysis's conversation as a thread with links to the steps 
   // The field stays below the conversation; the conversation shows its newest entry.
   const field = inspector.getByRole("textbox", { name: /^Ask the LLM about / });
   expect((await field.boundingBox())!.y).toBeGreaterThan((await questions.last().boundingBox())!.y);
-  const box = inspector.getByRole("region", { name: "Ask conversation" });
+  const box = inspector.getByRole("region", { name: "Scrollable conversation" });
   await expect
     .poll(() => box.evaluate((e) => e.scrollHeight - e.scrollTop - e.clientHeight))
     .toBeLessThanOrEqual(1);

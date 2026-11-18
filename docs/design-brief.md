@@ -697,8 +697,8 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   offers Hide; the top-bar switch still shows or hides all; the total note stays. Only the first line of a
   remark range is never hidden (it carries the marker); the rest may fold inside the bar.
 - **Ask** is a collapsible Inspector section like the others (remembered with them; the header keeps the
-  step's question count); `a` opens it and focuses the field. Its caption says answers appear below the field,
-  newest first.
+  step's question count); `a` opens it and focuses the field. (Its caption: see "Ask as a chat" below, which
+  supersedes "answers appear below the field, newest first".)
 
 ### Owner-approved amendment — 2026-11-18: LLM rating and remark pills in navigation
 
@@ -723,8 +723,8 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
 
 - **Ask as a chat.** The Ask area shows the user's conversation of the analysis as one thread, oldest at the top
   and newest at the bottom, the field below it. Each entry is the question with the step it was asked on (a small
-  link that opens that step) and its answer; questions asked on other steps belong to the same thread (the agent's
-  working session is per PR and user, so this is what the LLM remembers). "Whole conversation" (default) and
+  link that opens that step) and its answer; questions asked on other steps belong to the same thread: it is the
+  user's conversation about this pull request's analysis. "Whole conversation" (default) and
   "This step" filter it. The thread follows the newest entry unless the reader scrolled up; a new question always
   shows. Pending answers keep their progress line, failed ones Ask again. Answers keep their line breaks; list
   lines are shown as typed with a hanging indent. Supersedes "Answers render below the question field, newest

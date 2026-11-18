@@ -13,7 +13,7 @@ import { CommentMarker, CommentPanel, commentsByLine, lineKey, lineName } from "
 import type { Highlight, Token } from "./highlight";
 import { CodeText, useTokens } from "./tokens";
 import { CHANGE_LOOK, changeLineText } from "./changeLook";
-import { AskLineButton, moveLineFocus } from "./CodeView";
+import { AskLineButton, moveLineFocus, selectedTarget } from "./CodeView";
 
 /** Props of the classic diff ("Show old code", inspector section 1). */
 export interface ClassicDiffProps {
@@ -38,6 +38,9 @@ interface AskLines {
   onAsk: (target: CommentTarget) => void;
   path: string;
 }
+
+// How a diff row names the line it is asked about, for a selection over several rows.
+const ASK_ROWS = { selector: "[data-ask-number]", side: "askSide", line: "askNumber" };
 
 /** Where a diff line is asked about: its new line, or its old line when it was removed. */
 function askRef(line: DiffLine): { side: LineSide; line: number; key: string } | null {
@@ -108,6 +111,8 @@ function Hunk({
           <Fragment key={i}>
             <div
               data-diff-line={l.kind}
+              data-ask-side={at?.side}
+              data-ask-number={at?.line}
               className={`group/line grid min-w-full ${ask ? "grid-cols-[5ch_5ch_1.25rem_2ch_max-content]" : "grid-cols-[5ch_5ch_2ch_max-content]"} ${mine ? "min-h-6 items-center" : ""} ${kind.look}`}
             >
               <span className="pr-1 text-right text-muted select-none">{l.old_line}</span>
@@ -119,8 +124,8 @@ function Hunk({
                     removed={at.side === "base"}
                     tabbable={ask.tabKey === at.key}
                     onFocus={() => ask.onFocus(at.key)}
-                    onAsk={() =>
-                      ask.onAsk({ path: ask.path, side: at.side, start_line: null, line: at.line })
+                    onAsk={(button) =>
+                      ask.onAsk(selectedTarget(button, ask.path, at.side, at.line, ASK_ROWS))
                     }
                   />
                 ) : (

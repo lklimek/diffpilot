@@ -117,7 +117,8 @@ function DockHandle({
   }, [dock, inspector]);
   const max = Math.max(ASK_MIN_PX, drawn.inspector - PANEL_KEEP_PX);
   const clamp = (px: number) => Math.round(Math.min(max, Math.max(ASK_MIN_PX, px)));
-  const current = () => height ?? (drawn.dock || ASK_MIN_PX);
+  // The drawn height (a stored one may no longer fit the window), within the limits.
+  const current = () => clamp(drawn.dock || height || ASK_MIN_PX);
   const resize = (px: number | null) => onHeight(px === null ? null : clamp(px));
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
     const next = {
@@ -142,7 +143,7 @@ function DockHandle({
         aria-orientation="horizontal"
         aria-label="Resize the Ask area"
         tabIndex={0}
-        aria-valuenow={height ?? (drawn.dock || undefined)}
+        aria-valuenow={drawn.dock || height ? current() : undefined}
         aria-valuemin={ASK_MIN_PX}
         aria-valuemax={max}
         onPointerDown={(event: PointerEvent<HTMLDivElement>) => {
