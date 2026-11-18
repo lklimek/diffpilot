@@ -273,7 +273,7 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
 /** Right-hand inspector (brief §4.3): never empty; the current block, or the selected annotation of a step. */
 export function Inspector(props: InspectorProps) {
   const { dock, onBackToStep, flash, onFlashed } = props;
-  const sections = useSectionState();
+  const sections = useSectionState(JSON.stringify(props.block));
   const panel = panelFor(props, sections);
   const heading = useRef<HTMLHeadingElement>(null);
   const focusHeading = useRef(false);
@@ -293,7 +293,7 @@ export function Inspector(props: InspectorProps) {
     const step = props.block.block === "step" ? findStep(props.tour, props.block.step_id)?.step : undefined;
     const type = step?.llm.annotations.find((a) => a.id === flash.id)?.type;
     const key = flash.kind === "thread" ? "threads" : type && SECTION_OF[type];
-    if (key && !sections.isOpen(key)) sections.toggle(key);
+    if (key && !sections.isOpen(key)) sections.reveal(key);
   });
 
   // After "Back to step" the button is gone; the heading takes the focus.

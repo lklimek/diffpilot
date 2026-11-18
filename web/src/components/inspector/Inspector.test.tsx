@@ -496,6 +496,21 @@ describe("Inspector: Show in Inspector from a code marker", () => {
     await waitFor(() => expect(item).toHaveAttribute("data-flash"));
   });
 
+  it("opens the section for the flash only: the stored preference is unchanged, the next step shows it", () => {
+    const { rerender } = render(
+      <Inspector
+        tour={tour}
+        block={atStep("f1.5")}
+        flash={{ kind: "annotation", id: "f1.5.a3", nonce: 1 }}
+      />,
+    );
+    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "true");
+    expect(window.localStorage.getItem(SECTION_STORAGE_KEY) ?? "{}").not.toContain("questions");
+    rerender(<Inspector tour={tour} block={atStep("f1.4")} flash={null} />);
+    rerender(<Inspector tour={tour} block={atStep("f1.5")} flash={null} />);
+    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("highlights a GitHub thread of the step", async () => {
     render(
       <Inspector

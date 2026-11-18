@@ -504,6 +504,29 @@ it("opens the review as soon as context is ready while flows are still running",
   expect(screen.getByRole("button", { name: "Cancel analysis" })).toBeVisible();
 });
 
+it.each([
+  [false, "Open"],
+  [true, "Resume"],
+])("parked while the review is open (started: %s): the line names the button, %s review", (started, verb) => {
+  render(
+    <AnalysisProgress
+      state={{ state: "running", done: 1, total: 5 }}
+      reviewReady
+      reviewStarted={started}
+      busy={false}
+      reviewHref="/analyses/a1"
+      onCancel={() => {}}
+      onRetry={() => {}}
+    />,
+  );
+  expect(
+    screen.getByText(
+      `No flow job is running. ${verb} the review to choose a flow or change background analysis.`,
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole("link", { name: `${verb} review` })).toBeVisible();
+});
+
 it("a failure without a flow after planning never claims it failed before planning", () => {
   const state: AnalysisState = {
     state: "failed",

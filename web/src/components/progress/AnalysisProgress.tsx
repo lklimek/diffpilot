@@ -229,7 +229,7 @@ export function AnalysisProgress({
   const live = state.state !== "finished" && state.state !== "cancelled";
   const stage =
     reviewReady && state.state === "running" && !state.stage
-      ? "No flow job is running. Resume the review to choose a flow or change background analysis."
+      ? `No flow job is running. ${reviewStarted ? "Resume" : "Open"} the review to choose a flow or change background analysis.`
       : stageText(state);
   const started =
     (state.state === "planning" || state.state === "running") && state.stage ? state.stage.started_at : null;
