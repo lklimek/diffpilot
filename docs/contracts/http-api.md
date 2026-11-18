@@ -150,7 +150,8 @@ mapping, query rules and the endpoint × fixture-state inventory.
   Posting a value again replaces its note (same id); `overrated` and `underrated` exclude each other (posting one
   removes the other, one transaction); `DELETE …/feedback/{feedback_id}` removes one value of the user's own
   entries (`not_found` otherwise). `missed_by_llm` is recorded only by the server (a comment on a changed line
-  without annotation) and rejected from clients (`invalid_request`, it is not a `UserFeedbackValue`). A step or
+  without annotation; before the analysis is `finished` only inside a step of an analysed flow, since the LLM has
+  not read the other flows yet) and rejected from clients (`invalid_request`, it is not a `UserFeedbackValue`). A step or
   annotation target must exist in the analysis's flows under its canonical Tour id (`f3.1`, `f3.1.a2`; aliases
   such as `f3.01` are rejected), a line target must be a changed line of the analysed diff on its side (added on
   `head`, removed on `base`), the note at most `FeedbackRequest::MAX_NOTE_CHARS` (2000) characters, else
@@ -166,7 +167,9 @@ mapping, query rules and the endpoint × fixture-state inventory.
   question runs as an `ask` job claimed before batch jobs; one job runs per PR and credential, so a second question waits
   `pending` until the first ends. States: `pending` (queued; `resumes_at` set while it waits for the LLM usage
   limit), `answering`, `answered`, `failed` with a plain `failure` sentence (job failure by typed cause, an answer
-  that did not pass the checks, a re-analysis that cancelled it, a server error); a failed question is asked again
+  that did not pass the checks, a cancellation naming its cause: the analysis was cancelled, the PR session was
+  removed by a re-analysis, or another cancellation; a server error). A failed pipeline and Retry leave open
+  questions running; a ready answer is not published once the analysis is cancelled; a failed question is asked again
   as a new one. An answer is shown only after its schema, the wording rules of brief §1, plain text (no markup, no
   link other than `https://github.com/…`), at most 8000 characters and 50 evidence lines inside their file of the
   pinned tree; otherwise the question fails and the answer is never shown. After a server restart every `pending`,
@@ -416,7 +419,8 @@ resumes_at:null, done:3, total:5}` (existing stage fields remain optional). It i
 original pauser and time. A running job finishes and its result is kept, but no next job is submitted or
 claimed. The pause survives restarts. Provider pauses use `reason:"usage_limit"` (also the meaning of
 an absent reason); a provider deadline never overrides a user pause. Resume clears the user pause;
-if the provider is still limited, its pause remains. Resume checks the pinned head with GitHub and
+if the provider is still limited (a paused job, or a waiting job whose credential another analysis paused),
+its pause remains with its `resumes_at`. Resume checks the pinned head with GitHub and
 returns `conflict` with the existing moved-head sentence if it changed. Neither action discards results or increments the retry round.
 Once the plan and PR context are accepted, a paused analysis retains its partial Tour; Ask works on its accepted steps.
 Cancel requires an inline UI confirmation, then discards documents and cancels unfinished jobs. Analytic and private working PR sessions are retained.
@@ -438,8 +442,17 @@ POST `/api/v1/analyses/{id}/flows/{flow}/request` has no body and returns `Analy
 is 404. PUT `/api/v1/analyses/{id}/background` takes `{"enabled":false}` and returns `AnalysisSummary`.
 Both require session/CSRF and tenant access; requesting work or enabling background checks the current PR
 head. Latest requested flow runs first, then background flows by plan rank. Already claimed work finishes;
-queued work may be withdrawn. A user pause still prevents submission/claim. A failed flow needs explicit
-Retry. Requests/preferences survive restart. With background disabled or a failed flow awaiting Retry, the overall ETA is omitted because
+queued work may be withdrawn; a repair run refused because the demand changed waits for its flow's next turn
+and then repairs the stored output. A user pause still prevents submission/claim. With background analysis on,
+a failed flow is retried automatically at most twice, after the flows not analysed yet; then it stays `failed`
+and needs explicit Retry. Its `analysis_status.message` names the cause: `The flow analysis failed. <cause
+sentence of the failed call> Retry this flow.` An unusable LLM credential fails the analysis instead (state
+`failed` with the sign-in sentence and the flow). Requests/preferences survive restart.
+
+When no flow work is admitted (every flow analysed or failed for good, or the rest not requested with background
+off) and flows remain, the analysis stays `running {done, total}` without `stage` and no server task holds it;
+a flow request or switching background on starts the work again. `finished` still means every planned flow is
+analysed. With background disabled or a failed flow awaiting Retry, the overall ETA is omitted because
 unscheduled work has no completion time. Existing analysis SSE events invalidate the partial Tour,
 including when a verified flow becomes available; no extra polling is needed.
 

@@ -48,8 +48,11 @@
   that subscriber's saved review state. Neither flag is reused across subscribers. Projection failure closes
   the stream for a fresh reconnect; it never emits an event with another reader's ownership.
 - Activity events of jobs (commands, tool calls) are not forwarded to the browser (brief: no feed).
-- `heartbeat {at}`: server time, every 15 s while the stream is open (first 15 s after connect; no database read),
-  so the client can tell an open but silent stream from a dead one. It replaces the former keep-alive comment.
+- `heartbeat {at}`: server time, every 15 s while the stream is open (first 15 s after connect), so the client
+  can tell an open but silent stream from a dead one. It replaces the former keep-alive comment. Each tick
+  checks the stream's session again (one indexed read: sign-out, expiry, idle timeout, allow-list removal); the
+  stream ends at the first tick after the session ended, and the browser's reconnect gets 401.
+- The server's stop signal ends every open stream, so a graceful shutdown does not wait for the browsers.
   Events carry no secrets and no raw agent output (summaries only).
 
 Question snapshots are queried by user. Live foreign question events are skipped, without closing the stream

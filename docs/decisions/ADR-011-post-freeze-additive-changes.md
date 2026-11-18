@@ -165,8 +165,14 @@ These remaining statements in `docs/design-brief.md` are superseded:
 | `analyses.background_analysis`; `flow_work` requests/failures | Single rewritten pre-deployment migration; lazy scheduling adds no stored plan/flow fields or runner protocol change. Coordinator recreates the local DB. |
 | Nullable/optional assessment `headline`, `basis_note`, `not_checked`, `origin`, `blocking`; concise closed shape `{risk:"low", reason}` | Low assessments contain one sentence; full details and action requirements remain mandatory above low. Existing full assessments still parse. |
 
+| `flow_work.auto_retries` (migration `0002_flow_auto_retries.sql`, in-place, data kept) | A failed flow is retried automatically at most twice (owner decision, 2026-11-18), then stays failed until requested. |
+| No new state: an analysis without admitted flow work stays `running {done,total}` without `stage`, with no driver task | Unrequested or failed-for-good flows no longer hold a task and the diff in memory; `finished` keeps meaning "every flow analysed". `missed_by_llm` is recorded for comments in analysed flows before `finished`. |
+| `Flow.analysis_status.message` of a failed flow job: `The flow analysis failed. <cause sentence> Retry this flow.` | The typed cause of the failed call is kept (same fixed sentences as Settings); an unusable credential fails the analysis with the sign-in sentence. |
+| Question failure sentences for a cancelled `ask` job name the cause (analysis cancelled, PR session removed, other) | A failed pipeline or Retry no longer cancels Ask jobs; the "analysed again" sentence is used only when the PR session was removed. |
+| Unexplained rows keep the planned lines of failed flows (with `too_large_for_prompt` when not sent) | Only flows still waiting are left out of Unexplained; failed ones stay listed as not explained. |
+
 Existing `analysis` SSE events publish availability and scheduling changes; clients refetch the Tour.
-A failed flow stays explicitly failed until requested again; accepted siblings remain usable. Retry starts
+A failed flow stays explicitly failed until requested again or retried automatically (twice at most); accepted siblings remain usable. Retry starts
 another analysis job round at a serial boundary, preserving accepted documents and PR/private sessions.
 
 ## Flow file output (owner approval, 2026-11-17)

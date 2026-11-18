@@ -1,7 +1,7 @@
 # Database schema (summary)
 
-Source of truth: `crates/db/migrations/0001_init.sql` (one file, rewritten in place until deployment; no
-versioning). SQLite in WAL mode, foreign keys on, `STRICT` tables, timestamps as RFC 3339 UTC text. Only
+Source of truth: `crates/db/migrations/` (`0001_init.sql`, then additive migrations that upgrade an existing
+database in place and keep its data: `0002_flow_auto_retries.sql`). SQLite in WAL mode, foreign keys on, `STRICT` tables, timestamps as RFC 3339 UTC text. Only
 `crates/db` uses sqlx; everything else goes through the repository API (`crates/db/src/repo/*.rs`, one module per
 aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}` — sqlx types stay private.
 
@@ -78,5 +78,6 @@ explicit PR removal or PR-wide retention deletes them. This migration is rewritt
 Lazy review adds `analyses.background_analysis` (boolean, default 1) and `flow_work` keyed by analysis/flow,
 with tenant, nullable requested timestamp and nullable plain error. Lazy scheduling adds no fields to stored
 plan or flow documents; the separate concise-assessment amendment makes low assessment details optional.
-Accepted flow documents override scheduling rows. Newest demand precedes plan rank; failed work is excluded
-from background scheduling. Explicit retry advances the job round only between serial pipeline jobs.
+Accepted flow documents override scheduling rows. Newest demand precedes plan rank; a failed flow is scheduled
+again by background work until `flow_work.auto_retries` (integer, default 0, migration 0002) reaches 2, each
+automatic retry counting one, and after that only on request. Explicit retry advances the job round only between serial pipeline jobs.
