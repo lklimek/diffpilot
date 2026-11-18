@@ -123,8 +123,8 @@ pub struct LlmSelection {
     pub efforts: Vec<crate::job::spec::ReasoningEffort>,
     /// Current choice, or the server default before the first save.
     pub current: crate::job::spec::ModelChoice,
-    /// Reasoning effort of the dashboard ranking (`judge_work`; default low). Optional on the wire until WP11-JOB
-    /// stores and fills it; absent on older servers.
+    /// Reasoning effort of the dashboard ranking (`judge_work`; default low). Optional on the wire; absent on
+    /// older servers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub judge_effort: Option<crate::job::spec::ReasoningEffort>,

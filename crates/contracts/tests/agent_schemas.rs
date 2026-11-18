@@ -3,6 +3,7 @@
 
 use contracts::agent::analyse_flow::FlowAnalysisOutput;
 use contracts::agent::ask::AskOutput;
+use contracts::agent::judge_work::JudgeWorkOutput;
 use contracts::agent::plan::PlanOutput;
 use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::strict::{self, StrictSchemaError};
@@ -48,6 +49,15 @@ fn all_schemas() -> Vec<(JobKind, Value)> {
     JobKind::ALL
         .into_iter()
         .map(|kind| (kind, output_schema(kind).expect("agent schema is strict")))
+        .collect()
+}
+
+/// Schemas of the review module, which the brief §1 trust rules bind; the dashboard's `judge_work` scores by
+/// design and is outside them (OD2, ADR-016).
+fn review_schemas() -> Vec<(JobKind, Value)> {
+    all_schemas()
+        .into_iter()
+        .filter(|(kind, _)| *kind != JobKind::JudgeWork)
         .collect()
 }
 
@@ -170,7 +180,7 @@ fn integers_only_for_lines_and_rank() {
         "base_end",
         "importance_rank",
     ];
-    for (kind, schema) in all_schemas() {
+    for (kind, schema) in review_schemas() {
         walk(&schema, None, &mut |name, node| {
             if has_type(node, "integer") {
                 let name = name.unwrap_or_default();
@@ -197,7 +207,7 @@ fn no_confidence_like_fields() {
         "review_effort",
         "recommendation",
     ];
-    for (kind, schema) in all_schemas() {
+    for (kind, schema) in review_schemas() {
         walk(&schema, None, &mut |name, _| {
             let name = name.unwrap_or_default();
             let hit = BANNED
@@ -211,7 +221,7 @@ fn no_confidence_like_fields() {
 #[test]
 fn basis_objects_carry_evidence_or_a_location() {
     let mut seen = 0;
-    for (kind, schema) in all_schemas() {
+    for (kind, schema) in review_schemas() {
         walk(&schema, None, &mut |name, node| {
             let Some(properties) = node.get("properties").and_then(Value::as_object) else {
                 return;
@@ -312,6 +322,16 @@ fn samples() -> Vec<(JobKind, Value)> {
             JobKind::Ask,
             json!({"answer": "Does the node deduplicate? Check node-sdk.", "evidence": evidence}),
         ),
+        (
+            JobKind::JudgeWork,
+            json!({"items": [{
+                "key": "acme~node-client~pr~482",
+                "defect": {"likelihood": 4, "impact": 6, "basis": "Timeouts fail payments on slow nodes."},
+                "parts": [{"component": "completion", "points": 5, "basis": "One review round left."}],
+                "eligibility": null, "also_keys": [], "alarm": null,
+                "why": "A real defect with a small fix.", "next": "Review the retry loop."
+            }]}),
+        ),
     ]
 }
 
@@ -340,6 +360,9 @@ fn samples_validate_and_round_trip() {
             ),
             JobKind::Ask => serde_json::to_value(
                 serde_json::from_value::<AskOutput>(sample.clone()).expect("ask"),
+            ),
+            JobKind::JudgeWork => serde_json::to_value(
+                serde_json::from_value::<JudgeWorkOutput>(sample.clone()).expect("judge_work"),
             ),
         }
         .expect("serialises");

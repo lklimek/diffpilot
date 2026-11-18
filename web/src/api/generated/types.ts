@@ -1821,8 +1821,8 @@ efforts: Array<ReasoningEffort>,
  */
 current: ModelChoice,
 /**
- * Reasoning effort of the dashboard ranking (`judge_work`; default low). Optional on the wire until WP11-JOB
- * stores and fills it; absent on older servers.
+ * Reasoning effort of the dashboard ranking (`judge_work`; default low). Optional on the wire; absent on
+ * older servers.
  */
 judge_effort?: ReasoningEffort,
 /**

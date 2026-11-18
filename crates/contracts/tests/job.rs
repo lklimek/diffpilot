@@ -4,7 +4,7 @@
 use chrono::{TimeZone, Utc};
 use contracts::agent::JobKind;
 use contracts::common::RepoRef;
-use contracts::ids::{AnalysisId, CommitSha, JobId};
+use contracts::ids::{AnalysisId, CommitSha, JobId, RefreshId};
 use contracts::job::access::{AgentAccess, InstallationToken, McpHttpEndpoint, Secret};
 use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::protocol::{
@@ -16,8 +16,8 @@ use contracts::job::result::{
     SessionReport, Usage,
 };
 use contracts::job::spec::{
-    CredentialKind, JobLimits, JobSpec, LlmCredentialRef, ModelChoice, ReasoningEffort,
-    RepoCheckout, SessionRef,
+    CredentialKind, JobLimits, JobSpec, JobTarget, LlmCredentialRef, ModelChoice,
+    PullRequestTarget, ReasoningEffort, RepoCheckout, SessionRef,
 };
 use contracts::job::state::{JobState, JobTransition};
 use schemars::JsonSchema;
@@ -39,13 +39,15 @@ fn spec() -> JobSpec {
         job_id: JobId::new_random(),
         attempt: 1,
         kind: JobKind::AnalyseFlow,
-        analysis_id,
-        pull_request_id: 1,
-        repo: RepoCheckout {
-            clone_url: "https://github.com/acme/node-client.git".to_owned(),
-            base_sha: CommitSha("1".repeat(40)),
-            head_sha: CommitSha("9".repeat(40)),
-        },
+        target: JobTarget::PullRequest(PullRequestTarget {
+            analysis_id,
+            pull_request_id: 1,
+            repo: RepoCheckout {
+                clone_url: "https://github.com/acme/node-client.git".to_owned(),
+                base_sha: CommitSha("1".repeat(40)),
+                head_sha: CommitSha("9".repeat(40)),
+            },
+        }),
         prompt: "Job: analyse_flow f1.".to_owned(),
         output_schema: json!({"type": "object"}),
         flow_file: None,
@@ -197,6 +199,27 @@ fn outcome_wire_format_is_internally_tagged() {
         .expect("serialises"),
         json!({"state": "not_working", "message": "limit"})
     );
+}
+
+#[test]
+fn job_target_wire_format_is_internally_tagged() {
+    let refresh = RefreshId::new_random();
+    let mut dashboard = spec();
+    dashboard.target = JobTarget::Dashboard {
+        refresh_id: refresh,
+    };
+    round_trip(&dashboard);
+    let wire = serde_json::to_value(&dashboard).expect("serialises");
+    assert_eq!(
+        wire["target"],
+        json!({"type": "dashboard", "refresh_id": refresh})
+    );
+    assert!(wire.get("analysis_id").is_none() && wire.get("repo").is_none());
+    assert_eq!(dashboard.target.pull_request(), None);
+    let pr = serde_json::to_value(spec()).expect("serialises");
+    assert_eq!(pr["target"]["type"], "pull_request");
+    assert_eq!(pr["target"]["pull_request_id"], 1);
+    assert_eq!(pr["target"]["repo"]["head_sha"], "9".repeat(40));
 }
 
 #[test]
