@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use contracts::ids::JobId;
+use contracts::job::event::{ActivityKind, JobEvent};
 use contracts::job::result::{
     JobFailureKind, JobOutcome, JobResult, LlmCallOutcome, LlmCallStatus, SessionOutcome,
     SessionReport,
@@ -18,6 +19,7 @@ use contracts::job::spec::{JobLimits, JobSpec, LlmCredentialRef};
 use tokio::sync::mpsc;
 
 use crate::git;
+use crate::phases::PhaseLog;
 use crate::provider::{LlmProvider, ProviderCall, ProviderError, ProviderEvent, ProviderOutcome};
 use crate::scrub::{SUMMARY_MAX_CHARS, Scrubber, clip};
 use crate::sessions::SessionStore;
@@ -38,6 +40,8 @@ impl EventSink {
     }
 }
 
+/// Activity line of the first turn of a new working session, which compacts the fork first and takes longer.
+const PREPARING_FORK: &str = "Preparing the conversation (first question after an analysis)";
 /// Events buffered between the provider and `execute`; small, as summaries are not clipped yet.
 const EVENT_BUFFER: usize = 16;
 /// Longest failure message in a result.
@@ -158,9 +162,18 @@ impl Executor {
         let key = format!("{}-{}", spec.job_id, spec.attempt);
         let job_dir = RemoveOnDrop(self.dirs.work.join(&key));
         let codex_home = RemoveOnDrop(self.dirs.codex_homes.join(&key));
-        let result = self.attempt(&spec, &job_dir.0, &codex_home.0, &sink).await;
+        let phases = PhaseLog::default();
+        let started = tokio::time::Instant::now();
+        let result = self
+            .attempt(&spec, &job_dir.0, &codex_home.0, &sink, &phases)
+            .await;
+        let cleanup = tokio::time::Instant::now();
         drop(job_dir);
         drop(codex_home);
+        phases.since("cleanup", cleanup);
+        phases.since("total", started);
+        tracing::info!(job = %spec.job_id, attempt = spec.attempt, kind = ?spec.kind,
+            phases = %phases.summary(), "job phase timings");
         tracing::info!(job = %spec.job_id, attempt = spec.attempt, outcome = outcome_name(&result.outcome), "job attempt finished");
         result
     }
@@ -171,6 +184,7 @@ impl Executor {
         job_dir: &Path,
         codex_home: &Path,
         sink: &EventSink,
+        phases: &PhaseLog,
     ) -> JobResult {
         // The runtime limit counts from the start of the attempt: a hanging fetch must not hold the lease.
         let deadline = tokio::time::Instant::now()
@@ -182,7 +196,9 @@ impl Executor {
                 "the runner does not hold the LLM credential this job needs",
             );
         }
-        match tokio::time::timeout_at(deadline, self.prepare(spec, job_dir, codex_home)).await {
+        match tokio::time::timeout_at(deadline, self.prepare(spec, job_dir, codex_home, phases))
+            .await
+        {
             Ok(Ok(())) => {}
             Ok(Err((kind, message))) => return failed(spec, kind, message),
             Err(_) => {
@@ -247,6 +263,8 @@ impl Executor {
             },
             access: spec.access.clone(),
             skills: spec.skills.clone(),
+            compact_on_start: false,
+            phases: phases.clone(),
         };
         let (tx, rx) = mpsc::channel(EVENT_BUFFER);
         let run = async {
@@ -269,9 +287,11 @@ impl Executor {
         let ((outcome, session_outcome), ()) = tokio::join!(run, pump(rx, sink, &scrubber));
         let outcome = match outcome {
             Ok(mut done) if done.session_id.is_some() && !sink.secrets.is_empty() => {
-                if let Err(error) =
-                    crate::sessions::SessionStore::scrub_archive(&save_dir, &sink.secrets)
-                {
+                let scrub = tokio::time::Instant::now();
+                let scrubbed =
+                    crate::sessions::SessionStore::scrub_archive(&save_dir, &sink.secrets);
+                phases.since("archive_scrub", scrub);
+                if let Err(error) = scrubbed {
                     tracing::warn!(job = %spec.job_id, %error, "cannot scrub the stored agent session; it is discarded");
                     if let Err(error) = std::fs::remove_dir_all(&save_dir) {
                         tracing::warn!(job = %spec.job_id, %error, "cannot remove an unscrubbed agent session");
@@ -323,11 +343,31 @@ impl Executor {
         }
         if let Some(session) = &spec.session {
             if session.pull_request_id == spec.pull_request_id {
-                match self
+                // A new working fork is compacted once, in its first turn (ADR-004 addendum 2026-11-18).
+                call.compact_on_start = spec.working_session.is_some();
+                if call.compact_on_start {
+                    let _ = events
+                        .send(ProviderEvent::Activity(JobEvent {
+                            seq: 0,
+                            at: Utc::now(),
+                            activity: ActivityKind::Reasoning,
+                            summary: PREPARING_FORK.to_owned(),
+                        }))
+                        .await;
+                }
+                let mut resumed = self
                     .provider
                     .resume(&session.thread_id, &call, events.clone())
-                    .await
-                {
+                    .await;
+                if call.compact_on_start && matches!(resumed, Err(ProviderError::Failed { .. })) {
+                    tracing::warn!(job = %spec.job_id, "the turn compacting the forked session failed; answering from the uncompacted fork; the failed turn's tokens are not counted (no usage is reported for a failed turn)");
+                    call.compact_on_start = false;
+                    resumed = self
+                        .provider
+                        .resume(&session.thread_id, &call, events.clone())
+                        .await;
+                }
+                match resumed {
                     Err(ProviderError::SessionUnavailable) => {
                         tracing::info!(job = %spec.job_id, "the pull request's agent session is unavailable; starting a new one with the context pack");
                     }
@@ -344,6 +384,8 @@ impl Executor {
             Some(_) => SessionOutcome::StartedAfterLoss,
             None => SessionOutcome::Started,
         };
+        // A new session holds only the context pack: nothing to compact.
+        call.compact_on_start = false;
         (self.provider.run(&call, events).await, outcome)
     }
 
@@ -353,8 +395,12 @@ impl Executor {
         spec: &JobSpec,
         job_dir: &Path,
         codex_home: &Path,
+        phases: &PhaseLog,
     ) -> Result<(), (JobFailureKind, &'static str)> {
-        if let Err(error) = prepare_dirs(&[job_dir, codex_home]).await {
+        let dirs = tokio::time::Instant::now();
+        let prepared = prepare_dirs(&[job_dir, codex_home]).await;
+        phases.since("job_dirs", dirs);
+        if let Err(error) = prepared {
             tracing::error!(job = %spec.job_id, %error, "cannot create the job directories; check SR_RUNNER_STATE_DIR and SR_RUNNER_WORK_DIR");
             return Err((
                 JobFailureKind::Internal,
@@ -377,6 +423,7 @@ impl Executor {
             &spec.repo.clone_url,
             &commits,
             &job_dir.join("repo"),
+            phases,
         )
         .await
         {

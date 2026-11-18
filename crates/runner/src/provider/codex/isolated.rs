@@ -137,12 +137,13 @@ impl Isolation {
     }
 
     /// Prepare (ADR-013 step 2): hands the agent its three directories (job directory 0755, checkout
-    /// read-only) and copies the staging home and the job's skills in.
+    /// read-only) and copies the staging home and the job's skills in; returns the bytes copied in.
     pub(super) async fn enter(
         &self,
         call: &ProviderCall,
         skills: &[(PathBuf, Vec<u8>)],
-    ) -> Result<(), ProviderError> {
+    ) -> Result<u64, ProviderError> {
+        let mut copied = 0;
         let home = self.codex_home(&call.codex_home);
         if home.exists() {
             // An earlier run of this key left it.
@@ -168,12 +169,17 @@ impl Isolation {
         }
         for rel in staging_files(&call.codex_home)? {
             let contents = std::fs::read(call.codex_home.join(&rel))?;
+            copied += contents.len() as u64;
             self.supervisor
                 .copy_in(&home, &rel, &contents)
                 .await
                 .map_err(io_error)?;
         }
         let skills_root = agent_home(&call.job_dir).join(SKILLS_ROOT);
+        copied += skills
+            .iter()
+            .map(|(_, contents)| contents.len() as u64)
+            .sum::<u64>();
         for (rel, contents) in skills {
             let target = skills_root.join(rel);
             let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
@@ -188,7 +194,7 @@ impl Isolation {
                 .await
                 .map_err(io_error)?;
         }
-        Ok(())
+        Ok(copied)
     }
 
     /// Copy-back after a sweep (ADR-013 step 5): `auth.json` and the rollout of `thread` into the staging home.
@@ -388,10 +394,16 @@ impl CodexProvider {
         .into_iter()
         .map(|(key, value)| format!("{key}={}", value.to_string_lossy()))
         .collect();
+        let phases = &call.phases;
+        let step = Instant::now();
         let process = supervisor
             .spawn(argv, env, &call.job_dir)
             .await
             .map_err(io_error)?;
+        phases.since("agent_spawn", step);
+        let spawned = Instant::now();
+        let mut first_event = true;
+        let mut last_event = spawned;
         let pid = process.pid;
         credential.handed_over();
         // Only a panic drops this run before its own sweep; the guard still sweeps then.
@@ -420,7 +432,14 @@ impl CodexProvider {
             loop {
                 tokio::select! {
                     line = lines.next(), if open => match line? {
-                        Some(line) => forward(&mut parsed, &line, credential, events).await?,
+                        Some(line) => {
+                            if first_event {
+                                first_event = false;
+                                phases.since("agent_first_event", spawned);
+                            }
+                            last_event = Instant::now();
+                            forward(&mut parsed, &line, credential, events).await?;
+                        }
                         None => open = false,
                     },
                     status = &mut wait => return status.map_err(io_error),
@@ -447,8 +466,12 @@ impl CodexProvider {
             }
         }
         .await;
+        phases.duration("agent_last_event", last_event.duration_since(spawned));
+        phases.since("agent_exit", spawned);
+        let step = Instant::now();
         // Codex has exited (or failed): nothing of the agent may outlive the run.
         let sweep = supervisor.sweep().await;
+        phases.since("sweep", step);
         guard.0 = None;
         self.set_group(call, None);
         writer.abort();
@@ -485,7 +508,13 @@ impl CodexProvider {
             Invocation::Resume(thread) => Some(thread.to_owned()),
             Invocation::New => None,
         });
+        let step = Instant::now();
         copy_back(isolation, call, thread.as_deref(), credential).await?;
+        phases.bytes(
+            "copied_out",
+            crate::phases::dir_bytes(&call.codex_home.join(session::SESSIONS_DIR)),
+        );
+        phases.since("copy_out", step);
         if timed_out {
             return Err(ProviderError::Timeout);
         }

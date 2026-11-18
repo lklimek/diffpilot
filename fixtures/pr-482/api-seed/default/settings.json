@@ -54,6 +54,7 @@
       "model": "gpt-6.1-sol",
       "reasoning_effort": "high"
     },
+    "ask_effort": "medium",
     "changed_by": null,
     "changed_at": null
   }

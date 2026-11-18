@@ -1,5 +1,5 @@
 import { HttpResponse } from "msw";
-import type { LlmSelection, ModelChoice } from "../../api/generated/types";
+import type { LlmSelection, ModelChoice, SetAskEffortRequest } from "../../api/generated/types";
 import { SETTINGS, scenario } from "../scenarios";
 import { apiError, route } from "./common";
 export let savedSelection: LlmSelection | undefined;
@@ -20,6 +20,21 @@ export const setLlm = route("setLlm", async ({ request }) => {
   savedSelection = {
     ...selection,
     current: choice,
+    changed_by: "alice",
+    changed_at: new Date().toISOString(),
+  };
+  return HttpResponse.json(savedSelection);
+});
+/** `PUT /api/v1/settings/llm/ask-effort`: kept with the shared mock selection. */
+export const setAskEffort = route("setAskEffort", async ({ request }) => {
+  if (scenario().llmSaveFails) return apiError(503, "unavailable", "Try again later.");
+  const { reasoning_effort } = (await request.json()) as SetAskEffortRequest;
+  const selection = savedSelection ?? SETTINGS.llm_selection!;
+  if (!selection.efforts.includes(reasoning_effort))
+    return apiError(400, "invalid_request", "Choose an available effort.");
+  savedSelection = {
+    ...selection,
+    ask_effort: reasoning_effort,
     changed_by: "alice",
     changed_at: new Date().toISOString(),
   };

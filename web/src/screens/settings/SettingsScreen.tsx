@@ -13,6 +13,7 @@ import {
   useMe,
   useRepoSettings,
   useSaveDashboardSettings,
+  useSetAskEffort,
   useSetJudgeEffort,
   useSetLanguage,
   useSettings,
@@ -23,6 +24,7 @@ import { AccessTokensCard } from "../../components/dashboard/settings-access-tok
 import { DashboardSettingsCard } from "../../components/dashboard/settings-dashboard/DashboardSettingsCard";
 import { UnsavedChangesPrompt } from "../../components/dashboard/settings-dashboard/UnsavedChangesPrompt";
 import { JudgeEffortSelect } from "../../components/dashboard/settings-judge-effort/JudgeEffortSelect";
+import { AskEffortSelect } from "../../components/settings/AskEffortSelect";
 import { AccountCard } from "../../components/settings/AccountCard";
 import { AppInstallationsCard } from "../../components/settings/AppInstallationsCard";
 import { LanguageCard } from "../../components/settings/LanguageCard";
@@ -185,6 +187,7 @@ function SettingsContent({
 }) {
   const setLlm = useSetLlm();
   const setJudgeEffort = useSetJudgeEffort();
+  const setAskEffort = useSetAskEffort();
   const dashboard = useDashboardSettings();
   const settings = useSettings();
   const setLanguage = useSetLanguage();
@@ -197,7 +200,7 @@ function SettingsContent({
         <div className="grid min-w-0 items-start gap-4 min-[1600px]:grid-cols-2">
           {settings.data.llm_selection && (
             <LlmSelectionCard
-              // The model choice only: saving the ranking effort must not reset an unsaved model edit.
+              // The model choice only: saving the Ask or ranking effort must not reset an unsaved model edit.
               key={`${settings.data.llm_selection.current.model}/${settings.data.llm_selection.current.reasoning_effort}`}
               selection={settings.data.llm_selection}
               busy={setLlm.isPending}
@@ -205,6 +208,14 @@ function SettingsContent({
               error={setLlm.isError ? errorText(setLlm.error) : undefined}
               onSave={(choice) => setLlm.mutate(choice)}
             >
+              <AskEffortSelect
+                effort={settings.data.llm_selection.ask_effort}
+                efforts={settings.data.llm_selection.efforts}
+                busy={setAskEffort.isPending}
+                saved={setAskEffort.isSuccess}
+                error={setAskEffort.isError ? errorText(setAskEffort.error) : undefined}
+                onChange={(effort) => setAskEffort.mutate(effort)}
+              />
               {/* Shown with the dashboard settings, so not before the server has them (dark launch). */}
               {dashboard.isSuccess && (
                 <JudgeEffortSelect

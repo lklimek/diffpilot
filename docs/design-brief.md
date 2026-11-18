@@ -55,6 +55,15 @@ can judge the PR at project scale, not only line by line.
 - **LLM-classified refactors** (LLM says "pure refactor" or "rename", no deterministic confirmation) are
   shown as normal flows with that label, never collapsed (§3, §4.3).
 
+### Addendum 2026-11-18: risk statements in Ask answers (owner decision)
+- For Ask answers a risk is stated, not asked: a short title naming the risk class prefixed "Potential …" (for
+  example "Potential TOCTOU race:"), a numbered scenario (who acts, the order of events, the outcome and its cost)
+  and one closing line saying what was not reproduced or checked. Owner: concrete risk scenarios are better than
+  questions and prose.
+- It stays an LLM statement, shown as LLM analysis, never called verified, with no numeric confidence. The absence
+  of such statements is never shown as safety.
+- Flow analysis keeps "questions to check" for now; the same form replaces them in a later iteration.
+
 ## 2. Scope
 
 ### v1

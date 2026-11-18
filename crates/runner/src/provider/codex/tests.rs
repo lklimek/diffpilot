@@ -162,6 +162,8 @@ fn harness(recording: &str, exit_code: i32) -> Harness {
                 allow_write: false,
             }),
         },
+        compact_on_start: false,
+        phases: Default::default(),
         skills: Vec::new(),
     };
     let provider = CodexProvider::new(CodexSettings {
@@ -1830,6 +1832,22 @@ async fn useful_turn_is_archived_without_an_extra_turn() {
 }
 
 #[tokio::test]
+async fn a_fork_turn_compacts_before_it_answers_in_the_same_turn() {
+    let mut h = harness("plan.jsonl", 0);
+    h.call.limits.max_runtime_secs = 10;
+    h.call.compact_on_start = true;
+    store_session(&h, 1);
+    let outcome = resume(&h).await.0.unwrap();
+    assert_eq!(outcome.session_id.as_deref(), Some(THREAD));
+    assert_eq!(
+        child_file(&h, "invocations.txt").lines().count(),
+        1,
+        "no extra compaction turn"
+    );
+    assert!(child_file(&h, "child-config.toml").contains("model_auto_compact_token_limit = 80000"));
+}
+
+#[tokio::test]
 async fn agent_plain_git_accepts_the_runner_owned_checkout() {
     let h = harness("plan.jsonl", 0);
     let repo = h.call.job_dir.join("repo");
@@ -1839,6 +1857,7 @@ async fn agent_plain_git_accepts_the_runner_owned_checkout() {
         &format!("file://{}", crate::test_support::shared_repo().display()),
         &[&commits.head, &commits.base],
         &repo,
+        &crate::phases::PhaseLog::default(),
     )
     .await
     .unwrap();

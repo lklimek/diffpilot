@@ -277,6 +277,8 @@ export function createApiClient(baseUrl = "") {
     getDashboardSettings: () => call<DashboardSettingsView>("getDashboardSettings"),
     setDashboardSettings: (body: DashboardSettings) =>
       call<DashboardSettingsView>("setDashboardSettings", { body }),
+    setAskEffort: (reasoning_effort: ReasoningEffort) =>
+      call<import("./generated/types").LlmSelection>("setAskEffort", { body: { reasoning_effort } }),
     setJudgeEffort: (reasoning_effort: ReasoningEffort) =>
       call<import("./generated/types").LlmSelection>("setJudgeEffort", { body: { reasoning_effort } }),
     listAccessTokens: () => call<AccessToken[]>("listAccessTokens"),

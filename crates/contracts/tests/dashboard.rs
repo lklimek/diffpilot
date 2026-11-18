@@ -307,6 +307,25 @@ fn llm_selection_judge_effort_is_optional() {
     );
 }
 
+/// `ask_effort` is optional on the wire, so older servers and clients keep their JSON.
+#[test]
+fn llm_selection_ask_effort_is_optional() {
+    let selection: LlmSelection = serde_json::from_value(json!({
+        "models": [], "efforts": ["low"], "current": {"model": "m", "reasoning_effort": "high"},
+        "changed_by": null, "changed_at": null
+    }))
+    .expect("deserialises without ask_effort");
+    assert_eq!(selection.ask_effort, None);
+    let with = LlmSelection {
+        ask_effort: Some(contracts::job::spec::ReasoningEffort::Medium),
+        ..selection
+    };
+    assert_eq!(
+        serde_json::to_value(&with).expect("serialises")["ask_effort"],
+        json!("medium")
+    );
+}
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/dashboard")
 }

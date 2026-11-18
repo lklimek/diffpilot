@@ -17,9 +17,9 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   `execute(JobSpec, EventSink) -> JobResult`.
 - `LlmProvider` is `run` + `resume` + `cancel`: one analytic session per pull request (analysis and repairs
   only), plus one private working session per (PR, user) for Ask. Re-fork when the analytic generation advances.
-  Codex compacts by itself at 400k tokens; no forced compaction. Each successful useful turn is archived; a lost working session forks the analytic archive, then falls back to a private context pack.
+  Codex compacts by itself at 400k tokens; a new Ask fork's first turn uses 80k (one pre-turn compaction, ADR-004 addendum). Each successful useful turn is archived; a lost working session forks the analytic archive, then falls back to a private context pack.
   Model and effort come from `select_model`, a plain Rust function in the server using the stored
-  installation-wide Settings choice (default Sol, high). Each new job reads the current choice.
+  installation-wide Settings choice (default Sol, high; Ask: stored Ask effort, default medium). Each new job reads the current choice.
 - Flow jobs write tagged `out/flow.md` and run `sr-check`; server and checker share `analysis::tagged` (ADR-014).
   Plan, PR context and Ask keep JSON. Stored documents and browser contracts stay unchanged.
 - Only `runner::provider` knows Codex; only `analysis::tech` (TechPlugin) knows path/line rules and call hierarchy

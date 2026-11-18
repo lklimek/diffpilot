@@ -454,6 +454,19 @@ async fn check_lists_match_contract_enums() {
                 .join(", ")
             ),
         ),
+        (
+            "llm_selection",
+            format!(
+                "ask_effort IN ({})",
+                [
+                    ReasoningEffort::Low,
+                    ReasoningEffort::Medium,
+                    ReasoningEffort::High
+                ]
+                .map(|effort| format!("'{}'", wire_name(effort)))
+                .join(", ")
+            ),
+        ),
     ];
     for (table, list) in cases.into_iter().chain(dashboard_cases) {
         let sql = table_sql(&db, table).await;
@@ -768,6 +781,54 @@ async fn one_running_job_per_pull_request_across_credentials() {
             .await
             .is_err()
     );
+}
+
+/// Migration 0006 upgrades a database in place: the stored selection keeps its model, efforts and change pair and
+/// gains the default Ask effort `medium`.
+#[tokio::test]
+async fn ask_effort_migration_upgrades_a_stored_selection() {
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .in_memory(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .connect_with(options)
+        .await
+        .expect("pool");
+    migrate(&pool, 5).await.expect("schema before 0006");
+    sqlx::raw_sql(
+        "INSERT INTO llm_selection (singleton, model, reasoning_effort, judge_effort, changed_by, changed_at)
+           VALUES (1, 'gpt-6-astra', 'high', 'medium', 'lklimek', 't');",
+    )
+    .execute(&pool)
+    .await
+    .expect("stored row");
+    migrate(&pool, MIGRATIONS.len())
+        .await
+        .expect("upgrade in place");
+    let row: (String, String, String, String, String) = sqlx::query_as(
+        "SELECT model, reasoning_effort, judge_effort, ask_effort, changed_by FROM llm_selection",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("selection");
+    assert_eq!(
+        row,
+        (
+            "gpt-6-astra".to_owned(),
+            "high".to_owned(),
+            "medium".to_owned(),
+            "medium".to_owned(),
+            "lklimek".to_owned()
+        )
+    );
+    let invalid = sqlx::query("UPDATE llm_selection SET ask_effort = 'ultra'")
+        .execute(&pool)
+        .await;
+    assert!(invalid.is_err(), "ask_effort is low, medium or high");
 }
 
 /// Migrations 0003 and 0004 upgrade a v1 database in place: the stored model choice is kept and gains the

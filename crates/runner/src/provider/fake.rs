@@ -111,6 +111,9 @@ enum Action {
     Answer { output: Value },
 }
 
+/// The line a compacted fake archive starts with.
+pub const COMPACTED_MARK: &str = "[compacted history]";
+
 impl FakeProvider {
     /// A provider that waits `step_delay` before each recorded line (zero: replay at once), scripted by the file
     /// [`SCRIPT_ENV`] names, if set.
@@ -141,8 +144,14 @@ impl FakeProvider {
         resume: bool,
     ) -> Result<ProviderOutcome, ProviderError> {
         let prior = if self.archive_turns && resume {
-            std::fs::read_to_string(call.restore_dir.join("fake-rollout.txt"))
-                .map_err(|_| ProviderError::SessionUnavailable)?
+            let restored = std::fs::read_to_string(call.restore_dir.join("fake-rollout.txt"))
+                .map_err(|_| ProviderError::SessionUnavailable)?;
+            // Pre-turn compaction: a summary that still carries the history (S1b finding 3).
+            if call.compact_on_start {
+                format!("{COMPACTED_MARK}\n{restored}")
+            } else {
+                restored
+            }
         } else {
             String::new()
         };
@@ -450,6 +459,8 @@ mod tests {
             model: spec.model,
             limits: spec.limits,
             access: spec.access,
+            compact_on_start: false,
+            phases: Default::default(),
             skills: Vec::new(),
         }
     }
@@ -648,6 +659,8 @@ mod file_tests {
             model: crate::test_support::spec(JobKind::AnalyseFlow, root.path()).model,
             limits: Default::default(),
             access: Default::default(),
+            compact_on_start: false,
+            phases: Default::default(),
             skills: vec![],
         };
         let (send, mut receive) = mpsc::channel(32);

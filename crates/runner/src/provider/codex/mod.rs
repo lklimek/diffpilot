@@ -165,6 +165,8 @@ impl CodexProvider {
                         .map(|memcan| memcan.token.expose()),
                 ),
         );
+        let phases = &call.phases;
+        let step = Instant::now();
         // Dropped after the call (also when the call is dropped): writes a refreshed credential back.
         let mut credential = JobCredential::install(
             &self.settings.credential,
@@ -172,13 +174,28 @@ impl CodexProvider {
             call.job_id,
             known,
         )?;
+        phases.since("credential_install", step);
+        let step = Instant::now();
         let before = match resume {
-            Some(thread) => session::restore(&call.restore_dir, thread, &call.codex_home)?,
+            Some(thread) => {
+                let usage = session::restore(&call.restore_dir, thread, &call.codex_home)?;
+                phases.bytes(
+                    "restored",
+                    crate::phases::dir_bytes(&call.codex_home.join(session::SESSIONS_DIR)),
+                );
+                phases.since("session_restore", step);
+                usage
+            }
             None => Usage::default(),
         };
+        let step = Instant::now();
         let (skills_commit, skill_files) = self.prepare(call).await?;
+        phases.since("skills", step);
         if let Some(isolation) = &self.settings.isolation {
-            isolation.enter(call, &skill_files).await?;
+            let step = Instant::now();
+            let handed = isolation.enter(call, &skill_files).await?;
+            phases.bytes("copied_in", handed);
+            phases.since("isolation_enter", step);
         }
         tracing::info!(job = %call.job_id, skills = ?call.skills, "job agent skills available");
         let invocation = resume.map_or(Invocation::New, Invocation::Resume);
@@ -196,6 +213,7 @@ impl CodexProvider {
         } else {
             call.prompt.clone()
         };
+        let step = Instant::now();
         let (stream, exit) = self
             .exec(
                 call,
@@ -262,6 +280,8 @@ impl CodexProvider {
         let _ = events
             .send(ProviderEvent::OutputReady(output.clone()))
             .await;
+        phases.since("agent_to_output_ready", step);
+        let step = Instant::now();
         let certain = credential.settle(false);
         let mut session_turns = None;
         let session_id = match thread
@@ -290,6 +310,7 @@ impl CodexProvider {
         if session_id.is_none() {
             session::forget(&call.session_dir);
         }
+        phases.since("session_save", step);
         Ok(ProviderOutcome {
             output,
             session_id,
@@ -358,6 +379,11 @@ impl CodexProvider {
             &call.access,
             &self.settings.github_mcp,
             AGENT_NO_PROXY,
+            if call.compact_on_start {
+                config::FORK_COMPACT_TOKEN_LIMIT
+            } else {
+                config::AUTO_COMPACT_TOKEN_LIMIT
+            },
         );
         replace_private(&call.codex_home.join(CONFIG_FILE), config.as_bytes())
     }
@@ -422,6 +448,7 @@ impl CodexProvider {
                 )
                 .await;
         }
+        let spawned = Instant::now();
         let mut child = self.command(call, invocation).spawn().map_err(|error| {
             tracing::error!(binary = %self.settings.binary.display(), %error, "cannot start Codex; check SR_RUNNER_CODEX_BIN");
             ProviderError::Io(error)
@@ -454,6 +481,7 @@ impl CodexProvider {
             self.settings.term_grace,
         )
         .await?;
+        call.phases.since("agent_exit", spawned);
         drop(group);
         if let Some(stdin) = stdin {
             let _ = stdin.await;

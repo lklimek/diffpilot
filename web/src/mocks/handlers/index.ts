@@ -1,5 +1,5 @@
 import { requestFlow, setBackgroundAnalysis } from "./flow-work";
-import { setLlm } from "./set-llm";
+import { setAskEffort, setLlm } from "./set-llm";
 import { pauseAnalysis } from "./pause-analysis";
 import { resumeAnalysis } from "./resume-analysis";
 import { analysisEvents } from "./analysis-events";
@@ -88,6 +88,7 @@ export const handlers = [
   setDashboardSettings,
   setDashboardTimeZone,
   setJudgeEffort,
+  setAskEffort,
   listAccessTokens,
   createAccessToken,
   revokeAccessToken,

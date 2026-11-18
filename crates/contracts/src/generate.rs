@@ -25,7 +25,9 @@ use crate::api::feedback::{Feedback, FeedbackRequest};
 use crate::api::pr::{ResolvePrRequest, ResolvePrResponse};
 use crate::api::questions::{AskQuestion, AskRequest};
 use crate::api::review::ReviewState;
-use crate::api::settings::{RepoSettings, SetJudgeEffortRequest, SetLanguageRequest, Settings};
+use crate::api::settings::{
+    RepoSettings, SetAskEffortRequest, SetJudgeEffortRequest, SetLanguageRequest, Settings,
+};
 use crate::api::tour::Tour;
 use crate::routes::{Listener, ROUTES};
 
@@ -154,6 +156,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<SetLanguageRequest>();
     collector.visit::<RepoSettings>();
     collector.visit::<SetJudgeEffortRequest>();
+    collector.visit::<SetAskEffortRequest>();
     collector.visit::<DashboardSummary>();
     collector.visit::<ItemQuery>();
     collector.visit::<ItemPage>();

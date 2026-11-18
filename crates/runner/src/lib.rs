@@ -4,6 +4,7 @@ pub mod client;
 pub mod config;
 pub mod execute;
 pub mod git;
+pub mod phases;
 pub mod provider;
 pub mod scratch;
 pub mod scrub;

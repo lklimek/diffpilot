@@ -448,6 +448,19 @@ export function useSaveDashboardSettings() {
     });
 }
 
+/** Saves the installation-wide Ask effort and refreshes its audit details. */
+export function useSetAskEffort() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.setAskEffort,
+    onSuccess: (selection) =>
+      client.setQueryData<import("./generated/types").Settings>(
+        ["settings"],
+        (old) => old && { ...old, llm_selection: selection },
+      ),
+  });
+}
+
 /** Saves the installation-wide ranking effort and refreshes its audit details. */
 export function useSetJudgeEffort() {
   const client = useQueryClient();

@@ -19,7 +19,7 @@ export function LlmSelectionCard({
   saved?: boolean;
   error?: string;
   onSave: (choice: ModelChoice) => void;
-  /** Further installation choices shown in this card (the dashboard ranking effort). */
+  /** Further installation choices shown in this card (the Ask and dashboard ranking efforts). */
   children?: ReactNode;
 }) {
   const id = useId();

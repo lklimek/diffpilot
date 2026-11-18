@@ -13,10 +13,10 @@ use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use contracts::api::error::ApiErrorCode;
 use contracts::api::settings::AppInstallation;
-use contracts::api::settings::{RepoSettings, SetLanguageRequest, Settings};
+use contracts::api::settings::{RepoSettings, SetAskEffortRequest, SetLanguageRequest, Settings};
 use contracts::common::RepoRef;
 use contracts::job::result::{JobFailureKind, LlmCallOutcome, LlmCallStatus};
-use contracts::routes::{GET_REPO_SETTINGS, GET_SETTINGS, SET_LANGUAGE, SET_LLM};
+use contracts::routes::{GET_REPO_SETTINGS, GET_SETTINGS, SET_ASK_EFFORT, SET_LANGUAGE, SET_LLM};
 use db::error::DbError;
 use db::repo::settings::{AnalysedRepo, CallFailure, LastCall};
 
@@ -98,6 +98,7 @@ pub fn routes() -> Router<AppState> {
         .route(GET_SETTINGS.path, get(read))
         .route(SET_LANGUAGE.path, put(set_language))
         .route(SET_LLM.path, put(set_llm))
+        .route(SET_ASK_EFFORT.path, put(set_ask_effort))
         .route(GET_REPO_SETTINGS.path, get(read_repo))
 }
 
@@ -144,6 +145,35 @@ async fn set_llm(
         .map_err(failure)?;
     let old = crate::model::selection(old).current;
     tracing::info!(login = %user.profile.login, old_model = %old.model, old_effort = ?old.reasoning_effort, new_model = %choice.model, new_effort = ?choice.reasoning_effort, "installation LLM selection changed");
+    Ok(Json(crate::model::selection(Some(saved))))
+}
+
+async fn set_ask_effort(
+    State(state): State<AppState>,
+    SessionCsrf(session): SessionCsrf,
+    body: Result<Json<SetAskEffortRequest>, JsonRejection>,
+) -> SettingsResult<Json<contracts::api::settings::LlmSelection>> {
+    let Json(request) = body.map_err(failure)?;
+    let user = state
+        .db
+        .users()
+        .get(&session.user_id)
+        .await
+        .map_err(failure)?;
+    let default_choice = crate::model::selection(None).current;
+    let (old, saved) = state
+        .db
+        .settings()
+        .set_ask_effort(
+            request.reasoning_effort,
+            &default_choice,
+            &user.profile.login,
+            Utc::now(),
+        )
+        .await
+        .map_err(failure)?;
+    let old = crate::model::selection(old).ask_effort;
+    tracing::info!(login = %user.profile.login, ?old, new = ?request.reasoning_effort, "installation Ask effort changed");
     Ok(Json(crate::model::selection(Some(saved))))
 }
 
@@ -976,5 +1006,45 @@ mod tests {
         let (_, read) = h.get(GET_SETTINGS.path).await;
         assert_eq!(read["llm_selection"], saved);
         assert!(logs.text().contains("installation LLM selection changed"));
+    }
+
+    #[tokio::test]
+    async fn ask_effort_validates_csrf_keeps_the_model_and_records_the_changer() {
+        let h = harness().await;
+        let (_, initial) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(initial["llm_selection"]["ask_effort"], "medium");
+        let route = "/api/v1/settings/llm/ask-effort";
+        let body = json!({"reasoning_effort":"low"});
+        let (status, _) = h
+            .send("PUT", route, Some(&h.cookie), false, Some(body.clone()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = h.send("PUT", route, None, false, Some(body.clone())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = h
+            .send(
+                "PUT",
+                route,
+                Some(&h.cookie),
+                true,
+                Some(json!({"reasoning_effort":"ultra"})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let logs = LogCapture::start();
+        let (status, saved) = h
+            .send("PUT", route, Some(&h.cookie), true, Some(body))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{saved}");
+        assert_eq!(saved["ask_effort"], "low");
+        assert_eq!(
+            saved["current"],
+            json!({"model":"gpt-6.1-sol","reasoning_effort":"high"}),
+            "the analysis jobs keep their effort"
+        );
+        assert_eq!(saved["changed_by"], "lklimek");
+        let (_, read) = h.get(GET_SETTINGS.path).await;
+        assert_eq!(read["llm_selection"], saved);
+        assert!(logs.text().contains("installation Ask effort changed"));
     }
 }

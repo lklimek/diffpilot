@@ -41,7 +41,8 @@ struct Patterns {
     target: Regex,
     /// A scheme-relative URL (`//host…`).
     relative: Regex,
-    /// Plain sentences permit code spans and fences, but no list, heading, emphasis or reference link.
+    /// Plain lines permit code spans, fences and list-like lines (shown as typed), but no heading, quote,
+    /// emphasis or reference link.
     markdown: Regex,
     /// A common bare hostname link without a scheme.
     bare: Regex,
@@ -54,7 +55,7 @@ static PATTERNS: LazyLock<Option<Patterns>> = LazyLock::new(|| {
         autolink: Regex::new(r"<([A-Za-z][A-Za-z0-9+.-]*:[^\s<>]*)>").ok()?,
         tag: Regex::new(r"<[A-Za-z/!]").ok()?,
         target: Regex::new(r"(?m)\]\(\s*<?([^\s)>]*)|^\s*\[[^\]]+\]:\s*<?([^\s>]*)").ok()?,
-        markdown: Regex::new(r"(?m)^\s*(?:[-+*]\s|[0-9]+[.)]\s|#{1,6}\s|>\s)|(?:^|[^\w])(?:\*[^*\n]+\*|_[^_\n]+_|~~[^~\n]+~~)|\[[^\]\n]+\]\[[^\]\n]*\]").ok()?,
+        markdown: Regex::new(r"(?m)^\s*(?:#{1,6}\s|>\s)|(?:^|[^\w])(?:\*[^*\n]+\*|_[^_\n]+_|~~[^~\n]+~~)|\[[^\]\n]+\]\[[^\]\n]*\]").ok()?,
         bare: Regex::new(r"(?i)\bwww\.[a-z0-9-]+\.[a-z]{2,}").ok()?,
         relative: Regex::new(r#"(?:^|[\s(\[<"'=])//[A-Za-z0-9]"#).ok()?,
     })

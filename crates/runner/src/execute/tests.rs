@@ -747,6 +747,22 @@ mod fake {
             ] {
                 assert!(line.contains(&expected), "{expected}: {line}");
             }
+            let phases = logged
+                .lines()
+                .find(|line| line.contains("job phase timings"))
+                .expect("phase timings");
+            for expected in [
+                "job_dirs=",
+                "mirror=",
+                "objects_copied=",
+                "checkout=",
+                "cleanup=",
+                "total=",
+            ] {
+                assert!(phases.contains(expected), "{expected}: {phases}");
+            }
+            let root_path = root.path().display().to_string();
+            assert!(!phases.contains(&root_path), "no paths: {phases}");
         }
     }
 
@@ -1062,4 +1078,109 @@ async fn private_forks_keep_marker_out_of_analytic_and_other_users_and_refork_on
     let text = fs::read_to_string(&a_file).unwrap();
     assert!(text.contains("<<<DATA history>>>") && !text.contains("head-two"));
     assert!(!archive.exists());
+}
+
+/// The first Ask of a working session (and every re-fork) compacts the forked analytic session once, said in an
+/// activity line; follow-ups and analytic jobs never compact; a failed compacting turn is answered again from
+/// the uncompacted fork (ADR-004 addendum 2026-11-18).
+#[cfg(feature = "fake-provider")]
+#[tokio::test]
+async fn a_fork_compacts_once_and_falls_back_when_the_compacting_turn_fails() {
+    use crate::provider::fake::{COMPACTED_MARK, FakeProvider};
+    use contracts::job::spec::WorkingSession;
+    let root = TempDir::new().unwrap();
+    let script = root.path().join("script.json");
+    fs::write(
+        &script,
+        json!({"rules": [
+            {"id":"broken", "job":"ask", "prompt_contains":"BROKEN", "times":1,
+             "action":{"fail":{"message":"compaction failed"}}},
+            {"id":"ask", "job":"ask", "action":{"answer":{"output":{"answer":"Answer", "evidence":[]}}}}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let executor = Executor::new(
+        Arc::new(FakeProvider::default().with_script(script).with_archives()),
+        dirs(root.path()),
+        credential(),
+    );
+    let mut analytic = spec(JobKind::Plan, shared_repo());
+    analytic.prompt = "Job: plan.".to_owned();
+    let (first, events) = execute_collect(&executor, analytic.clone()).await;
+    assert!(!preparing(&events), "an analytic job never compacts");
+    analytic.session = Some(SessionRef {
+        pull_request_id: 1,
+        thread_id: first.session.unwrap().thread_id,
+    });
+    let ask = |text: &str, generation: i64, thread: Option<&str>| {
+        let mut ask = spec(JobKind::Ask, shared_repo());
+        ask.prompt = format!("Job: ask. {text}");
+        ask.session = analytic.session.clone();
+        ask.working_session = Some(WorkingSession {
+            user_key: "a".repeat(64),
+            analytic_generation: generation,
+            thread_id: thread.map(str::to_owned),
+        });
+        ask
+    };
+    let working = executor
+        .sessions()
+        .working_dir(1, &"a".repeat(64))
+        .join("fake-rollout.txt");
+    let marks = || {
+        fs::read_to_string(&working)
+            .unwrap()
+            .matches(COMPACTED_MARK)
+            .count()
+    };
+
+    let (first_ask, events) = execute_collect(&executor, ask("First", 1, None)).await;
+    assert!(
+        matches!(first_ask.outcome, JobOutcome::Succeeded { .. }),
+        "{first_ask:?}"
+    );
+    assert!(
+        preparing(&events),
+        "the first question says it prepares the conversation"
+    );
+    assert_eq!(marks(), 1, "the fork is compacted once");
+    let thread = first_ask.session.unwrap().thread_id;
+
+    let (follow_up, events) = execute_collect(&executor, ask("Follow up", 1, Some(&thread))).await;
+    assert!(matches!(follow_up.outcome, JobOutcome::Succeeded { .. }));
+    assert!(!preparing(&events));
+    assert_eq!(
+        marks(),
+        1,
+        "a follow-up only relies on automatic compaction"
+    );
+
+    execute_collect(&executor, ask("After a new analytic generation", 2, None)).await;
+    assert_eq!(
+        marks(),
+        1,
+        "a re-fork starts from the analytic archive and compacts again"
+    );
+    assert!(
+        fs::read_to_string(&working)
+            .unwrap()
+            .contains("After a new analytic generation")
+    );
+
+    let (fallback, events) = execute_collect(&executor, ask("BROKEN", 3, None)).await;
+    assert!(
+        matches!(fallback.outcome, JobOutcome::Succeeded { .. }),
+        "answered from the uncompacted fork: {fallback:?}"
+    );
+    assert!(preparing(&events));
+    assert_eq!(marks(), 0, "the fallback turn keeps the uncompacted fork");
+}
+
+#[cfg(feature = "fake-provider")]
+fn preparing(events: &[ProviderEvent]) -> bool {
+    events.iter().any(|event| {
+        matches!(event, ProviderEvent::Activity(activity)
+            if activity.summary == "Preparing the conversation (first question after an analysis)")
+    })
 }

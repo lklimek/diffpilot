@@ -3113,7 +3113,7 @@ mod tests {
         .fetch_all(&db.pool)
         .await
         .expect("versions");
-        assert_eq!(versions, [1, 2, 3, 4, 5]);
+        assert_eq!(versions, [1, 2, 3, 4, 5, 6]);
     }
 
     /// Migration 0005 upgrades a database with dashboard rows in place: refreshes, settings and judgements are kept,

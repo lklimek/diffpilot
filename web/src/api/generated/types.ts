@@ -345,7 +345,7 @@ all_repositories: boolean, };
  */
 export type AskOutput = {
 /**
- * The answer; suspicions phrased as questions to check.
+ * The answer; a suspected defect is stated as a risk scenario saying what was not checked.
  */
 answer: string,
 /**
@@ -1826,7 +1826,12 @@ current: ModelChoice,
  */
 judge_effort?: ReasoningEffort,
 /**
- * Login of the last editor of the model, effort or ranking effort; null for the default.
+ * Reasoning effort of Ask jobs (default medium); every other job uses `current`. Optional on the wire;
+ * absent on older servers.
+ */
+ask_effort?: ReasoningEffort,
+/**
+ * Login of the last editor of the model, effort, ranking effort or Ask effort; null for the default.
  */
 changed_by: string | null,
 /**
@@ -2893,6 +2898,15 @@ basis: string, };
  * Whether a score is final.
  */
 export type ScoreState = "final" | "provisional" | "unjudged";
+
+/**
+ * Body of `PUT /api/v1/settings/llm/ask-effort`.
+ */
+export type SetAskEffortRequest = {
+/**
+ * Reasoning effort of Ask jobs.
+ */
+reasoning_effort: ReasoningEffort, };
 
 /**
  * Body of `PUT /api/v1/settings/llm/judge-effort`.

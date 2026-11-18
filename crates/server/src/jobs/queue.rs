@@ -104,7 +104,7 @@ impl JobExecutor for QueueExecutor {
                         job.spec.model = crate::model::select_model(
                             job.spec.kind,
                             &crate::model::ModelContext::default(),
-                            saved.as_ref().map(|s| &s.choice),
+                            saved.as_ref(),
                         );
                         match self.db.jobs().enqueue(job, Utc::now()).await {
                             Ok(job) => Ok(Some(JobHandle { job_id: job.id })),
