@@ -57,7 +57,7 @@ export const getDashboard = route("getDashboard", () =>
 
 /**
  * `GET /api/v1/dashboard/items`: `tier`, `kind` (`pr` | `issue`; absent = both; TODOs are listed whatever it
- * says), `limit` and `cursor` (`<revision>:<offset>`).
+ * says), `todos=false` (no TODOs), `limit` and `cursor` (`<revision>:<offset>`).
  */
 export const listDashboardItems = route("listDashboardItems", ({ request }) => {
   const query = new URL(request.url).searchParams;
@@ -73,7 +73,9 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
   }
   const keep = (item: WorkItem) =>
     (!query.get("tier") || item.score.tier === query.get("tier")) &&
-    (!query.get("kind") || item.kind === "todo" || item.kind === query.get("kind"));
+    (item.kind === "todo"
+      ? query.get("todos") !== "false"
+      : !query.get("kind") || item.kind === query.get("kind"));
   const matching = ITEMS.items.filter(keep);
   const next = offset + limit < matching.length ? `${ITEMS.revision}:${offset + limit}` : null;
   return HttpResponse.json({
@@ -83,11 +85,21 @@ export const listDashboardItems = route("listDashboardItems", ({ request }) => {
   });
 });
 
-/** `POST /api/v1/dashboard/refreshes`: 201, or 409 `refresh_running` while one is live. */
+/**
+ * `POST /api/v1/dashboard/refreshes` (http-api.md "Refresh states"): 201, superseding a live ranking (it finishes
+ * with ranking `cancelled`); 409 `refresh_running` while one scans.
+ */
 export const startDashboardRefresh = route("startDashboardRefresh", () => {
-  if ([live, ...changed.values()].some((r) => r !== null && isLive(r))) {
-    return apiError(409, "refresh_running", "A refresh is already running.");
+  const known = [live, ...changed.values()].filter((r): r is RefreshStatus => r !== null);
+  if (known.some((r) => r.state === "scanning")) {
+    return apiError(409, "refresh_running", "A refresh is already scanning.");
   }
+  for (const r of known) {
+    if (r.state === "ranking" && r.ranking) {
+      store({ ...r, state: "finished", ranking: { ...r.ranking, state: "cancelled" } });
+    }
+  }
+  changed.delete(SCANNING.id);
   live = { ...SCANNING, started_at: new Date().toISOString() };
   return HttpResponse.json(live, { status: 201 });
 });

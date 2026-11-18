@@ -71,6 +71,8 @@ describe("msw handlers of the dashboard routes (fixtures/dashboard)", () => {
     expect(new Set(prs.items.map((item) => item.kind))).toEqual(new Set(["pr", "todo"]));
     const both = (await call<ItemPage>("/api/v1/dashboard/items")).body;
     expect(new Set(both.items.map((item) => item.kind))).toEqual(new Set(["pr", "issue", "todo"]));
+    const noTodos = (await call<ItemPage>("/api/v1/dashboard/items?todos=false")).body;
+    expect(new Set(noTodos.items.map((item) => item.kind))).toEqual(new Set(["pr", "issue"]));
   });
 
   it("start one refresh at a time, read and cancel it", async () => {
@@ -110,6 +112,28 @@ describe("msw handlers of the dashboard routes (fixtures/dashboard)", () => {
     const retried = await post(`${base}/rank`);
     expect(retried).toMatchObject({ status: 202, body: { state: "ranking", ranking: { state: "running" } } });
     expect(await post(`${base}/rank`)).toMatchObject({ status: 409, body: { code: "conflict" } });
+  });
+
+  it("a new refresh supersedes a live ranking; only a scan blocks it", async () => {
+    const ranking = rankingJson as unknown as RefreshStatus;
+    const post = (path: string) =>
+      call<RefreshStatus & { code?: string }>(path, { method: "POST", headers: CSRF });
+    const base = `/api/v1/dashboard/refreshes/${ranking.id}`;
+    await post(`${base}/cancel`);
+    expect((await post(`${base}/rank`)).body.state).toBe("ranking");
+    expect(await post("/api/v1/dashboard/refreshes")).toMatchObject({
+      status: 201,
+      body: { state: "scanning" },
+    });
+    expect((await call<RefreshStatus>(base)).body).toMatchObject({
+      state: "finished",
+      ranking: { state: "cancelled" },
+    });
+    expect(await post(`${base}/rank`)).toMatchObject({ status: 409, body: { code: "refresh_running" } });
+    expect(await post("/api/v1/dashboard/refreshes")).toMatchObject({
+      status: 409,
+      body: { code: "refresh_running" },
+    });
   });
 
   it("save settings, reject an invalid look-back and set the ranking effort", async () => {
