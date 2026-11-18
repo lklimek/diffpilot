@@ -216,3 +216,25 @@ fail closed without it (S6 P1–P5); env contract in T2. Hosts seen (allowlist s
 MemCan host:8190. Open item: S6 passed the MemCan bearer through `bearer_token_env_var` (bearer in Codex's env,
 visible to every agent subprocess); WP3-RUN tests `http_headers` first and falls back to the env variable only
 with an ADR (T2); AR-4 covers the bearer's readability either way.
+
+## 11. v1.1 — GitHub work dashboard and personal access tokens
+
+Plan `docs/v1.1-dashboard-plan.md` §E.4; ADR-016 to ADR-020. New assets: per-user snapshots (titles, labels and
+300-character excerpts of private repositories, OD11), stored LLM judgements, MemCan TODO text, personal access
+token hashes, and the GitHub user-token pair kept without a live session while the daily schedule is on. New entry
+points: R1–R10 (`http-api.md` "Dashboard (v1.1)"), `Authorization: Bearer srp_…` on `read` routes, the in-process
+scheduler, `judge_work` jobs. The v1.1 accepted risks are AR-9 and AR-10 (AR-6 and AR-7 above name other risks).
+
+| # | Control (testable) | Owner | Verified by |
+|---|---|---|---|
+| T16 | Dashboard data per user: every repository function and query keyed by `(tenant_id, user_id)` of the session or token principal (no list-all API for serving); another user's refresh id is `not_found`; SSE streams per user; settings per user | WP11-DB, WP11-REFRESH, WP11-SCOPE | `dashboard_of_another_user_is_never_served`, `dashboard_events_are_per_user` |
+| T17 | A judge job holds nothing: no checkout, no GitHub token, no MemCan endpoint, no session archive (`JobTarget::Dashboard`, ADR-018); scanned text is fenced as data in the prompt; output re-validated against closed value sets, ids of the batch, text caps and the suggested `also_ids` (item keys, `ItemText.also_keys`); LLM, GitHub and MemCan text rendered as text only (T12) | WP11-JOB, WP11-JUDGE, WP11-WEB-C | `judge_job_spec_has_no_access`, `judge_output_outside_closed_sets_is_rejected`, Playwright `dashboard_llm_text_renders_as_text` |
+| T18 | The scan is read-only: `server::github::work` sends only REST `GET` and GraphQL queries (never a mutation), with the user token, which is never logged | WP11-GH | `work_client_sends_no_mutation`, log-capture test |
+| T19 | Private-repository text is at rest in snapshots and judgements and sent to the provider in judge prompts (`jobs.spec`); retention bounded (10 refreshes per user plus the latest snapshot's, judgements 90 days after last seen, judge jobs by v1 job retention); TODOs read and shown only for users with `include_todos` | WP11-DB, WP11-REFRESH | retention tests; `todos_hidden_when_switched_off` |
+| T20 | Personal access tokens (ADR-019): 256-bit random secret, only SHA-256 at rest, shown once (`CreatedAccessToken` is the only type carrying it, contract test), constant-time comparison, expiry 30/90/365 days, revocation (also by "sign out everywhere"), allow-list checked per request, 120 requests/min per token and 30 failed attempts/min per client, one audit line per request without the secret, its hash or query strings; accepted only on `read` routes (`GET`) of the public listener; never with a session cookie in the same request; never on the runner listener | WP11-TOKENS | `token_never_accepted_on_mutating_routes`, `token_cannot_list_or_mint_tokens`, `revoked_expired_or_unlisted_user_token_is_rejected`, `token_and_cookie_together_are_rejected`, `token_not_logged`, `runner_listener_rejects_personal_tokens`; contracts `token_secret_is_only_in_the_creation_response`, `tokens_are_accepted_only_on_public_safe_reads` |
+| T21 | The GitHub token pair is kept without a live session while the schedule is on (ADR-020): AES-GCM at rest as in v1, the allow-list checked before each scheduled run, deleted by "sign out everywhere", allow-list removal, a rejected refresh or an expired refresh token | WP11-SCHED | `pair_kept_without_session_while_schedule_on`, `sign_out_everywhere_deletes_pair_and_stops_schedule`, `unlisted_user_is_not_scheduled` |
+
+| # | Risk | Blast radius | Why accepted | Cheapest later mitigation |
+|---|---|---|---|---|
+| AR-9 (T17) | Proposed: PR, issue and TODO text can skew that item's own LLM score parts and texts within the closed value sets | the item's rank among the user's own work; never another item's judgement, never a write anywhere | the ranking is advisory; every part shows its source and basis; computed parts are deterministic | per-part caps on LLM parts; compare with the computed estimates and mark large gaps |
+| AR-10 (T20) | Accepted (owner, OD17): a token is as powerful as a read-only session of its user (dashboard, Tour, Q&A, pending comments, private-repository titles) and lives in the user's agents' environments and files outside the browser | everything its user can read in smart-review until it expires or is revoked | the owner's agents already hold his GitHub access; tokens are read-only, expire, can be revoked, are rate limited and audited | narrower scopes per route group (`TokenScope` is open); shorter default expiry |

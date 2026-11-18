@@ -1,0 +1,36 @@
+{
+  "platform": {
+    "todos": [
+      {
+        "id": "3fa91c2e-0000-4000-8000-000000000000",
+        "title": "Write the migration note for config v3",
+        "description": "List the three breaking keys of config v3 and how to migrate them, for the PLAT-1176 release notes.",
+        "project": "platform",
+        "priority": "high",
+        "status": "in_progress",
+        "owner": "alice",
+        "blocked_by": [],
+        "created_at": "2026-11-13T09:00:00+00:00",
+        "completed_at": null
+      }
+    ],
+    "has_more": false
+  },
+  "consensus": {
+    "todos": [
+      {
+        "id": "91bd0a44-0000-4000-8000-000000000000",
+        "title": "Revisit the flaky test in the sync suite",
+        "description": "sync_suite::reorg_catch_up fails about once a week in CI; the retry hides it.",
+        "project": "consensus",
+        "priority": "low",
+        "status": "postponed",
+        "owner": null,
+        "blocked_by": [],
+        "created_at": "2026-10-29T15:30:00+00:00",
+        "completed_at": null
+      }
+    ],
+    "has_more": false
+  }
+}

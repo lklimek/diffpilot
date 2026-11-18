@@ -1,6 +1,6 @@
 //! Fixture PR `acme/node-client#482` (`fixtures/pr-482/`, plan §7 WP1-B): agent outputs, API seed and states,
 //! GitHub and Codex recordings and the example repository are valid, mutually consistent and follow the trust
-//! wording rules of brief §1.
+//! wording rules of brief §1; so does the text of the dashboard fixtures (`fixtures/dashboard/`).
 #![expect(clippy::expect_used, reason = "test helpers outside #[test] functions")]
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -1442,8 +1442,18 @@ fn fixture_text_follows_the_wording_rules_and_holds_no_secrets() {
     assert!(
         wording_violation("noisy, unverified, no risks", &phrases).as_deref() == Some("no risk")
     );
-    for file in files_below(&root()) {
-        let text = fs::read_to_string(root().join(&file))
+    // The dashboard fixtures (`fixtures/dashboard/`, v1.1) follow the same rules.
+    let dashboard = root().join("../dashboard");
+    for (dir, file) in files_below(&root())
+        .into_iter()
+        .map(|file| (root(), file))
+        .chain(
+            files_below(&dashboard)
+                .into_iter()
+                .map(|file| (dashboard.clone(), file)),
+        )
+    {
+        let text = fs::read_to_string(dir.join(&file))
             .unwrap_or_else(|e| panic!("{}: {e}", file.display()));
         let name = file.display().to_string();
         let mut texts = Vec::new();

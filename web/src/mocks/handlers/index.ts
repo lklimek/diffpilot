@@ -7,6 +7,24 @@ import { askQuestion } from "./ask-question";
 import { cancelAnalysis } from "./cancel-analysis";
 import { createAnalysis } from "./create-analysis";
 import { createComment } from "./create-comment";
+import {
+  cancelDashboardRefresh,
+  dashboardRefreshEvents,
+  getDashboard,
+  getDashboardRefresh,
+  listDashboardItems,
+  rankDashboardRefresh,
+  startDashboardRefresh,
+} from "./dashboard";
+import {
+  createAccessToken,
+  getDashboardSettings,
+  listAccessTokens,
+  revokeAccessToken,
+  setDashboardSettings,
+  setDashboardTimeZone,
+  setJudgeEffort,
+} from "./dashboard-settings";
 import { deleteComment } from "./delete-comment";
 import { deleteFeedback } from "./delete-feedback";
 import { getAnalysis } from "./get-analysis";
@@ -59,4 +77,18 @@ export const handlers = [
   getSettings,
   setLanguage,
   getRepoSettings,
+  getDashboard,
+  listDashboardItems,
+  startDashboardRefresh,
+  getDashboardRefresh,
+  cancelDashboardRefresh,
+  rankDashboardRefresh,
+  dashboardRefreshEvents,
+  getDashboardSettings,
+  setDashboardSettings,
+  setDashboardTimeZone,
+  setJudgeEffort,
+  listAccessTokens,
+  createAccessToken,
+  revokeAccessToken,
 ];

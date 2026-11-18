@@ -63,6 +63,10 @@ uuid_id!(
     /// Identifier of a feedback entry.
     FeedbackId
 );
+uuid_id!(
+    /// Identifier of a dashboard refresh (one scan and its ranking).
+    RefreshId
+);
 
 /// Identifier of a flow, assigned by the `plan` job: `f1`, `f2`, ….
 #[derive(

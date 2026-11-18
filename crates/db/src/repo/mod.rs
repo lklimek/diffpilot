@@ -13,10 +13,12 @@ use sqlx::{SqlSafeStr, Sqlite, Transaction};
 
 use crate::error::DbError;
 
+pub mod access_tokens;
 pub mod agent_sessions;
 pub mod analyses;
 mod analysis_progress;
 pub mod comments;
+pub mod dashboard;
 pub mod documents;
 pub mod feedback;
 pub mod flow_work;
@@ -90,12 +92,22 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The schema migrations in order, as `(version, description, SQL)`: the initial schema, then additive
 /// changes that upgrade an existing database in place.
-const MIGRATIONS: [(i64, &str, &str); 2] = [
+const MIGRATIONS: [(i64, &str, &str); 4] = [
     (1, "init", include_str!("../../migrations/0001_init.sql")),
     (
         2,
         "flow_auto_retries",
         include_str!("../../migrations/0002_flow_auto_retries.sql"),
+    ),
+    (
+        3,
+        "dashboard",
+        include_str!("../../migrations/0003_dashboard.sql"),
+    ),
+    (
+        4,
+        "access_tokens",
+        include_str!("../../migrations/0004_access_tokens.sql"),
     ),
 ];
 

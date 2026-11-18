@@ -1,0 +1,124 @@
+{
+  "settings": {
+    "linked_logins": [
+      "alice-ci"
+    ],
+    "repositories": [
+      {
+        "repo": {
+          "owner": "acme",
+          "name": "platform"
+        },
+        "alias": "PLAT",
+        "watch_issues": true,
+        "ownership_policy": {
+          "repo": {
+            "owner": "acme",
+            "name": "policies"
+          },
+          "path": "policies/platform.json"
+        },
+        "branch_patterns": []
+      },
+      {
+        "repo": {
+          "owner": "acme",
+          "name": "wallet-ui"
+        },
+        "alias": "WUI",
+        "watch_issues": true,
+        "ownership_policy": null,
+        "branch_patterns": []
+      },
+      {
+        "repo": {
+          "owner": "acme",
+          "name": "node-client"
+        },
+        "alias": "NC",
+        "watch_issues": false,
+        "ownership_policy": null,
+        "branch_patterns": []
+      },
+      {
+        "repo": {
+          "owner": "acme",
+          "name": "consensus"
+        },
+        "alias": "CON",
+        "watch_issues": true,
+        "ownership_policy": null,
+        "branch_patterns": [
+          "release/*",
+          "vX.Y-dev"
+        ]
+      },
+      {
+        "repo": {
+          "owner": "acme",
+          "name": "docs-site"
+        },
+        "alias": "DOC",
+        "watch_issues": false,
+        "ownership_policy": null,
+        "branch_patterns": []
+      },
+      {
+        "repo": {
+          "owner": "acme",
+          "name": "legacy-tools"
+        },
+        "alias": null,
+        "watch_issues": false,
+        "ownership_policy": null,
+        "branch_patterns": []
+      }
+    ],
+    "enumerate_owners": [
+      "acme"
+    ],
+    "lookback_days": 7,
+    "ready_label": "ready-for-human",
+    "skip_authors": [
+      "dependabot",
+      "dependabot[bot]"
+    ],
+    "include_todos": true,
+    "memcan_extra_projects": [
+      "release-notes"
+    ],
+    "schedule_enabled": true,
+    "schedule_time": "06:00",
+    "time_zone": "Europe/Warsaw"
+  },
+  "defaults": {
+    "linked_logins": [],
+    "repositories": [],
+    "enumerate_owners": [],
+    "lookback_days": 7,
+    "ready_label": "ready-for-human",
+    "skip_authors": [
+      "dependabot",
+      "dependabot[bot]"
+    ],
+    "include_todos": true,
+    "memcan_extra_projects": [],
+    "schedule_enabled": true,
+    "schedule_time": "06:00",
+    "time_zone": null
+  },
+  "own_login": "alice",
+  "memcan_configured": true,
+  "memcan_projects": [
+    "platform",
+    "wallet-ui",
+    "node-client",
+    "consensus",
+    "docs-site",
+    "legacy-tools",
+    "release-notes"
+  ],
+  "unreachable": [
+    "acme/legacy-tools"
+  ]
+}

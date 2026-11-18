@@ -1,0 +1,69 @@
+{
+  "id": "8b0d6c1e-1118-4d2a-9c3b-000000001026",
+  "trigger": "manual",
+  "state": "scanning",
+  "judged": 0,
+  "reused": 0,
+  "left_provisional": 0,
+  "steps": [
+    {
+      "key": "search_prs",
+      "state": "done",
+      "done": 6,
+      "total": 6,
+      "detail": null
+    },
+    {
+      "key": "issues",
+      "state": "done",
+      "done": 6,
+      "total": 6,
+      "detail": null
+    },
+    {
+      "key": "pr_details",
+      "state": "running",
+      "done": 23,
+      "total": 41,
+      "detail": "acme/platform#1199"
+    },
+    {
+      "key": "context",
+      "state": "waiting",
+      "done": null,
+      "total": null,
+      "detail": null
+    },
+    {
+      "key": "history",
+      "state": "waiting",
+      "done": 0,
+      "total": 4,
+      "detail": null
+    },
+    {
+      "key": "todos",
+      "state": "waiting",
+      "done": 0,
+      "total": 2,
+      "detail": null
+    },
+    {
+      "key": "ranking",
+      "state": "waiting",
+      "done": null,
+      "total": null,
+      "detail": null
+    }
+  ],
+  "percent": 45,
+  "started_at": "2026-11-18T08:12:22Z",
+  "scanned_at": null,
+  "ranking": null,
+  "failure": null,
+  "log": [
+    "10:26:02 refresh started (manual)",
+    "10:26:31 search PRs: 41 found (2 logins)",
+    "10:26:58 issues: 23 found"
+  ]
+}

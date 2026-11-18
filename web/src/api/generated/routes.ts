@@ -35,6 +35,20 @@ export const routes = {
   setLanguage: { method: "PUT", path: "/api/v1/settings/language", auth: "session_csrf" },
   setLlm: { method: "PUT", path: "/api/v1/settings/llm", auth: "session_csrf" },
   getRepoSettings: { method: "GET", path: "/api/v1/repos/{owner}/{name}/settings", auth: "session" },
+  getDashboard: { method: "GET", path: "/api/v1/dashboard", auth: "read" },
+  listDashboardItems: { method: "GET", path: "/api/v1/dashboard/items", auth: "read" },
+  startDashboardRefresh: { method: "POST", path: "/api/v1/dashboard/refreshes", auth: "session_csrf" },
+  getDashboardRefresh: { method: "GET", path: "/api/v1/dashboard/refreshes/{id}", auth: "read" },
+  cancelDashboardRefresh: { method: "POST", path: "/api/v1/dashboard/refreshes/{id}/cancel", auth: "session_csrf" },
+  rankDashboardRefresh: { method: "POST", path: "/api/v1/dashboard/refreshes/{id}/rank", auth: "session_csrf" },
+  dashboardRefreshEvents: { method: "GET", path: "/api/v1/dashboard/refreshes/{id}/events", auth: "read" },
+  getDashboardSettings: { method: "GET", path: "/api/v1/settings/dashboard", auth: "read" },
+  setDashboardSettings: { method: "PUT", path: "/api/v1/settings/dashboard", auth: "session_csrf" },
+  setDashboardTimeZone: { method: "PUT", path: "/api/v1/settings/dashboard/time-zone", auth: "session_csrf" },
+  setJudgeEffort: { method: "PUT", path: "/api/v1/settings/llm/judge-effort", auth: "session_csrf" },
+  listAccessTokens: { method: "GET", path: "/api/v1/settings/access-tokens", auth: "session" },
+  createAccessToken: { method: "POST", path: "/api/v1/settings/access-tokens", auth: "session_csrf" },
+  revokeAccessToken: { method: "DELETE", path: "/api/v1/settings/access-tokens/{id}", auth: "session_csrf" },
 } as const;
 
 /** Name of a browser-facing route. */

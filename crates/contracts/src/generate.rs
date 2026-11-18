@@ -8,11 +8,16 @@ use std::fmt::Write as _;
 use ts_rs::{Config, TS, TypeVisitor};
 
 use crate::agent::{JobKind, StrictSchemaError, output_schema};
+use crate::api::access_tokens::{AccessToken, CreateAccessToken, CreatedAccessToken};
 use crate::api::analyses::{AnalysisSummary, CreateAnalysisRequest};
 use crate::api::auth::{LogoutRequest, MeResponse};
 use crate::api::code::{DiffResponse, LinesResponse, RangeQuery};
 use crate::api::comments::{
     CreateCommentRequest, CreateCommentResponse, PendingReview, UpdateCommentRequest,
+};
+use crate::api::dashboard::{
+    DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, ItemPage,
+    ItemQuery, RefreshStatus, SetTimeZoneRequest,
 };
 use crate::api::error::{ApiError, LoginError};
 use crate::api::events::AnalysisEvent;
@@ -20,7 +25,7 @@ use crate::api::feedback::{Feedback, FeedbackRequest};
 use crate::api::pr::{ResolvePrRequest, ResolvePrResponse};
 use crate::api::questions::{AskQuestion, AskRequest};
 use crate::api::review::ReviewState;
-use crate::api::settings::{RepoSettings, SetLanguageRequest, Settings};
+use crate::api::settings::{RepoSettings, SetJudgeEffortRequest, SetLanguageRequest, Settings};
 use crate::api::tour::Tour;
 use crate::routes::{Listener, ROUTES};
 
@@ -148,6 +153,18 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<Settings>();
     collector.visit::<SetLanguageRequest>();
     collector.visit::<RepoSettings>();
+    collector.visit::<SetJudgeEffortRequest>();
+    collector.visit::<DashboardSummary>();
+    collector.visit::<ItemQuery>();
+    collector.visit::<ItemPage>();
+    collector.visit::<RefreshStatus>();
+    collector.visit::<DashboardEvent>();
+    collector.visit::<DashboardSettings>();
+    collector.visit::<DashboardSettingsView>();
+    collector.visit::<SetTimeZoneRequest>();
+    collector.visit::<AccessToken>();
+    collector.visit::<CreateAccessToken>();
+    collector.visit::<CreatedAccessToken>();
     if let Some(name) = collector.duplicate {
         return Err(GenerateError::DuplicateTypeName(name));
     }

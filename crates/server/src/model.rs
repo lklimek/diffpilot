@@ -65,6 +65,7 @@ pub fn selection(
             &ModelContext::default(),
             saved.as_ref().map(|s| &s.choice),
         ),
+        judge_effort: None,
         changed_by: saved.as_ref().map(|s| s.changed_by.clone()),
         changed_at: saved.map(|s| s.changed_at),
     }

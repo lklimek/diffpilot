@@ -1,0 +1,442 @@
+{
+  "generated_at": "2026-11-18T08:14:00Z",
+  "users": [
+    "alice",
+    "alice-ci"
+  ],
+  "issue_repos": [
+    "acme/platform",
+    "acme/wallet-ui",
+    "acme/consensus"
+  ],
+  "lookback_days": 7,
+  "repo_aliases": {
+    "acme/platform": "PLAT",
+    "acme/wallet-ui": "WUI",
+    "acme/node-client": "NC",
+    "acme/consensus": "CON",
+    "acme/docs-site": "DOC"
+  },
+  "prs": [
+    {
+      "repo": "acme/platform",
+      "number": 1203,
+      "title": "fix(sync): retry header fetch after peer timeout",
+      "url": "https://github.com/acme/platform/pull/1203",
+      "relations": [
+        "review_requested"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "review_requested"
+        ]
+      },
+      "author": "mira-k",
+      "createdAt": "2026-11-14T08:14:00Z",
+      "updatedAt": "2026-11-17T07:14:00Z",
+      "labels": [],
+      "milestone": "v2.4",
+      "baseRefName": "main",
+      "defaultBranchName": "main",
+      "targetsReleaseBranch": false,
+      "conventionalType": "fix",
+      "isDraft": false,
+      "mergeable": "MERGEABLE",
+      "reviewDecision": "REVIEW_REQUIRED",
+      "ciEffective": "passing",
+      "ciRedChecks": [],
+      "additions": 400,
+      "deletions": 100,
+      "reviewPendingFor": [
+        "alice"
+      ],
+      "reviewRequestFreshnessDays": 1,
+      "unresolvedThreadsTotal": 0,
+      "linkedIssues": [
+        1187
+      ],
+      "dependentPRs": [],
+      "stackedOnPRs": [],
+      "awaitingOurReply": false
+    },
+    {
+      "repo": "acme/wallet-ui",
+      "number": 320,
+      "title": "fix(ui): restore the focus ring on tabs",
+      "url": "https://github.com/acme/wallet-ui/pull/320",
+      "relations": [
+        "review_requested"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "review_requested"
+        ]
+      },
+      "author": "jun-park",
+      "createdAt": "2026-11-15T08:14:00Z",
+      "updatedAt": "2026-11-18T07:14:00Z",
+      "labels": [],
+      "milestone": null,
+      "baseRefName": "main",
+      "defaultBranchName": "main",
+      "targetsReleaseBranch": false,
+      "conventionalType": "fix",
+      "isDraft": false,
+      "mergeable": "MERGEABLE",
+      "reviewDecision": "REVIEW_REQUIRED",
+      "ciEffective": "passing",
+      "ciRedChecks": [],
+      "additions": 32,
+      "deletions": 8,
+      "reviewPendingFor": [
+        "alice"
+      ],
+      "reviewRequestFreshnessDays": 0,
+      "unresolvedThreadsTotal": 0,
+      "linkedIssues": [],
+      "dependentPRs": [],
+      "stackedOnPRs": [],
+      "awaitingOurReply": false
+    },
+    {
+      "repo": "acme/wallet-ui",
+      "number": 311,
+      "title": "feat(wallet): show pending withdrawals",
+      "url": "https://github.com/acme/wallet-ui/pull/311",
+      "relations": [
+        "authored"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "authored"
+        ]
+      },
+      "author": "alice",
+      "createdAt": "2026-11-15T08:14:00Z",
+      "updatedAt": "2026-11-18T07:14:00Z",
+      "labels": [],
+      "milestone": "v2.5",
+      "baseRefName": "main",
+      "defaultBranchName": "main",
+      "targetsReleaseBranch": false,
+      "conventionalType": "feat",
+      "isDraft": false,
+      "mergeable": "MERGEABLE",
+      "reviewDecision": "REVIEW_REQUIRED",
+      "ciEffective": "failing",
+      "ciRedChecks": [
+        "test (e2e)"
+      ],
+      "additions": 304,
+      "deletions": 76,
+      "reviewPendingFor": [],
+      "reviewRequestFreshnessDays": null,
+      "unresolvedThreadsTotal": 2,
+      "linkedIssues": [],
+      "dependentPRs": [
+        298
+      ],
+      "stackedOnPRs": [],
+      "awaitingOurReply": true
+    },
+    {
+      "repo": "acme/node-client",
+      "number": 482,
+      "title": "feat(rpc): retry with backoff on timeout",
+      "url": "https://github.com/acme/node-client/pull/482",
+      "relations": [
+        "review_requested"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "review_requested"
+        ]
+      },
+      "author": "dana",
+      "createdAt": "2026-11-13T08:14:00Z",
+      "updatedAt": "2026-11-16T07:14:00Z",
+      "labels": [],
+      "milestone": "1.9",
+      "baseRefName": "main",
+      "defaultBranchName": "main",
+      "targetsReleaseBranch": false,
+      "conventionalType": "feat",
+      "isDraft": false,
+      "mergeable": "MERGEABLE",
+      "reviewDecision": "REVIEW_REQUIRED",
+      "ciEffective": "failing",
+      "ciRedChecks": [
+        "test (integration)"
+      ],
+      "additions": 512,
+      "deletions": 128,
+      "reviewPendingFor": [
+        "alice"
+      ],
+      "reviewRequestFreshnessDays": 3,
+      "unresolvedThreadsTotal": 0,
+      "linkedIssues": [],
+      "dependentPRs": [],
+      "stackedOnPRs": [],
+      "awaitingOurReply": false
+    },
+    {
+      "repo": "acme/docs-site",
+      "number": 77,
+      "title": "docs: describe the node upgrade path",
+      "url": "https://github.com/acme/docs-site/pull/77",
+      "relations": [
+        "review_requested"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "review_requested"
+        ]
+      },
+      "author": "renata-s",
+      "createdAt": "2026-11-13T08:14:00Z",
+      "updatedAt": "2026-11-16T07:14:00Z",
+      "labels": [],
+      "milestone": null,
+      "baseRefName": "main",
+      "defaultBranchName": "main",
+      "targetsReleaseBranch": false,
+      "conventionalType": "docs",
+      "isDraft": false,
+      "mergeable": "MERGEABLE",
+      "reviewDecision": "REVIEW_REQUIRED",
+      "ciEffective": "passing",
+      "ciRedChecks": [],
+      "additions": 168,
+      "deletions": 42,
+      "reviewPendingFor": [
+        "alice"
+      ],
+      "reviewRequestFreshnessDays": 2,
+      "unresolvedThreadsTotal": 0,
+      "linkedIssues": [],
+      "dependentPRs": [],
+      "stackedOnPRs": [],
+      "awaitingOurReply": false
+    },
+    {
+      "repo": "acme/consensus",
+      "number": 1534,
+      "title": "refactor(abci): move proposal checks into the validator",
+      "url": "https://github.com/acme/consensus/pull/1534",
+      "relations": [
+        "review_requested"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "review_requested"
+        ]
+      },
+      "author": "jun-park",
+      "createdAt": "2026-11-11T08:14:00Z",
+      "updatedAt": "2026-11-14T07:14:00Z",
+      "labels": [],
+      "milestone": null,
+      "baseRefName": "main",
+      "defaultBranchName": "main",
+      "targetsReleaseBranch": false,
+      "conventionalType": "refactor",
+      "isDraft": false,
+      "mergeable": "MERGEABLE",
+      "reviewDecision": "REVIEW_REQUIRED",
+      "ciEffective": "passing",
+      "ciRedChecks": [],
+      "additions": 1160,
+      "deletions": 290,
+      "reviewPendingFor": [
+        "alice"
+      ],
+      "reviewRequestFreshnessDays": 6,
+      "unresolvedThreadsTotal": 3,
+      "linkedIssues": [],
+      "dependentPRs": [],
+      "stackedOnPRs": [],
+      "awaitingOurReply": false
+    },
+    {
+      "repo": "acme/platform",
+      "number": 1199,
+      "title": "feat(api): paginate identity lookups",
+      "url": "https://github.com/acme/platform/pull/1199",
+      "relations": [
+        "review_requested"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "review_requested"
+        ]
+      },
+      "author": "olek-d",
+      "createdAt": "2026-11-09T08:14:00Z",
+      "updatedAt": "2026-11-12T07:14:00Z",
+      "labels": [],
+      "milestone": "v3.0",
+      "baseRefName": "main",
+      "defaultBranchName": "main",
+      "targetsReleaseBranch": false,
+      "conventionalType": "feat",
+      "isDraft": false,
+      "mergeable": "MERGEABLE",
+      "reviewDecision": "REVIEW_REQUIRED",
+      "ciEffective": "passing",
+      "ciRedChecks": [],
+      "additions": 1472,
+      "deletions": 368,
+      "reviewPendingFor": [
+        "alice"
+      ],
+      "reviewRequestFreshnessDays": 9,
+      "unresolvedThreadsTotal": 0,
+      "linkedIssues": [],
+      "dependentPRs": [],
+      "stackedOnPRs": [],
+      "awaitingOurReply": false
+    },
+    {
+      "repo": "acme/node-client",
+      "number": 490,
+      "title": "chore(deps): bump tokio to 1.48",
+      "url": "https://github.com/acme/node-client/pull/490",
+      "relations": [
+        "authored"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "authored"
+        ]
+      },
+      "author": "alice",
+      "createdAt": "2026-11-07T08:14:00Z",
+      "updatedAt": "2026-11-10T07:14:00Z",
+      "labels": [],
+      "milestone": null,
+      "baseRefName": "main",
+      "defaultBranchName": "main",
+      "targetsReleaseBranch": false,
+      "conventionalType": "chore",
+      "isDraft": true,
+      "mergeable": "MERGEABLE",
+      "reviewDecision": "REVIEW_REQUIRED",
+      "ciEffective": "passing",
+      "ciRedChecks": [],
+      "additions": 96,
+      "deletions": 24,
+      "reviewPendingFor": [],
+      "reviewRequestFreshnessDays": null,
+      "unresolvedThreadsTotal": 0,
+      "linkedIssues": [],
+      "dependentPRs": [],
+      "stackedOnPRs": [],
+      "awaitingOurReply": false
+    }
+  ],
+  "issues": [
+    {
+      "repo": "acme/platform",
+      "number": 1187,
+      "title": "Block sync stalls after the 2.4 upgrade on three nodes",
+      "url": "https://github.com/acme/platform/issues/1187",
+      "relations": [
+        "assigned"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "assigned"
+        ]
+      },
+      "author": "renata-s",
+      "createdAt": "2026-11-15T08:14:00Z",
+      "updatedAt": "2026-11-18T07:14:00Z",
+      "labels": [
+        "production report",
+        "bug"
+      ],
+      "milestone": "v2.4",
+      "isNew": true,
+      "assignees": [
+        "alice"
+      ],
+      "commentsCount": 14,
+      "bodyExcerpt": "open, 14 comments, 3 reporters"
+    },
+    {
+      "repo": "acme/platform",
+      "number": 1210,
+      "title": "Wallet balance shows a stale value after a reorg",
+      "url": "https://github.com/acme/platform/issues/1210",
+      "relations": [
+        "assigned"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "assigned"
+        ]
+      },
+      "author": "olek-d",
+      "createdAt": "2026-11-12T08:14:00Z",
+      "updatedAt": "2026-11-15T07:14:00Z",
+      "labels": [],
+      "milestone": "v2.4",
+      "isNew": false,
+      "assignees": [
+        "alice"
+      ],
+      "commentsCount": 4,
+      "bodyExcerpt": "open, 4 comments"
+    },
+    {
+      "repo": "acme/consensus",
+      "number": 1520,
+      "title": "Investigate memory growth in the mempool",
+      "url": "https://github.com/acme/consensus/issues/1520",
+      "relations": [
+        "assigned"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "assigned"
+        ]
+      },
+      "author": "olek-d",
+      "createdAt": "2026-11-08T08:14:00Z",
+      "updatedAt": "2026-11-11T07:14:00Z",
+      "labels": [],
+      "milestone": "1.9",
+      "isNew": false,
+      "assignees": [
+        "alice"
+      ],
+      "commentsCount": 6,
+      "bodyExcerpt": "open, 6 comments"
+    },
+    {
+      "repo": "acme/wallet-ui",
+      "number": 305,
+      "title": "Dark theme: low contrast on disabled buttons",
+      "url": "https://github.com/acme/wallet-ui/issues/305",
+      "relations": [
+        "mentions"
+      ],
+      "relations_by_user": {
+        "alice": [
+          "mentions"
+        ]
+      },
+      "author": "jun-park",
+      "createdAt": "2026-11-03T08:14:00Z",
+      "updatedAt": "2026-11-06T07:14:00Z",
+      "labels": [],
+      "milestone": null,
+      "isNew": false,
+      "assignees": [],
+      "commentsCount": 3,
+      "bodyExcerpt": "open, 3 comments"
+    }
+  ],
+  "errors": []
+}

@@ -14,7 +14,7 @@ sessions. A 06:00 run after a quiet weekend would find no pair.
    §A.5 from stored settings and run records; no timers are persisted, so restarts lose nothing. One run per user
    per local date; a missed run is caught up once at the first tick on the same local date unless a refresh already
    succeeded after the scheduled instant. Scheduled runs use the manual refresh pipeline and its one-live-refresh
-   rule; at most one scheduled refresh runs server-wide, users ordered by due instant plus a per-user 0–9 min offset.
+   rule (a start supersedes a ranking; only a scanning refresh blocks; `docs/contracts/http-api.md` "Refresh states"); at most one scheduled refresh runs server-wide, users ordered by due instant plus a per-user 0–9 min offset.
 2. **Time zone** per user (IANA, `chrono-tz`), stored from the browser at the first dashboard visit, editable in
    Settings; without it the schedule does not run. DST: gap → first valid instant after; overlap → first occurrence.
 3. **Token pair lifetime:** the pair is kept while the user has a live session **or** the schedule is on. Sign-out of
