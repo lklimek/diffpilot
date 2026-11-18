@@ -1,7 +1,7 @@
 # Database schema (summary)
 
 Source of truth: `crates/db/migrations/` (`0001_init.sql`, then additive migrations that upgrade an existing
-database in place and keep its data: `0002_flow_auto_retries.sql`). An applied migration file is never edited
+database in place and keep its data: `0002_flow_auto_retries.sql`, `0003_dashboard.sql`, `0004_access_tokens.sql`). An applied migration file is never edited
 (sqlx compares its checksum at start). A server binary older than the database (an applied migration it does not
 know) refuses to start; going back needs a database copy of that version. SQLite in WAL mode, foreign keys on, `STRICT` tables, timestamps as RFC 3339 UTC text. Only
 `crates/db` uses sqlx; everything else goes through the repository API (`crates/db/src/repo/*.rs`, one module per
@@ -20,7 +20,7 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `repos`, `pull_requests` | known repositories (Settings list) and PR snapshots; PR-level analytic `agent_thread_id`, `analytic_generation` (default 0), and `session_state`, shared across analyses; PR id uses AUTOINCREMENT for archive keys | – |
 | `analyses` | one analysis per PR head and language: state, progress, skills commit, `round` (incremented by each Retry), nullable `user_paused_by` and `user_paused_at` | partial unique index: one live (not cancelled) per (PR, head, language) |
 | `documents` | validated agent output and pre-pass as JSON: `prepass`, `plan`, `pr_context`, `flow` (key = flow id), `github_snapshot` (threads, checks), `unsent` (lines the server did not send to the LLM with their reason; key `plan` or a flow id), `memcan_profile` (the analysis's MemCan project profile lookup: `not_checked`, or `checked` with the bounded profile text or none; a Retry looks a `not_checked` one up again); `github_access` (an accepted agent output's attempt ran with an installation token; NULL for server-built documents) | `json_valid` |
-| `llm_selection` | singleton installation model, reasoning effort, changer login and time | primary key must be 1; effort low/medium/high; no tenant scope |
+| `llm_selection` | singleton installation model, reasoning effort, dashboard ranking `judge_effort` (default `low`, migration 0003), changer login and time | primary key must be 1; effort low/medium/high; no tenant scope |
 | `llm_credentials` | credential ids runners hold (never the secret), pause, unusable, last call outcome | kind `codex_chatgpt` |
 | `jobs` | the queue: kind, priority (0 Ask, 1 batch), state, spec (no secrets), attempt/max, lease, job-token hash, cancel flag, `resumes_at`, `ready_output` + `ready_output_attempt`, result, `stage` (`plan:<n>`, `pr_context`, `flow:<id>`, `ask:<id>`), `generation` (0 first run, 1..2 repair runs), `round` (the analysis's round at enqueue), `github_access_granted` (the last claim got an installation token; the queue executor reports it with the result) | partial unique indexes: one claimed/running job per analysis and per credential, one live or succeeded job per (analysis, stage, generation, round); PR-level insert/update triggers exclude simultaneous claimed/running jobs across analyses and credentials; claim-order and by-analysis indexes |
 | `installation_tokens` | AES-GCM ciphertext and expiry of the installation token per (job, attempt), kept until revocation is confirmed | PK `(job_id, attempt)`; listed for revocation once the attempt is no longer claimed or running |
@@ -31,6 +31,10 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 | `working_sessions` | private Ask thread and fork's analytic generation, with `tenant_id` | PK `(pull_request_id, user_id)`; cascading PR/user foreign keys |
 | `feedback` | one entry per (user, analysis, target, value) (CCR-F1); `revision` (+1 per replacement or removal); `memcan_state` pending/written/failed of the current revision (exposed as `Feedback.memory`); `removed_at` marks a removed entry kept until MemCan deleted its memory; `attempts` / `next_attempt_at` schedule retries per entry; `unsettled_until` is the end of the settle period of a write with unknown outcome | `target_key`: step id, annotation id, or `<side>:<line>:<path>` for lines; `overrated` / `underrated` exclusive per (user, analysis, target) |
 | `comment_requests` | pending-review idempotency: request hash + response per (user, key) | – |
+| `dashboard_settings` | per-user dashboard settings (v1.1, plan §F.6): JSON lists of linked logins, enumerate owners, `repositories` (`RepositoryRule[]`), skip authors, extra MemCan projects; look-back days, ready label, TODOs and schedule switches, `schedule_time`, IANA `time_zone` (null until known); the last scheduled run (`last_scheduled_on` local date, `last_scheduled_outcome`, reason) | PK `user_id` (cascade); absent row = defaults; outcome and date set together |
+| `dashboard_refreshes` | one scan + ranking per row: trigger, state, `progress` `{steps, percent}`, `log` (≤ 200 lines), failure code/message/`retry_at`, `ranking_state`, judged/reused/left-provisional counts, `snapshot` (one validated JSON document, null until scanned), start/scan/end times | partial unique index: one `scanning`/`ranking` row per user; `failed` exactly when a failure code is set; newest 10 per user kept, plus the one holding the latest snapshot |
+| `dashboard_judgements` | stored LLM judgement per (user, item key): judged-input fingerprint (SHA-256 hex), input and prompt versions, `body` JSON, refresh (set null when deleted), job id (no foreign key), model, `judged_at` (daily cap), `last_seen_at` (deleted 90 days after) | PK `(user_id, item_key)` |
+| `access_tokens` | personal access tokens (ADR-019): public 8-character `id`, name, SHA-256 `token_hash` (32 bytes, never the token), `scopes` JSON, created/expiry/last-used/revoked times | `token_hash` unique; name unique per user among tokens not revoked; cascade with the user |
 
 Every table except `tenants`, `users` and installation-wide `llm_selection` has a `NOT NULL tenant_id` (schema test). `CHECK` lists mirror the
 closed contract enums (schema test compares them with the serde names).
@@ -58,7 +62,10 @@ unreachable or times out, the sweep stops and the writer backs off (30 s doublin
 does not stop the sweep.
 
 ## Ownership
-Frozen cross-WP signatures (bodies return `NotImplemented` until filled): `jobs` (WP2-JOBS), `analyses`
+v1.1 frozen signatures (WP11-A; bodies return `NotImplemented` until filled): `dashboard` (WP11-DB; every function
+takes `(tenant_id, user_id)` except the server-internal `schedule_candidates`, `interrupt_live` and
+`delete_unseen_judgements`), `access_tokens` (WP11-TOKENS). `judge_effort` reads and writes in `settings` belong to
+WP11-DB. Frozen cross-WP signatures (bodies return `NotImplemented` until filled): `jobs` (WP2-JOBS), `analyses`
 (WP2-JOBS / WP2-INGEST), `documents` (WP2-INGEST), `feedback` (WP3-MEMCAN; WP3-REVIEW records
 `missed_by_llm`), `llm_credentials` (WP2-JOBS). Other modules are owned and shaped by their work package.
 Schema changes are change requests to the coordinator.

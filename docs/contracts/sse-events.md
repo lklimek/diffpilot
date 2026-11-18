@@ -65,3 +65,18 @@ invalidates the partial Tour. `state.idle` of a running analysis (`http-api.md`)
 snapshot is sent whenever it changes (the driver ends without admitted flow work; a flow request or background
 analysis on admits work again), so an open page needs no polling to show that nothing is being analysed.
 No extra polling or replay protocol is added; reconnect snapshots resynchronise it.
+
+## Dashboard refresh events (v1.1)
+
+`GET /api/v1/dashboard/refreshes/{id}/events` (`read`: session or a `read` access token; plan
+`docs/v1.1-dashboard-plan.md` §E.3). Type: `DashboardEvent` (`crates/contracts/src/api/dashboard.rs`). Only the
+refresh's own user may open it; another user's refresh id answers `not_found` (threat model T16).
+
+- `refresh {status}`: full `RefreshStatus` on connect and on every change of that refresh, including its ranking
+  (`ranking.state`, `judged` of `total`, `resumes_at`). When the ranking stores judgements, the `revision` of
+  `GET /api/v1/dashboard` changes; the client refetches the summary and the items on `refresh` events.
+- `heartbeat {at}`: every 15 s, as for analyses; each tick re-checks the session or the access token (revoked,
+  expired, user off the allow-list), so the stream ends within 15 s of a revocation.
+- Reconnect = current status, then live events. Updates of a refresh are written before they are published, under
+  one per-user task (the v1 invariant above). The stream stays open after the refresh ended until the client
+  closes it. No provider activity, no item text and no secrets are sent.
