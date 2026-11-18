@@ -5,7 +5,7 @@
 //! A copy is agent-writable: it is read only as a small regular file without following symlinks, and written
 //! back only when it is a ChatGPT credential of the master's account and user, read from the token claims (the
 //! agent can write the `account_id` field), and the master is still the one the copy was taken from. A master
-//! whose id token does not name its stored account is refused before any job uses it. Next to
+//! whose tokens do not name its stored account is refused before any job uses it. Next to
 //! each per-job `CODEX_HOME` the runner keeps `<home>.cas`, the SHA-256 of that master (runner-only directory),
 //! so recovery after a crash applies the same compare-and-swap.
 //! A master that can no longer be refreshed is recorded by digest in `auth.json.unusable`; signing in again
@@ -101,7 +101,7 @@ impl CodexCredential {
         if identity(&master).is_none() {
             self.mark_unusable(
                 digest,
-                "its id token does not name the stored account, so a refreshed copy could not be verified",
+                "its id token does not name the stored account, or its access token names another, so a refreshed copy could not be verified",
             );
             return false;
         }
@@ -539,36 +539,38 @@ struct Claims {
 
 impl Identity {
     /// Whether `copy`, a refreshed copy of this credential, acts as the same account and user: it keeps every
-    /// claim this one has (a refresh may add one) and its access token names no other account.
+    /// claim this one has (a refresh may add one).
     fn kept_by(&self, copy: &Self) -> bool {
         let kept = |old: &Option<String>, new: &Option<String>| old.is_none() || old == new;
         copy.account == self.account
             && kept(&self.user, &copy.user)
             && kept(&self.access.account, &copy.access.account)
             && kept(&self.access.user, &copy.access.user)
-            && copy
-                .access
-                .account
-                .as_ref()
-                .is_none_or(|account| *account == copy.account)
     }
 }
 
-/// The identity of `auth`; `None` unless it stores an account id and its id token names that account.
+/// The identity of `auth`; `None` unless it stores an account id, its id token names that account and its
+/// access token names no other.
 fn identity(auth: &[u8]) -> Option<Identity> {
     let json = serde_json::from_slice::<Value>(auth).ok()?;
     let tokens = json.get("tokens")?;
     let account = nonempty(tokens, "account_id")?;
     let id_token = claims(nonempty(tokens, "id_token")?);
-    if id_token.account.as_deref() != Some(account) {
+    let access = nonempty(tokens, "access_token")
+        .map(claims)
+        .unwrap_or_default();
+    if id_token.account.as_deref() != Some(account)
+        || access
+            .account
+            .as_deref()
+            .is_some_and(|named| named != account)
+    {
         return None;
     }
     Some(Identity {
         account: account.to_owned(),
         user: id_token.user,
-        access: nonempty(tokens, "access_token")
-            .map(claims)
-            .unwrap_or_default(),
+        access,
     })
 }
 

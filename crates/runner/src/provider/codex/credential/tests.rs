@@ -367,6 +367,10 @@ fn master_without_an_account_bound_id_token_is_refused_before_a_job_starts() {
             ),
         ),
         (
+            "an access token of another account than the stored one",
+            auth_with("rt-original", "acct-1", &own, &token("acct-2", "user-1")),
+        ),
+        (
             "an id token of another account than the stored one",
             auth_with(
                 "rt-original",
