@@ -299,6 +299,59 @@ describe("WorkList", () => {
   });
 });
 
+describe("WorkList: a visible link out on every row (F38)", () => {
+  const pr = ITEMS.find((item) => item.kind === "pr" && item.score.tier !== "p0")!;
+  const todo = ITEMS.find((item) => item.kind === "todo")!;
+  const alarm = ITEMS.find((item) => item.score.tier === "p0")!;
+
+  it("each row and the P0 alarm have an icon link named and tipped 'Open <id> on GitHub', in a new tab", () => {
+    render(<List />);
+    for (const item of [pr, alarm]) {
+      const link = screen.getByRole("link", { name: `Open ${item.id} on GitHub` });
+      expect(link).toHaveAttribute("href", item.url);
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noopener noreferrer");
+      expect(link).toHaveAccessibleDescription(`Open ${item.id} on GitHub`);
+      expect(link.querySelector("svg")).not.toBeNull();
+      expect(link.className).toMatch(/min-h-6/);
+      expect(link.className).toMatch(/min-w-6/);
+    }
+  });
+
+  it("a TODO with a link opens it in MemCan; no icon without a link or with a non-http URL", () => {
+    const items = [
+      { ...todo, url: "http://memcan.example/ui/tasks/1" },
+      { ...pr, key: "no-url", id: "NOURL-1", url: null },
+      { ...pr, key: "js-url", id: "JS-1", url: "javascript:alert(1)" },
+    ];
+    render(<List items={items} />);
+    expect(screen.getByRole("link", { name: "Open TODO in MemCan" })).toHaveAttribute(
+      "href",
+      "http://memcan.example/ui/tasks/1",
+    );
+    expect(screen.queryByRole("link", { name: /NOURL-1/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /JS-1/ })).toBeNull();
+    expect(document.querySelector('a[href^="javascript"]')).toBeNull();
+  });
+
+  it("clicking the icon does not expand or select the row", async () => {
+    render(<List />);
+    const link = screen.getByRole("link", { name: `Open ${pr.id} on GitHub` });
+    link.addEventListener("click", (event) => event.preventDefault());
+    const bubbled = vi.fn();
+    // React handlers run at the root; a stopped click does not reach the body beyond it.
+    document.body.addEventListener("click", bubbled);
+    await userEvent.click(link);
+    document.body.removeEventListener("click", bubbled);
+    expect(bubbled).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: `Details of ${pr.id}` })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(document.querySelector("[data-current]")).toBeNull();
+  });
+});
+
 describe("WorkList: TODO rows kept while MemCan was unreachable (plan §G Failures)", () => {
   const row = (key: string) => document.querySelector<HTMLElement>(`li[data-item="${key}"]`)!;
   const todoKeys = ITEMS.filter((item) => item.kind === "todo").map((item) => item.key);

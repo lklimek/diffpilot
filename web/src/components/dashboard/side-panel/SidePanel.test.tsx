@@ -74,6 +74,11 @@ describe("side panel sections", () => {
     expect(items[0]).toHaveTextContent("PLAT-1176");
     expect(items[0]).toHaveTextContent("waits on @jun-park, team:core for 11 d");
     expect(items[2]).toHaveTextContent("—");
+    const first = SUMMARY.snapshot!.awaiting.find((item) => item.id === "PLAT-1176")!;
+    const link = within(items[0]!).getByRole("link", { name: "Open PLAT-1176 on GitHub" });
+    expect(link).toHaveAttribute("href", first.url);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAccessibleDescription("Open PLAT-1176 on GitHub");
   });
 
   it("shows yesterday's PRs and reviews only", async () => {

@@ -3,6 +3,7 @@ import type { Tier, TodosState, WorkItem } from "../../../api/generated/types";
 import { AlarmRow } from "../alarm-row/AlarmRow";
 import { TIER_RULE, tierName } from "../common/format";
 import type { Navigate } from "../common/navigate";
+import { httpUrl } from "../common/OpenExternal";
 import { ToggleGroup } from "../common/ToggleGroup";
 import { WorkItemRow } from "../work-item/WorkItemRow";
 import { dashboardShortcut, isTyping } from "./shortcuts";
@@ -140,9 +141,11 @@ export function WorkList({
         const href = reviewHref(current);
         if (onNavigate) onNavigate(href);
         else window.location.assign(href);
-      } else if (action === "open" && current.url) {
+      } else if (action === "open") {
+        const url = httpUrl(current.url);
+        if (!url) return;
         event.preventDefault();
-        window.open(current.url, "_blank", "noopener,noreferrer");
+        window.open(url, "_blank", "noopener,noreferrer");
       }
     };
     document.addEventListener("keydown", onKey);

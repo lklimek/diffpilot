@@ -3,6 +3,7 @@ import { buttonClass } from "../../button/button";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { ExternalIcon } from "../common/icons";
 import { navigateOnClick, type Navigate } from "../common/navigate";
+import { httpUrl } from "../common/OpenExternal";
 
 const WIDTH = "min-w-[118px] justify-center";
 
@@ -54,12 +55,13 @@ export function ItemAction({ item, reviewHref, onNavigate }: ItemActionProps) {
       </Tooltip>
     );
   }
-  if (item.kind === "pr" || !item.url) return null;
+  const url = httpUrl(item.url);
+  if (item.kind === "pr" || !url) return null;
   const what = item.kind === "todo" ? "TODO" : "issue";
   return (
     <Tooltip tip={`Open the ${what} in ${item.kind === "todo" ? "MemCan" : "GitHub"} (new tab)`}>
       <a
-        href={item.url}
+        href={url}
         target="_blank"
         rel="noopener noreferrer"
         className={`${buttonClass("plain", true)} ${WIDTH}`}
