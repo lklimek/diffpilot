@@ -156,8 +156,8 @@ export function DashboardScreen() {
       {snapshot && !view.empty && page.allItems && (
         <WorkList
           items={page.allItems}
-          kind={page.filter}
-          onKindChange={page.setFilter}
+          kinds={page.filter}
+          onKindsChange={page.setFilter}
           reviewHref={reviewHref}
           onNavigate={go}
           onHelp={() => setHelpOpen(true)}

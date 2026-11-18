@@ -3,19 +3,22 @@ import type { Tier, TodosState, WorkItem } from "../../../api/generated/types";
 import { AlarmRow } from "../alarm-row/AlarmRow";
 import { TIER_RULE, tierName } from "../common/format";
 import type { Navigate } from "../common/navigate";
-import { Segmented } from "../common/Segmented";
+import { ToggleGroup } from "../common/ToggleGroup";
 import { WorkItemRow } from "../work-item/WorkItemRow";
 import { dashboardShortcut, isTyping } from "./shortcuts";
 
-/** Which GitHub items the list shows; MemCan TODOs are listed with each (http-api.md "Items"). */
-export type KindFilter = "pr" | "issue" | "both";
+/** A kind of listed item: pull request, issue or MemCan TODO. */
+export type ItemKind = WorkItem["kind"];
+
+/** Every kind, in toggle order. */
+export const ALL_KINDS: ItemKind[] = ["pr", "issue", "todo"];
 
 interface WorkListProps {
   /** Ranked items in rank order (R1b). */
   items: WorkItem[];
-  /** Kind switch; the screen opens it on `pr` (owner decision). */
-  kind: KindFilter;
-  onKindChange: (kind: KindFilter) => void;
+  /** Kinds shown (independent toggles; all on by default). */
+  kinds: ItemKind[];
+  onKindsChange: (kinds: ItemKind[]) => void;
   /** In-app href of a pull request's review (plan §F.1); built by the screen. */
   reviewHref: (item: WorkItem) => string;
   /** In-app navigation (links and `v`); without it links load the page. */
@@ -31,14 +34,23 @@ interface WorkListProps {
   now: Date;
 }
 
-const shows = (filter: KindFilter, item: WorkItem) =>
-  item.kind === "todo" || filter === "both" || item.kind === filter;
+const KIND_LABEL: Record<ItemKind, string> = { pr: "PRs", issue: "Issues", todo: "TODOs" };
 
-const KIND_TEXT: Record<KindFilter, string> = {
+const KIND_TEXT: Record<ItemKind, string> = {
   pr: "pull requests",
   issue: "issues",
-  both: "pull requests or issues",
+  todo: "TODOs",
 };
+
+/** `issues`, `issues or TODOs`, `pull requests, issues or TODOs`. */
+const kindsText = (kinds: ItemKind[]) => {
+  const names = kinds.map((kind) => KIND_TEXT[kind]);
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)}` : (names[0] ?? "");
+};
+
+/** MemCan TODOs can be in the snapshot: TODOs are read (or kept), or some are listed. */
+const todosPossible = (items: WorkItem[], todos?: TodosState) =>
+  todos?.status === "read" || todos?.status === "not_refreshed" || items.some((item) => item.kind === "todo");
 
 /** Groups of the list: P0 alarms, the tiers P1–P3, then "Not judged yet"; each keeps the server's rank order. */
 export function groupItems(items: WorkItem[]) {
@@ -52,14 +64,14 @@ export function groupItems(items: WorkItem[]) {
 }
 
 /**
- * The ranked list "Needs you" (mockup `renderList`): kind switch, P0 alarms (of every kind), tier groups and
+ * The ranked list "Needs you" (mockup `renderList`): kind toggles, P0 alarms (of every kind), tier groups and
  * "Not judged yet";
  * keys `j`/`k` move the cursor, Enter expands, `v` opens the PR's review, `g` the item, `?` the help.
  */
 export function WorkList({
   items,
-  kind,
-  onKindChange,
+  kinds,
+  onKindsChange,
   reviewHref,
   onNavigate,
   onHelp,
@@ -75,14 +87,18 @@ export function WorkList({
   const titleId = useId();
   const staleId = useId();
 
-  const shown = items.filter((item) => shows(kind, item));
-  // P0 alarms stay visible whatever the kind switch says.
+  const offered = todosPossible(items, todos) ? ALL_KINDS : ALL_KINDS.filter((kind) => kind !== "todo");
+  // Kinds on among those offered; none (TODOs only, now hidden) shows every offered kind.
+  const chosen = offered.filter((kind) => kinds.includes(kind));
+  const active = chosen.length > 0 ? chosen : offered;
+  const shows = (item: WorkItem) => active.includes(item.kind);
+  const shown = items.filter(shows);
+  // P0 alarms stay visible whatever the kind toggles say.
   const alarms = groupItems(items).alarms;
   const { tiers, notJudged } = groupItems(shown);
   const rows = [...alarms, ...tiers.flatMap((group) => group.items), ...notJudged];
-  const listed = shown.length + alarms.filter((alarm) => !shows(kind, alarm)).length;
-  const count = (k: KindFilter) => items.filter((item) => item.kind !== "todo" && shows(k, item)).length;
-  const todoCount = items.filter((item) => item.kind === "todo").length;
+  const listed = shown.length + alarms.filter((alarm) => !shows(alarm)).length;
+  const count = (kind: ItemKind) => items.filter((item) => item.kind === kind).length;
 
   const toggle = (key: string) =>
     setExpanded((open) => {
@@ -172,42 +188,21 @@ export function WorkList({
         </h2>
         <span className="text-xs text-muted">
           {listed} of {items.length} items, ranked
-          {todoCount > 0 ? `; your ${todoCount} MemCan TODOs are listed with every choice` : ""}
         </span>
         <span className="flex-1" />
-        <Segmented
-          label="Show pull requests, issues or both"
-          value={kind}
-          onChange={onKindChange}
-          options={[
-            {
-              value: "pr",
-              label: (
-                <>
-                  PRs <b>{count("pr")}</b>
-                </>
-              ),
-              tip: "Show pull requests (and your MemCan TODOs)",
-            },
-            {
-              value: "issue",
-              label: (
-                <>
-                  Issues <b>{count("issue")}</b>
-                </>
-              ),
-              tip: "Show issues (and your MemCan TODOs)",
-            },
-            {
-              value: "both",
-              label: (
-                <>
-                  Both <b>{count("both")}</b>
-                </>
-              ),
-              tip: "Show pull requests and issues (and your MemCan TODOs)",
-            },
-          ]}
+        <ToggleGroup
+          label="Kinds shown"
+          values={active}
+          onChange={onKindsChange}
+          options={offered.map((kind) => ({
+            value: kind,
+            label: (
+              <>
+                {KIND_LABEL[kind]} <b>{count(kind)}</b>
+              </>
+            ),
+            tip: `Show or hide ${kind === "todo" ? "your MemCan TODOs" : KIND_TEXT[kind]}`,
+          }))}
         />
       </div>
       {/* A stale list keeps full text contrast: a tinted dashed frame and its chip mark it. */}
@@ -244,8 +239,8 @@ export function WorkList({
           ({ tier, items: list }) => list.length > 0 && group(tierName(tier), TIER_RULE[tier], list),
         )}
         {notJudged.length > 0 && group("Not judged yet", "new since the last ranking", notJudged)}
-        {count(kind) === 0 && (
-          <p className="px-0.5 py-2 text-[12.5px] text-muted">No {KIND_TEXT[kind]} need you.</p>
+        {shown.length === 0 && (
+          <p className="px-0.5 py-2 text-[12.5px] text-muted">No {kindsText(active)} need you.</p>
         )}
       </div>
     </section>
