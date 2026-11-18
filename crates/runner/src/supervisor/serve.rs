@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -568,14 +569,17 @@ async fn serve_inner(config: ServeConfig, runner_argv: &[OsString]) -> i32 {
     let setup = || -> io::Result<_> {
         rustix::process::set_child_subreaper(Some(rustix::process::getpid()))?;
         if config.privileged {
+            // Volume roots, the runner's /tmp included (Docker volumes have no uid or mode option); their
+            // modes are the runner's job. One already the runner's is left alone (also on a read-only root).
             for root in [
                 config.state_dir.clone(),
                 config.state_dir.join("codex-homes"),
                 config.work_dir.clone(),
+                std::env::temp_dir(),
             ] {
-                // Fresh volume roots; their modes are the runner's job.
                 if let Ok(meta) = std::fs::symlink_metadata(&root)
                     && meta.is_dir()
+                    && (meta.uid(), meta.gid()) != (config.runner.uid, config.runner.gid)
                 {
                     std::os::unix::fs::lchown(
                         &root,

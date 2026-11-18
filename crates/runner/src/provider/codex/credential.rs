@@ -144,7 +144,7 @@ impl CodexCredential {
         }
         for entry in std::fs::read_dir(codex_homes)? {
             let path = entry?.path();
-            if !kept.contains(&path) && !crate::codex_homes::is_lost_found(&path) {
+            if !kept.contains(&path) {
                 remove_tree(&path);
             }
         }
