@@ -397,12 +397,19 @@ the size. Otherwise it returns:
 
 `changed_lines` and `changed_files` come from the same GitHub PR metadata request already used by resolve.
 There is no additional GitHub call. `estimate` uses the same tenant-scoped recent-run samples and formula
-as waiting progress: historical plan seconds per changed agent line × PR changed lines + mean PR-context
-seconds + historical flow seconds per changed agent line × PR changed lines. The flow count is unknown,
-so this pre-start estimate uses `lines_only`, `rough: true`. PR metadata includes quiet lines too; this is
+as waiting progress for what starting the analysis runs, plan and PR context: historical plan seconds per
+changed agent line × PR changed lines + mean PR-context seconds. Flows are analysed on request and are no part
+of it. It uses `lines_only`, `rough: true`. PR metadata includes quiet lines too; this is
 an intentionally rough comparison. Missing samples or an estimate above seven days produce null.
-The Home notice makes no time claim without history, never disables Analyze, and adds no dialog.
-Old resolve responses without `size_warning` remain readable.
+
+Independent of the threshold, resolve carries two optional fields from the same GitHub response (no extra
+request): `size {changed_lines, changed_files}` for a pull request of any size (absent when GitHub did not
+report it) and `planning_estimate {remaining_seconds, basis, rough}`, the same plan + PR context estimate
+(absent without the size or enough history; `basis` is `this_analysis | recent_runs | lines_only`, before the
+start always `lines_only`). `size_warning.estimate` equals `planning_estimate`.
+The lookup never starts an analysis and makes no time claim without history; "Start analysis"
+(`POST /api/v1/analyses`) does, and runs plan and PR context only.
+Old resolve responses without `size_warning`, `size` or `planning_estimate` remain readable.
 
 ### Installation LLM choice and user pause
 
@@ -428,10 +435,14 @@ Cancel requires an inline UI confirmation, then discards documents and cancels u
 ### Lazy flow review
 
 `AnalysisSummary.review_ready` is true after accepted plan and PR context, including while running or
-paused; false after Cancel. `background_analysis` is the stored switch (default true). The Tour now
+paused; false after Cancel. `background_analysis` is the stored switch; a new analysis starts with it `false`
+(owner decision, 2026-11-18): after plan and PR context nothing is analysed until a flow is requested or the
+switch is turned on. Reading the analysis, its Tour or a flow never requests work. The Tour now
 contains every planned flow. Until accepted, `steps` and graph nodes are empty and `llm.risk` is null;
 clients show `analysis_status`, not a risk label or a review tick. `planned` carries intent, rank and
-verified changed ranges. Accepted flows support ticks, comments and private Ask before the run ends.
+verified changed ranges; the sum of `end_line - start_line + 1` over `planned.ranges[].ranges[]` is the flow's
+size in changed lines, known before the flow is analysed (no time estimate per flow). Accepted flows support
+ticks, comments and private Ask before the run ends.
 
 Example: `{"analysis_status":{"state":"analysing","started_at":"2026-11-17T20:00:00Z","message":null},
 "planned":{"intent":"Bound retries","importance_rank":2,"ranges":[{"file":"src/rpc.rs","side":"head","ranges":[{"start_line":8,"end_line":19}]}]}}`.
@@ -444,20 +455,27 @@ Both require session/CSRF and tenant access; requesting work or enabling backgro
 head. Latest requested flow runs first, then background flows by plan rank. Already claimed work finishes;
 queued work may be withdrawn; a repair run refused because the demand changed waits for its flow's next turn
 and then repairs the stored output, also after another flow's retry started a new job round. A user pause still
-prevents submission/claim. With background analysis on, a failed flow is retried automatically at most twice,
-after the flows not analysed yet; then it stays `failed` and needs explicit Retry. Its `analysis_status.message`
-names the cause and what happens next: `The flow analysis failed. <cause sentence of the failed call>` followed
-by `It will be tried again automatically.` while an automatic retry is left and background analysis is on, else
-by `Retry this flow.` (likewise after `The flow output failed verification after repairs.`). A flow too large
-for the agent request (`This flow is too large for the agent request.`) is never retried automatically: the
-same plan and diff give the same prompt. An unusable LLM credential fails the analysis instead (state `failed`
+prevents submission/claim. A flow nobody requested never runs while background analysis is off. A failed flow
+is retried automatically at most twice (per flow, whoever started it): a requested flow keeps its demand and
+runs again at once (state `queued`), also with background analysis off; a flow analysed in the background is
+retried after the flows not analysed yet, while background analysis is on. Then it stays `failed` and needs
+explicit Retry, which runs it once more. Its `analysis_status.message` names the cause and what happens next:
+`The flow analysis failed. <cause sentence of the failed call>` followed by `It will be tried again
+automatically.` while the analysis is planning, running or paused and the server will run the flow again by
+itself (it is requested, or an automatic retry is left and background analysis is on), else by `Retry this
+flow.` (likewise after `The flow output failed verification after repairs.`). A flow too large for the agent
+request (`This flow is too large for the agent request.`) is never retried automatically: the same plan and
+diff give the same prompt. An unusable LLM credential fails the analysis instead (state `failed`
 with the sign-in sentence and the flow). Requests/preferences survive restart.
 
 When no flow work is admitted (every flow analysed or failed for good, or the rest not requested with background
-off) and flows remain, the analysis stays `running {done, total}` without `stage` and no server task holds it;
-a flow request or switching background on starts the work again. `finished` still means every planned flow is
-analysed. With background disabled or a failed flow awaiting Retry, the overall ETA is omitted because
-unscheduled work has no completion time. Existing analysis SSE events invalidate the partial Tour,
+off) and flows remain, the analysis stays `running {done, total, idle: true}` without `stage` and no server task
+holds it; a flow request or switching background on starts the work again. `idle` (boolean, `false` when absent)
+is read with every summary: `false` while a flow is requested, being analysed or waiting for its turn, so a
+client can tell "nothing is being analysed" from "working between two jobs". `finished` still means every
+planned flow is analysed. With background analysis off, `progress.estimate` and `progress.percent` cover plan
+parts and PR context only (the wait until the review is ready) and are null once it is ready, until `finished`
+(100); with a failed flow awaiting Retry the ETA is omitted. Unscheduled work has no completion time. Existing analysis SSE events invalidate the partial Tour,
 including when a verified flow becomes available; no extra polling is needed.
 
 #### Deterministic context and replacement lines

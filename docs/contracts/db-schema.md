@@ -77,12 +77,14 @@ only `working_sessions` using the job's durable question owner. A stale fork is 
 analytic output without an archive clears its reference and invalidates forks. Cancel/Re-analyze keep archives;
 explicit PR removal or PR-wide retention deletes them.
 
-Lazy review adds `analyses.background_analysis` (boolean, default 1) and `flow_work` keyed by analysis/flow,
+Lazy review adds `analyses.background_analysis` (boolean, column default 1; a new analysis is inserted with 0,
+existing rows keep their value) and `flow_work` keyed by analysis/flow,
 with tenant, nullable requested timestamp and nullable plain error. Lazy scheduling adds no fields to stored
 plan or flow documents; the separate concise-assessment amendment makes low assessment details optional.
 Accepted flow documents override scheduling rows. Newest demand precedes plan rank; a failed flow is scheduled
 again by background work until `flow_work.auto_retries` (integer, default 0, migration 0002) reaches 2, each
-automatic retry counting one, and after that only on request; a flow with an `unsent` document (too large for
+automatic retry counting one, and after that only on request; a requested flow that fails keeps `requested_at`
+while the counter is below 2 (the failure counts one) and so runs again whatever the background switch; a flow with an `unsent` document (too large for
 the agent request) only on request. A flow retry advances the job round only between serial pipeline jobs, in the
 transaction that chose the flow; succeeded jobs of other flows that have neither a flow document nor a failure
 (an output waiting for its postponed repair) move to the new round with it (`jobs.round`).

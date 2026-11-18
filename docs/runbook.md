@@ -349,7 +349,7 @@ but no task works on it, and no new driver is started by itself. After the stora
 request, switching background analysis on, Pause followed by Resume, or a server restart starts a driver again.
 
 The initial estimate is the first pre-start estimate actually returned to the initiating reader for
-that PR head. This small, bounded process-local observation is not persisted; after restart, eviction,
+that PR head; it covers plan and PR context only (flows are analysed on request). This small, bounded process-local observation is not persisted; after restart, eviction,
 or a start without resolve it is absent, never reconstructed as the original prediction. Counts learned
 from diff preparation are also absent if cancellation/failure preceded preparation. Logs contain no
 prompts, answers, PR titles or other source text. No migration or stored-document shape changed.

@@ -61,4 +61,7 @@ or emitting counts/author markers. The shared broadcast stays server-internal; n
 Lazy review reuses `analysis` snapshots: `review_ready` becomes true after accepted plan and PR context,
 and each accepted flow, flow failure, demand or background-switch change publishes a snapshot. The client
 refetches the Tour to read `Flow.analysis_status` and new steps. Cancel sets `review_ready` false and also
-invalidates the partial Tour. No extra polling or replay protocol is added; reconnect snapshots resynchronise it.
+invalidates the partial Tour. `state.idle` of a running analysis (`http-api.md`) is part of the snapshot: a
+snapshot is sent whenever it changes (the driver ends without admitted flow work; a flow request or background
+analysis on admits work again), so an open page needs no polling to show that nothing is being analysed.
+No extra polling or replay protocol is added; reconnect snapshots resynchronise it.
