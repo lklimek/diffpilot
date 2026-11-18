@@ -8,8 +8,8 @@ use std::time::Duration;
 use chrono::{DateTime, TimeDelta, TimeZone, Utc};
 use contracts::agent::judge_work::{JudgeWorkInput, part_values};
 use contracts::api::dashboard::{
-    DashboardSettings, ItemKey, ItemTarget, KindCounts, RankingState, RefreshState, RefreshStatus,
-    RefreshTrigger, ScoreComponent, ScoreState, Tier, TodosState, TodosStatus,
+    DashboardSettings, ItemKey, ItemTarget, KindCounts, PartStatus, RankingState, RefreshState,
+    RefreshStatus, RefreshTrigger, ScoreComponent, ScoreState, Tier, TodosState, TodosStatus,
 };
 use contracts::common::RepoRef;
 use contracts::ids::RefreshId;
@@ -605,6 +605,35 @@ fn judge_input_shows_no_age_and_only_plan_facts() {
         k.component,
         ScoreComponent::Recency | ScoreComponent::ChangeSize
     )));
+}
+
+/// Plan §B.1 J8: an unsure human-waiting default is sent with its value and the scorer's age class, never an age.
+#[test]
+fn unsure_human_waiting_default_is_sent_with_its_age_class() {
+    let mut p = pr(3, "feat: y");
+    p.facts.author = Some("carol".to_owned());
+    p.facts.relations = vec![Relation::ReviewRequested];
+    p.facts.review_pending_for_us = true;
+    p.facts.review_request_age_is_approx = true;
+    p.facts.review_requested_at = Some(now() - TimeDelta::days(1));
+    let snap = snapshot(vec![p], vec![], vec![]);
+    let items = candidates(&snap);
+    let item = &items[0].item;
+    assert!(item.asks.contains(&ScoreComponent::HumanWaiting), "premise");
+    let default = item
+        .known
+        .iter()
+        .find(|k| k.component == ScoreComponent::HumanWaiting)
+        .expect("the default is sent");
+    assert_eq!(
+        (default.points_tenths, default.status),
+        (Some(150), PartStatus::Estimated)
+    );
+    assert_eq!(
+        default.basis,
+        "default to confirm: a request within 2 days → 15; unsure: a team review request, an approximate request \
+         date or an unanswered comment"
+    );
 }
 
 #[test]

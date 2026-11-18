@@ -17,7 +17,7 @@ Significance (defect, change_impact, urgency_bonus) rates the problem and its va
 
 Answer rules:
 - One entry per item; copy `key` exactly. Answer every asked component: `defect` for `defect_severity`, the others in `parts`.
-- `known` lists computed values; replace one in `parts` only with evidence from the data, else leave it out.
+- `known` lists computed values; replace one in `parts` only with evidence from the data, else leave it out. A `known` entry with status `estimated` is the computed default of an asked component: answer that component with its value unless the data supports another.
 - `previous` is the judgement made before the item changed: keep its values unless the changed facts move them.
 - `eligibility`: when asked, true to rank the item or false to leave it out, with the reason; else null.
 - `also_keys`: only keys from the item's `suggested_merges` that describe the same outcome; usually empty.
