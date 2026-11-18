@@ -319,14 +319,24 @@ fn flow_outputs_follow_the_agent_output_rules() {
             let what = format!("{f}/{}", step.id);
             kinds.insert((step.side, step.kind));
             assert_lines_exist(step.side, &step.file, step.start_line, step.end_line, &what);
-            for text in [
-                &step.title,
-                &step.called_by,
-                &step.decides,
-                &step.next,
-                &step.why,
-            ] {
+            for text in [&step.title, &step.decides, &step.why] {
                 assert!(!text.trim().is_empty(), "{what}: empty text");
+            }
+            let has_edge = |incoming: bool| {
+                flow.edges.iter().any(|e| {
+                    let end = if incoming {
+                        &e.to_step_id
+                    } else {
+                        &e.from_step_id
+                    };
+                    *end == step.id
+                })
+            };
+            for (incoming, text) in [(true, &step.called_by), (false, &step.next)] {
+                assert!(
+                    !text.trim().is_empty() || !has_edge(incoming),
+                    "{what}: connection empty although an edge carries it"
+                );
             }
             if step.side == LineSide::Base {
                 assert_eq!(

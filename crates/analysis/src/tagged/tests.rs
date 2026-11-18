@@ -358,21 +358,19 @@ fn explicit_edges_derive_connections_including_labels_and_loops() {
 }
 
 #[test]
-fn explicit_connection_prose_keeps_external_callers_and_conditions() {
+fn explicit_connection_prose_adds_to_the_derived_step_targets() {
     let text = connections_fixture(
         "",
         "called_by: Worker::run outside this flow.\nnext: Leave only after committing.\n",
     );
     let doc = parse(&text, &Catalog::default()).unwrap();
     assert_eq!(doc.steps[0].called_by, "Worker::run outside this flow.");
-    assert_eq!(doc.steps[0].next, "Leave only after committing.");
+    assert_eq!(doc.steps[0].next, "Step 2; Leave only after committing.");
     assert_eq!(doc.steps[1].called_by, "Step 1");
-    assert_eq!(
-        parse(
-            &encode(&doc, &Catalog::default()).unwrap(),
-            &Catalog::default()
-        )
-        .unwrap(),
-        doc
+    let encoded = encode(&doc, &Catalog::default()).unwrap();
+    assert!(
+        encoded.contains("\nnext: Leave only after committing.\n"),
+        "{encoded}"
     );
+    assert_eq!(parse(&encoded, &Catalog::default()).unwrap(), doc);
 }

@@ -378,6 +378,7 @@ fn every_prompt_contains_the_rules_block() {
         "`perPage` of at most 10 and only the `fields` you need",
         "If this job has no GitHub tools, say nothing about related work.",
         "Flow size: about 25 steps or 500 changed lines per flow",
+        "`severity` skill (`$HOME/.agents/skills/severity/SKILL.md`); re-read it if its text is no longer in this session.",
     ];
     for (name, prompt) in all_prompts()
         .into_iter()

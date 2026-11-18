@@ -35,7 +35,8 @@ Maximum document size is 1 MiB.
   Write `called_by` / `next` only for information absent from the graph (an external
   caller, an external destination or an additional condition). Omitted values are
   derived from incoming/outgoing edges, including step numbers and edge labels;
-  a boundary with no such edge stays empty. Explicit prose is preserved.
+  a boundary with no such edge stays empty. Explicit prose follows the derived
+  targets (`Step 2; <prose>`), so never restate step ids.
 - `### annotation <type> <basis> <first>-<last>` under its step. Optional `was`, `is`,
   `text`, `evidence`. Behaviour requires nonempty `was`/`is`; other types require
   `text`. Evidence is space-separated `<file-id>:<side>:<line>` references.

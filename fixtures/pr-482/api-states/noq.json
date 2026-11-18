@@ -674,7 +674,7 @@
               "symbol": "RpcClient::send",
               "called_by": "Step 3 (other error)",
               "decides": "Nothing; ends the call.",
-              "next": "back to the caller",
+              "next": "",
               "why": "Only timeouts are worth another attempt.",
               "annotations": [
                 {
@@ -943,7 +943,7 @@
               "symbol": "RpcConfig::default",
               "called_by": "RpcClient::new (src/rpc/client.rs:40)",
               "decides": "Sets the default per-attempt timeout.",
-              "next": "every send call",
+              "next": "Step 2; every send call",
               "why": "The wallet UI froze for 30 s on an unreachable peer (issue #470).",
               "annotations": [
                 {
@@ -1027,7 +1027,7 @@
               "title": "Affected code: sync::fetch_headers",
               "kind": "context",
               "symbol": "sync::fetch_headers",
-              "called_by": "the sync loop (src/sync/mod.rs:41)",
+              "called_by": "Step 1; the sync loop (src/sync/mod.rs:41)",
               "decides": "Requests up to 2000 headers in one reply.",
               "next": "decodes the headers",
               "why": "Shown because the default timeout reaches it, although the file is not in the diff.",
@@ -1155,7 +1155,7 @@
               "symbol": "RpcError",
               "called_by": "RpcClient::send (step 7 of flow 1)",
               "decides": "Adds a variant that carries the attempt count.",
-              "next": "every match on RpcError",
+              "next": "Step 2; every match on RpcError",
               "why": "Callers need to tell “retried and failed” from one timeout.",
               "annotations": [
                 {
@@ -1244,7 +1244,7 @@
               "title": "Affected code: wildcard match on send()",
               "kind": "context",
               "symbol": "wallet::fetch_balance",
-              "called_by": "the wallet balance view",
+              "called_by": "Step 1; the wallet balance view",
               "decides": "Maps any other error to WalletError::Rpc.",
               "next": "returns to the wallet UI",
               "why": "Same pattern × 2; the second site is src/sync/peers.rs:204.",
@@ -1460,7 +1460,7 @@
               "title": "Backoff helpers moved",
               "kind": "moved",
               "symbol": "exp_delay, with_jitter, jitter_fraction",
-              "called_by": "RetryPolicy::backoff (flow 1)",
+              "called_by": "Step 2; RetryPolicy::backoff (flow 1)",
               "decides": "Computes the exponential delay and the jitter.",
               "next": "returns the delay to backoff",
               "why": "Keeps the helpers next to the policy that uses them.",

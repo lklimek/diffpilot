@@ -55,7 +55,7 @@ pub(super) fn descriptions(document: &FlowAnalysisOutput) -> BTreeMap<String, (S
     texts
 }
 
-/// Fill omitted prose and edges while preserving explicit additional context.
+/// Fill omitted edges and prefix connection prose with the derived step targets.
 pub(super) fn fill(document: &mut FlowAnalysisOutput) {
     if document.edges.is_empty() {
         document.edges = reading_order(&document.steps);
@@ -63,12 +63,25 @@ pub(super) fn fill(document: &mut FlowAnalysisOutput) {
     let mut texts = descriptions(document);
     for step in &mut document.steps {
         if let Some((called_by, next)) = texts.remove(&step.id) {
-            if step.called_by.is_empty() {
-                step.called_by = called_by;
-            }
-            if step.next.is_empty() {
-                step.next = next;
+            for (text, derived) in [(&mut step.called_by, called_by), (&mut step.next, next)] {
+                if text.is_empty() {
+                    *text = derived;
+                } else if !derived.is_empty() {
+                    *text = format!("{derived}; {text}");
+                }
             }
         }
+    }
+}
+
+/// The model-written part of stored connection prose: `stored` without its derived prefix.
+pub(super) fn addition<'a>(stored: &'a str, derived: &str) -> &'a str {
+    if derived.is_empty() {
+        return stored;
+    }
+    match stored.strip_prefix(derived) {
+        Some("") => "",
+        Some(rest) => rest.strip_prefix("; ").unwrap_or(stored),
+        None => stored,
     }
 }

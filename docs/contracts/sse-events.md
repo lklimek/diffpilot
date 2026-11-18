@@ -40,7 +40,7 @@
   resumed): the job's follower publishes the summary within its poll interval (250 ms), and the claim route at
   once. A summary equal to the one published last is not sent again.
 - `question {question}`: full `AskQuestion` on every state change: `pending` → `answering` → `answered` |
-  `failed`. `answered` is sent as soon as the job's output arrives before compaction (runner
+  `failed`. `answered` is sent as soon as the job's output arrives before session archival (runner
   `OutputReady`, ADR-004); if that attempt is later requeued or cancelled, a new `question` event returns it to
   `answering` or `failed`. A usage limit returns it to `pending` with `resumes_at`. No token streaming in v1.
 - Reader fields are projected after the shared broadcast: `question.asked_by` is the asker's GitHub login,

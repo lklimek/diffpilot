@@ -1,12 +1,16 @@
 """Render local ownership overrides without inspecting or changing the running stack."""
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.skipif(shutil.which("docker") is None, reason="docker CLI not installed")
 def test_host_uid_volume_keeps_prepared_ownership():
     env = {key: value for key, value in os.environ.items() if not key.startswith("SR_")}
     env.update(SR_SERVER_UID="1234", SR_SERVER_GID="2345")

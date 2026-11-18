@@ -454,7 +454,7 @@
       "moved_from": null,
       "called_by": "Step 3 (other error)",
       "decides": "Nothing; ends the call.",
-      "next": "back to the caller",
+      "next": "",
       "why": "Only timeouts are worth another attempt.",
       "annotations": [
         {

@@ -588,7 +588,7 @@ impl Jobs<'_> {
         })
     }
 
-    /// Stores the output of `attempt` posted before compaction, moves `claimed` to `running` and renews the lease.
+    /// Stores the output of `attempt` posted before session archival, moves `claimed` to `running` and renews the lease.
     /// A different output for the same attempt, a stale attempt or a job that is not claimed or running is a
     /// `Conflict`.
     pub async fn record_output(

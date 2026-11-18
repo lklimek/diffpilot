@@ -496,13 +496,19 @@ pub fn encode(document: &FlowAnalysisOutput, catalog: &Catalog) -> Result<String
         ));
         let derived = connections.get(step["id"].as_str().unwrap_or(""));
         for key in ["title", "symbol", "called_by", "decides", "next", "why"] {
-            let redundant = derived.is_some_and(|(called_by, next)| match key {
-                "called_by" => step[key].as_str() == Some(called_by),
-                "next" => step[key].as_str() == Some(next),
-                _ => false,
+            let derived = derived.and_then(|(called_by, next)| match key {
+                "called_by" => Some(called_by),
+                "next" => Some(next),
+                _ => None,
             });
-            if !redundant {
-                emit_fields(&mut body, step, &[key]);
+            match (step[key].as_str(), derived) {
+                (Some(stored), Some(derived)) => {
+                    let addition = super::connections::addition(stored, derived);
+                    if !addition.is_empty() {
+                        field(&mut body, key, addition);
+                    }
+                }
+                _ => emit_fields(&mut body, step, &[key]),
             }
         }
         if !step["moved_from"].is_null() {

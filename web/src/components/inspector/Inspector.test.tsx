@@ -91,6 +91,16 @@ describe("Inspector at a step", () => {
     expect(consequences).toHaveTextContent("inference");
   });
 
+  it("hides empty connections of a flow boundary step", () => {
+    const t = structuredClone(tour);
+    step(t, "f1.5").llm.called_by = "";
+    step(t, "f1.5").llm.next = " ";
+    render(<Inspector tour={t} block={atStep("f1.5")} />);
+    expect(screen.queryByRole("region", { name: /^Called by/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: /^Goes next/ })).toBeNull();
+    expect(region(/^Why/)).toBeInTheDocument();
+  });
+
   it("hides unavailable call hierarchy", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
     expect(screen.queryByRole("region", { name: /Call hierarchy/ })).toBeNull();

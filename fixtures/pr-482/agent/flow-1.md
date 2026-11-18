@@ -156,7 +156,6 @@ smallest_correction: Map Exhausted to the same wallet error as Timeout.
 title: Other errors returned as before
 symbol: RpcClient::send
 decides: Nothing; ends the call.
-next: back to the caller
 why: Only timeouts are worth another attempt.
 
 ### annotation behaviour fact 107-107
