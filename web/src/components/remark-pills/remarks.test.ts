@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { Step, Tour } from "../../api/generated/types";
+import type { Annotation, Step, Tour } from "../../api/generated/types";
 import { seedFor } from "../../mocks/fixtures";
 import { remarkTarget, summariseRemarks } from "./remarks";
 
@@ -28,6 +28,7 @@ it("a step: its LLM rating and its remark count, as two separate facts", () => {
     rated: 1,
     remarks: 5,
     handled: 0,
+    flags: { red: 0, yellow: 0, unknown: 0 },
     ratings: [{ rating: "high", steps: 1 }],
   });
 });
@@ -45,6 +46,7 @@ it("a flow: the highest step rating with the number of steps at it, all remarks,
     rated: 2,
     remarks: 10,
     handled: 2,
+    flags: { red: 0, yellow: 0, unknown: 0 },
     ratings: [
       { rating: "high", steps: 2 },
       { rating: "low", steps: 1 },
@@ -67,4 +69,13 @@ it("leads to the first remark on a step at the highest rating, one without feedb
     annotation: null,
   });
   expect(remarkTarget([rated(null, 0)], new Set())).toBeUndefined();
+});
+
+it("counts the flags among the remarks by level, a flag without a level as unknown", () => {
+  const flagged = rated("high", 3, "f");
+  const [a, b, c] = flagged.llm.annotations as Annotation[];
+  Object.assign(a!, { type: "flag", flag: { level: "red", scenario: ["x", "y"], not_checked: "z" } });
+  Object.assign(b!, { type: "flag" });
+  Object.assign(c!, { type: "flag", flag: { level: "yellow", scenario: ["x", "y"], not_checked: "z" } });
+  expect(summariseRemarks([flagged], new Set())?.flags).toEqual({ red: 1, yellow: 1, unknown: 1 });
 });

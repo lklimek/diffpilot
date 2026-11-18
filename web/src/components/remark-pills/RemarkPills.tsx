@@ -1,4 +1,5 @@
 import { REMARK_LOOK } from "../code-view/changeLook";
+import { flagCountText } from "../flag/flags";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { RemarkSummary } from "./remarks";
 
@@ -45,6 +46,7 @@ export function RemarkPill({ summary, scope, subject, label, withRating = true, 
     : scope === "flow"
       ? `LLM rated no step in ${subject}`
       : `LLM did not rate ${subject}`;
+  const flags = flagCountText(summary.flags);
   const name = withRating
     ? `${ratingName}${remarks > 0 ? ` · ${plural(remarks, "LLM remark")}` : ""}`
     : `${plural(remarks, "LLM remark")} in ${subject}`;
@@ -61,7 +63,9 @@ export function RemarkPill({ summary, scope, subject, label, withRating = true, 
   return (
     <span className="inline-flex flex-wrap items-center gap-1">
       {label && <span className="text-[12px] text-muted">{label}</span>}
-      <Tooltip tip={`${breakdown}${action}${done ? ` All ${remarks} have your feedback.` : ""}`}>
+      <Tooltip
+        tip={`${flags ? `LLM flags: ${flags}. ` : ""}${breakdown}${action}${done ? ` All ${remarks} have your feedback.` : ""}`}
+      >
         <button
           type="button"
           aria-label={name}

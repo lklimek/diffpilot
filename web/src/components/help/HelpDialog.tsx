@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { SpeechBubble } from "../comment/LineComments";
-import { CHANGE_LOOK, REMARK_LOOK } from "../code-view/changeLook";
+import { CHANGE_LOOK, flagBar, REMARK_LOOK } from "../code-view/changeLook";
+import { FLAG_LOOK } from "../flag/flags";
 import { SHORTCUTS } from "./shortcuts";
 
 interface HelpDialogProps {
@@ -49,6 +50,15 @@ const LEGEND: ReactNode[] = [
     <Swatch look={`border-l-4 ${REMARK_LOOK.none.bar}`} />
     LLM remark without a risk rating: thin neutral line
   </>,
+  <>
+    <Swatch look={`border-l-4 ${flagBar("red", "high")}`} />
+    <b className={FLAG_LOOK.red.text}>{FLAG_LOOK.red.label}</b> ·{" "}
+    <Swatch look={`border-l-4 ${flagBar("yellow", "high")}`} />
+    <b className={FLAG_LOOK.yellow.text}>{FLAG_LOOK.yellow.label}</b>: a bar with an LLM flag takes the
+    flag&apos;s colour (grey for a flag stored without a level, &quot;{FLAG_LOOK.unknown.label}&quot;) and
+    keeps the pattern of the step&apos;s rating; its label names the flag. A flag is the LLM&apos;s statement
+    of a risk scenario, not checked
+  </>,
   <>A changed line without a bar has no LLM remark. An unchanged line inside a bar is unchanged.</>,
   <>
     <Swatch look="border-l-[6px] border-double border-mv-bd" />
@@ -79,9 +89,9 @@ const LEGEND: ReactNode[] = [
       </span>
     </span>
     pills in the list and above the code: the LLM&apos;s rating of a step (not checked) and the number of its
-    LLM remarks, two separate facts; a flow shows its rating once (its label: the highest step rating) and a
-    pill with all its remarks; remarks on an unrated step: a neutral pill; no pill means neither, not that the
-    code is safe
+    LLM remarks, two separate facts; its tooltip counts the flags among them; a flow shows its rating once
+    (its label: the highest step rating) and a pill with all its remarks; remarks on an unrated step: a
+    neutral pill; no pill means neither, not that the code is safe
   </>,
   <>
     <Swatch look="outline-2 -outline-offset-2 outline-med-bd" />

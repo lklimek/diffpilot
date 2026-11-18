@@ -35,7 +35,6 @@ const STATES: Record<string, (page: Page) => Promise<void>> = {
     await nav(page)
       .getByRole("button", { name: /^Step 5:/ })
       .click();
-    await inspector(page).getByRole("button", { name: "Questions to check" }).click();
   },
   noprofile: async () => {},
   resume: async () => {},

@@ -18,7 +18,7 @@ const STEP_SECTIONS = [
   /^Behaviour: was → is/,
   /^Why/,
   /^Consequences/,
-  /^Questions to check/,
+  /^Flags/,
   /^Assessment/,
   /^GitHub threads at this location/,
 ];
@@ -132,21 +132,52 @@ describe("Inspector at a step", () => {
     expect(calls).toHaveTextContent("evil");
   });
 
-  it("moves the LLM questions here, phrased as questions, with a count in the header", async () => {
+  it("shows the LLM flags open, apart from the collapsed assessment, each a card with its level in words", () => {
     render(<Inspector tour={tour} block={atStep("f1.5")} />);
-    const button = sectionButton(/^Questions to check/);
-    expect(button).toHaveTextContent("Questions to check (1)");
-    await userEvent.click(button);
-    expect(region(/^Questions to check/)).toHaveTextContent(
-      "can broadcast_tx be sent twice when the reply arrives late?",
-    );
+    expect(sectionButton(/^Flags/)).toHaveTextContent("Flags (1)");
+    expect(sectionButton(/^Flags/)).toHaveAttribute("aria-expanded", "true");
+    expect(sectionButton(/^Assessment/)).toHaveAttribute("aria-expanded", "false");
+    const card = region(/^Flags/).querySelector('[data-annotation-id="f1.5.a3"]') as HTMLElement;
+    expect(card).toHaveAttribute("data-flag", "red");
+    expect(within(card).getByText("⚑ Red flag")).toHaveAccessibleDescription(/likely defect.*not checked/);
+    expect(within(card).getByText("LLM")).toBeInTheDocument();
+    expect(card).toHaveTextContent("Potential double broadcast on a late reply:");
+    const steps = within(within(card).getByRole("list", { name: "Scenario" })).getAllByRole("listitem");
+    expect(steps).toHaveLength(4);
+    expect(steps[1]).toHaveTextContent("should_retry sees only the attempt number");
+    expect(card).toHaveTextContent("Not checked: Not reproduced against a node; no test was run.");
+    expect(card).not.toHaveTextContent("?");
   });
 
-  it("hides Questions and Assessment when the LLM gave none (noq)", () => {
+  it("lists red flags before yellow ones and opens a flag's lines from its title", async () => {
+    const onEvidence = vi.fn();
+    render(<Inspector tour={tour} block={atStep("f4.1")} onEvidence={onEvidence} />);
+    const cards = region(/^Flags/).querySelectorAll("[data-flag]");
+    expect([...cards].map((c) => c.getAttribute("data-flag"))).toEqual(["red", "yellow"]);
+    await userEvent.click(screen.getByRole("button", { name: "Potential build break in acme/node-sdk:" }));
+    expect(onEvidence).toHaveBeenCalledWith({ file: "src/rpc/client.rs", side: "base", line: 53 });
+  });
+
+  it("hides Flags and Assessment when the LLM gave none (noq): no all-clear", () => {
     const noq = seedFor("noq", "tour") as Tour;
-    render(<Inspector tour={noq} block={atStep("f1.5")} />);
-    expect(screen.queryByRole("region", { name: /Questions to check/ })).toBeNull();
+    const { container } = render(<Inspector tour={noq} block={atStep("f1.5")} />);
+    expect(screen.queryByRole("region", { name: /Flags/ })).toBeNull();
     expect(screen.queryByRole("region", { name: /Assessment/ })).toBeNull();
+    expect(container).not.toHaveTextContent(/no flags/i);
+  });
+
+  it("shows a flag stored before levels as a flag without a level: its question as the title, no scenario", () => {
+    const stored = structuredClone(tour);
+    const flag = step(stored, "f1.5").llm.annotations.find((a) => a.id === "f1.5.a3")!;
+    flag.text = "Can broadcast_tx be sent twice when the reply arrives late?";
+    flag.flag = { level: "unknown", scenario: [], not_checked: "" };
+    render(<Inspector tour={stored} block={atStep("f1.5")} />);
+    const card = region(/^Flags/).querySelector('[data-annotation-id="f1.5.a3"]') as HTMLElement;
+    expect(within(card).getByText("⚑ Flag")).toBeInTheDocument();
+    expect(card).toHaveTextContent("Can broadcast_tx be sent twice when the reply arrives late?");
+    expect(card).toHaveTextContent("Stored before flags had levels");
+    expect(within(card).queryByRole("list", { name: "Scenario" })).toBeNull();
+    expect(card).not.toHaveTextContent("Not checked:");
   });
 
   it("opens the assessment only on request, after the evidence sections", async () => {
@@ -216,7 +247,7 @@ describe("Inspector at a selected annotation", () => {
     expect(region(/^Classic diff of the selected range/)).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: /Behaviour/ })).toBeNull();
     expect(region(/^Consequences/)).toHaveTextContent("may submit the same transaction twice");
-    expect(screen.queryByRole("region", { name: /Questions to check/ })).toBeNull();
+    expect(screen.queryByRole("region", { name: /Flags/ })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /Back to step/ }));
     expect(onBack).toHaveBeenCalledOnce();
   });
@@ -255,7 +286,14 @@ describe("Inspector summaries", () => {
       "Flow 1 · Send an RPC request with retry",
     );
     expect(region(/^Files touched/)).toHaveTextContent("src/rpc/retry.rs");
-    expect(region(/^Questions to check/)).toHaveTextContent("Step 5 · Retry allowed?");
+    expect(region(/^Flags/)).toHaveTextContent(
+      /⚑ Red flag.*Step 5 · Retry allowed\?: Potential double broadcast on a late reply:/,
+    );
+    // Red flags first, then yellow ones.
+    const levels = [...region(/^Flags/).querySelectorAll("[data-flag-level]")].map((m) =>
+      m.getAttribute("data-flag-level"),
+    );
+    expect(levels).toEqual(["red", "yellow", "yellow", "yellow", "yellow"]);
     expect(region(/^Depends on/)).toHaveTextContent(/Flow 3 ·/);
     await userEvent.click(screen.getByRole("button", { name: /Step 5 · Retry allowed\?/ }));
     expect(onSelectStep).toHaveBeenCalledWith("f1.5");
@@ -496,7 +534,8 @@ describe("Inspector trust rules", () => {
 describe("Inspector: Show in Inspector from a code marker", () => {
   it("opens a collapsed section, scrolls to the remark and highlights it briefly", async () => {
     const { rerender } = render(<Inspector tour={tour} block={atStep("f1.5")} />);
-    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(sectionButton(/^Flags/));
+    expect(sectionButton(/^Flags/)).toHaveAttribute("aria-expanded", "false");
     rerender(
       <Inspector
         tour={tour}
@@ -504,25 +543,27 @@ describe("Inspector: Show in Inspector from a code marker", () => {
         flash={{ kind: "annotation", id: "f1.5.a3", nonce: 1 }}
       />,
     );
-    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "true");
-    const item = region(/^Questions to check/).querySelector('[data-annotation-id="f1.5.a3"]');
+    expect(sectionButton(/^Flags/)).toHaveAttribute("aria-expanded", "true");
+    const item = region(/^Flags/).querySelector('[data-annotation-id="f1.5.a3"]');
     expect(item).not.toBeNull();
     await waitFor(() => expect(item).toHaveAttribute("data-flash"));
   });
 
-  it("opens the section for the flash only: the stored preference is unchanged, the next step shows it", () => {
-    const { rerender } = render(
+  it("opens the section for the flash only: the stored preference is unchanged, the next step shows it", async () => {
+    const { rerender } = render(<Inspector tour={tour} block={atStep("f1.5")} />);
+    await userEvent.click(sectionButton(/^Flags/));
+    rerender(
       <Inspector
         tour={tour}
         block={atStep("f1.5")}
         flash={{ kind: "annotation", id: "f1.5.a3", nonce: 1 }}
       />,
     );
-    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "true");
-    expect(window.localStorage.getItem(SECTION_STORAGE_KEY) ?? "{}").not.toContain("questions");
+    expect(sectionButton(/^Flags/)).toHaveAttribute("aria-expanded", "true");
+    expect(JSON.parse(window.localStorage.getItem(SECTION_STORAGE_KEY) ?? "{}")).toEqual({ flags: false });
     rerender(<Inspector tour={tour} block={atStep("f1.4")} flash={null} />);
     rerender(<Inspector tour={tour} block={atStep("f1.5")} flash={null} />);
-    expect(sectionButton(/^Questions to check/)).toHaveAttribute("aria-expanded", "false");
+    expect(sectionButton(/^Flags/)).toHaveAttribute("aria-expanded", "false");
   });
 
   it("highlights a GitHub thread of the step", async () => {

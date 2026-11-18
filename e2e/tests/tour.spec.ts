@@ -102,10 +102,10 @@ test("quiet rows: Unexplained and not analysed sections, deterministic only", as
   }
 });
 
-test("hard case 3: empty questions are hidden and the low assessment stays collapsed", async ({ page }) => {
+test("hard case 3: a step without flags has no Flags section; the low assessment stays collapsed", async ({ page }) => {
   await finishedReview(page);
   await openStep(page, 1, 2);
-  await expect(inspector(page).getByRole("button", { name: /Questions to check/ })).toHaveCount(0);
+  await expect(inspector(page).getByRole("button", { name: /^Flags/ })).toHaveCount(0);
   await expect(inspector(page).getByRole("button", { name: /Assessment$/ })).toHaveAttribute(
     "aria-expanded",
     "false",

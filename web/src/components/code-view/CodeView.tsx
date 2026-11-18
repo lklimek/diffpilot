@@ -26,7 +26,8 @@ import { useFlashTarget } from "../flash/useFlashTarget";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { Highlight, Token } from "./highlight";
 import { Mark, RemarkMarker, ThreadMarker, type MarkerTarget } from "./markers";
-import { CHANGE_LOOK, changeLineText, REMARK_LOOK } from "./changeLook";
+import { FLAG_LOOK, strongestFlag } from "../flag/flags";
+import { CHANGE_LOOK, changeLineText, flagBar, REMARK_LOOK } from "./changeLook";
 import { foldRuns, type Piece } from "./fold";
 import { buildSegments, type Segment, type Row } from "./rows";
 import { CodeText, useTokens } from "./tokens";
@@ -274,11 +275,12 @@ interface HighlightRunProps {
 function HighlightRun({ annotations, band, selected, onSelect, children }: HighlightRunProps) {
   const descriptionId = useId();
   const look = BANDS[band ?? "none"];
+  const flag = strongestFlag(annotations);
   const ids = annotations.map((a) => a.id);
   const remark = `LLM remark: ${[...new Set(annotations.map((a) => a.type))].join(", ")}`;
-  const text = look.label ? `${look.label} · ${remark}` : remark;
+  const text = [flag && FLAG_LOOK[flag].label, look.label, remark].filter(Boolean).join(" · ");
   const description = <WasIs annotations={annotations} unrated={band === null} />;
-  const labelClass = `${STRIP} border-0 bg-transparent text-left text-[10.5px] leading-[17px] font-bold ${look.text} ${
+  const labelClass = `${STRIP} border-0 bg-transparent text-left text-[10.5px] leading-[17px] font-bold ${flag ? FLAG_LOOK[flag].text : look.text} ${
     selected ? "rounded-sm outline-2 -outline-offset-2 outline-accent" : ""
   }`;
   return (
@@ -289,9 +291,10 @@ function HighlightRun({ annotations, band, selected, onSelect, children }: Highl
         data-highlight
         data-band={band ?? "none"}
         data-bar={look.pattern}
+        data-flag={flag ?? undefined}
         data-selected={selected || undefined}
         onClick={onSelect && (() => onSelect(ids))}
-        className={`${SEGMENT} ${look.bar} ${onSelect ? "cursor-pointer" : "cursor-help"}`}
+        className={`${SEGMENT} ${flag ? flagBar(flag, band) : look.bar} ${onSelect ? "cursor-pointer" : "cursor-help"}`}
       >
         <span id={descriptionId} hidden>
           {description}

@@ -11,6 +11,7 @@ const step: RemarkSummary = {
   rated: 1,
   remarks: 5,
   handled: 0,
+  flags: { red: 0, yellow: 0, unknown: 0 },
   ratings: [{ rating: "high", steps: 1 }],
 };
 
@@ -33,7 +34,14 @@ it("a step: the LLM rating, then the remark count in plain weight; one pill, nev
 it("remarks without a rating get a neutral pill; a rating without remarks stands alone", () => {
   const { rerender } = render(
     <RemarkPill
-      summary={{ rating: null, rated: 0, remarks: 2, handled: 0, ratings: [{ rating: null, steps: 1 }] }}
+      summary={{
+        rating: null,
+        rated: 0,
+        remarks: 2,
+        handled: 0,
+        flags: { red: 0, yellow: 0, unknown: 0 },
+        ratings: [{ rating: null, steps: 1 }],
+      }}
       scope="step"
       subject="step 3"
       onSelect={() => {}}
@@ -44,7 +52,14 @@ it("remarks without a rating get a neutral pill; a rating without remarks stands
   expect(screen.getByRole("button").className).toContain(REMARK_LOOK.none.text);
   rerender(
     <RemarkPill
-      summary={{ rating: "low", rated: 1, remarks: 0, handled: 0, ratings: [{ rating: "low", steps: 1 }] }}
+      summary={{
+        rating: "low",
+        rated: 1,
+        remarks: 0,
+        handled: 0,
+        flags: { red: 0, yellow: 0, unknown: 0 },
+        ratings: [{ rating: "low", steps: 1 }],
+      }}
       scope="step"
       subject="step 3"
       onSelect={() => {}}
@@ -62,6 +77,7 @@ it("a flow: the highest step rating ×steps at it and all remarks; the tooltip l
         rated: 2,
         remarks: 11,
         handled: 11,
+        flags: { red: 0, yellow: 0, unknown: 0 },
         ratings: [
           { rating: "high", steps: 2 },
           { rating: "low", steps: 3 },
@@ -90,6 +106,7 @@ it("next to the flow's own rating label it shows the remarks only; the tooltip k
     rated: 1,
     remarks: 11,
     handled: 0,
+    flags: { red: 0, yellow: 0, unknown: 0 },
     ratings: [
       { rating: "high", steps: 1 },
       { rating: "low", steps: 2 },
@@ -126,4 +143,19 @@ it("shows nothing without a rating and without remarks: never an all-clear", () 
 it("can carry a leading label", () => {
   render(<RemarkPill summary={step} scope="flow" subject="this flow" label="LLM:" onSelect={() => {}} />);
   expect(screen.getByText("LLM:")).toBeVisible();
+});
+
+it("counts the LLM's flags by level in the tooltip, the rating and remark count unchanged", () => {
+  render(
+    <RemarkPill
+      summary={{ ...step, flags: { red: 1, yellow: 2, unknown: 0 } }}
+      scope="step"
+      subject="this step"
+      onSelect={() => {}}
+    />,
+  );
+  const pill = screen.getByRole("button");
+  expect(pill).toHaveTextContent("▲ HIGH · 5 remarks");
+  expect(pill).toHaveAccessibleName("LLM rated this step HIGH (not checked) · 5 LLM remarks");
+  expect(pill).toHaveAccessibleDescription(/^LLM flags: 1 red flag, 2 yellow flags\. /);
 });

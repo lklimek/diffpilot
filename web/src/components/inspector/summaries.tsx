@@ -13,6 +13,8 @@ import type {
 } from "../../api/generated/types";
 import { ProvenanceBadge } from "../badge/Badge";
 import { PENDING_INCOMPLETE, dependencyFacts, rangeText } from "../section/format";
+import { FlagMark } from "../flag/FlagCard";
+import { FLAG_ORDER, flagLevel, sortedFlags } from "../flag/flags";
 import { Collapsible } from "./Collapsible";
 import { COMMENTING_UNAVAILABLE, COMMENTING_UNAVAILABLE_WHY } from "../comment/unavailable";
 import type { SectionControl } from "./sectionState";
@@ -21,7 +23,7 @@ type Sections = { sections: SectionControl };
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** Summary of a flow introduction: its steps, files, questions and dependencies. */
+/** Summary of a flow introduction: its steps, files, flags and dependencies. */
 export function FlowSummary({
   flow,
   flows,
@@ -34,9 +36,11 @@ export function FlowSummary({
   onSelectStep?: (step: StepId) => void;
   onEvidence?: (e: Evidence) => void;
 } & Sections) {
-  const questions = flow.steps.flatMap((step) =>
-    step.llm.annotations.filter((a) => a.type === "question").map((annotation) => ({ step, annotation })),
-  );
+  const flags = flow.steps
+    .flatMap((step) => sortedFlags(step.llm.annotations).map((annotation) => ({ step, annotation })))
+    .sort(
+      (a, b) => FLAG_ORDER.indexOf(flagLevel(a.annotation)!) - FLAG_ORDER.indexOf(flagLevel(b.annotation)!),
+    );
   const dependencies = flows.filter((f) => flow.llm.depends_on.includes(f.id));
   return (
     <>
@@ -55,12 +59,13 @@ export function FlowSummary({
           ))}
         </ul>
       </Collapsible>
-      {questions.length > 0 && (
-        <Collapsible sectionKey="flow-questions" title="Questions to check" tone="llm" sections={sections}>
+      {flags.length > 0 && (
+        <Collapsible sectionKey="flow-flags" title={`Flags (${flags.length})`} tone="llm" sections={sections}>
           <ul className="m-0 grid list-none gap-2 p-0">
-            {questions.map(({ step, annotation }) => (
-              <li key={annotation.id}>
-                <Tooltip tip="Open the step and source lines this question concerns.">
+            {flags.map(({ step, annotation }) => (
+              <li key={annotation.id} className="flex flex-wrap items-baseline gap-1.5">
+                <FlagMark level={flagLevel(annotation)!} />
+                <Tooltip tip="Open the step and the lines this flag is about.">
                   <button
                     type="button"
                     className="cursor-pointer text-left text-accent underline"

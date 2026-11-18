@@ -109,9 +109,9 @@ describe("Tour screen (brief §4.3)", () => {
     await openStep("1", "5");
     const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
     await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
-    await user().click(screen.getByRole("button", { name: /^Show in Inspector: Question to check/ }));
-    const questions = within(inspector()).getByRole("region", { name: /^Questions to check/ });
-    const item = questions.querySelector('[data-annotation-id="f1.5.a3"]');
+    await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
+    const flags = within(inspector()).getByRole("region", { name: /^Flags/ });
+    const item = flags.querySelector('[data-annotation-id="f1.5.a3"]');
     await waitFor(() => expect(item).toHaveAttribute("data-flash"));
   });
 
@@ -132,7 +132,7 @@ describe("Tour screen (brief §4.3)", () => {
       await openStep("1", "5");
       const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
       await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
-      await user().click(screen.getByRole("button", { name: /^Show in Inspector: Question to check/ }));
+      await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
       const flashed = () => inspector().querySelector('[data-annotation-id="f1.5.a3"]');
       await waitFor(() => expect(flashed()).toHaveAttribute("data-flash"));
       act(() => vi.advanceTimersByTime(FLASH_MS));
