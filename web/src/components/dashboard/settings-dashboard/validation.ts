@@ -125,7 +125,7 @@ export function validateSettings(settings: DashboardSettings, ownLogin: string):
       if (!repoGiven || policy.path === "") {
         put(
           `repositories.${i}.policy`,
-          `${label}: give both the policy repository and its path, or neither.`,
+          `${label}: the policy ${repoGiven ? "path" : "repository"} is missing. Give the repository and the path of the policy file, or leave both empty.`,
         );
       } else if (!validRepo(policy.repo)) {
         put(`repositories.${i}.policy`, `${label}: the policy repository uses owner/name.`);

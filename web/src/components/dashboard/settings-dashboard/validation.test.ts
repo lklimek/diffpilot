@@ -102,8 +102,12 @@ describe("dashboard settings validation (plan §F.6)", () => {
   it("G6 ownership policy: both or neither, owner/name, relative .json path without ..", () => {
     const policy = (owner: string, name: string, path: string) =>
       errors({ repositories: [row("acme/x", { ownership_policy: { repo: { owner, name }, path } })] });
-    expect(policy("acme", "p", "")["repositories.0.policy"]).toMatch(/both .* or neither/);
-    expect(policy("", "", "a.json")["repositories.0.policy"]).toMatch(/both .* or neither/);
+    expect(policy("acme", "p", "")["repositories.0.policy"]).toBe(
+      "Repository 1: the policy path is missing. Give the repository and the path of the policy file, or leave both empty.",
+    );
+    expect(policy("", "", "a.json")["repositories.0.policy"]).toBe(
+      "Repository 1: the policy repository is missing. Give the repository and the path of the policy file, or leave both empty.",
+    );
     expect(policy("acme", "", "a.json")).toHaveProperty(["repositories.0.policy"]);
     expect(policy("acme", "p", "/abs.json")).toHaveProperty(["repositories.0.policy"]);
     expect(policy("acme", "p", "a/../b.json")).toHaveProperty(["repositories.0.policy"]);

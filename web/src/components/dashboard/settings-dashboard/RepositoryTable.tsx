@@ -16,7 +16,7 @@ const COLUMNS: [string, string][] = [
   ["Watch issues", "Also list its open issues, not only the ones you are assigned or mentioned in."],
   [
     "Ownership policy",
-    "Repository and path of a JSON file naming the paths you own; changes outside them count as not yours. Both or neither.",
+    "Optional. A JSON file listing the paths you own in this repository (the format of dashpay/stale_prs_are_bad). Pull requests by others that only touch other paths are left out of Needs you. Leave both fields empty when the repository has no such file. Example: repository dashpay/stale_prs_are_bad, path policies/platform.json.",
   ],
   [
     "Release branches",
@@ -76,6 +76,8 @@ export function RepositoryTable({ rows, onChange, errors, unreachable }: Reposit
                 const bare = row.repo.split("/")[1]?.trim();
                 const error = (field: string) => errors[`repositories.${i}.${field}`];
                 const described = (field: string) => (error(field) ? `${id}-${i}-${field}` : undefined);
+                const policyHint = `${id}-${i}-policy-hint`;
+                const policyDescribed = [policyHint, described("policy")].filter(Boolean).join(" ");
                 const message = (field: string) =>
                   error(field) && (
                     <p id={`${id}-${i}-${field}`} className={ERROR}>
@@ -127,23 +129,26 @@ export function RepositoryTable({ rows, onChange, errors, unreachable }: Reposit
                         <input
                           aria-label={`Policy repository of ${name}`}
                           value={row.policy_repo}
-                          placeholder="none (owner/name)"
+                          placeholder="owner/name"
                           autoComplete="off"
                           aria-invalid={error("policy") ? true : undefined}
-                          aria-describedby={described("policy")}
+                          aria-describedby={policyDescribed}
                           className={`${FIELD} w-44 font-mono`}
                           onChange={(e) => set(i, { policy_repo: e.target.value })}
                         />
                         <input
                           aria-label={`Policy path of ${name}`}
                           value={row.policy_path}
-                          placeholder="path/to/policy.json"
+                          placeholder="policies/<repo>.json"
                           autoComplete="off"
                           aria-invalid={error("policy") ? true : undefined}
-                          aria-describedby={described("policy")}
+                          aria-describedby={policyDescribed}
                           className={`${FIELD} w-44 font-mono`}
                           onChange={(e) => set(i, { policy_path: e.target.value })}
                         />
+                        <p id={policyHint} className="m-0 text-[11px] text-muted">
+                          Optional — leave empty if there is no policy file
+                        </p>
                         {message("policy")}
                       </div>
                     </td>
