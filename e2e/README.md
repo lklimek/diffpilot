@@ -20,11 +20,11 @@ hash). A leak fails the run.
 | `slice.spec.ts`                   | sign in, analyse PR 482, flow 1 step 1; a read-only installation token per job, revoked; no secret in the logs so far |
 | `analysis-cancel.spec.ts`         | planning, cancel → "analyze again"; failure before any flow → Retry → `k of n` → finished                             |
 | `analysis-cancel-running.spec.ts` | cancel while a flow job runs: the job stops, stored flows and session discarded, a clean new analysis                 |
-| `analysis-pause.spec.ts`          | usage limit → "Paused until HH:MM" of `resumes_at`, no attempt before it, one after; failed flow → Retry              |
+| `analysis-pause.spec.ts`          | usage limit → "Paused until HH:MM" of `resumes_at`, no attempt before it, one after; failed flow → Retry this flow    |
 | `tour.spec.ts`                    | PR context facts, flow order, quiet rows, no LLM questions (hard case 3), classic diff, resume, columns               |
-| `flow-groups.spec.ts`             | flows the LLM classifies as refactor or tests: after the behaviour flows, labelled                                    |
+| `flow-groups.spec.ts`             | a flow the LLM classifies as refactor: after the behaviour flows, labelled; tests listed once, not as a flow          |
 | `comments.spec.ts`                | pending review: create, second comment, edit, delete, outside the diff, missed by the LLM (hard case 2)               |
-| `head-moved.spec.ts`              | `pr_head_changed`, "The PR has moved" → Re-analyze without ticks, Ask on the superseded analysis                      |
+| `head-moved.spec.ts`              | `pr_head_changed`, "The PR has moved" → Re-analyze without ticks, Ask on the superseded analysis still answered       |
 | `feedback.spec.ts`                | wrong + overrated → MemCan calibration example (hard case 1), removal, MemCan failures, recovery                      |
 | `ask.spec.ts`                     | answered and pinned, usage-limit wait until `resumes_at`, failed answer, Ask again, markup as text                    |
 | `settings.spec.ts`                | signed-out screens, LLM status after a failed and a working call, language                                            |

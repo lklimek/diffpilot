@@ -45,7 +45,9 @@ test("hard case 1: wrong + overrated on the HIGH step are stored; MemCan gets a 
   await expect(memory(page)).toContainText("overrated: Recorded; saving to calibration memory…");
   await checkScreen(page);
   await expect(memory(page)).toContainText("overrated: Saved to calibration memory", { timeout: 30_000 });
-  await expect(memory(page)).toContainText("wrong: Saved to calibration memory", { timeout: 30_000 });
+  // Only overrated / underrated are calibration examples (brief §3); wrong is stored in MemCan as plain feedback.
+  await expect(memory(page)).toContainText(/wrong: Recorded(?!;| here)/, { timeout: 30_000 });
+  expect((await stored(page, id)).find((entry) => entry.value === "wrong")?.memory).toBe("written");
   await expect(buttons(page).getByRole("button", { name: "overrated" })).toHaveAttribute(
     "aria-pressed",
     "true",
@@ -122,10 +124,9 @@ test("MemCan rejects the call (synthetic tool error): recorded here, not reporte
   await openStep(page, 1, 4);
   await fake.mode({ mode: "synthetic_tool_error" });
   await buttons(page).getByRole("button", { name: "irrelevant" }).click();
-  await expect(memory(page)).toContainText(
-    "irrelevant: Recorded here; not yet saved to calibration memory (retrying)",
-    { timeout: OUTCOME_MS },
-  );
+  await expect(memory(page)).toContainText("irrelevant: Recorded here; not yet saved to memory (retrying)", {
+    timeout: OUTCOME_MS,
+  });
   await checkScreen(page);
   expect(Object.values((await fake.state()).memories).map((entry) => entry.value)).not.toContain(
     "irrelevant",
@@ -149,7 +150,7 @@ test("once MemCan answers again, the rejected write is retried and reads saved",
     .toBe("written");
   expect((await fake.state()).memories[irrelevant?.id ?? ""]).toMatchObject({ value: "irrelevant" });
   await page.reload();
-  await expect(memory(page)).toContainText("irrelevant: Saved to calibration memory");
+  await expect(memory(page)).toContainText(/irrelevant: Recorded(?!;| here)/);
   await checkScreen(page);
 });
 
@@ -163,6 +164,6 @@ test("the open page shows a retried write as saved without a reload", async ({ p
   await buttons(page).getByRole("button", { name: "correct" }).click();
   await expect(memory(page)).toContainText("correct: Recorded here; not yet saved", { timeout: OUTCOME_MS });
   await fake.mode({ mode: "normal" });
-  await expect(memory(page)).toContainText("correct: Saved to calibration memory", { timeout: SHOWN_MS });
+  await expect(memory(page)).toContainText(/correct: Recorded(?!;| here)/, { timeout: SHOWN_MS });
   await checkScreen(page);
 });

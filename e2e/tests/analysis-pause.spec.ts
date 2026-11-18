@@ -1,11 +1,13 @@
 // Journey (a), part 2: the usage limit pauses the analysis with its resume time and it resumes on its own; a
-// failed flow is named and Retry starts a new round.
+// failed flow is named in the Tour and its Retry runs it again.
 import {
   analysisState,
   analyze,
   checkScreen,
   clock,
   expectRetriedOnlyAfter,
+  heading,
+  navTo,
   signIn,
   waitForState,
 } from "../support/app";
@@ -36,17 +38,41 @@ test("usage limit → paused until a time → resumed; a failed flow is named �
   await expect(
     page.getByText(`Paused until ${await clock(page, resumesAt)} — ${String(paused.done)} of 5`),
   ).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open review" })).toHaveCount(0);
+  // The plan and the PR context were accepted: the review is open while the remaining flows wait (brief §4.2).
+  await expect(page.getByRole("link", { name: "Open review" })).toHaveCount(1);
   await checkScreen(page);
 
-  await waitForState(page, id, "failed");
-  await expect(page.getByText(/Analysis of flow “.+” failed/)).toBeVisible();
-  await checkScreen(page);
+  // Flow 3 fails once the pause is over; the analysis goes on with the other flows and the failed flow stays
+  // explicitly failed until it is requested again (ADR-011, lazy flow analysis).
+  let failed = { position: 0, title: "" };
+  await expect
+    .poll(
+      async () => {
+        const tour = (await (await page.request.get(`/api/v1/analyses/${id}/tour`)).json()) as {
+          flows: { position: number; llm: { title: string }; analysis_status?: { state: string } }[];
+        };
+        const flows = tour.flows.filter((flow) => flow.analysis_status?.state === "failed");
+        if (flows.length === 1) failed = { position: flows[0].position, title: flows[0].llm.title };
+        return [flows.length, tour.flows.filter((flow) => flow.analysis_status?.state === "analysed").length];
+      },
+      { timeout: 90_000 },
+    )
+    .toEqual([1, 4]);
+  expect((await analysisState(page, id)).state, "a failed flow does not fail the analysis").toBe("running");
   // The paused job waited for the reset time it was given, then ran once.
   expectRetriedOnlyAfter(stack, Date.parse(resumesAt), "analyse_flow");
 
-  await page.getByRole("button", { name: "Retry" }).click();
+  await page.reload();
+  await page.getByRole("link", { name: "Open review" }).click();
+  await navTo(page, new RegExp(`^Flow ${failed.position}:`));
+  await expect(heading(page)).toContainText(failed.title);
+  await expect(page.getByRole("main").getByRole("status")).toHaveText("Failed — Retry");
+  await expect(page.getByRole("main")).toContainText("The flow analysis failed. Retry this flow.");
+  await checkScreen(page);
+
+  await page.getByRole("button", { name: "Retry this flow" }).click();
   await waitForState(page, id, "finished");
+  await page.goto(`/analyses/${id}/progress`);
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();
   await expect(page.getByRole("link", { name: "Open review" })).toBeVisible();
   await checkScreen(page);

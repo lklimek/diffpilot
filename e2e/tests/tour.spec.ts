@@ -19,10 +19,10 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
   const facts = page.getByRole("region", { name: "Facts" });
   await expect(facts).toContainText("From GitHub and the diff; no LLM.");
   for (const fact of [
-    "CI: 1 of 6 checks failing",
+    "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
     "test (integration): sync_headers::slow_peer_2000_headers",
     "3 review threads on GitHub",
-    "12 lines removed from tests",
+    "12 test lines changed or removed, 30 added",
     "3 dependencies changed: tokio, tracing, url",
     "Project profile: repository file",
   ])
@@ -30,10 +30,12 @@ test("PR context: facts are computed from GitHub and the diff, apart from the LL
   // Fake MemCan answered the profile lookup completely (has_more false) and holds no profile.
   await expect(facts).not.toContainText("Project profile in MemCan: not checked");
   const banner = page.getByRole("banner");
-  await expect(banner).toContainText("CI: 1 of 6 failing");
+  await expect(banner).toContainText(
+    "Check runs: 3 passed, 1 failed, 1 skipped, 1 neutral. Statuses: 1 pending.",
+  );
   await expect(banner).toContainText("flows reviewed 0 / 5");
   await expect(page.getByRole("main")).toContainText("LLM analysis unless marked otherwise.");
-  await expect(inspector(page)).toContainText("Unexplained: 7 changed lines in 1 file — read these yourself");
+  await expect(inspector(page)).toContainText("Unexplained: 6 changed lines in 1 file — read these yourself");
   await checkScreen(page);
 });
 
@@ -67,7 +69,11 @@ test("flows by importance, then quiet rows with Unexplained first; flow introduc
   await expect(heading(page)).toHaveText("5 Retry allowed?");
   const code = page.getByRole("region", { name: /^src\/rpc\/client\.rs, line/ });
   await expect(code).toContainText("should_retry");
-  await expect(page.locator("main details").first()).not.toHaveAttribute("open");
+  // The assessment lives in the Inspector now and stays collapsed.
+  await expect(inspector(page).getByRole("button", { name: /Assessment/ })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
   await checkScreen(page);
 });
 
@@ -84,7 +90,7 @@ test("quiet rows: Unexplained, moves and not analysed sections, deterministic on
 
   for (const [row, content] of [
     [/^Tests · 4 files/, "tests/rpc_retry.rs whole file · rule tests/**"],
-    [/^Docs & comments · 3 files/, "README.md lines 15–20 · rule *.md"],
+    [/^Docs & comments · 6 files/, "README.md lines 15–20 · rule *.md"],
     [/^Mechanical & generated · 1 file/, "Cargo.lock"],
   ] as const) {
     await navTo(page, row);
@@ -142,7 +148,7 @@ test("resume where left off: the tick and the last viewed block survive a reload
   const found = page.getByRole("status").filter({ hasText: "Analysis found." });
   await expect(found).toContainText("Your ticks, answers and last viewed block are kept");
   await checkScreen(page);
-  await found.getByRole("link", { name: "Resume review" }).click();
+  await found.getByRole("link", { name: "Open review" }).click();
   await expect(heading(page)).toContainText("Default timeout");
   await expect(ticked).toBeVisible();
   await checkScreen(page);
