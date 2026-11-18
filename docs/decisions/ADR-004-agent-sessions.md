@@ -86,11 +86,17 @@ rewritable migration); old analytic references must not be reused because they m
   compacted session is what the working archive keeps. Later Ask turns use the 400000 limit (automatic
   compaction only); analytic jobs never use the lower limit. 80000 lies above a compacted context (17–24k in S7)
   plus one Ask turn, so the turn does not compact again.
-- **Visibility.** The runner posts the activity line "Preparing the conversation (first question on this pull
-  request)" before that turn; the Ask panel tells the reviewer that a first question takes longer.
+- **Visibility.** The runner posts the activity line "Preparing the conversation (first question after an
+  analysis)" before that turn; the Ask panel says that a first question, or the first after the analysis
+  changed, takes longer.
 - **Fallback.** If the compacting turn fails (provider failure), the runner answers once more from the
   uncompacted fork with the 400000 limit; a fork without an analytic archive starts from the context pack and
-  is not compacted.
+  is not compacted. The retry follows any provider failure of that turn, not only a failed compaction (the
+  agent is read-only, so a second attempt has no side effects). The failed turn's tokens are not in the job's
+  usage: the provider reports no usage for a failed turn; the runner logs the retry at warn.
+- **Unproven.** The 80000 limit is not yet measured on the deployed Codex with a ~300k-token fork: compaction
+  time (S7: 47–130 s from 50–95k) and whether it happens before the first request must be checked on the real
+  stack (job phase timings and input tokens of the first and a follow-up Ask).
 - **Reason.** Ask turns resumed the full analytic history: on a large pull request (dashpay/platform, plan +
   PR context + 2 flows) every model request re-read about 300k tokens, and answers took 70–115 s against about
   30 s on a 100k-token session. The removal of forced compaction above stays valid for analytic jobs (35–147 s per

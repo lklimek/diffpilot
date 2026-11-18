@@ -41,7 +41,7 @@ impl EventSink {
 }
 
 /// Activity line of the first turn of a new working session, which compacts the fork first and takes longer.
-const PREPARING_FORK: &str = "Preparing the conversation (first question on this pull request)";
+const PREPARING_FORK: &str = "Preparing the conversation (first question after an analysis)";
 /// Events buffered between the provider and `execute`; small, as summaries are not clipped yet.
 const EVENT_BUFFER: usize = 16;
 /// Longest failure message in a result.
@@ -360,7 +360,7 @@ impl Executor {
                     .resume(&session.thread_id, &call, events.clone())
                     .await;
                 if call.compact_on_start && matches!(resumed, Err(ProviderError::Failed { .. })) {
-                    tracing::warn!(job = %spec.job_id, "the turn compacting the forked session failed; answering from the uncompacted fork");
+                    tracing::warn!(job = %spec.job_id, "the turn compacting the forked session failed; answering from the uncompacted fork; the failed turn's tokens are not counted (no usage is reported for a failed turn)");
                     call.compact_on_start = false;
                     resumed = self
                         .provider

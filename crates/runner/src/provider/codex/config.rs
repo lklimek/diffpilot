@@ -44,7 +44,8 @@ const GITHUB_PROXY_VARS: [&str; 4] = ["HTTPS_PROXY", "https_proxy", "NO_PROXY", 
 pub(crate) const AUTO_COMPACT_TOKEN_LIMIT: u32 = 400_000;
 /// Limit of the first turn of an Ask working session forked from the analytic one: Codex compacts the fork before
 /// that turn (pre-turn compaction, S1b finding 3) and the turn continues on the compacted context; above the
-/// compacted size plus one turn, so the turn does not compact again (ADR-004 addendum 2026-11-18).
+/// compacted size plus one turn, so the turn does not compact again (ADR-004 addendum 2026-11-18). Unproven on
+/// the deployed Codex with a ~300k-token fork: measure compaction time and per-request input on the real stack.
 pub(crate) const FORK_COMPACT_TOKEN_LIMIT: u32 = 80_000;
 
 /// The per-job configuration; `github_mcp` is the GitHub MCP binary, `no_proxy` the bypass hosts and

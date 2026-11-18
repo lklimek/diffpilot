@@ -302,7 +302,7 @@ describe("AskAnswers", () => {
     ["pending", /Waiting for the LLM/],
     [
       "answering",
-      /The LLM is working on the answer; it appears here whole when it is ready\. The first question on a pull request takes longer: the conversation is prepared first\./,
+      /The LLM is working on the answer; it appears here whole when it is ready\. A first question, or the first after the analysis changed, takes longer: the conversation is prepared first\./,
     ],
   ] as const)("shows the %s state as a status", (state, text) => {
     render(<AskAnswers questions={[question({ state })]} />);

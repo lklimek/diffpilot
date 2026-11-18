@@ -1181,6 +1181,6 @@ async fn a_fork_compacts_once_and_falls_back_when_the_compacting_turn_fails() {
 fn preparing(events: &[ProviderEvent]) -> bool {
     events.iter().any(|event| {
         matches!(event, ProviderEvent::Activity(activity)
-            if activity.summary == "Preparing the conversation (first question on this pull request)")
+            if activity.summary == "Preparing the conversation (first question after an analysis)")
     })
 }
