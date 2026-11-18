@@ -141,6 +141,37 @@ describe("CommentComposer", () => {
     expect(document.body).not.toHaveTextContent(/may already be in your GitHub pending review/);
   });
 
+  it.each([
+    ["pr_head_changed", "The pull request changed since this analysis. Analyse it again to comment."],
+    ["position_rejected", "GitHub did not accept a comment on this line."],
+    ["app_not_installed", "The smart-review GitHub App is not installed on this repository."],
+    ["invalid_request", "The comment is too long."],
+  ])(
+    "a definite refusal (%s) states the reason, keeps the text editable and offers no Retry",
+    async (code, sentence) => {
+      const onCreate = vi.fn().mockRejectedValue(Object.assign(new Error(sentence), { code }));
+      const { user } = setup({ onCreate });
+      await user.type(field(), "kept text");
+      await user.click(addButton());
+      expect(await screen.findByRole("alert")).toHaveTextContent(sentence);
+      expect(field()).toHaveValue("kept text");
+      expect(field()).not.toHaveAttribute("readonly");
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(document.body).not.toHaveTextContent(/may already be in your GitHub pending review/);
+    },
+  );
+
+  it("an unknown outcome (github_unavailable) keeps Retry with the same key", async () => {
+    const onCreate = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("GitHub did not answer."), { code: "github_unavailable" }));
+    const { user } = setup({ onCreate });
+    await user.type(field(), "text");
+    await user.click(addButton());
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeVisible();
+    expect(document.body).toHaveTextContent("The comment may already be in your GitHub pending review");
+  });
+
   it("an edit answered comment_published shows the server's sentence, not 'Not saved'", async () => {
     const sentence =
       "This comment was published on GitHub in the meantime; the change was applied to the published comment.";

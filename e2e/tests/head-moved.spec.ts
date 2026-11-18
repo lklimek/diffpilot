@@ -48,6 +48,8 @@ test("head moved: comment refused with pr_head_changed, Re-analyze, the supersed
   await expect(inspector(page).getByRole("alert")).toContainText(
     "The pull request changed since this analysis. Analyse it again to comment.",
   );
+  // A definite refusal: no Retry that could not succeed, no "may already be in your pending review".
+  await expect(inspector(page).getByRole("button", { name: "Retry" })).toHaveCount(0);
   expect(await pending(page, old)).toEqual([]);
   await checkScreen(page);
 

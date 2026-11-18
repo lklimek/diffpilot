@@ -83,6 +83,23 @@ export function newIdempotencyKey(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/**
+ * API errors of a create that prove nothing was written, or that a repeat cannot succeed (http-api.md
+ * § Idempotency): the server's sentence is shown and no Retry offered. Other failures have an unknown outcome.
+ */
+const DEFINITE_REFUSALS = new Set([
+  "comment_published",
+  "pr_head_changed",
+  "position_rejected",
+  "app_not_installed",
+  "invalid_request",
+  "not_found",
+  "unauthenticated",
+  "csrf_rejected",
+  "login_not_allowed",
+  "analysis_not_finished",
+]);
+
 /** Identity of a comment target: path, side and the whole line range. */
 const identity = (t: CommentTarget) => JSON.stringify([t.path, t.side, t.start_line, t.line]);
 
@@ -262,9 +279,8 @@ export function CommentComposer(props: CommentComposerProps) {
         onDraftChange(key, "");
         return response;
       } catch (error) {
-        // comment_published on create: the misplaced comment was removed again and the key freed (http-api.md),
-        // so there is nothing to retry; the text stays for the user to keep.
-        if (codeOf(error) === "comment_published") {
+        // A definite refusal: nothing to retry (a moved head stays moved); the text stays for the user to keep.
+        if (DEFINITE_REFUSALS.has(codeOf(error) ?? "")) {
           setUnresolved((all) => without(all, key));
           return { settled: messageOf(error) };
         }
