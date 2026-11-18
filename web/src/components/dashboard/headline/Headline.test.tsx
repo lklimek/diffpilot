@@ -83,6 +83,18 @@ describe("NetChart keyboard reading", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     const rows = within(screen.getByRole("table")).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("Day 18 Nov (so far)220+6");
+    // A long table scrolls: its scroll box takes keyboard focus and has a name.
+    const box = screen.getByRole("region", { name: "Net per day as a table" });
+    expect(box).toHaveAttribute("tabindex", "0");
+    expect(box).toContainElement(screen.getByRole("table"));
+  });
+
+  it("marks today so far with a dashed outline, also when its net is 0", () => {
+    render(<Harness />);
+    const today = document.querySelector('[data-point="2"] [data-partial]')!;
+    expect(today).toHaveAttribute("stroke-dasharray");
+    expect(today).not.toHaveAttribute("opacity");
+    expect(document.querySelectorAll("[data-partial]")).toHaveLength(1);
   });
 
   it("draws bars and the line with theme tokens only", () => {

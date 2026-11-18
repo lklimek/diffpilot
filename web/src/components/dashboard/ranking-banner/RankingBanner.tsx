@@ -19,6 +19,9 @@ interface RankingBannerProps {
 const PROVISIONAL =
   "Items marked provisional show ~N scores: changed items keep their earlier judgement until re-judged, and new items are scored from computed parts and fixed estimates. The order may still change.";
 
+/** `text` ending with exactly one period (server messages may or may not end with one). */
+const sentence = (text: string) => `${text.replace(/[.\s]+$/u, "")}.`;
+
 /** Banner of the LLM ranking state (plan §B.3); nothing once it finished. */
 export function RankingBanner({ ranking, scannedAt, onRetry, retrying = false, now }: RankingBannerProps) {
   const fresh = `Facts and computed parts are fresh (scan finished ${clockText(scannedAt, now)}).`;
@@ -69,7 +72,7 @@ export function RankingBanner({ ranking, scannedAt, onRetry, retrying = false, n
       return (
         <Banner
           tone="error"
-          title={`LLM ranking failed: ${ranking.message ?? (ranking.state === "interrupted" ? "stopped by a server restart" : "no reason given")}. Provisional scores stay approximate.`}
+          title={`LLM ranking failed: ${sentence(ranking.message ?? (ranking.state === "interrupted" ? "stopped by a server restart" : "no reason given"))} Provisional scores stay approximate.`}
           actions={retry}
         >
           {fresh}

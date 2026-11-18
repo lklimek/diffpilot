@@ -47,17 +47,11 @@ export function Yesterday({ label, prs, reviews }: YesterdayProps) {
             </td>
             <td className="text-xs text-muted">{prs.merged} merged</td>
           </tr>
-          <tr>
-            <th scope="row" className="!text-left font-semibold">
-              Reviews
-            </th>
-            <td>{reviews}</td>
-            <td>—</td>
-            <td>—</td>
-            <td className="text-xs text-muted">given</td>
-          </tr>
         </tbody>
       </table>
+      <p className="mt-1.5 text-[12.5px]">
+        Reviews given: <b className="tabular-nums">{reviews}</b>
+      </p>
     </AsideSection>
   );
 }

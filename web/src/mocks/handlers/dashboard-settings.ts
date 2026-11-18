@@ -113,8 +113,10 @@ export const setDashboardSettings = route("setDashboardSettings", async ({ reque
 /** `PUT /api/v1/settings/dashboard/time-zone`: 204. */
 export const setDashboardTimeZone = route("setDashboardTimeZone", async ({ request }) => {
   const { time_zone } = (await request.json()) as SetTimeZoneRequest;
+  if (!noteDashboardTimeZone(time_zone)) {
+    return apiError(422, "invalid_dashboard_settings", `Time zone: "${time_zone}" is not a known time zone.`);
+  }
   view = { ...view, settings: { ...view.settings, time_zone } };
-  noteDashboardTimeZone(time_zone);
   return new HttpResponse(null, { status: 204 });
 });
 

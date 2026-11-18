@@ -37,6 +37,9 @@ function save(state: Stored): void {
   }
 }
 
+/** Width of DEFAULT_WIDTH at the current viewport. */
+const defaultWidth = () => Math.round(Math.max(340, Math.min(560, window.innerWidth * 0.22)));
+
 const wide = () => window.matchMedia?.(`(min-width: ${SIDE_PANEL_OPEN_FROM_PX}px)`).matches ?? true;
 
 interface SidePanelProps {
@@ -63,7 +66,7 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
       return merged;
     });
   const resize = (px: number) => update({ width: Math.round(Math.max(MIN, Math.min(MAX, px))) });
-  const current = () => aside.current?.offsetWidth || state.width || 400;
+  const current = () => aside.current?.offsetWidth || state.width || defaultWidth();
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -105,7 +108,7 @@ export function SidePanel({ main, children, railText }: SidePanelProps) {
             aria-label="Resize the side panel"
             aria-valuemin={MIN}
             aria-valuemax={MAX}
-            aria-valuenow={state.width ?? undefined}
+            aria-valuenow={state.width ?? defaultWidth()}
             tabIndex={0}
             onKeyDown={onKeyDown}
             onPointerDown={onPointerDown}

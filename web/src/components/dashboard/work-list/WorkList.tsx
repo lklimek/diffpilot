@@ -24,8 +24,8 @@ interface WorkListProps {
   onHelp?: () => void;
   /** Shortcuts on (off while a dialog is open). */
   keysEnabled?: boolean;
-  /** Shown above the rows and dims them, e.g. "08:12 snapshot. It is replaced when a scan finishes." */
-  staleNote?: string | null;
+  /** The list is an earlier snapshot: its clock time (`08:12`) and what happens next; tints and frames the rows. */
+  stale?: { at: string; note: string } | null;
   now: Date;
 }
 
@@ -62,12 +62,13 @@ export function WorkList({
   onNavigate,
   onHelp,
   keysEnabled = true,
-  staleNote,
+  stale,
   now,
 }: WorkListProps) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [cursor, setCursor] = useState<string | null>(null);
-  const expanders = useRef(new Map<string, HTMLButtonElement>());
+  /** Focus targets of the rows for `j`/`k`: a row's expander, an alarm's frame. */
+  const targets = useRef(new Map<string, HTMLElement>());
   const titleId = useId();
   const staleId = useId();
 
@@ -75,7 +76,8 @@ export function WorkList({
   // P0 alarms stay visible whatever the kind switch says.
   const alarms = groupItems(items).alarms;
   const { tiers, notJudged } = groupItems(shown);
-  const rows = [...tiers.flatMap((group) => group.items), ...notJudged];
+  const rows = [...alarms, ...tiers.flatMap((group) => group.items), ...notJudged];
+  const listed = shown.length + alarms.filter((alarm) => !shows(kind, alarm)).length;
   const count = (k: KindFilter) => items.filter((item) => item.kind !== "todo" && shows(k, item)).length;
   const todos = items.filter((item) => item.kind === "todo").length;
 
@@ -103,14 +105,15 @@ export function WorkList({
         event.preventDefault();
         const next = rows[action === "next" ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1)]!;
         setCursor(next.key);
-        const button = expanders.current.get(next.key);
-        button?.focus();
-        button?.scrollIntoView?.({ block: "nearest" });
+        const target = targets.current.get(next.key);
+        target?.focus();
+        target?.scrollIntoView?.({ block: "nearest" });
       } else if (!current) {
         return;
       } else if (action === "toggle") {
         // A focused control handles Enter itself.
         if (event.target instanceof HTMLElement && event.target.closest("a, button, summary")) return;
+        if (current.score.tier === "p0") return;
         event.preventDefault();
         toggle(current.key);
       } else if (action === "review" && current.kind === "pr") {
@@ -127,6 +130,10 @@ export function WorkList({
     return () => document.removeEventListener("keydown", onKey);
   });
 
+  const register = (key: string) => (element: HTMLElement | null) => {
+    if (element) targets.current.set(key, element);
+    else targets.current.delete(key);
+  };
   const row = (item: WorkItem) => (
     <WorkItemRow
       key={item.key}
@@ -136,10 +143,7 @@ export function WorkList({
       current={item.key === cursor}
       reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
       onNavigate={onNavigate}
-      expanderRef={(element) => {
-        if (element) expanders.current.set(item.key, element);
-        else expanders.current.delete(item.key);
-      }}
+      expanderRef={register(item.key)}
       now={now}
     />
   );
@@ -163,7 +167,7 @@ export function WorkList({
           Needs you
         </h2>
         <span className="text-xs text-muted">
-          {shown.length} of {items.length} items, ranked
+          {listed} of {items.length} items, ranked
           {todos > 0 ? `; your ${todos} MemCan TODOs are listed with every choice` : ""}
         </span>
         <span className="flex-1" />
@@ -202,23 +206,30 @@ export function WorkList({
           ]}
         />
       </div>
-      {staleNote && (
-        <p id={staleId} className="mt-1.5 text-xs text-muted">
-          {staleNote}
-        </p>
-      )}
-      {/* A stale list keeps full text contrast: the note describes it and a dashed frame marks it. */}
+      {/* A stale list keeps full text contrast: a tinted dashed frame and its chip mark it. */}
       <div
-        data-stale={staleNote ? true : undefined}
-        aria-describedby={staleNote ? staleId : undefined}
-        className={staleNote ? "mt-1.5 rounded-md border border-dashed border-border px-2 pb-1.5" : ""}
+        data-stale={stale ? true : undefined}
+        aria-describedby={stale ? staleId : undefined}
+        className={
+          stale ? "mt-2.5 rounded-md border border-dashed border-border bg-surface-2 px-2 pb-1.5" : ""
+        }
       >
+        {stale && (
+          <p id={staleId} className="m-0 flex flex-wrap items-center gap-x-2 pt-0.5 text-xs text-muted">
+            <span className="relative -top-2 rounded-full border border-border bg-surface px-2 py-px font-semibold text-text">
+              Previous snapshot · {stale.at}
+            </span>{" "}
+            {stale.note}
+          </p>
+        )}
         {alarms.length > 0 && (
           <div className="mt-2.5 grid gap-2.5">
             {alarms.map((item) => (
               <AlarmRow
                 key={item.key}
                 item={item}
+                current={item.key === cursor}
+                focusRef={register(item.key)}
                 reviewHref={item.kind === "pr" ? reviewHref(item) : undefined}
                 onNavigate={onNavigate}
               />

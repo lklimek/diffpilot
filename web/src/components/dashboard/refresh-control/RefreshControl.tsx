@@ -60,14 +60,28 @@ function scanInfo(latest: RefreshStatus | null, snapshot: SnapshotMeta | null, n
   const checked = `${snapshot.checked.pr} PRs, ${snapshot.checked.issue} issues and ${snapshot.checked.todo} TODOs checked`;
   const ranked = snapshot.ranked_at ? `; ranked by the LLM at ${at(snapshot.ranked_at)}` : "";
   if (latest?.state === "ranking" && latest.ranking) {
+    const { state, judged, total, resumes_at } = latest.ranking;
+    const scanned = `The scan finished at ${at(snapshot.scanned_at)}.`;
+    if (state === "waiting_for_analysis") {
+      return {
+        text: `Refreshed ${at(snapshot.scanned_at)} · LLM ranking waits for a review analysis`,
+        tip: `${scanned} The LLM ranking starts when a running review analysis finishes; scores stay provisional until then.`,
+      };
+    }
+    if (state === "paused") {
+      const until = resumes_at ? ` until ${at(resumes_at)}` : "";
+      return {
+        text: `Refreshed ${at(snapshot.scanned_at)} · LLM ranking paused${until}`,
+        tip: `${scanned} The LLM ranking paused at the usage limit and continues by itself; ${judged} of ${total} items judged so far.`,
+      };
+    }
     return {
       text: (
         <>
-          <Spinner /> Refreshed {at(snapshot.scanned_at)} · LLM ranking {latest.ranking.judged} /{" "}
-          {latest.ranking.total}
+          <Spinner /> Refreshed {at(snapshot.scanned_at)} · LLM ranking {judged} / {total}
         </>
       ),
-      tip: `The scan finished at ${at(snapshot.scanned_at)}. The LLM is judging changed and new items; their scores are provisional until then.`,
+      tip: `${scanned} The LLM is judging changed and new items; their scores are provisional until then.`,
     };
   }
   const counts = own ? ` · judged ${own.judged} · reused ${own.reused}` : "";
@@ -75,6 +89,28 @@ function scanInfo(latest: RefreshStatus | null, snapshot: SnapshotMeta | null, n
     text: `Refreshed${trigger} at ${at(snapshot.scanned_at)} · ${agoText(snapshot.scanned_at, now)}${counts}`,
     tip: `Last scan: ${started}. ${checked}${ranked}.${own ? ` The LLM judged ${own.judged} items and reused ${own.reused} earlier judgements whose inputs did not change.` : ""}`,
   };
+}
+
+/** What the live region says: the refresh's state only, without relative times or counts (WCAG 4.1.3). */
+function announcement(latest: RefreshStatus | null, snapshot: SnapshotMeta | null, now: Date): string {
+  switch (latest?.state) {
+    case "scanning":
+      return "Scanning GitHub and MemCan.";
+    case "failed":
+      return "The refresh failed.";
+    case "cancelled":
+      return "The refresh was cancelled.";
+    case "ranking": {
+      const ranking = latest.ranking;
+      if (ranking?.state === "waiting_for_analysis")
+        return "The scan finished; the LLM ranking waits for a review analysis.";
+      if (ranking?.state === "paused")
+        return `The scan finished; the LLM ranking is paused${ranking.resumes_at ? ` until ${clockText(ranking.resumes_at, now)}` : ""}.`;
+      return "The scan finished; the LLM is ranking.";
+    }
+    default:
+      return snapshot ? `Refreshed at ${clockText(snapshot.scanned_at, now)}.` : "Not refreshed yet.";
+  }
 }
 
 /** The scheduled run's failure, shown until a later scan succeeds; null otherwise. */
@@ -128,10 +164,12 @@ export function RefreshControl({
           </span>
         </Tooltip>
       )}
+      <span role="status" className="sr-only">
+        {announcement(latest, snapshot, now)}
+      </span>
       <Tooltip tip={info.tip}>
         <span
-          role="status"
-          aria-live="polite"
+          data-scan-info
           tabIndex={0}
           className={`flex cursor-help items-center gap-1.5 truncate text-[12.5px] ${info.error ? "text-high" : "text-muted"}`}
         >

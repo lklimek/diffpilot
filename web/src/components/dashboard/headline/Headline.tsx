@@ -66,7 +66,7 @@ export function Headline({ figures, days, weeks, unit, onUnitChange, staleNote }
       aria-labelledby={titleId}
       className="@container grid gap-x-7 gap-y-1 rounded-lg border border-border bg-surface px-5 py-4"
     >
-      <div className="grid gap-x-7 gap-y-3 @min-[900px]:grid-cols-[minmax(250px,320px)_minmax(0,1fr)]">
+      <div className="grid gap-x-7 gap-y-3 @min-[820px]:grid-cols-[minmax(250px,320px)_minmax(0,1fr)]">
         <div>
           <Tooltip tip="Net = closed − opened. Closed counts your PRs merged or closed without merge; opened counts PRs you opened. Positive means your open backlog shrank.">
             <h2 id={titleId} tabIndex={0} className="inline cursor-help text-[13px] font-semibold">

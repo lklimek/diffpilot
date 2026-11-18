@@ -67,6 +67,21 @@ describe("RankingBanner", () => {
     expect(onRetry).toHaveBeenCalledOnce();
   });
 
+  it("a failure message ending with a period reads as one sentence", () => {
+    render(
+      <RankingBanner
+        ranking={{ ...RANKING.ranking!, state: "failed", message: "The LLM stopped answering. " }}
+        scannedAt={snapshotAt}
+        onRetry={() => {}}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "LLM ranking failed: The LLM stopped answering. Provisional scores stay approximate.",
+    );
+    expect(screen.getByRole("alert").textContent).not.toMatch(/\.\./);
+  });
+
   it("shows nothing once the ranking finished", () => {
     const { container } = render(
       <RankingBanner

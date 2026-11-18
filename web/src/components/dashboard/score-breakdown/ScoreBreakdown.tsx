@@ -93,7 +93,7 @@ export function ScoreBreakdown({ item, now }: { item: WorkItem; now: Date }) {
       </div>
       <div className="min-w-0">
         <h3 className={H3}>Facts from {item.kind === "todo" ? "MemCan" : "GitHub"}</h3>
-        <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12.5px] [&>dd]:m-0 [&>dt]:pt-0.5 [&>dt]:text-[11px] [&>dt]:font-bold [&>dt]:tracking-wide [&>dt]:text-muted [&>dt]:uppercase">
+        <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12.5px] [&_dd]:m-0 [&_dt]:pt-0.5 [&_dt]:text-[11px] [&_dt]:font-bold [&_dt]:tracking-wide [&_dt]:text-muted [&_dt]:uppercase">
           {item.facts.map((fact, i) => (
             <div key={`${fact.label}-${i}`} className="contents">
               <dt>{fact.label}</dt>

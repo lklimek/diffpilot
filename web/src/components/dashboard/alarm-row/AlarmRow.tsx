@@ -1,3 +1,4 @@
+import type { Ref } from "react";
 import type { WorkItem } from "../../../api/generated/types";
 import { Tooltip } from "../../tooltip/Tooltip";
 import { LlmLine } from "../common/LlmLine";
@@ -12,17 +13,24 @@ interface AlarmRowProps {
   /** In-app href of a pull request's review (plan §F.1). */
   reviewHref?: string;
   onNavigate?: Navigate;
+  /** The keyboard cursor is on this alarm. */
+  current?: boolean;
+  /** The alarm's frame, focused by `j`/`k`. */
+  focusRef?: Ref<HTMLDivElement>;
 }
 
 /** A P0 alarm above the tiers (mockup `.alarm`): the LLM's alarm reason and next action, independent of the score. */
-export function AlarmRow({ item, reviewHref, onNavigate }: AlarmRowProps) {
+export function AlarmRow({ item, reviewHref, onNavigate, current = false, focusRef }: AlarmRowProps) {
   const points = Math.round(item.score.total_tenths / 10);
   return (
     <div
+      ref={focusRef}
       role="group"
+      tabIndex={-1}
       aria-label={`P0 alarm ${item.id}`}
       data-alarm={item.key}
-      className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3.5 gap-y-1.5 rounded-lg border-2 border-high-bd bg-high-bg px-3.5 py-3"
+      data-current={current || undefined}
+      className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3.5 gap-y-1.5 rounded-lg border-2 border-high-bd bg-high-bg px-3.5 py-3 ${current ? "shadow-[inset_4px_0_0_var(--color-accent)]" : ""}`}
     >
       <Tooltip
         tip={`P0 alarm: judged by the LLM as needing your attention now. Independent of the score (${points}).`}

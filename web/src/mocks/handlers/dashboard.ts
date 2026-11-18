@@ -41,7 +41,7 @@ interface Base {
   items: ItemPage;
 }
 
-/** Snapshot of the ranking refresh: scanned 10:29, not ranked yet, one item not judged. */
+/** Snapshot of the ranking refresh: scanned 09:24, not ranked yet, one item not judged. */
 const PROVISIONAL_SNAPSHOT: SnapshotMeta = {
   ...SUMMARY.snapshot!,
   refresh_id: RANKING.id,
@@ -78,6 +78,12 @@ const withReview = (review: (current: WorkItem["review"]) => WorkItem["review"])
   },
 });
 
+/** No time zone stored, so the schedule cannot run yet. */
+const noTimeZone = (): Base => ({
+  summary: { ...SUMMARY, schedule: { ...SUMMARY.schedule, time_zone: null, next_run_at: null } },
+  items: ITEMS,
+});
+
 const SCENARIOS = {
   /** A finished manual refresh of 08:12, ranked at 08:15. */
   normal: (): Base => ({ summary: SUMMARY, items: ITEMS }),
@@ -86,13 +92,12 @@ const SCENARIOS = {
     const started_at = new Date(LOADED - 47_000).toISOString();
     return { summary: { ...SUMMARY, latest_refresh: { ...SCANNING, started_at } }, items: ITEMS };
   },
-  /** The scan finished at 10:29; the LLM ranks (10 of 14); changed and new items are provisional. */
+  /** The scan finished at 09:24; the LLM ranks (10 of 14); changed and new items are provisional. */
   provisional: () => ranking("running"),
   /** As provisional, but the ranking waits for a review analysis holding the LLM credential. */
   waiting: () => ranking("waiting_for_analysis"),
   /** The ranking failed: the estimates stay, "Rank again" (R4) restarts it. */
-  "ranking-failed": () =>
-    ranking("failed", "The LLM stopped answering. Provisional scores stay approximate."),
+  "ranking-failed": () => ranking("failed", "The LLM stopped answering"),
   /** Nothing needs the user; three own PRs wait on others. */
   empty: (): Base => {
     const counts = SUMMARY.snapshot!.item_counts;
@@ -124,10 +129,9 @@ const SCENARIOS = {
     items: { revision: "r-none", items: [], next_cursor: null },
   }),
   /** First dashboard visit: no time zone stored, so the schedule cannot run yet (R6b stores it). */
-  "no-time-zone": (): Base => ({
-    summary: { ...SUMMARY, schedule: { ...SUMMARY.schedule, time_zone: null, next_run_at: null } },
-    items: ITEMS,
-  }),
+  "no-time-zone": noTimeZone,
+  /** As no-time-zone, but R6b refuses the browser's zone (422): the note points to Settings. */
+  "no-time-zone-refused": noTimeZone,
   /** NC-482 without an analysis: its row opens the review start page, which offers a new analysis. */
   "review-new": () => withReview(() => null),
   /** NC-482 analysed at its current head: its row opens the review (fixture state `resume`). */
@@ -181,9 +185,14 @@ export function setDashboardScenario(name: DashboardScenario): void {
   if (name === "review-found") setFixtureState("resume");
 }
 
-/** Records the time zone stored through `PUT /api/v1/settings/dashboard/time-zone`. */
-export function noteDashboardTimeZone(zone: string): void {
+/**
+ * Records the time zone stored through `PUT /api/v1/settings/dashboard/time-zone`; false when the scenario
+ * refuses it (the handler answers 422).
+ */
+export function noteDashboardTimeZone(zone: string): boolean {
+  if (scenarioName === "no-time-zone-refused") return false;
   timeZone = zone;
+  return true;
 }
 
 const requested = new URLSearchParams(globalThis.location?.search ?? "").get("dashboard");
