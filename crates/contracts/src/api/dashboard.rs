@@ -251,7 +251,7 @@ pub struct SnapshotMeta {
     pub ranked_at: Option<Timestamp>,
     /// Ranked items by kind and tier.
     pub item_counts: ItemCounts,
-    /// Items left out of the ranking (drafts of others, skipped bot authors, no owned change).
+    /// Items left out of the ranking (`exclusions.total`).
     pub excluded: u32,
     /// The user's pull requests waiting on other people.
     pub awaiting: Vec<AwaitingItem>,
@@ -265,6 +265,89 @@ pub struct SnapshotMeta {
     pub unreachable: Vec<String>,
     /// What the scan read before exclusion.
     pub checked: KindCounts,
+    /// Why the rules left items out, computed with the ranking; absent only from a response without it (a server
+    /// older than this field), which the web shows as not recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub exclusions: Option<Exclusions>,
+}
+
+/// Most excluded items listed by `GET /api/v1/dashboard?excluded=true`; the counts cover all.
+pub const EXCLUDED_ITEMS_LIMIT: usize = 200;
+
+/// The items the rules left out of the ranking, counted per reason (facts only, no LLM text).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct Exclusions {
+    /// All left-out items.
+    pub total: u32,
+    /// Non-zero counts, in the order of [`ExclusionReason`].
+    pub counts: Vec<ExclusionCount>,
+    /// With `?excluded=true` only: the items by reason, then display id, at most [`EXCLUDED_ITEMS_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub items: Option<Vec<ExcludedItem>>,
+}
+
+/// How many items one rule left out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ExclusionCount {
+    /// The rule.
+    pub reason: ExclusionReason,
+    /// Items it left out.
+    pub count: u32,
+}
+
+/// The rule that left an item out of the ranking. Clients show an unknown value as a plain "other rule".
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema, TS,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ExclusionReason {
+    /// Written by an excluded author (Settings → Excluded authors).
+    ExcludedAuthor,
+    /// A pull request of someone else not directed at the user, with no or only a minor change in the user's
+    /// owned paths (Settings → Ownership policy).
+    OutsideOwnedAreas,
+    /// A draft pull request of someone else (only the user's own drafts count).
+    Draft,
+    /// The LLM, asked because the ownership policy could not be read, judged it outside the user's areas.
+    JudgedNotEligible,
+    /// The LLM merged it into another item covering the same work.
+    MergedIntoAnother,
+}
+
+/// One item the rules left out.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ExcludedItem {
+    /// Stable key.
+    pub key: ItemKey,
+    /// Kind.
+    pub kind: ItemKind,
+    /// Display id (`PLAT-1203`, `TODO-3fa91c2e`).
+    pub id: String,
+    /// Repository; null for TODOs.
+    pub repo: Option<RepoRef>,
+    /// Number; null for TODOs.
+    pub number: Option<u32>,
+    /// Link: GitHub, or the MemCan UI for a TODO when configured.
+    pub url: Option<String>,
+    /// Title, plain text.
+    pub title: String,
+    /// Author login; null for TODOs.
+    pub author: Option<String>,
+    /// The rule.
+    pub reason: ExclusionReason,
+    /// Display id of the item it was merged into (`merged_into_another` only).
+    pub merged_into: Option<String>,
+}
+
+/// Query of `GET /api/v1/dashboard`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SummaryQuery {
+    /// List the excluded items (`snapshot.exclusions.items`); without it only their counts are sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub excluded: Option<bool>,
 }
 
 /// Ranked items by kind and tier.

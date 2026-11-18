@@ -4,8 +4,9 @@
 use std::collections::HashMap;
 
 use contracts::api::dashboard::{
-    AwaitingItem, Fact, FactTag, ItemCounts, ItemKey, ItemKind, ItemTarget, ItemText, RankingState,
-    ScoreState, SnapshotMeta, Tier, WorkItem,
+    AwaitingItem, EXCLUDED_ITEMS_LIMIT, ExcludedItem, ExclusionCount, Exclusions, Fact, FactTag,
+    ItemCounts, ItemKey, ItemKind, ItemTarget, ItemText, RankingState, ScoreState, SnapshotMeta,
+    Tier, WorkItem,
 };
 use contracts::common::RepoRef;
 use contracts::time::Timestamp;
@@ -36,15 +37,24 @@ pub struct View {
     pub items: Vec<ViewItem>,
     /// Counts by kind and tier.
     pub item_counts: ItemCounts,
-    /// Items left out of the ranking.
-    pub excluded: u32,
+    /// Items left out of the ranking: counts per rule and the capped list.
+    pub exclusions: Exclusions,
     /// The user's pull requests waiting on others.
     pub awaiting: Vec<AwaitingItem>,
 }
 
 impl View {
-    /// `SnapshotMeta` of the snapshot held by `record`.
-    pub fn meta(&self, snapshot: &Snapshot, record: &RefreshRecord) -> SnapshotMeta {
+    /// `SnapshotMeta` of the snapshot held by `record`; the excluded items are listed only when `list_excluded`.
+    pub fn meta(
+        &self,
+        snapshot: &Snapshot,
+        record: &RefreshRecord,
+        list_excluded: bool,
+    ) -> SnapshotMeta {
+        let exclusions = Exclusions {
+            items: self.exclusions.items.clone().filter(|_| list_excluded),
+            ..self.exclusions.clone()
+        };
         SnapshotMeta {
             refresh_id: record.id,
             scanned_at: snapshot.scanned_at,
@@ -52,13 +62,14 @@ impl View {
                 .then_some(record.finished_at)
                 .flatten(),
             item_counts: self.item_counts,
-            excluded: self.excluded,
+            excluded: self.exclusions.total,
             awaiting: self.awaiting.clone(),
             history: snapshot.history.clone(),
             todos: snapshot.todos_state.clone(),
             notes: snapshot.notes.clone(),
             unreachable: snapshot.unreachable.clone(),
             checked: snapshot.checked,
+            exclusions: Some(exclusions),
         }
     }
 }
@@ -155,9 +166,92 @@ pub fn build(
     View {
         items,
         item_counts: counts,
-        excluded: u32::try_from(ranking.excluded.len()).unwrap_or(u32::MAX),
+        exclusions: exclusions(ranking.excluded, &sources, memcan_ui),
         awaiting,
     }
+}
+
+/// Counts per rule and the first [`EXCLUDED_ITEMS_LIMIT`] items by rule, then display id (B4).
+fn exclusions(
+    mut left_out: Vec<score::Excluded>,
+    sources: &HashMap<ItemKey, Source<'_>>,
+    memcan_ui: Option<&str>,
+) -> Exclusions {
+    left_out.sort_by_key(|e| e.rule);
+    let mut counts: Vec<ExclusionCount> = Vec::new();
+    for item in &left_out {
+        match counts.last_mut() {
+            Some(last) if last.reason == item.rule => last.count = last.count.saturating_add(1),
+            _ => counts.push(ExclusionCount {
+                reason: item.rule,
+                count: 1,
+            }),
+        }
+    }
+    let items = left_out
+        .into_iter()
+        .filter_map(|e| {
+            let source = sources.get(&e.key)?;
+            Some(excluded_item(e, source, memcan_ui))
+        })
+        .take(EXCLUDED_ITEMS_LIMIT)
+        .collect();
+    Exclusions {
+        total: counts.iter().map(|c| c.count).sum(),
+        counts,
+        items: Some(items),
+    }
+}
+
+fn excluded_item(e: score::Excluded, source: &Source<'_>, memcan_ui: Option<&str>) -> ExcludedItem {
+    let (kind, repo, number, url, title, author) = match source {
+        Source::Pr(pr) => {
+            let f = &pr.facts;
+            (
+                ItemKind::Pr,
+                Some(f.repo.clone()),
+                Some(f.number),
+                Some(github_url(&f.repo, "pull", f.number)),
+                f.title.clone(),
+                f.author.clone(),
+            )
+        }
+        Source::Issue(issue) => {
+            let f = &issue.facts;
+            (
+                ItemKind::Issue,
+                Some(f.repo.clone()),
+                Some(f.number),
+                Some(github_url(&f.repo, "issues", f.number)),
+                f.title.clone(),
+                f.author.clone(),
+            )
+        }
+        Source::Todo(todo) => (
+            ItemKind::Todo,
+            None,
+            None,
+            todo_url(memcan_ui, todo),
+            todo.facts.title.clone(),
+            None,
+        ),
+    };
+    ExcludedItem {
+        key: e.key,
+        kind,
+        id: e.id,
+        repo,
+        number,
+        url,
+        title,
+        author,
+        reason: e.rule,
+        merged_into: e.merged_into,
+    }
+}
+
+fn todo_url(memcan_ui: Option<&str>, todo: &StoredTodo) -> Option<String> {
+    memcan_ui.map(|base| format!("{}/tasks/{}", base.trim_end_matches('/'), todo.facts.id))
 }
 
 fn item_key(target: ItemTarget) -> Option<ItemKey> {
@@ -297,8 +391,7 @@ fn work_item(
                 None,
                 None,
                 todo.facts.title.clone(),
-                memcan_ui
-                    .map(|base| format!("{}/tasks/{}", base.trim_end_matches('/'), todo.facts.id)),
+                todo_url(memcan_ui, todo),
                 None,
                 false,
                 todo.facts.changed_at,

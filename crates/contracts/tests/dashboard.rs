@@ -540,6 +540,22 @@ fn dashboard_fixtures_are_typed_and_consistent() {
     let provisional = check_items("api/items-provisional.json");
     let snapshot = summary.snapshot.as_ref().expect("snapshot");
     assert_eq!(snapshot.item_counts, counts(&items));
+    let exclusions = snapshot.exclusions.as_ref().expect("exclusions");
+    let listed = exclusions.items.as_deref().unwrap_or_default();
+    assert_eq!(
+        (
+            exclusions.total,
+            exclusions.counts.iter().map(|c| c.count).sum::<u32>(),
+            u32::try_from(listed.len()).expect("count"),
+        ),
+        (snapshot.excluded, snapshot.excluded, snapshot.excluded)
+    );
+    assert!(
+        listed
+            .windows(2)
+            .all(|pair| pair[0].reason <= pair[1].reason),
+        "listed by reason"
+    );
     assert_eq!(items.revision, summary.revision);
     let latest = summary.latest_refresh.as_ref().expect("latest refresh");
     assert_eq!(latest.id, snapshot.refresh_id);

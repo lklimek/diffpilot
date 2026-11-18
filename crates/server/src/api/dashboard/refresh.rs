@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use contracts::api::dashboard::{
     DashboardEvent, DashboardSummary, ItemKey, ItemKind, ItemPage, ItemQuery, RefreshStatus,
-    RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, WorkItem,
+    RefreshTrigger, ReviewLink, ScheduleStatus, ScheduledRun, SummaryQuery, WorkItem,
 };
 use contracts::api::error::ApiErrorCode;
 use contracts::ids::RefreshId;
@@ -210,7 +210,10 @@ async fn current_view(
 async fn summary(
     State(state): State<AppState>,
     session: Session,
+    query: Result<Query<SummaryQuery>, QueryRejection>,
 ) -> DashboardResult<Json<DashboardSummary>> {
+    let Query(query) = query?;
+    let list_excluded = query.excluded.unwrap_or(false);
     let scope = scope(&session);
     let dashboard = state.db.dashboard();
     let latest_refresh = match dashboard
@@ -224,7 +227,7 @@ async fn summary(
         match current_view(&state, &scope).await? {
             Some((revision, snapshot, view, record, older)) => (
                 revision,
-                Some(view.meta(&snapshot, &record)),
+                Some(view.meta(&snapshot, &record, list_excluded)),
                 older,
                 record.scanned_at,
             ),

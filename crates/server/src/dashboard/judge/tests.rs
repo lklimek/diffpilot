@@ -1389,6 +1389,38 @@ async fn previous_texts_are_not_sent_after_a_language_switch() {
     h.ranked("u1", third).await;
 }
 
+/// B4: the excluded list is capped at 200 (by display id); the counts cover every left-out item.
+#[test]
+fn excluded_list_is_capped_and_counted_in_full() {
+    use contracts::api::dashboard::{ExclusionCount, ExclusionReason};
+    let prs = (1..=205)
+        .map(|n| {
+            let mut item = pr(n, &format!("chore(deps): bump {n}"));
+            item.facts.author = Some("dependabot".into());
+            item
+        })
+        .collect();
+    let view = snapshot::build(&snapshot(prs, vec![], vec![]), &HashMap::new(), None);
+    let exclusions = &view.exclusions;
+    assert_eq!(
+        (exclusions.total, exclusions.counts.as_slice()),
+        (
+            205,
+            [ExclusionCount {
+                reason: ExclusionReason::ExcludedAuthor,
+                count: 205
+            }]
+            .as_slice()
+        )
+    );
+    let items = exclusions.items.as_deref().expect("listed");
+    assert_eq!(items.len(), 200);
+    assert_eq!(
+        (items[0].id.as_str(), items[199].id.as_str()),
+        ("wallet-ui#1", "wallet-ui#200")
+    );
+}
+
 #[tokio::test]
 async fn usage_limit_pauses_ranking() {
     let h = harness().await;

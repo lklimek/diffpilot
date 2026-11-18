@@ -57,6 +57,25 @@ test.describe("My work (msw)", () => {
     );
   });
 
+  test("excluded items: a quiet line under Needs you; by keyboard it lists them by reason with links out", async ({
+    page,
+  }) => {
+    await open(page);
+    const toggle = main(page).getByRole("button", { name: /^Excluded: 3/ });
+    await expect(toggle).toHaveText(/Excluded: 3 — 1 excluded author · 1 outside your areas · 1 draft/);
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const authors = main(page).getByRole("group", { name: "Excluded authors: 1" });
+    const link = authors.getByRole("link", { name: "Open WUI-330 on GitHub" });
+    await expect(link).toHaveAttribute("href", "https://github.com/acme/wallet-ui/pull/330");
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(authors.getByText("by @dependabot")).toBeVisible();
+    await authors.getByRole("link", { name: "Settings → Excluded authors" }).click();
+    await expect(page).toHaveURL(/\/settings$/);
+  });
+
   test("kind toggles combine by keyboard, the last one on stays on, and the choice is remembered", async ({
     page,
   }) => {
@@ -257,6 +276,8 @@ test.describe("My work (msw)", () => {
       await page.locator("li[data-item] button[aria-expanded]").first().click();
       const closed = page.locator("aside details:not([open]) > summary");
       while ((await closed.count()) > 0) await closed.first().click();
+      await page.getByRole("button", { name: /^Excluded: 3/ }).click();
+      await expect(page.getByRole("group", { name: "Drafts: 1" })).toBeVisible();
       await page.getByRole("button", { name: "Show as table" }).click();
       await expect(page.getByRole("region", { name: "Net per day as a table" })).toBeVisible();
       await expectAccessible(page);

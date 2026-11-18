@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { Tier, TodosState, WorkItem } from "../../../api/generated/types";
 import { AlarmRow } from "../alarm-row/AlarmRow";
 import { TIER_RULE, tierName } from "../common/format";
@@ -32,6 +32,8 @@ interface WorkListProps {
   stale?: { at: string; note: string } | null;
   /** State of the MemCan TODOs in the snapshot (marks TODO rows MemCan could not refresh). */
   todos?: TodosState;
+  /** A quiet note under the heading (the screen's excluded-items block). */
+  notice?: ReactNode;
   now: Date;
 }
 
@@ -79,6 +81,7 @@ export function WorkList({
   keysEnabled = true,
   stale,
   todos,
+  notice,
   now,
 }: WorkListProps) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -208,6 +211,7 @@ export function WorkList({
           }))}
         />
       </div>
+      {notice}
       {/* A stale list keeps full text contrast: a tinted dashed frame and its chip mark it. */}
       <div
         data-stale={stale ? true : undefined}

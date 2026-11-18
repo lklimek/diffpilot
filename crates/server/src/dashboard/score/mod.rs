@@ -18,8 +18,8 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use contracts::api::dashboard::{
-    ItemKey, ItemKeyError, ItemKind, ItemScore, ItemTarget, PartSource, PartStatus, ScoreComponent,
-    ScorePart, ScoreState, Tier,
+    ExclusionReason, ItemKey, ItemKeyError, ItemKind, ItemScore, ItemTarget, PartSource,
+    PartStatus, ScoreComponent, ScorePart, ScoreState, Tier,
 };
 use contracts::time::Timestamp;
 
@@ -120,6 +120,8 @@ pub struct Scored {
     pub points: f64,
     /// Why the item is left out of the ranking; `None` when ranked.
     pub excluded: Option<String>,
+    /// The rule that leaves it out; `None` when ranked.
+    pub exclusion: Option<ExclusionReason>,
     /// Items the LLM merged into this one.
     pub also: Vec<ItemKey>,
     /// Components a judgement of this item answers (always-LLM parts, open conditional parts, defaults).
@@ -206,7 +208,7 @@ pub fn score_todo(
 ) -> Result<Scored, ScoreError> {
     let key = key_of(ItemTarget::Todo(todo.id))?;
     let eligibility = Eligibility {
-        eligible: true,
+        excluded_by: None,
         reason: "open TODO".into(),
         confirmed: true,
     };
@@ -288,7 +290,8 @@ fn finish(
         tier: if alarm { Tier::P0 } else { tier(points) },
         parts: wire,
     };
-    let excluded = (!eligibility.eligible).then_some(eligibility.reason);
+    let exclusion = eligibility.excluded_by;
+    let excluded = exclusion.map(|_| eligibility.reason);
     Ok(Scored {
         key,
         id,
@@ -296,6 +299,7 @@ fn finish(
         score,
         points,
         excluded,
+        exclusion,
         also,
         asks,
         asks_eligibility,
@@ -376,7 +380,7 @@ fn apply(
     }
     if let Some(flip) = &judgement.eligibility {
         let given = flip.reason.trim();
-        if flip.eligible != eligibility.eligible && given.is_empty() {
+        if flip.eligible != eligibility.excluded_by.is_none() && given.is_empty() {
             return Err(ScoreError::EligibilityWithoutReason);
         }
         let reason = if given.is_empty() {
@@ -390,7 +394,7 @@ fn apply(
             reason
         };
         *eligibility = Eligibility {
-            eligible: flip.eligible,
+            excluded_by: (!flip.eligible).then_some(ExclusionReason::JudgedNotEligible),
             reason,
             confirmed: !inherited,
         };
@@ -407,6 +411,10 @@ pub struct Excluded {
     pub id: String,
     /// Plain reason.
     pub reason: String,
+    /// The rule.
+    pub rule: ExclusionReason,
+    /// Display id of the item it was merged into.
+    pub merged_into: Option<String>,
 }
 
 /// Ranked items in rank order, and the ones left out.
@@ -468,12 +476,22 @@ pub fn rank(mut items: Vec<Scored>) -> Ranking {
     }
     let (mut ranked, mut excluded) = (Vec::new(), Vec::new());
     for item in items {
-        let merged = owner.get(&item.key).map(|by| format!("merged into {by}"));
-        match merged.or_else(|| item.excluded.clone()) {
-            Some(reason) => excluded.push(Excluded {
+        let left_out = match (owner.get(&item.key), item.exclusion, &item.excluded) {
+            (Some(by), ..) => Some((
+                ExclusionReason::MergedIntoAnother,
+                format!("merged into {by}"),
+                Some(by.clone()),
+            )),
+            (None, Some(rule), Some(reason)) => Some((rule, reason.clone(), None)),
+            _ => None,
+        };
+        match left_out {
+            Some((rule, reason, merged_into)) => excluded.push(Excluded {
                 key: item.key,
                 id: item.id,
                 reason,
+                rule,
+                merged_into,
             }),
             None => ranked.push(item),
         }

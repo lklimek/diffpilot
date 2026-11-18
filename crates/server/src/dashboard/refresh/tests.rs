@@ -21,8 +21,9 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use contracts::api::dashboard::{
-    DashboardEvent, DashboardSettings, DashboardSummary, HistoryKind, ItemCounts, ItemKind,
-    ItemPage, KindCounts, PolicyRef, RankingState, RefreshFailureCode, RefreshState, RefreshStatus,
+    DashboardEvent, DashboardSettings, DashboardSummary, ExcludedItem, ExclusionCount,
+    ExclusionReason, Exclusions, HistoryKind, ItemCounts, ItemKey, ItemKind, ItemPage, ItemTarget,
+    KindCounts, PolicyRef, RankingState, RefreshFailureCode, RefreshState, RefreshStatus,
     RepositoryRule, ScanStepKey, ScoreState, StepState, Tier, TodosStatus, WorkItem,
 };
 use contracts::common::RepoRef;
@@ -597,7 +598,13 @@ impl World {
     }
 
     async fn summary(&self, cookie: &str) -> DashboardSummary {
-        let answer = self.send("GET", "/api/v1/dashboard", cookie, &[]).await;
+        self.summary_with(cookie, "").await
+    }
+
+    async fn summary_with(&self, cookie: &str, query: &str) -> DashboardSummary {
+        let answer = self
+            .send("GET", &format!("/api/v1/dashboard{query}"), cookie, &[])
+            .await;
         assert_eq!(answer.status, StatusCode::OK, "{}", answer.body);
         serde_json::from_value(answer.body).expect("summary")
     }
@@ -705,6 +712,47 @@ async fn full_refresh_stores_the_expected_snapshot() {
     let summary = w.summary(ALICE).await;
     let meta = summary.snapshot.expect("snapshot");
     assert_eq!(meta.refresh_id, done.id);
+    assert_eq!(
+        meta.exclusions,
+        Some(Exclusions {
+            total: 1,
+            counts: vec![ExclusionCount {
+                reason: ExclusionReason::ExcludedAuthor,
+                count: 1
+            }],
+            items: None,
+        }),
+        "counts only without ?excluded=true"
+    );
+    let node_client = || RepoRef {
+        owner: "acme".to_owned(),
+        name: "node-client".to_owned(),
+    };
+    let listed = w.summary_with(ALICE, "?excluded=true").await;
+    let items = listed
+        .snapshot
+        .and_then(|s| s.exclusions)
+        .and_then(|e| e.items)
+        .expect("listed");
+    assert_eq!(
+        items,
+        [ExcludedItem {
+            key: ItemKey::new(&ItemTarget::PullRequest {
+                repo: node_client(),
+                number: 495
+            })
+            .expect("key"),
+            kind: ItemKind::Pr,
+            id: "NC-495".to_owned(),
+            repo: Some(node_client()),
+            number: Some(495),
+            url: Some("https://github.com/acme/node-client/pull/495".to_owned()),
+            title: "chore(deps): bump serde from 1.0.228 to 1.0.229".to_owned(),
+            author: Some("dependabot[bot]".to_owned()),
+            reason: ExclusionReason::ExcludedAuthor,
+            merged_into: None,
+        }]
+    );
     assert_eq!(summary.latest_refresh.as_ref().map(|r| r.id), Some(done.id));
     assert_eq!(
         meta.item_counts,

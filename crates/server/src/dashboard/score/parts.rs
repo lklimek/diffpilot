@@ -1,7 +1,7 @@
 //! Score components of pull requests, issues and TODOs from scan facts (skill `scoring.py`, `todos.py`
 //! `score_row`, `score.py` `heuristic_part`).
 
-use contracts::api::dashboard::{PartSource, PartStatus, ScoreComponent as C};
+use contracts::api::dashboard::{ExclusionReason, PartSource, PartStatus, ScoreComponent as C};
 use contracts::time::Timestamp;
 
 use super::facts::{
@@ -225,7 +225,8 @@ fn milestone_part(milestone: &Milestone, context: &MilestoneContext) -> Part {
 /// Whether the item is ranked, with the reason; `confirmed` is false when the LLM should check it (plan Q3).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Eligibility {
-    pub eligible: bool,
+    /// The rule that leaves the item out; `None` when eligible.
+    pub excluded_by: Option<ExclusionReason>,
     pub reason: String,
     pub confirmed: bool,
 }
@@ -233,15 +234,15 @@ pub(super) struct Eligibility {
 impl Eligibility {
     fn yes(reason: &str) -> Self {
         Self {
-            eligible: true,
+            excluded_by: None,
             reason: reason.into(),
             confirmed: true,
         }
     }
 
-    fn no(reason: String) -> Self {
+    fn no(rule: ExclusionReason, reason: String) -> Self {
         Self {
-            eligible: false,
+            excluded_by: Some(rule),
             reason,
             confirmed: true,
         }
@@ -250,9 +251,12 @@ impl Eligibility {
 
 /// An excluded author's item is always left out (K7), whatever its relation to the user.
 fn skipped(rules: &ScoreRules, author: Option<&str>) -> Option<Eligibility> {
-    author
-        .filter(|a| rules.is_skipped_author(a))
-        .map(|a| Eligibility::no(format!("author @{a} is excluded")))
+    author.filter(|a| rules.is_skipped_author(a)).map(|a| {
+        Eligibility::no(
+            ExclusionReason::ExcludedAuthor,
+            format!("author @{a} is excluded"),
+        )
+    })
 }
 
 /// Skill `pr_eligibility` with the excluded authors (K7) and per-repository ownership policies (K4).
@@ -262,7 +266,10 @@ pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
         return no;
     }
     if pr.is_draft && !rules.is_scanned(author) {
-        return Eligibility::no(format!("draft by @{author} (only our own drafts count)"));
+        return Eligibility::no(
+            ExclusionReason::Draft,
+            format!("draft by @{author} (only our own drafts count)"),
+        );
     }
     // The ownership policy filters only what is not directed at the user (D19): authored by, assigned to or a
     // review requested directly from a scanned login. A team-only request stays filtered: like human waiting, the
@@ -282,12 +289,16 @@ pub(super) fn pr_eligibility(rules: &ScoreRules, pr: &PrFacts) -> Eligibility {
     }
     match pr.owned_change {
         OwnedChange::Significant => Eligibility::yes("significant change in owned paths"),
-        OwnedChange::None => Eligibility::no("no change in owned paths (ownership policy)".into()),
-        OwnedChange::Minor => {
-            Eligibility::no("only a minor change in owned paths (ownership policy)".into())
-        }
+        OwnedChange::None => Eligibility::no(
+            ExclusionReason::OutsideOwnedAreas,
+            "no change in owned paths (ownership policy)".into(),
+        ),
+        OwnedChange::Minor => Eligibility::no(
+            ExclusionReason::OutsideOwnedAreas,
+            "only a minor change in owned paths (ownership policy)".into(),
+        ),
         OwnedChange::Unknown => Eligibility {
-            eligible: true,
+            excluded_by: None,
             reason: "ownership policy unavailable: change in owned paths unverified".into(),
             confirmed: false,
         },

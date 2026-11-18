@@ -30,7 +30,6 @@ describe("EmptyWork", () => {
       <EmptyWork
         checkedAt={snapshot.scanned_at}
         checked={snapshot.checked}
-        excluded={snapshot.excluded}
         awaiting={snapshot.awaiting.length}
         reviewStartHref="/"
         onNavigate={onNavigate}

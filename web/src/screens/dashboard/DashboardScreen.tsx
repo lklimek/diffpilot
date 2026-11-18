@@ -9,6 +9,7 @@ import { RankingBanner } from "../../components/dashboard/ranking-banner/Ranking
 import { RefreshError } from "../../components/dashboard/refresh-error/RefreshError";
 import { Headline, type ChartUnit } from "../../components/dashboard/headline/Headline";
 import { WorkList } from "../../components/dashboard/work-list/WorkList";
+import { ExcludedItems } from "../../components/dashboard/excluded-items/ExcludedItems";
 import { EmptyWork } from "../../components/dashboard/work-list/EmptyWork";
 import { SidePanel } from "../../components/dashboard/side-panel/SidePanel";
 import { WaitingOnOthers } from "../../components/dashboard/waiting-on-others/WaitingOnOthers";
@@ -72,6 +73,9 @@ export function DashboardScreen() {
   }, [snapshot, now]);
 
   const snapshotAt = snapshot?.scanned_at ?? null;
+  const excluded = snapshot && (
+    <ExcludedItems exclusions={snapshot.exclusions} settingsHref={SETTINGS_PATH} onNavigate={go} />
+  );
   const stale = view?.stale && snapshotAt ? clockText(snapshotAt, now) : null;
   const actionErrors = [page.refresh.error, page.cancel.error, page.rankAgain.error].filter(
     (e): e is string => e !== null,
@@ -140,7 +144,7 @@ export function DashboardScreen() {
         <EmptyWork
           checkedAt={snapshot.scanned_at}
           checked={snapshot.checked}
-          excluded={snapshot.excluded}
+          excluded={excluded}
           awaiting={snapshot.awaiting.length}
           reviewStartHref={REVIEW_START_PATH}
           onNavigate={go}
@@ -164,6 +168,7 @@ export function DashboardScreen() {
           keysEnabled={!helpOpen}
           stale={stale ? { at: stale, note: "It is replaced when a scan finishes." } : null}
           todos={snapshot.todos}
+          notice={excluded}
           now={now}
         />
       )}

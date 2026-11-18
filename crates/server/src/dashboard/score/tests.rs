@@ -1544,6 +1544,80 @@ fn alarms_rank_first_and_merges_leave_items_out() {
     );
 }
 
+/// B4: every left-out item names the rule that left it out (one per rule) and, when merged, the item it went into.
+#[test]
+fn every_left_out_item_names_its_rule() {
+    use contracts::api::dashboard::ExclusionReason as R;
+    let r = rules();
+    let score = |facts: PrFacts, judgement: Option<&Judgement>| {
+        score_pr(&r, &facts, judgement, now()).expect("scores")
+    };
+    let mut not_eligible = judged(&JUDGED);
+    not_eligible.eligibility = Some(EligibilityJudgement {
+        eligible: false,
+        reason: "Generated code only.".into(),
+    });
+    let survivor = score(PrFacts { number: 6, ..pr() }, None);
+    let merged = score(PrFacts { number: 5, ..pr() }, None);
+    let items = vec![
+        score(
+            PrFacts {
+                number: 1,
+                author: Some("dependabot".into()),
+                ..pr()
+            },
+            None,
+        ),
+        score(
+            PrFacts {
+                number: 2,
+                owned_change: OwnedChange::Minor,
+                ..undirected()
+            },
+            None,
+        ),
+        score(
+            PrFacts {
+                number: 3,
+                is_draft: true,
+                ..undirected()
+            },
+            None,
+        ),
+        score(
+            PrFacts {
+                number: 4,
+                owned_change: OwnedChange::Unknown,
+                ..undirected()
+            },
+            Some(&not_eligible),
+        ),
+        merged.clone(),
+        Scored {
+            also: vec![merged.key.clone()],
+            ..survivor
+        },
+    ];
+    let ranking = rank(items);
+    let left_out: Vec<_> = ranking
+        .excluded
+        .iter()
+        .map(|e| (e.id.as_str(), e.rule, e.merged_into.as_deref()))
+        .collect();
+    assert_eq!(
+        left_out,
+        [
+            ("wallet-ui#1", R::ExcludedAuthor, None),
+            ("wallet-ui#2", R::OutsideOwnedAreas, None),
+            ("wallet-ui#3", R::Draft, None),
+            ("wallet-ui#4", R::JudgedNotEligible, None),
+            ("wallet-ui#5", R::MergedIntoAnother, Some("wallet-ui#6")),
+        ]
+    );
+    let ranked: Vec<_> = ranking.ranked.iter().map(|i| i.id.as_str()).collect();
+    assert_eq!(ranked, ["wallet-ui#6"]);
+}
+
 #[test]
 fn merge_claims_never_form_cycles() {
     let a = scored(&PrFacts { number: 1, ..pr() });

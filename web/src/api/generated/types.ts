@@ -1018,6 +1018,86 @@ side: LineSide,
 line: number, };
 
 /**
+ * One item the rules left out.
+ */
+export type ExcludedItem = {
+/**
+ * Stable key.
+ */
+key: ItemKey,
+/**
+ * Kind.
+ */
+kind: ItemKind,
+/**
+ * Display id (`PLAT-1203`, `TODO-3fa91c2e`).
+ */
+id: string,
+/**
+ * Repository; null for TODOs.
+ */
+repo: RepoRef | null,
+/**
+ * Number; null for TODOs.
+ */
+number: number | null,
+/**
+ * Link: GitHub, or the MemCan UI for a TODO when configured.
+ */
+url: string | null,
+/**
+ * Title, plain text.
+ */
+title: string,
+/**
+ * Author login; null for TODOs.
+ */
+author: string | null,
+/**
+ * The rule.
+ */
+reason: ExclusionReason,
+/**
+ * Display id of the item it was merged into (`merged_into_another` only).
+ */
+merged_into: string | null, };
+
+/**
+ * How many items one rule left out.
+ */
+export type ExclusionCount = {
+/**
+ * The rule.
+ */
+reason: ExclusionReason,
+/**
+ * Items it left out.
+ */
+count: number, };
+
+/**
+ * The rule that left an item out of the ranking. Clients show an unknown value as a plain "other rule".
+ */
+export type ExclusionReason = "excluded_author" | "outside_owned_areas" | "draft" | "judged_not_eligible" | "merged_into_another";
+
+/**
+ * The items the rules left out of the ranking, counted per reason (facts only, no LLM text).
+ */
+export type Exclusions = {
+/**
+ * All left-out items.
+ */
+total: number,
+/**
+ * Non-zero counts, in the order of [`ExclusionReason`].
+ */
+counts: Array<ExclusionCount>,
+/**
+ * With `?excluded=true` only: the items by reason, then display id, at most [`EXCLUDED_ITEMS_LIMIT`].
+ */
+items?: Array<ExcludedItem>, };
+
+/**
  * A labelled scan fact.
  */
 export type Fact = {
@@ -3089,7 +3169,7 @@ ranked_at: string | null,
  */
 item_counts: ItemCounts,
 /**
- * Items left out of the ranking (drafts of others, skipped bot authors, no owned change).
+ * Items left out of the ranking (`exclusions.total`).
  */
 excluded: number,
 /**
@@ -3115,7 +3195,12 @@ unreachable: Array<string>,
 /**
  * What the scan read before exclusion.
  */
-checked: KindCounts, };
+checked: KindCounts,
+/**
+ * Why the rules left items out, computed with the ranking; absent only from a response without it (a server
+ * older than this field), which the web shows as not recorded.
+ */
+exclusions?: Exclusions, };
 
 /**
  * Whether a source was checked.
@@ -3256,6 +3341,15 @@ impact: Array<ImpactRef>, };
  * State of a scan step.
  */
 export type StepState = "waiting" | "running" | "done" | "failed" | "skipped";
+
+/**
+ * Query of `GET /api/v1/dashboard`.
+ */
+export type SummaryQuery = {
+/**
+ * List the excluded items (`snapshot.exclusions.items`); without it only their counts are sent.
+ */
+excluded?: boolean, };
 
 /**
  * LLM status of an existing GitHub review thread.

@@ -19,7 +19,7 @@ use crate::api::comments::{
 };
 use crate::api::dashboard::{
     DashboardEvent, DashboardSettings, DashboardSettingsView, DashboardSummary, ItemPage,
-    ItemQuery, RefreshStatus, SetTimeZoneRequest,
+    ItemQuery, RefreshStatus, SetTimeZoneRequest, SummaryQuery,
 };
 use crate::api::error::{ApiError, LoginError};
 use crate::api::events::AnalysisEvent;
@@ -69,6 +69,7 @@ pub const API_SCHEMAS: &[ApiSchema] = &[
     api_schema::<MeResponse>("me_response", &[routes::GET_ME]),
     api_schema::<DashboardSummary>("dashboard_summary", &[routes::GET_DASHBOARD]),
     api_schema::<ItemQuery>("item_query", &[]),
+    api_schema::<SummaryQuery>("summary_query", &[]),
     api_schema::<ItemPage>("item_page", &[routes::LIST_DASHBOARD_ITEMS]),
     api_schema::<RefreshStatus>("refresh_status", &[routes::GET_DASHBOARD_REFRESH]),
     api_schema::<DashboardEvent>("dashboard_event", &[routes::DASHBOARD_REFRESH_EVENTS]),
@@ -222,6 +223,7 @@ fn typescript_types() -> Result<String, GenerateError> {
     collector.visit::<SetAskEffortRequest>();
     collector.visit::<DashboardSummary>();
     collector.visit::<ItemQuery>();
+    collector.visit::<SummaryQuery>();
     collector.visit::<ItemPage>();
     collector.visit::<RefreshStatus>();
     collector.visit::<DashboardEvent>();
