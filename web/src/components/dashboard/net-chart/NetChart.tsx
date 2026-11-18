@@ -18,13 +18,13 @@ export interface NetPoint {
   tick: boolean;
 }
 
-/** A point with its net (closed − opened) and the running total since the first point. */
+/** A point with its net (closed − opened) and the cumulative total since the first point. */
 export interface NetRow extends NetPoint {
   net: number;
   running: number;
 }
 
-/** Net and running total of each point. */
+/** Net and cumulative total of each point. */
 export function netRows(points: NetPoint[]): NetRow[] {
   let running = 0;
   return points.map((point) => {
@@ -56,7 +56,7 @@ interface NetChartProps {
 }
 
 /**
- * Net closed − opened per day or week as bars, with the running total as a line (mockup `drawNet`). Hand-written
+ * Net closed − opened per day or week as bars, with the cumulative total as a line (mockup `drawNet`). Hand-written
  * SVG; focusable, ←/→/Home/End read one point into a live region; the same numbers as a table on request.
  */
 export function NetChart({ points, unit }: NetChartProps) {
@@ -97,7 +97,7 @@ export function NetChart({ points, unit }: NetChartProps) {
   const now = unit === "day" ? "today" : "this week";
 
   const describe = (row: NetRow) =>
-    `${row.full}${row.partial ? " (so far)" : ""}: closed ${row.closed}, opened ${row.opened}, net ${signed(row.net)}, running ${signed(row.running)}`;
+    `${row.full}${row.partial ? " (so far)" : ""}: closed ${row.closed}, opened ${row.opened}, net ${signed(row.net)}, cumulative ${signed(row.running)}`;
   const show = (i: number, read: boolean) => {
     setAt(i);
     if (read) setReading(describe(rows[i]!));
@@ -127,7 +127,7 @@ export function NetChart({ points, unit }: NetChartProps) {
         </span>
         <span>
           <i className="mr-1.5 inline-block h-0.5 w-4 rounded-sm bg-text align-[3px]" />
-          running total since the first {unit} shown
+          cumulative total since the first {unit} shown
         </span>
         <span>
           <i className="mr-1.5 inline-block h-3 w-3 rounded-sm border-[1.5px] border-dashed border-c-pos align-[-2px]" />
@@ -141,7 +141,7 @@ export function NetChart({ points, unit }: NetChartProps) {
           viewBox={`0 0 ${width} ${height}`}
           role="img"
           tabIndex={0}
-          aria-label={`Net closed minus opened pull requests per ${unit} for the last ${rows.length} ${unit}s; running total ${signed(last.running)}. Use the left and right arrow keys to read each ${unit}.`}
+          aria-label={`Net closed minus opened pull requests per ${unit} for the last ${rows.length} ${unit}s; cumulative total ${signed(last.running)}. Use the left and right arrow keys to read each ${unit}.`}
           onKeyDown={onKeyDown}
           onFocus={() => show(at ?? rows.length - 1, true)}
           onBlur={() => setAt(null)}
@@ -253,7 +253,7 @@ export function NetChart({ points, unit }: NetChartProps) {
             closed {hover.closed} · opened {hover.opened}
             <br />
             {/* Neutral: the inverted tooltip gives the net tokens under 2.3:1 in both themes. */}
-            net <b>{signed(hover.net)}</b> · running <b>{signed(hover.running)}</b>
+            net <b>{signed(hover.net)}</b> · cumulative <b>{signed(hover.running)}</b>
           </div>
         )}
         <span className="sr-only" aria-live="polite" data-chart-reading>
@@ -287,7 +287,7 @@ export function NetChart({ points, unit }: NetChartProps) {
                 <th scope="col">Closed</th>
                 <th scope="col">Opened</th>
                 <th scope="col">Net</th>
-                <th scope="col">Running</th>
+                <th scope="col">Cumulative</th>
               </tr>
             </thead>
             <tbody>

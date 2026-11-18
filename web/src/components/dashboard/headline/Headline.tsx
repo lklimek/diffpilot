@@ -115,7 +115,7 @@ export function Headline({ figures, days, weeks, unit, onUnitChange, staleNote }
         <div className="flex min-w-0 flex-col gap-1.5">
           <div className="flex flex-wrap items-center gap-2.5">
             <h3 className="text-sm font-semibold">
-              Net per {unit === "day" ? "working day" : "week"}, with running total
+              Net per {unit === "day" ? "working day" : "week"}, with cumulative total
             </h3>
             <span className="flex-1" />
             <Segmented
