@@ -7,8 +7,10 @@
 # unless --no-render is given.
 #
 # With --env-file (production, without --local) FILE's values are checked too, by name only (never printed): no
-# value left from .env.example, secrets set (runner secret at least 32 characters), an https public URL, the skills
-# pinned (SR_RUNNER_CLAUDIUS_REF a commit id or refs/tags/...), trusted reverse proxies set, no development override.
+# value left from .env.example, secrets set (runner secret at least 32 characters), an https public URL, no
+# development override, no `$` interpolation (the effective value would be unknown; variables of the invoking
+# shell also override FILE in compose, so run it from a clean shell). An unpinned SR_RUNNER_CLAUDIUS_REF (not a
+# commit id or refs/tags/...) is a warning only.
 #
 # Usage: deploy/check-production-config.sh [--env-file FILE [--local | --secret-files]] [--no-render]
 #        deploy/check-production-config.sh --self-test [--no-render]
@@ -58,11 +60,14 @@ dev_only='^(SR_SERVER_UID|SR_SERVER_GID|SR_LOCAL_CODEX_HOMES_SIZE|SR_CODEX_HOMES
 agent_uid=10002
 
 # load_env FILE NAME: fills the associative array NAME as docker compose reads an env file (last assignment wins,
-# `export ` prefix, quotes, ` #` comments of unquoted values).
+# `export ` prefix, quotes, ` #` comments); keys whose value compose would interpolate (`$` outside single quotes)
+# go to the global set `interpolated`.
+declare -A interpolated=()
 load_env() {
   local -n into="$2"
   local line key value
   into=()
+  interpolated=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line#"${line%%[![:space:]]*}"}"
     [[ -z "$line" || "$line" == \#* || "$line" != *=* ]] && continue
@@ -71,11 +76,16 @@ load_env() {
     key="${key%"${key##*[![:space:]]}"}"
     value="${line#*=}"
     value="${value#"${value%%[![:space:]]*}"}"
-    if [[ "$value" =~ ^\"(.*)\"[[:space:]]*$ || "$value" =~ ^\'(.*)\'[[:space:]]*$ ]]; then
+    if [[ "$value" =~ ^\'(.*)\'[[:space:]]*(#.*)?$ ]]; then
       value="${BASH_REMATCH[1]}"
     else
-      value="${value%%[[:space:]]#*}"
-      value="${value%"${value##*[![:space:]]}"}"
+      if [[ "$value" =~ ^\"(.*)\"[[:space:]]*(#.*)?$ ]]; then
+        value="${BASH_REMATCH[1]}"
+      else
+        value="${value%%[[:space:]]#*}"
+        value="${value%"${value##*[![:space:]]}"}"
+      fi
+      if [[ "$value" == *\$* ]]; then interpolated["$key"]=1; fi
     fi
     # shellcheck disable=SC2034 # written through the nameref
     into["$key"]="$value"
@@ -122,9 +132,12 @@ check_secret_file() {
 check_env() {
   local -A values=() example=()
   local found=0 key value secrets_dir
-  load_env "$1" values
-  load_env "$2" example
   say() { echo "check-production-config: $*" >&2; found=1; }
+  load_env "$1" values
+  for key in "${!interpolated[@]}"; do
+    say "$key uses \$ interpolation, so this check cannot see the value compose uses; write it literally (single quotes keep a \$)"
+  done
+  load_env "$2" example
   for key in "${!values[@]}"; do
     if [[ "${values[$key]}" == *REPLACE* ]]; then say "$key still holds a placeholder (REPLACE...)"; fi
     if [[ "$key" =~ $dev_only || "$key" =~ ^($forbidden)$ ]]; then
@@ -143,12 +156,10 @@ check_env() {
   if [[ ! "${values[SR_PUBLIC_URL]:-}" =~ ^https://[^/?#]+ ]]; then
     say "SR_PUBLIC_URL must be an https:// URL (the reverse proxy's public name; Secure cookies)"
   fi
-  if [[ -z "${values[SR_TRUSTED_PROXIES]:-}" ]]; then
-    say "SR_TRUSTED_PROXIES is empty: set the reverse proxy's address (docs/runbook.md, First deploy step 8)"
-  fi
   value="${values[SR_RUNNER_CLAUDIUS_REF]:-}"
   if [[ ! "$value" =~ ^([0-9a-f]{40}|[0-9a-f]{64}|refs/tags/[A-Za-z0-9._/-]+)$ ]]; then
-    say "SR_RUNNER_CLAUDIUS_REF must pin the agent's skills: a commit id (40 hex) or refs/tags/<tag>, not a branch"
+    echo "check-production-config: warning: SR_RUNNER_CLAUDIUS_REF is not pinned (unset means main): the agent's" \
+      "skills follow every push; a commit id (40 hex) or refs/tags/<tag> is recommended" >&2
   fi
   if ((${3})); then
     secrets_dir="${values[SR_SECRETS_DIR]:-/srv/smart-review/secrets}"
@@ -242,6 +253,10 @@ if ((self_test)); then
     out="$(check_env "$tmp/case.env" "$repo/.env.example" "$as_files" 2>&1)" || got=fail
     [[ "$got" == "$want" ]] || { echo "self-test: env case '$name': expected $want, got $got: $out" >&2; exit 1; }
     if grep -q CANARY <<< "$out"; then echo "self-test: env case '$name' printed a secret value" >&2; exit 1; fi
+    if [[ -n "${want_text:-}" ]] && ! grep -qF -- "$want_text" <<< "$out"; then
+      echo "self-test: env case '$name' did not say '$want_text': $out" >&2
+      exit 1
+    fi
   }
   env_case "complete production env" pass 0 -e ''
   env_case "quoted values" pass 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL="https://review.test.invalid"|'
@@ -252,9 +267,18 @@ if ((self_test)); then
   env_case "http public URL" fail 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL=http://review.test.invalid|'
   env_case "empty secret" fail 0 -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=|'
   env_case "short runner secret" fail 0 -e 's|^SR_RUNNER_SECRET=.*|SR_RUNNER_SECRET=CANARY-0123456789abcdef0123456|'
-  env_case "skills on a branch" fail 0 -e 's|^SR_RUNNER_CLAUDIUS_REF=.*|SR_RUNNER_CLAUDIUS_REF=main|'
-  env_case "skills ref unset" fail 0 -e '/^SR_RUNNER_CLAUDIUS_REF=/d'
-  env_case "no trusted proxy" fail 0 -e 's|^SR_TRUSTED_PROXIES=.*|SR_TRUSTED_PROXIES=|'
+  want_text="warning: SR_RUNNER_CLAUDIUS_REF" env_case "skills on a branch (warning only)" pass 0 \
+    -e 's|^SR_RUNNER_CLAUDIUS_REF=.*|SR_RUNNER_CLAUDIUS_REF=main|'
+  want_text="warning: SR_RUNNER_CLAUDIUS_REF" env_case "skills ref unset (warning only)" pass 0 \
+    -e '/^SR_RUNNER_CLAUDIUS_REF=/d'
+  env_case "no trusted proxy (ignored with https)" pass 0 -e 's|^SR_TRUSTED_PROXIES=.*|SR_TRUSTED_PROXIES=|'
+  env_case "quoted value with a comment" pass 0 \
+    -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL="https://review.test.invalid" # public name|'
+  env_case "single-quoted value is literal" pass 0 -e "s|^SR_MEMCAN_TOKEN=.*|SR_MEMCAN_TOKEN='CANARY-\\\${literal}'|"
+  # shellcheck disable=SC2016 # a literal ${...} for the env file
+  env_case "interpolated secret" fail 0 -e 's|^SR_SECRET_KEY=.*|SR_SECRET_KEY=${SR_UNSET_IN_SELF_TEST}|'
+  # shellcheck disable=SC2016 # a literal ${...} for the env file
+  env_case "interpolated public URL" fail 0 -e 's|^SR_PUBLIC_URL=.*|SR_PUBLIC_URL="https://${SR_UNSET_IN_SELF_TEST}"|'
   env_case "host-uid override variable" fail 0 -e "\$a SR_SERVER_UID=1000"
   env_case "dev switch" fail 0 -e "\$a SR_RUNNER_DEV_NO_ISOLATION=1"
   env_case "local override in COMPOSE_FILE" fail 0 -e "\$a COMPOSE_FILE=deploy/compose.yaml:deploy/compose.local.yaml"
