@@ -15,10 +15,11 @@ use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 use chrono::{TimeDelta, Utc};
+use contracts::agent::ask::AskOutput;
 use contracts::api::analyses::{AnalysisState, AnalysisSummary};
 use contracts::api::events::AnalysisEvent;
 use contracts::api::questions::{AskQuestion, AskRequest};
-use contracts::ids::{AnalysisId, QuestionId, StepId};
+use contracts::ids::{AnalysisId, JobId, QuestionId, StepId};
 use db::error::DbError;
 use db::repo::analyses::{AnalysisRecord, SessionState};
 use db::repo::questions::{Asked, NewQuestion, QuestionLimits, QuestionUpdate};
@@ -173,6 +174,55 @@ fn superseded(record: &AnalysisRecord) -> bool {
         record.session_state,
         SessionState::DropRequested | SessionState::Dropped
     )
+}
+
+/// Stores and publishes a ready answer of `job` unless the question was cancelled meanwhile (analysis cancelled,
+/// PR session removed, or the job flagged): checked under the analysis's update lock, the one Cancel writes
+/// under, so no answer appears after it. `None` when it is not shown.
+async fn publish_provisional(
+    state: &AppState,
+    analysis: AnalysisId,
+    question: QuestionId,
+    job: JobId,
+    answer: AskOutput,
+) -> Result<Option<AskQuestion>, DbError> {
+    let db = &state.db;
+    let event = state
+        .progress
+        .update(analysis, || async {
+            let record = db.analyses().get(analysis).await?;
+            let job_cancelled = match db.jobs().get(job).await {
+                Ok(job) => job.cancel_requested,
+                // An executor that keeps its jobs elsewhere: the analysis decides alone.
+                Err(DbError::NotFound) => false,
+                Err(error) => return Err(Some(error)),
+            };
+            if matches!(record.state, AnalysisState::Cancelled)
+                || superseded(&record)
+                || job_cancelled
+            {
+                return Err(None);
+            }
+            let now = Utc::now();
+            db.questions()
+                .update(question, &QuestionUpdate::Provisional(answer), now)
+                .await?;
+            let record = db.questions().get(question, now).await?;
+            Ok(AnalysisEvent::Question {
+                question: record.question,
+            })
+        })
+        .await;
+    match event {
+        Ok(AnalysisEvent::Question { question }) => Ok(Some(question)),
+        Ok(AnalysisEvent::Analysis { .. } | AnalysisEvent::Heartbeat { .. }) => {
+            Err(DbError::Corrupt {
+                column: "question event",
+            })
+        }
+        Err(None) => Ok(None),
+        Err(Some(error)) => Err(error),
+    }
 }
 
 /// Stores a state change of `question` and publishes it under the analysis's update lock.

@@ -107,6 +107,15 @@ macro_rules! columns {
     };
 }
 
+/// The latest pause end (after `?1`, now) among the credentials of the analysis's waiting pipeline jobs.
+macro_rules! credential_pause {
+    () => {
+        "(SELECT MAX(c.paused_until) FROM jobs j JOIN llm_credentials c ON c.id=j.credential_id
+          WHERE j.analysis_id=analyses.id AND j.round=analyses.round AND j.kind<>'ask' AND j.state='queued'
+            AND julianday(c.paused_until)>julianday(?1))"
+    };
+}
+
 /// `AnalysisState` spread over its columns.
 struct StateColumns {
     state: &'static str,
@@ -185,6 +194,7 @@ fn state_from_row(row: &SqliteRow) -> Result<AnalysisState, DbError> {
         "running" => AnalysisState::Running {
             done: row.try_get("flows_done")?,
             total: total.ok_or(corrupt)?,
+            idle: false,
             stage: None,
         },
         "paused" => AnalysisState::Paused {
@@ -272,7 +282,8 @@ fn record_from_row(row: &SqliteRow) -> Result<AnalysisRecord, DbError> {
 }
 
 impl Analyses<'_> {
-    /// Creates an analysis in state `planning`; `Conflict` if a live one exists for the head and language.
+    /// Creates an analysis in state `planning` with background analysis off (flows are analysed on request);
+    /// `Conflict` if a live one exists for the head and language.
     pub async fn create(
         &self,
         analysis: NewAnalysis,
@@ -280,8 +291,8 @@ impl Analyses<'_> {
     ) -> Result<AnalysisRecord, DbError> {
         sqlx::query(
             "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by,
-                 created_at)
-             VALUES (?, ?, ?, ?, ?, ?, 'planning', ?, ?)",
+                 created_at, background_analysis)
+             VALUES (?, ?, ?, ?, ?, ?, 'planning', ?, ?, 0)",
         )
         .bind(analysis.id.to_string())
         .bind(&analysis.tenant_id)
@@ -339,6 +350,12 @@ impl Analyses<'_> {
         {
             *stage = self.live_stage(id).await?;
         }
+        if let AnalysisState::Running { idle, .. } = &mut record.state {
+            let db = super::Db {
+                pool: self.pool.clone(),
+            };
+            *idle = db.flow_work().parked(id).await?;
+        }
         let mut summary = AnalysisSummary {
             review_ready: Some(sqlx::query_scalar("SELECT state <> 'cancelled' AND EXISTS(SELECT 1 FROM documents WHERE analysis_id=a.id AND kind='plan' AND key='') AND EXISTS(SELECT 1 FROM documents WHERE analysis_id=a.id AND kind='pr_context' AND key='') FROM analyses a WHERE id=?").bind(id.to_string()).fetch_one(self.pool).await?),
             background_analysis: Some(sqlx::query_scalar("SELECT background_analysis FROM analyses WHERE id=?").bind(id.to_string()).fetch_one(self.pool).await?),
@@ -371,10 +388,17 @@ impl Analyses<'_> {
         self.add_progress(&mut summary).await?;
         let awaiting_retry: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM flow_work WHERE analysis_id=? AND error IS NOT NULL AND requested_at IS NULL)")
             .bind(id.to_string()).fetch_one(self.pool).await?;
-        if (summary.background_analysis == Some(false) || awaiting_retry)
-            && let Some(progress) = &mut summary.progress
-        {
-            progress.estimate = None;
+        // With flows on request the wait ends when the review is ready: no whole-run figure afterwards.
+        let on_request = summary.background_analysis == Some(false)
+            && summary.review_ready == Some(true)
+            && !matches!(summary.state, AnalysisState::Finished { .. });
+        if let Some(progress) = &mut summary.progress {
+            if on_request || awaiting_retry {
+                progress.estimate = None;
+            }
+            if on_request {
+                progress.percent = None;
+            }
         }
         Ok(summary)
     }
@@ -432,7 +456,8 @@ impl Analyses<'_> {
         }))
     }
 
-    /// The newest analysis of a pull request in a language, any head and state.
+    /// The analysis of a pull request a reader is shown, any head: usable ones (not cancelled; a failed one can be
+    /// retried) before cancelled ones, then `language` before another, then the newest.
     pub async fn latest_for_pr(
         &self,
         pull_request_id: i64,
@@ -441,8 +466,8 @@ impl Analyses<'_> {
         let row = sqlx::query(concat!(
             "SELECT ",
             columns!(),
-            " FROM analyses a WHERE a.pull_request_id = ? AND a.language = ?
-             ORDER BY a.created_at DESC, a.rowid DESC LIMIT 1"
+            " FROM analyses a WHERE a.pull_request_id = ?
+             ORDER BY a.state <> 'cancelled' DESC, a.language = ? DESC, a.created_at DESC, a.rowid DESC LIMIT 1"
         ))
         .bind(pull_request_id)
         .bind(wire_name(language)?)
@@ -467,8 +492,9 @@ impl Analyses<'_> {
     }
 
     /// Starts a new round of a failed analysis (explicit Retry): state `planning` and the round incremented, and in
-    /// the same transaction every unfinished job of earlier rounds cancelled (queued and paused ones at once,
-    /// claimed and running ones flagged), so no submit of the new round re-uses them; a `not_checked` MemCan profile
+    /// the same transaction every unfinished pipeline job of earlier rounds cancelled (queued and paused ones at
+    /// once, claimed and running ones flagged), so no submit of the new round re-uses them; `ask` jobs are left
+    /// alone (a question does not depend on the failed work); a `not_checked` MemCan profile
     /// lookup is deleted too, so the new round looks the profile up again. `false` when the analysis is not failed
     /// (nothing changed).
     pub async fn retry(&self, id: AnalysisId, now: DateTime<Utc>) -> Result<bool, DbError> {
@@ -486,7 +512,7 @@ impl Analyses<'_> {
             return Ok(false);
         }
         let waiting: Vec<(String, u32)> = sqlx::query_as(
-            "SELECT id, attempt FROM jobs WHERE analysis_id = ? AND state IN ('queued', 'paused')",
+            "SELECT id, attempt FROM jobs WHERE analysis_id = ? AND kind <> 'ask' AND state IN ('queued', 'paused')",
         )
         .bind(id.to_string())
         .fetch_all(&mut *tx)
@@ -506,7 +532,8 @@ impl Analyses<'_> {
             .await?;
         }
         sqlx::query(
-            "UPDATE jobs SET cancel_requested = 1 WHERE analysis_id = ? AND state IN ('claimed', 'running')",
+            "UPDATE jobs SET cancel_requested = 1
+             WHERE analysis_id = ? AND kind <> 'ask' AND state IN ('claimed', 'running')",
         )
         .bind(id.to_string())
         .execute(&mut *tx)
@@ -547,15 +574,19 @@ impl Analyses<'_> {
             .bind(login).bind(ts(now)).bind(id.to_string()).execute(self.pool).await?.rows_affected() > 0)
     }
 
-    /// Clears only the user pause; a job's provider-limit gate remains in force.
+    /// Clears only the user pause; the provider-limit gate remains in force: a paused job of the analysis, or a
+    /// waiting pipeline job whose credential is paused (by any job), keeps the analysis `paused` until that time.
     pub async fn resume_by_user(
         &self,
         id: AnalysisId,
         now: DateTime<Utc>,
     ) -> Result<bool, DbError> {
-        Ok(sqlx::query("UPDATE analyses SET user_paused_at=NULL, user_paused_by=NULL,
-            state=CASE WHEN EXISTS (SELECT 1 FROM jobs j WHERE j.analysis_id=analyses.id AND j.round=analyses.round AND j.state='paused' AND (j.resumes_at IS NULL OR julianday(j.resumes_at)>julianday(?))) THEN 'paused' WHEN flows_total IS NULL THEN 'planning' ELSE 'running' END
-            WHERE id=? AND user_paused_at IS NOT NULL AND state='paused'")
+        Ok(sqlx::query(concat!(
+            "UPDATE analyses SET user_paused_at=NULL, user_paused_by=NULL,
+            paused_until=COALESCE(", credential_pause!(), ", paused_until),
+            state=CASE WHEN EXISTS (SELECT 1 FROM jobs j WHERE j.analysis_id=analyses.id AND j.round=analyses.round AND j.state='paused' AND (j.resumes_at IS NULL OR julianday(j.resumes_at)>julianday(?1)))
+                OR ", credential_pause!(), " IS NOT NULL THEN 'paused' WHEN flows_total IS NULL THEN 'planning' ELSE 'running' END
+            WHERE id=?2 AND user_paused_at IS NOT NULL AND state='paused'"))
             .bind(ts(now)).bind(id.to_string()).execute(self.pool).await?.rows_affected() > 0)
     }
 
@@ -719,7 +750,8 @@ pub mod testing {
         Ok(HeldConnection(db.pool.acquire().await?))
     }
 
-    /// Inserts a user, the repository `acme/node-client`, PR #482 (once) and a new `planning` analysis of it.
+    /// Inserts a user, the repository `acme/node-client`, PR #482 (once) and a new `planning` analysis of it with
+    /// background analysis off, as created in production (flows run on request).
     pub async fn seed_analysis(db: &Db) -> Result<AnalysisId, DbError> {
         let id = AnalysisId::new_random();
         sqlx::raw_sql(
@@ -735,8 +767,8 @@ pub mod testing {
         .await?;
         sqlx::query(
             "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by,
-                 created_at)
-             VALUES (?, ?, 1, ?, ?, 'en', 'planning', 'u1', '2026-11-16T00:00:00.000000Z')",
+                 created_at, background_analysis)
+             VALUES (?, ?, 1, ?, ?, 'en', 'planning', 'u1', '2026-11-16T00:00:00.000000Z', 0)",
         )
         .bind(id.to_string())
         .bind(DEFAULT_TENANT)
@@ -826,6 +858,22 @@ mod tests {
             language: LlmLanguage::Pl,
             created_by: "u1".to_owned(),
         }
+    }
+
+    /// Nothing is analysed until the user asks: a new analysis has background analysis off, whatever the
+    /// column's default.
+    #[tokio::test]
+    async fn new_analysis_starts_with_background_analysis_off() {
+        let db = db().await;
+        seed_analysis(&db).await.expect("seed");
+        let created = db
+            .analyses()
+            .create(new_analysis("a"), at(1))
+            .await
+            .expect("create");
+        assert!(!db.flow_work().background(created.id).await.expect("read"));
+        let summary = db.analyses().summary(created.id).await.expect("summary");
+        assert_eq!(summary.background_analysis, Some(false));
     }
 
     #[tokio::test]
@@ -985,6 +1033,7 @@ mod tests {
                 AnalysisState::Running {
                     done: 2,
                     total: 5,
+                    idle: false,
                     stage: None,
                 },
                 false,
@@ -1095,6 +1144,70 @@ mod tests {
                 .await
                 .expect("none"),
             None
+        );
+    }
+
+    /// The lookup shows a pull request's analysis whatever language it was made in, and prefers the asked one.
+    #[tokio::test]
+    async fn latest_for_pr_prefers_the_language_and_falls_back_to_another() {
+        let db = &db().await;
+        let english = seed_analysis(db).await.expect("seed");
+        let latest = |language| async move {
+            db.analyses()
+                .latest_for_pr(1, language)
+                .await
+                .expect("latest")
+                .map(|record| record.id)
+        };
+        assert_eq!(latest(LlmLanguage::En).await, Some(english));
+        assert_eq!(
+            latest(LlmLanguage::Pl).await,
+            Some(english),
+            "no analysis in the asked language: the one that exists"
+        );
+        let polish = db
+            .analyses()
+            .create(new_analysis("b"), at(1))
+            .await
+            .expect("create");
+        assert_eq!(polish.language, LlmLanguage::Pl);
+        assert_eq!(latest(LlmLanguage::Pl).await, Some(polish.id));
+        assert_eq!(
+            latest(LlmLanguage::En).await,
+            Some(english),
+            "the older one in the asked language"
+        );
+        db.analyses()
+            .set_state(polish.id, &AnalysisState::Cancelled, at(2))
+            .await
+            .expect("cancel");
+        assert_eq!(
+            latest(LlmLanguage::Pl).await,
+            Some(english),
+            "a usable analysis in another language before a cancelled one in the asked language"
+        );
+        let failed = AnalysisState::Failed {
+            reason: None,
+            flow: None,
+            message: "The analysis stopped because of a server error. Retry the analysis.".into(),
+        };
+        db.analyses()
+            .set_state(english, &failed, at(3))
+            .await
+            .expect("fail");
+        assert_eq!(
+            latest(LlmLanguage::Pl).await,
+            Some(english),
+            "a failed analysis can be retried: it is usable"
+        );
+        db.analyses()
+            .set_state(english, &AnalysisState::Cancelled, at(4))
+            .await
+            .expect("cancel");
+        assert_eq!(
+            latest(LlmLanguage::Pl).await,
+            Some(polish.id),
+            "only cancelled ones: the asked language"
         );
     }
 
@@ -1284,6 +1397,7 @@ mod tests {
                 &AnalysisState::Running {
                     done: 0,
                     total: 2,
+                    idle: false,
                     stage: None,
                 },
                 at(3),
@@ -1369,6 +1483,7 @@ mod tests {
                 &AnalysisState::Running {
                     done: 0,
                     total: 1,
+                    idle: false,
                     stage: None,
                 },
                 at(2),
@@ -1394,6 +1509,7 @@ mod tests {
                 &AnalysisState::Running {
                     done: 1,
                     total: 3,
+                    idle: false,
                     stage: None,
                 },
                 at(2),
@@ -1408,7 +1524,8 @@ mod tests {
             AnalysisState::Running {
                 done: 1,
                 total: 3,
-                stage: None
+                idle: false,
+                stage: None,
             }
         );
         assert_eq!(summary.pr.repo.owner, "acme");
@@ -1423,6 +1540,73 @@ mod tests {
             db.analyses().summary(AnalysisId::new_random()).await,
             Err(DbError::NotFound)
         ));
+    }
+
+    /// Resume keeps the usage-limit pause of the shared credential: the analysis shows it with its reset time
+    /// instead of an active state in which nothing can run.
+    #[tokio::test]
+    async fn resume_keeps_the_usage_limit_pause_of_the_shared_credential() {
+        let db = db().await;
+        let id = seed_analysis(&db).await.expect("seed");
+        enqueue(&db, id, JobStage::Plan { batch: 1 }, JobKind::Plan, 0).await;
+        db.llm_credentials()
+            .register(
+                "default",
+                &testing::job_spec(id, JobKind::Plan).credential,
+                true,
+                at(0),
+            )
+            .await
+            .expect("credential");
+        // Another analysis's job hit the limit of the credential both use.
+        db.llm_credentials()
+            .pause(testing::CREDENTIAL, at(50))
+            .await
+            .expect("pause");
+        assert!(
+            db.analyses()
+                .pause_by_user(id, "alice", at(1))
+                .await
+                .expect("pause")
+        );
+        assert!(
+            db.analyses()
+                .resume_by_user(id, at(2))
+                .await
+                .expect("resume")
+        );
+        let summary = db.analyses().summary(id).await.expect("summary");
+        assert!(
+            matches!(
+                summary.state,
+                AnalysisState::Paused {
+                    reason: Some(contracts::api::analyses::PauseReason::UsageLimit),
+                    resumes_at: Some(until),
+                    ..
+                } if until == at(50)
+            ),
+            "{:?}",
+            summary.state
+        );
+        // Once the limit has reset, Resume shows the active state.
+        assert!(
+            db.analyses()
+                .pause_by_user(id, "alice", at(51))
+                .await
+                .expect("pause")
+        );
+        assert!(
+            db.analyses()
+                .resume_by_user(id, at(52))
+                .await
+                .expect("resume")
+        );
+        let summary = db.analyses().summary(id).await.expect("summary");
+        assert!(
+            matches!(summary.state, AnalysisState::Planning { .. }),
+            "{:?}",
+            summary.state
+        );
     }
 }
 

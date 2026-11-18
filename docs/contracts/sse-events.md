@@ -48,8 +48,11 @@
   that subscriber's saved review state. Neither flag is reused across subscribers. Projection failure closes
   the stream for a fresh reconnect; it never emits an event with another reader's ownership.
 - Activity events of jobs (commands, tool calls) are not forwarded to the browser (brief: no feed).
-- `heartbeat {at}`: server time, every 15 s while the stream is open (first 15 s after connect; no database read),
-  so the client can tell an open but silent stream from a dead one. It replaces the former keep-alive comment.
+- `heartbeat {at}`: server time, every 15 s while the stream is open (first 15 s after connect), so the client
+  can tell an open but silent stream from a dead one. It replaces the former keep-alive comment. Each tick
+  checks the stream's session again (one indexed read: sign-out, expiry, idle timeout, allow-list removal); the
+  stream ends at the first tick after the session ended, and the browser's reconnect gets 401.
+- The server's stop signal ends every open stream, so a graceful shutdown does not wait for the browsers.
   Events carry no secrets and no raw agent output (summaries only).
 
 Question snapshots are queried by user. Live foreign question events are skipped, without closing the stream
@@ -58,4 +61,7 @@ or emitting counts/author markers. The shared broadcast stays server-internal; n
 Lazy review reuses `analysis` snapshots: `review_ready` becomes true after accepted plan and PR context,
 and each accepted flow, flow failure, demand or background-switch change publishes a snapshot. The client
 refetches the Tour to read `Flow.analysis_status` and new steps. Cancel sets `review_ready` false and also
-invalidates the partial Tour. No extra polling or replay protocol is added; reconnect snapshots resynchronise it.
+invalidates the partial Tour. `state.idle` of a running analysis (`http-api.md`) is part of the snapshot: a
+snapshot is sent whenever it changes (the driver ends without admitted flow work; a flow request or background
+analysis on admits work again), so an open page needs no polling to show that nothing is being analysed.
+No extra polling or replay protocol is added; reconnect snapshots resynchronise it.

@@ -118,7 +118,7 @@ async fn run(dotenv: Result<PathBuf, dotenvy::Error>) -> Result<(), StartError> 
         .await
         .map_err(StartError::ResumeQuestions)?;
 
-    let (stop, stopped) = watch::channel(false);
+    let (stop, stopped) = (state.stopping.clone(), state.stopping.subscribe());
     tokio::spawn(async move {
         shutdown_signal().await;
         // Both servers may already be gone; nothing to notify then.

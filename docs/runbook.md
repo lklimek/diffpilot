@@ -529,10 +529,24 @@ job seconds (`plan_seconds`, `pr_context_seconds`, `flow_seconds`, `ask_seconds`
 `total_seconds`, the usage totals/report count, and `initial_estimate_seconds` when known. It includes
 all rounds; wall time includes pauses. Cancelled or failed jobs without a finish timestamp contribute
 no execution duration. It is a snapshot at the transition: later Ask jobs and late runner completion
-after cancellation remain visible in usage summaries but cannot change this single event.
+after cancellation remain visible in usage summaries but cannot change this single event. Each time the
+driver of an open review ends without admitted flow work (background analysis off and nothing requested, or
+the remaining flows failed for good) it emits an `analysis parked` info event with the same fields for the run
+so far, without `total_seconds`; an analysis can log it many times before its one `analysis statistics` event.
+A park releases the in-memory run facts (an analysis whose head moved may stay parked for good): after a park
+the final event carries changed lines/files, agent files and plan batches only when a driver ran again, and
+`initial_estimate_seconds` never (the first `analysis parked` event has it).
+A parked analysis stays `running` for good unless its flows are all analysed or it is cancelled, also after its
+pull request head moved. Server start checks every such analysis for admitted work; with many analyses this can
+add seconds to the start (`resuming unfinished analyses`), but it does not grow memory.
+
+The error line `could not store the ended analysis state` means a driver stopped on an error and the database
+refused the write of `failed` (full disk, read-only file system): the analysis still reads as planning/running
+but no task works on it, and no new driver is started by itself. After the storage problem is fixed, a flow
+request, switching background analysis on, Pause followed by Resume, or a server restart starts a driver again.
 
 The initial estimate is the first pre-start estimate actually returned to the initiating reader for
-that PR head. This small, bounded process-local observation is not persisted; after restart, eviction,
+that PR head; it covers plan and PR context only (flows are analysed on request). This small, bounded process-local observation is not persisted; after restart, eviction,
 or a start without resolve it is absent, never reconstructed as the original prediction. Counts learned
 from diff preparation are also absent if cancellation/failure preceded preparation. Logs contain no
 prompts, answers, PR titles or other source text. No migration or stored-document shape changed.

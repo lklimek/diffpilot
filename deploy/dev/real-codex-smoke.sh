@@ -235,6 +235,10 @@ created="$(api -d "$(jq '{pr: {repo: .pr.repo, number: .pr.number}, head_sha: .p
 id="$(jq -r '.id // empty' <<< "$created")"
 [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || fail "the analysis could not be created" "$created"
 say "analysis $id requested"
+# A new analysis analyses flows on request; the smoke runs every flow, so background analysis goes on.
+background="$(api -X PUT -d '{"enabled":true}' "$url/api/v1/analyses/$id/background")"
+[[ "$(jq -r .background_analysis <<< "$background")" == true ]] ||
+  fail "background analysis could not be switched on" "$background"
 
 last="" started="$(date +%s)"
 while :; do

@@ -4,7 +4,7 @@
 
 use chrono::Utc;
 use contracts::api::analyses::{AnalysisSummary, CreateAnalysisRequest};
-use contracts::api::pr::ResolvePrResponse;
+use contracts::api::pr::{PrSize, ResolvePrResponse, SizeWarning};
 use contracts::common::PrRef;
 use contracts::ids::AnalysisId;
 use db::error::DbError;
@@ -81,7 +81,8 @@ async fn fetch_pull(
     Ok((pull, pr_id))
 }
 
-/// The pull request with the tenant's latest analysis of it in the user's language.
+/// The pull request with the tenant's latest analysis of it ([`db::repo::analyses::Analyses::latest_for_pr`]):
+/// a usable one first, then in the user's language.
 pub async fn resolve(
     state: &AppState,
     session: &Session,
@@ -117,27 +118,34 @@ pub async fn resolve(
             );
             false
         });
-    let size_warning = match pull.size {
-        Some((changed_lines, changed_files)) if changed_lines >= LARGE_PR_LINES => {
-            Some(contracts::api::pr::SizeWarning {
-                changed_lines,
-                changed_files,
-                estimate: state
-                    .db
-                    .analyses()
-                    .estimate_for_size(&session.tenant_id, changed_lines)
-                    .await?,
-            })
+    let size = pull.size.map(|(changed_lines, changed_files)| PrSize {
+        changed_lines,
+        changed_files,
+    });
+    let planning_estimate = match size {
+        Some(size) => {
+            state
+                .db
+                .analyses()
+                .estimate_for_size(&session.tenant_id, size.changed_lines)
+                .await?
         }
-        _ => None,
+        None => None,
     };
-    state.statistics.resolved(
-        session,
-        &pull.summary,
-        size_warning.as_ref().and_then(|warning| warning.estimate),
-    );
+    let size_warning = size
+        .filter(|size| size.changed_lines >= LARGE_PR_LINES)
+        .map(|size| SizeWarning {
+            changed_lines: size.changed_lines,
+            changed_files: size.changed_files,
+            estimate: planning_estimate,
+        });
+    state
+        .statistics
+        .resolved(session, &pull.summary, planning_estimate);
     Ok(ResolvePrResponse {
         size_warning,
+        size,
+        planning_estimate,
         pr: pull.summary,
         commenting_available,
         analysis,

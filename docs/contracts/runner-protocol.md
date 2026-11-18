@@ -54,6 +54,7 @@ the same attempt; 400 malformed body.
 | claimed, running | lease expired, cancel requested | cancelled (never re-claimed) |
 | claimed, running | lease expired, attempts left | queued |
 | claimed, running | lease expired, `attempt ≥ max_attempts` (3) | failed |
+| claimed | the claim's context (session, context pack) cannot be prepared | as a lease expiry: queued with the attempt spent, failed (`internal`) at `max_attempts`, cancelled if requested; nothing was handed out |
 | queued, paused | cancel | cancelled at once |
 | claimed, running | cancel | stays; `cancel_requested` in every ack; ends `cancelled` on any result or at lease expiry |
 
@@ -188,7 +189,9 @@ Durable state only; no in-memory handle is needed after a restart.
   explicit Retry increments `analyses.round` atomically with failed → planning and cancels the earlier round's
   unfinished jobs in the same transaction; jobs are enqueued in the current round and `submit` finds only jobs of
   that round, so a Retry calls the agent again while a restart (same round) re-uses stored outputs. Accepted
-  results of an earlier round are re-used only as verified documents.
+  results of an earlier round are re-used only as verified documents. A flow's retry (automatic or requested)
+  increments the round too; the succeeded jobs of other flows whose repair was postponed move to the new round,
+  so that repair still starts from the stored output.
 - **One job at a time.** The driver submits an analysis's pipeline jobs one at a time, in order: plan batches,
   PR context, then the flows in plan order. The next job is submitted only after the previous result was verified
   and its document stored (or the stage ended), so a claim never overtakes the previous result and every context
@@ -208,8 +211,9 @@ Durable state only; no in-memory handle is needed after a restart.
   result of an earlier generation.
 - **End boundary.** When an analysis fails or is cancelled, the pipeline calls
   `JobExecutor::cancel_analysis(analysis_id)` once. It requests cancellation of every queued, claimed, running or
-  paused job of the analysis, also jobs submitted before a restart (`QueueExecutor`: `Jobs::list_for_analysis`
-  + `Jobs::request_cancel`); the pipeline itself never reads the jobs table.
+  paused pipeline job of the analysis, also jobs submitted before a restart (`QueueExecutor`:
+  `Jobs::list_for_analysis` + `Jobs::request_cancel`). `ask` jobs are cancelled with them only when the analysis
+  is cancelled or its PR session is removed: a failed pipeline and an explicit Retry leave open questions alone.
 - **Result boundary.** `Jobs::complete` stores the result and the state in one transaction, idempotently per
   attempt; a runner retry after a lost reply changes nothing.
 - **Persist boundary.** Verification and `Documents::put` (upsert by analysis, kind and key) run from the
@@ -220,7 +224,10 @@ Durable state only; no in-memory handle is needed after a restart.
   table: a stage with a document is skipped; every other stage is submitted again, which the submit boundary
   answers with the existing live or succeeded job, followed with `JobExecutor::events`; a succeeded result whose
   document is missing is verified again and persisted, or repaired (next generation) if rejected. Because
-  verification is deterministic, this replay reaches the newest generation. Expired leases are handled by
+  verification is deterministic, this replay reaches the newest generation. Flows are otherwise submitted only
+  when admitted (demand, background switch), so the driver first replays every flow with a succeeded job of the
+  current round and no document or failure (`FlowWork::unstored`), whatever the switch says: no new agent call.
+  An analysis with accepted plan and PR context, no admitted flow and nothing to replay gets no driver. Expired leases are handled by
   `Jobs::expire_leases` as usual.
 - **Installation-token revocation.** The encrypted token is stored per (job, attempt) at claim
   (`installation_tokens`). Revocation reads it without removing it (`Jobs::github_token`), calls
