@@ -136,18 +136,26 @@ pub(super) fn candidates(snapshot: &Snapshot) -> Vec<Candidate<'_>> {
         .collect()
 }
 
-/// Judged inputs as hashed: the item as sent without its display id and previous judgement, plus the signals.
+/// Judged inputs as hashed: the item as sent without its display id and previous judgement, and the known parts
+/// without their basis (it may name release tags or a failed lookup, which are no judged inputs), plus the signals.
 #[derive(Serialize)]
 struct Fingerprinted<'a> {
     key: &'a ItemKey,
     kind: ItemKind,
     facts: &'a JudgeFacts,
-    known: &'a [KnownPart],
+    known: Vec<KnownValue>,
     asks: &'a [ScoreComponent],
     asks_eligibility: bool,
     eligibility: &'a Eligibility,
     suggested_merges: &'a [ItemKey],
     signals: &'a score::FingerprintSignals,
+}
+
+/// A known part as fingerprinted: component and points only.
+#[derive(Serialize)]
+struct KnownValue {
+    component: ScoreComponent,
+    points_tenths: Option<i32>,
 }
 
 /// `SHA-256(JUDGE_INPUT_VERSION ‖ JUDGE_PROMPT_VERSION ‖ canonical JSON)` in hex (plan §B.4).
@@ -156,7 +164,14 @@ fn fingerprint(item: &JudgeItem, scored: &Scored) -> String {
         key: &item.key,
         kind: item.kind,
         facts: &item.facts,
-        known: &item.known,
+        known: item
+            .known
+            .iter()
+            .map(|part| KnownValue {
+                component: part.component,
+                points_tenths: part.points_tenths,
+            })
+            .collect(),
         asks: &item.asks,
         asks_eligibility: item.asks_eligibility,
         eligibility: &item.eligibility,
