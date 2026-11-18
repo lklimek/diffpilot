@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ageBuckets, QueueAge } from "../queue-age/QueueAge";
@@ -86,6 +86,26 @@ describe("side panel sections", () => {
     ]);
     // Reviews have no closed or opened count: their own line, not a row under "Closed".
     expect(screen.getByText(/^Reviews given:/)).toHaveTextContent("Reviews given: 5");
+  });
+
+  it("colours yesterday's net by its sign in the summary and the table; counts and zero stay neutral", async () => {
+    const tone = (el: Element | null) =>
+      el?.classList.contains("text-ok") ? "ok" : el?.classList.contains("text-high") ? "high" : "neutral";
+    const { unmount } = render(
+      <Yesterday label="Tue 17 Nov" prs={{ closed: 1, merged: 1, opened: 4 }} reviews={2} />,
+    );
+    const summary = screen.getByText("Yesterday").closest("summary")!;
+    expect(tone(within(summary).getByText("−3"))).toBe("high");
+    await userEvent.click(screen.getByText("Yesterday"));
+    const cells = within(screen.getAllByRole("row")[1]!).getAllByRole("cell");
+    expect(tone(within(cells[2]!).getByText("−3"))).toBe("high");
+    expect([tone(cells[0]!), tone(cells[1]!)]).toEqual(["neutral", "neutral"]);
+    unmount();
+    render(<Yesterday label="Tue 17 Nov" prs={{ closed: 5, merged: 5, opened: 2 }} reviews={2} />);
+    expect(tone(within(screen.getByText("Yesterday").closest("summary")!).getByText("+3"))).toBe("ok");
+    cleanup();
+    render(<Yesterday label="Tue 17 Nov" prs={{ closed: 2, merged: 2, opened: 2 }} reviews={2} />);
+    expect(tone(within(screen.getByText("Yesterday").closest("summary")!).getByText("0"))).toBe("neutral");
   });
 
   it("draws throughput per week as labelled images", async () => {
