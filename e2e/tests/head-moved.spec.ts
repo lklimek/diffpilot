@@ -48,6 +48,8 @@ test("head moved: comment refused with pr_head_changed, Re-analyze, the supersed
   await expect(inspector(page).getByRole("alert")).toContainText(
     "The pull request changed since this analysis. Analyse it again to comment.",
   );
+  // A definite refusal: no Retry that could not succeed, no "may already be in your pending review".
+  await expect(inspector(page).getByRole("button", { name: "Retry" })).toHaveCount(0);
   expect(await pending(page, old)).toEqual([]);
   await checkScreen(page);
 
@@ -66,7 +68,7 @@ test("head moved: comment refused with pr_head_changed, Re-analyze, the supersed
   const fresh = new URL(page.url()).pathname.split("/")[2];
   expect(fresh).not.toBe(old);
   await waitForState(page, fresh, "finished");
-  await page.getByRole("link", { name: "Open review" }).click();
+  await page.getByRole("link", { name: "Resume review" }).click();
   await expect(page.getByRole("banner")).toContainText(moved.slice(0, 7));
   await openStep(page, 1, 2);
   await expect(nav(page).getByRole("button", { name: /^Step 2: .*, reviewed$/ })).toHaveCount(0);

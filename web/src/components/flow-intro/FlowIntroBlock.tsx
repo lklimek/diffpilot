@@ -2,15 +2,18 @@ import { CodeText } from "../section/CodeText";
 import { Tooltip } from "../tooltip/Tooltip";
 import { buttonClass } from "../button/button";
 import { useId } from "react";
-import type { Flow, StepId } from "../../api/generated/types";
+import type { AnalysisState, Flow, StepId } from "../../api/generated/types";
 import { ClassificationLabel, GroupLabel, RiskLabel } from "../badge/LlmLabel";
 import { Section } from "../section/Section";
 import { ReviewToggle } from "../step/ReviewToggle";
 import { reviewedSteps } from "./progress";
+import { flowWorkStatus } from "./status";
 
 interface FlowIntroBlockProps {
   /** The flow. */
   flow: Flow;
+  /** State of the whole analysis: a pending flow says what it waits for. */
+  analysis?: AnalysisState;
   now?: number;
   onRequest?: () => void;
   busy?: boolean;
@@ -28,6 +31,7 @@ const TERM = "pt-0.5 text-[11px] font-semibold tracking-wide text-muted uppercas
 /** Flow introduction block: title, LLM risk, progress, Problem, Change, Before / After example. */
 export function FlowIntroBlock({
   flow,
+  analysis,
   dependencies,
   ticked,
   onSetReviewed,
@@ -43,44 +47,65 @@ export function FlowIntroBlock({
       status.started_at && now !== undefined
         ? Math.max(0, Math.floor((now - Date.parse(status.started_at)) / 60000))
         : null;
+    const work = flowWorkStatus(status, analysis);
     const text =
-      status.state === "analysing"
-        ? `Being analysed${minutes === null ? "" : ` · started ${minutes} min ago`}`
-        : status.state === "queued"
-          ? "Queued"
-          : status.state === "failed"
-            ? "Failed — Retry"
-            : "Not analysed yet";
+      work.text === "Being analysed" && minutes !== null
+        ? `${work.text} · started ${minutes} min ago`
+        : work.text;
     return (
-      <article aria-labelledby={headingId}>
-        <h2 id={headingId}>
-          {flow.position} {llm.title}
-        </h2>
-        <ClassificationLabel value={llm.classification} />
-        <p>{flow.planned?.intent}</p>
-        {flow.planned && <p>Plan rank: {flow.planned.importance_rank} (LLM)</p>}
-        <p role="status">{text}</p>
-        <p>These changes have not been assessed. The plan is an LLM grouping, not a finding of safety.</p>
-        {status.message && <p>{status.message}</p>}
-        <ul>
-          {flow.planned?.ranges.map((r, i) => (
-            <li key={i}>
-              {r.file} ({r.side}): {r.ranges.map((n) => `${n.start_line}–${n.end_line}`).join(", ")}
-            </li>
-          ))}
-        </ul>
-        {onRequest && status.state !== "analysing" && (
-          <Tooltip tip="Prioritises this flow after the running job; opening a pending flow also requests it.">
-            <button
-              type="button"
-              aria-disabled={busy || undefined}
-              className={buttonClass("plain")}
-              onClick={() => !busy && onRequest()}
-            >
-              {status.state === "failed" ? "Retry this flow" : "Analyse this flow now"}
-            </button>
-          </Tooltip>
-        )}
+      <article aria-labelledby={headingId} className="grid gap-3.5">
+        <header className="rounded-lg border border-l-[6px] border-border border-l-mv-bd bg-surface px-4 py-3">
+          <h2 id={headingId} className="flex flex-wrap items-center gap-2 text-[17px] font-bold">
+            <span className="font-mono text-[15px] text-muted">{flow.position}</span> {llm.title}
+          </h2>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <ClassificationLabel value={llm.classification} />
+            <Tooltip tip={work.tip}>
+              <span role="status" tabIndex={0} className="cursor-help text-[12.5px] font-semibold">
+                {text}
+              </span>
+            </Tooltip>
+          </div>
+        </header>
+        <Section title="LLM plan" tone="llm">
+          <p className="text-[13px]">
+            These changes have not been assessed. The plan is an LLM grouping, not a finding of safety.
+          </p>
+          {status.message && <p className="text-[13px]">{status.message}</p>}
+          {flow.planned && (
+            <dl className="m-0 grid grid-cols-1 gap-x-3 gap-y-1.5 text-[13px] sm:grid-cols-[minmax(10rem,auto)_1fr]">
+              <dt className={TERM}>Intent</dt>
+              <dd className="m-0 max-w-[100ch]">
+                <CodeText text={flow.planned.intent} />
+              </dd>
+              <dt className={TERM}>Plan rank</dt>
+              <dd className="m-0">{flow.planned.importance_rank}</dd>
+              <dt className={TERM}>Planned lines</dt>
+              <dd className="m-0">
+                <ul className="m-0 list-none p-0">
+                  {flow.planned.ranges.map((r, i) => (
+                    <li key={i}>
+                      <code>{r.file}</code>: {r.side === "base" ? "removed lines" : "lines"}{" "}
+                      {r.ranges.map((n) => `${n.start_line}–${n.end_line}`).join(", ")}
+                    </li>
+                  ))}
+                </ul>
+              </dd>
+            </dl>
+          )}
+          {onRequest && status.state !== "analysing" && (
+            <Tooltip tip="Prioritises this flow after the running job; opening a pending flow also requests it.">
+              <button
+                type="button"
+                aria-disabled={busy || undefined}
+                className={buttonClass("plain")}
+                onClick={() => !busy && onRequest()}
+              >
+                {status.state === "failed" ? "Retry this flow" : "Analyse this flow now"}
+              </button>
+            </Tooltip>
+          )}
+        </Section>
       </article>
     );
   }

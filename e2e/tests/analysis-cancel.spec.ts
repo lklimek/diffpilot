@@ -18,7 +18,7 @@ test("cancel while planning: Home says the analysis was cancelled, with the URL 
   const id = await analyze(page);
   await expect(page.getByText("Planning flows…")).toBeVisible();
   await expect(progress(page)).not.toHaveAttribute("aria-valuenow", /.*/);
-  await expect(page.getByRole("link", { name: "Open review" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Resume review" })).toHaveCount(0);
   await checkScreen(page);
 
   await page.getByRole("button", { name: "Cancel analysis" }).click();
@@ -48,7 +48,7 @@ test("failure before any flow: plain description; Retry runs a new round to the 
   const id = await analyze(page);
   await waitForState(page, id, "failed");
   await expect(page.getByText("The analysis failed before any flow was planned")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open review" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Resume review" })).toHaveCount(0);
   await checkScreen(page);
 
   await page.getByRole("button", { name: "Retry" }).click();
@@ -62,7 +62,7 @@ test("failure before any flow: plain description; Retry runs a new round to the 
   await checkScreen(page);
   await waitForState(page, id, "finished");
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open review" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Resume review" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Cancel analysis" })).toHaveCount(0);
   await checkScreen(page);
 });

@@ -14,6 +14,7 @@ import { FIXTURE_STATES, seedFor } from "../../mocks/fixtures";
 import {
   CommentComposer,
   type CommentComposerProps,
+  type CommentDrafts,
   type CommentLine,
   type UnresolvedPosts,
 } from "./CommentComposer";
@@ -30,13 +31,25 @@ const created = (over: Partial<CreateCommentResponse> = {}): CreateCommentRespon
   ...over,
 });
 
-type HarnessProps = Omit<CommentComposerProps, "unresolved" | "onUnresolvedChange"> & { mounted?: boolean };
+type HarnessProps = Omit<
+  CommentComposerProps,
+  "unresolved" | "onUnresolvedChange" | "drafts" | "onDraftChange"
+> & {
+  mounted?: boolean;
+};
 
-/** The screen's role: keeps the unresolved posts for the session while the composer mounts and unmounts. */
+/** The screen's role: keeps unresolved posts and drafts for the session while the composer mounts and unmounts. */
 function Harness({ mounted = true, ...props }: HarnessProps) {
   const [unresolved, setUnresolved] = useState<UnresolvedPosts>({});
+  const [drafts, setDrafts] = useState<CommentDrafts>({});
   return mounted ? (
-    <CommentComposer {...props} unresolved={unresolved} onUnresolvedChange={setUnresolved} />
+    <CommentComposer
+      {...props}
+      unresolved={unresolved}
+      onUnresolvedChange={setUnresolved}
+      drafts={drafts}
+      onDraftChange={(key, text) => setDrafts((all) => ({ ...all, [key]: text }))}
+    />
   ) : null;
 }
 
@@ -63,8 +76,11 @@ describe("CommentComposer", () => {
     setup({ available: false });
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
+    expect(document.body).toHaveTextContent("Commenting is not available for this repository right now.");
+    // The server cannot tell a missing App from a failed check (commenting_available is one boolean).
+    expect(document.body).not.toHaveTextContent(/App is not installed/);
     expect(document.body).toHaveTextContent(
-      "Commenting is not available for this pull request: the smart-review GitHub App is not installed on this repository",
+      "The smart-review GitHub App may not be installed on it, or its installation could not be checked.",
     );
   });
 
@@ -126,6 +142,37 @@ describe("CommentComposer", () => {
     expect(screen.getByRole("textbox", { name: /^Comment on/ })).not.toHaveAttribute("readonly");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     expect(document.body).not.toHaveTextContent(/may already be in your GitHub pending review/);
+  });
+
+  it.each([
+    ["pr_head_changed", "The pull request changed since this analysis. Analyse it again to comment."],
+    ["position_rejected", "GitHub did not accept a comment on this line."],
+    ["app_not_installed", "The smart-review GitHub App is not installed on this repository."],
+    ["invalid_request", "The comment is too long."],
+  ])(
+    "a definite refusal (%s) states the reason, keeps the text editable and offers no Retry",
+    async (code, sentence) => {
+      const onCreate = vi.fn().mockRejectedValue(Object.assign(new Error(sentence), { code }));
+      const { user } = setup({ onCreate });
+      await user.type(field(), "kept text");
+      await user.click(addButton());
+      expect(await screen.findByRole("alert")).toHaveTextContent(sentence);
+      expect(field()).toHaveValue("kept text");
+      expect(field()).not.toHaveAttribute("readonly");
+      expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(document.body).not.toHaveTextContent(/may already be in your GitHub pending review/);
+    },
+  );
+
+  it("an unknown outcome (github_unavailable) keeps Retry with the same key", async () => {
+    const onCreate = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("GitHub did not answer."), { code: "github_unavailable" }));
+    const { user } = setup({ onCreate });
+    await user.type(field(), "text");
+    await user.click(addButton());
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeVisible();
+    expect(document.body).toHaveTextContent("The comment may already be in your GitHub pending review");
   });
 
   it("an edit answered comment_published shows the server's sentence, not 'Not saved'", async () => {
@@ -324,15 +371,33 @@ describe("CommentComposer", () => {
     expect(other).toHaveValue("B");
   });
 
-  it("drops the draft when the line changes, also through null", async () => {
+  it("keeps a draft per line: another line starts empty, returning restores it, marked as a draft", async () => {
     const { user, rerender, ...props } = setup();
+    expect(screen.queryByText("Draft")).toBeNull();
     await user.type(field(), "for 96");
+    expect(screen.getByText("Draft")).toHaveAccessibleDescription(/Not added to GitHub yet/);
     rerender(<Harness {...props} line={{ ...line96, target: { ...target96, line: 97 } }} />);
     expect(screen.getByRole("textbox", { name: /client\.rs:97/ })).toHaveValue("");
     await user.type(screen.getByRole("textbox"), "for 97");
     rerender(<Harness {...props} line={null} />);
     rerender(<Harness {...props} line={line96} />);
+    expect(field()).toHaveValue("for 96");
+    expect(screen.getByText("Draft")).toBeVisible();
+  });
+
+  it("keeps the draft after Cancel; an added comment clears it", async () => {
+    const { user, rerender, ...props } = setup();
+    await user.type(field(), "kept");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    rerender(<Harness {...props} line={null} />);
+    rerender(<Harness {...props} line={line96} />);
+    expect(field()).toHaveValue("kept");
+    await user.click(addButton());
+    await screen.findByRole("status");
+    rerender(<Harness {...props} line={null} />);
+    rerender(<Harness {...props} line={line96} />);
     expect(field()).toHaveValue("");
+    expect(screen.queryByText("Draft")).toBeNull();
   });
 
   it("treats a change of only start_line as another target with its own key", async () => {

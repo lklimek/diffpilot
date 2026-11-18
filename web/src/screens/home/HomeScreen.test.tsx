@@ -89,7 +89,7 @@ describe("Home (brief §4.1)", () => {
     renderRoute("/");
     await analyze();
     const message = await banner("Analysis found.", "status");
-    expect(message).toHaveTextContent("This PR head is already analysed. Open review.");
+    expect(message).toHaveTextContent("This PR head is already analysed. Resume review.");
     expect(message).not.toHaveTextContent("Your ticks, answers");
   });
 
@@ -98,8 +98,8 @@ describe("Home (brief §4.1)", () => {
     const router = renderRoute("/");
     await analyze();
     const found = await banner("Analysis found.", "status");
-    expect(found).toHaveTextContent("This PR head is already analysed. Open review.");
-    expect(within(found).getByRole("link", { name: "Open review" })).toHaveAttribute(
+    expect(found).toHaveTextContent("This PR head is already analysed. Resume review.");
+    expect(within(found).getByRole("link", { name: "Resume review" })).toHaveAttribute(
       "href",
       `/analyses/${analysis.id}`,
     );
@@ -174,9 +174,10 @@ describe("Home (brief §4.1)", () => {
     setScenario("no-app");
     const router = renderRoute("/");
     await analyze();
-    const noApp = await banner("The GitHub App is not installed on acme/node-client.", "alert");
+    const noApp = await banner("Commenting is not available for acme/node-client right now.", "alert");
+    expect(noApp).not.toHaveTextContent(/App is not installed/);
     expect(router.state.location.pathname).toBe("/");
-    await userEvent.click(within(noApp).getByRole("button", { name: "Analyze without it" }));
+    await userEvent.click(within(noApp).getByRole("button", { name: "Analyze anyway" }));
     await waitFor(() => expect(router.state.location.pathname).toBe(PROGRESS));
   });
 

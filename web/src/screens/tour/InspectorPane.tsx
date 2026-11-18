@@ -23,7 +23,11 @@ import {
 } from "../../api/queries";
 import { AskAnswers } from "../../components/ask/AskAnswers";
 import { AskForm } from "../../components/ask/AskForm";
-import { CommentComposer, type UnresolvedPosts } from "../../components/comment/CommentComposer";
+import {
+  CommentComposer,
+  type CommentDrafts,
+  type UnresolvedPosts,
+} from "../../components/comment/CommentComposer";
 import { commentPlacement, isChangedLine } from "../../components/comment/placement";
 import { FeedbackButtons } from "../../components/feedback/FeedbackButtons";
 import { Inspector, type InspectorProps } from "../../components/inspector/Inspector";
@@ -57,6 +61,8 @@ interface InspectorPaneProps {
   onCancelComment: () => void;
   unresolved: UnresolvedPosts;
   onUnresolvedChange: (update: (posts: UnresolvedPosts) => UnresolvedPosts) => void;
+  drafts: CommentDrafts;
+  onDraftChange: (key: string, text: string) => void;
   askRef: RefObject<HTMLTextAreaElement | null>;
   commentRef: RefObject<HTMLTextAreaElement | null>;
 }
@@ -145,6 +151,8 @@ export function InspectorPane(props: InspectorPaneProps) {
       textareaRef={props.commentRef}
       unresolved={props.unresolved}
       onUnresolvedChange={props.onUnresolvedChange}
+      drafts={props.drafts}
+      onDraftChange={props.onDraftChange}
     />
   ) : pending.isError ? (
     <p className="text-[12.5px]">

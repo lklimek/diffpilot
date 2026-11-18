@@ -369,7 +369,7 @@ describe("PendingReviewBlock", () => {
       />,
     );
     expect(screen.getByRole("article")).toHaveTextContent(
-      "Commenting is not available: the GitHub App is not installed on this repository.",
+      "Commenting is not available for this repository right now.",
     );
     expect(screen.queryByRole("link", { name: /Finish on GitHub/ })).not.toBeInTheDocument();
   });

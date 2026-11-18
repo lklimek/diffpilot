@@ -39,7 +39,7 @@ test("usage limit → paused until a time → resumed; a failed flow is named �
     page.getByText(`Paused until ${await clock(page, resumesAt)} — ${String(paused.done)} of 5`),
   ).toBeVisible();
   // The plan and the PR context were accepted: the review is open while the remaining flows wait (brief §4.2).
-  await expect(page.getByRole("link", { name: "Open review" })).toHaveCount(1);
+  await expect(page.getByRole("link", { name: "Resume review" })).toHaveCount(1);
   await checkScreen(page);
 
   // Flow 3 fails once the pause is over; the analysis goes on with the other flows and the failed flow stays
@@ -63,7 +63,7 @@ test("usage limit → paused until a time → resumed; a failed flow is named �
   expectRetriedOnlyAfter(stack, Date.parse(resumesAt), "analyse_flow");
 
   await page.reload();
-  await page.getByRole("link", { name: "Open review" }).click();
+  await page.getByRole("link", { name: "Resume review" }).click();
   await navTo(page, new RegExp(`^Flow ${failed.position}:`));
   await expect(heading(page)).toContainText(failed.title);
   await expect(page.getByRole("main").getByRole("status")).toHaveText("Failed — Retry");
@@ -74,6 +74,6 @@ test("usage limit → paused until a time → resumed; a failed flow is named �
   await waitForState(page, id, "finished");
   await page.goto(`/analyses/${id}/progress`);
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open review" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Resume review" })).toBeVisible();
   await checkScreen(page);
 });

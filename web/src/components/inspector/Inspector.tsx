@@ -14,6 +14,7 @@ import type {
 import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
 import { useFlashTarget } from "../flash/useFlashTarget";
 import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
+import { FlowWorkLabel } from "../flow-intro/status";
 import { rangeText } from "../section/format";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Collapsible } from "./Collapsible";
@@ -217,7 +218,11 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
         title: flowTitle(flow),
         meta: (
           <>
-            <RiskLabel risk={flow.llm.risk} />
+            {flow.analysis_status && flow.analysis_status.state !== "analysed" ? (
+              <FlowWorkLabel status={flow.analysis_status} analysis={tour.analysis.state} />
+            ) : (
+              <RiskLabel risk={flow.llm.risk} />
+            )}
             <GroupLabel group={flow.group} />
           </>
         ),

@@ -36,12 +36,12 @@ const ALLOWED: { file: string; match: string; reason: string }[] = [
   },
   {
     file: "components/nav/NavList.tsx",
-    match: 'current.block === "flow_intro"',
+    match: 'current?.block === "flow_intro"',
     reason: "Flow row named by its destination; its risk and group labels carry their own tooltips.",
   },
   {
     file: "components/nav/NavList.tsx",
-    match: 'current.block === "step"',
+    match: 'current?.block === "step"',
     reason: "Step row named by its destination; a tip would cover the rows below.",
   },
   {
