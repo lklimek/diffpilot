@@ -128,6 +128,7 @@ export function InspectorPane(props: InspectorPaneProps) {
         )}
         <AskAnswers
           onEvidence={props.onEvidence}
+          currentFile={step.facts.file}
           questions={questions.data.filter((q) => q.step_id === step.id)}
           onAskAgain={onAsk}
         />

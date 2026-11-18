@@ -39,6 +39,7 @@ function AskDraft({
   const subject = step.label;
   const id = useId();
   const field = useRef<HTMLTextAreaElement | null>(null);
+  const answersBox = useRef<HTMLDivElement>(null);
   const [text, setText] = useState("");
   const [empty, setEmpty] = useState(false);
   const action = useAction();
@@ -53,6 +54,8 @@ function AskDraft({
     setEmpty(false);
     if (await action.run(() => onAsk(step.id, question))) {
       setText("");
+      // Newest first: the new question is at the top of the answers.
+      if (answersBox.current) answersBox.current.scrollTop = 0;
       requestAnimationFrame(() => growField(field.current));
     }
   };
@@ -120,7 +123,18 @@ function AskDraft({
           {error}
         </p>
       )}
-      {answers && <div className="mt-2">{answers}</div>}
+      {answers && (
+        // Bounded, with its own scroll: Feedback and Comment below stay in view in the dock.
+        <div
+          ref={answersBox}
+          role="region"
+          aria-label="Answers"
+          tabIndex={0}
+          className="mt-2 max-h-[24vh] overflow-y-auto overscroll-contain"
+        >
+          {answers}
+        </div>
+      )}
     </section>
   );
 }

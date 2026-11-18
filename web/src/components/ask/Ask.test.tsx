@@ -172,9 +172,50 @@ describe("AskForm", () => {
     expect(items[1]).toHaveTextContent("No answer: the job failed.");
     expect(screen.getByRole("heading", { name: /Ask/ })).toHaveTextContent(/answers appear below/);
   });
+
+  it("keeps the answers in a block of bounded height with its own scroll, so the rest of the dock stays in view", async () => {
+    const user = userEvent.setup();
+    const onAsk = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AskForm step={step5} onAsk={onAsk} answers={<AskAnswers questions={[question({ id: "q" })]} />} />,
+    );
+    const block = screen.getByRole("region", { name: "Answers" });
+    expect(block).toContainElement(screen.getByRole("list", { name: "Questions asked about this step" }));
+    expect(block.className).toMatch(/(^|\s)max-h-\[/);
+    expect(block.className).toMatch(/(^|\s)overflow-y-auto(\s|$)/);
+    expect(block).toHaveAttribute("tabindex", "0");
+    // A new question goes to the top of the newest-first list: the block shows its start.
+    block.scrollTop = 120;
+    await user.type(screen.getByRole("textbox"), "Why?{Enter}");
+    expect(block.scrollTop).toBe(0);
+  });
 });
 
 describe("AskAnswers", () => {
+  it("shows the current file's name in bold in an answer's evidence", async () => {
+    const user = userEvent.setup();
+    render(
+      <AskAnswers
+        currentFile="src/rpc/client.rs"
+        questions={[
+          question({
+            state: "answered",
+            answer: {
+              answer: "Yes.",
+              evidence: [
+                { file: "src/rpc/client.rs", side: "head", line: 99 },
+                { file: "src/rpc/retry.rs", side: "head", line: 23 },
+              ],
+            },
+          }),
+        ]}
+      />,
+    );
+    await user.click(screen.getByText("Evidence · 2 places"));
+    expect(screen.getByText("client.rs")).toHaveClass("font-bold");
+    expect(screen.getByText("retry.rs")).not.toHaveClass("font-bold");
+  });
+
   it("wraps long answer words and code inside the inspector", () => {
     const questions = structuredClone(seedFor("resume", "questions") as AskQuestion[]);
     const long = "x".repeat(500);

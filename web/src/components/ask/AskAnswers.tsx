@@ -11,6 +11,8 @@ export interface AskAnswersProps {
   /** Questions of the current step, any order (`GET …/questions` and `question` SSE events). */
   questions: readonly AskQuestion[];
   onEvidence?: (evidence: Evidence) => void;
+  /** File of the step asked about; its evidence links are shown in bold. */
+  currentFile?: string;
   /** Asks a failed question again on its step; no button without it. One request at a time per question. */
   onAskAgain?: (step: StepId, text: string) => Promise<unknown> | void;
 }
@@ -50,7 +52,8 @@ function Answer({
   question,
   onAskAgain,
   onEvidence,
-}: { question: AskQuestion } & Pick<AskAnswersProps, "onAskAgain" | "onEvidence">) {
+  currentFile,
+}: { question: AskQuestion } & Pick<AskAnswersProps, "onAskAgain" | "onEvidence" | "currentFile">) {
   switch (question.state) {
     case "pending":
       return (
@@ -92,7 +95,7 @@ function Answer({
           </div>
           {answer.evidence.length > 0 && (
             <div className="mt-1 text-[11.5px] text-muted">
-              <EvidenceLinks evidence={answer.evidence} onEvidence={onEvidence} />
+              <EvidenceLinks evidence={answer.evidence} onEvidence={onEvidence} currentFile={currentFile} />
             </div>
           )}
         </div>
@@ -102,7 +105,7 @@ function Answer({
 }
 
 /** Questions asked about a step, newest first, each with its state or its whole LLM answer (ADR-004). */
-export function AskAnswers({ questions, onAskAgain, onEvidence }: AskAnswersProps) {
+export function AskAnswers({ questions, onAskAgain, onEvidence, currentFile }: AskAnswersProps) {
   if (questions.length === 0) return null;
   const newestFirst = [...questions].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   return (
@@ -113,7 +116,7 @@ export function AskAnswers({ questions, onAskAgain, onEvidence }: AskAnswersProp
             <span className="text-muted">Asked by {q.mine ? "you" : (q.asked_by ?? "unknown author")}: </span>
             {q.text}
           </p>
-          <Answer question={q} onAskAgain={onAskAgain} onEvidence={onEvidence} />
+          <Answer question={q} onAskAgain={onAskAgain} onEvidence={onEvidence} currentFile={currentFile} />
         </li>
       ))}
     </ol>

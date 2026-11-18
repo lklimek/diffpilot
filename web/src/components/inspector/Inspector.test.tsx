@@ -356,7 +356,8 @@ describe("Inspector summaries", () => {
     render(<Inspector tour={tour} block={{ block: "quiet", row }} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(title);
     expect(document.body).toHaveTextContent(text);
-    expect(document.body).not.toHaveTextContent("LLM analysis unless marked otherwise.");
+    // Deterministic panels carry no LLM provenance tag.
+    expect(document.querySelector('[data-provenance="llm"]')).toBeNull();
   });
 
   it("summarises the pending review from GitHub", () => {
