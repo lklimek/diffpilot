@@ -10,6 +10,7 @@ import { assignRef, codeOf, growField, messageOf, useAction } from "../inspector
 import { GithubLink } from "../inspector/text";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { CommentPlacement } from "./placement";
+import { appendDraft } from "./prefill";
 import { COMMENTING_UNAVAILABLE, COMMENTING_UNAVAILABLE_WHY } from "./unavailable";
 
 /** The displayed line a comment is written on. */
@@ -48,6 +49,12 @@ export interface CommentComposerProps {
   drafts: CommentDrafts;
   /** Where the PR can be analysed again; offered after a refusal because the PR head moved. */
   reanalyseHref?: string;
+  /**
+   * Text for the draft on `line` ("Use as review comment"): appended after a blank line to a draft already there,
+   * focused, never sent by itself; `onPrefilled` once it is in.
+   */
+  prefill?: { text: string } | null;
+  onPrefilled?: () => void;
 }
 
 const BUTTON =
@@ -236,7 +243,19 @@ function OwnComment({
 /** Comment on any displayed line into the user's GitHub pending review (brief §4.3 Dock, ADR-006). */
 export function CommentComposer(props: CommentComposerProps) {
   const { available, line, onCreate, unresolved, onUnresolvedChange: setUnresolved, drafts } = props;
+  const { prefill, onPrefilled } = props;
   const id = useId();
+  // A prefill goes into the kept draft; the draft field is mounted again to show it.
+  const [revision, setRevision] = useState(0);
+  const prefilled = useRef<{ text: string } | null>(null);
+  const prefillKey = line && identity(line.target);
+  useEffect(() => {
+    if (!prefill || !prefillKey || prefilled.current === prefill) return;
+    prefilled.current = prefill;
+    drafts.set(prefillKey, appendDraft(drafts.get(prefillKey), prefill.text));
+    setRevision((n) => n + 1);
+    onPrefilled?.();
+  }, [prefill, prefillKey, drafts, onPrefilled]);
   // Unconfirmed posts live with the screen (props): after a failure the server may have created the comment,
   // so the only ways on are Retry with the same key and payload, or Discard — also after a remount.
   const inFlight = useRef(new Set<string>());
@@ -296,7 +315,7 @@ export function CommentComposer(props: CommentComposerProps) {
     // Draft, error and confirmation belong to one target: another target starts afresh, an old outcome is dropped.
     body = (
       <Draft
-        key={key}
+        key={`${key}#${revision}`}
         {...props}
         line={line}
         post={unresolved[key] ?? null}

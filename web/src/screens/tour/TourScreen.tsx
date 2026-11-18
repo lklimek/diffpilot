@@ -3,6 +3,7 @@ import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
 import { RemarkPill } from "../../components/remark-pills/RemarkPills";
 import { lineReference } from "../../components/ask/AskForm";
+import { answerComment, flagComment } from "../../components/comment/prefill";
 import { remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -10,7 +11,9 @@ import { Navigate, useParams, useLocation, useNavigate, useNavigationType } from
 import { ApiError } from "../../api/client";
 import type {
   AnalysisId,
+  Annotation,
   AnnotationId,
+  AskQuestion,
   BlockRef,
   CommentTarget,
   Evidence,
@@ -388,18 +391,53 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     setCommentLine({ target, lines });
     openInspector();
   };
+  // The open comment's line, else the step's first changed line: where `c` and an Ask answer's draft go.
+  const currentLine = (): CommentLineState | null => {
+    if (commentLine) return commentLine;
+    if (!step || !stepLines.data) return null;
+    const { from, lines } = stepLines.data;
+    const line = firstShownChange ?? lines.map((_, i) => from + i).find((l) => !stepHidden.has(l));
+    if (line === undefined) return null;
+    return {
+      target: { path: step.facts.file, side: step.facts.side, start_line: null, line },
+      lines: stepLines.data,
+    };
+  };
   // `c`: back to the open comment, else a comment on the step's first changed line.
   const commentOnCurrentLine = () => {
     if (commentLine) {
       openInspector();
       setFocusNext("comment");
-    } else if (step && stepLines.data) {
-      const { from, lines } = stepLines.data;
-      const line = firstShownChange ?? lines.map((_, i) => from + i).find((l) => !stepHidden.has(l));
-      if (line === undefined) return;
-      comment({ path: step.facts.file, side: step.facts.side, start_line: null, line }, stepLines.data);
+      return;
     }
+    const at = currentLine();
+    if (at) comment(at.target, at.lines);
   };
+  // "Use as review comment": the composer opens on `at` with `text` as a draft; nothing is sent.
+  const [commentPrefill, setCommentPrefill] = useState<{ text: string } | null>(null);
+  const draftComment = (at: CommentLineState | null, text: string) => {
+    if (!at) return;
+    comment(at.target, at.lines);
+    setCommentPrefill({ text });
+  };
+  const commenting = pending.data?.commenting_available === true;
+  const onFlagAsComment =
+    commenting && step && stepLines.data
+      ? (flag: Annotation) => {
+          const { start_line, end_line } = flag.range;
+          const target = {
+            path: step.facts.file,
+            side: step.facts.side,
+            start_line: start_line === end_line ? null : start_line,
+            line: end_line,
+          };
+          draftComment(stepLines.data ? { target, lines: stepLines.data } : null, flagComment(flag));
+        }
+      : undefined;
+  const onAnswerAsComment =
+    commenting && step
+      ? (question: AskQuestion) => draftComment(currentLine(), answerComment(question.answer?.answer ?? ""))
+      : undefined;
   // LLM remark pills and `r`: the remark's code line and its Inspector entry flash.
   const jumpToRemark = (steps: Step[]) => {
     const remark = remarkTarget(steps, handledRemarks);
@@ -938,6 +976,10 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             onAskLine={ctx.onAskLine}
             askInsert={askInsert}
             onAskInserted={() => setAskInsert(null)}
+            onFlagAsComment={onFlagAsComment}
+            onAnswerAsComment={onAnswerAsComment}
+            commentPrefill={commentPrefill}
+            onCommentPrefilled={() => setCommentPrefill(null)}
           />
         }
       />

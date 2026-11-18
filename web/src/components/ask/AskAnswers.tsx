@@ -4,6 +4,7 @@ import { busyTip } from "../button/button";
 import { clockText } from "../format/time";
 import { useAction } from "../inspector/action";
 import { EvidenceLinks } from "../section/EvidenceLinks";
+import { UseAsCommentButton } from "../comment/UseAsCommentButton";
 import { Tooltip } from "../tooltip/Tooltip";
 
 /** Props of the questions asked about a step and their LLM answers. */
@@ -98,7 +99,11 @@ export function Answer({
   onAskAgain,
   onEvidence,
   currentFile,
-}: { question: AskQuestion } & Pick<AskAnswersProps, "onAskAgain" | "onEvidence" | "currentFile">) {
+  onUseAsComment,
+}: { question: AskQuestion; onUseAsComment?: () => void } & Pick<
+  AskAnswersProps,
+  "onAskAgain" | "onEvidence" | "currentFile"
+>) {
   switch (question.state) {
     case "pending":
       return (
@@ -142,6 +147,11 @@ export function Answer({
           {answer.evidence.length > 0 && (
             <div className="mt-1 text-[11.5px] text-muted">
               <EvidenceLinks evidence={answer.evidence} onEvidence={onEvidence} currentFile={currentFile} />
+            </div>
+          )}
+          {onUseAsComment && (
+            <div className="mt-1">
+              <UseAsCommentButton onClick={onUseAsComment} what="this answer" />
             </div>
           )}
         </div>
