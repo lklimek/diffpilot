@@ -15,8 +15,8 @@ export interface SectionControl {
   reveal: (key: string) => void;
 }
 
-// Brief §4.3: Questions and Assessment start collapsed; every other section starts open.
-const CLOSED_BY_DEFAULT = new Set(["questions", "assessment"]);
+// Brief §4.3: Assessment starts collapsed; every other section, Flags included (addendum 2026-11-18), starts open.
+const CLOSED_BY_DEFAULT = new Set(["assessment"]);
 
 /** Stored state; empty when storage is unavailable or holds something else. */
 export function loadSectionState(): SectionState {

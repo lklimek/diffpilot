@@ -1059,6 +1059,19 @@
                       "line": 65
                     }
                   ]
+                },
+                {
+                  "id": "f2.2.a2",
+                  "type": "note",
+                  "basis": "inference",
+                  "range": {
+                    "start_line": 64,
+                    "end_line": 64
+                  },
+                  "was": "",
+                  "is": "",
+                  "text": "Same risk as step 1: a 2000-header reply from a slow peer may take longer than 5 s.",
+                  "evidence": []
                 }
               ],
               "assessment": null,
@@ -1276,6 +1289,19 @@
                       "line": 121
                     }
                   ]
+                },
+                {
+                  "id": "f3.2.a2",
+                  "type": "note",
+                  "basis": "inference",
+                  "range": {
+                    "start_line": 121,
+                    "end_line": 121
+                  },
+                  "was": "",
+                  "is": "",
+                  "text": "Same risk as step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.",
+                  "evidence": []
                 }
               ],
               "assessment": null,

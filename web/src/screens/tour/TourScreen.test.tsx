@@ -109,9 +109,9 @@ describe("Tour screen (brief §4.3)", () => {
     await openStep("1", "5");
     const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
     await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
-    await user().click(screen.getByRole("button", { name: /^Show in Inspector: Question to check/ }));
-    const questions = within(inspector()).getByRole("region", { name: /^Questions to check/ });
-    const item = questions.querySelector('[data-annotation-id="f1.5.a3"]');
+    await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
+    const flags = within(inspector()).getByRole("region", { name: /^Flags/ });
+    const item = flags.querySelector('[data-annotation-id="f1.5.a3"]');
     await waitFor(() => expect(item).toHaveAttribute("data-flash"));
   });
 
@@ -132,7 +132,7 @@ describe("Tour screen (brief §4.3)", () => {
       await openStep("1", "5");
       const code = await within(main()).findByRole("region", { name: /lines 99 to 99/ });
       await user().click(within(code).getByRole("button", { name: /LLM remarks? at line 99/ }));
-      await user().click(screen.getByRole("button", { name: /^Show in Inspector: Question to check/ }));
+      await user().click(screen.getByRole("button", { name: /^Show in Inspector: Red flag/ }));
       const flashed = () => inspector().querySelector('[data-annotation-id="f1.5.a3"]');
       await waitFor(() => expect(flashed()).toHaveAttribute("data-flash"));
       act(() => vi.advanceTimersByTime(FLASH_MS));
@@ -443,13 +443,15 @@ describe("Tour screen (brief §4.3)", () => {
   it("rating pills: the flow intro and step show them; a pill jumps to the first remark and flashes it", async () => {
     await open();
     await user().click(within(nav()).getByRole("button", { name: /^Flow 1:/ }));
-    const flowPill = await within(main()).findByRole("button", { name: "19 LLM remarks in this flow" });
+    const flowPill = await within(main()).findByRole("button", {
+      name: "LLM flags in this flow: 1 red flag, 4 yellow flags",
+    });
     expect(flowPill).toHaveTextContent(/^$/);
     await user().click(flowPill);
     expect(await within(main()).findByRole("heading", { level: 2, name: /Retry allowed/ })).toBeVisible();
     const stepPill = within(main()).getByRole("button", { name: "LLM rated this step HIGH (not checked)" });
     expect(stepPill).toHaveTextContent(/^▲ HIGH$/);
-    expect(stepPill).toHaveAccessibleDescription(/^3 LLM remarks on this step\./);
+    expect(stepPill).toHaveAccessibleDescription(/^LLM flags on this step: 1 red flag\./);
     // The code line of the first remark and its Inspector entry flash.
     await waitFor(() => expect(main().querySelector("[data-flash]")).not.toBeNull());
     await waitFor(() => expect(inspector().querySelector("[data-flash]")).not.toBeNull());

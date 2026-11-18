@@ -6,6 +6,7 @@ import type {
   LinesResponse,
   PendingComment,
   PendingReview,
+  FlagLevel,
   RiskBand,
   Tour,
 } from "../../api/generated/types";
@@ -71,12 +72,12 @@ function plain(from: number, texts: string[], extra: Partial<LinesResponse> = {}
 function note(id: string, start: number, end: number, extra: Partial<Annotation> = {}): Annotation {
   return {
     id,
-    type: "question",
+    type: "note",
     basis: "inference",
     range: { start_line: start, end_line: end },
     was: "",
     is: "",
-    text: "Is a retry safe here?",
+    text: "A retry may repeat the request.",
     evidence: [],
     ...extra,
   };
@@ -91,7 +92,7 @@ describe("CodeView", () => {
         band="low"
       />,
     );
-    const label = screen.getByText(/LOW · LLM remark: question/);
+    const label = screen.getByText(/LOW · LLM remark: note/);
     act(() => label.focus());
     const tooltip = screen.getByRole("tooltip");
     expect(tooltip).not.toHaveTextContent("Was:");
@@ -141,9 +142,49 @@ describe("CodeView", () => {
       expect(highlight).toHaveAttribute("data-bar", style);
       expect(highlight.className).toContain(`border-${style}`);
       expect(highlight.className).not.toMatch(/accent/);
-      expect(
-        within(highlight as HTMLElement).getByText(`${text} · LLM remark: question`),
-      ).toBeInTheDocument();
+      expect(within(highlight as HTMLElement).getByText(`${text} · LLM remark: note`)).toBeInTheDocument();
+    },
+  );
+
+  it.each<[FlagLevel, RiskBand | null, string, string]>([
+    ["red", "medium", "border-high-bd", "border-dashed"],
+    ["yellow", "high", "border-med-bd", "border-solid"],
+    ["red", "high", "border-high-bd", "border-solid"],
+  ])(
+    "draws a range with a %s flag in the flag's colour, keeping the rating's pattern (%s), and names the flag",
+    (level, band, colour, pattern) => {
+      const flag = note("x.a2", 1, 2, {
+        type: "flag",
+        text: "Potential double send:",
+        flag: { level, scenario: ["A sends.", "B sends again."], not_checked: "Not run." },
+      });
+      render(<CodeView lines={plain(1, ["a", "b"])} annotations={[note("x.a1", 2, 2), flag]} band={band} />);
+      const highlight = document.querySelector("[data-highlight]")!;
+      expect(highlight).toHaveAttribute("data-flag", level);
+      expect(highlight.className).toContain(colour);
+      expect(highlight.className).toContain(pattern);
+      const name = { red: "⚑ Red flag", yellow: "⚑ Yellow flag", unknown: "⚑ Flag" }[level];
+      expect(within(highlight as HTMLElement).getByText(new RegExp(`^${name} · `))).toBeInTheDocument();
+    },
+  );
+
+  it.each<[FlagLevel, string]>([
+    ["red", "--color-high-bd"],
+    ["unknown", "--color-mark"],
+  ])(
+    "draws a %s flag on an unrated step as the thin line in the flag's colour, not a full bar",
+    (level, colour) => {
+      const flag = note("x.a2", 1, 2, {
+        type: "flag",
+        text: "Potential double send:",
+        flag: { level, scenario: ["A sends twice.", "B pays twice."], not_checked: "Not run." },
+      });
+      render(<CodeView lines={plain(1, ["a", "b"])} annotations={[flag]} band={null} />);
+      const highlight = document.querySelector("[data-highlight]")!;
+      expect(highlight).toHaveAttribute("data-flag", level);
+      expect(highlight).toHaveAttribute("data-bar", "thin");
+      expect(highlight.className).toContain("border-transparent");
+      expect(highlight.className).toContain(`var(${colour})`);
     },
   );
 
@@ -153,8 +194,8 @@ describe("CodeView", () => {
     expect(highlight).toHaveAttribute("data-band", "none");
     expect(highlight).toHaveAttribute("data-bar", "thin");
     expect(highlight.className).not.toMatch(/border-(dotted|dashed|double)|accent/);
-    const label = within(highlight as HTMLElement).getByText("LLM remark: question");
-    expect(label).toHaveTextContent(/^LLM remark: question$/);
+    const label = within(highlight as HTMLElement).getByText("LLM remark: note");
+    expect(label).toHaveTextContent(/^LLM remark: note$/);
     expect(highlight).not.toHaveTextContent("◇");
     expect(label).toHaveAccessibleDescription(/Risk not rated by the LLM/);
   });
@@ -736,7 +777,15 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
         lines={plain(1, ["a", "b"])}
         annotations={[
           note("n1", 1, 2, { type: "behaviour", was: "retries once", is: "retries all", text: null }),
-          note("n2", 1, 1, { text: "Is a retry of a broadcast safe?" }),
+          note("n2", 1, 1, {
+            type: "flag",
+            text: "Potential double broadcast:",
+            flag: {
+              level: "red",
+              scenario: ["The reply arrives late.", "The client sends again."],
+              not_checked: "Not run.",
+            },
+          }),
         ]}
         band="medium"
       />,
@@ -750,8 +799,13 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     expect(popover).toHaveTextContent("Behaviour · lines 1–2");
     expect(popover).toHaveTextContent("Was: retries once");
     expect(popover).toHaveTextContent("Is: retries all");
-    expect(popover).toHaveTextContent("Question to check · line 1");
-    expect(popover).toHaveTextContent("Is a retry of a broadcast safe?");
+    expect(popover).toHaveTextContent("Red flag · line 1");
+    expect(popover).toHaveTextContent("Potential double broadcast:");
+    expect(
+      within(popover)
+        .getAllByRole("listitem")
+        .map((i) => i.textContent),
+    ).toEqual(["1. The reply arrives late.", "2. The client sends again."]);
     expect(within(popover).getByText("LLM")).toHaveAttribute("data-provenance", "llm");
     expect(within(popover).getByText("LLM")).toHaveAccessibleDescription(
       "This text was written by the LLM; it was not checked.",

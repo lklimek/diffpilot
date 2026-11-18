@@ -1,4 +1,5 @@
-import type { RiskBand } from "../../api/generated/types";
+import type { FlagLevel, RiskBand } from "../../api/generated/types";
+import { FLAG_LOOK } from "../flag/flags";
 
 /**
  * How a changed line is drawn, in the code view and the classic diff alike (deterministic, from the diff):
@@ -44,3 +45,14 @@ export const REMARK_LOOK: Record<
     text: "text-llm",
   },
 };
+
+const PATTERN = { solid: "border-solid", dashed: "border-dashed", dotted: "border-dotted" };
+
+/**
+ * The bar of a range with an LLM flag: the flag's level colour in the step rating's pattern; on an unrated step the
+ * thin line of an unrated remark, in the flag's colour (never a full bar that would read as a rating).
+ */
+export const flagBar = (level: FlagLevel, band: RiskBand | null) =>
+  band === null
+    ? `border-solid border-transparent ${FLAG_LOOK[level].line} bg-size-[2px_auto] bg-origin-border bg-no-repeat`
+    : `${PATTERN[REMARK_LOOK[band].pattern as keyof typeof PATTERN]} ${FLAG_LOOK[level].border}`;

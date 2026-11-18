@@ -2540,7 +2540,7 @@
           "type": "string"
         },
         "text": {
-          "description": "The consequence, question or note; null for a behaviour annotation.",
+          "description": "The consequence, the flag's title or the note; null for a behaviour annotation.",
           "type": [
             "string",
             "null"
@@ -2552,6 +2552,17 @@
           "items": {
             "$ref": "#/$defs/Evidence"
           }
+        },
+        "flag": {
+          "description": "Present exactly on a flag: its level (`unknown` for a flag stored before levels), scenario and what was\nnot checked.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Flag"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -2582,9 +2593,9 @@
           "const": "consequence"
         },
         {
-          "description": "A question for the reviewer to check (also LLM suspicions).",
+          "description": "A risk the LLM states as a concrete scenario (brief §1 addendum 2026-11-18).",
           "type": "string",
-          "const": "question"
+          "const": "flag"
         },
         {
           "description": "Any other remark.",
@@ -2605,6 +2616,52 @@
           "description": "Not directly read; a conclusion.",
           "type": "string",
           "const": "inference"
+        }
+      ]
+    },
+    "Flag": {
+      "description": "The scenario of a flag; its title (the risk class, \"Potential …\") is the annotation's `text`.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "red or yellow in agent output; unknown only on a flag stored before levels.",
+          "$ref": "#/$defs/FlagLevel"
+        },
+        "scenario": {
+          "description": "Ordered steps: who acts, the order of events, the outcome and its cost.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_checked": {
+          "description": "One line: what was not reproduced or run.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "scenario",
+        "not_checked"
+      ]
+    },
+    "FlagLevel": {
+      "description": "How strongly the LLM flags a risk: its own judgement, not checked.",
+      "oneOf": [
+        {
+          "description": "A likely defect or damage if the scenario is reachable.",
+          "type": "string",
+          "const": "red"
+        },
+        {
+          "description": "Worth a look: plausible but weaker, or of lower cost.",
+          "type": "string",
+          "const": "yellow"
+        },
+        {
+          "description": "A flag stored before flags had levels (a former question to check); never in new agent output.",
+          "type": "string",
+          "const": "unknown"
         }
       ]
     },

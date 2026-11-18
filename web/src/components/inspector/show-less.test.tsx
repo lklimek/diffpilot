@@ -36,7 +36,7 @@ it("hides empty inspector sections without claiming safety", () => {
     /^Why/,
     /Consequences/,
     /Call hierarchy/,
-    /Questions to check/,
+    /^Flags/,
     /^Assessment/,
     /GitHub threads/,
   ])
@@ -52,20 +52,20 @@ it("shows the decision in the title bar and leaves facts and assessment to the i
   expect(screen.queryByText("Assessment (LLM)")).toBeNull();
   expect(screen.queryByText(/^Lines .* changed lines/)).toBeNull();
 });
-it("lists flow questions with their destination instead of an unlocated count", async () => {
+it("lists flow flags with their destination instead of an unlocated count", async () => {
   const onSelectStep = vi.fn();
   render(
     <Inspector tour={tour} block={{ block: "flow_intro", flow_id: "f1" }} onSelectStep={onSelectStep} />,
   );
-  const question = tour.flows[0]!.steps.flatMap((s) =>
-    s.llm.annotations.filter((a) => a.type === "question").map((a) => ({ s, a })),
+  const flag = tour.flows[0]!.steps.flatMap((s) =>
+    s.llm.annotations.filter((a) => a.type === "flag").map((a) => ({ s, a })),
   )[0]!;
   const button = screen.getByRole("button", {
-    name: new RegExp(`Step ${question.s.number}.*${question.s.llm.title}`),
+    name: new RegExp(`Step ${flag.s.number}.*${flag.s.llm.title}`),
   });
-  expect(button).toHaveTextContent(question.a.text!);
+  expect(button).toHaveTextContent(flag.a.text!);
   await userEvent.click(button);
-  expect(onSelectStep).toHaveBeenCalledWith(question.s.id);
+  expect(onSelectStep).toHaveBeenCalledWith(flag.s.id);
 });
 it("shows evidence below the statement, collapsed until opened", async () => {
   const onEvidence = vi.fn();

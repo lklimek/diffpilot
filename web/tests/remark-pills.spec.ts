@@ -7,13 +7,13 @@ test("rating and remark pills in the list and above the code lead to the first r
   const nav = page.getByRole("navigation");
   // A flow row: its rating once (its label) and a marker for all its remarks, also while collapsed (flow 2 has an
   // unrated step whose remarks still count).
-  await expect(nav.getByRole("button", { name: "5 LLM remarks in flow 2" })).toHaveText("");
+  await expect(nav.getByRole("button", { name: "LLM flags in flow 2: 1 red flag" })).toHaveText("");
   // Steps show their rating only; the remark count is in the tooltip.
   await expect(nav.getByRole("button", { name: "LLM rated step 3 LOW (not checked)" })).toHaveText("● LOW");
   const step5 = nav.getByRole("button", { name: "LLM rated step 5 HIGH (not checked)" });
   await expect(step5).toHaveText("▲ HIGH");
-  await expect(step5).toHaveAccessibleDescription(/^3 LLM remarks on step 5\./);
-  const flow1 = nav.getByRole("button", { name: "18 LLM remarks in flow 1" });
+  await expect(step5).toHaveAccessibleDescription(/^LLM flags on step 5: 1 red flag\./);
+  const flow1 = nav.getByRole("button", { name: "LLM flags in flow 1: 1 red flag, 4 yellow flags" });
   expect((await flow1.boundingBox())!.height).toBeGreaterThanOrEqual(24);
   await flow1.focus();
   await page.keyboard.press("Enter");
@@ -31,7 +31,9 @@ test("rating and remark pills in the list and above the code lead to the first r
   await expect(unrated).toHaveAccessibleDescription(/the LLM did not rate it/);
   expect((await unrated.boundingBox())!.width).toBeGreaterThanOrEqual(24);
   // Every pill explains itself (the code view's line buttons are outside this check).
-  for (const pill of await page.getByRole("button", { name: /^(LLM rated|\d+ LLM remarks? (in|on))/ }).all())
+  for (const pill of await page
+    .getByRole("button", { name: /^(LLM rated|LLM flags (in|on)|\d+ LLM remarks? (in|on))/ })
+    .all())
     expect(await pill.getAttribute("aria-describedby")).toBeTruthy();
   await expectAccessible(page);
 });

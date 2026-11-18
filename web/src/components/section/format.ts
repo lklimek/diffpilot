@@ -1,4 +1,12 @@
-import type { AnnotationType, Counters, Evidence, LineRange, ThreadsStatus } from "../../api/generated/types";
+import type {
+  Annotation,
+  AnnotationType,
+  Counters,
+  Evidence,
+  LineRange,
+  ThreadsStatus,
+} from "../../api/generated/types";
+import { FLAG_LOOK, flagLevel } from "../flag/flags";
 
 /** `file:line` of an evidence reference; base-side lines are marked. */
 export const evidenceText = (e: Evidence) => `${e.file}:${e.line}${e.side === "base" ? " (base)" : ""}`;
@@ -7,8 +15,14 @@ export const evidenceText = (e: Evidence) => `${e.file}:${e.line}${e.side === "b
 export const ANNOTATION: Record<AnnotationType, string> = {
   behaviour: "Behaviour",
   consequence: "Consequence",
-  question: "Question to check",
+  flag: "Flag",
   note: "Note",
+};
+
+/** Reader-facing name of an annotation: a flag by its level ("Red flag"), others by type. */
+export const annotationName = (a: Annotation) => {
+  const level = flagLevel(a);
+  return level ? FLAG_LOOK[level].name : ANNOTATION[a.type];
 };
 
 /** `a–b`, or `a` for a one-line range. */

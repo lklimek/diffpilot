@@ -23,7 +23,7 @@ import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
 import { useFlashTarget } from "../flash/useFlashTarget";
 import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
 import { FlowWorkLabel } from "../flow-intro/status";
-import { ANNOTATION, rangeText } from "../section/format";
+import { annotationName, rangeText } from "../section/format";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Collapsible } from "./Collapsible";
 import { useSectionState, type SectionControl } from "./sectionState";
@@ -34,7 +34,7 @@ import {
   CallHierarchySection,
   ConsequencesSection,
   DiffSection,
-  QuestionsSection,
+  FlagsSection,
   ThreadsSection,
   WhySection,
 } from "./StepSections";
@@ -169,7 +169,7 @@ const SECTION_OF: Record<AnnotationType, string> = {
   behaviour: "behaviour",
   note: "why",
   consequence: "consequences",
-  question: "questions",
+  flag: "flags",
 };
 
 const linesWord = (r: Annotation["range"]) =>
@@ -206,7 +206,7 @@ function stepPanel(
   const stepThreads = tour.threads.filter((t) => step.facts.thread_ids.includes(t.id));
   const stepTitle = `Step ${step.number} · ${step.llm.title}`;
   return {
-    title: annotation ? `${ANNOTATION[annotation.type]} · ${linesWord(annotation.range)}` : stepTitle,
+    title: annotation ? `${annotationName(annotation)} · ${linesWord(annotation.range)}` : stepTitle,
     backTo: annotation ? stepTitle : undefined,
     meta: (
       <>
@@ -275,11 +275,11 @@ function stepPanel(
           sections={sections}
         />
         <CallHierarchySection hierarchy={step.facts.call_hierarchy} sections={sections} />
-        <QuestionsSection
+        <FlagsSection
           currentFile={step.facts.file}
           step={step}
           onEvidence={onEvidence}
-          questions={byType("question")}
+          annotations={byType("flag")}
           sections={sections}
         />
         <AssessmentSection assessment={step.llm.assessment} sections={sections} />

@@ -64,6 +64,25 @@ can judge the PR at project scale, not only line by line.
   of such statements is never shown as safety.
 - Flow analysis keeps "questions to check" for now; the same form replaces them in a later iteration.
 
+### Addendum 2026-11-18: flags replace questions in flow analysis (owner decision)
+- A suspected defect in a step is a **flag**: "Red flag" (the LLM sees a likely defect or damage if the scenario is
+  reachable) or "Yellow flag" (worth a look: plausible but weaker, or of lower cost). It has a title naming the risk
+  class ("Potential …"), a scenario of 2 to 7 ordered steps (who acts, the order of events, the outcome and its cost)
+  and one line of what was not reproduced or run. A risk the LLM cannot state that way is not a flag. Owner: "call it
+  simply yellow flag / red flag and describe what it is about"; concrete scenarios are easier to understand than
+  questions and prose.
+- A flag is an LLM statement: labelled as LLM content, never called verified, no numeric confidence; its colour is
+  never the only signal (the level is also written). The absence of flags is never shown as safety.
+- Inspector: the flags of a step replace "Questions to check" and are visible without opening the collapsed
+  Assessment. Each is a card: level, title, the scenario as a numbered list showing at most 5 lines at once with
+  "Show all" / "Show less", the not-checked line and its evidence. The code view draws a flag's bar in its level's
+  colour; the step rating stays per step, but a step with a red flag is not rated LOW. Navigation pills keep the
+  rating; their tooltips count flags by level.
+- Analyses stored before flags are not converted or analysed again: their questions show as flags of unknown level
+  ("Flag"), with the question as the title and no scenario. Supersedes "questions to check" for flow analysis in §1
+  (Product, Verdict after evidence), §3 (Annotation) and §4.3 (Inspector, section 6; hard case 3 becomes a step on
+  which the LLM raises no flags).
+
 ## 2. Scope
 
 ### v1

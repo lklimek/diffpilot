@@ -8,8 +8,8 @@ use crate::agent::analyse_flow::{AgentAnnotation, Assessment, FlowIntroduction, 
 use crate::agent::pr_context::PrContextOutput;
 use crate::api::analyses::AnalysisSummary;
 use crate::common::{
-    AnnotationType, Basis, Classification, Evidence, FileRange, FragmentKind, LineRange, LineSide,
-    NodeKind, NotAnalysedCategory, ProvenanceBadge, RiskBand, ThreadLlmStatus,
+    AnnotationType, Basis, Classification, Evidence, FileRange, Flag, FlagLevel, FragmentKind,
+    LineRange, LineSide, NodeKind, NotAnalysedCategory, ProvenanceBadge, RiskBand, ThreadLlmStatus,
 };
 use crate::ids::{AnnotationId, FlowId, StepId};
 
@@ -435,15 +435,28 @@ pub struct Annotation {
     pub was: String,
     /// Behaviour after the pull request.
     pub is: String,
-    /// The consequence, question or note; null for a behaviour annotation.
+    /// The consequence, the flag's title or the note; null for a behaviour annotation.
     pub text: Option<String>,
     /// Evidence lines.
     pub evidence: Vec<Evidence>,
+    /// Present exactly on a flag: its level (`unknown` for a flag stored before levels), scenario and what was
+    /// not checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub flag: Option<Flag>,
 }
 
 impl Annotation {
-    /// Projects a verified agent annotation; `id` is the server id `<step>.a<n>`.
+    /// Projects a verified agent annotation; `id` is the server id `<step>.a<n>`. A flag stored before levels
+    /// (a former question) gets level `unknown` and no scenario.
     pub fn from_agent(id: AnnotationId, agent: AgentAnnotation) -> Self {
+        let flag = (agent.kind == AnnotationType::Flag).then(|| {
+            agent.flag.unwrap_or(Flag {
+                level: FlagLevel::Unknown,
+                scenario: Vec::new(),
+                not_checked: String::new(),
+            })
+        });
         Self {
             id,
             kind: agent.kind,
@@ -456,6 +469,7 @@ impl Annotation {
             is: agent.is,
             text: agent.text,
             evidence: agent.evidence,
+            flag,
         }
     }
 }

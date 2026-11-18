@@ -1,4 +1,5 @@
 import type { Annotation, AnnotationId, RiskBand, Step } from "../../api/generated/types";
+import { countFlags, type FlagCounts } from "../flag/flags";
 
 /**
  * The LLM's rating of steps and their remark count, two separate facts: on the wire a remark has no severity of
@@ -13,6 +14,8 @@ export interface RemarkSummary {
   remarks: number;
   /** Remarks with the user's feedback. */
   handled: number;
+  /** The LLM's flags among the remarks, by level (`flagCountText` phrases them). */
+  flags: FlagCounts;
   /** Steps per rating, highest first, unrated (`null`) last; ratings without steps left out. */
   ratings: { rating: RiskBand | null; steps: number }[];
 }
@@ -38,6 +41,7 @@ export function summariseRemarks(
     rated: top?.steps ?? 0,
     remarks: remarks.length,
     handled: remarks.filter((a) => handled.has(a.id)).length,
+    flags: countFlags(remarks),
     ratings,
   };
 }

@@ -332,17 +332,19 @@ fn golden_prompts_of_fixture_pr_482() {
 
 /// Ask states risks as scenarios (brief §1 addendum 2026-11-18); every other job keeps the question form.
 #[test]
-fn only_ask_states_suspected_defects_as_risk_scenarios() {
-    let question_form =
-        "Suspected defects are `question` annotations phrased as questions to check";
+fn ask_and_flow_analysis_state_suspected_defects_as_risk_scenarios() {
+    let question_form = "Suspected defects are phrased as questions to check";
     let statement_form = "A suspected defect is an LLM statement of risk";
+    let flag_form = "A suspected defect is a `flag` annotation";
     for (name, prompt) in all_prompts() {
         if name.starts_with("context_pack") {
             continue;
         }
         let ask = name.starts_with("ask.");
+        let flow = name.contains("analyse_flow");
         assert_eq!(prompt.contains(statement_form), ask, "{name}");
-        assert_eq!(prompt.contains(question_form), !ask, "{name}");
+        assert_eq!(prompt.contains(flag_form), flow, "{name}");
+        assert_eq!(prompt.contains(question_form), !ask && !flow, "{name}");
     }
 }
 
@@ -409,11 +411,13 @@ fn every_prompt_contains_the_rules_block() {
             instructions.contains(output_rule),
             "{name} lacks {output_rule}"
         );
-        // Ask states risks as scenarios (brief §1 addendum 2026-11-18); every other job asks questions.
+        // Ask and flow analysis state risks as scenarios (brief §1 addenda 2026-11-18); plan and PR context ask.
         let defect_form = if name.starts_with("ask.") {
             "A suspected defect is an LLM statement of risk: a short title naming the risk class, prefixed \"Potential\""
+        } else if name.contains("analyse_flow") {
+            "A suspected defect is a `flag` annotation: a concrete risk scenario, never a question or a verdict."
         } else {
-            "Suspected defects are `question` annotations phrased as questions to check, each ending with \"?\""
+            "Suspected defects are phrased as questions to check, each ending with \"?\""
         };
         for rule in required.into_iter().chain([defect_form]) {
             assert!(instructions.contains(rule), "{name} lacks {rule:?}");
@@ -1013,7 +1017,7 @@ fn plan_lists_context_lines_per_hunk_and_every_moved_block() {
 }
 
 #[test]
-fn analyse_flow_requires_assessments_on_every_step_and_asks_for_questions() {
+fn analyse_flow_requires_assessments_on_every_step_and_raises_flags() {
     let prompts = render_all(LlmLanguage::En);
     let (_, prompt) = prompts
         .iter()
@@ -1028,15 +1032,35 @@ fn analyse_flow_requires_assessments_on_every_step_and_asks_for_questions() {
         "Never split one statement",
         "Do not create steps made only of unchanged context",
         "Never copy behaviour into another annotation",
-        "Questions: ask what a careful reviewer would want answered before approving",
-        "Each is a `question` annotation ending with \"?\"",
+        "Flags: raise a `flag` only for a concrete risk scenario you can state: who acts, the order of events, the outcome and its cost.",
+        "If you cannot state them, it is not a flag",
+        "`level: red`: a likely defect or damage if the scenario is reachable; `level: yellow`: worth a look",
+        "`text` is the title: the risk class, starting \"Potential \"",
+        "a step with a red flag is never rated low",
+        "a risk shared by several steps is flagged once",
         "There is no minimum number; never invent one.",
+        "a concrete `smallest_correction` or an evidenced `flag` on this step",
         "Never make a step of an import, a visibility change or a signature line alone",
         "Set `flow_id` to \"f1\".",
         "`follow_up` requires a named action in `smallest_correction`",
     ] {
         assert!(instructions.contains(rule), "missing {rule:?}");
     }
+    // The prompt names the checker's limits (`analysis::verify`).
+    let steps = analysis::verify::FLAG_SCENARIO_STEPS;
+    for limit in [
+        format!("`scenario`: {} to {} steps", steps.start(), steps.end()),
+        format!(
+            "At most {} flags per step",
+            analysis::verify::MAX_FLAGS_PER_STEP
+        ),
+    ] {
+        assert!(instructions.contains(&limit), "missing {limit:?}");
+    }
+    assert!(
+        !instructions.contains("`question`"),
+        "no question annotations"
+    );
 }
 
 #[test]

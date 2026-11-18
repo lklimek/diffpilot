@@ -23,6 +23,9 @@ use contracts::api::tour::{FlowGraph, MoveFact};
 use contracts::common::{Evidence, FileRanges, LineSide};
 use contracts::ids::{CommitSha, FlowId, StepId};
 
+pub use check_flow::{
+    FLAG_SCENARIO_STEPS, MAX_FLAG_LINE_CHARS, MAX_FLAG_TITLE_CHARS, MAX_FLAGS_PER_STEP,
+};
 pub use facts::MAX_FACTS_BYTES;
 
 use crate::blob::BlobError;
@@ -126,7 +129,7 @@ pub enum VerifyIssueKind {
     FactWithoutEvidence,
     /// A behaviour annotation with an empty `was` or `is`.
     BehaviourMissing,
-    /// `text` null on a consequence, question or note, or set on a behaviour annotation.
+    /// `text` null on a consequence, flag or note, set on a behaviour annotation, or flag details on another type.
     RemarkMismatch,
     /// A base-side step that is not `deleted_site`, or base lines outside the file's hunks.
     BaseSideMisused,
@@ -148,7 +151,7 @@ pub enum VerifyIssueKind {
     MarkupOrLink,
     /// Reviewer-facing text describes missing agent capabilities instead of the change.
     AgentLimitation,
-    /// A risk assessment has no concrete correction or question to resolve.
+    /// A risk assessment has no concrete correction or evidenced flag to resolve.
     AssessmentActionMissing,
     /// A step has no assessment from which to derive the flow rating.
     AssessmentMissing,
@@ -156,6 +159,11 @@ pub enum VerifyIssueKind {
     SchemaMismatch,
     /// A stacked relationship asserted without a server-supplied deterministic fact.
     UnconfirmedStack,
+    /// A flag without level red or yellow, a "Potential …" title, 2 to 7 one-line scenario steps or what was not
+    /// checked; or more flags on a step than allowed.
+    FlagInvalid,
+    /// A step with a red flag rated low.
+    RedFlagOnLowStep,
 }
 
 impl VerifyIssueKind {
@@ -188,6 +196,8 @@ impl VerifyIssueKind {
             Self::AssessmentMissing => "assessment_missing",
             Self::AssessmentActionMissing => "assessment_action_missing",
             Self::UnconfirmedStack => "unconfirmed_stack",
+            Self::FlagInvalid => "flag_invalid",
+            Self::RedFlagOnLowStep => "red_flag_on_low_step",
         }
     }
 }

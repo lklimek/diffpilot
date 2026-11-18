@@ -103,7 +103,27 @@ for (const state of ["default", "wrong", "missed", "noq", "noprofile", "resume"]
   });
 }
 
-test("noq: the step hides Questions and Assessment when the LLM gave none", async ({ page }) => {
+test("a step shows its LLM flags as cards without opening the collapsed assessment", async ({ page }) => {
+  await openTour(page, "default");
+  await page
+    .getByRole("navigation")
+    .getByRole("button", { name: "Flow 1: Send an RPC request with retry" })
+    .click();
+  await page.getByRole("navigation").getByRole("button", { name: "Step 5: Retry allowed?" }).click();
+  const inspector = page.getByRole("complementary", { name: "Inspector" });
+  await expect(inspector.getByRole("button", { name: "Flags (1)" })).toHaveAttribute("aria-expanded", "true");
+  await expect(inspector.getByRole("button", { name: /Assessment$/ })).toHaveAttribute(
+    "aria-expanded",
+    "false",
+  );
+  const card = inspector.locator('[data-annotation-id="f1.5.a3"]');
+  await expect(card.getByText("⚑ Red flag")).toBeVisible();
+  await expect(card.getByText("Potential double broadcast on a late reply:")).toBeVisible();
+  await expect(card.getByRole("list", { name: "Scenario" }).getByRole("listitem")).toHaveCount(4);
+  await expect(card).toContainText("Not checked: Not reproduced against a node; no test was run.");
+});
+
+test("noq: the step hides Flags and Assessment when the LLM gave none", async ({ page }) => {
   await openTour(page, "noq");
   await page
     .getByRole("navigation")
@@ -111,7 +131,7 @@ test("noq: the step hides Questions and Assessment when the LLM gave none", asyn
     .click();
   await page.getByRole("navigation").getByRole("button", { name: "Step 5: Retry allowed?" }).click();
   const inspector = page.getByRole("complementary", { name: "Inspector" });
-  await expect(inspector.getByRole("button", { name: /Questions to check/ })).toHaveCount(0);
+  await expect(inspector.getByRole("button", { name: /^Flags/ })).toHaveCount(0);
   await expect(inspector.getByRole("button", { name: /Assessment$/ })).toHaveCount(0);
 });
 

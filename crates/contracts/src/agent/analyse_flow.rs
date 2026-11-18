@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::common::{
-    AnnotationType, Basis, Blocking, Evidence, FragmentKind, LineSide, Origin, RiskBand,
+    AnnotationType, Basis, Blocking, Evidence, Flag, FragmentKind, LineSide, Origin, RiskBand,
     ThreadLlmStatus,
 };
 use crate::ids::FlowId;
@@ -104,10 +104,13 @@ pub struct AgentAnnotation {
     pub was: String,
     /// Behaviour of these lines after this pull request (hover tooltip; facts only, no risk or verdict).
     pub is: String,
-    /// The consequence, question or note; null for a behaviour annotation (its content is was and is).
+    /// The consequence, the flag's title or the note; null for a behaviour annotation (its content is was and is).
     pub text: Option<String>,
     /// Lines read that support the annotation.
     pub evidence: Vec<Evidence>,
+    /// A flag's level, scenario and what was not checked; null on other types (and absent on flags stored before
+    /// levels).
+    pub flag: Option<Flag>,
 }
 
 /// Assessment of a step at system scale (brief §3); evidence comes before it.

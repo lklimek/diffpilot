@@ -1,4 +1,5 @@
 import { REMARK_LOOK } from "../code-view/changeLook";
+import { flagCountText } from "../flag/flags";
 import { Tooltip } from "../tooltip/Tooltip";
 import type { RemarkSummary } from "./remarks";
 
@@ -37,7 +38,13 @@ export function RemarkPill({ summary, scope, subject, label, withRating = true, 
   const ratingText =
     shown && `${look.label?.split(" ")[0] ?? ""} ${WORD[shown]}${scope === "flow" ? ` ×${rated}` : ""}`;
   const where = `${scope === "flow" ? "in" : "on"} ${subject}`;
-  const count = remarks > 0 ? `${plural(remarks, "LLM remark")} ${where}` : null;
+  // Flags are counted by level ("1 red flag, 2 yellow flags"); other remarks only by number.
+  const flags = flagCountText(summary.flags);
+  const count = flags
+    ? `LLM flags ${where}: ${flags}`
+    : remarks > 0
+      ? `${plural(remarks, "LLM remark")} ${where}`
+      : null;
   const name = shown
     ? scope === "flow"
       ? `LLM rated ${plural(rated, "step")} in ${subject} ${WORD[shown]} (not checked), the highest rating there`

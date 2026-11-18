@@ -44,10 +44,10 @@ describe("StepBlock", () => {
       expect(screen.getByRole("region", { name })).toHaveTextContent(value!);
   });
 
-  it("leaves questions to check to the inspector (brief §4.3)", () => {
+  it("leaves flags to the inspector (brief §4.3, addendum 2026-11-18)", () => {
     render(<StepBlock step={stepOf(tour, "f1.5")} code={null} />);
-    expect(screen.queryByText(/Questions to check/)).toBeNull();
-    expect(screen.queryByText(/can broadcast_tx be sent twice/)).toBeNull();
+    expect(screen.queryByText(/^Flags \(/)).toBeNull();
+    expect(screen.queryByText(/Potential double broadcast/)).toBeNull();
   });
 
   it("keeps the assessment only in the inspector, collapsed until clicked", async () => {
