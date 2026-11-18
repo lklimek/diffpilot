@@ -74,7 +74,7 @@ export async function finishedReview(page: Page): Promise<string> {
       response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/analyses",
   );
   await page.getByRole("button", { name: "Analyze" }).click();
-  const resume = page.getByRole("link", { name: "Resume review" });
+  const resume = page.getByRole("link", { name: "Open review" });
   // The loser of the race stays pending until the page closes; its rejection is expected.
   const existing = await Promise.race([
     created.then(() => false).catch(() => false),
@@ -127,22 +127,37 @@ export function wordingViolations(text: string, patterns: RegExp[] = [WORDS, PER
   });
 }
 
+/** The analysis waiting screen's progress section: the one place a percentage may show (brief §1, §4.2). */
+const PROGRESS_SECTION = 'section[aria-label="Analysis progress"]';
+
 /**
  * Brief §1 / plan §12.4 on the rendered page: no banned phrase and no percentage in the page text (hidden tooltip
- * text included), and no `%` at all in the top bar.
+ * text included; the progress section of the analysis waiting screen may show its percentage), and no `%` at all
+ * in the top bar.
  */
 export async function expectTrustWording(page: Page): Promise<void> {
   // Text nodes joined by spaces (hidden text too; block boundaries keep word boundaries) and the rendered text
-  // (inline markup inside a word).
-  const text = await page.locator("body").evaluate((body) => {
-    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, (node) =>
-      node.parentElement?.closest("script, style") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
-    );
-    const nodes: string[] = [];
-    while (walker.nextNode()) nodes.push(walker.currentNode.textContent ?? "");
-    return `${nodes.join(" ")}\n${(body as HTMLElement).innerText}`;
-  });
-  expect(wordingViolations(text), "banned wording on the page").toEqual([]);
+  // (inline markup inside a word); the second pair leaves the progress section out.
+  const [text, withoutProgress] = await page.locator("body").evaluate((body, progress) => {
+    const collect = (root: HTMLElement, skip: boolean) => {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (node) =>
+        node.parentElement?.closest("script, style") || (skip && node.parentElement?.closest(progress))
+          ? NodeFilter.FILTER_REJECT
+          : NodeFilter.FILTER_ACCEPT,
+      );
+      const nodes: string[] = [];
+      while (walker.nextNode()) nodes.push(walker.currentNode.textContent ?? "");
+      return nodes.join(" ");
+    };
+    const rest = body.cloneNode(true) as HTMLElement;
+    rest.querySelectorAll(progress).forEach((section) => section.remove());
+    const rendered = (body as HTMLElement).innerText;
+    return [`${collect(body, false)}\n${rendered}`, `${collect(body, true)}\n${rest.textContent ?? ""}`];
+  }, PROGRESS_SECTION);
+  expect(
+    [...wordingViolations(text, [WORDS]), ...wordingViolations(withoutProgress, [PERCENT])],
+    "banned wording on the page",
+  ).toEqual([]);
   const banner = page.getByRole("banner");
   if ((await banner.count()) > 0) {
     const top = await banner

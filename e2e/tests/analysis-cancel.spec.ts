@@ -53,7 +53,9 @@ test("failure before any flow: plain description; Retry runs a new round to the 
 
   await page.getByRole("button", { name: "Retry" }).click();
   await expect(page.getByText(/^[1-4] of 5 flows analysed/)).toBeVisible({ timeout: 60_000 });
-  await expect(progress(page)).toHaveAttribute("aria-valuemax", "5");
+  // The bar counts the whole run in percent (brief §4.2); the flow count k of n is in its text.
+  await expect(progress(page)).toHaveAttribute("aria-valuemax", "100");
+  await expect(progress(page)).toHaveAttribute("aria-valuetext", /^\d+% of analysis · [1-4] of 5 flows analysed/);
   await checkScreen(page);
   await waitForState(page, id, "finished");
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();

@@ -49,13 +49,15 @@ test("a question on a step is answered, pinned to the step and kept over a reloa
   await finishedReview(page);
   await openStep(page, 1, 5);
   await ask(page, "Can broadcast_tx send the same transaction twice?");
-  await expect(answers(page)).toContainText("You asked: Can broadcast_tx send the same transaction twice?");
-  await expect(answers(page)).toContainText(ANSWER, { timeout: 60_000 });
+  await expect(answers(page)).toContainText("Asked by you: Can broadcast_tx send the same transaction twice?");
+  // Backtick spans are drawn as code, without the backticks.
+  await expect(answers(page)).toContainText(ANSWER.replaceAll("`", ""), { timeout: 60_000 });
+  await expect(answers(page).locator("code", { hasText: /^broadcast_tx$/ })).toBeVisible();
   await expect(answers(page)).toContainText("LLM answer");
   await expect(answers(page)).toContainText("src/rpc/retry.rs");
   await checkScreen(page);
   await page.reload();
-  await expect(answers(page)).toContainText(ANSWER);
+  await expect(answers(page)).toContainText(ANSWER.replaceAll("`", ""));
 });
 
 test("usage limit: the question waits with the time it runs, then is answered", async ({ page, stack }) => {
