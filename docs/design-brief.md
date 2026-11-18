@@ -682,7 +682,7 @@ The rule above covers only plain material, read from the Rust lexer's tokens (ne
   After a cancel Home says "Analysis cancelled. Check the PR to start again.". Supersedes the start on "Analyze"
   and "Re-analyze", and "Analysis cancelled — analyze again", in §4.1 and the separate "Analyze anyway" step.
 - **Language of an analysis.** Wherever an analysis is offered or shown (Home's check card, the progress screen
-  and Tour top bar) a small tag names the language of its LLM texts ("EN" / "PL"). An existing analysis in
+  and Tour top bar) a small tag names the language of its LLM texts ("EN" / "PL" / "RU"). An existing analysis in
   another language than the user's setting is still offered first ("Open review"); a secondary
   "Analyse again in <language>" starts one in the user's language.
 - **Flows on request.** Flows are analysed only when the user asks: "Analyse this flow" on a flow not analysed

@@ -1821,7 +1821,7 @@ message: string, };
 /**
  * Language of LLM-written texts.
  */
-export type LlmLanguage = "en" | "pl";
+export type LlmLanguage = "en" | "pl" | "ru";
 
 /**
  * One model available in this deployment.

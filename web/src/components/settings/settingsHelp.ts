@@ -127,9 +127,9 @@ const HELP = {
     section: "Language",
     title: "Language of LLM texts",
     what: "The language of explanations, questions and assessments the LLM writes for you.",
-    when: "Read when an analysis starts; an analysis keeps the language it started with, its Ask answers too.",
+    when: "Read when an analysis starts; an analysis keeps the language it started with, its Ask answers too. Dashboard ranking texts follow it from the next refresh; until they are judged again they show as provisional.",
     empty: "English.",
-    limits: "English or Polski.",
+    limits: "English, Polski or Русский.",
     example: "Polski, then analyse the pull request again to get its texts in Polish.",
   },
   app_installations: {

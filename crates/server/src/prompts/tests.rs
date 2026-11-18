@@ -166,6 +166,7 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
     let lang = match language {
         LlmLanguage::En => "en",
         LlmLanguage::Pl => "pl",
+        LlmLanguage::Ru => "ru",
     };
     let plan_input = PlanInput {
         job,
@@ -247,6 +248,7 @@ fn render_all(language: LlmLanguage) -> Vec<(String, String)> {
 fn all_prompts() -> Vec<(String, String)> {
     let mut all = render_all(LlmLanguage::En);
     all.extend(render_all(LlmLanguage::Pl));
+    all.extend(render_all(LlmLanguage::Ru));
     all
 }
 
@@ -723,7 +725,18 @@ fn instruction_files_get_the_t14_notice_in_every_prompt() {
 fn language_parameter_sets_the_llm_text_language() {
     let english = render_all(LlmLanguage::En);
     let polish = render_all(LlmLanguage::Pl);
-    for ((name, en), (_, pl)) in english.iter().zip(&polish) {
+    let russian = render_all(LlmLanguage::Ru);
+    for (((name, en), (_, pl)), (_, ru)) in english.iter().zip(&polish).zip(&russian) {
+        assert!(
+            ru.contains("Write every text value of the output in Russian (русский)."),
+            "{name}"
+        );
+        assert!(
+            ru.contains("Rules 2 to 4 apply to the Russian wording as well."),
+            "{name}"
+        );
+        let differing_ru = en.lines().zip(ru.lines()).filter(|(a, b)| a != b).count();
+        assert_eq!(differing_ru, 1, "{name}: only the language rule differs");
         assert!(
             en.contains("Write every text value of the output in English."),
             "{name}"

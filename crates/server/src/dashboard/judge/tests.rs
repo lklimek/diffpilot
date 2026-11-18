@@ -708,6 +708,8 @@ fn prompt_names_the_users_language() {
     };
     assert!(english.contains(&rule("English")), "{english}");
     assert!(polish.contains(&rule("Polish (polski)")), "{polish}");
+    let russian = prompt::render(&golden_input(), LlmLanguage::Ru).expect("prompt");
+    assert!(russian.contains(&rule("Russian (русский)")), "{russian}");
     assert!(!polish.contains("{{language}}"));
 }
 

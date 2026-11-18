@@ -14,6 +14,7 @@ pub(super) fn render(input: &JudgeWorkInput, language: LlmLanguage) -> Result<St
     let name = match language {
         LlmLanguage::En => "English",
         LlmLanguage::Pl => "Polish (polski)",
+        LlmLanguage::Ru => "Russian (русский)",
     };
     Ok(TEMPLATE
         .replacen(LANGUAGE, name, 1)

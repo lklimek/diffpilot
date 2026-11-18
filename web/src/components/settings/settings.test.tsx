@@ -52,6 +52,19 @@ describe("LanguageCard", () => {
     expect(document.body).toHaveTextContent("The interface stays English.");
   });
 
+  it("offers English, Polish and Russian", async () => {
+    const onChange = vi.fn();
+    render(<LanguageCard language="pl" busy={false} onChange={onChange} />);
+    const select = screen.getByLabelText(/written in/);
+    expect(Array.from((select as HTMLSelectElement).options, (o) => [o.value, o.text])).toEqual([
+      ["en", "English"],
+      ["pl", "Polski"],
+      ["ru", "Русский"],
+    ]);
+    await userEvent.selectOptions(select, "ru");
+    expect(onChange).toHaveBeenCalledWith("ru");
+  });
+
   it("is disabled while saving", () => {
     render(<LanguageCard language="pl" busy onChange={() => {}} />);
     expect(screen.getByLabelText(/written in/)).toBeDisabled();

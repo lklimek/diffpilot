@@ -219,7 +219,7 @@ basic format, missing seconds, `±hh`, `±hhmm` and sub-minute offsets, comma fr
   (`GET /user/installations`, suspended ones left out); when the user token is missing, GitHub rejects it or
   GitHub fails, `app_installations` is `null` ("not checked", no cause given; signing in again may help) and the
   rest of Settings is still returned, the session stays valid; `[]` means none installed. After a GitHub 401 the
-  next request refreshes the user token; if GitHub rejects the refresh, the sign-in ends (later requests: 401). `PUT …/settings/language` accepts only `en` and `pl`.
+  next request refreshes the user token; if GitHub rejects the refresh, the sign-in ends (later requests: 401). `PUT …/settings/language` accepts only `en`, `pl` and `ru`.
 - **Personal state indicator**: every current HTTP/SSE `AnalysisSummary` includes `has_my_state`, true iff
   the current reader has a stored `review_states` row (even an explicitly saved empty one). It never derives
   from another user's state or merely from the existence of the shared analysis. Older payloads may omit it.
@@ -440,7 +440,7 @@ Old resolve responses without `size_warning`, `size` or `planning_estimate` rema
 `analysis` in the resolve response is the tenant's latest analysis of the pull request whatever its language:
 usable analyses (not cancelled; a failed one can be retried) before cancelled ones, then the user's current
 language before another, then the newest. Every
-`AnalysisSummary` carries `language` (`en` | `pl`), so a client can label it. Changing the language therefore
+`AnalysisSummary` carries `language` (`en` | `pl` | `ru`), so a client can label it. Changing the language therefore
 does not hide an existing analysis; `POST /api/v1/analyses` still creates an analysis per head and language
 (409 only when a live one exists for this head and the user's language), so analysing again in the new
 language stays an explicit action.

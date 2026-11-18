@@ -68,6 +68,11 @@
           "description": "Polish.",
           "type": "string",
           "const": "pl"
+        },
+        {
+          "description": "Russian.",
+          "type": "string",
+          "const": "ru"
         }
       ]
     }

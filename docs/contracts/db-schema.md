@@ -12,7 +12,7 @@ aggregate) and sees `DbError {NotFound, Conflict, NotImplemented, Json, Storage}
 |---|---|---|
 | `tenants` | tenants; `default` seeded | – |
 | `tenant_allowed_logins` | sign-in allowlist (ADR-007); seeds `lklimek`, `Claudius-Maginificent` | login `NOCASE`; `github_id` bound once at first sign-in with `bound_at`; `UNIQUE(tenant_id, github_id)` |
-| `users` | GitHub users (id, login, name, avatar, LLM language) | no `tenant_id` (memberships) |
+| `users` | GitHub users (id, login, name, avatar, LLM language `en`, `pl` or `ru`; `ru` since migration 0010) | no `tenant_id` (memberships) |
 | `memberships` | user ↔ tenant | – |
 | `oauth_logins` | OAuth state + encrypted PKCE verifier, short-lived | – |
 | `sessions` | cookie sessions, token hash only, CSRF token | – |
