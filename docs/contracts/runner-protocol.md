@@ -16,7 +16,7 @@ job; 409 `conflict` for a stale attempt, a job that is no longer claimed or runn
 the same attempt; 400 malformed body.
 
 ## Claim
-- The runner polls `claim` every 5 s while idle, reporting the credentials it holds (`usable` false after a
+- The runner polls `claim` every 1 s while idle (5 s after a failed claim), reporting the credentials it holds (`usable` false after a
   failed refresh, ADR-003) and the sessions it deleted (`dropped_sessions`).
 - The server picks the next runnable job: `queued`, credential usable, not paused and idle, no running job of
   the same PR (claim exclusion and triggers), analysis or credential (partial unique indexes), Ask (`priority` 0) before batch (1), then oldest. It increments

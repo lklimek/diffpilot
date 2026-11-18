@@ -802,7 +802,16 @@ fn v1_stop_fits_inside_the_lease() {
         t.heartbeat * 2 < t.fence_after_send,
         "two lost heartbeats stay inside the deadline"
     );
-    assert_eq!(t.idle_poll, Duration::from_secs(5));
+    assert_eq!(
+        t.idle_poll,
+        Duration::from_secs(1),
+        "an Ask waits at most 1 s"
+    );
+    assert_eq!(
+        t.error_poll,
+        Duration::from_secs(5),
+        "failed claims retry slower"
+    );
 }
 
 #[tokio::test]

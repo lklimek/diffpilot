@@ -35,8 +35,10 @@ const MAX_PENDING_EVENTS: usize = 1000;
 const MAX_PENDING_BYTES: usize = 256 * 1024;
 /// How often expired agent sessions are looked for.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
-/// Idle claim interval in [`LeaseTiming`] seconds.
-const IDLE_POLL_SECS: u32 = 5;
+/// Idle claim interval in [`LeaseTiming`] seconds: the longest an Ask waits for an idle runner.
+const IDLE_POLL_SECS: u32 = 1;
+/// Claim interval after a failed claim, in [`LeaseTiming`] seconds.
+const ERROR_POLL_SECS: u32 = 5;
 /// Longest pause between two result attempts, in [`LeaseTiming`] seconds.
 const RESULT_RETRY_MAX_SECS: u32 = 15;
 
@@ -57,6 +59,8 @@ pub struct Timing {
     pub output_retry: [Duration; 3],
     /// Claim interval while idle.
     pub idle_poll: Duration,
+    /// Claim interval after a failed claim.
+    pub error_poll: Duration,
     /// One [`LeaseTiming`] second.
     pub unit: Duration,
 }
@@ -73,6 +77,7 @@ impl Timing {
             kill_and_cleanup: secs(lease.kill_and_cleanup_secs),
             output_retry: lease.output_retry_secs.map(secs),
             idle_poll: secs(IDLE_POLL_SECS),
+            error_poll: secs(ERROR_POLL_SECS),
             unit,
         }
     }
@@ -253,20 +258,24 @@ impl Worker {
                 skills.refresh_if_due().await;
             }
             let polled = self.poll_once().await;
-            match polled {
+            let pause = match polled {
                 Ok(Some(end)) => {
                     tracing::trace!(?end, "claiming the next job at once");
                     continue;
                 }
-                Ok(None) => {}
+                Ok(None) => self.timing.idle_poll,
                 Err(ClientError::Rejected(StatusCode::UNAUTHORIZED)) => {
                     tracing::error!(
                         "the server rejected the runner secret; check SR_RUNNER_SECRET"
                     );
+                    self.timing.error_poll
                 }
-                Err(error) => tracing::warn!(%error, "claim failed; retrying"),
-            }
-            sleep(self.timing.idle_poll).await;
+                Err(error) => {
+                    tracing::warn!(%error, "claim failed; retrying");
+                    self.timing.error_poll
+                }
+            };
+            sleep(pause).await;
         }
     }
 
