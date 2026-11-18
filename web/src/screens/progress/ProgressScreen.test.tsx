@@ -92,11 +92,11 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
     expect(screen.getByText("Bad output.")).toBeVisible();
   });
 
-  it("Cancel analysis returns to Home with 'Analysis cancelled. Check the PR to start again.'", async () => {
+  it("Cancel analysis returns to the review start page with 'Analysis cancelled. Check the PR to start again.'", async () => {
     const router = await showAt({ state: "running", done: 1, total: 5 });
     await userEvent.click(screen.getByRole("button", { name: "Cancel analysis" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm cancel" }));
-    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/review"));
     expect(liveAnalysis().state).toEqual({ state: "cancelled" });
     expect(await screen.findByText("Analysis cancelled. Check the PR to start again.")).toBeVisible();
     expect(screen.getByLabelText("GitHub pull request URL")).toHaveValue(analysis.pr.html_url);
@@ -105,7 +105,7 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
   it("cancelled elsewhere (event): returns to Home as well", async () => {
     const router = await showAt({ state: "running", done: 1, total: 5 });
     emit({ state: "cancelled" });
-    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/review"));
   });
 
   it("a failed cancel request is reported and the analysis stays", async () => {
@@ -140,6 +140,6 @@ describe("Analysis progress (brief §4.2, sse-events.md)", () => {
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     act(() => FakeEventSource.latest().fail());
     expect(await screen.findByRole("alert")).toHaveTextContent("This analysis does not exist.");
-    expect(screen.getByRole("link", { name: "Back to Home" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "My work" })).toHaveAttribute("href", "/");
   });
 });

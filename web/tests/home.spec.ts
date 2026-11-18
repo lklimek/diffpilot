@@ -5,14 +5,14 @@ import { ANALYSIS_ID, expectTrustWording } from "./support";
 const PROGRESS = new RegExp(`/analyses/${ANALYSIS_ID}/progress$`);
 
 test("sign in → analyze → progress → resume review", async ({ page }) => {
-  await page.goto("/?scenario=signed-out");
+  await page.goto("/review?scenario=signed-out");
   const signIn = page.getByRole("link", { name: "Sign in with GitHub" });
   await expect(signIn).toHaveAttribute("href", "/auth/github/login");
   await expectTrustWording(page);
   await expectAccessible(page);
 
   // The OAuth callback redirects to Home signed in (the mocks have no GitHub).
-  await page.goto("/");
+  await page.goto("/review");
   await expect(page.getByRole("banner")).toContainText("alice");
   await expectTooltips(page);
   await analyze(page);
@@ -37,7 +37,7 @@ test("sign in → analyze → progress → resume review", async ({ page }) => {
 
 test("signed in: URL form, example and side card use the width at 3440", async ({ page }) => {
   await page.setViewportSize({ width: 3440, height: 1440 });
-  await page.goto("/");
+  await page.goto("/review");
   const field = page.getByLabel("GitHub pull request URL");
   const aside = page.getByRole("complementary", { name: "What happens after Start analysis" });
   await expect(aside).toBeVisible();
@@ -67,18 +67,18 @@ for (const [url, message] of [
   ["https://github.com/acme/node-client/pull/9", "This pull request does not exist"],
 ] as const) {
   test(`error: ${url}`, async ({ page }) => {
-    await page.goto("/");
+    await page.goto("/review");
     await analyze(page, url);
     const alert = page.getByRole("alert");
     await expect(alert).toContainText("Cannot open this pull request.");
     await expect(alert).toContainText(message);
-    await expect(page).toHaveURL(/\/$/);
+    await expect(page).toHaveURL(/\/review$/);
     await expectTrustWording(page);
   });
 }
 
 test("existing analysis: Open review (Resume review once started) opens the review", async ({ page }) => {
-  await page.goto("/?state=resume");
+  await page.goto("/review?state=resume");
   await analyze(page);
   const banner = page.getByRole("status").filter({ hasText: "Analysis found." });
   await expect(banner).toContainText("This PR head is already analysed.");
@@ -88,7 +88,7 @@ test("existing analysis: Open review (Resume review once started) opens the revi
 });
 
 test("head moved: banner, Start analysis starts a fresh analysis", async ({ page }) => {
-  await page.goto("/?scenario=head-moved");
+  await page.goto("/review?scenario=head-moved");
   await analyze(page);
   const banner = page.getByRole("alert").filter({ hasText: "The PR has moved." });
   await expect(banner).toContainText("This analysis is for 52d2da1; the PR is now at d41b7a0.");
@@ -103,13 +103,13 @@ test("head moved: banner, Start analysis starts a fresh analysis", async ({ page
 });
 
 test("analysis in progress and failed analysis lead to the progress screen", async ({ page }) => {
-  await page.goto("/?scenario=existing-running");
+  await page.goto("/review?scenario=existing-running");
   await analyze(page);
   await page.getByRole("link", { name: "Show progress" }).click();
   await expect(page).toHaveURL(PROGRESS);
   await expect(page.getByText("2 of 5 flows analysed")).toBeVisible();
 
-  await page.goto("/?scenario=existing-failed");
+  await page.goto("/review?scenario=existing-failed");
   await analyze(page);
   await expect(page.getByRole("alert")).toContainText(
     "The analysis stopped because of a server error. Retry the analysis.",
@@ -119,7 +119,7 @@ test("analysis in progress and failed analysis lead to the progress screen", asy
 });
 
 test("without the GitHub App: warning, Start analysis anyway", async ({ page }) => {
-  await page.goto("/?scenario=no-app");
+  await page.goto("/review?scenario=no-app");
   await analyze(page);
   const banner = page
     .getByRole("alert")
@@ -135,7 +135,7 @@ test("cancelled: Home says 'Analysis cancelled. Check the PR to start again.' wi
   await page.goto(`/analyses/${ANALYSIS_ID}/progress?scenario=running`);
   await page.getByRole("button", { name: "Cancel analysis" }).click();
   await page.getByRole("button", { name: "Confirm cancel", exact: true }).click();
-  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\/review$/);
   await expect(
     page.getByRole("status").filter({ hasText: "Analysis cancelled. Check the PR to start again." }),
   ).toBeVisible();

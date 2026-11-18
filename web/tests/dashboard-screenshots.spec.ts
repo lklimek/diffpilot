@@ -25,7 +25,7 @@ const SCENARIOS = [
 const NC482 = "feat(rpc): retry with backoff on timeout";
 
 async function openDashboard(page: Page, scenario: string) {
-  await page.goto(`/my-work?dashboard=${scenario}`);
+  await page.goto(`/?dashboard=${scenario}`);
   await expect(page.getByRole("heading", { name: "My work", level: 1 })).toBeVisible();
   await expect(page.getByText(/^Loading/)).toHaveCount(0);
   await page.waitForTimeout(300);

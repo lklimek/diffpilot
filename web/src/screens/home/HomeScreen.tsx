@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router";
 import { ApiError } from "../../api/client";
 import type { ResolvePrResponse } from "../../api/generated/types";
@@ -14,12 +14,11 @@ import { COMMENTING_UNAVAILABLE_WHY } from "../../components/comment/unavailable
 import { SignInCard } from "../../components/sign-in/SignInCard";
 import { StatusMessage } from "../../components/status/StatusMessage";
 import { Tooltip } from "../../components/tooltip/Tooltip";
-import { TopBar } from "../../components/top-bar/TopBar";
 import { LANGUAGE_NAME, LanguageTag } from "../../components/language-tag/LanguageTag";
 import { analysisHref, homeOutcome, reviewLabel } from "./outcome";
 import { usePrTabSubject, useTabActivity } from "../../app/tabStatus";
 
-/** Router state of Home after Cancel analysis on the progress screen. */
+/** Router state of the review start page after Cancel analysis on the progress screen. */
 export interface HomeState {
   /** PR URL of the cancelled analysis (fills the field). */
   cancelledPrUrl?: string;
@@ -55,9 +54,16 @@ export function HomeScreen() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const { cancelledPrUrl } = (useLocation().state ?? {}) as HomeState;
-  // `/?pr=<url>` (a refused comment's way back to analysing): fills the field, starts nothing.
+  // `/review?pr=<url>` (a dashboard row, a refused comment's way back): fills the field and checks the PR on
+  // arrival, so new / found / moved shows at once; nothing starts.
   const givenPrUrl = params.get("pr") ?? undefined;
   const user = me.data?.user ?? null;
+  const checkedOnArrival = useRef(false);
+  useEffect(() => {
+    if (checkedOnArrival.current || !givenPrUrl || !user || cancelledPrUrl) return;
+    checkedOnArrival.current = true;
+    resolve.mutate(givenPrUrl);
+  }, [givenPrUrl, user, cancelledPrUrl, resolve]);
   const loginErrorCode = params.get("login_error");
   const loginError = loginErrorCode === null ? null : (LOGIN_ERRORS[loginErrorCode] ?? LOGIN_FAILED);
 
@@ -143,215 +149,190 @@ export function HomeScreen() {
     );
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <TopBar login={user?.login ?? null} />
-      <main id="main" className="flex-1 px-8 py-5">
-        <div className="grid items-start gap-6 min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
-          <div className="grid content-start gap-3">
-            {loginError && (
-              <Banner tone="error" title={loginError[0]}>
-                {loginError[1]}
+    <div className="grid items-start gap-6 min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+      <div className="grid content-start gap-3">
+        {loginError && (
+          <Banner tone="error" title={loginError[0]}>
+            {loginError[1]}
+          </Banner>
+        )}
+        {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
+        {me.isError && <StatusMessage kind="error">{errorText(me.error)}</StatusMessage>}
+        {me.isSuccess && !user && <SignInCard loginHref="/auth/github/login" />}
+        {user && (
+          <>
+            <h1 className="text-[22px] font-bold">Which pull request?</h1>
+            <PrUrlForm
+              initialUrl={cancelledPrUrl ?? givenPrUrl}
+              busy={busy}
+              checking={resolve.isPending}
+              inputRef={field}
+              onSubmit={submit}
+              onChange={edited}
+            />
+            {cancelledPrUrl && resolve.isIdle && (
+              <Banner tone="info" title="Analysis cancelled. Check the PR to start again.">
+                Its partial results were discarded.
               </Banner>
             )}
-            {me.isPending && <StatusMessage kind="loading">Loading…</StatusMessage>}
-            {me.isError && <StatusMessage kind="error">{errorText(me.error)}</StatusMessage>}
-            {me.isSuccess && !user && <SignInCard loginHref="/auth/github/login" />}
-            {user && (
-              <>
-                <h1 className="text-[22px] font-bold">Which pull request?</h1>
-                <PrUrlForm
-                  initialUrl={cancelledPrUrl ?? givenPrUrl}
-                  busy={busy}
-                  checking={resolve.isPending}
-                  inputRef={field}
-                  onSubmit={submit}
-                  onChange={edited}
-                />
-                {cancelledPrUrl && resolve.isIdle && (
-                  <Banner tone="info" title="Analysis cancelled. Check the PR to start again.">
-                    Its partial results were discarded.
+            <div aria-live="polite" className="grid gap-3">
+              {resolve.isError && (
+                <PrCheckCard pr={null} onCancel={clear}>
+                  <Banner tone="error" title="Cannot open this pull request.">
+                    {errorText(resolve.error)}
                   </Banner>
-                )}
-                <div aria-live="polite" className="grid gap-3">
-                  {resolve.isError && (
-                    <PrCheckCard pr={null} onCancel={clear}>
-                      <Banner tone="error" title="Cannot open this pull request.">
-                        {errorText(resolve.error)}
-                      </Banner>
-                    </PrCheckCard>
+                </PrCheckCard>
+              )}
+              {resolved && (
+                <PrCheckCard
+                  pr={resolved.pr}
+                  // A size warning already states the size; the facts line is for every other PR.
+                  size={resolved.size_warning ? undefined : resolved.size}
+                  estimate={resolved.planning_estimate}
+                  onCancel={clear}
+                  actions={(describedBy) => (
+                    <>
+                      {start(describedBy)}
+                      {again}
+                    </>
                   )}
-                  {resolved && (
-                    <PrCheckCard
-                      pr={resolved.pr}
-                      // A size warning already states the size; the facts line is for every other PR.
-                      size={resolved.size_warning ? undefined : resolved.size}
-                      estimate={resolved.planning_estimate}
-                      onCancel={clear}
-                      actions={(describedBy) => (
-                        <>
-                          {start(describedBy)}
-                          {again}
-                        </>
-                      )}
+                >
+                  {resolved.size_warning && <SizeWarning warning={resolved.size_warning} />}
+                  {resolved && !resolved.commenting_available && (
+                    <Banner
+                      tone="warn"
+                      title={`Commenting is not available for ${resolved.pr.repo.owner}/${resolved.pr.repo.name} right now.`}
                     >
-                      {resolved.size_warning && <SizeWarning warning={resolved.size_warning} />}
-                      {resolved && !resolved.commenting_available && (
-                        <Banner
-                          tone="warn"
-                          title={`Commenting is not available for ${resolved.pr.repo.owner}/${resolved.pr.repo.name} right now.`}
-                        >
-                          {COMMENTING_UNAVAILABLE_WHY} The analysis still runs; comments cannot be written
-                          into your pending review while this lasts. The installations are listed in{" "}
-                          <Link to="/settings">Settings</Link>.
-                        </Banner>
-                      )}
-                      {outcome?.kind === "resume" && outcome.analysis.state.state === "finished" && (
-                        <Banner
-                          tone="info"
-                          title="Analysis found."
-                          actions={
-                            <Tooltip
-                              tip={
-                                outcome.analysis.has_my_state === true
-                                  ? "Returns to your review of this analysis where you left it."
-                                  : "Opens the review of this analysis."
-                              }
-                            >
-                              <Link
-                                to={analysisHref(outcome.analysis)}
-                                data-primary
-                                className={SMALL_PRIMARY}
-                              >
-                                {reviewLabel(outcome.analysis)}
-                              </Link>
-                            </Tooltip>
-                          }
-                        >
-                          <LanguageTag language={outcome.analysis.language} />{" "}
-                          {outcome.analysis.has_my_state === true
-                            ? "This PR head is already analysed. Your ticks, answers and last viewed block are kept."
-                            : "This PR head is already analysed."}
-                        </Banner>
-                      )}
-                      {outcome?.kind === "in_progress" && (
-                        <Banner
-                          tone="info"
-                          title="An analysis of this PR is in progress."
-                          actions={
-                            <>
-                              {outcome.analysis.state.state === "paused" &&
-                                outcome.analysis.state.reason === "user" && (
-                                  <Tooltip
-                                    tip={busyTip("Continues this analysis with its saved results.", busy)}
-                                  >
-                                    <button
-                                      type="button"
-                                      aria-disabled={busy || undefined}
-                                      className={SMALL_PRIMARY}
-                                      onClick={() =>
-                                        !busy &&
-                                        resume.mutate(outcome.analysis.id, {
-                                          onSuccess: (a) => void navigate(analysisHref(a)),
-                                        })
-                                      }
-                                    >
-                                      Resume
-                                    </button>
-                                  </Tooltip>
-                                )}
-                              <Tooltip
-                                tip={
-                                  outcome.analysis.review_ready
-                                    ? "Opens accepted results while the remaining flows are analysed."
-                                    : "Opens the progress of the running analysis."
-                                }
-                              >
-                                <Link
-                                  to={analysisHref(outcome.analysis)}
-                                  data-primary
-                                  className={SMALL_PRIMARY}
-                                >
-                                  {outcome.analysis.review_ready
-                                    ? reviewLabel(outcome.analysis)
-                                    : "Show progress"}
-                                </Link>
-                              </Tooltip>
-                            </>
-                          }
-                        >
-                          <LanguageTag language={outcome.analysis.language} />{" "}
-                          {outcome.analysis.state.state === "paused" &&
-                            `${pausedText(outcome.analysis.state)}${outcome.analysis.state.reason === "user" ? "" : `. ${PAUSE_REASON}`} `}
-                          Nothing new is started.
-                        </Banner>
-                      )}
-                      {outcome?.kind === "failed" && (
-                        <Banner
-                          tone="error"
-                          title="The last analysis of this PR failed."
-                          actions={
-                            <Tooltip
-                              tip={
-                                outcome.analysis.state.state === "failed" &&
-                                outcome.analysis.state.reason === "configuration"
-                                  ? "Opens the configuration problem that needs administrator action."
-                                  : "Opens the failed analysis, where you can retry it."
-                              }
-                            >
-                              <Link
-                                to={analysisHref(outcome.analysis)}
-                                data-primary
-                                className={SMALL_PRIMARY}
-                              >
-                                {outcome.analysis.state.state === "failed" &&
-                                outcome.analysis.state.reason === "configuration"
-                                  ? "Show details"
-                                  : "Show details and retry"}
-                              </Link>
-                            </Tooltip>
-                          }
-                        >
-                          <LanguageTag language={outcome.analysis.language} /> {outcome.message}
-                        </Banner>
-                      )}
-                      {outcome?.kind === "head_moved" && resolved && (
-                        <Banner
-                          tone="warn"
-                          title="The PR has moved."
-                          actions={
-                            <Tooltip tip="Opens the analysis of the older head.">
-                              <Link
-                                to={analysisHref(outcome.analysis)}
-                                className={buttonClass("plain", true)}
-                              >
-                                Open the old analysis
-                              </Link>
-                            </Tooltip>
-                          }
-                        >
-                          <LanguageTag language={outcome.analysis.language} /> This analysis is for{" "}
-                          {short(outcome.analysis.pr.head_sha)}; the PR is now at{" "}
-                          {short(resolved.pr.head_sha)}. Start analysis starts a fresh analysis; ticks are not
-                          carried over.
-                        </Banner>
-                      )}
-                      {resume.isError && (
-                        <StatusMessage kind="error">{errorText(resume.error)}</StatusMessage>
-                      )}
-                      {create.isError && (
-                        <Banner tone="error" title="Cannot start the analysis.">
-                          {errorText(create.error)}
-                        </Banner>
-                      )}
-                    </PrCheckCard>
+                      {COMMENTING_UNAVAILABLE_WHY} The analysis still runs; comments cannot be written into
+                      your pending review while this lasts. The installations are listed in{" "}
+                      <Link to="/settings">Settings</Link>.
+                    </Banner>
                   )}
-                </div>
-              </>
-            )}
-          </div>
-          {user && <AnalyzeHelp settingsHref="/settings" />}
-        </div>
-      </main>
+                  {outcome?.kind === "resume" && outcome.analysis.state.state === "finished" && (
+                    <Banner
+                      tone="info"
+                      title="Analysis found."
+                      actions={
+                        <Tooltip
+                          tip={
+                            outcome.analysis.has_my_state === true
+                              ? "Returns to your review of this analysis where you left it."
+                              : "Opens the review of this analysis."
+                          }
+                        >
+                          <Link to={analysisHref(outcome.analysis)} data-primary className={SMALL_PRIMARY}>
+                            {reviewLabel(outcome.analysis)}
+                          </Link>
+                        </Tooltip>
+                      }
+                    >
+                      <LanguageTag language={outcome.analysis.language} />{" "}
+                      {outcome.analysis.has_my_state === true
+                        ? "This PR head is already analysed. Your ticks, answers and last viewed block are kept."
+                        : "This PR head is already analysed."}
+                    </Banner>
+                  )}
+                  {outcome?.kind === "in_progress" && (
+                    <Banner
+                      tone="info"
+                      title="An analysis of this PR is in progress."
+                      actions={
+                        <>
+                          {outcome.analysis.state.state === "paused" &&
+                            outcome.analysis.state.reason === "user" && (
+                              <Tooltip tip={busyTip("Continues this analysis with its saved results.", busy)}>
+                                <button
+                                  type="button"
+                                  aria-disabled={busy || undefined}
+                                  className={SMALL_PRIMARY}
+                                  onClick={() =>
+                                    !busy &&
+                                    resume.mutate(outcome.analysis.id, {
+                                      onSuccess: (a) => void navigate(analysisHref(a)),
+                                    })
+                                  }
+                                >
+                                  Resume
+                                </button>
+                              </Tooltip>
+                            )}
+                          <Tooltip
+                            tip={
+                              outcome.analysis.review_ready
+                                ? "Opens accepted results while the remaining flows are analysed."
+                                : "Opens the progress of the running analysis."
+                            }
+                          >
+                            <Link to={analysisHref(outcome.analysis)} data-primary className={SMALL_PRIMARY}>
+                              {outcome.analysis.review_ready
+                                ? reviewLabel(outcome.analysis)
+                                : "Show progress"}
+                            </Link>
+                          </Tooltip>
+                        </>
+                      }
+                    >
+                      <LanguageTag language={outcome.analysis.language} />{" "}
+                      {outcome.analysis.state.state === "paused" &&
+                        `${pausedText(outcome.analysis.state)}${outcome.analysis.state.reason === "user" ? "" : `. ${PAUSE_REASON}`} `}
+                      Nothing new is started.
+                    </Banner>
+                  )}
+                  {outcome?.kind === "failed" && (
+                    <Banner
+                      tone="error"
+                      title="The last analysis of this PR failed."
+                      actions={
+                        <Tooltip
+                          tip={
+                            outcome.analysis.state.state === "failed" &&
+                            outcome.analysis.state.reason === "configuration"
+                              ? "Opens the configuration problem that needs administrator action."
+                              : "Opens the failed analysis, where you can retry it."
+                          }
+                        >
+                          <Link to={analysisHref(outcome.analysis)} data-primary className={SMALL_PRIMARY}>
+                            {outcome.analysis.state.state === "failed" &&
+                            outcome.analysis.state.reason === "configuration"
+                              ? "Show details"
+                              : "Show details and retry"}
+                          </Link>
+                        </Tooltip>
+                      }
+                    >
+                      <LanguageTag language={outcome.analysis.language} /> {outcome.message}
+                    </Banner>
+                  )}
+                  {outcome?.kind === "head_moved" && resolved && (
+                    <Banner
+                      tone="warn"
+                      title="The PR has moved."
+                      actions={
+                        <Tooltip tip="Opens the analysis of the older head.">
+                          <Link to={analysisHref(outcome.analysis)} className={buttonClass("plain", true)}>
+                            Open the old analysis
+                          </Link>
+                        </Tooltip>
+                      }
+                    >
+                      <LanguageTag language={outcome.analysis.language} /> This analysis is for{" "}
+                      {short(outcome.analysis.pr.head_sha)}; the PR is now at {short(resolved.pr.head_sha)}.
+                      Start analysis starts a fresh analysis; ticks are not carried over.
+                    </Banner>
+                  )}
+                  {resume.isError && <StatusMessage kind="error">{errorText(resume.error)}</StatusMessage>}
+                  {create.isError && (
+                    <Banner tone="error" title="Cannot start the analysis.">
+                      {errorText(create.error)}
+                    </Banner>
+                  )}
+                </PrCheckCard>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+      {user && <AnalyzeHelp settingsHref="/settings" />}
     </div>
   );
 }

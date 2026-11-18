@@ -66,7 +66,7 @@ test("pause and resume retain progress; cancellation explains loss before confir
 });
 
 test("Home offers Resume for a user pause", async ({ page }) => {
-  await page.goto("/?scenario=user-paused");
+  await page.goto("/review?scenario=user-paused");
   await analyze(page);
   await expect(page.getByText(/Resume when you want/)).toBeVisible();
   await page.getByRole("button", { name: "Resume", exact: true }).click();

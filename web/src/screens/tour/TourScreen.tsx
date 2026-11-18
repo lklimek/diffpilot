@@ -3,6 +3,7 @@ import { FlowWork } from "../../components/progress/FlowWork";
 import { isIdle } from "../../components/progress/idle";
 import { RemarkPill } from "../../components/remark-pills/RemarkPills";
 import { lineReference } from "../../components/ask/AskForm";
+import { REVIEW_START_PATH } from "../dashboard/paths";
 import { answerComment, flagComment } from "../../components/comment/prefill";
 import { remarkTarget, summariseRemarks } from "../../components/remark-pills/remarks";
 import { useSectionState } from "../../components/inspector/sectionState";
@@ -122,7 +123,7 @@ export function TourScreen() {
     return (
       <Shell login={login}>
         <StatusMessage kind="error">{errorText(tour.error)}</StatusMessage>
-        <a href="/">Back to Home</a>
+        <a href="/">My work</a>
       </Shell>
     );
   }
@@ -967,7 +968,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             unresolved={unresolved}
             onUnresolvedChange={setUnresolved}
             drafts={drafts}
-            reanalyseHref={`/?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
+            reanalyseHref={`${REVIEW_START_PATH}?pr=${encodeURIComponent(tour.analysis.pr.html_url)}`}
             askRef={askRef}
             sections={sections}
             commentRef={commentRef}

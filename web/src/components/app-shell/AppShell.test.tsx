@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppNav } from "./AppNav";
 import { ShellTopBar } from "./ShellTopBar";
 
-const HREFS = { "my-work": "/my-work", review: "/", settings: "/settings" };
+const HREFS = { "my-work": "/", review: "/review", settings: "/settings" };
 
 describe("AppNav", () => {
   beforeEach(() => window.localStorage.clear());
@@ -13,7 +13,7 @@ describe("AppNav", () => {
     render(<AppNav current="my-work" hrefs={HREFS} myWorkCount={14} />);
     const myWork = screen.getByRole("link", { name: /My work/ });
     expect(myWork).toHaveAttribute("aria-current", "page");
-    expect(myWork).toHaveAttribute("href", "/my-work");
+    expect(myWork).toHaveAttribute("href", "/");
     expect(myWork).toHaveTextContent("14");
     expect(screen.getByRole("link", { name: "Review a PR" })).not.toHaveAttribute("aria-current");
   });
@@ -49,7 +49,7 @@ describe("ShellTopBar", () => {
   it("starts with a skip link and holds the page actions, help and the user", async () => {
     const onHelp = vi.fn();
     render(
-      <ShellTopBar crumb="My work" homeHref="/my-work" settingsHref="/settings" login="alice" onHelp={onHelp}>
+      <ShellTopBar crumb="My work" homeHref="/" settingsHref="/settings" login="alice" onHelp={onHelp}>
         <button type="button">Refresh</button>
       </ShellTopBar>,
     );

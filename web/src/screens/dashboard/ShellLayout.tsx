@@ -27,8 +27,8 @@ interface ShellLayoutProps {
 }
 
 /**
- * The navigation shell (plan §F.2): slim top bar, left navigation and the main region. Wraps My work during the
- * dark launch; WP11-SWITCH makes it the layout of `/`, `/review` and `/settings`.
+ * The navigation shell (plan §F.2): slim top bar, left navigation and the main region of `/`, `/review` and
+ * `/settings` (`ShellRoute`).
  */
 export function ShellLayout({
   current,

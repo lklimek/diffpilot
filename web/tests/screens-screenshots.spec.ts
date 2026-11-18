@@ -8,20 +8,23 @@ const dir = process.env.SCREENSHOT_DIR;
 const progress = `/analyses/${ANALYSIS_ID}/progress`;
 
 const STATES: [string, (page: Page) => Promise<unknown>][] = [
-  ["home-signed-out", (p) => p.goto("/?scenario=signed-out")],
-  ["home-login-not-allowed", (p) => p.goto("/?scenario=signed-out&login_error=login_not_allowed")],
-  ["home-signed-in", (p) => p.goto("/")],
+  ["home-signed-out", (p) => p.goto("/review?scenario=signed-out")],
+  ["home-login-not-allowed", (p) => p.goto("/review?scenario=signed-out&login_error=login_not_allowed")],
+  ["home-signed-in", (p) => p.goto("/review")],
   [
     "home-not-a-pr",
-    (p) => p.goto("/").then(() => analyze(p, "https://github.com/acme/node-client/issues/5")),
+    (p) => p.goto("/review").then(() => analyze(p, "https://github.com/acme/node-client/issues/5")),
   ],
-  ["home-private", (p) => p.goto("/").then(() => analyze(p, "https://github.com/acme/private-repo/pull/1"))],
-  ["home-resume", (p) => p.goto("/?state=resume").then(() => analyze(p))],
-  ["home-head-moved", (p) => p.goto("/?scenario=head-moved").then(() => analyze(p))],
-  ["home-in-progress", (p) => p.goto("/?scenario=existing-running").then(() => analyze(p))],
-  ["home-paused", (p) => p.goto("/?scenario=existing-paused").then(() => analyze(p))],
-  ["home-failed", (p) => p.goto("/?scenario=existing-failed").then(() => analyze(p))],
-  ["home-no-app", (p) => p.goto("/?scenario=no-app").then(() => analyze(p))],
+  [
+    "home-private",
+    (p) => p.goto("/review").then(() => analyze(p, "https://github.com/acme/private-repo/pull/1")),
+  ],
+  ["home-resume", (p) => p.goto("/review?state=resume").then(() => analyze(p))],
+  ["home-head-moved", (p) => p.goto("/review?scenario=head-moved").then(() => analyze(p))],
+  ["home-in-progress", (p) => p.goto("/review?scenario=existing-running").then(() => analyze(p))],
+  ["home-paused", (p) => p.goto("/review?scenario=existing-paused").then(() => analyze(p))],
+  ["home-failed", (p) => p.goto("/review?scenario=existing-failed").then(() => analyze(p))],
+  ["home-no-app", (p) => p.goto("/review?scenario=no-app").then(() => analyze(p))],
   [
     "home-cancelled",
     (p) =>
