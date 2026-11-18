@@ -2,6 +2,8 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import { useState, type RefObject } from "react";
 import type {
   AnalysisId,
+  Annotation,
+  AskQuestion,
   AnnotationId,
   BlockRef,
   CommentTarget,
@@ -81,6 +83,12 @@ interface InspectorPaneProps {
   /** Text for the Ask field from "Ask about this line"; `onAskInserted` once it is in. */
   askInsert: { text: string } | null;
   onAskInserted: () => void;
+  /** "Use as review comment" on a flag or an Ask answer of the step; absent while commenting is unavailable. */
+  onFlagAsComment?: (flag: Annotation) => void;
+  onAnswerAsComment?: (question: AskQuestion) => void;
+  /** Draft text for the comment composer ("Use as review comment"); `onCommentPrefilled` once it is in. */
+  commentPrefill: { text: string } | null;
+  onCommentPrefilled: () => void;
 }
 
 /** GitHub link to a line at the analysed commit of its side. */
@@ -146,6 +154,7 @@ export function InspectorPane(props: InspectorPaneProps) {
         onEvidence={props.onEvidence}
         currentFile={step.facts.file}
         onAskAgain={onAsk}
+        onUseAsComment={props.onAnswerAsComment}
       />
     ));
 
@@ -169,6 +178,8 @@ export function InspectorPane(props: InspectorPaneProps) {
       onUnresolvedChange={props.onUnresolvedChange}
       drafts={props.drafts}
       reanalyseHref={props.reanalyseHref}
+      prefill={props.commentPrefill}
+      onPrefilled={props.onCommentPrefilled}
     />
   ) : pending.isError ? (
     <p className="text-[12.5px]">
@@ -181,6 +192,7 @@ export function InspectorPane(props: InspectorPaneProps) {
   return (
     <Inspector
       sections={props.sections}
+      onFlagAsComment={props.onFlagAsComment}
       dockHeight={props.askHeight}
       onDockHeight={step ? props.onAskHeight : undefined}
       tour={tour}

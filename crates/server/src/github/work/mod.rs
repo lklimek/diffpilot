@@ -27,6 +27,7 @@ use serde::Deserialize;
 use crate::github::rest::is_valid_repo;
 
 pub use batch::{MAX_PR_BATCH, PR_BATCH};
+pub(crate) use client::SEARCH_INTERVAL;
 pub use client::{TokenSource, UserTokens, WorkClient, WorkError};
 pub use details::{
     Actor, CheckContext, Comment, CommitNode, CommitRollup, Contexts, Count, HasNextPage,

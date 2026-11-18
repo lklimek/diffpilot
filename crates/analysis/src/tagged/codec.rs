@@ -362,6 +362,13 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
                 section.args(4)?;
                 let index = active_step
                     .ok_or_else(|| Problem::new(line, "annotation must follow its step"))?;
+                if section.words[1] == "question" {
+                    return Err(Problem::new(
+                        line,
+                        "annotation type `question` is now `flag`: `level`, a `Potential …` title in `text`, \
+                         `scenario` and `not_checked`",
+                    ));
+                }
                 enum_value::<AnnotationType>(&section.words[1], line)?;
                 enum_value::<Basis>(&section.words[2], line)?;
                 let (start, end) = range(&section.words[3], line)?;
@@ -371,6 +378,7 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
                         value[key] = json!("");
                     }
                 }
+                value["flag"] = flag(&mut section, line)?;
                 value["type"] = json!(section.words[1]);
                 value["basis"] = json!(section.words[2]);
                 value["start_line"] = json!(start);
@@ -460,6 +468,53 @@ pub fn parse(text: &str, catalog: &Catalog) -> Result<FlowAnalysisOutput, Proble
         serde_json::from_value(root).map_err(|e| Problem::new(1, format!("invalid flow: {e}")))?;
     super::connections::fill(&mut document);
     Ok(document)
+}
+
+/// A flag's `level` (red or yellow), `scenario` (one step per line) and `not_checked`; other types carry none.
+fn flag(section: &mut Section, line: usize) -> Result<Value, Problem> {
+    if section.words[1] != "flag" {
+        let found = ["level", "scenario", "not_checked"]
+            .into_iter()
+            .find_map(|key| section.fields.get(key).map(|(line, _)| (key, *line)));
+        return match found {
+            Some((key, line)) => Err(Problem::new(
+                line,
+                format!("`{key}` belongs only to a flag annotation"),
+            )),
+            None => Ok(Value::Null),
+        };
+    }
+    let level_line = section.fields.get("level").map_or(line, |(line, _)| *line);
+    let level = section.field("level").unwrap_or_default();
+    if !matches!(level.as_str(), "red" | "yellow") {
+        return Err(Problem::new(
+            level_line,
+            "a flag needs `level: red` or `level: yellow`",
+        ));
+    }
+    let scenario: Vec<String> = section
+        .required("scenario")?
+        .lines()
+        .map(scenario_step)
+        .filter(|step| !step.is_empty())
+        .collect();
+    let not_checked = section.required("not_checked")?;
+    Ok(json!({"level": level, "scenario": scenario, "not_checked": not_checked}))
+}
+
+/// One scenario step without its list marker (`1.`, `2)`, `-`, `*`): the reader numbers the steps.
+fn scenario_step(line: &str) -> String {
+    let line = line.trim();
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    let rest = if (1..=2).contains(&digits) {
+        line[digits..].strip_prefix(['.', ')'])
+    } else {
+        line.strip_prefix(['-', '*', '•'])
+    };
+    match rest {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start().to_owned(),
+        _ => line.to_owned(),
+    }
 }
 
 fn array_mut<'a>(value: &'a mut Value, key: &str) -> Result<&'a mut Vec<Value>, Problem> {
@@ -579,7 +634,21 @@ pub fn encode(document: &FlowAnalysisOutput, catalog: &Catalog) -> Result<String
                 annotation["start_line"],
                 annotation["end_line"]
             ));
-            emit_fields(&mut body, annotation, &["was", "is", "text"]);
+            let flag = &annotation["flag"];
+            if flag.is_null() {
+                emit_fields(&mut body, annotation, &["was", "is", "text"]);
+            } else {
+                emit_fields(&mut body, flag, &["level"]);
+                emit_fields(&mut body, annotation, &["was", "is", "text"]);
+                let scenario = flag["scenario"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>();
+                field(&mut body, "scenario", &scenario.join("\n"));
+                emit_fields(&mut body, flag, &["not_checked"]);
+            }
             let refs = annotation["evidence"]
                 .as_array()
                 .into_iter()

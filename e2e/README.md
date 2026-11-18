@@ -21,7 +21,7 @@ hash). A leak fails the run.
 | `analysis-cancel.spec.ts`         | planning, cancel → "Check the PR to start again"; failure before any flow → Retry → `k of n` → finished                             |
 | `analysis-cancel-running.spec.ts` | cancel while a flow job runs: the job stops, stored flows and session discarded, a clean new analysis                 |
 | `analysis-pause.spec.ts`          | usage limit → "Paused until HH:MM" of `resumes_at`, no attempt before it, one after; failed flow → Retry this flow    |
-| `tour.spec.ts`                    | PR context facts, flow order, quiet rows, no LLM questions (hard case 3), classic diff, resume, columns               |
+| `tour.spec.ts`                    | PR context facts, flow order, quiet rows, no LLM flags (hard case 3), classic diff, resume, columns               |
 | `flow-groups.spec.ts`             | a flow the LLM classifies as refactor: after the behaviour flows, labelled; tests listed once, not as a flow          |
 | `comments.spec.ts`                | pending review: create, second comment, edit, delete, outside the diff, missed by the LLM (hard case 2)               |
 | `head-moved.spec.ts`              | `pr_head_changed`, "The PR has moved" → Start analysis without ticks, Ask on the superseded analysis still answered   |

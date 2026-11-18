@@ -1037,7 +1037,7 @@ fn tagged_fixture_checker_matches_server_verifier_and_measures_bytes() {
     let mut after = 0;
     for (index, output) in fixture.flows.iter().enumerate() {
         let context = crate::tagged::Context {
-            version: 1,
+            version: crate::tagged::VERSION,
             base: fixture.base.clone(),
             head: fixture.head.clone(),
             files: fixture.files.clone(),
@@ -1093,7 +1093,7 @@ fn tagged_checker_rejects_the_same_semantic_violations_as_canonical_flow_verific
     let fixture = Fixture::new();
     let original = &fixture.flows[1];
     let context = crate::tagged::Context {
-        version: 1,
+        version: crate::tagged::VERSION,
         base: fixture.base.clone(),
         head: fixture.head.clone(),
         files: fixture.files.clone(),
@@ -1162,7 +1162,7 @@ fn tagged_checker_rejects_the_same_semantic_violations_as_canonical_flow_verific
 fn omitted_boundary_connections_pass_the_full_check() {
     let fixture = Fixture::new();
     let context = |output: &FlowAnalysisOutput| crate::tagged::Context {
-        version: 1,
+        version: crate::tagged::VERSION,
         base: fixture.base.clone(),
         head: fixture.head.clone(),
         files: fixture.files.clone(),

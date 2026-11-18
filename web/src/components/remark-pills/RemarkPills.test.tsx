@@ -11,6 +11,7 @@ const step: RemarkSummary = {
   rated: 1,
   remarks: 5,
   handled: 0,
+  flags: { red: 0, yellow: 0, unknown: 0 },
   ratings: [{ rating: "high", steps: 1 }],
 };
 
@@ -32,7 +33,14 @@ it("a step: the pill shows the LLM rating only; the remark count is in its toolt
 it("remarks without a rating get a small neutral marker, never an all-clear; a rating without remarks stands alone", () => {
   const { rerender } = render(
     <RemarkPill
-      summary={{ rating: null, rated: 0, remarks: 2, handled: 0, ratings: [{ rating: null, steps: 1 }] }}
+      summary={{
+        rating: null,
+        rated: 0,
+        remarks: 2,
+        handled: 0,
+        flags: { red: 0, yellow: 0, unknown: 0 },
+        ratings: [{ rating: null, steps: 1 }],
+      }}
       scope="step"
       subject="step 3"
       onSelect={() => {}}
@@ -47,7 +55,14 @@ it("remarks without a rating get a small neutral marker, never an all-clear; a r
   expect(marker.className).toMatch(/min-w-6/);
   rerender(
     <RemarkPill
-      summary={{ rating: "low", rated: 1, remarks: 0, handled: 0, ratings: [{ rating: "low", steps: 1 }] }}
+      summary={{
+        rating: "low",
+        rated: 1,
+        remarks: 0,
+        handled: 0,
+        flags: { red: 0, yellow: 0, unknown: 0 },
+        ratings: [{ rating: "low", steps: 1 }],
+      }}
       scope="step"
       subject="step 3"
       onSelect={() => {}}
@@ -66,6 +81,7 @@ it("a flow: the highest step rating ×steps at it; the tooltip has the remarks a
         rated: 2,
         remarks: 11,
         handled: 11,
+        flags: { red: 0, yellow: 0, unknown: 0 },
         ratings: [
           { rating: "high", steps: 2 },
           { rating: "low", steps: 3 },
@@ -96,6 +112,7 @@ it("next to the flow's own rating label: a neutral marker for its remarks; the t
     rated: 1,
     remarks: 11,
     handled: 0,
+    flags: { red: 0, yellow: 0, unknown: 0 },
     ratings: [
       { rating: "high", steps: 1 },
       { rating: "low", steps: 2 },
@@ -132,4 +149,25 @@ it("shows nothing without a rating and without remarks: never an all-clear", () 
 it("can carry a leading label", () => {
   render(<RemarkPill summary={step} scope="flow" subject="this flow" label="LLM:" onSelect={() => {}} />);
   expect(screen.getByText("LLM:")).toBeVisible();
+});
+
+it("counts the LLM's flags by level in the tooltip; the pill still shows only the rating", () => {
+  const flags = { red: 1, yellow: 2, unknown: 0 };
+  const { rerender } = render(
+    <RemarkPill summary={{ ...step, flags }} scope="step" subject="this step" onSelect={() => {}} />,
+  );
+  const pill = screen.getByRole("button");
+  expect(pill).toHaveTextContent(/^▲ HIGH$/);
+  expect(pill).toHaveAccessibleName("LLM rated this step HIGH (not checked)");
+  expect(pill).toHaveAccessibleDescription(/^LLM flags on this step: 1 red flag, 2 yellow flags\. /);
+  // The neutral marker of an unrated step is named by its flags.
+  rerender(
+    <RemarkPill
+      summary={{ ...step, rating: null, rated: 0, flags }}
+      scope="step"
+      subject="step 3"
+      onSelect={() => {}}
+    />,
+  );
+  expect(screen.getByRole("button")).toHaveAccessibleName("LLM flags on step 3: 1 red flag, 2 yellow flags");
 });

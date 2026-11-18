@@ -1097,7 +1097,7 @@ impl Driver<'_> {
             .as_ref()
             .ok_or_else(|| self.invalid(&stage, "missing plan"))?;
         Ok(analysis::tagged::Context {
-            version: 1,
+            version: analysis::tagged::VERSION,
             base: self.facts.base.clone(),
             head: self.facts.head.clone(),
             files: self.facts.files.clone(),

@@ -176,7 +176,7 @@
               },
               {
                 "id": "f1.2.a3",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": { "start_line": 43, "end_line": 43 },
                 "was": "The button builder did not specify a wrap mode.",
@@ -189,7 +189,8 @@
                     "side": "head",
                     "line": 50
                   }
-                ]
+                ],
+                "flag": { "level": "unknown", "scenario": [], "not_checked": "" }
               }
             ],
             "assessment": {

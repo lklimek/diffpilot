@@ -40,27 +40,46 @@
               "side": "base",
               "line": 53
             }
-          ]
+          ],
+          "flag": null
         },
         {
-          "type": "question",
+          "type": "flag",
           "basis": "inference",
           "start_line": 53,
           "end_line": 53,
           "was": "",
           "is": "",
-          "text": "Does acme/node-sdk (PR #118) still call send_once()?",
-          "evidence": []
+          "text": "Potential build break in acme/node-sdk:",
+          "evidence": [],
+          "flag": {
+            "level": "red",
+            "scenario": [
+              "acme/node-sdk (PR #118) calls send_once().",
+              "This pull request removes send_once().",
+              "The SDK no longer builds when it updates to this version."
+            ],
+            "not_checked": "The SDK's current code was not read."
+          }
         },
         {
-          "type": "question",
+          "type": "flag",
           "basis": "inference",
           "start_line": 52,
           "end_line": 53,
           "was": "",
           "is": "",
-          "text": "How does a caller now send a request that must not be repeated?",
-          "evidence": []
+          "text": "Potential repeat of a request that must run once:",
+          "evidence": [],
+          "flag": {
+            "level": "yellow",
+            "scenario": [
+              "A caller used send_once() for a request that must run at most once.",
+              "send_once() is removed, and send() is the only call left.",
+              "send() retries on timeout, so the request may run twice."
+            ],
+            "not_checked": "Downstream use was not searched."
+          }
         }
       ],
       "assessment": {

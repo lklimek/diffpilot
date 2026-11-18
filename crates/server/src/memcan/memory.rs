@@ -220,7 +220,7 @@ fn annotation_name(kind: AnnotationType) -> &'static str {
     match kind {
         AnnotationType::Behaviour => "Behaviour",
         AnnotationType::Consequence => "Consequence",
-        AnnotationType::Question => "Question",
+        AnnotationType::Flag => "Flag",
         AnnotationType::Note => "Note",
     }
 }

@@ -44,17 +44,27 @@
               "side": "base",
               "line": 23
             }
-          ]
+          ],
+          "flag": null
         },
         {
-          "type": "question",
+          "type": "flag",
           "basis": "inference",
           "start_line": 49,
           "end_line": 50,
           "was": "",
           "is": "",
-          "text": "Is the jump from a tenth to a half of the delay intended in a PR that is described as a move?",
-          "evidence": []
+          "text": "Potential behaviour change inside a move:",
+          "evidence": [],
+          "flag": {
+            "level": "yellow",
+            "scenario": [
+              "The pull request describes the backoff code as moved.",
+              "The moved jitter range grows from a tenth to a half of the delay.",
+              "Retries spread wider than before; a reader who takes it as a pure move misses the change."
+            ],
+            "not_checked": "The intent was not confirmed with the author; timings were not measured."
+          }
         }
       ],
       "assessment": {
@@ -97,7 +107,8 @@
               "side": "base",
               "line": 18
             }
-          ]
+          ],
+          "flag": null
         }
       ],
       "assessment": {

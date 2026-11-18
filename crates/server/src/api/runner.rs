@@ -93,7 +93,8 @@ impl ApiErrorSource for RunnerError {
                 ClaimError::Random(_)
                 | ClaimError::StoreToken(_)
                 | ClaimError::GithubTask(_)
-                | ClaimError::ContextPack(_),
+                | ClaimError::ContextPack(_)
+                | ClaimError::StaleFlowContext { .. },
             )
             | Self::InstallationToken(_) => ApiErrorCode::Internal,
         }
@@ -114,7 +115,8 @@ impl ApiErrorSource for RunnerError {
                 ClaimError::Random(_)
                 | ClaimError::StoreToken(_)
                 | ClaimError::GithubTask(_)
-                | ClaimError::ContextPack(_),
+                | ClaimError::ContextPack(_)
+                | ClaimError::StaleFlowContext { .. },
             )
             | Self::InstallationToken(_) => {
                 Cow::Borrowed("Something went wrong on the server. Try again later.")

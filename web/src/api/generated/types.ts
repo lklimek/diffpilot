@@ -291,13 +291,18 @@ was: string,
  */
 is: string,
 /**
- * The consequence, question or note; null for a behaviour annotation.
+ * The consequence, the flag's title or the note; null for a behaviour annotation.
  */
 text: string | null,
 /**
  * Evidence lines.
  */
-evidence: Array<Evidence>, };
+evidence: Array<Evidence>,
+/**
+ * Present exactly on a flag: its level (`unknown` for a flag stored before levels), scenario and what was
+ * not checked.
+ */
+flag?: Flag, };
 
 /**
  * Identifier of an annotation, assigned by the server: `"<step>.a<n>"`, e.g. `f2.3.a1`.
@@ -307,7 +312,7 @@ export type AnnotationId = string;
 /**
  * Type of an annotation inside a step.
  */
-export type AnnotationType = "behaviour" | "consequence" | "question" | "note";
+export type AnnotationType = "behaviour" | "consequence" | "flag" | "note";
 
 /**
  * Body of every API error response.
@@ -1176,6 +1181,28 @@ evidence: Array<Evidence>, };
  * Topic of a fit question.
  */
 export type FitTopic = "layer_or_repository" | "size_for_problem" | "duplicate_mechanism" | "other";
+
+/**
+ * The scenario of a flag; its title (the risk class, "Potential …") is the annotation's `text`.
+ */
+export type Flag = {
+/**
+ * red or yellow in agent output; unknown only on a flag stored before levels.
+ */
+level: FlagLevel,
+/**
+ * Ordered steps: who acts, the order of events, the outcome and its cost.
+ */
+scenario: Array<string>,
+/**
+ * One line: what was not reproduced or run.
+ */
+not_checked: string, };
+
+/**
+ * How strongly the LLM flags a risk: its own judgement, not checked.
+ */
+export type FlagLevel = "red" | "yellow" | "unknown";
 
 /**
  * One flow.

@@ -15,6 +15,8 @@ import { RiskLabel } from "../badge/LlmLabel";
 import { threadsNote } from "../section/format";
 import { ProvenanceTag } from "../section/ProvenanceTag";
 import { Tooltip } from "../tooltip/Tooltip";
+import { FlagCard } from "../flag/FlagCard";
+import { sortedFlags } from "../flag/flags";
 import { Collapsible } from "./Collapsible";
 import type { SectionControl } from "./sectionState";
 import { BasisNote, Empty, GithubLink } from "./text";
@@ -180,44 +182,37 @@ export function CallHierarchySection({
   );
 }
 
-/** Questions link to the step's annotated lines. */
-export function QuestionsSection({
-  questions,
+/** Section 6: the LLM's flags on the step, strongest first; open by default, apart from the Assessment. */
+export function FlagsSection({
+  annotations,
   sections,
   onEvidence,
   step,
   currentFile,
-}: { questions: readonly Annotation[]; step: Step } & Sections) {
-  questions = questions.filter((a) => a.text?.trim());
-  if (questions.length === 0) return null;
+  onUseAsComment,
+}: {
+  annotations: readonly Annotation[];
+  step: Step;
+  /** "Use as review comment" on a flag; no button without it. */
+  onUseAsComment?: (flag: Annotation) => void;
+} & Sections) {
+  const flags = sortedFlags(annotations).filter((a) => a.text?.trim());
+  if (flags.length === 0) return null;
   return (
-    <Collapsible
-      sectionKey="questions"
-      title={`Questions to check (${questions.length})`}
-      tone="llm"
-      sections={sections}
-    >
+    <Collapsible sectionKey="flags" title={`Flags (${flags.length})`} tone="llm" sections={sections}>
       <ul className="m-0 grid list-none gap-2 p-0">
-        {questions.map((a) => (
-          <li key={a.id} data-annotation-id={a.id}>
-            <Tooltip tip="Open the step and source lines this question concerns.">
-              <button
-                type="button"
-                className="cursor-pointer text-left text-accent underline"
-                onClick={() =>
-                  onEvidence?.({ file: step.facts.file, side: step.facts.side, line: a.range.start_line })
-                }
-              >
-                Step {step.number} · {step.llm.title}: {a.text}
-              </button>
-            </Tooltip>
-            <BasisNote
-              currentFile={currentFile}
-              basis={a.basis}
-              evidence={a.evidence}
-              onEvidence={onEvidence}
-            />
-          </li>
+        {flags.map((a) => (
+          <FlagCard
+            key={a.id}
+            annotation={a}
+            currentFile={currentFile}
+            onEvidence={onEvidence}
+            onOpen={
+              onEvidence &&
+              (() => onEvidence({ file: step.facts.file, side: step.facts.side, line: a.range.start_line }))
+            }
+            onUseAsComment={onUseAsComment && (() => onUseAsComment(a))}
+          />
         ))}
       </ul>
     </Collapsible>

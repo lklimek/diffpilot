@@ -68,3 +68,19 @@ but cannot bypass the server check. The parser accepts no executable directives.
 
 Next steps, explicitly out of scope: stream steps while the file is being written;
 a planning cap on steps per flow; lazy flow analysis; other job output formats.
+
+## Addendum 2026-11-18: flags replace questions (format version 2)
+
+Owner decision (brief §1, addendum on flow analysis): suspected defects are flags, not
+questions. The annotation type `question` becomes `flag`, which needs `level` (`red` or
+`yellow`), `scenario` (2 to 7 lines) and `not_checked`, with a "Potential …" title in
+`text`. The grammar rejects `question`, a flag without these fields and these fields on
+another type. The verifier rejects malformed flags, more than 5 flags per step and a
+step rated low with a red flag. The context version is 2 (`tagged::VERSION`), so a
+checker from an older runner image cannot accept the new grammar.
+
+Stored documents and the browser contract change backward-compatibly: an annotation
+gains an optional `flag` object, and a stored `question` reads as a `flag` without
+it. Stored analyses are not migrated or analysed again. Today's checks accept such
+a flag, and the Tour shows it with level `unknown`, its text as the title and no
+scenario. Only new agent output must carry the object, and the grammar enforces it.

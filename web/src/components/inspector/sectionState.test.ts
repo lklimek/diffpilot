@@ -6,11 +6,11 @@ beforeEach(() => window.localStorage.clear());
 afterEach(() => vi.restoreAllMocks());
 
 describe("section state", () => {
-  it("opens every section by default except Questions and Assessment", () => {
+  it("opens every section by default, Flags included, except Assessment", () => {
     const { result } = renderHook(() => useSectionState());
     expect(result.current.isOpen("diff")).toBe(true);
     expect(result.current.isOpen("why")).toBe(true);
-    expect(result.current.isOpen("questions")).toBe(false);
+    expect(result.current.isOpen("flags")).toBe(true);
     expect(result.current.isOpen("assessment")).toBe(false);
   });
 
@@ -32,17 +32,17 @@ describe("section state", () => {
     const { result, rerender } = renderHook(({ scope }) => useSectionState(scope), {
       initialProps: { scope: "f1.5" },
     });
-    act(() => result.current.reveal("questions"));
-    expect(result.current.isOpen("questions")).toBe(true);
+    act(() => result.current.reveal("assessment"));
+    expect(result.current.isOpen("assessment")).toBe(true);
     expect(window.localStorage.getItem(SECTION_STORAGE_KEY)).toBeNull();
     rerender({ scope: "f1.6" });
-    expect(result.current.isOpen("questions")).toBe(false);
+    expect(result.current.isOpen("assessment")).toBe(false);
     rerender({ scope: "f1.5" });
-    expect(result.current.isOpen("questions")).toBe(false);
-    act(() => result.current.reveal("questions"));
-    act(() => result.current.toggle("questions"));
-    expect(result.current.isOpen("questions")).toBe(false);
-    expect(JSON.parse(window.localStorage.getItem(SECTION_STORAGE_KEY)!)).toEqual({ questions: false });
+    expect(result.current.isOpen("assessment")).toBe(false);
+    act(() => result.current.reveal("assessment"));
+    act(() => result.current.toggle("assessment"));
+    expect(result.current.isOpen("assessment")).toBe(false);
+    expect(JSON.parse(window.localStorage.getItem(SECTION_STORAGE_KEY)!)).toEqual({ assessment: false });
   });
 
   it.each([

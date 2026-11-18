@@ -23,7 +23,7 @@ import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
 import { useFlashTarget } from "../flash/useFlashTarget";
 import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
 import { FlowWorkLabel } from "../flow-intro/status";
-import { ANNOTATION, rangeText } from "../section/format";
+import { annotationName, rangeText } from "../section/format";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Collapsible } from "./Collapsible";
 import { useSectionState, type SectionControl } from "./sectionState";
@@ -34,7 +34,7 @@ import {
   CallHierarchySection,
   ConsequencesSection,
   DiffSection,
-  QuestionsSection,
+  FlagsSection,
   ThreadsSection,
   WhySection,
 } from "./StepSections";
@@ -78,6 +78,8 @@ export interface InspectorProps {
   dockHeight?: number | null;
   /** A new dock height from the handle above it; null resets. Without it there is no handle. */
   onDockHeight?: (height: number | null) => void;
+  /** "Use as review comment" on a flag of the step; no button without it. */
+  onFlagAsComment?: (flag: Annotation) => void;
 }
 
 /** Smallest height in px of a resized dock: the Ask field and a few lines of the conversation. */
@@ -169,7 +171,7 @@ const SECTION_OF: Record<AnnotationType, string> = {
   behaviour: "behaviour",
   note: "why",
   consequence: "consequences",
-  question: "questions",
+  flag: "flags",
 };
 
 const linesWord = (r: Annotation["range"]) =>
@@ -200,13 +202,14 @@ function stepPanel(
   diff: ReactNode,
   sections: SectionControl,
   onEvidence?: (evidence: Evidence) => void,
+  onFlagAsComment?: (flag: Annotation) => void,
 ): Panel {
   const anns = annotation ? [annotation] : step.llm.annotations;
   const byType = (type: AnnotationType) => anns.filter((a) => a.type === type);
   const stepThreads = tour.threads.filter((t) => step.facts.thread_ids.includes(t.id));
   const stepTitle = `Step ${step.number} · ${step.llm.title}`;
   return {
-    title: annotation ? `${ANNOTATION[annotation.type]} · ${linesWord(annotation.range)}` : stepTitle,
+    title: annotation ? `${annotationName(annotation)} · ${linesWord(annotation.range)}` : stepTitle,
     backTo: annotation ? stepTitle : undefined,
     meta: (
       <>
@@ -275,12 +278,13 @@ function stepPanel(
           sections={sections}
         />
         <CallHierarchySection hierarchy={step.facts.call_hierarchy} sections={sections} />
-        <QuestionsSection
+        <FlagsSection
           currentFile={step.facts.file}
           step={step}
           onEvidence={onEvidence}
-          questions={byType("question")}
+          annotations={byType("flag")}
           sections={sections}
+          onUseAsComment={onFlagAsComment}
         />
         <AssessmentSection assessment={step.llm.assessment} sections={sections} />
         <ThreadsSection
@@ -301,7 +305,7 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
       const found = findStep(tour, block.step_id);
       if (!found) break;
       const annotation = found.step.llm.annotations.find((a) => a.id === annotationId);
-      return stepPanel(tour, found.step, annotation, diff, sections, props.onEvidence);
+      return stepPanel(tour, found.step, annotation, diff, sections, props.onEvidence, props.onFlagAsComment);
     }
     case "flow_intro": {
       const flow = tour.flows.find((f) => f.id === block.flow_id);

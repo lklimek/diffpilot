@@ -35,8 +35,9 @@ use contracts::api::tour::{
     SourceCheck, Step, StepFacts, StepLlm, ThreadsStatus, Tour,
 };
 use contracts::common::{
-    AnnotationType, Basis, Blocking, Classification, Evidence, FileRanges, FragmentKind, LineRange,
-    LineSide, LlmLanguage, NodeKind, NotAnalysedCategory, Origin, RepoRef, RiskBand,
+    AnnotationType, Basis, Blocking, Classification, Evidence, FileRanges, Flag, FlagLevel,
+    FragmentKind, LineRange, LineSide, LlmLanguage, NodeKind, NotAnalysedCategory, Origin, RepoRef,
+    RiskBand,
 };
 use contracts::ids::{AnalysisId, AnnotationId, CommitSha, FlowId, QuestionId, StepId};
 use contracts::routes::{HttpMethod, Listener, ROUTES, RouteAuth};
@@ -175,16 +176,25 @@ fn tour() -> Tour {
                     why: "stop rule".to_owned(),
                     annotations: vec![Annotation {
                         id: AnnotationId("f1.1.a1".to_owned()),
-                        kind: AnnotationType::Question,
+                        kind: AnnotationType::Flag,
                         basis: Basis::Inference,
                         range: LineRange {
                             start_line: 99,
                             end_line: 99,
                         },
-                        was: "A timeout was returned to the caller.".to_owned(),
-                        is: "A timeout is retried while attempt < 3.".to_owned(),
-                        text: Some("Can broadcast_tx be sent twice?".to_owned()),
+                        was: String::new(),
+                        is: String::new(),
+                        text: Some("Potential double broadcast:".to_owned()),
                         evidence: vec![],
+                        flag: Some(Flag {
+                            level: FlagLevel::Red,
+                            scenario: vec![
+                                "The node accepts broadcast_tx but its reply arrives late."
+                                    .to_owned(),
+                                "The client retries; the payment is sent twice.".to_owned(),
+                            ],
+                            not_checked: "Not reproduced against a node.".to_owned(),
+                        }),
                     }],
                     assessment: Some(Assessment {
                         headline: Some("h".to_owned()),
@@ -219,7 +229,18 @@ fn tour_round_trips() {
         tour
     );
     let annotation = &json["flows"][0]["steps"][0]["llm"]["annotations"][0];
-    assert_eq!(annotation["type"], json!("question"));
+    assert_eq!(annotation["type"], json!("flag"));
+    assert_eq!(annotation["flag"]["level"], json!("red"));
+    // Other annotation types carry no flag field.
+    let mut note = tour.flows[0].steps[0].llm.annotations[0].clone();
+    note.kind = AnnotationType::Note;
+    note.flag = None;
+    assert!(
+        serde_json::to_value(&note)
+            .expect("note")
+            .get("flag")
+            .is_none()
+    );
 }
 
 #[test]
@@ -701,7 +722,7 @@ fn annotation_projection_keeps_was_is_and_remark() {
     }))
     .expect("agent annotation");
     let annotation = Annotation::from_agent(AnnotationId("f1.1.a1".to_owned()), agent);
-    assert_eq!(annotation.kind, AnnotationType::Question);
+    assert_eq!(annotation.kind, AnnotationType::Flag);
     assert_eq!(annotation.was, "A timeout was returned to the caller.");
     assert_eq!(annotation.is, "A timeout is retried while attempt < 3.");
     assert_eq!(
@@ -718,6 +739,39 @@ fn annotation_projection_keeps_was_is_and_remark() {
     let json = serde_json::to_value(&annotation).expect("serialises");
     assert_eq!(json["was"], json!("A timeout was returned to the caller."));
     assert_eq!(json["is"], json!("A timeout is retried while attempt < 3."));
+}
+
+/// A question stored before flags reads as a flag of level unknown: its text is the title, no scenario.
+#[test]
+fn stored_question_projects_to_a_flag_of_unknown_level() {
+    let agent: AgentAnnotation = serde_json::from_value(json!({
+        "type": "question", "basis": "inference", "start_line": 99, "end_line": 99,
+        "was": "", "is": "", "text": "Can broadcast_tx be sent twice?", "evidence": []
+    }))
+    .expect("stored question");
+    assert_eq!((agent.kind, &agent.flag), (AnnotationType::Flag, &None));
+    assert!(serde_json::from_value::<AnnotationType>(json!("assessment")).is_err());
+    assert_eq!(
+        serde_json::to_value(&agent).expect("agent")["type"],
+        json!("flag")
+    );
+    let annotation = Annotation::from_agent(AnnotationId("f1.1.a1".to_owned()), agent);
+    let wire = serde_json::to_value(&annotation).expect("serialises");
+    assert_eq!(wire["type"], json!("flag"));
+    assert_eq!(wire["text"], json!("Can broadcast_tx be sent twice?"));
+    assert_eq!(
+        wire["flag"],
+        json!({"level": "unknown", "scenario": [], "not_checked": ""})
+    );
+    // A new flag keeps its own level and scenario.
+    let agent: AgentAnnotation = serde_json::from_value(json!({
+        "type": "flag", "basis": "inference", "start_line": 99, "end_line": 99, "was": "", "is": "",
+        "text": "Potential double send:", "evidence": [],
+        "flag": {"level": "yellow", "scenario": ["A sends.", "B sends."], "not_checked": "Not run."}
+    }))
+    .expect("flag");
+    let flag = Annotation::from_agent(AnnotationId("f1.1.a2".to_owned()), agent).flag;
+    assert_eq!(flag.map(|f| f.level), Some(FlagLevel::Yellow));
 }
 
 /// Settings lists the tenant's known repositories, so per-repository settings can be opened.

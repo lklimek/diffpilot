@@ -27,7 +27,7 @@ fn checker_accepts_fixture_file_and_reports_line_numbered_rejections() {
         });
     }
     let context = analysis::tagged::Context {
-        version: 1,
+        version: analysis::tagged::VERSION,
         base,
         head,
         files,

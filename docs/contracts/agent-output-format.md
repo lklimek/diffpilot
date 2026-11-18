@@ -1,4 +1,4 @@
-# Flow file format, version 1
+# Flow file format, version 2
 
 Write `out/flow.md` relative to the job directory (the parent of `repo`). Run
 `sr-check flow out/flow.md`, edit the file to fix every reported problem, and finish
@@ -43,6 +43,14 @@ at most 80 bytes. Violations are reported with their line.
 - `### annotation <type> <basis> <first>-<last>` under its step. Optional `was`, `is`,
   `text`, `evidence`. Behaviour requires nonempty `was`/`is`; other types require
   `text`. Evidence is space-separated `<file-id>:<side>:<line>` references.
+  A `flag` also requires `level` (`red` or `yellow`), `scenario` (2 to 7 steps, one
+  per line, unnumbered; list markers are dropped) and `not_checked` (one line: what was
+  not reproduced or run); its `text` is the title, starting `Potential ` (Polish:
+  `Potencjalny `, `Potencjalna ` or `Potencjalne `) followed by the risk class. Plain
+  text with code and types such as `Option<A>` in backticks (no other Markdown, links
+  or HTML); title at most 160, scenario steps 10 to 300 and `not_checked` at most 300
+  characters; at most 5 flags per step, and a step with a red flag is rated `medium`
+  or `high`. Only a flag has these fields.
 - `### assessment` under every step, exactly once. Required: `risk`, `reason`. At
   `risk: low` the rest may be omitted (concise assessment: band plus one sentence).
   Above low also required: `headline`, `basis_note`, `not_checked`, `origin`,
@@ -60,7 +68,8 @@ at most 80 bytes. Violations are reported with their line.
 All ranges are inclusive and one-based. References must exist at the pinned commit.
 Enums (literal values, never translated):
 - Step kind: `modified`, `added`, `moved`, `renamed`, `deleted_site`, `context`.
-- Annotation type: `behaviour`, `consequence`, `question`, `note`.
+- Annotation type: `behaviour`, `consequence`, `flag`, `note`.
+- Flag level: `red`, `yellow`.
 - Basis: `fact`, `inference`.
 - Risk: `low`, `medium`, `high`.
 - Origin: `introduced`, `pre_existing`, `unclear`.
@@ -94,11 +103,21 @@ was: A closed queue waited for another message.
 is: A closed queue returns Closed.
 evidence: p1:head:10 p1:head:12
 
+### annotation flag inference 11-11
+level: yellow
+text: Potential lost message on close:
+scenario: <<END
+A producer sends a message while the worker waits in receive.
+The caller closes the queue before the worker reads it.
+receive returns Closed; the sent message is dropped without an error.
+END
+not_checked: Not reproduced; no test was run.
+evidence: p1:head:11
+
 ### assessment
 risk: low
 reason: The change affects only the closed-queue branch.
 ```
 
-The parser reconstructs the existing canonical JSON document. Stored documents,
-Tour responses and browser types keep their current shapes. Plan, PR context and
-Ask still use schema-constrained JSON.
+The parser reconstructs the canonical JSON document. Plan, PR context and Ask still
+use schema-constrained JSON.

@@ -8,13 +8,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use contracts::agent::analyse_flow::{AgentStep, FlowAnalysisOutput};
 use contracts::api::tour::{FlowGraph, GraphEdge, GraphNode};
 use contracts::common::{
-    AnnotationType, Basis, Blocking, FragmentKind, LineRange, LineSide, RiskBand,
+    AnnotationType, Basis, Blocking, Flag, FlagLevel, FragmentKind, LineRange, LineSide, RiskBand,
 };
 use contracts::ids::StepId;
 
 use super::spans::{self, Span};
 use super::{
-    FileFacts, FlowContext, Issues, VerifiedFlow, VerifyError, VerifyIssueKind, side_name, wording,
+    FileFacts, FlowContext, Issues, VerifiedFlow, VerifyError, VerifyIssueKind, plain, side_name,
+    wording,
 };
 use crate::diff::FileDiff;
 use crate::moves::{ConfirmedMove, MovesReport};
@@ -24,6 +25,22 @@ type Removed<'a> = (Span, u32, Option<&'a str>);
 
 /// Spans a step or reference message lists before "and more": messages stay short however wide the range.
 const MESSAGE_SPANS: usize = 3;
+
+/// Most flags (with a level) one step may raise.
+pub const MAX_FLAGS_PER_STEP: usize = 5;
+/// Fewest and most scenario steps of a flag.
+pub const FLAG_SCENARIO_STEPS: std::ops::RangeInclusive<usize> = 2..=7;
+/// Longest flag title, in characters.
+pub const MAX_FLAG_TITLE_CHARS: usize = 160;
+/// Longest scenario step or `not_checked` line of a flag, in characters.
+pub const MAX_FLAG_LINE_CHARS: usize = 300;
+/// Shortest scenario step of a flag, in characters.
+const MIN_FLAG_STEP_CHARS: usize = 10;
+/// Shortest risk class after a flag title's "Potential " prefix, in characters.
+const MIN_FLAG_CLASS_CHARS: usize = 3;
+/// Title prefixes of a flag: English, and the Polish forms of "Potential".
+const FLAG_TITLE_PREFIXES: [&str; 4] =
+    ["Potential ", "Potencjalny ", "Potencjalna ", "Potencjalne "];
 
 /// The changed lines of the diff, indexed by side and path.
 struct Changes<'a> {
@@ -307,7 +324,7 @@ fn check_step(
             && (!annotation.was.is_empty() || !annotation.is.is_empty())
         {
             issues.push(VerifyIssueKind::RemarkMismatch,
-                format!("{at}: was and is must be empty strings on a consequence, question or note; put its content in text"));
+                format!("{at}: was and is must be empty strings on a consequence, flag or note; put its content in text"));
         }
         let blank_text = annotation
             .text
@@ -320,13 +337,30 @@ fn check_step(
                 );
                 issues.push(VerifyIssueKind::RemarkMismatch, message);
             }
-            AnnotationType::Consequence | AnnotationType::Question | AnnotationType::Note
+            AnnotationType::Consequence | AnnotationType::Flag | AnnotationType::Note
                 if blank_text =>
             {
-                let message = format!("{at}: a consequence, question or note needs its text");
+                let message = format!("{at}: a consequence, flag or note needs its text");
                 issues.push(VerifyIssueKind::RemarkMismatch, message);
             }
             _ => {}
+        }
+        match (annotation.kind, &annotation.flag) {
+            (AnnotationType::Flag, Some(flag)) => {
+                check_flag(
+                    issues,
+                    &at,
+                    annotation.text.as_deref().unwrap_or_default(),
+                    flag,
+                );
+            }
+            // A flag without details was stored before levels; the flow file grammar requires them in new output.
+            (_, None) => {}
+            (_, Some(_)) => {
+                let message =
+                    format!("{at}: level, scenario and not_checked belong only to a flag");
+                issues.push(VerifyIssueKind::RemarkMismatch, message);
+            }
         }
         if annotation.basis == Basis::Fact && annotation.evidence.is_empty() {
             let message = format!(
@@ -335,6 +369,32 @@ fn check_step(
             issues.push(VerifyIssueKind::FactWithoutEvidence, message);
         }
         issues.evidence(context.facts, &at, &annotation.evidence);
+    }
+    let flags = || {
+        step.annotations
+            .iter()
+            .filter_map(|note| note.flag.as_ref())
+    };
+    let raised = flags().count();
+    if raised > MAX_FLAGS_PER_STEP {
+        let message = format!(
+            "{at}: {raised} flags; raise at most {MAX_FLAGS_PER_STEP} per step, the strongest, and keep weaker \
+             remarks as notes"
+        );
+        issues.push(VerifyIssueKind::FlagInvalid, message);
+    }
+    let red = flags().any(|flag| flag.level == FlagLevel::Red);
+    if red
+        && step
+            .assessment
+            .as_ref()
+            .is_some_and(|a| a.risk == RiskBand::Low)
+    {
+        let message = format!(
+            "{at}.assessment: a step with a red flag is not rated low; rate it medium or high, or lower the flag \
+             to yellow"
+        );
+        issues.push(VerifyIssueKind::RedFlagOnLowStep, message);
     }
     if step.assessment.is_none() {
         issues.push(VerifyIssueKind::AssessmentMissing,
@@ -372,17 +432,99 @@ fn check_step(
             .smallest_correction
             .as_deref()
             .is_some_and(concrete_action);
-        let question = step.annotations.iter().any(|note| {
-            note.kind == AnnotationType::Question
-                && note.text.as_deref().is_some_and(|text| {
-                    concrete_action(text) && text.trim().ends_with('?') && !note.evidence.is_empty()
-                })
+        let flagged = step.annotations.iter().any(|note| {
+            note.kind == AnnotationType::Flag
+                && note.text.as_deref().is_some_and(concrete_action)
+                && !note.evidence.is_empty()
         });
         if (assessment.blocking == Some(Blocking::FollowUp) && !correction)
-            || (assessment.risk != RiskBand::Low && !correction && !question)
+            || (assessment.risk != RiskBand::Low && !correction && !flagged)
         {
             issues.push(VerifyIssueKind::AssessmentActionMissing,
-                format!("{at}: follow_up needs a named action in smallest_correction; a non-low risk needs a concrete correction or an evidenced question on this step; rate only unresolved risk introduced or left by this change"));
+                format!("{at}: follow_up needs a named action in smallest_correction; a non-low risk needs a concrete correction or an evidenced flag on this step; rate only unresolved risk introduced or left by this change"));
+        }
+    }
+}
+
+/// A flag states a risk (brief §1 addendum 2026-11-18): level red or yellow, a "Potential …" title, 2 to 7
+/// one-line scenario steps and one line of what was not checked, all plain text.
+fn check_flag(issues: &mut Issues, at: &str, title: &str, flag: &Flag) {
+    let mut invalid = |field: &str, problem: String| {
+        issues.push(
+            VerifyIssueKind::FlagInvalid,
+            format!("{at}.{field}: {problem}"),
+        );
+    };
+    if flag.level == FlagLevel::Unknown {
+        invalid("level", "write red or yellow".to_owned());
+    }
+    let class = FLAG_TITLE_PREFIXES
+        .iter()
+        .find_map(|prefix| title.trim_start().strip_prefix(prefix))
+        .map(|rest| rest.trim().trim_end_matches(':').trim());
+    match class {
+        None => invalid("text", "a flag's title names the risk class and starts with \"Potential \" (Polish: \"Potencjalny \", \"Potencjalna \" or \"Potencjalne \")".to_owned()),
+        Some(class) if class.chars().count() < MIN_FLAG_CLASS_CHARS => invalid(
+            "text",
+            "name the risk class after \"Potential \", for example \"Potential double send on a late reply:\"".to_owned(),
+        ),
+        Some(_) => {}
+    }
+    let steps = flag.scenario.len();
+    if !FLAG_SCENARIO_STEPS.contains(&steps) {
+        invalid(
+            "scenario",
+            format!(
+                "{steps} steps; write 2 to 7, one per line: who acts, the order of events, the outcome and its cost"
+            ),
+        );
+    }
+    let mut lines = vec![("text", title, MAX_FLAG_TITLE_CHARS)];
+    lines.extend(
+        flag.scenario
+            .iter()
+            .map(|step| ("scenario", step.as_str(), MAX_FLAG_LINE_CHARS)),
+    );
+    lines.push((
+        "not_checked",
+        flag.not_checked.as_str(),
+        MAX_FLAG_LINE_CHARS,
+    ));
+    for (field, text, max) in lines {
+        if text.trim().is_empty() {
+            invalid(field, "a line is empty".to_owned());
+        } else if text.contains('\n') || text.chars().count() > max {
+            invalid(field, format!("write one line of at most {max} characters"));
+        }
+    }
+    for (number, step) in flag.scenario.iter().enumerate() {
+        let length = step.trim().chars().count();
+        if (1..MIN_FLAG_STEP_CHARS).contains(&length) {
+            invalid(
+                "scenario",
+                format!(
+                    "step {} is too short; write at least {MIN_FLAG_STEP_CHARS} characters saying who acts and what happens",
+                    number + 1
+                ),
+            );
+        }
+    }
+    for (field, text) in std::iter::once(("not_checked", flag.not_checked.as_str()))
+        .chain(flag.scenario.iter().map(|step| ("scenario", step.as_str())))
+    {
+        issues.reviewer_text(&format!("{at}.{field}"), text);
+    }
+    for (field, text) in std::iter::once(("text", title))
+        .chain(flag.scenario.iter().map(|step| ("scenario", step.as_str())))
+        .chain(std::iter::once(("not_checked", flag.not_checked.as_str())))
+    {
+        if let Some(found) = plain::check(text) {
+            let message = format!(
+                "{at}.{field} contains {}; write plain text and put code (names, types such as `Vec<u8>`, \
+                 expressions) in backticks",
+                found.describe()
+            );
+            issues.push(VerifyIssueKind::MarkupOrLink, message);
         }
     }
 }
@@ -702,8 +844,8 @@ mod tests {
     use contracts::agent::plan::{HunkSelection, PlannedFlow};
     use contracts::api::tour::{FlowGroup, MoveFact};
     use contracts::common::{
-        Blocking, Classification, Evidence, FileRange, FileRanges, LineRange, NodeKind, Origin,
-        ProvenanceBadge, RiskBand, ThreadLlmStatus,
+        Blocking, Classification, Evidence, FileRange, FileRanges, Flag, FlagLevel, LineRange,
+        NodeKind, Origin, ProvenanceBadge, RiskBand, ThreadLlmStatus,
     };
     use contracts::ids::{FlowId, HunkId};
 
@@ -846,8 +988,23 @@ mod tests {
                 ""
             }
             .to_owned(),
-            text: (kind != AnnotationType::Behaviour).then(|| "Can it be sent twice?".to_owned()),
+            text: (kind != AnnotationType::Behaviour).then(|| {
+                if kind == AnnotationType::Flag {
+                    "Potential double send:"
+                } else {
+                    "A retry may send it twice."
+                }
+                .to_owned()
+            }),
             evidence,
+            flag: (kind == AnnotationType::Flag).then(|| Flag {
+                level: FlagLevel::Yellow,
+                scenario: vec![
+                    "The node accepts the request; its reply arrives late.".to_owned(),
+                    "The client sends it again.".to_owned(),
+                ],
+                not_checked: "Not reproduced against a node.".to_owned(),
+            }),
         }
     }
 
@@ -1022,6 +1179,146 @@ mod tests {
         issues.iter().map(|issue| issue.kind).collect()
     }
 
+    fn flagged(level: FlagLevel) -> FlowAnalysisOutput {
+        let mut output = output();
+        let mut flag = annotation(
+            AnnotationType::Flag,
+            Basis::Inference,
+            (10, 12),
+            vec![evidence("src/a.rs", LineSide::Head, 10)],
+        );
+        if let Some(details) = flag.flag.as_mut() {
+            details.level = level;
+        }
+        output.steps[1].annotations.push(flag);
+        output
+    }
+
+    fn flag_of(output: &mut FlowAnalysisOutput) -> (&mut Option<String>, &mut Flag) {
+        let note = output.steps[1].annotations.last_mut().unwrap();
+        (&mut note.text, note.flag.as_mut().unwrap())
+    }
+
+    #[test]
+    fn a_flag_states_a_red_or_yellow_potential_risk_with_a_scenario() {
+        assert!(Setup::new().run(&flagged(FlagLevel::Red)).is_ok());
+        let mut polish = flagged(FlagLevel::Yellow);
+        *flag_of(&mut polish).0 = Some("Potencjalny wyścig między odczytem a zapisem:".to_owned());
+        assert!(Setup::new().run(&polish).is_ok());
+        type Mutation = (&'static str, fn(&mut Option<String>, &mut Flag));
+        let mutations: [Mutation; 12] = [
+            ("unknown level", |_, flag| flag.level = FlagLevel::Unknown),
+            ("question title", |text, _| {
+                *text = Some("Can it be sent twice?".to_owned());
+            }),
+            ("long title", |text, _| {
+                *text = Some(format!("Potential {}", "x".repeat(MAX_FLAG_TITLE_CHARS)));
+            }),
+            ("prefix only", |text, _| {
+                *text = Some("Potential :".to_owned())
+            }),
+            ("short step", |_, flag| {
+                flag.scenario[1] = "B sends.".to_owned()
+            }),
+            ("one step", |_, flag| flag.scenario.truncate(1)),
+            ("eight steps", |_, flag| {
+                flag.scenario = vec!["The client sends again.".to_owned(); 8];
+            }),
+            ("blank step", |_, flag| flag.scenario[1] = " ".to_owned()),
+            ("long step", |_, flag| {
+                flag.scenario[0] = "x".repeat(MAX_FLAG_LINE_CHARS + 1);
+            }),
+            ("two-line step", |_, flag| {
+                flag.scenario[0] = "A reads.\nB writes.".to_owned();
+            }),
+            ("blank not_checked", |_, flag| flag.not_checked.clear()),
+            ("two-line not_checked", |_, flag| {
+                flag.not_checked = "Not run.\nNot read.".to_owned();
+            }),
+        ];
+        for (name, mutate) in mutations {
+            let mut output = flagged(FlagLevel::Yellow);
+            let (text, flag) = flag_of(&mut output);
+            mutate(text, flag);
+            let issues = Setup::new().issues(&output);
+            assert_eq!(
+                kinds(&issues),
+                [VerifyIssueKind::FlagInvalid],
+                "{name}: {issues:#?}"
+            );
+            assert!(
+                issues[0]
+                    .message
+                    .starts_with("steps[1] \"s2\".annotations[1]."),
+                "{name}: {}",
+                issues[0].message
+            );
+        }
+        let mut linked = flagged(FlagLevel::Yellow);
+        flag_of(&mut linked).1.scenario[0] = "See [the docs](https://example.com).".to_owned();
+        assert_eq!(
+            kinds(&Setup::new().issues(&linked)),
+            [VerifyIssueKind::MarkupOrLink]
+        );
+        // Bare code reads as markup; the message says how to write it.
+        let mut code = flagged(FlagLevel::Yellow);
+        flag_of(&mut code).1.scenario[0] = "The reply is decoded into a Vec<u8> twice.".to_owned();
+        let issues = Setup::new().issues(&code);
+        assert_eq!(kinds(&issues), [VerifyIssueKind::MarkupOrLink]);
+        assert!(issues[0].message.contains("backticks"), "{issues:#?}");
+        flag_of(&mut code).1.scenario[0] =
+            "The reply is decoded into a `Vec<u8>` twice.".to_owned();
+        assert!(Setup::new().run(&code).is_ok());
+    }
+
+    #[test]
+    fn only_a_flag_carries_a_level_and_scenario() {
+        let mut output = flagged(FlagLevel::Yellow);
+        output.steps[1].annotations.last_mut().unwrap().kind = AnnotationType::Note;
+        assert_eq!(
+            kinds(&Setup::new().issues(&output)),
+            [VerifyIssueKind::RemarkMismatch]
+        );
+    }
+
+    #[test]
+    fn a_flag_stored_before_levels_is_read_as_it_was_accepted() {
+        let mut output = flagged(FlagLevel::Yellow);
+        let stored = output.steps[1].annotations.last_mut().unwrap();
+        stored.flag = None;
+        stored.text = Some("Can it be sent twice?".to_owned());
+        assert!(Setup::new().run(&output).is_ok());
+    }
+
+    #[test]
+    fn a_step_with_a_red_flag_is_not_rated_low() {
+        let mut output = flagged(FlagLevel::Red);
+        let assessment = output.steps[1].assessment.as_mut().unwrap();
+        assessment.risk = RiskBand::Low;
+        assert_eq!(
+            kinds(&Setup::new().issues(&output)),
+            [VerifyIssueKind::RedFlagOnLowStep]
+        );
+        let mut yellow = flagged(FlagLevel::Yellow);
+        yellow.steps[1].assessment.as_mut().unwrap().risk = RiskBand::Low;
+        assert!(Setup::new().run(&yellow).is_ok());
+    }
+
+    #[test]
+    fn a_step_raises_at_most_five_flags() {
+        let mut output = flagged(FlagLevel::Yellow);
+        let flag = output.steps[1].annotations.last().unwrap().clone();
+        output.steps[1]
+            .annotations
+            .extend(vec![flag; MAX_FLAGS_PER_STEP - 1]);
+        assert!(Setup::new().run(&output).is_ok());
+        let flag = output.steps[1].annotations.last().unwrap().clone();
+        output.steps[1].annotations.push(flag);
+        let issues = Setup::new().issues(&output);
+        assert_eq!(kinds(&issues), [VerifyIssueKind::FlagInvalid]);
+        assert!(issues[0].message.contains("6 flags"), "{issues:#?}");
+    }
+
     #[test]
     fn real_flows_with_silent_assessments_are_rejected() {
         for source in [
@@ -1097,11 +1394,13 @@ mod tests {
         let mut output = output();
         for kind in [
             AnnotationType::Note,
-            AnnotationType::Question,
+            AnnotationType::Flag,
             AnnotationType::Consequence,
         ] {
             let note = &mut output.steps[0].annotations[0];
             note.kind = kind;
+            note.flag = annotation(kind, Basis::Inference, (41, 42), Vec::new()).flag;
+            note.text = annotation(kind, Basis::Inference, (41, 42), Vec::new()).text;
             note.was.clear();
             note.is.clear();
             assert!(Setup::new().run(&output).is_ok(), "{kind:?}");
@@ -1152,7 +1451,7 @@ mod tests {
     }
 
     #[test]
-    fn non_low_risk_can_ask_a_concrete_question_without_prescribing_a_fix() {
+    fn non_low_risk_can_raise_an_evidenced_flag_without_prescribing_a_fix() {
         let mut output = output();
         output.steps[1]
             .assessment
@@ -1160,7 +1459,7 @@ mod tests {
             .unwrap()
             .smallest_correction = None;
         output.steps[1].annotations.push(annotation(
-            AnnotationType::Question,
+            AnnotationType::Flag,
             Basis::Inference,
             (10, 12),
             vec![evidence("src/a.rs", LineSide::Head, 10)],
@@ -1293,7 +1592,7 @@ mod tests {
         notes[0].evidence.clear();
         notes[0].text = Some("A behaviour remark.".to_owned());
         notes.push(annotation(
-            AnnotationType::Question,
+            AnnotationType::Note,
             Basis::Inference,
             (10, 10),
             Vec::new(),

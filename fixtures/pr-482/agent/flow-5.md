@@ -19,8 +19,15 @@ was: JITTER is a tenth: a delay moves by up to a tenth either way.
 is: JITTER is a half: a delay moves by up to half either way.
 evidence: p9:head:50 p10:base:23
 
-### annotation question inference 49-50
-text: Is the jump from a tenth to a half of the delay intended in a PR that is described as a move?
+### annotation flag inference 49-50
+level: yellow
+text: Potential behaviour change inside a move:
+scenario: <<END
+The pull request describes the backoff code as moved.
+The moved jitter range grows from a tenth to a half of the delay.
+Retries spread wider than before; a reader who takes it as a pure move misses the change.
+END
+not_checked: The intent was not confirmed with the author; timings were not measured.
 
 ### assessment
 risk: low

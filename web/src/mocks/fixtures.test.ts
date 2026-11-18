@@ -35,7 +35,7 @@ describe("fixture seed", () => {
     expect(profile).toEqual([]);
     const noq = seedFor("noq", "tour") as Tour;
     const annotations = noq.flows.flatMap((f) => f.steps.flatMap((s) => s.llm.annotations));
-    expect(annotations.some((a) => a.type === "question")).toBe(false);
+    expect(annotations.some((a) => a.type === "flag")).toBe(false);
     expect((seedFor("resume", "review-state") as ReviewState).last_viewed).toEqual({
       block: "step",
       step_id: "f1.5",

@@ -3,7 +3,8 @@ import { MARKER, SpeechBubble } from "../comment/LineComments";
 import { GithubLink, isGithubUrl } from "../inspector/text";
 import { Popover } from "../popover/Popover";
 import { CodeText } from "../section/CodeText";
-import { ANNOTATION, rangeText } from "../section/format";
+import { FLAG_LOOK, flagLevel } from "../flag/flags";
+import { annotationName, rangeText } from "../section/format";
 import { Tooltip } from "../tooltip/Tooltip";
 
 /** A remark or GitHub thread a marker's popover can show in the Inspector. */
@@ -83,10 +84,14 @@ export function RemarkMarker({
       tag="llm"
       content={(pinned) =>
         annotations.map((a) => {
-          const title = `${ANNOTATION[a.type]} · ${linesWord(a)}`;
+          const title = `${annotationName(a)} · ${linesWord(a)}`;
+          const level = flagLevel(a);
           return (
             <span key={a.id} className="block">
-              <span className="block font-semibold text-llm">{title}</span>
+              <span className={`block font-semibold ${level ? FLAG_LOOK[level].text : "text-llm"}`}>
+                {level && <span aria-hidden>⚑ </span>}
+                {title}
+              </span>
               {a.type === "behaviour" ? (
                 <>
                   <span className="block">Was: {a.was}</span> <span className="block">Is: {a.is}</span>
@@ -94,6 +99,15 @@ export function RemarkMarker({
               ) : (
                 <span className="block whitespace-pre-wrap">
                   <CodeText text={a.text ?? ""} />
+                </span>
+              )}
+              {a.flag && a.flag.scenario.length > 0 && (
+                <span role="list" className="block pl-1">
+                  {a.flag.scenario.map((line, i) => (
+                    <span role="listitem" key={i} className="block">
+                      {i + 1}. <CodeText text={line} />
+                    </span>
+                  ))}
                 </span>
               )}{" "}
               <span className="text-muted">({a.basis})</span>

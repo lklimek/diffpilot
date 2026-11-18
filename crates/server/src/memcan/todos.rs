@@ -113,18 +113,21 @@ pub async fn read(config: &MemcanConfig, projects: &[String]) -> TodosRead {
         Ok(client) => client,
         Err(error) => return unavailable(&error),
     };
-    read_with(projects, READ_BUDGET, async |arguments| {
-        client.call(LIST_TODOS, arguments).await
+    let client = &client;
+    read_with(projects, READ_BUDGET, |arguments| {
+        client.call(LIST_TODOS, arguments)
     })
     .await
 }
 
 /// [`read`] over `list`, which carries out one `list_todos` call with the given arguments, within `budget`.
-async fn read_with(
-    projects: &[String],
-    budget: Duration,
-    mut list: impl AsyncFnMut(Value) -> Result<String, MemcanError>,
-) -> TodosRead {
+/// `list` returns a future that does not borrow `list` itself (no async closure), so [`read`]'s future is `Send`
+/// and runs in a spawned task.
+async fn read_with<F, L>(projects: &[String], budget: Duration, mut list: L) -> TodosRead
+where
+    L: FnMut(Value) -> F,
+    F: Future<Output = Result<String, MemcanError>>,
+{
     let mut todos = Vec::new();
     let mut notes = Vec::new();
     let all = async {
@@ -179,11 +182,15 @@ struct Raw {
 }
 
 /// The open TODOs of one project. `Err` only when MemCan is unavailable; other problems are added to `notes`.
-async fn read_project(
+async fn read_project<F, L>(
     project: &str,
-    list: &mut impl AsyncFnMut(Value) -> Result<String, MemcanError>,
+    list: &mut L,
     notes: &mut Vec<String>,
-) -> Result<Vec<Todo>, MemcanError> {
+) -> Result<Vec<Todo>, MemcanError>
+where
+    L: FnMut(Value) -> F,
+    F: Future<Output = Result<String, MemcanError>>,
+{
     let Some((page, _)) = fetch(project, None, list, notes).await? else {
         return Ok(Vec::new());
     };
@@ -233,12 +240,16 @@ async fn read_project(
 
 /// One page of `project` (optionally of one status) with the limit it was read with; an over-size answer is
 /// asked for once more with [`SMALL_LIMIT`]. `None` (and a note) when the page cannot be had.
-async fn fetch(
+async fn fetch<F, L>(
     project: &str,
     status: Option<&str>,
-    list: &mut impl AsyncFnMut(Value) -> Result<String, MemcanError>,
+    list: &mut L,
     notes: &mut Vec<String>,
-) -> Result<Option<(Page, u32)>, MemcanError> {
+) -> Result<Option<(Page, u32)>, MemcanError>
+where
+    L: FnMut(Value) -> F,
+    F: Future<Output = Result<String, MemcanError>>,
+{
     let mut limit = LIMIT;
     let mut answer = list(arguments(project, status, limit)).await;
     if matches!(answer, Err(MemcanError::InvalidResponse { .. })) {
@@ -411,7 +422,7 @@ mod tests {
 
         async fn read(&self, projects: &[&str]) -> TodosRead {
             let projects: Vec<String> = projects.iter().map(|p| (*p).to_owned()).collect();
-            read_with(&projects, READ_BUDGET, async |arguments| {
+            read_with(&projects, READ_BUDGET, |arguments| async move {
                 self.calls.borrow_mut().push(arguments);
                 if let Some(delay) = self.delay {
                     tokio::time::sleep(delay).await;
@@ -474,6 +485,17 @@ mod tests {
         DateTime::parse_from_rfc3339(time)
             .expect("time")
             .with_timezone(&Utc)
+    }
+
+    #[tokio::test]
+    async fn read_runs_in_a_spawned_task() {
+        let fake = FakeMemcan::start();
+        let config = fake.config();
+        let projects = vec!["platform".to_owned()];
+        let read = tokio::spawn(async move { read(&config, &projects).await })
+            .await
+            .expect("task");
+        assert!(matches!(read, TodosRead::Read { .. }), "{read:?}");
     }
 
     #[tokio::test]

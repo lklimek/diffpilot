@@ -35,7 +35,8 @@
               "side": "head",
               "line": 23
             }
-          ]
+          ],
+          "flag": null
         },
         {
           "type": "consequence",
@@ -56,23 +57,34 @@
               "side": "head",
               "line": 11
             }
-          ]
+          ],
+          "flag": null
         },
         {
-          "type": "question",
+          "type": "flag",
           "basis": "inference",
           "start_line": 23,
           "end_line": 23,
           "was": "",
           "is": "",
-          "text": "Its own comment says 10-20 s and the failing CI test is about this: does sync::fetch_headers finish within 5 s for 2000 headers on slow peers?",
+          "text": "Potential header sync timeout on slow peers:",
           "evidence": [
             {
               "file": "src/sync/mod.rs",
               "side": "head",
               "line": 63
             }
-          ]
+          ],
+          "flag": {
+            "level": "red",
+            "scenario": [
+              "A node syncs from a slow peer and requests 2000 headers.",
+              "The reply takes 10 to 20 s, as the comment beside the setting says.",
+              "The new 5 s timeout ends each attempt first, and every retry ends the same way.",
+              "Header sync stalls; the failing CI test is about this path."
+            ],
+            "not_checked": "The CI test was not run here; peer timings were not measured."
+          }
         }
       ],
       "assessment": {
@@ -120,17 +132,19 @@
               "side": "head",
               "line": 65
             }
-          ]
+          ],
+          "flag": null
         },
         {
-          "type": "question",
+          "type": "note",
           "basis": "inference",
           "start_line": 64,
           "end_line": 64,
           "was": "",
           "is": "",
-          "text": "Is a 2000-header reply from a slow peer expected to arrive within 5 s?",
-          "evidence": []
+          "text": "Same risk as step 1: a 2000-header reply from a slow peer may take longer than 5 s.",
+          "evidence": [],
+          "flag": null
         }
       ],
       "assessment": {

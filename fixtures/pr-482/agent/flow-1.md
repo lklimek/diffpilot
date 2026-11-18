@@ -18,8 +18,15 @@ why: Shows who reaches the retry loop, in particular a call that is not safe to 
 text: broadcast_tx now reaches a retrying send.
 evidence: p15:head:129 p15:head:130 p6:head:99
 
-### annotation question inference 129-130
-text: Not visible in this repository: does the node reject a repeated broadcast_tx for the same transaction, so that a second send is harmless?
+### annotation flag inference 129-130
+level: yellow
+text: Potential duplicate transaction in the node:
+scenario: <<END
+The client sends broadcast_tx for a transaction and the node accepts it, but the reply is lost.
+The retry of step 5 sends the same transaction again.
+If the node does not reject a repeated transaction, it is relayed twice; the extra cost is relay load.
+END
+not_checked: How the node treats a repeated transaction is outside this repository; not checked.
 evidence: p15:head:129
 
 ### assessment
@@ -90,8 +97,16 @@ evidence: p6:head:99 p9:head:23 p9:head:24
 text: mempool::broadcast_tx may submit the same transaction twice if attempt 1 reached the node and only the reply was late.
 evidence: p15:head:129
 
-### annotation question inference 99-99
-text: should_retry receives only the attempt number and no method or idempotency input: can broadcast_tx be sent twice when the reply arrives late?
+### annotation flag inference 99-99
+level: red
+text: Potential double broadcast on a late reply:
+scenario: <<END
+A wallet calls send with broadcast_tx; the node accepts the transaction, but its reply arrives after the timeout.
+should_retry sees only the attempt number, so it allows another attempt.
+The client sends broadcast_tx again.
+If the node accepts the second request, the user's payment is broadcast twice.
+END
+not_checked: Not reproduced against a node; no test was run.
 evidence: p9:head:23
 
 ### assessment
@@ -115,8 +130,15 @@ was: No delay.
 is: Sleeps backoff(attempt): 200 ms doubling, capped at 4 s, plus jitter; then loops to step 2.
 evidence: p6:head:100 p6:head:102 p9:head:29 p9:head:30
 
-### annotation question inference 100-100
-text: With jitter applied after the cap, can one sleep exceed max_delay (4 s)?
+### annotation flag inference 100-100
+level: yellow
+text: Potential sleep longer than max_delay:
+scenario: <<END
+The backoff reaches the 4 s cap after a few attempts.
+Jitter is added after the cap.
+One sleep lasts longer than 4 s; a caller with a tight deadline waits longer than max_delay suggests.
+END
+not_checked: The jitter range was read in the code; no timing was measured.
 evidence: p9:head:30
 
 ### assessment
@@ -139,8 +161,15 @@ evidence: p6:head:104 p6:head:105 p7:head:13
 text: Callers that matched on Timeout no longer see it from send; wallet::fetch_balance maps only Timeout to WalletError::Offline.
 evidence: p16:head:120 p16:head:121
 
-### annotation question inference 104-106
-text: Two wildcard sites were found (flow 3): do all callers of send still handle the case that used to be Timeout?
+### annotation flag inference 104-106
+level: yellow
+text: Potential unhandled Exhausted where Timeout was matched:
+scenario: <<END
+A request times out on every attempt.
+send now returns Exhausted where it returned Timeout.
+A caller that matched Timeout falls into its wildcard arm (two sites, flow 3) and reports another error.
+END
+not_checked: Callers outside this repository were not searched.
 
 ### assessment
 headline: Wallet users get a generic RPC error instead of the “offline” message once retries run out.
@@ -179,8 +208,15 @@ was: RpcClient had no retry settings.
 is: Every client carries a RetryPolicy, set to the default in new.
 evidence: p6:head:35 p6:head:42
 
-### annotation question inference 42-42
-text: No setter or constructor argument takes a policy: how does a caller that must not retry change it?
+### annotation flag inference 42-42
+level: yellow
+text: Potential retries a caller cannot turn off:
+scenario: <<END
+A caller builds RpcClient with the default constructor.
+No setter or constructor argument takes a retry policy.
+A request that must not be repeated is retried up to 3 times, with no way to opt out.
+END
+not_checked: Downstream code was not searched for such callers.
 evidence: p6:head:42
 
 ### assessment

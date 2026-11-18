@@ -22,6 +22,8 @@ export interface AskThreadProps {
   currentFile?: string;
   /** Asks a failed question again on its step. */
   onAskAgain?: (step: StepId, text: string) => Promise<unknown> | void;
+  /** "Use as review comment" on an answer asked on the open step (anchored on that step's lines). */
+  onUseAsComment?: (question: AskQuestion) => void;
 }
 
 // Within this many px of the end the reader counts as following the newest entry.
@@ -49,6 +51,7 @@ export function AskThread({
   onEvidence,
   currentFile,
   onAskAgain,
+  onUseAsComment,
 }: AskThreadProps) {
   const box = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -130,6 +133,9 @@ export function AskThread({
                     onAskAgain={onAskAgain}
                     onEvidence={onEvidence}
                     currentFile={currentFile}
+                    onUseAsComment={
+                      onUseAsComment && q.step_id === stepId ? () => onUseAsComment(q) : undefined
+                    }
                   />
                 </li>
               );
