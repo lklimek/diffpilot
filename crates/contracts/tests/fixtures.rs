@@ -22,7 +22,9 @@ use contracts::api::questions::{AskQuestion, AskState};
 use contracts::api::review::{BlockRef, ReviewState};
 use contracts::api::settings::Settings;
 use contracts::api::tour::{Annotation, FlowGroup, ProfileSource, Tour};
-use contracts::common::{AnnotationType, Basis, FragmentKind, LineRange, LineSide, NodeKind};
+use contracts::common::{
+    AnnotationType, Basis, FlagLevel, FragmentKind, LineRange, LineSide, NodeKind,
+};
 use contracts::ids::{AnnotationId, StepId};
 use serde::Deserialize;
 use serde::Serialize;
@@ -392,12 +394,23 @@ fn flow_outputs_follow_the_agent_output_rules() {
                     a.basis == Basis::Inference || !a.evidence.is_empty(),
                     "{what}: fact without evidence"
                 );
-                if a.kind == AnnotationType::Question {
+                assert_eq!(
+                    a.flag.is_some(),
+                    a.kind == AnnotationType::Flag,
+                    "{what}: a flag carries its level and scenario, nothing else does"
+                );
+                if let Some(flag) = &a.flag {
                     assert!(
                         a.text
                             .as_deref()
-                            .is_some_and(|t| t.trim_end().ends_with('?')),
-                        "{what}: question not phrased as a question"
+                            .is_some_and(|t| t.starts_with("Potential ")),
+                        "{what}: flag title names the risk class"
+                    );
+                    assert!(
+                        flag.level != FlagLevel::Unknown
+                            && (2..=7).contains(&flag.scenario.len())
+                            && !flag.not_checked.trim().is_empty(),
+                        "{what}: flag has a level, a scenario and what was not checked"
                     );
                 }
                 for e in &a.evidence {
@@ -987,8 +1000,8 @@ fn api_states_show_what_the_inventory_names() {
 
     let mut noq = tour_of(&state("noq"));
     assert!(
-        step_annotations(&noq).all(|(_, a)| a.kind != AnnotationType::Question),
-        "noq: no questions"
+        step_annotations(&noq).all(|(_, a)| a.kind != AnnotationType::Flag),
+        "noq: no flags"
     );
     assert!(
         noq.flows
@@ -1003,7 +1016,7 @@ fn api_states_show_what_the_inventory_names() {
             step.llm.assessment = None;
             step.llm
                 .annotations
-                .retain(|a| a.kind != AnnotationType::Question);
+                .retain(|a| a.kind != AnnotationType::Flag);
         }
     }
     renumber(&mut expected);

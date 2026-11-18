@@ -23,8 +23,16 @@ evidence: p4:head:23
 text: sync::fetch_headers relied on the longer wait; CI: sync_headers::slow_peer_2000_headers fails with a timeout after 5 s.
 evidence: p15:head:63 p14:head:11
 
-### annotation question inference 23-23
-text: Its own comment says 10-20 s and the failing CI test is about this: does sync::fetch_headers finish within 5 s for 2000 headers on slow peers?
+### annotation flag inference 23-23
+level: red
+text: Potential header sync timeout on slow peers:
+scenario: <<END
+A node syncs from a slow peer and requests 2000 headers.
+The reply takes 10 to 20 s, as the comment beside the setting says.
+The new 5 s timeout ends each attempt first, and every retry ends the same way.
+Header sync stalls; the failing CI test is about this path.
+END
+not_checked: The CI test was not run here; peer timings were not measured.
 evidence: p15:head:63
 
 ### assessment
@@ -49,8 +57,8 @@ why: Shown because the default timeout reaches it, although the file is not in t
 text: A reply that needs 10-20 s now times out on every attempt.
 evidence: p15:head:63 p15:head:65
 
-### annotation question inference 64-64
-text: Is a 2000-header reply from a slow peer expected to arrive within 5 s?
+### annotation note inference 64-64
+text: Same risk as the red flag on step 1: a 2000-header reply from a slow peer may take longer than 5 s.
 
 ### assessment
 risk: low

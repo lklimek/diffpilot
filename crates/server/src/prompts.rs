@@ -806,11 +806,13 @@ fn frame(job: &str, context: JobContext<'_>, task: &str) -> Result<String, Promp
     } else {
         "Output only the JSON object of the output schema."
     };
-    // Ask states risks as scenarios (brief §1 addendum 2026-11-18); flows keep the question form for now.
+    // Ask and flow analysis state risks as scenarios (brief §1 addenda 2026-11-18).
     let defect_form = if job == "ask" {
         "A suspected defect is an LLM statement of risk: a short title naming the risk class, prefixed \"Potential\", a numbered scenario (who acts, the order of events, the outcome and its cost) and one closing line saying what was not reproduced or checked."
+    } else if file_job {
+        "A suspected defect is a `flag` annotation: a concrete risk scenario, never a question or a verdict."
     } else {
-        "Suspected defects are `question` annotations phrased as questions to check, each ending with \"?\"."
+        "Suspected defects are phrased as questions to check, each ending with \"?\"."
     };
     let file_permission = if file_job {
         "You may write/edit out/flow.md and run the installed sr-check checker; these are the only write/execute exceptions."

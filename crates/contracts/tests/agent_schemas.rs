@@ -8,7 +8,7 @@ use contracts::agent::pr_context::PrContextOutput;
 use contracts::agent::strict::{self, StrictSchemaError};
 use contracts::agent::{JobKind, output_schema};
 use contracts::common::{
-    AnnotationType, Basis, Blocking, Classification, FitTopic, FragmentKind, Origin,
+    AnnotationType, Basis, Blocking, Classification, FitTopic, FlagLevel, FragmentKind, Origin,
     RelatedWorkKind, RiskBand, ThreadLlmStatus,
 };
 use schemars::JsonSchema;
@@ -105,8 +105,9 @@ fn closed_enums_match_brief() {
     );
     assert_eq!(
         enum_values::<AnnotationType>(),
-        ["behaviour", "consequence", "question", "note"]
+        ["behaviour", "consequence", "flag", "note"]
     );
+    assert_eq!(enum_values::<FlagLevel>(), ["red", "yellow", "unknown"]);
     assert_eq!(enum_values::<Basis>(), ["fact", "inference"]);
     assert_eq!(enum_values::<RiskBand>(), ["low", "medium", "high"]);
     assert_eq!(
@@ -276,12 +277,14 @@ fn samples() -> Vec<(JobKind, Value)> {
                     {"id": "s1", "title": "Retry allowed?", "file": "src/rpc/client.rs", "side": "head", "start_line": 99, "end_line": 99,
                      "symbol": "RpcClient::send", "kind": "added", "moved_from": null,
                      "called_by": "step s2", "decides": "Retry or give up.", "next": "s2", "why": "Stops the loop.",
-                     "annotations": [{"type": "question", "basis": "inference", "start_line": 99, "end_line": 99,
-                                      "was": "A timeout was returned.", "is": "A timeout is retried.",
-                                      "text": "Can broadcast_tx be sent twice?", "evidence": []},
+                     "annotations": [{"type": "flag", "basis": "inference", "start_line": 99, "end_line": 99,
+                                      "was": "", "is": "",
+                                      "text": "Potential double broadcast:", "evidence": [],
+                                      "flag": {"level": "red", "scenario": ["The reply arrives late.", "The client sends again."],
+                                               "not_checked": "Not reproduced."}},
                                      {"type": "behaviour", "basis": "fact", "start_line": 99, "end_line": 99,
                                       "was": "A timeout was returned.", "is": "A timeout is retried.",
-                                      "text": null, "evidence": evidence}],
+                                      "text": null, "evidence": evidence, "flag": null}],
                      "assessment": {"headline": "A payment may be broadcast twice.", "risk": "high", "reason": "Value-moving.",
                                     "basis_note": "Read: 2 files", "not_checked": "node deduplication",
                                     "origin": "introduced", "blocking": "blocks_this_pr", "smallest_correction": null}},
@@ -296,7 +299,7 @@ fn samples() -> Vec<(JobKind, Value)> {
                      "annotations": [{"type": "consequence", "basis": "fact", "start_line": 1, "end_line": 3,
                                       "was": "send_once sent exactly one request.", "is": "No single-attempt call exists.",
                                       "text": "Callers that cannot tolerate a repeat lose their opt-out.",
-                                      "evidence": [{"file": "src/rpc/old.rs", "side": "base", "line": 2}]}],
+                                      "evidence": [{"file": "src/rpc/old.rs", "side": "base", "line": 2}], "flag": null}],
                      "assessment": {"headline": "The bounded wait may delay a response.", "risk": "low", "reason": "The wait is confined to a single request.", "basis_note": "Read: the wait and callers.", "not_checked": "Runtime timing.", "origin": "introduced", "blocking": "no_action_proposed", "smallest_correction": null}}
                 ],
                 "edges": [{"from_step_id": "s1", "to_step_id": "s2", "label": "yes"},

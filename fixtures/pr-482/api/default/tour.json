@@ -452,7 +452,7 @@
               },
               {
                 "id": "f1.1.a2",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 129,
@@ -460,14 +460,23 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Not visible in this repository: does the node reject a repeated broadcast_tx for the same transaction, so that a second send is harmless?",
+                "text": "Potential duplicate transaction in the node:",
                 "evidence": [
                   {
                     "file": "src/mempool/mod.rs",
                     "side": "head",
                     "line": 129
                   }
-                ]
+                ],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "The client sends broadcast_tx for a transaction and the node accepts it, but the reply is lost.",
+                    "The retry of step 5 sends the same transaction again.",
+                    "If the node does not reject a repeated transaction, it is relayed twice; the extra cost is relay load."
+                  ],
+                  "not_checked": "How the node treats a repeated transaction is outside this repository; not checked."
+                }
               }
             ],
             "assessment": {
@@ -769,7 +778,7 @@
               },
               {
                 "id": "f1.5.a3",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 99,
@@ -777,14 +786,24 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "should_retry receives only the attempt number and no method or idempotency input: can broadcast_tx be sent twice when the reply arrives late?",
+                "text": "Potential double broadcast on a late reply:",
                 "evidence": [
                   {
                     "file": "src/rpc/retry.rs",
                     "side": "head",
                     "line": 23
                   }
-                ]
+                ],
+                "flag": {
+                  "level": "red",
+                  "scenario": [
+                    "A wallet calls send with broadcast_tx; the node accepts the transaction, but its reply arrives after the timeout.",
+                    "should_retry sees only the attempt number, so it allows another attempt.",
+                    "The client sends broadcast_tx again.",
+                    "If the node accepts the second request, the user's payment is broadcast twice."
+                  ],
+                  "not_checked": "Not reproduced against a node; no test was run."
+                }
               }
             ],
             "assessment": {
@@ -867,7 +886,7 @@
               },
               {
                 "id": "f1.6.a2",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 100,
@@ -875,14 +894,23 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "With jitter applied after the cap, can one sleep exceed max_delay (4 s)?",
+                "text": "Potential sleep longer than max_delay:",
                 "evidence": [
                   {
                     "file": "src/rpc/retry.rs",
                     "side": "head",
                     "line": 30
                   }
-                ]
+                ],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "The backoff reaches the 4 s cap after a few attempts.",
+                    "Jitter is added after the cap.",
+                    "One sleep lasts longer than 4 s; a caller with a tight deadline waits longer than max_delay suggests."
+                  ],
+                  "not_checked": "The jitter range was read in the code; no timing was measured."
+                }
               }
             ],
             "assessment": {
@@ -979,7 +1007,7 @@
               },
               {
                 "id": "f1.7.a3",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 104,
@@ -987,8 +1015,17 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Two wildcard sites were found (flow 3): do all callers of send still handle the case that used to be Timeout?",
-                "evidence": []
+                "text": "Potential unhandled Exhausted where Timeout was matched:",
+                "evidence": [],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "A request times out on every attempt.",
+                    "send now returns Exhausted where it returned Timeout.",
+                    "A caller that matched Timeout falls into its wildcard arm (two sites, flow 3) and reports another error."
+                  ],
+                  "not_checked": "Callers outside this repository were not searched."
+                }
               }
             ],
             "assessment": {
@@ -1124,7 +1161,7 @@
               },
               {
                 "id": "f1.9.a2",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 42,
@@ -1132,14 +1169,23 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "No setter or constructor argument takes a policy: how does a caller that must not retry change it?",
+                "text": "Potential retries a caller cannot turn off:",
                 "evidence": [
                   {
                     "file": "src/rpc/client.rs",
                     "side": "head",
                     "line": 42
                   }
-                ]
+                ],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "A caller builds RpcClient with the default constructor.",
+                    "No setter or constructor argument takes a retry policy.",
+                    "A request that must not be repeated is retried up to 3 times, with no way to opt out."
+                  ],
+                  "not_checked": "Downstream code was not searched for such callers."
+                }
               }
             ],
             "assessment": {
@@ -1411,7 +1457,7 @@
               },
               {
                 "id": "f2.1.a3",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 23,
@@ -1419,14 +1465,24 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Its own comment says 10-20 s and the failing CI test is about this: does sync::fetch_headers finish within 5 s for 2000 headers on slow peers?",
+                "text": "Potential header sync timeout on slow peers:",
                 "evidence": [
                   {
                     "file": "src/sync/mod.rs",
                     "side": "head",
                     "line": 63
                   }
-                ]
+                ],
+                "flag": {
+                  "level": "red",
+                  "scenario": [
+                    "A node syncs from a slow peer and requests 2000 headers.",
+                    "The reply takes 10 to 20 s, as the comment beside the setting says.",
+                    "The new 5 s timeout ends each attempt first, and every retry ends the same way.",
+                    "Header sync stalls; the failing CI test is about this path."
+                  ],
+                  "not_checked": "The CI test was not run here; peer timings were not measured."
+                }
               }
             ],
             "assessment": {
@@ -1506,7 +1562,7 @@
               },
               {
                 "id": "f2.2.a2",
-                "type": "question",
+                "type": "note",
                 "basis": "inference",
                 "range": {
                   "start_line": 64,
@@ -1514,7 +1570,7 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Is a 2000-header reply from a slow peer expected to arrive within 5 s?",
+                "text": "Same risk as the red flag on step 1: a 2000-header reply from a slow peer may take longer than 5 s.",
                 "evidence": []
               }
             ],
@@ -1694,7 +1750,7 @@
               },
               {
                 "id": "f3.1.a3",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 13,
@@ -1702,8 +1758,17 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Should the two wildcard sites handle Exhausted explicitly?",
-                "evidence": []
+                "text": "Potential generic error where Timeout was handled:",
+                "evidence": [],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "A request exhausts its retries and send returns Exhausted.",
+                    "The two match sites with a wildcard arm treat it as an unknown error.",
+                    "The user sees a generic failure instead of the offline message Timeout gave."
+                  ],
+                  "not_checked": "The two sites were read; their messages were not run."
+                }
               }
             ],
             "assessment": {
@@ -1783,7 +1848,7 @@
               },
               {
                 "id": "f3.2.a2",
-                "type": "question",
+                "type": "note",
                 "basis": "inference",
                 "range": {
                   "start_line": 121,
@@ -1791,7 +1856,7 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Should Exhausted map to WalletError::Offline like Timeout?",
+                "text": "Same risk as the flag on step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.",
                 "evidence": []
               }
             ],
@@ -1917,7 +1982,7 @@
               },
               {
                 "id": "f4.1.a2",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 53,
@@ -1925,12 +1990,21 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Does acme/node-sdk (PR #118) still call send_once()?",
-                "evidence": []
+                "text": "Potential build break in acme/node-sdk:",
+                "evidence": [],
+                "flag": {
+                  "level": "red",
+                  "scenario": [
+                    "acme/node-sdk (PR #118) calls send_once().",
+                    "This pull request removes send_once().",
+                    "The SDK no longer builds when it updates to this version."
+                  ],
+                  "not_checked": "The SDK's current code was not read."
+                }
               },
               {
                 "id": "f4.1.a3",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 52,
@@ -1938,8 +2012,17 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "How does a caller now send a request that must not be repeated?",
-                "evidence": []
+                "text": "Potential repeat of a request that must run once:",
+                "evidence": [],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "A caller used send_once() for a request that must run at most once.",
+                    "send_once() is removed, and send() is the only call left.",
+                    "send() retries on timeout, so the request may run twice."
+                  ],
+                  "not_checked": "Downstream use was not searched."
+                }
               }
             ],
             "assessment": {
@@ -2123,7 +2206,7 @@
               },
               {
                 "id": "f5.1.a2",
-                "type": "question",
+                "type": "flag",
                 "basis": "inference",
                 "range": {
                   "start_line": 49,
@@ -2131,8 +2214,17 @@
                 },
                 "was": "",
                 "is": "",
-                "text": "Is the jump from a tenth to a half of the delay intended in a PR that is described as a move?",
-                "evidence": []
+                "text": "Potential behaviour change inside a move:",
+                "evidence": [],
+                "flag": {
+                  "level": "yellow",
+                  "scenario": [
+                    "The pull request describes the backoff code as moved.",
+                    "The moved jitter range grows from a tenth to a half of the delay.",
+                    "Retries spread wider than before; a reader who takes it as a pure move misses the change."
+                  ],
+                  "not_checked": "The intent was not confirmed with the author; timings were not measured."
+                }
               }
             ],
             "assessment": {

@@ -15,7 +15,8 @@ output against the schema, then verifies it (`analysis::verify`), then projects 
   questions and Ask answers carry evidence but no basis (a question is never a fact).
 - **Numbers.** Integers only for lines, counters and `importance_rank`. No scores, confidence, percentages.
   Risk is the band `low | medium | high` from the severity skill, never its numbers.
-- **Questions, not verdicts.** Suspected defects are `question` annotations phrased as questions.
+- **Flags, not verdicts.** In flow analysis a suspected defect is a `flag` annotation: a concrete risk scenario
+  with a level (brief §1 addendum 2026-11-18, flow analysis). Plan and PR context phrase suspicions as questions.
 
 ## `plan`
 - `flows[]`: `id` `f<n>`; `title`; `classification` (closed list, brief §3); `importance_rank` (1 = read first,
@@ -39,10 +40,13 @@ repository there is no GitHub tool: `related_work` is `[]` and the server shows 
   `file`, `side`, `start_line`, `end_line`, `symbol`, `kind` (`modified | added | moved | renamed | deleted_site |
   context`), `moved_from` (base location of a moved block or null), `called_by`, `decides`, `next`, `why`,
   `annotations[]`, `assessment` (required on every step, including low-risk and context steps).
-- `annotations[]`: `type` (`behaviour | consequence | question | note`), `basis`, `start_line`, `end_line`
+- `annotations[]`: `type` (`behaviour | consequence | flag | note`), `basis`, `start_line`, `end_line`
   (inside the step, step's side), **`was` and `is`** (nonempty before/after facts for `behaviour`, empty strings
-  for the other types), `text` (the consequence, question or note; null exactly
-  for `behaviour`), `evidence[]`.
+  for the other types), `text` (the consequence, the flag's title or the note; null exactly
+  for `behaviour`), `evidence[]`, `flag` (null except on a flag: `level` `red | yellow`, `scenario[]` of 2 to 7
+  one-line steps, `not_checked` one line; the title starts "Potential "). A flag stored before levels (stored type
+  `question`, read as `flag`) has no `flag` object; the Tour shows it with level `unknown`, its text as the title
+  and no scenario. New output always carries the object (the flow file grammar requires it).
 - Low `assessment`: only `risk` and one-sentence `reason`. Above low: `headline`, `risk`, `reason`, `basis_note` (what the agent did: "Read: …", and "Ran: …" if it ran anything),
   `not_checked`, `origin`, `blocking` (`no_action_proposed | blocks_this_pr | follow_up`), `smallest_correction`.
   Rate unresolved risk introduced or left by the change, not the pre-existing defect it fixes.
@@ -80,11 +84,13 @@ material (e.g. a deleted comment) is classified on the base side.
 | `DuplicateId`, `UnknownReference`, `DanglingEdge` | flow ids, `importance_rank`, step ids and thread statuses unique; `depends_on`, impact and pattern references and edges name existing flows or steps; the output's `flow_id` is the job's flow |
 | `FactWithoutEvidence` | `fact` ⇒ ≥ 1 evidence line |
 | `BehaviourMissing` | `was` and `is` non-empty on `behaviour` annotations only |
-| `RemarkMismatch` | `text` null iff `type = behaviour` (blank text counts as null); other annotation types use empty strings for `was` and `is` |
+| `RemarkMismatch` | `text` null iff `type = behaviour` (blank text counts as null); other annotation types use empty strings for `was` and `is`; only a flag carries a `flag` object |
+| `FlagInvalid` | a flag has level `red` or `yellow`, a title starting "Potential " (Polish "Potencjalny/-a/-e "), 2 to 7 non-empty one-line scenario steps and a non-empty one-line `not_checked`; title ≤ 160, other lines ≤ 300 characters; at most 5 flags per step (`MarkupOrLink` for markup or links in them) |
+| `RedFlagOnLowStep` | a step with a red flag is rated `medium` or `high` |
 | `AgentLimitation` | reviewer-facing text must not report missing agent tools, skills or instructions, or AI self-commentary |
 | `SchemaMismatch` | the pipeline requests repair of a flow output that fails the schema before deserialization; exhausted repairs leave its lines Unexplained |
 | `AssessmentMissing` | every step has an assessment (including low-risk and context steps); no silently empty rating |
-| `AssessmentActionMissing` | `follow_up` requires a named action in `smallest_correction`; non-low risk requires a concrete correction or an evidenced question on the same step |
+| `AssessmentActionMissing` | `follow_up` requires a named action in `smallest_correction`; non-low risk requires a concrete correction or an evidenced flag on the same step |
 | `UnconfirmedStack` | the server supplies no deterministic base/open-PR-head relationship yet, so agent-supplied `stacked_pr` labels are rejected |
 | `BaseSideMisused` | a base step is `deleted_site` and every line of it was removed |
 | `UnknownThread`, `ThreadStatusMissing` | thread aliases were listed; every listed alias has a status |
@@ -108,7 +114,8 @@ output are Unexplained; `coverage.double_covered` lists lines covered by two flo
 some moves have no fact) for the pipeline to record; it is never a rejection.
 
 ## Mandatory prompt rules block (every job kind)
-1. Trust and wording: facts carry evidence you read; inferences are marked; suspicions are questions; no
+1. Trust and wording: facts carry evidence you read; inferences are marked; suspicions are flags (flow analysis),
+   risk statements (Ask) or questions (plan, PR context); no
    numeric confidence; never write "no risk", "nothing to review", "no review needed", "noise", "verified" or
    verdicts; every step has a change-risk assessment with a reason; above low it also has an explicit basis.
 2. Read-only: do not modify files, push, comment, or call write tools; GitHub tools are read-only.
@@ -123,7 +130,7 @@ some moves have no fact) for the pipeline to record; it is never a rejection.
 
 Every step still requires an assessment. Low may be exactly
 `{"risk":"low","reason":"The retry remains bounded to one request."}`. Above low, headline, basis note,
-not-checked, origin and blocking remain mandatory, as do the existing concrete-action/question rules.
+not-checked, origin and blocking remain mandatory, as do the existing concrete-action/flag rules.
 The agent JSON schema accepts both the concise closed object and the detailed object; the Rust fields
 are optional so a formal Markdown representation can omit them too. Existing full low assessments remain
 readable, but the UI renders only their band and reason. Wording checks apply to every supplied text.

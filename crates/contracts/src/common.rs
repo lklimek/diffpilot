@@ -190,17 +190,55 @@ impl From<FragmentKind> for NodeKind {
 }
 
 /// Type of an annotation inside a step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum AnnotationType {
     /// Behaviour change, was → is.
     Behaviour,
     /// A consequence of the change.
     Consequence,
-    /// A question for the reviewer to check (also LLM suspicions).
-    Question,
+    /// A risk the LLM states as a concrete scenario (brief §1 addendum 2026-11-18).
+    Flag,
     /// Any other remark.
     Note,
+}
+
+// Hand-written so that `question`, stored before flags, reads as `flag` (ts-rs does not support `alias`).
+impl<'de> Deserialize<'de> for AnnotationType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const NAMES: &[&str] = &["behaviour", "consequence", "flag", "note"];
+        let name = String::deserialize(deserializer)?;
+        match name.as_str() {
+            "behaviour" => Ok(Self::Behaviour),
+            "consequence" => Ok(Self::Consequence),
+            "flag" | "question" => Ok(Self::Flag),
+            "note" => Ok(Self::Note),
+            other => Err(serde::de::Error::unknown_variant(other, NAMES)),
+        }
+    }
+}
+
+/// How strongly the LLM flags a risk: its own judgement, not checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum FlagLevel {
+    /// A likely defect or damage if the scenario is reachable.
+    Red,
+    /// Worth a look: plausible but weaker, or of lower cost.
+    Yellow,
+    /// A flag stored before flags had levels (a former question to check); never in new agent output.
+    Unknown,
+}
+
+/// The scenario of a flag; its title (the risk class, "Potential …") is the annotation's `text`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct Flag {
+    /// red or yellow in agent output; unknown only on a flag stored before levels.
+    pub level: FlagLevel,
+    /// Ordered steps: who acts, the order of events, the outcome and its cost.
+    pub scenario: Vec<String>,
+    /// One line: what was not reproduced or run.
+    pub not_checked: String,
 }
 
 /// Whether an issue was introduced by the pull request.

@@ -114,6 +114,12 @@ pub fn flow(output: &FlowAnalysisOutput) -> Vec<WordingWarning> {
             if let Some(text) = &note.text {
                 scan(&mut found, &format!("{at}.text"), text);
             }
+            if let Some(flag) = &note.flag {
+                for line in &flag.scenario {
+                    scan(&mut found, &format!("{at}.scenario"), line);
+                }
+                scan(&mut found, &format!("{at}.not_checked"), &flag.not_checked);
+            }
         }
         if let Some(assessment) = &step.assessment {
             let at = format!("{at}.assessment");
@@ -229,6 +235,29 @@ mod tests {
                 ("confidence", "problem"),
                 ("95 %", "problem"),
                 ("noise", "fit_questions[0].question"),
+            ]
+        );
+    }
+
+    #[test]
+    fn flag_scenario_and_not_checked_wording_is_scanned() {
+        let mut output: FlowAnalysisOutput = serde_json::from_str(include_str!(
+            "../../../../fixtures/pr-482/agent/flow-2.json"
+        ))
+        .expect("fixture");
+        assert!(flow(&output).is_empty());
+        let flag = output.steps[0]
+            .annotations
+            .iter_mut()
+            .find_map(|a| a.flag.as_mut())
+            .expect("a flag");
+        flag.scenario[1] = "The retry was verified.".to_owned();
+        flag.not_checked = "Nothing; no risk.".to_owned();
+        assert_eq!(
+            phrases(&flow(&output)),
+            [
+                ("verified", "steps[0].annotations[2].scenario"),
+                ("no risk", "steps[0].annotations[2].not_checked"),
             ]
         );
     }

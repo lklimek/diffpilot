@@ -21,6 +21,8 @@ pub use codec::{encode, parse};
 
 /// Maximum bytes in a flow document (also enforced when collecting the file).
 pub const MAX_BYTES: usize = 1024 * 1024;
+/// Grammar and verification context version (2: flags replace questions).
+pub const VERSION: u32 = 2;
 
 /// A problem in the model's document. Line numbers are one-based.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -157,7 +159,7 @@ impl Context {
     /// The caller supplies the checkout/mirror path; it is never taken from model text.
     pub fn check(&self, text: &str, repo: &Path) -> Result<FlowAnalysisOutput, Vec<Problem>> {
         let fail = |message: String| vec![Problem::new(1, message)];
-        if self.version != 1 {
+        if self.version != VERSION {
             return Err(fail("unsupported verification context version".into()));
         }
         let output = parse(text, &self.catalog()).map_err(|problem| vec![problem])?;

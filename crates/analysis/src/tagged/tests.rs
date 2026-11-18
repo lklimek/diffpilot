@@ -65,7 +65,7 @@ fn grammar_rejects_malformed_unknown_duplicate_and_missing_fields_with_lines() {
         (text.replace(risk, "risk: enormous"), "unknown variant"),
         (format!("{text}\n### bad\n"), "unknown or misplaced section"),
         (
-            text.replace(decides, "decides: <<END\nraw"),
+            text.replace(decides, "decides: <<UNCLOSED\nraw"),
             "missing heredoc terminator",
         ),
         (
@@ -512,4 +512,70 @@ fn diagnostic_line_map_stays_linear_in_the_document_size() {
     parse(&largest, &hunk_catalog()).expect("valid");
     let bytes = key_bytes(&largest).expect("valid");
     assert!(bytes <= 16 * largest.len(), "{bytes} key bytes");
+}
+
+#[test]
+fn flags_round_trip_and_need_a_red_or_yellow_level_a_scenario_and_what_was_not_checked() {
+    let (doc, text) = fixture();
+    assert!(
+        doc.steps
+            .iter()
+            .flat_map(|s| &s.annotations)
+            .any(|a| a.flag.is_some())
+    );
+    let heading = text
+        .lines()
+        .find(|line| line.starts_with("### annotation flag "))
+        .unwrap();
+    let block = |level: &str| {
+        format!(
+            "level: {level}\ntext: Potential stall:\nscenario: <<END\n1. A peer is slow.\n\n- The request times out.\nEND\nnot_checked: Not run.\n"
+        )
+    };
+    let start = text.find(heading).unwrap() + heading.len() + 1;
+    let end = text[start..].find("evidence:").unwrap() + start;
+    let with = |fields: &str| format!("{}{fields}{}", &text[..start], &text[end..]);
+    let parsed = parse(&with(&block("red")), &Catalog::default()).unwrap();
+    let flag = parsed
+        .steps
+        .iter()
+        .flat_map(|s| &s.annotations)
+        .find_map(|a| {
+            a.flag
+                .as_ref()
+                .filter(|_| a.text.as_deref() == Some("Potential stall:"))
+        })
+        .unwrap();
+    // List markers and blank lines are layout, not content: the reader numbers the steps.
+    assert_eq!(flag.scenario, ["A peer is slow.", "The request times out."]);
+    assert_eq!(flag.not_checked, "Not run.");
+    let cases = [
+        (
+            with(&block("unknown")),
+            "a flag needs `level: red` or `level: yellow`",
+        ),
+        (
+            with(&block("red").replace("level: red\n", "")),
+            "a flag needs `level: red`",
+        ),
+        (
+            with(&block("red").replace("not_checked: Not run.\n", "")),
+            "has no `not_checked:` line",
+        ),
+        (
+            text.replace(heading, &heading.replace(" flag ", " question ")),
+            "`question` is now `flag`",
+        ),
+        (
+            text.replacen("was: ", "level: red\nwas: ", 1),
+            "`level` belongs only to a flag",
+        ),
+    ];
+    for (bad, expected) in cases {
+        let error = parse(&bad, &Catalog::default()).unwrap_err();
+        assert!(
+            error.message.contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
 }

@@ -40,7 +40,8 @@
               "side": "head",
               "line": 13
             }
-          ]
+          ],
+          "flag": null
         },
         {
           "type": "consequence",
@@ -61,17 +62,27 @@
               "side": "head",
               "line": 204
             }
-          ]
+          ],
+          "flag": null
         },
         {
-          "type": "question",
+          "type": "flag",
           "basis": "inference",
           "start_line": 13,
           "end_line": 13,
           "was": "",
           "is": "",
-          "text": "Should the two wildcard sites handle Exhausted explicitly?",
-          "evidence": []
+          "text": "Potential generic error where Timeout was handled:",
+          "evidence": [],
+          "flag": {
+            "level": "yellow",
+            "scenario": [
+              "A request exhausts its retries and send returns Exhausted.",
+              "The two match sites with a wildcard arm treat it as an unknown error.",
+              "The user sees a generic failure instead of the offline message Timeout gave."
+            ],
+            "not_checked": "The two sites were read; their messages were not run."
+          }
         }
       ],
       "assessment": {
@@ -119,17 +130,19 @@
               "side": "head",
               "line": 121
             }
-          ]
+          ],
+          "flag": null
         },
         {
-          "type": "question",
+          "type": "note",
           "basis": "inference",
           "start_line": 121,
           "end_line": 121,
           "was": "",
           "is": "",
-          "text": "Should Exhausted map to WalletError::Offline like Timeout?",
-          "evidence": []
+          "text": "Same risk as the flag on step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.",
+          "evidence": [],
+          "flag": null
         }
       ],
       "assessment": {

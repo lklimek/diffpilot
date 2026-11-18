@@ -138,12 +138,12 @@
               "type": "object",
               "properties": {
                 "type": {
-                  "description": "Annotation type. `behaviour`: Behaviour change, was → is. `consequence`: A consequence of the change. `question`: A question for the reviewer to check (also LLM suspicions). `note`: Any other remark.",
+                  "description": "Annotation type. `behaviour`: Behaviour change, was → is. `consequence`: A consequence of the change. `flag`: A risk the LLM states as a concrete scenario (brief §1 addendum 2026-11-18). `note`: Any other remark.",
                   "type": "string",
                   "enum": [
                     "behaviour",
                     "consequence",
-                    "question",
+                    "flag",
                     "note"
                   ]
                 },
@@ -174,7 +174,7 @@
                   "type": "string"
                 },
                 "text": {
-                  "description": "The consequence, question or note; null for a behaviour annotation (its content is was and is).",
+                  "description": "The consequence, the flag's title or the note; null for a behaviour annotation (its content is was and is).",
                   "type": [
                     "string",
                     "null"
@@ -212,6 +212,41 @@
                     ],
                     "additionalProperties": false
                   }
+                },
+                "flag": {
+                  "description": "A flag's level, scenario and what was not checked; null on other types (and absent on flags stored before\nlevels).",
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "level": {
+                      "description": "red or yellow. `red`: A likely defect or damage if the scenario is reachable. `yellow`: Worth a look: plausible but weaker, or of lower cost. `unknown`: A flag stored before flags had levels (a former question to check); never in new agent output.",
+                      "type": "string",
+                      "enum": [
+                        "red",
+                        "yellow",
+                        "unknown"
+                      ]
+                    },
+                    "scenario": {
+                      "description": "Ordered steps: who acts, the order of events, the outcome and its cost.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "not_checked": {
+                      "description": "One line: what was not reproduced or run.",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "level",
+                    "scenario",
+                    "not_checked"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -222,7 +257,8 @@
                 "was",
                 "is",
                 "text",
-                "evidence"
+                "evidence",
+                "flag"
               ],
               "additionalProperties": false
             }

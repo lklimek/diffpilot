@@ -24,8 +24,15 @@ evidence: p7:head:12 p7:head:13
 text: Two wildcard match sites outside the diff swallow it (wallet and peers).
 evidence: p15:head:121 p16:head:204
 
-### annotation question inference 13-13
-text: Should the two wildcard sites handle Exhausted explicitly?
+### annotation flag inference 13-13
+level: yellow
+text: Potential generic error where Timeout was handled:
+scenario: <<END
+A request exhausts its retries and send returns Exhausted.
+The two match sites with a wildcard arm treat it as an unknown error.
+The user sees a generic failure instead of the offline message Timeout gave.
+END
+not_checked: The two sites were read; their messages were not run.
 
 ### assessment
 headline: A wallet user sees a generic RPC error; a peer that keeps timing out is ignored instead of being marked failed.
@@ -49,8 +56,8 @@ why: Same pattern × 2; the second site is src/sync/peers.rs:204.
 text: The user message differs from the Timeout case.
 evidence: p15:head:120 p15:head:121
 
-### annotation question inference 121-121
-text: Should Exhausted map to WalletError::Offline like Timeout?
+### annotation note inference 121-121
+text: Same risk as the flag on step 1, at this site: Exhausted does not map to WalletError::Offline as Timeout does.
 
 ### assessment
 risk: low
