@@ -154,6 +154,26 @@ describe("AskThread: the analysis's Ask conversation as one thread", () => {
     expect(screen.getByText("Potential double send:").style.textIndent).toBe("");
   });
 
+  it("offers Use as review comment on answers asked on the open step only", async () => {
+    const onUseAsComment = vi.fn();
+    render(
+      <AskThread
+        questions={thread}
+        stepId="f1.5"
+        scope="conversation"
+        onScope={() => {}}
+        placeOf={placeOf(() => {})}
+        onUseAsComment={onUseAsComment}
+      />,
+    );
+    // Answered: "a" (step 5) and "b" (step 2); "c" is still being answered.
+    const buttons = screen.getAllByRole("button", { name: "Use as review comment" });
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toHaveAccessibleDescription(/draft.*nothing is posted/i);
+    await userEvent.click(buttons[0]!);
+    expect(onUseAsComment).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
+  });
+
   it("keeps the wording rules", () => {
     const { container } = render(<Harness />);
     expectTrustWording(container.textContent ?? "");

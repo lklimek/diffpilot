@@ -78,6 +78,8 @@ export interface InspectorProps {
   dockHeight?: number | null;
   /** A new dock height from the handle above it; null resets. Without it there is no handle. */
   onDockHeight?: (height: number | null) => void;
+  /** "Use as review comment" on a flag of the step; no button without it. */
+  onFlagAsComment?: (flag: Annotation) => void;
 }
 
 /** Smallest height in px of a resized dock: the Ask field and a few lines of the conversation. */
@@ -200,6 +202,7 @@ function stepPanel(
   diff: ReactNode,
   sections: SectionControl,
   onEvidence?: (evidence: Evidence) => void,
+  onFlagAsComment?: (flag: Annotation) => void,
 ): Panel {
   const anns = annotation ? [annotation] : step.llm.annotations;
   const byType = (type: AnnotationType) => anns.filter((a) => a.type === type);
@@ -281,6 +284,7 @@ function stepPanel(
           onEvidence={onEvidence}
           annotations={byType("flag")}
           sections={sections}
+          onUseAsComment={onFlagAsComment}
         />
         <AssessmentSection assessment={step.llm.assessment} sections={sections} />
         <ThreadsSection
@@ -301,7 +305,7 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
       const found = findStep(tour, block.step_id);
       if (!found) break;
       const annotation = found.step.llm.annotations.find((a) => a.id === annotationId);
-      return stepPanel(tour, found.step, annotation, diff, sections, props.onEvidence);
+      return stepPanel(tour, found.step, annotation, diff, sections, props.onEvidence, props.onFlagAsComment);
     }
     case "flow_intro": {
       const flow = tour.flows.find((f) => f.id === block.flow_id);

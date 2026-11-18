@@ -3,6 +3,7 @@ import type { Annotation, Evidence, FlagLevel } from "../../api/generated/types"
 import { CodeText } from "../section/CodeText";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { ProvenanceTag } from "../section/ProvenanceTag";
+import { UseAsCommentButton } from "../comment/UseAsCommentButton";
 import { Tooltip } from "../tooltip/Tooltip";
 import { FLAG_LOOK, flagLevel } from "./flags";
 
@@ -56,13 +57,15 @@ interface FlagCardProps {
   onEvidence?: (evidence: Evidence) => void;
   /** Shows the flagged lines; the title becomes a link to them. */
   onOpen?: () => void;
+  /** Opens the comment composer on the flagged lines with this flag as a draft; no button without it. */
+  onUseAsComment?: () => void;
 }
 
 /**
  * One LLM flag: level, title, the scenario as a numbered list clipped to 5 lines with Show all / Show less,
  * what was not checked, and its evidence. A flag stored before levels shows its text as the title only.
  */
-export function FlagCard({ annotation, currentFile, onEvidence, onOpen }: FlagCardProps) {
+export function FlagCard({ annotation, currentFile, onEvidence, onOpen, onUseAsComment }: FlagCardProps) {
   const level = flagLevel(annotation) ?? "unknown";
   const flag = annotation.flag;
   const scenario = flag?.scenario ?? [];
@@ -139,6 +142,7 @@ export function FlagCard({ annotation, currentFile, onEvidence, onOpen }: FlagCa
         onEvidence={onEvidence}
         currentFile={currentFile}
       />
+      {onUseAsComment && <UseAsCommentButton onClick={onUseAsComment} what="this flag" />}
     </li>
   );
 }
