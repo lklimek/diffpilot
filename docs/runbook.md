@@ -232,7 +232,68 @@ roll back and report it, never delete the database.
 
 ## Backup and restore
 
-A backup is three parts taken together with every service stopped: the `server-data` volume (consistent
+Two kinds: a daily **online backup** (`deploy/backup.sh`, services keep running) and a **full backup** with every
+service stopped (before an upgrade, and weekly). Both contain the Codex credential, `.env` and the secrets: store
+them like a password (root only, encrypted off-site).
+
+### Online backup (daily)
+
+`deploy/backup.sh` (root; needs `sqlite3` 3.27+ on the host: `apt-get install sqlite3`) writes
+`/srv/smart-review/backup/<UTC stamp>/` (mode 0700, files 0600, `SHA256SUMS`): a consistent snapshot of the
+database (`VACUUM INTO` while the server writes; WAL mode), `credentials/` and `sessions/` of `runner-state`, a copy
+of `.env` and the secrets directory. It keeps the newest 14 (`SR_BACKUP_KEEP`), prints sizes only, never contents.
+Mirrors and the claudius checkout are re-created by the runner. The credential is a copy of the moment: a job
+running meanwhile may rotate it, and then the restored one is rejected at its first refresh (sign in again, section
+"LLM credential"). `deploy/backup.sh --self-test` backs up and restores a throwaway database under a live writer.
+
+Schedule (root):
+
+```sh
+sudo tee /etc/systemd/system/smart-review-backup.service > /dev/null <<'EOF'
+[Unit]
+Description=smart-review online backup
+[Service]
+Type=oneshot
+ExecStart=/srv/smart-review/app/deploy/backup.sh
+EOF
+sudo tee /etc/systemd/system/smart-review-backup.timer > /dev/null <<'EOF'
+[Unit]
+Description=Daily smart-review online backup
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15m
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+sudo systemctl daemon-reload && sudo systemctl enable --now smart-review-backup.timer
+systemctl list-timers smart-review-backup.timer; journalctl -u smart-review-backup.service -n 20
+```
+
+**Off-site, encrypted** (the backup holds the Codex credential, `SR_SECRET_KEY` and the App key): encrypt on this
+host to a key whose private half is not on it, then copy, e.g. with `age` (`apt-get install age`; `age-keygen` on
+another machine gives the recipient `age1...`):
+
+```sh
+B=/srv/smart-review/backup; S="$(ls "$B" | tail -n 1)"
+sudo tar -C "$B" -cf - "$S" | age -r age1REPLACE_WITH_RECIPIENT | ssh backup-host "cat > smart-review/$S.tar.age"
+```
+
+Restore an online backup (server and runner stopped; the script refuses otherwise). It checks `SHA256SUMS` and the
+database's integrity, replaces the database (and drops its stale `-wal`/`-shm`), `credentials/` and `sessions/`;
+`.env` and the secrets stay as they are (copy them by hand when the host is new). Test a restore now and then on a
+spare host or a copy of the volumes.
+
+```sh
+sr stop server runner
+sudo /srv/smart-review/app/deploy/backup.sh --restore /srv/smart-review/backup/REPLACE_WITH_THE_STAMP
+sr up -d
+sr logs runner | grep -i credential
+```
+
+### Full backup (stopped)
+
+A full backup is three parts taken together with every service stopped: the `server-data` volume (consistent
 SQLite), the `runner-state` volume and the codex-homes filesystem. Stopping the runner interrupts a running job;
 the job's Codex `CODEX_HOME` then stays in codex-homes, and its `auth.json` may be the only current copy of the
 credential (a refresh during the job rotates the single-use refresh token). The runner brings that copy back to
@@ -250,6 +311,7 @@ for v in server-data runner-state; do
 done
 sudo tar -C /srv/smart-review/codex-homes --numeric-owner -czpf "/srv/smart-review/backup/codex-homes-$STAMP.tar.gz" .
 sudo cp /srv/smart-review/.env "/srv/smart-review/backup/env-$STAMP"
+sudo tar -C /srv/smart-review/secrets --numeric-owner -czpf "/srv/smart-review/backup/secrets-$STAMP.tar.gz" .
 sr start
 ```
 
