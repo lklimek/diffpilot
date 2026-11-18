@@ -62,7 +62,7 @@
   "ranking": null,
   "failure": {
     "code": "github_rate_limited",
-    "message": "GitHub rate limit reached; the refresh stopped. Nothing was replaced.",
+    "message": "GitHub rate limit reached; the refresh stopped.",
     "retry_at": "2026-11-18T10:41:00Z"
   },
   "log": [
