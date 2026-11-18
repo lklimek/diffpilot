@@ -1,7 +1,8 @@
 # smart-review runbook
 
 Operating the compose stack of `deploy/compose.yaml`: `server` (web UI and API), `runner` (root supervisor, runner
-and agents, ADR-013) and `egress-proxy` (Squid, the runner's only way out). Variables: `.env.example`.
+and agents, ADR-013) and `egress-proxy` (Squid, the runner's only way out: all agent network traffic goes through
+the proxy; Codex's hosted web search is disabled). Variables: `.env.example`.
 Design background: `docs/implementation-plan.md` §5.4 (threat model), ADR-003 (LLM credential), ADR-013 (runner).
 
 Every block below is meant to be pasted as is into a root shell or a shell of a user in the `docker` group

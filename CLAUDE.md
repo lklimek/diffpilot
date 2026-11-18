@@ -36,7 +36,8 @@ walked step by step, with LLM analysis (Codex CLI) clearly separated from determ
   official `github-mcp-server` in read-only mode.
 - Runner security design (plan §5.4): agent runs as a separate uid without access to runner secrets, job
   token, cache or master `CODEX_HOME`; never mount the host `~/.codex`. Egress only through the Squid explicit
-  proxy (v1: allow-all, host-name log, no TLS interception); MemCan URL and token are pure configuration.
+  proxy (v1: allow-all, host-name log, no TLS interception); Codex's hosted web search is disabled for every job;
+  MemCan URL and token are pure configuration.
 - Keep it simple: no abstraction beyond the seams the brief names.
 
 ## Build and test
