@@ -457,16 +457,17 @@ async fn apply_result(
         &known_secrets(state, &auth.token, installation.as_ref()),
     );
     let now = Utc::now();
-    if let JobOutcome::UsageLimited {
-        resets_at: Some(resets_at),
-    } = &mut result.outcome
+    if let JobOutcome::UsageLimited { resets_at } = &mut result.outcome
+        && let Some(reported) = *resets_at
     {
-        // No sooner than the protocol's first retry pause: a reset time that has passed would re-queue the
-        // job at once, to hit the same limit again.
+        // A pause does not count as an attempt, so a time that has passed must not re-queue the job at once:
+        // it tells nothing and is stored as unknown (the default pause applies). A coming time is accepted
+        // from the protocol's first retry pause on.
         let first_retry = TimeDelta::seconds(i64::from(LeaseTiming::V1.output_retry_secs[0]));
-        let accepted = (*resets_at).clamp(now + first_retry, now + MAX_USAGE_LIMIT_PAUSE);
-        if accepted != *resets_at {
-            tracing::warn!(job = %auth.job, reported = %resets_at, %accepted, "the reported usage-limit reset time is not between the first retry pause and 7 days from now; the pause is limited to that range");
+        let accepted = (reported > now)
+            .then(|| reported.clamp(now + first_retry, now + MAX_USAGE_LIMIT_PAUSE));
+        if accepted != Some(reported) {
+            tracing::warn!(job = %auth.job, %reported, ?accepted, "the reported usage-limit reset time is not accepted as reported: a passed one counts as unknown, a coming one is limited to between 1 s and 7 days from now");
             *resets_at = accepted;
         }
     }
@@ -517,7 +518,7 @@ mod tests {
     use db::repo::analyses::SessionState;
     use db::repo::analyses::testing::{CREDENTIAL, job_spec, seed_analysis};
     use db::repo::documents::DocumentKind;
-    use db::repo::jobs::{JobStage, NewJob};
+    use db::repo::jobs::{JobStage, NewJob, PAUSE_WITHOUT_RESET};
     use http_body_util::BodyExt;
     use serde::Serialize;
     use serde_json::json;
@@ -1227,40 +1228,42 @@ mod tests {
         }
     }
 
-    /// A reset time that has passed would re-queue the job at once, to hit the same limit again.
+    /// A usage-limit pause does not count as an attempt, so a reset time that has passed must not re-queue the
+    /// job at once (nor a second later): it tells nothing and is treated as unknown.
     #[tokio::test]
-    async fn usage_limit_reset_time_in_the_past_is_raised_to_the_first_retry_pause() {
-        let harness = Harness::new().await;
-        harness.enqueue(CREDENTIAL).await;
-        let claimed = harness.claim(CREDENTIAL).await;
-        let mut result = succeeded(claimed.job, 1);
-        result.outcome = JobOutcome::UsageLimited {
-            resets_at: Some(Utc::now() - TimeDelta::days(1)),
-        };
-        let pause = TimeDelta::seconds(i64::from(LeaseTiming::V1.output_retry_secs[0]));
-        let earliest = Utc::now() + pause;
-        let (status, _) = harness
-            .send(
-                &path(RUNNER_RESULT.path, claimed.job),
-                Some(&claimed.token),
-                result,
-            )
-            .await;
-        assert_eq!(status, StatusCode::NO_CONTENT);
-        let latest = Utc::now() + pause;
-        let credential = harness
-            .state
-            .db
-            .llm_credentials()
-            .get(CREDENTIAL)
-            .await
-            .expect("credential");
-        let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
-        for until in [credential.paused_until, job.resumes_at] {
-            assert!(
-                until.is_some_and(|until| until >= earliest && until <= latest),
-                "{until:?}"
-            );
+    async fn usage_limit_reset_time_in_the_past_waits_the_pause_of_an_unknown_reset() {
+        for passed in [TimeDelta::days(1), TimeDelta::zero()] {
+            let harness = Harness::new().await;
+            harness.enqueue(CREDENTIAL).await;
+            let claimed = harness.claim(CREDENTIAL).await;
+            let mut result = succeeded(claimed.job, 1);
+            result.outcome = JobOutcome::UsageLimited {
+                resets_at: Some(Utc::now() - passed),
+            };
+            let earliest = Utc::now() + PAUSE_WITHOUT_RESET;
+            let (status, _) = harness
+                .send(
+                    &path(RUNNER_RESULT.path, claimed.job),
+                    Some(&claimed.token),
+                    result,
+                )
+                .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            let latest = Utc::now() + PAUSE_WITHOUT_RESET;
+            let credential = harness
+                .state
+                .db
+                .llm_credentials()
+                .get(CREDENTIAL)
+                .await
+                .expect("credential");
+            let job = harness.state.db.jobs().get(claimed.job).await.expect("get");
+            for until in [credential.paused_until, job.resumes_at] {
+                assert!(
+                    until.is_some_and(|until| until >= earliest && until <= latest),
+                    "{until:?}"
+                );
+            }
         }
     }
 
