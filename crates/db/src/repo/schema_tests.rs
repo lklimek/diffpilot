@@ -46,9 +46,10 @@ async fn seed(db: &Db) {
          INSERT INTO repos (id, tenant_id, owner, name) VALUES (1, 'default', 'acme', 'node-client');
          INSERT INTO pull_requests (id, tenant_id, repo_id, number, title, author, html_url, base_sha, head_sha, fetched_at)
            VALUES (1, 'default', 1, 482, 't', 'alice', 'u', 'b', 'h', 't');
-         INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by, created_at)
-           VALUES ('a1', 'default', 1, 'b', 'h1', 'en', 'running', 'u1', 't'),
-                  ('a2', 'default', 1, 'b', 'h2', 'en', 'running', 'u1', 't');",
+         INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by, created_at,
+             background_analysis)
+           VALUES ('a1', 'default', 1, 'b', 'h1', 'en', 'running', 'u1', 't', 0),
+                  ('a2', 'default', 1, 'b', 'h2', 'en', 'running', 'u1', 't', 0);",
     )
     .execute(&db.pool)
     .await
@@ -415,8 +416,9 @@ async fn one_live_analysis_per_head_and_language() {
     seed(&db).await;
     let insert = |id: &'static str, state: &'static str| {
         sqlx::query(
-            "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by, created_at)
-             VALUES (?, 'default', 1, 'b', 'h1', 'en', ?, 'u1', 't')",
+            "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by, created_at,
+                 background_analysis)
+             VALUES (?, 'default', 1, 'b', 'h1', 'en', ?, 'u1', 't', 0)",
         )
         .bind(id)
         .bind(state)

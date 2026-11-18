@@ -456,8 +456,8 @@ impl Analyses<'_> {
         }))
     }
 
-    /// The newest analysis of a pull request in `language`, else the newest in another language; any head and
-    /// state.
+    /// The analysis of a pull request a reader is shown, any head: usable ones (not cancelled; a failed one can be
+    /// retried) before cancelled ones, then `language` before another, then the newest.
     pub async fn latest_for_pr(
         &self,
         pull_request_id: i64,
@@ -467,7 +467,7 @@ impl Analyses<'_> {
             "SELECT ",
             columns!(),
             " FROM analyses a WHERE a.pull_request_id = ?
-             ORDER BY a.language = ? DESC, a.created_at DESC, a.rowid DESC LIMIT 1"
+             ORDER BY a.state <> 'cancelled' DESC, a.language = ? DESC, a.created_at DESC, a.rowid DESC LIMIT 1"
         ))
         .bind(pull_request_id)
         .bind(wire_name(language)?)
@@ -750,7 +750,8 @@ pub mod testing {
         Ok(HeldConnection(db.pool.acquire().await?))
     }
 
-    /// Inserts a user, the repository `acme/node-client`, PR #482 (once) and a new `planning` analysis of it.
+    /// Inserts a user, the repository `acme/node-client`, PR #482 (once) and a new `planning` analysis of it with
+    /// background analysis off, as created in production (flows run on request).
     pub async fn seed_analysis(db: &Db) -> Result<AnalysisId, DbError> {
         let id = AnalysisId::new_random();
         sqlx::raw_sql(
@@ -766,8 +767,8 @@ pub mod testing {
         .await?;
         sqlx::query(
             "INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by,
-                 created_at)
-             VALUES (?, ?, 1, ?, ?, 'en', 'planning', 'u1', '2026-11-16T00:00:00.000000Z')",
+                 created_at, background_analysis)
+             VALUES (?, ?, 1, ?, ?, 'en', 'planning', 'u1', '2026-11-16T00:00:00.000000Z', 0)",
         )
         .bind(id.to_string())
         .bind(DEFAULT_TENANT)
@@ -1175,6 +1176,38 @@ mod tests {
             latest(LlmLanguage::En).await,
             Some(english),
             "the older one in the asked language"
+        );
+        db.analyses()
+            .set_state(polish.id, &AnalysisState::Cancelled, at(2))
+            .await
+            .expect("cancel");
+        assert_eq!(
+            latest(LlmLanguage::Pl).await,
+            Some(english),
+            "a usable analysis in another language before a cancelled one in the asked language"
+        );
+        let failed = AnalysisState::Failed {
+            reason: None,
+            flow: None,
+            message: "The analysis stopped because of a server error. Retry the analysis.".into(),
+        };
+        db.analyses()
+            .set_state(english, &failed, at(3))
+            .await
+            .expect("fail");
+        assert_eq!(
+            latest(LlmLanguage::Pl).await,
+            Some(english),
+            "a failed analysis can be retried: it is usable"
+        );
+        db.analyses()
+            .set_state(english, &AnalysisState::Cancelled, at(4))
+            .await
+            .expect("cancel");
+        assert_eq!(
+            latest(LlmLanguage::Pl).await,
+            Some(polish.id),
+            "only cancelled ones: the asked language"
         );
     }
 

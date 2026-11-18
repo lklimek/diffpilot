@@ -112,8 +112,8 @@ pub async fn log_end(state: &AppState, summary: &AnalysisSummary) -> Result<(), 
     log(state, summary, facts, false).await
 }
 
-/// The run so far, when the driver ends for lack of admitted flow work (once per such end); the run facts stay
-/// for the final line.
+/// The run so far, when the driver ends for lack of admitted flow work (once per such end); the run facts are
+/// released afterwards, so the final line carries only those a later driver records again.
 pub async fn log_parked(state: &AppState, summary: &AnalysisSummary) -> Result<(), DbError> {
     let facts = state
         .statistics

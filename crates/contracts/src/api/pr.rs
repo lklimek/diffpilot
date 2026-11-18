@@ -54,8 +54,8 @@ pub struct ResolvePrResponse {
     pub pr: PrSummary,
     /// False when the GitHub App is not installed on the repository: analysis works, comments do not.
     pub commenting_available: bool,
-    /// The latest analysis of this pull request, if any: the one in the user's language when there is one, else
-    /// in another language (its `language` says which).
+    /// The latest analysis of this pull request, if any: a not cancelled one first, then the one in the user's
+    /// language, else in another language (its `language` says which).
     pub analysis: Option<AnalysisSummary>,
     /// The analysis is for an older head than the pull request now has.
     pub head_moved: bool,

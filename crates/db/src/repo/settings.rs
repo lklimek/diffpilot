@@ -393,7 +393,7 @@ mod tests {
                 .fetch_one(&db.pool)
                 .await
                 .unwrap();
-            sqlx::query("INSERT INTO analyses (id,tenant_id,pull_request_id,created_by,base_sha,head_sha,language,state,created_at) SELECT ?,tenant_id,?,created_by,base_sha,head_sha,language,'planning',? FROM analyses LIMIT 1")
+            sqlx::query("INSERT INTO analyses (id,tenant_id,pull_request_id,created_by,base_sha,head_sha,language,state,created_at,background_analysis) SELECT ?,tenant_id,?,created_by,base_sha,head_sha,language,'planning',?,background_analysis FROM analyses LIMIT 1")
                 .bind(contracts::ids::AnalysisId::new_random().to_string()).bind(pr).bind(at).execute(&db.pool).await.unwrap();
         }
         let repos = db.settings().analysed_repos(DEFAULT_TENANT).await.unwrap();

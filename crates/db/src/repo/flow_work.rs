@@ -22,6 +22,12 @@ pub const RETRY_BY_USER: &str = "Retry this flow.";
 /// requested, or an automatic retry is left and background analysis is on.
 const RETRY_AUTOMATICALLY: &str = "It will be tried again automatically.";
 
+/// Shown in place of [`RETRY_BY_USER`] in a failed analysis: a flow request is refused there, its Retry works.
+const RETRY_ANALYSIS: &str = "Retry the analysis to analyse this flow again.";
+
+/// Shown in place of [`RETRY_BY_USER`] in a cancelled analysis: neither a flow request nor a Retry works there.
+const START_ANALYSIS: &str = "Start a new analysis to analyse this flow.";
+
 /// What the driver does next for the flows of an analysis ([`FlowWork::next`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NextFlow {
@@ -184,7 +190,7 @@ impl FlowWork<'_> {
     /// Mark a flow failed, retaining the accepted plan and other flow outputs. A requested flow keeps its demand
     /// while an automatic retry is left (using one), unless it was too large to send; otherwise the demand ends.
     /// A `message` that ends with [`RETRY_BY_USER`] is shown with the automatic retry instead while the flow
-    /// will run again by itself ([`FlowWork::status`]).
+    /// will run again by itself, and with the action that works once the analysis ended ([`FlowWork::status`]).
     pub async fn fail(&self, id: AnalysisId, flow: &FlowId, message: &str) -> Result<(), DbError> {
         // Every assignment reads the row as it was before the update.
         macro_rules! retried {
@@ -231,7 +237,7 @@ impl FlowWork<'_> {
             message: None,
         };
         if let Some(row) = sqlx::query(
-            "SELECT w.requested_at, w.error,
+            "SELECT w.requested_at, w.error, a.state,
                     a.state IN ('planning','running','paused')
                     AND (w.requested_at IS NOT NULL OR (a.background_analysis=1 AND w.auto_retries < ?)) AS retried
              FROM flow_work w JOIN analyses a ON a.id=w.analysis_id WHERE w.analysis_id=? AND w.flow_id=?",
@@ -243,13 +249,19 @@ impl FlowWork<'_> {
         .await?
         {
             status.message = row.try_get("error")?;
-            // The stored message names the user's Retry; while the server runs the flow again by itself it says
-            // that.
-            if row.try_get::<bool, _>("retried")?
+            // The stored message names the flow's Retry; it says what works instead while the server runs the flow
+            // again by itself or once the analysis ended (a flow request is refused then).
+            let instead = match row.try_get::<String, _>("state")?.as_str() {
+                _ if row.try_get::<bool, _>("retried")? => Some(RETRY_AUTOMATICALLY),
+                "failed" => Some(RETRY_ANALYSIS),
+                "cancelled" => Some(START_ANALYSIS),
+                _ => None,
+            };
+            if let Some(instead) = instead
                 && let Some(message) = &mut status.message
                 && let Some(failure) = message.strip_suffix(RETRY_BY_USER)
             {
-                *message = format!("{failure}{RETRY_AUTOMATICALLY}");
+                *message = format!("{failure}{instead}");
             }
             status.state = if row.try_get::<Option<String>, _>("requested_at")?.is_some() {
                 FlowAnalysisState::Queued
@@ -338,6 +350,10 @@ mod tests {
         let path = dir.path().join("lazy.sqlite");
         let db = Db::open(&path).await.unwrap();
         let id = seed_analysis(&db).await.unwrap();
+        db.flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .unwrap();
         let plan = PlanOutput {
             flows: (1..=3)
                 .rev()
@@ -492,6 +508,10 @@ mod tests {
     async fn failed_flow_is_retried_automatically_after_the_others_up_to_the_limit() {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
+        db.flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .unwrap();
         let (f1, f2) = (FlowId("f1".into()), FlowId("f2".into()));
         db.flow_work().fail(id, &f1, "Failed").await.unwrap();
         assert_eq!(
@@ -622,6 +642,10 @@ mod tests {
     async fn flow_too_large_to_send_is_not_retried_automatically() {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
+        db.flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .unwrap();
         let (f1, f2) = (FlowId("f1".into()), FlowId("f2".into()));
         let now = Utc::now();
         db.documents()
@@ -748,26 +772,30 @@ mod tests {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
         let f1 = FlowId("f1".into());
-        let by_user = "The flow analysis failed. Retry this flow.";
-        db.flow_work().fail(id, &f1, by_user).await.unwrap();
+        db.flow_work()
+            .fail(id, &f1, "The flow analysis failed. Retry this flow.")
+            .await
+            .unwrap();
         let failed = AnalysisState::Failed {
             reason: None,
             flow: None,
             message: "The analysis stopped because of a server error. Retry the analysis.".into(),
         };
-        for ended in [failed, AnalysisState::Cancelled] {
+        // A flow request is refused once the analysis ended: the message names what still works.
+        for (ended, action) in [
+            (failed, "Retry the analysis to analyse this flow again."),
+            (
+                AnalysisState::Cancelled,
+                "Start a new analysis to analyse this flow.",
+            ),
+        ] {
             db.analyses()
                 .set_state(id, &ended, Utc::now())
                 .await
                 .unwrap();
             assert_eq!(
-                db.flow_work()
-                    .status(id, &f1)
-                    .await
-                    .unwrap()
-                    .message
-                    .as_deref(),
-                Some(by_user),
+                db.flow_work().status(id, &f1).await.unwrap().message,
+                Some(format!("The flow analysis failed. {action}")),
                 "nothing runs in an analysis that is {ended:?}"
             );
         }
@@ -777,6 +805,10 @@ mod tests {
     async fn failed_flow_says_whether_it_is_tried_again_automatically() {
         let db = Db::in_memory().await.unwrap();
         let id = planned(&db, 2).await;
+        db.flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .unwrap();
         let f1 = FlowId("f1".into());
         let message = |status: FlowAnalysisStatus| {
             assert_eq!(status.state, FlowAnalysisState::Failed);

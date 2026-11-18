@@ -2056,8 +2056,8 @@ pr: PrSummary,
  */
 commenting_available: boolean,
 /**
- * The latest analysis of this pull request, if any: the one in the user's language when there is one, else
- * in another language (its `language` says which).
+ * The latest analysis of this pull request, if any: a not cancelled one first, then the one in the user's
+ * language, else in another language (its `language` says which).
  */
 analysis: AnalysisSummary | null,
 /**

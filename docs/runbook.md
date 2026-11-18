@@ -342,6 +342,9 @@ after cancellation remain visible in usage summaries but cannot change this sing
 driver of an open review ends without admitted flow work (background analysis off and nothing requested, or
 the remaining flows failed for good) it emits an `analysis parked` info event with the same fields for the run
 so far, without `total_seconds`; an analysis can log it many times before its one `analysis statistics` event.
+A park releases the in-memory run facts (an analysis whose head moved may stay parked for good): after a park
+the final event carries changed lines/files, agent files and plan batches only when a driver ran again, and
+`initial_estimate_seconds` never (the first `analysis parked` event has it).
 
 The error line `could not store the ended analysis state` means a driver stopped on an error and the database
 refused the write of `failed` (full disk, read-only file system): the analysis still reads as planning/running

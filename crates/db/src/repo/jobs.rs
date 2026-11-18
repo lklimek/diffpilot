@@ -1444,7 +1444,7 @@ mod tests {
         let analysis = seed_analysis(&db).await.expect("seed");
         let first = enqueue(&db, analysis, "f1", 0).await;
         let other = AnalysisId::new_random();
-        sqlx::query("INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by, created_at) SELECT ?, tenant_id, pull_request_id, base_sha, 'new-head', 'pl', 'planning', created_by, created_at FROM analyses WHERE id = ?")
+        sqlx::query("INSERT INTO analyses (id, tenant_id, pull_request_id, base_sha, head_sha, language, state, created_by, created_at, background_analysis) SELECT ?, tenant_id, pull_request_id, base_sha, 'new-head', 'pl', 'planning', created_by, created_at, background_analysis FROM analyses WHERE id = ?")
             .bind(other.to_string()).bind(analysis.to_string()).execute(&db.pool).await.unwrap();
         let second = enqueue(&db, other, "f2", 1).await;
         let claimed = db

@@ -49,6 +49,8 @@ struct Timing {
     seconds: f64,
     count: u32,
     lines: u64,
+    /// Every stage of this kind is in the sample, so `seconds / lines` is a per-line rate.
+    whole: bool,
 }
 
 fn mean(samples: &[Timing], kind: JobKind) -> Option<f64> {
@@ -60,7 +62,7 @@ fn mean(samples: &[Timing], kind: JobKind) -> Option<f64> {
 fn per_line(samples: &[Timing], kind: JobKind) -> Option<f64> {
     let matching: Vec<_> = samples
         .iter()
-        .filter(|s| s.kind == kind && s.lines > 0)
+        .filter(|s| s.kind == kind && s.lines > 0 && s.whole)
         .collect();
     let lines: u64 = matching.iter().map(|s| s.lines).sum();
     (lines > 0).then(|| matching.iter().map(|s| s.seconds).sum::<f64>() / lines as f64)
@@ -167,20 +169,26 @@ impl Analyses<'_> {
         Ok(estimate(&progress, &[], &history, lines, false))
     }
 
+    /// Samples of the 30 newest review-ready analyses (most never finish while flows run on request): plan and PR
+    /// context of each, and each flow whose document is accepted; flows are `whole` only in a finished analysis.
     async fn recent_timings(
         &self,
         tenant: &str,
         excluding: Option<&str>,
     ) -> Result<Vec<Timing>, DbError> {
         let history = sqlx::query(
-            "WITH recent AS (SELECT id FROM analyses WHERE state = 'finished'
-               AND tenant_id = ?1 AND (?2 IS NULL OR id <> ?2)
-               ORDER BY finished_at DESC LIMIT 30)
+            "WITH recent AS (SELECT a.id FROM analyses a WHERE a.state <> 'cancelled'
+               AND a.tenant_id = ?1 AND (?2 IS NULL OR a.id <> ?2)
+               AND EXISTS(SELECT 1 FROM documents WHERE analysis_id = a.id AND kind = 'plan' AND key = '')
+               AND EXISTS(SELECT 1 FROM documents WHERE analysis_id = a.id AND kind = 'pr_context' AND key = '')
+               ORDER BY a.created_at DESC, a.rowid DESC LIMIT 30)
              SELECT j.kind, SUM((julianday(j.finished_at) - julianday(j.claimed_at)) * 86400) AS seconds,
-                    COUNT(DISTINCT j.stage) AS count,
+                    COUNT(DISTINCT j.stage) AS count, j.kind <> 'analyse_flow' OR a.state = 'finished' AS whole,
                     (SELECT body FROM documents WHERE analysis_id = a.id AND kind = 'prepass' AND key = '') AS prepass
              FROM recent r JOIN analyses a ON a.id = r.id JOIN jobs j ON j.analysis_id = a.id AND j.round = a.round
              WHERE j.state = 'succeeded' AND j.kind <> 'ask'
+               AND (j.kind <> 'analyse_flow' OR EXISTS(SELECT 1 FROM documents d
+                    WHERE d.analysis_id = a.id AND d.kind = 'flow' AND d.key = j.flow_id))
                AND j.finished_at > j.claimed_at
                AND (julianday(j.finished_at) - julianday(j.claimed_at)) * 86400 BETWEEN 1 AND 10800
              GROUP BY a.id, j.kind")
@@ -193,6 +201,7 @@ impl Analyses<'_> {
                     seconds: row.try_get("seconds")?,
                     count: row.try_get("count")?,
                     lines: changed_lines(row.try_get::<Option<String>, _>("prepass")?.as_deref())?,
+                    whole: row.try_get("whole")?,
                 })
             })
             .collect::<Result<_, DbError>>()
@@ -267,6 +276,7 @@ impl Analyses<'_> {
                         seconds: 0.0,
                         count: 1,
                         lines,
+                        whole: false,
                     });
                     timing.seconds += seconds as f64;
                 }
@@ -387,9 +397,10 @@ mod tests {
         Db,
         analyses::testing,
         documents::DocumentKind,
-        jobs::{JobStage, NewJob},
+        jobs::{JobStage, NewJob, ts},
     };
     use chrono::{TimeZone, Utc};
+    use contracts::ids::AnalysisId;
     use contracts::job::spec::JobPriority;
 
     fn progress() -> AnalysisProgress {
@@ -410,18 +421,21 @@ mod tests {
                 seconds: 600.0,
                 count: 2,
                 lines: 1000,
+                whole: true,
             },
             Timing {
                 kind: JobKind::PrContext,
                 seconds: 120.0,
                 count: 1,
                 lines: 1000,
+                whole: true,
             },
             Timing {
                 kind: JobKind::AnalyseFlow,
                 seconds: 1800.0,
                 count: 6,
                 lines: 1000,
+                whole: true,
             },
         ]
     }
@@ -433,6 +447,7 @@ mod tests {
             seconds: 300.0,
             count: 1,
             lines: 1000,
+            whole: false,
         }];
         assert_eq!(estimate(&progress(), &current, &[], 1000, true), None);
         let e = estimate(&progress(), &current, &history(), 1000, true).unwrap();
@@ -558,10 +573,21 @@ mod tests {
         let old = testing::seed_analysis(&db).await.unwrap();
         let prepass =
             serde_json::json!({"agent_lines": [{"ranges": [{"start_line": 1, "end_line": 1000}]}]});
-        db.documents()
-            .put(old, DocumentKind::Prepass, "", &prepass, Utc::now())
-            .await
-            .unwrap();
+        for (kind, key, body) in [
+            (DocumentKind::Prepass, "", prepass.clone()),
+            (
+                DocumentKind::Plan,
+                "",
+                serde_json::json!({"flows": [{"id": "f1"}]}),
+            ),
+            (DocumentKind::PrContext, "", serde_json::json!({})),
+            (DocumentKind::Flow, "f1", serde_json::json!({})),
+        ] {
+            db.documents()
+                .put(old, kind, key, &body, Utc::now())
+                .await
+                .unwrap();
+        }
         for (stage, end) in [
             (JobStage::Plan { batch: 1 }, "2026-11-17T10:10:00Z"),
             (JobStage::PrContext, "2026-11-17T10:02:00Z"),
@@ -591,6 +617,10 @@ mod tests {
             .await
             .unwrap();
         let id = testing::seed_analysis(&db).await.unwrap();
+        db.flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .unwrap();
         db.documents()
             .put(id, DocumentKind::Prepass, "", &prepass, Utc::now())
             .await
@@ -729,6 +759,178 @@ mod tests {
             None
         );
     }
+    async fn timed_job(db: &Db, id: AnalysisId, stage: JobStage, seconds: u32) {
+        let job = db
+            .jobs()
+            .enqueue(
+                NewJob {
+                    spec: testing::job_spec(id, stage.kind()),
+                    stage,
+                    generation: 0,
+                    priority: JobPriority::Batch,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let start = Utc.with_ymd_and_hms(2026, 11, 17, 10, 0, 0).unwrap();
+        sqlx::query("UPDATE jobs SET state='succeeded', claimed_at=?, finished_at=? WHERE id=?")
+            .bind(ts(start))
+            .bind(ts(start + chrono::TimeDelta::seconds(i64::from(seconds))))
+            .bind(job.id.to_string())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+
+    /// With flows on request most analyses never finish: every review-ready analysis supplies plan and PR-context
+    /// samples and one per analysed flow; seconds per changed line of flows only come from finished analyses.
+    #[tokio::test]
+    async fn review_ready_analyses_that_never_finish_feed_the_history() {
+        let db = Db::in_memory().await.unwrap();
+        let flow = |id: &str| JobStage::Flow(contracts::ids::FlowId(id.into()));
+        let old = testing::seed_analysis(&db).await.unwrap();
+        let prepass =
+            serde_json::json!({"agent_lines": [{"ranges": [{"start_line": 1, "end_line": 1000}]}]});
+        for (kind, key, body) in [
+            (DocumentKind::Prepass, "", prepass.clone()),
+            (
+                DocumentKind::Plan,
+                "",
+                serde_json::json!({"flows": [{"id": "f1"}, {"id": "f2"}]}),
+            ),
+            (DocumentKind::PrContext, "", serde_json::json!({})),
+            (DocumentKind::Flow, "f1", serde_json::json!({})),
+        ] {
+            db.documents()
+                .put(old, kind, key, &body, Utc::now())
+                .await
+                .unwrap();
+        }
+        timed_job(&db, old, JobStage::Plan { batch: 1 }, 600).await;
+        timed_job(&db, old, JobStage::PrContext, 120).await;
+        timed_job(&db, old, flow("f1"), 300).await;
+        // Succeeded but not accepted (a repair pending): no flow sample.
+        timed_job(&db, old, flow("f2"), 900).await;
+        let parked = AnalysisState::Running {
+            done: 1,
+            total: 2,
+            idle: true,
+            stage: None,
+        };
+        db.analyses()
+            .set_state(old, &parked, Utc::now())
+            .await
+            .unwrap();
+        let before_start = db
+            .analyses()
+            .estimate_for_size("default", 1000)
+            .await
+            .unwrap()
+            .expect("plan and PR context of a parked analysis");
+        assert!(
+            (720..=721).contains(&before_start.remaining_seconds),
+            "{before_start:?}"
+        );
+
+        let planning = testing::seed_analysis(&db).await.unwrap();
+        db.flow_work()
+            .set_background(planning, true, Utc::now())
+            .await
+            .unwrap();
+        db.documents()
+            .put(planning, DocumentKind::Prepass, "", &prepass, Utc::now())
+            .await
+            .unwrap();
+        let mut spec = testing::job_spec(planning, JobKind::Plan);
+        spec.prompt = format!("{BATCH_PREFIX}1 of 23, listing only some directories.");
+        db.jobs()
+            .enqueue(
+                NewJob {
+                    spec,
+                    stage: JobStage::Plan { batch: 1 },
+                    generation: 0,
+                    priority: JobPriority::Batch,
+                },
+                Utc::now(),
+            )
+            .await
+            .unwrap();
+        let eta = |id| {
+            let db = &db;
+            async move {
+                db.analyses()
+                    .summary(id)
+                    .await
+                    .unwrap()
+                    .progress
+                    .unwrap()
+                    .estimate
+            }
+        };
+        assert_eq!(
+            eta(planning).await,
+            None,
+            "a partial analysis gives no flow seconds per changed line"
+        );
+
+        let flows = testing::seed_analysis(&db).await.unwrap();
+        db.flow_work()
+            .set_background(flows, true, Utc::now())
+            .await
+            .unwrap();
+        for (kind, body) in [
+            (
+                DocumentKind::Plan,
+                serde_json::json!({"flows": [{"id": "f1"}, {"id": "f2"}, {"id": "f3"}]}),
+            ),
+            (DocumentKind::PrContext, serde_json::json!({})),
+        ] {
+            db.documents()
+                .put(flows, kind, "", &body, Utc::now())
+                .await
+                .unwrap();
+        }
+        let running = AnalysisState::Running {
+            done: 0,
+            total: 3,
+            idle: false,
+            stage: None,
+        };
+        db.analyses()
+            .set_state(flows, &running, Utc::now())
+            .await
+            .unwrap();
+        let each_flow = eta(flows).await.expect("mean of the analysed flow");
+        assert_eq!(each_flow.basis, EstimateBasis::RecentRuns);
+        assert!(
+            (900..=903).contains(&each_flow.remaining_seconds),
+            "3 flows of 300 s: {each_flow:?}"
+        );
+
+        db.analyses()
+            .set_state(old, &AnalysisState::Finished { total: 2 }, Utc::now())
+            .await
+            .unwrap();
+        let whole = eta(planning).await.expect("a finished analysis");
+        assert!(
+            (1020..=1022).contains(&whole.remaining_seconds),
+            "600 s plan, 120 s PR context, 300 s of accepted flows per 1000 lines: {whole:?}"
+        );
+        db.analyses()
+            .set_state(old, &AnalysisState::Cancelled, Utc::now())
+            .await
+            .unwrap();
+        assert_eq!(
+            db.analyses()
+                .estimate_for_size("default", 1000)
+                .await
+                .unwrap(),
+            None,
+            "a cancelled analysis supplies nothing"
+        );
+    }
+
     #[tokio::test]
     async fn failed_flow_counts_accepted_documents_not_plan_position() {
         let db = Db::in_memory().await.unwrap();
@@ -777,6 +979,10 @@ mod tests {
     async fn on_demand_and_failed_flows_have_no_whole_run_eta() {
         let db = Db::in_memory().await.unwrap();
         let id = testing::seed_analysis(&db).await.unwrap();
+        db.flow_work()
+            .set_background(id, true, Utc::now())
+            .await
+            .unwrap();
         for (kind, key, body) in [
             (
                 DocumentKind::Plan,

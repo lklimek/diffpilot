@@ -254,10 +254,9 @@ pub fn start(state: &AppState, analysis: AnalysisId) {
 /// analysis switched on) while the driver parked. An end that could not be stored starts none: the next driver
 /// would fail the same way.
 async fn release(state: &AppState, analysis: AnalysisId, end: DriverEnd) -> Result<bool, DbError> {
-    // A parked analysis keeps its run facts for its final statistics line.
-    if end != DriverEnd::Parked {
-        state.statistics.forget(analysis);
-    }
+    // A parked analysis may never end: its `analysis parked` line carried the run facts, the next driver plans
+    // again.
+    state.statistics.forget(analysis);
     DRIVING
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -414,6 +413,12 @@ mod tests {
         let db = db::repo::Db::in_memory().await.expect("db");
         let state = AppState::with_queue(config, db);
         let id = seed_analysis(&state.db).await.expect("seed");
+        state
+            .db
+            .flow_work()
+            .set_background(id, true, chrono::Utc::now())
+            .await
+            .expect("background on");
         let flow = |rank: u32| {
             json!({
                 "id": format!("f{rank}"), "title": "flow", "classification": "behavioural",
@@ -436,7 +441,8 @@ mod tests {
     }
 
     /// A flow request that found the parked driver's slot still taken starts the next driver when it is freed;
-    /// without admitted work none starts, and the run facts stay for the final statistics line.
+    /// without admitted work none starts. A park releases the run facts (its `analysis parked` line carries
+    /// them; the next driver plans again): an analysis that never ends holds no memory.
     #[tokio::test]
     async fn parked_driver_is_followed_by_a_new_one_only_for_admitted_work() {
         let (_dir, state, id) = with_flow_work().await;
@@ -453,11 +459,12 @@ mod tests {
         let logs = LogCapture::start();
         control::cancel(&state, id).await.expect("cancel");
         let text = logs.text();
-        assert!(
-            text.lines()
-                .any(|line| line.contains("analysis statistics") && line.contains("plan_batches=3")),
-            "{text}"
-        );
+        let last: Vec<_> = text
+            .lines()
+            .filter(|line| line.contains("analysis statistics"))
+            .collect();
+        assert_eq!(last.len(), 1, "{text}");
+        assert!(!last[0].contains("plan_batches"), "{text}");
         assert!(!release(&state, id, DriverEnd::Failed).await.expect("end"));
     }
 
