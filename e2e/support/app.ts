@@ -166,7 +166,7 @@ export async function expectTrustWording(page: Page): Promise<void> {
   if (new URL(page.url()).pathname === "/") return;
   // Text nodes joined by spaces (hidden text too; block boundaries keep word boundaries) and the rendered text
   // (inline markup inside a word); the second pair leaves the progress section out.
-  const [text, withoutProgress] = await page.locator("body").evaluate((body, progress) => {
+  const [text, withoutProgress] = await page.locator("body").evaluate((body: HTMLElement, progress) => {
     const collect = (root: HTMLElement, skip: boolean) => {
       const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (node) =>
         node.parentElement?.closest("script, style") || (skip && node.parentElement?.closest(progress))
