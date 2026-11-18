@@ -68,7 +68,7 @@ test("head moved: comment refused with pr_head_changed, Re-analyze, the supersed
   const fresh = new URL(page.url()).pathname.split("/")[2];
   expect(fresh).not.toBe(old);
   await waitForState(page, fresh, "finished");
-  await page.getByRole("link", { name: "Resume review" }).click();
+  await page.getByRole("link", { name: /^(Resume|Open) review$/ }).click();
   await expect(page.getByRole("banner")).toContainText(moved.slice(0, 7));
   await openStep(page, 1, 2);
   await expect(nav(page).getByRole("button", { name: /^Step 2: .*, reviewed$/ })).toHaveCount(0);

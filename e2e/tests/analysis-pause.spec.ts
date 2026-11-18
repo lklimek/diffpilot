@@ -1,5 +1,5 @@
 // Journey (a), part 2: the usage limit pauses the analysis with its resume time and it resumes on its own; a
-// failed flow is named in the Tour and its Retry runs it again.
+// failed flow is named in the Tour (after the server's automatic retries) and its Retry runs it again.
 import {
   analysisState,
   analyze,
@@ -19,7 +19,8 @@ test("usage limit → paused until a time → resumed; a failed flow is named �
 }) => {
   test.skip(!stack.script, "needs the fake provider's script (a local stack)");
   stack.script?.([
-    { id: "flow-3-fails", job: "analyse_flow", flow: 3, times: 1, action: { fail: { message: "scripted" } } },
+    // The first try and both automatic retries fail; the user's Retry then succeeds.
+    { id: "flow-3-fails", job: "analyse_flow", flow: 3, times: 3, action: { fail: { message: "scripted" } } },
     {
       id: "pause",
       job: "analyse_flow",
@@ -39,11 +40,12 @@ test("usage limit → paused until a time → resumed; a failed flow is named �
     page.getByText(`Paused until ${await clock(page, resumesAt)} — ${String(paused.done)} of 5`),
   ).toBeVisible();
   // The plan and the PR context were accepted: the review is open while the remaining flows wait (brief §4.2).
-  await expect(page.getByRole("link", { name: "Resume review" })).toHaveCount(1);
+  await expect(page.getByRole("link", { name: /^(Resume|Open) review$/ })).toHaveCount(1);
   await checkScreen(page);
 
-  // Flow 3 fails once the pause is over; the analysis goes on with the other flows and the failed flow stays
-  // explicitly failed until it is requested again (ADR-011, lazy flow analysis).
+  // Flow 3 fails once the pause is over and again on both automatic retries; the analysis goes on with the other
+  // flows and the failed flow stays explicitly failed until it is requested again (ADR-011, lazy flow analysis).
+  // Polled until that final state: a retried flow is not failed in between.
   let failed = { position: 0, title: "" };
   await expect
     .poll(
@@ -63,17 +65,18 @@ test("usage limit → paused until a time → resumed; a failed flow is named �
   expectRetriedOnlyAfter(stack, Date.parse(resumesAt), "analyse_flow");
 
   await page.reload();
-  await page.getByRole("link", { name: "Resume review" }).click();
+  await page.getByRole("link", { name: /^(Resume|Open) review$/ }).click();
   await navTo(page, new RegExp(`^Flow ${failed.position}:`));
   await expect(heading(page)).toContainText(failed.title);
-  await expect(page.getByRole("main").getByRole("status")).toHaveText("Failed — Retry");
-  await expect(page.getByRole("main")).toContainText("The flow analysis failed. Retry this flow.");
+  await expect(page.getByRole("main").getByRole("status")).toHaveText("Failed");
+  // The cause sentence between the stable prefix and "Retry this flow." comes from the server.
+  await expect(page.getByRole("main")).toContainText("The flow analysis failed.");
   await checkScreen(page);
 
   await page.getByRole("button", { name: "Retry this flow" }).click();
   await waitForState(page, id, "finished");
   await page.goto(`/analyses/${id}/progress`);
   await expect(page.getByText("5 of 5 flows analysed")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Resume review" })).toBeVisible();
+  await expect(page.getByRole("link", { name: /^(Resume|Open) review$/ })).toBeVisible();
   await checkScreen(page);
 });

@@ -148,7 +148,7 @@ test("resume where left off: the tick and the last viewed block survive a reload
   const found = page.getByRole("status").filter({ hasText: "Analysis found." });
   await expect(found).toContainText("Your ticks, answers and last viewed block are kept");
   await checkScreen(page);
-  await found.getByRole("link", { name: "Resume review" }).click();
+  await found.getByRole("link", { name: /^(Resume|Open) review$/ }).click();
   await expect(heading(page)).toContainText("Default timeout");
   await expect(ticked).toBeVisible();
   await checkScreen(page);

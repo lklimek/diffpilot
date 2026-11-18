@@ -74,7 +74,7 @@ export async function finishedReview(page: Page): Promise<string> {
       response.request().method() === "POST" && new URL(response.url()).pathname === "/api/v1/analyses",
   );
   await page.getByRole("button", { name: "Analyze" }).click();
-  const resume = page.getByRole("link", { name: "Resume review" });
+  const resume = page.getByRole("link", { name: /^(Resume|Open) review$/ });
   // The loser of the race stays pending until the page closes; its rejection is expected.
   const existing = await Promise.race([
     created.then(() => false).catch(() => false),
@@ -90,7 +90,7 @@ export async function finishedReview(page: Page): Promise<string> {
     expect(response.status(), await response.text()).toBe(201);
     const { id } = (await response.json()) as { id: string };
     await waitForState(page, id, "finished");
-    await page.getByRole("link", { name: "Resume review" }).click();
+    await page.getByRole("link", { name: /^(Resume|Open) review$/ }).click();
   }
   await expect(page).toHaveURL(/\/analyses\/[0-9a-f-]+$/);
   await navTo(page, /^PR context$/);
