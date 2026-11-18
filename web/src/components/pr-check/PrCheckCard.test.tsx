@@ -109,7 +109,7 @@ describe("PrCheckCard (Home: the result of Check)", () => {
       </PrCheckCard>,
     );
     expect(screen.getByRole("region", { name: "Pull request check" })).toHaveTextContent(
-      "1 240 changed lines in 12 files. About 25 min (estimate from recent runs here).",
+      "1 240 changed lines in 12 files. Planning: about 25 min (estimate from recent runs here).",
     );
   });
 

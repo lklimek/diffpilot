@@ -156,6 +156,23 @@ describe("Home (brief §4.1)", () => {
     expect(within(result).queryByRole("button", { name: /Analyse again/ })).toBeNull();
   });
 
+  it("the card shows the PR's size and the planning estimate when the lookup has them", async () => {
+    server.use(
+      http.post("/api/v1/pr/resolve", () =>
+        HttpResponse.json({
+          ...(seedFor("default", "pr-resolve") as ResolvePrResponse),
+          size: { changed_lines: 412, changed_files: 9 },
+          planning_estimate: { remaining_seconds: 300, basis: "lines_only", rough: true },
+        }),
+      ),
+    );
+    renderRoute("/");
+    await analyze();
+    expect(await card()).toHaveTextContent(
+      "412 changed lines in 9 files. Planning: about 5 min (rough estimate from changed lines in recent runs).",
+    );
+  });
+
   it("Cancel clears the card and returns to the field", async () => {
     renderRoute("/");
     await analyze();

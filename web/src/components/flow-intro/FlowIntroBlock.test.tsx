@@ -199,3 +199,20 @@ it("a pending flow says what it waits for in a paused or failed analysis, never 
   expect(screen.getByRole("status")).toHaveTextContent("Not analysed — the analysis failed");
   expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent("1 Send an RPC request with retry");
 });
+
+it("a queued flow that failed and will be retried says so with the server's message", () => {
+  const queued = {
+    ...f1,
+    steps: [],
+    analysis_status: {
+      state: "queued",
+      started_at: null,
+      message: "The flow analysis timed out. It will be tried again automatically.",
+    },
+    planned: { intent: "Bound RPC retries", importance_rank: 1, ranges: [] },
+  } as Tour["flows"][number];
+  render(<FlowIntroBlock flow={queued} dependencies={[]} ticked={[]} onRequest={() => {}} />);
+  expect(
+    screen.getByText("The flow analysis timed out. It will be tried again automatically."),
+  ).toBeVisible();
+});

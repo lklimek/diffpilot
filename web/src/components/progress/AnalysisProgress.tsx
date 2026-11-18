@@ -247,6 +247,8 @@ export function AnalysisProgress({
   const elapsed = stage !== null && activity !== undefined ? elapsedText(started, activity, working) : "";
   const running = state.state === "planning" || state.state === "running";
   const percentText = progress?.percent != null ? percentLabel(progress.percent) : "";
+  // With flows on request the server counts no whole-run percent or estimate: no bar and no number then.
+  const uncounted = reviewReady === true && running && progress !== undefined && progress.percent === null;
   const analysisElapsed =
     progress && activity && activity.clockOffset !== null && running
       ? durationText(Math.max(0, activity.now - activity.clockOffset - Date.parse(progress.started_at)))
@@ -270,7 +272,7 @@ export function AnalysisProgress({
       {progress && <StageList progress={progress} />}
       <div className="flex items-center gap-4">
         <div className="min-w-0 flex-1">
-          <Bar state={state} working={working} progress={progress} planned={planned} />
+          {!uncounted && <Bar state={state} working={working} progress={progress} planned={planned} />}
         </div>
         <span className="flex flex-none flex-wrap gap-2">
           {live && state.state !== "failed" && (userPaused ? onResume : onPause) && (
@@ -342,7 +344,7 @@ export function AnalysisProgress({
           )}
         </span>
       </div>
-      {progress && running && (
+      {progress && running && !uncounted && (
         <p className="mt-2 text-[12.5px] text-muted">
           {percentText && <span>{percentText}</span>}
           {progress.estimate ? estimateText(progress.estimate) : "No estimate yet"}

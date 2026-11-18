@@ -1,7 +1,11 @@
 import type { AnalysisState } from "../../api/generated/types";
 
 /**
- * A running analysis with no flow job queued or running: nothing goes on until a flow is requested.
- * Inferred from the absent `stage` until the server's `idle` field replaces it here.
+ * A running analysis with nothing admitted for analysis: nothing goes on until a flow is requested.
+ * The server's `idle` (not yet in the generated types) wins; without it, an absent `stage` is the sign.
  */
-export const isIdle = (state: AnalysisState): boolean => state.state === "running" && !state.stage;
+export function isIdle(state: AnalysisState): boolean {
+  if (state.state !== "running") return false;
+  const { idle } = state as { idle?: boolean };
+  return idle ?? !state.stage;
+}

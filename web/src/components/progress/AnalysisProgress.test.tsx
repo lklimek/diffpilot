@@ -567,3 +567,22 @@ it("a failure without a flow after planning never claims it failed before planni
   rerender(<AnalysisProgress state={state} {...props} />);
   expect(screen.getByText("The analysis failed")).toBeVisible();
 });
+
+it("review open with background off: no percent and no estimate from the server, so no bar and no number", () => {
+  render(
+    <AnalysisProgress
+      state={{ state: "running", done: 1, total: 5 }}
+      reviewReady
+      backgroundAnalysis={false}
+      onBackground={() => {}}
+      progress={failedAt("done", "done")}
+      busy={false}
+      reviewHref="/analyses/a1"
+      onCancel={() => {}}
+      onRetry={() => {}}
+    />,
+  );
+  expect(screen.queryByRole("progressbar")).toBeNull();
+  expect(screen.queryByText("No estimate yet")).toBeNull();
+  expect(screen.getByText("1 of 5 flows analysed. The review is open.")).toBeVisible();
+});
