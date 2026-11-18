@@ -1,4 +1,5 @@
-//! OAuth web flow (`/login/oauth/authorize`, `/login/oauth/access_token`) and `GET /user` for one fake user.
+//! OAuth web flow (`/login/oauth/authorize`, `/login/oauth/access_token`) and `GET /user` for the fake user;
+//! `POST /_fake/user` makes later sign-ins another user (multi-user tests).
 //! Behaviour follows spike S4: PKCE S256, exact callback URL, refresh rotation that invalidates the old pair,
 //! OAuth errors as HTTP 200 with an `error` field.
 
@@ -54,6 +55,17 @@ struct Issued {
     refresh: HashMap<String, String>,
     /// Valid access tokens.
     access: HashSet<String>,
+    /// The `GET /user` body of later code exchanges, once `POST /_fake/user` set one.
+    next_user: Option<Bytes>,
+    /// Access token → its `GET /user` body, for tokens not of the configured user.
+    users: HashMap<String, Bytes>,
+}
+
+/// Body of `POST /_fake/user`: who signs in from now on.
+#[derive(Deserialize)]
+struct Identity {
+    login: String,
+    id: i64,
 }
 
 /// What a request's `Authorization` header amounts to.
@@ -131,15 +143,10 @@ impl Oauth {
 
     /// The request's `Authorization` against the currently valid access tokens.
     pub(crate) fn credentials(&self, headers: &HeaderMap) -> Credentials {
-        let Some(value) = headers.get(AUTHORIZATION) else {
+        if !headers.contains_key(AUTHORIZATION) {
             return Credentials::Anonymous;
-        };
-        let token = value.to_str().ok().and_then(|value| {
-            value
-                .strip_prefix("Bearer ")
-                .or_else(|| value.strip_prefix("token "))
-        });
-        if token.is_some_and(|token| self.issued().access.contains(token)) {
+        }
+        if bearer(headers).is_some_and(|token| self.issued().access.contains(token)) {
             Credentials::Valid
         } else {
             Credentials::Invalid
@@ -150,8 +157,8 @@ impl Oauth {
         self.issued.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Issues the next token pair.
-    fn mint(&self, issued: &mut Issued) -> TokenGrant {
+    /// Issues the next token pair, of `user` (a `GET /user` body) or else the configured user.
+    fn mint(&self, issued: &mut Issued, user: Option<Bytes>) -> TokenGrant {
         issued.grants += 1;
         let grant = TokenGrant {
             access_token: nth(&self.grant.access_token, issued.grants),
@@ -162,8 +169,19 @@ impl Oauth {
             .refresh
             .insert(grant.refresh_token.clone(), grant.access_token.clone());
         issued.access.insert(grant.access_token.clone());
+        if let Some(user) = user {
+            issued.users.insert(grant.access_token.clone(), user);
+        }
         grant
     }
+}
+
+/// The token of a `Bearer` or `token` `Authorization` header.
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
+    value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("token "))
 }
 
 pub(crate) fn routes(oauth: Arc<Oauth>) -> Router {
@@ -171,6 +189,7 @@ pub(crate) fn routes(oauth: Arc<Oauth>) -> Router {
         .route("/login/oauth/authorize", get(authorize))
         .route("/login/oauth/access_token", post(access_token))
         .route("/user", get(user))
+        .route("/_fake/user", post(set_user))
         .with_state(oauth)
 }
 
@@ -341,7 +360,8 @@ fn exchange_code(oauth: &Oauth, form: &TokenForm) -> Response {
         }
     }
     issued.pending.remove(code);
-    let grant = oauth.mint(&mut issued);
+    let user = issued.next_user.clone();
+    let grant = oauth.mint(&mut issued, user);
     tracing::info!("fake-github exchanged a code for a token pair");
     Json(grant).into_response()
 }
@@ -363,7 +383,8 @@ fn refresh(oauth: &Oauth, refresh_token: Option<&str>) -> Response {
         );
     };
     issued.access.remove(&access);
-    let grant = oauth.mint(&mut issued);
+    let user = issued.users.remove(&access);
+    let grant = oauth.mint(&mut issued, user);
     tracing::info!("fake-github rotated a token pair");
     Json(grant).into_response()
 }
@@ -377,5 +398,21 @@ async fn user(State(oauth): State<Arc<Oauth>>, headers: HeaderMap) -> Response {
         tracing::debug!("fake-github GET /user with a missing, unknown or rotated token");
         return github_error(StatusCode::UNAUTHORIZED, "Bad credentials");
     }
-    json_body(StatusCode::OK, oauth.user.clone())
+    let body = bearer(&headers)
+        .and_then(|token| oauth.issued().users.get(token).cloned())
+        .unwrap_or_else(|| oauth.user.clone());
+    json_body(StatusCode::OK, body)
+}
+
+/// Test control: later sign-ins are `login`/`id` (the configured profile otherwise); earlier tokens keep their user.
+async fn set_user(State(oauth): State<Arc<Oauth>>, Json(identity): Json<Identity>) -> Response {
+    let Ok(serde_json::Value::Object(mut profile)) = serde_json::from_slice(&oauth.user) else {
+        tracing::warn!("fake-github cannot switch users: the recorded user is not a JSON object");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    profile.insert("login".to_owned(), identity.login.clone().into());
+    profile.insert("id".to_owned(), identity.id.into());
+    oauth.issued().next_user = Some(Bytes::from(serde_json::Value::Object(profile).to_string()));
+    tracing::info!(login = %identity.login, "fake-github signs in another user from now on");
+    StatusCode::NO_CONTENT.into_response()
 }
