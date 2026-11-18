@@ -223,21 +223,18 @@ fn utc_date(at: Timestamp) -> Date {
     at.to_zoned(TimeZone::UTC).date()
 }
 
-/// What the charts know of a login search refuses.
+/// What the charts know of a login search refuses, and how to complete them.
 fn refused_note(login: &str, repositories: usize, feed_since: Option<Timestamp>) -> ScanNote {
-    let elsewhere = match feed_since {
-        Some(at) => format!(
-            "its reviews and its pull requests elsewhere come from its public events, which reach back to {} only",
-            utc_date(at)
-        ),
-        None => {
-            "its reviews and its pull requests elsewhere come from its public events".to_owned()
-        }
+    let reach = match feed_since {
+        Some(at) => format!(", which reach back to {} only", utc_date(at)),
+        None => String::new(),
     };
     ScanNote {
         text: format!(
-            "GitHub search refuses {login}: its pull requests are read from {repositories} configured or enumerated \
-             repositories; {elsewhere}"
+            "GitHub search refuses {login}: the charts count its pull requests in {repositories} repositories of \
+             your settings; its reviews and its pull requests in other repositories come from its public \
+             events{reach} and may be incomplete. To count them, add those repositories in Settings → Dashboard, \
+             or their owners under \"When GitHub search refuses an account\"."
         ),
         item: None,
     }
