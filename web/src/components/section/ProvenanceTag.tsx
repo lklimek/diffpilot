@@ -17,14 +17,20 @@ const TAG: Record<ProvenanceSource, { text: string; tip: string; look: string }>
   },
 };
 
-/** Small tag naming the source of the content next to it. */
-export function ProvenanceTag({ source }: { source: ProvenanceSource }) {
+/** Small tag naming the source of the content next to it; `focusable: false` leaves it out of the tab order. */
+export function ProvenanceTag({
+  source,
+  focusable = true,
+}: {
+  source: ProvenanceSource;
+  focusable?: boolean;
+}) {
   const { text, tip, look } = TAG[source];
   return (
     <Tooltip tip={tip}>
       <span
         data-provenance={source}
-        tabIndex={0}
+        tabIndex={focusable ? 0 : undefined}
         className={`inline-block cursor-help rounded px-1 align-baseline text-[10.5px] leading-4 font-semibold whitespace-nowrap ${look}`}
       >
         {text}

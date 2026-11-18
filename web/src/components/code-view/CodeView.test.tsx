@@ -554,6 +554,10 @@ describe("CodeView: the reviewer's pending comments (owner: a comment must be fi
     const tip = screen.getByRole("tooltip");
     expect(tip).toHaveTextContent("Is the retry bounded?");
     expect(tip).toHaveTextContent("And the backoff?");
+    // A long comment is clamped; `block` would override the clamp's display.
+    const body = within(tip).getByText("Is the retry bounded?");
+    expect(body.className).toMatch(/(^|\s)line-clamp-6(\s|$)/);
+    expect(body.className).not.toMatch(/(^|\s)block(\s|$)/);
   });
 
   it("opens the comment's text right at the line by click, and closes it again", async () => {
@@ -739,7 +743,10 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     expect(popover).toHaveTextContent("Is: retries all");
     expect(popover).toHaveTextContent("Question to check · line 1");
     expect(popover).toHaveTextContent("Is a retry of a broadcast safe?");
-    expect(within(popover).getByText("LLM")).toHaveAccessibleDescription(/LLM analysis/);
+    expect(within(popover).getByText("LLM")).toHaveAttribute("data-provenance", "llm");
+    expect(within(popover).getByText("LLM")).toHaveAccessibleDescription(
+      "This text was written by the LLM; it was not checked.",
+    );
     // The marker's own popover wins over the row's was → is tooltip while the pointer is on the marker.
     expect(screen.queryByRole("tooltip")).toBeNull();
     expect(within(popover).queryByRole("button", { name: /Show in Inspector/ })).toBeNull();
@@ -777,9 +784,15 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     expect(marker.querySelector("svg")).not.toBeNull();
     await user.hover(marker);
     const popover = screen.getByRole("dialog", { name: "GitHub thread at line 2" });
-    expect(within(popover).getByText("GitHub")).toHaveAccessibleDescription(/From GitHub/);
+    expect(within(popover).getByText("GitHub")).toHaveAttribute("data-provenance", "github");
+    expect(within(popover).getByText("GitHub")).toHaveAccessibleDescription(
+      "Taken from GitHub as written there.",
+    );
     expect(popover).toHaveTextContent("@bob");
-    expect(popover).toHaveTextContent("Should we retry non-idempotent calls at all?");
+    const excerpt = within(popover).getByText("Should we retry non-idempotent calls at all?");
+    // `block` would override the clamp's display and show the whole text.
+    expect(excerpt.className).toMatch(/(^|\s)line-clamp-4(\s|$)/);
+    expect(excerpt.className).not.toMatch(/(^|\s)block(\s|$)/);
     expect(within(popover).queryByRole("link")).toBeNull();
     await user.click(marker);
     expect(within(popover).getByRole("link", { name: /Open on GitHub/ })).toHaveAttribute("href", thread.url);
@@ -801,6 +814,37 @@ describe("CodeView: gutter markers (owner: explained, large enough, the icon's o
     expect(within(popover).queryByRole("link")).toBeNull();
     expect(within(popover).queryByRole("button", { name: /^Show in Inspector/ })).toBeNull();
     expect(within(popover).getByRole("button", { name: "Close" })).toBeVisible();
+  });
+
+  it("offers no Open on GitHub for a thread URL that is not a GitHub URL", async () => {
+    const user = userEvent.setup();
+    render(
+      <CodeView lines={plain(1, ["a", "b"])} threads={[{ ...thread, url: "https://example.com/t/1" }]} />,
+    );
+    await user.click(screen.getByRole("button", { name: "GitHub thread by bob at line 2" }));
+    const popover = screen.getByRole("dialog", { name: "GitHub thread at line 2" });
+    expect(popover).not.toHaveTextContent("Open on GitHub");
+  });
+
+  it("names the step a thread of another step opens in, and says that it switches the step", async () => {
+    const user = userEvent.setup();
+    const onShowInInspector = vi.fn();
+    render(
+      <CodeView
+        lines={plain(1, ["a", "b"])}
+        threads={[thread]}
+        onShowInInspector={onShowInInspector}
+        otherThreadStep={() => "2.1"}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "GitHub thread by bob at line 2" }));
+    const popover = screen.getByRole("dialog", { name: "GitHub thread at line 2" });
+    expect(within(popover).queryByRole("button", { name: /^Show in Inspector/ })).toBeNull();
+    const show = within(popover).getByRole("button", { name: "Show in step 2.1: GitHub thread by bob" });
+    expect(show).toHaveTextContent("Show in step 2.1");
+    expect(show).toHaveAccessibleDescription(/switches to step 2\.1/i);
+    await user.click(show);
+    expect(onShowInInspector).toHaveBeenCalledWith({ kind: "thread", id: thread.id });
   });
 
   it("≠ and − keep no action but show project tooltips instead of a native title", async () => {

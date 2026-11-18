@@ -49,10 +49,17 @@ describe("HelpDialog", () => {
       "outside the diff, unchanged",
       "removed code shown at the deletion marker",
       "◆ LLM remark",
-      "▣ your comment",
+      "your pending comment (accent bubble)",
+      "GitHub review thread (slate bubble)",
+      "− removed line (from the diff)",
     ]) {
       expect(text).toContain(part);
     }
+    expect(text).not.toContain("▣");
+    // Both bubbles are drawn as in the code, in their colours, next to their words.
+    const bubbles = [...legend.querySelectorAll("svg")].map((svg) => svg.parentElement!.className);
+    expect(bubbles.some((c) => /(^|\s)text-accent(\s|$)/.test(c))).toBe(true);
+    expect(bubbles.some((c) => /(^|\s)text-thread(\s|$)/.test(c))).toBe(true);
   });
 
   it("closes with the button, Escape and a click outside", async () => {

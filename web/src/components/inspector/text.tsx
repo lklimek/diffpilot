@@ -4,7 +4,7 @@ import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Tooltip } from "../tooltip/Tooltip";
 
 // Only server-built GitHub links become links (threat model T12); anything else stays text.
-const isGithubUrl = (url: string) => url.startsWith("https://github.com/");
+export const isGithubUrl = (url: string) => url.startsWith("https://github.com/");
 
 /** Link to GitHub in a new tab; plain text when the URL is not a GitHub URL. */
 export function GithubLink({ url, tip, children }: { url: string; tip: string; children: ReactNode }) {

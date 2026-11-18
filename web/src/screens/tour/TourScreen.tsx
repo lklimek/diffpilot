@@ -216,8 +216,9 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     location.hash || current.block === "pr_context" ? null : current,
   );
   const [annotationId, setAnnotationId] = useState<AnnotationId | null>(null);
-  // "Show in Inspector": the remark or thread the Inspector scrolls to and highlights; `nonce` only grows.
+  // "Show in Inspector": the remark or thread the Inspector scrolls to and highlights, until it was shown once.
   const [inspectorFlash, setInspectorFlash] = useState<(MarkerTarget & { nonce: number }) | null>(null);
+  const flashNonce = useRef(0);
   const [oldCode, setOldCode] = useState(false);
   const [commentLine, setCommentLine] = useState<CommentLineState | null>(null);
   // A pending comment opened from the pending-review list, shown open at its line.
@@ -378,7 +379,8 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     const owner = target.kind === "thread" ? tour.threads.find((t) => t.id === target.id)?.step_id : null;
     if (owner && owner !== step?.id) go({ block: "step", step_id: owner });
     else if (!(target.kind === "annotation" && target.id === annotationId)) setAnnotationId(null);
-    setInspectorFlash((last) => ({ ...target, nonce: (last?.nonce ?? 0) + 1 }));
+    flashNonce.current += 1;
+    setInspectorFlash({ ...target, nonce: flashNonce.current });
     openInspector();
   };
 
@@ -442,6 +444,10 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
     onDeleteComment: comments.remove,
     flash: evidence ?? null,
     onShowInInspector: showInInspector,
+    otherThreadStep: (t) => {
+      const owner = t.step_id && t.step_id !== step?.id ? findStep(tour, t.step_id) : undefined;
+      return owner ? `${owner.flow.position}.${owner.step.number}` : null;
+    },
   };
   // The step that shows a pending comment's line; a file comment without a shown line: the first step of its file.
   const placeOf = (c: PendingComment) => {
@@ -789,6 +795,7 @@ function TourView({ analysisId, tour, review, login, refresh }: TourViewProps) {
             step={step}
             annotationId={annotationId}
             flash={inspectorFlash}
+            onFlashed={() => setInspectorFlash(null)}
             onBackToStep={() => setAnnotationId(null)}
             onSelectStep={selectStep}
             onEvidence={showEvidence}

@@ -3,9 +3,17 @@ import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FLASH_MS, useFlashTarget, type FlashRequest } from "./useFlashTarget";
 
-function Harness({ request, hidden = false }: { request: FlashRequest | null; hidden?: boolean }) {
+function Harness({
+  request,
+  hidden = false,
+  onDone,
+}: {
+  request: FlashRequest | null;
+  hidden?: boolean;
+  onDone?: () => void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  useFlashTarget(ref, request);
+  useFlashTarget(ref, request, onDone);
   return (
     <div ref={ref}>
       <p data-item="a">First</p>
@@ -76,6 +84,20 @@ describe("useFlashTarget", () => {
     rerender(<Harness request={{ selector: '[data-item="b"]', nonce: 1 }} />);
     frame();
     expect(screen.getByText("Second")).toHaveAttribute("data-flash");
+  });
+
+  it("reports a request handled once its frame ends, or once no target showed", () => {
+    const onDone = vi.fn();
+    const { rerender } = render(
+      <Harness request={{ selector: '[data-item="a"]', nonce: 1 }} onDone={onDone} />,
+    );
+    frame();
+    expect(onDone).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(FLASH_MS));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    rerender(<Harness request={{ selector: '[data-item="none"]', nonce: 2 }} onDone={onDone} />);
+    act(() => vi.advanceTimersByTime(2000));
+    expect(onDone).toHaveBeenCalledTimes(2);
   });
 
   it("does nothing without a request or a matching target", () => {

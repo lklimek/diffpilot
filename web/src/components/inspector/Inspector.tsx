@@ -15,7 +15,7 @@ import { DifferingLinesBadge, ProvenanceBadge } from "../badge/Badge";
 import { useFlashTarget } from "../flash/useFlashTarget";
 import { GroupLabel, KindLabel, RiskLabel } from "../badge/LlmLabel";
 import { FlowWorkLabel } from "../flow-intro/status";
-import { rangeText } from "../section/format";
+import { ANNOTATION, rangeText } from "../section/format";
 import { EvidenceLinks } from "../section/EvidenceLinks";
 import { Collapsible } from "./Collapsible";
 import { useSectionState, type SectionControl } from "./sectionState";
@@ -62,15 +62,9 @@ export interface InspectorProps {
   onEvidence?: (evidence: Evidence) => void;
   /** Scroll to and briefly highlight a remark or GitHub thread of the step ("Show in Inspector"); new `nonce`, again. */
   flash?: { kind: "annotation" | "thread"; id: string; nonce: number } | null;
+  /** The `flash` request was handled (its highlight ended); it is not to be shown again. */
+  onFlashed?: () => void;
 }
-
-/** Reader-facing name of each annotation type. */
-export const ANNOTATION: Record<AnnotationType, string> = {
-  behaviour: "Behaviour",
-  consequence: "Consequence",
-  question: "Question to check",
-  note: "Note",
-};
 
 // The section listing each annotation type.
 const SECTION_OF: Record<AnnotationType, string> = {
@@ -278,7 +272,7 @@ function panelFor(props: InspectorProps, sections: SectionControl): Panel {
 
 /** Right-hand inspector (brief §4.3): never empty; the current block, or the selected annotation of a step. */
 export function Inspector(props: InspectorProps) {
-  const { dock, onBackToStep, flash } = props;
+  const { dock, onBackToStep, flash, onFlashed } = props;
   const sections = useSectionState();
   const panel = panelFor(props, sections);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -289,6 +283,7 @@ export function Inspector(props: InspectorProps) {
   useFlashTarget(
     scroller,
     flash && { selector: `[${attribute}="${flash.id.replace(/["\\]/g, "\\$&")}"]`, nonce: flash.nonce },
+    onFlashed,
   );
 
   // A flashed item in a collapsed section: open that section once per request.

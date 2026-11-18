@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Tooltip } from "../tooltip/Tooltip";
 import { Popover } from "./Popover";
 
@@ -149,5 +149,127 @@ describe("Popover", () => {
     await user.click(screen.getByRole("button", { name: "Remark" }));
     await user.hover(screen.getByTestId("row"));
     expect(screen.getByRole("dialog")).toBeVisible();
+  });
+
+  describe("placement", () => {
+    const rect = (top: number, height: number, left = 100, width = 24) =>
+      ({ top, bottom: top + height, left, right: left + width, width, height, x: left, y: top }) as DOMRect;
+    const contentHeight = (px: number) =>
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function (this: HTMLElement) {
+        return this.hasAttribute("data-popover-box") ? px : 0;
+      });
+    afterEach(() => vi.restoreAllMocks());
+
+    it("opens above its trigger when the measured content does not fit below", async () => {
+      const user = userEvent.setup();
+      vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+      contentHeight(300);
+      render(marker("Remark", "Full remark text"));
+      const trigger = screen.getByRole("button", { name: "Remark" });
+      vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(rect(600, 24));
+      await user.click(trigger);
+      const dialog = screen.getByRole("dialog");
+      expect(dialog.style.bottom).toBe("200px");
+      expect(dialog.style.top).toBe("");
+    });
+
+    it("keeps content taller than either side within the viewport, on the larger side, with its own scroll", async () => {
+      const user = userEvent.setup();
+      vi.spyOn(window, "innerHeight", "get").mockReturnValue(800);
+      contentHeight(900);
+      render(marker("Remark", "Full remark text"));
+      const trigger = screen.getByRole("button", { name: "Remark" });
+      vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(rect(300, 24));
+      await user.click(trigger);
+      const dialog = screen.getByRole("dialog");
+      expect(dialog.style.top).toBe("324px");
+      expect(parseInt(dialog.style.maxHeight)).toBeLessThanOrEqual(800 - 324);
+      const box = dialog.querySelector("[data-popover-box]")!;
+      expect(box.className).toMatch(/(^|\s)overflow-y-auto(\s|$)/);
+      expect(box.className).toMatch(/\[overflow-wrap:anywhere\]/);
+    });
+
+    it("hides a pinned popover while its trigger is scrolled out of its scroll container, and shows it again", async () => {
+      const user = userEvent.setup();
+      render(
+        <div data-testid="column" style={{ overflow: "auto" }}>
+          {marker("Remark", "Full remark text")}
+        </div>,
+      );
+      const column = screen.getByTestId("column");
+      vi.spyOn(column, "getBoundingClientRect").mockReturnValue(rect(100, 400, 0, 800));
+      const trigger = screen.getByRole("button", { name: "Remark" });
+      const at = vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue(rect(200, 24));
+      await user.click(trigger);
+      await user.unhover(trigger);
+      expect(screen.getByRole("dialog")).toBeVisible();
+      at.mockReturnValue(rect(40, 24));
+      fireEvent.scroll(column);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      at.mockReturnValue(rect(300, 24));
+      fireEvent.scroll(column);
+      expect(screen.getByRole("dialog")).toBeVisible();
+    });
+  });
+
+  describe("keyboard", () => {
+    it("Escape outside the popover is left to the focused element; the popover stays", async () => {
+      const user = userEvent.setup();
+      const onComposerKey = vi.fn();
+      render(
+        <>
+          {marker("Remark", "Full remark text")}
+          <textarea aria-label="Comment" onKeyDown={(event) => onComposerKey(event.key)} />
+        </>,
+      );
+      await user.tab();
+      await user.keyboard("{Enter}");
+      act(() => screen.getByRole("textbox", { name: "Comment" }).focus());
+      await user.keyboard("{Escape}");
+      expect(onComposerKey).toHaveBeenCalledWith("Escape");
+      expect(screen.getByRole("dialog")).toBeVisible();
+    });
+
+    it("Escape in the popover closes only the popover: handlers around it do not see the key", async () => {
+      const user = userEvent.setup();
+      const around = vi.fn();
+      render(<div onKeyDown={(event) => around(event.key)}>{marker("Remark", "Full remark text")}</div>);
+      await user.click(screen.getByRole("button", { name: "Remark" }));
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(around).not.toHaveBeenCalled();
+      await user.click(screen.getByRole("button", { name: "Remark" }));
+      await user.click(screen.getByText("Full remark text"));
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(around).not.toHaveBeenCalled();
+    });
+
+    it("costs one tab stop: its tag is focusable only when pinned; aria-expanded follows the shown popover", async () => {
+      const user = userEvent.setup();
+      const tagged = (name: string) => (
+        <Popover label={`${name} details`} tag="llm" content={() => <p>{name} text</p>}>
+          <button type="button" aria-label={name}>
+            ◆
+          </button>
+        </Popover>
+      );
+      render(
+        <>
+          {tagged("First")}
+          {tagged("Second")}
+        </>,
+      );
+      await user.tab();
+      const first = screen.getByRole("button", { name: "First" });
+      expect(first).toHaveFocus();
+      expect(first).toHaveAttribute("aria-expanded", "true");
+      await user.tab();
+      expect(screen.getByRole("button", { name: "Second" })).toHaveFocus();
+      expect(first).toHaveAttribute("aria-expanded", "false");
+      await user.keyboard("{Enter}");
+      await user.tab();
+      expect(within(screen.getByRole("dialog")).getByText("LLM")).toHaveFocus();
+    });
   });
 });

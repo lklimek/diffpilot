@@ -78,7 +78,7 @@ export function CommentMarker({
     <>
       {comments.map((c) => (
         <Fragment key={c.id}>
-          <span className="mb-1 line-clamp-6 block whitespace-pre-wrap">{c.body}</span>{" "}
+          <span className="mb-1 line-clamp-6 whitespace-pre-wrap">{c.body}</span>{" "}
         </Fragment>
       ))}
       <span className="block opacity-80">{about}</span>

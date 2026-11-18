@@ -10,13 +10,14 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
+import { ProvenanceTag, type ProvenanceSource } from "../section/ProvenanceTag";
 import { Tooltip, useTipPrecedence } from "../tooltip/Tooltip";
 
 interface PopoverProps {
   /** Accessible name of the popover, e.g. "LLM remarks at line 91". */
   label: string;
-  /** Provenance tag in the popover's top row, e.g. an "LLM" or "GitHub" label with its own tooltip. */
-  tag?: ReactNode;
+  /** Source of the content, shown as a provenance tag in the popover's top row. */
+  tag?: ProvenanceSource;
   /** The text; `pinned` adds what only a pinned popover offers (links). Also the trigger's description. */
   content: (pinned: boolean) => ReactNode;
   /** The trigger: one button without an `onClick`; it gets the ARIA state and the click. */
@@ -44,7 +45,22 @@ const setPinned = (id: string | null) => {
 };
 
 const WIDTH = 360;
-const ROOM = 200;
+// Distance kept from the viewport edges; the popover's gap and border.
+const MARGIN = 8;
+const FRAME = 8;
+
+// Whether `rect` lies outside a clipping (scrolling) ancestor of `element`.
+function clippedOut(element: HTMLElement, rect: DOMRect): boolean {
+  for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+    const { overflowX, overflowY } = getComputedStyle(parent);
+    if (overflowX === "visible" && overflowY === "visible") continue;
+    const box = parent.getBoundingClientRect();
+    if (rect.bottom < box.top || rect.top > box.bottom || rect.right < box.left || rect.left > box.right) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * A marker's popover: hover or keyboard focus shows it (WCAG 1.4.13: Escape dismisses, the pointer can move
@@ -59,7 +75,16 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
   const [focused, setFocused] = useState(false);
   // Closed by Escape or the close button; shown again after the pointer or the focus left and came back.
   const [dismissed, setDismissed] = useState(false);
-  const [position, setPosition] = useState<{ top?: number; bottom?: number; left: number }>({ left: 0 });
+  const [position, setPosition] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    maxHeight?: number;
+  }>({ left: 0 });
+  // The trigger is scrolled out of view: the popover is not drawn over other parts of the page.
+  const [outside, setOutside] = useState(false);
+  const dialog = useRef<HTMLSpanElement>(null);
+  const box = useRef<HTMLSpanElement>(null);
   const open = pinned || ((hovered || focused) && !dismissed);
   useTipPrecedence(hovered || focused);
 
@@ -71,15 +96,25 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
     if (active === document.body || wrapper.current?.contains(active)) trigger()?.focus();
   };
 
-  // Fixed position so scroll containers do not clip it; it follows its trigger while the page scrolls.
+  // Fixed position so scroll containers do not clip it; it follows its trigger while the page scrolls, below it
+  // when it fits, else above, else on the larger side with its own scroll.
   useLayoutEffect(() => {
     if (!open) return;
     const place = () => {
-      const rect = trigger()?.getBoundingClientRect();
-      if (!rect) return;
-      const left = Math.max(4, Math.min(rect.left, window.innerWidth - WIDTH - 8));
-      const above = rect.bottom + ROOM > window.innerHeight && rect.top > ROOM;
-      setPosition(above ? { bottom: window.innerHeight - rect.top, left } : { top: rect.bottom, left });
+      const element = trigger();
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
+      setOutside(clippedOut(element, rect));
+      const width = dialog.current?.offsetWidth || WIDTH;
+      const left = Math.max(4, Math.min(rect.left, window.innerWidth - width - MARGIN));
+      const needed = (box.current?.scrollHeight ?? 0) + FRAME;
+      const below = window.innerHeight - rect.bottom - MARGIN;
+      const above = rect.top - MARGIN;
+      setPosition(
+        needed <= below || below >= above
+          ? { top: rect.bottom, left, maxHeight: below }
+          : { bottom: window.innerHeight - rect.top, left, maxHeight: above },
+      );
     };
     place();
     window.addEventListener("scroll", place, true);
@@ -88,7 +123,7 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
     };
-  }, [open]);
+  }, [open, pinned]);
 
   const onEscape = useEffectEvent(close);
   useEffect(() => {
@@ -96,10 +131,14 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
     const outside = (event: PointerEvent) => {
       if (!wrapper.current?.contains(event.target as Node) && pinnedId === id) setPinned(null);
     };
-    // Capture phase: Escape closes the popover before page shortcuts see it.
+    // Capture phase: Escape in the popover (or with no focus) closes only the popover; no other handler sees
+    // it. With the focus elsewhere (a comment being written) the key belongs to that element.
     const escape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      const active = document.activeElement;
+      if (active !== document.body && !wrapper.current?.contains(active)) return;
       event.preventDefault();
+      event.stopPropagation();
       onEscape();
     };
     document.addEventListener("pointerdown", outside, true);
@@ -135,7 +174,7 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
       onClick={(event) => event.stopPropagation()}
     >
       {cloneElement(children, {
-        "aria-expanded": pinned,
+        "aria-expanded": open && !outside,
         "aria-haspopup": "dialog",
         "aria-controls": id,
         "aria-describedby": `${id}-body`,
@@ -145,22 +184,26 @@ export function Popover({ label, tag, content, children, className = "" }: Popov
         },
       })}
       <span
+        ref={dialog}
         id={id}
         role="dialog"
         aria-label={label}
-        hidden={!open}
+        tabIndex={-1}
+        hidden={!open || outside}
         style={position}
-        className={`fixed z-50 block w-max max-w-[min(360px,calc(100vw-16px))] cursor-auto pt-1 font-sans text-xs font-normal whitespace-normal normal-case select-text ${
+        className={`fixed z-50 flex w-max max-w-[min(360px,calc(100vw-16px))] cursor-auto flex-col pt-1 font-sans text-xs font-normal whitespace-normal normal-case outline-none select-text ${
           position.bottom !== undefined ? "pt-0 pb-1" : ""
         }`}
       >
         <span
-          className={`block rounded-md border bg-surface px-2.5 py-1.5 text-left text-text shadow-tip ${
+          ref={box}
+          data-popover-box
+          className={`block min-h-0 overflow-y-auto overscroll-contain rounded-md border bg-surface px-2.5 py-1.5 text-left text-text shadow-tip [overflow-wrap:anywhere] ${
             pinned ? "border-accent" : "border-border"
           }`}
         >
           <span className="mb-1 flex min-h-6 items-center gap-2">
-            {tag}
+            {tag && <ProvenanceTag source={tag} focusable={pinned} />}
             {pinned && (
               <Tooltip tip="Closes this popover (Esc)." className="ml-auto">
                 <button

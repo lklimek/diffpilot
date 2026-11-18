@@ -51,6 +51,7 @@ interface InspectorPaneProps {
   annotationId: AnnotationId | null;
   /** Remark or thread to scroll to and highlight ("Show in Inspector"). */
   flash?: InspectorProps["flash"];
+  onFlashed?: () => void;
   onBackToStep: () => void;
   onSelectStep: (step: StepId) => void;
   onEvidence: (evidence: Evidence) => void;
@@ -168,6 +169,7 @@ export function InspectorPane(props: InspectorPaneProps) {
       block={block}
       annotationId={annotationId}
       flash={props.flash}
+      onFlashed={props.onFlashed}
       diff={diff}
       pendingReview={pending.data ?? null}
       onBackToStep={props.onBackToStep}

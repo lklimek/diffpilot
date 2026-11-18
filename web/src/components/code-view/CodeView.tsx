@@ -78,6 +78,8 @@ export interface CodeViewProps {
   onLoadDeleted?: (block: DeletedBlock) => void;
   /** "Show in Inspector" of a pinned remark or thread popover; without it the link is not offered. */
   onShowInInspector?: (target: MarkerTarget) => void;
+  /** "N.M" of a thread's step when it is not the step shown; its Show in Inspector then names that step. */
+  otherThreadStep?: (thread: GithubThread) => string | null;
 }
 
 // The bar pattern is the colour-independent signal; an unrated remark gets a thin neutral line of its own, so it
@@ -132,6 +134,7 @@ interface LineContext {
   onLineAction?: (target: CommentTarget) => void;
   onFocusLine: (key: string) => void;
   onShowInInspector?: (target: MarkerTarget) => void;
+  otherThreadStep?: (thread: GithubThread) => string | null;
 }
 
 interface LineProps {
@@ -240,7 +243,12 @@ function Line({
             <RemarkMarker annotations={remarks} line={line} onShowInInspector={ctx.onShowInInspector} />
           )}
           {threads && (
-            <ThreadMarker threads={threads} line={line} onShowInInspector={ctx.onShowInInspector} />
+            <ThreadMarker
+              threads={threads}
+              line={line}
+              onShowInInspector={ctx.onShowInInspector}
+              otherStep={ctx.otherThreadStep}
+            />
           )}
           {mine && (
             <CommentMarker
@@ -447,6 +455,7 @@ export function CodeView({
   onEditComment,
   onDeleteComment,
   onShowInInspector,
+  otherThreadStep,
 }: CodeViewProps) {
   const id = useId();
   const view = useRef<HTMLDivElement>(null);
@@ -532,6 +541,7 @@ export function CodeView({
     onLineAction,
     onFocusLine: setFocusKey,
     onShowInInspector,
+    otherThreadStep,
   };
   for (const t of threads) {
     if (t.path !== lines.path || t.side === null || t.line === null) continue;
