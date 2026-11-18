@@ -85,8 +85,10 @@ describe("Headline", () => {
     expect(screen.getByRole("button", { name: "Days" })).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(screen.getByRole("button", { name: "Weeks" }));
     expect(screen.getByRole("button", { name: "Weeks" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("heading", { name: "Net per week, with running total" })).toBeInTheDocument();
-    expect(screen.getByRole("img")).toHaveAccessibleName(/per week for the last 3 weeks; running total \+14/);
+    expect(screen.getByRole("heading", { name: "Net per week, with cumulative total" })).toBeInTheDocument();
+    expect(screen.getByRole("img")).toHaveAccessibleName(
+      /per week for the last 3 weeks; cumulative total \+14/,
+    );
   });
 });
 
@@ -96,9 +98,9 @@ describe("NetChart keyboard reading", () => {
     const chart = screen.getByRole("img");
     const reading = () => document.querySelector("[data-chart-reading]")!.textContent;
     fireEvent.focus(chart);
-    expect(reading()).toBe("Day 18 Nov (so far): closed 2, opened 2, net 0, running +6");
+    expect(reading()).toBe("Day 18 Nov (so far): closed 2, opened 2, net 0, cumulative +6");
     fireEvent.keyDown(chart, { key: "ArrowLeft" });
-    expect(reading()).toBe("Day 17 Nov: closed 6, opened 2, net +4, running +6");
+    expect(reading()).toBe("Day 17 Nov: closed 6, opened 2, net +4, cumulative +6");
     fireEvent.keyDown(chart, { key: "Home" });
     expect(reading()).toMatch(/^Day 16 Nov/);
     fireEvent.keyDown(chart, { key: "ArrowLeft" });
@@ -115,6 +117,7 @@ describe("NetChart keyboard reading", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     const rows = within(screen.getByRole("table")).getAllByRole("row");
     expect(rows[1]).toHaveTextContent("Day 18 Nov (so far)220+6");
+    expect(rows[0]).toHaveTextContent("DayClosedOpenedNetCumulative");
     // A long table scrolls: its scroll box takes keyboard focus and has a name.
     const box = screen.getByRole("region", { name: "Net per day as a table" });
     expect(box).toHaveAttribute("tabindex", "0");
