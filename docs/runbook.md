@@ -154,16 +154,51 @@ docker run --rm --network none -v OLD-VOLUME:/src:ro -v smart-review_runner-stat
 
 ## Upgrade
 
+The schema is the numbered files in `crates/db/migrations`, append-only: the server applies new ones at its start,
+each in its own transaction (a failing one leaves the database at the previous version), and refuses to start when
+an applied one has changed or is unknown to it. `scripts/check-migrations.sh` (CI) keeps applied files unchanged.
+Never delete the database to upgrade.
+
+1. Fetch the new version, keep the old commit and images for a rollback, check, build (services keep running):
+
+   ```sh
+   cd /srv/smart-review/app
+   OLD="$(git rev-parse HEAD)"; echo "previous version: $OLD"
+   sudo git pull --ff-only
+   scripts/check-migrations.sh
+   git diff --name-status "$OLD" -- crates/db/migrations   # only A (added) lines; M or D: stop, do not deploy
+   for i in server runner egress-proxy; do docker tag "smart-review-$i:local" "smart-review-$i:rollback"; done
+   sr build egress-proxy && sr build runner && sr build server
+   ```
+
+2. Stop, back up (section "Backup and restore", full backup), start the new version; migrations run now:
+
+   ```sh
+   sr stop
+   # full backup here
+   sr up -d
+   sr ps
+   sr logs --since 10m server | grep -E 'server stopped|migration' || echo "no migration error"
+   ```
+
+3. Verify: all three `healthy`, sign-in works, an existing analysis opens.
+
+**Rollback** (the new version fails, or a migration error in the log): restore the backup of step 2 together with
+the previous images and commit; whatever was written after the upgrade is lost.
+
 ```sh
-cd /srv/smart-review/app && sudo git pull --ff-only
-sr build egress-proxy && sr build runner && sr build server
+sr stop
+# restore the step-2 backup here (section "Backup and restore")
+for i in server runner egress-proxy; do docker tag "smart-review-$i:rollback" "smart-review-$i:local"; done
+cd /srv/smart-review/app && sudo git checkout --detach "$OLD"   # back later with: sudo git switch -
 sr up -d
-sr ps
 ```
 
-`sr up -d` recreates the changed services; a job running on the runner is interrupted and retried by the
-server. Before the first release the database schema is a single rewritable `0001_init.sql` without migrations:
-when it changes, restore is not possible across the change; start with an empty `server-data` volume.
+**Binary older than the database:** a server image without a migration the database already holds stops with
+`the schema migration failed: migration N was previously applied but is missing in the resolved migrations` (exit
+1, restart loop). Never run an older image against an upgraded database: roll back with the matching backup.
+`... was previously applied but has been modified` means an applied migration was edited: the build is defective;
+roll back and report it, never delete the database.
 
 ## Backup and restore
 
@@ -218,11 +253,12 @@ smart-review-runner-1` show the last exit.
 | 78 | runner | Preflight or the runner's own start-up check refused. Either codex-homes is missing, not ext4, mounted without `nosuid,nodev,noexec`, or larger than the limits (or, local stack only, a tmpfs with a non-localhost `SR_PUBLIC_URL`); or the runner network is not isolated (a default route, or a gateway address answers); or `SR_RUNNER_SECRET_FILE` is readable by the agent uid 10002 (owned by it, any `other` bit, or a group bit with group 10002). The log line says which. | Filesystem: run `prepare-codex-homes.sh` again; check `findmnt /srv/smart-review/codex-homes` and `SR_CODEX_HOMES_DIR`. Network: upgrade Docker Engine to 28.0 or newer, keep the runner network's `gateway_mode_*: isolated` options, then `sr down && sr up -d` (networks are created anew). |
 | 64 | egress-proxy | `SR_MEMCAN_URL` is not `http(s)://host[:port][/path]`. | Fix `.env`, `sr up -d`. |
 | 65 | egress-proxy | The MemCan host name of `SR_MEMCAN_URL` does not resolve (the proxy pins its address at start). | Check DNS from the host (`getent hosts HOST`); the proxy retries with every restart. |
+| 1 | server, runner | Configuration or start-up error; the log's last line names the variable. | Fix `.env`, `sr up -d`. |
+| 1 | server | `the schema migration failed` in the last log line: the image does not match the database (section "Upgrade"). | Roll back (section "Upgrade"); never delete the database. |
 
 **MemCan moved to another address:** the proxy keeps the address it resolved at its start, so agents keep
 connecting to the old one (and get nothing) until `sr restart egress-proxy`. The server resolves on every
 connection. Update MemCan's allow-list if the source addresses change (First deploy, step 5).
-| 1 | server, runner | Configuration or start-up error; the log's last line names the variable. | Fix `.env`, `sr up -d`. |
 
 ## Rotating the runner secret
 
@@ -354,9 +390,7 @@ prompts, answers, PR titles or other source text. No migration or stored-documen
 Settings → LLM model changes the model and effort for everyone. Default: Sol 6.1, high; the fixed catalog
 comes from ADR-002. Saving affects newly submitted jobs, including remaining jobs of running analyses;
 a submitted job retains its spec. The server logs the editor and old/new choice, and the Tour shows
-choices actually used. The owner-approved singleton table and pause columns rewrite `0001_init.sql`;
-the coordinator must recreate the pre-deployment database before running this build against the local
-stack. Do not apply this migration to a database containing a running analysis.
+choices actually used.
 
 Pause analysis lets the current job finish, retains its result and the PR session, and prevents further
 submissions/claims until Resume. This survives server/runner restarts. A provider limit cannot automatically

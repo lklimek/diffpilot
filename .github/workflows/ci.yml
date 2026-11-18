@@ -93,6 +93,11 @@ jobs:
         run: scripts/check-architecture.sh --self-test
       - name: Architecture check
         run: scripts/check-architecture.sh
+      # Applied migrations are immutable (the server verifies their checksums at start).
+      - name: Migrations unchanged
+        run: |
+          scripts/check-migrations.sh --self-test
+          scripts/check-migrations.sh
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
