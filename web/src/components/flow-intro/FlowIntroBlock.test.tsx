@@ -240,6 +240,35 @@ it("a failed flow of a finished analysis offers Analyse this flow again, the wor
     />,
   );
   expect(screen.queryByRole("button", { name: "Retry this flow" })).toBeNull();
-  await userEvent.setup().click(screen.getByRole("button", { name: "Analyse this flow again" }));
+  const again = screen.getByRole("button", { name: "Analyse this flow again" });
+  await userEvent.setup().hover(again);
+  expect(await screen.findByRole("tooltip")).toHaveTextContent(
+    "Replaces this flow's steps. Ticks, questions and feedback on them are removed.",
+  );
+  await userEvent.setup().click(again);
   expect(onRequest).toHaveBeenCalledOnce();
+});
+
+it("a stored flow of a running analysis that fails today's checks offers the action its message names", () => {
+  const failed = {
+    ...f1,
+    steps: [],
+    analysis_status: {
+      state: "failed",
+      started_at: null,
+      message:
+        "The stored analysis of this flow does not pass the server's current checks, so its changes are listed as not analysed. Analyse this flow again.",
+    },
+    planned: { intent: "Bound RPC retries", importance_rank: 1, ranges: [] },
+  } as Tour["flows"][number];
+  render(
+    <FlowIntroBlock
+      flow={failed}
+      analysis={{ state: "running", done: 4, total: 5 }}
+      dependencies={[]}
+      ticked={[]}
+      onRequest={() => {}}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "Analyse this flow again" })).toBeVisible();
 });

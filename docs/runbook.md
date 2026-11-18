@@ -526,7 +526,8 @@ reasoning counts are unavailable in the retained result. Duplicate completion po
 Each live-to-terminal analysis transition emits one `analysis statistics` info event: analysis id,
 changed lines/files, agent files, plan batches, flows, submitted jobs/repair generations, summed finished
 job seconds (`plan_seconds`, `pr_context_seconds`, `flow_seconds`, `ask_seconds`), wall-clock
-`total_seconds`, the usage totals/report count, and `initial_estimate_seconds` when known. It includes
+`total_seconds`, the usage totals/report count, `initial_estimate_seconds` when known, and `refinish` (true
+when a finished analysis ran again for flows analysed again: its earlier finish logged its own line). It includes
 all rounds; wall time includes pauses. Cancelled or failed jobs without a finish timestamp contribute
 no execution duration. It is a snapshot at the transition: later Ask jobs and late runner completion
 after cancellation remain visible in usage summaries but cannot change this single event. Each time the

@@ -99,8 +99,13 @@ impl Statistics {
 }
 
 /// The final statistics line of an analysis: called by the guarded live-to-terminal transition, before
-/// cancellation deletes documents. The run facts are released with it.
-pub async fn log_end(state: &AppState, summary: &AnalysisSummary) -> Result<(), DbError> {
+/// cancellation deletes documents. The run facts are released with it. `refinish`: the analysis had finished
+/// and ran again for flows analysed again (its earlier finish logged its own line).
+pub async fn log_end(
+    state: &AppState,
+    summary: &AnalysisSummary,
+    refinish: bool,
+) -> Result<(), DbError> {
     let facts = state
         .statistics
         .0
@@ -109,7 +114,7 @@ pub async fn log_end(state: &AppState, summary: &AnalysisSummary) -> Result<(), 
         .runs
         .remove(&summary.id)
         .unwrap_or_default();
-    log(state, summary, facts, false).await
+    log(state, summary, facts, false, refinish).await
 }
 
 /// The run so far, when the driver ends for lack of admitted flow work (once per such end); the run facts are
@@ -124,7 +129,7 @@ pub async fn log_parked(state: &AppState, summary: &AnalysisSummary) -> Result<(
         .get(&summary.id)
         .copied()
         .unwrap_or_default();
-    log(state, summary, facts, true).await
+    log(state, summary, facts, true, false).await
 }
 
 async fn log(
@@ -132,6 +137,7 @@ async fn log(
     summary: &AnalysisSummary,
     facts: RunFacts,
     parked: bool,
+    refinish: bool,
 ) -> Result<(), DbError> {
     let jobs = state.db.jobs().statistics(summary.id).await?;
     let seconds = summary
@@ -151,6 +157,7 @@ async fn log(
                 input_tokens = usage.map(|u| u.input_tokens), cached_input_tokens = usage.map(|u| u.cached_input_tokens),
                 output_tokens = usage.map(|u| u.output_tokens), reasoning_output_tokens = tracing::field::Empty,
                 usage_jobs = usage.map(|u| u.jobs), initial_estimate_seconds = facts.initial_estimate_seconds,
+                refinish,
                 $message)
         };
     }
@@ -187,7 +194,7 @@ mod tests {
         // Every flow request with background analysis off ends in a park.
         log_parked(&state, &summary).await.unwrap();
         log_parked(&state, &summary).await.unwrap();
-        log_end(&state, &summary).await.unwrap();
+        log_end(&state, &summary, false).await.unwrap();
         let text = logs.text();
         let lines = |message: &str| {
             text.lines()
@@ -205,9 +212,26 @@ mod tests {
         let last = lines("analysis statistics");
         assert_eq!(last.len(), 1, "{text}");
         assert!(
-            last[0].contains("initial_estimate_seconds=1200"),
+            last[0].contains("initial_estimate_seconds=1200") && last[0].contains("refinish=false"),
             "{}",
             last[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_finish_of_a_finished_analysis_run_again_is_marked() {
+        let state = crate::state::tests::test_state().await;
+        let id = db::repo::analyses::testing::seed_analysis(&state.db)
+            .await
+            .unwrap();
+        let summary = state.db.analyses().summary(id).await.unwrap();
+        let logs = crate::test_support::logs::LogCapture::start();
+        log_end(&state, &summary, true).await.unwrap();
+        let text = logs.text();
+        assert!(
+            text.lines()
+                .any(|line| line.contains("analysis statistics") && line.contains("refinish=true")),
+            "{text}"
         );
     }
 

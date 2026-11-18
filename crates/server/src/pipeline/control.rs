@@ -65,11 +65,13 @@ pub async fn set_state_if(
             if !allowed(&current.state) {
                 return Err(Guarded::Refused);
             }
+            // Set while a finished analysis runs again for flows analysed again.
+            let refinish = db.analyses().get(analysis).await?.finished_at.is_some();
             db.analyses().set_state(analysis, next, Utc::now()).await?;
             let summary = db.analyses().summary(analysis).await?;
             if is_live(&current.state)
                 && !is_live(&summary.state)
-                && let Err(error) = super::statistics::log_end(state, &summary).await
+                && let Err(error) = super::statistics::log_end(state, &summary, refinish).await
             {
                 tracing::warn!(%analysis, ?error, "analysis statistics unavailable");
             }
@@ -174,11 +176,31 @@ async fn user_pause(
 }
 
 /// Cancels a live or failed analysis: state `cancelled`, then every unfinished job cancelled, the stored results
-/// deleted and both PR sessions retained. A running driver ends when its jobs report `cancelled`.
+/// deleted and both PR sessions retained. A running driver ends when its jobs report `cancelled`. An analysis
+/// that finished and runs again for flows analysed again only stops that work: it is `finished` again with its
+/// results ([`db::repo::flow_work::FlowWork::cancel_rerun`]).
 pub async fn cancel(
     state: &AppState,
     analysis: AnalysisId,
 ) -> Result<AnalysisSummary, ControlError> {
+    let db = &state.db;
+    let restored = state
+        .progress
+        .update(analysis, || async {
+            if !db.flow_work().cancel_rerun(analysis).await? {
+                return Err(Guarded::Refused);
+            }
+            Ok(AnalysisEvent::Analysis {
+                summary: db.analyses().summary(analysis).await?,
+            })
+        })
+        .await;
+    if let Some(summary) = published(restored)? {
+        // Pipeline jobs only: questions of a finished analysis keep running.
+        state.executor.cancel_analysis(analysis).await?;
+        tracing::info!(%analysis, "flow analysis run again cancelled by the user; the finished analysis is kept");
+        return Ok(summary);
+    }
     let cancellable = |current: &AnalysisState| {
         is_live(current) || matches!(current, AnalysisState::Failed { .. })
     };

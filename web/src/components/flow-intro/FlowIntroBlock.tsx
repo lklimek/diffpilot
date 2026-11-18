@@ -9,6 +9,11 @@ import { ReviewToggle } from "../step/ReviewToggle";
 import { reviewedSteps } from "./progress";
 import { flowWorkStatus } from "./status";
 
+/** The action a failed flow's server message names when the flow is analysed again from scratch. */
+const ANALYSE_AGAIN = "Analyse this flow again";
+/** What analysing a flow again does to what was said about its steps (said before the click). */
+const REPLACES_STEPS = "Replaces this flow's steps. Ticks, questions and feedback on them are removed.";
+
 interface FlowIntroBlockProps {
   /** The flow. */
   flow: Flow;
@@ -54,8 +59,10 @@ export function FlowIntroBlock({
         ? Math.max(0, Math.floor((now - Date.parse(status.started_at)) / 60000))
         : null;
     const work = flowWorkStatus(status, analysis);
-    // In a finished analysis a failed flow is a stored one that fails today's checks (its message says so).
-    const finished = analysis?.state === "finished";
+    // A failed flow of a finished analysis, or one whose message names it, is analysed again from scratch.
+    const again =
+      status.state === "failed" &&
+      (analysis?.state === "finished" || (status.message?.endsWith(`${ANALYSE_AGAIN}.`) ?? false));
     const text =
       work.text === "Being analysed" && minutes !== null
         ? `${work.text} · started ${minutes} min ago`
@@ -114,8 +121,8 @@ export function FlowIntroBlock({
               tip={
                 status.state === "queued"
                   ? "Moves this requested flow to the front: it runs after the job that is running now."
-                  : status.state === "failed" && finished
-                    ? "Discards the stored analysis that fails the server's current checks and runs the LLM analysis of this flow again."
+                  : again
+                    ? REPLACES_STEPS
                     : status.state === "failed"
                       ? "Runs the LLM analysis of this flow again, after the job that is running now."
                       : "Runs the LLM analysis of this flow, after the job that is running now. Nothing runs until you ask."
@@ -127,8 +134,8 @@ export function FlowIntroBlock({
                 className={buttonClass(status.state === "queued" ? "plain" : "primary")}
                 onClick={() => !busy && onRequest()}
               >
-                {status.state === "failed" && finished
-                  ? "Analyse this flow again"
+                {again
+                  ? ANALYSE_AGAIN
                   : status.state === "failed"
                     ? "Retry this flow"
                     : status.state === "queued"

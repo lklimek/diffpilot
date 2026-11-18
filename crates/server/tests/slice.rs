@@ -401,6 +401,11 @@ async fn harness() -> Harness {
 
 /// The harness; with `app`, the GitHub App is installed on the fixture repository (key and installation lookup).
 async fn harness_with_app(app: bool) -> Harness {
+    // Server warnings and errors go to the test's captured output: a failed test shows why the server failed.
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_env_filter("warn")
+        .try_init();
     let dir = tempfile::tempdir().expect("temp dir");
     let built = Command::new(fixtures().join("repo/build-repo.sh"))
         .arg(dir.path().join("remotes/acme/node-client.git"))
@@ -1560,6 +1565,67 @@ async fn a_stored_flow_failing_another_check_is_failed_and_can_be_analysed_again
         .expect("f1");
     assert_eq!(f1["analysis_status"]["state"], "analysed", "{f1}");
     assert!(!f1["steps"].as_array().expect("steps").is_empty());
+}
+
+/// Cancel of a finished analysis that runs again for one flow ends that run only: the analysis is finished
+/// again with its results, and the flow says how to analyse it again.
+#[tokio::test]
+async fn cancelling_the_rerun_of_a_finished_analysis_keeps_its_results() {
+    let h = harness().await;
+    let id = h.seed_analysis().await;
+    h.background_on(id).await;
+    server::pipeline::resume_unfinished(&h.state)
+        .await
+        .expect("resume");
+    let first = h.wait_until_finished(&id.to_string()).await;
+    let mut flow: Value = agent_output("flow:f1");
+    flow["edges"]
+        .as_array_mut()
+        .expect("edges")
+        .push(json!({"from_step_id": "s1", "to_step_id": "s99", "label": null}));
+    h.state
+        .db
+        .documents()
+        .put(id, DocumentKind::Flow, "f1", &flow, Utc::now())
+        .await
+        .expect("store a flow that fails a check");
+    h.executor.script("flow:f1", Script::Pending);
+    let (status, body) = h
+        .post(
+            &format!("/api/v1/analyses/{id}/flows/f1/request"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["finished_at"], Value::Null, "{body}");
+    let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/cancel")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let summary: AnalysisSummary = serde_json::from_value(body).expect("summary");
+    assert_eq!(summary.state, AnalysisState::Finished { total: 5 });
+    assert_eq!(summary.finished_at, first.finished_at);
+    let flows = h
+        .state
+        .db
+        .documents()
+        .list::<Value>(id, DocumentKind::Flow)
+        .await
+        .expect("flows");
+    assert_eq!(flows.len(), 4, "the other results stay");
+    let (status, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
+    assert_eq!(status, StatusCode::OK, "{tour}");
+    let f1 = tour["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|flow| flow["id"] == "f1")
+        .expect("f1");
+    assert_eq!(f1["analysis_status"]["state"], "failed", "{f1}");
+    assert!(
+        f1["analysis_status"]["message"]
+            .as_str()
+            .is_some_and(|m| m.ends_with("Analyse this flow again.")),
+        "{f1}"
+    );
 }
 
 /// "Analyse all remaining flows" also runs again a stored flow that today's checks reject.
@@ -3256,6 +3322,7 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
     let (status, body) = h.post_empty(&format!("/api/v1/analyses/{id}/retry")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // The new round's plan job is queued behind the old claim.
+    let mut queued = false;
     for _ in 0..500 {
         let current = h
             .state
@@ -3265,10 +3332,12 @@ async fn late_usage_limit_of_an_old_round_pauses_the_new_round_with_its_time() {
             .await
             .expect("read");
         if current.is_some_and(|job| job.id != old.job_id) {
+            queued = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    assert!(queued, "the new round's plan job was not queued within 5 s");
     let resets_at = chrono::DateTime::from_timestamp(Utc::now().timestamp() + 3, 0).expect("time");
     let late = JobResult {
         job_id: old.job_id,
@@ -3777,6 +3846,26 @@ async fn test_classification_is_repaired_before_flow_jobs() {
     let runs = h.executor.specs_of("plan:1");
     assert_eq!(runs.len(), 2);
     assert!(runs[1].1.prompt.contains("/flows/0/classification"));
+    let order: Vec<(String, u32)> = h
+        .executor
+        .specs
+        .lock()
+        .expect("lock")
+        .iter()
+        .map(|(stage, generation, _)| (stage.clone(), *generation))
+        .collect();
+    let repaired = order
+        .iter()
+        .position(|run| *run == ("plan:1".to_owned(), 1))
+        .expect("the repair run");
+    let first_flow = order
+        .iter()
+        .position(|(stage, _)| stage.starts_with("flow:"))
+        .expect("a flow run");
+    assert!(
+        repaired < first_flow,
+        "no flow before the repaired plan: {order:?}"
+    );
     let (_, tour) = h.get(&format!("/api/v1/analyses/{id}/tour")).await;
     let flows = tour["flows"].as_array().expect("flows");
     assert!(

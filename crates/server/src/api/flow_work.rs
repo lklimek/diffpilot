@@ -35,7 +35,8 @@ async fn request(
     let Path((id, flow)) = path.map_err(failure)?;
     let flow = FlowId(flow);
     let summary = visible_analysis(&state, &session, id).await?;
-    // A finished analysis takes a request too: only a stored flow today's checks reject is analysed again there.
+    // A finished analysis takes a request too: a failed flow there (a stored flow today's checks reject, or a
+    // re-run that was cancelled) is analysed again, and the analysis runs until it is.
     let open =
         control::is_live(&summary.state) || matches!(summary.state, AnalysisState::Finished { .. });
     if summary.review_ready != Some(true) || !open {
@@ -46,17 +47,25 @@ async fn request(
     ingest::check_head(&state, &session, &summary)
         .await
         .map_err(failure)?;
-    // Verified outside the write: a stored flow document is never replaced, only discarded here.
+    // Verified outside the write; only the verified version is discarded (a newer result stays).
     let rejected = tour::rejected_stored_flows(&state, &summary)
         .await
         .map_err(failure)?
-        .contains(&flow);
+        .into_iter()
+        .find_map(|(rejected, verified)| (rejected == flow).then_some(verified));
     state
         .progress
         .update(id, || async {
             let now = chrono::Utc::now();
             let work = state.db.flow_work();
-            if !(rejected && work.request_again(id, &flow, now).await?) {
+            let discarded = match &rejected {
+                Some(verified) => work.request_again(id, &flow, verified, now).await?,
+                None => false,
+            };
+            if discarded {
+                // Feedback on the discarded steps was removed: its MemCan memories are deleted.
+                crate::memcan::writer::nudge();
+            } else {
                 work.request(id, &flow, now).await?;
             }
             Ok::<_, DbError>(AnalysisEvent::Analysis {
@@ -105,6 +114,9 @@ async fn background(
             let work = state.db.flow_work();
             if body.enabled {
                 work.analyse_remaining(id, &rejected, now).await?;
+                if !rejected.is_empty() {
+                    crate::memcan::writer::nudge();
+                }
             } else {
                 work.set_background(id, false, now).await?;
             }

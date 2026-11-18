@@ -279,6 +279,22 @@ async fn release(state: &AppState, analysis: AnalysisId, end: DriverEnd) -> Resu
 async fn end(state: &AppState, analysis: AnalysisId, error: PipelineError) -> bool {
     let final_state = error.final_state();
     let cancelled = matches!(final_state, AnalysisState::Cancelled);
+    // Stopped by a state set elsewhere: only a cancelled analysis loses its results (a cancelled re-run of a
+    // finished one is finished again and keeps them).
+    if cancelled {
+        match state.db.analyses().get(analysis).await {
+            Ok(record) if !matches!(record.state, AnalysisState::Cancelled) => {
+                tracing::info!(%analysis, state = ?record.state,
+                    "analysis pipeline stopped; the analysis is not cancelled and keeps its results");
+                return true;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(%analysis, ?error, "could not read the stopped analysis; its results are kept");
+                return false;
+            }
+        }
+    }
     if cancelled {
         tracing::info!(%analysis, "analysis pipeline stopped: cancelled");
         if let Err(error) = control::discard(state, analysis).await {

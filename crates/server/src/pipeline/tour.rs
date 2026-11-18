@@ -231,32 +231,42 @@ fn rejected_message(state: &AnalysisState) -> String {
     )
 }
 
-/// Flows whose stored document fails today's checks (the Tour shows them failed).
+/// Flows whose stored document fails today's checks (the Tour shows them failed), each with the document text
+/// verified, so only that version is discarded.
 pub async fn rejected_stored_flows(
     state: &AppState,
     summary: &AnalysisSummary,
-) -> Result<Vec<FlowId>, TourLoadError> {
-    let results = StoredResults::load(&state.db, summary.id).await?;
-    let stored: Vec<FlowId> = results
-        .flows
-        .iter()
-        .map(|flow| flow.flow_id.clone())
-        .collect();
+) -> Result<Vec<(FlowId, String)>, TourLoadError> {
+    let documents = state.db.documents();
+    let stored = documents.list_raw(summary.id, DocumentKind::Flow).await?;
     if stored.is_empty() {
         return Ok(Vec::new());
     }
+    let flows = stored
+        .iter()
+        .map(|(_, body)| serde_json::from_str(body).map_err(DbError::from))
+        .collect::<Result<Vec<_>, _>>()?;
+    let results = StoredResults {
+        plan: documents.get(summary.id, DocumentKind::Plan, "").await?,
+        pr_context: documents
+            .get(summary.id, DocumentKind::PrContext, "")
+            .await?,
+        flows,
+    };
     let tour = load_from(state, summary, results).await?;
-    Ok(tour
-        .flows
-        .into_iter()
-        .filter(|shown| {
-            stored.contains(&shown.id)
+    let failed = |flow: &str| {
+        tour.flows.iter().any(|shown| {
+            shown.id.0 == flow
                 && shown
                     .analysis_status
                     .as_ref()
                     .is_some_and(|status| status.state == FlowAnalysisState::Failed)
         })
-        .map(|shown| shown.id)
+    };
+    Ok(stored
+        .into_iter()
+        .filter(|(key, _)| failed(key))
+        .map(|(key, body)| (FlowId(key), body))
         .collect())
 }
 

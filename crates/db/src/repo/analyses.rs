@@ -381,9 +381,17 @@ impl Analyses<'_> {
                 head_sha: record.head_sha,
             },
             language: record.language,
-            state: record.state,
             created_at: record.created_at,
-            finished_at: record.finished_at,
+            // Kept while a finished analysis runs again (cancelling returns to it), shown only once it ended.
+            finished_at: record.finished_at.filter(|_| {
+                !matches!(
+                    record.state,
+                    AnalysisState::Planning { .. }
+                        | AnalysisState::Running { .. }
+                        | AnalysisState::Paused { .. }
+                )
+            }),
+            state: record.state,
         };
         self.add_progress(&mut summary).await?;
         let awaiting_retry: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM flow_work WHERE analysis_id=? AND error IS NOT NULL AND requested_at IS NULL)")
@@ -590,7 +598,8 @@ impl Analyses<'_> {
             .bind(ts(now)).bind(id.to_string()).execute(self.pool).await?.rows_affected() > 0)
     }
 
-    /// Stores a new state (progress included); terminal states set `finished_at`.
+    /// Stores a new state (progress included); terminal states set `finished_at` (the last finish), a live state
+    /// keeps it (set only while an analysis that finished runs again for a flow).
     pub async fn set_state(
         &self,
         id: AnalysisId,
@@ -602,7 +611,7 @@ impl Analyses<'_> {
             "UPDATE analyses SET state = CASE WHEN user_paused_at IS NOT NULL AND ?1 NOT IN ('failed','cancelled') THEN 'paused' ELSE ?1 END,
                  flows_total = ?2, flows_done = ?3, paused_until = ?4, failure_flow_id = ?5,
                  failure_flow_title = ?6, failure_message = ?7, failure_reason = ?8,
-                 finished_at = CASE WHEN user_paused_at IS NOT NULL AND ?1 = 'finished' THEN NULL ELSE ?9 END,
+                 finished_at = CASE WHEN ?9 IS NULL OR (user_paused_at IS NOT NULL AND ?1 = 'finished') THEN finished_at ELSE ?9 END,
                  user_paused_at = CASE WHEN ?1 IN ('failed','cancelled') THEN NULL ELSE user_paused_at END,
                  user_paused_by = CASE WHEN ?1 IN ('failed','cancelled') THEN NULL ELSE user_paused_by END
              WHERE id = ?10",
@@ -734,6 +743,16 @@ pub mod testing {
 
     use crate::error::DbError;
     use crate::repo::{DEFAULT_TENANT, Db};
+
+    /// Forgets that `id` ever finished: a fixture built as finished then set live models an analysis still
+    /// running for the first time (not one running again after its finish).
+    pub async fn never_finished(db: &Db, id: AnalysisId) -> Result<(), DbError> {
+        sqlx::query("UPDATE analyses SET finished_at = NULL WHERE id = ?")
+            .bind(id.to_string())
+            .execute(&db.pool)
+            .await?;
+        Ok(())
+    }
 
     /// Credential id used by [`job_spec`].
     pub const CREDENTIAL: &str = "codex-default";

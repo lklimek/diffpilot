@@ -141,6 +141,16 @@ fn step_of<'f>(flow: &'f FlowAnalysisOutput, step: &StepId) -> Option<&'f AgentS
 pub(super) async fn run(state: &AppState, question: QuestionId) {
     let analysis = match follow(state, question).await {
         Ok(()) => return,
+        // Removed with its flow's steps (the flow is analysed again): nothing is left to answer.
+        Err((_, FollowError::Db(DbError::NotFound)))
+            if matches!(
+                state.db.questions().get(question, Utc::now()).await,
+                Err(DbError::NotFound)
+            ) =>
+        {
+            tracing::debug!(%question, "question removed with its flow's steps; its answer is dropped");
+            return;
+        }
         Err((analysis, error)) => {
             tracing::error!(%question, error = ?error, "the question could not be answered");
             analysis
