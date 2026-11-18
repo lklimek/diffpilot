@@ -604,3 +604,24 @@ Empty explanatory sections are hidden, without implying safety. Unavailable dete
 Test files, fixtures, mocks, benches and test helpers recognised by deterministic path rules are outside LLM planning, flow analysis and coverage. They appear in Tests once with file and added/removed-line counts and access to the diff. Test code may be read as evidence for a production step and mentioned in one clause; never create a test-subject flow. Inline Rust test modules/functions are not yet delimited by the generic plugin; a Rust syntax plugin is required before excluding these ranges deterministically.
 
 Rust comment-only lines (including block/doc comments) and complete single-line `use`, `mod` and `extern crate` declarations remain available to the agent as context, but require no explanation, annotation, assessment or flow. They are covered by a deterministic rule. Main code views hide them by default with a per-user browser preference and a hidden-line count; the classic diff always retains them. Other languages have no such rule. A contradiction between a comment and production code may be cited on the code's step. This supersedes the earlier test-flow and comment-omission rules above.
+
+### Owner-approved amendment — 2026-11-18: provenance tags, Ask below the field, collapsed context code
+
+- **No-questions sentence.** "The LLM raised no questions. That is not evidence of no defects." is no longer
+  rendered; an empty Questions section is hidden like every other empty explanatory section. Supersedes that
+  sentence in §1 (Silence is not safety) and §4.3 (Inspector, section 6).
+- **Provenance tags.** The caption "LLM analysis unless marked otherwise" is removed everywhere. Content written
+  by the LLM carries a small "LLM" tag (tooltip: written by the LLM, not checked); content taken from GitHub
+  review threads carries a "GitHub" tag. A tag names the source, never correctness; deterministic facts keep
+  their fact badges. The step's decision sentence under its title carries the "LLM" tag. Supersedes the
+  one-line-per-panel rule in §1 (A badge names exactly what was checked) and the caption in the flow
+  introduction block of §4.3.
+- **Ask.** Answers render below the question field, newest first, with pending and failed states in the same
+  place; each keeps its LLM answer label and its author label ("Asked by you"). Its tooltip says the agent was told
+  not to run code, never that nothing was executed. Supersedes "answers stay pinned above" (§4.3 Dock, Ask).
+- **Context code.** In the context part of a step (impact outside the diff), each code block starts collapsed
+  behind a one-line header naming its file and lines; its explanation stays visible. The expanded state is not
+  carried to another step. Supersedes "impact outside the diff inline under the step as real code" (§4.3 Step
+  block).
+- **Resume.** The button that returns to a review already started reads "Resume review" (as §4.1); "Open
+  review" remains only for a review not yet opened. Supersedes "Open review" for a started review in §4.2.
