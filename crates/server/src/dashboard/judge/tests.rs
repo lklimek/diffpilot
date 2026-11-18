@@ -1231,8 +1231,12 @@ fn unasked_eligibility_answer_is_dropped() {
         why: "w".into(),
         next: "n".into(),
     };
-    assert_eq!(store::Body::of(answer.clone(), false).eligibility, None);
-    assert!(store::Body::of(answer, true).eligibility.is_some());
+    let snap = snapshot(vec![pr(1, "fix: x")], vec![], vec![]);
+    let mut item = candidates(&snap)[0].item.clone();
+    assert!(!item.asks_eligibility, "premise");
+    assert_eq!(store::Body::of(answer.clone(), &item).eligibility, None);
+    item.asks_eligibility = true;
+    assert!(store::Body::of(answer, &item).eligibility.is_some());
 }
 
 #[tokio::test]

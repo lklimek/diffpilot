@@ -56,7 +56,7 @@ use crate::state::AppState;
 
 /// Version of the judge prompt and output schema (`prompts/judge_work.md`, pinned by its golden); a bump
 /// re-judges every item within the caps.
-pub const JUDGE_PROMPT_VERSION: u32 = 2;
+pub const JUDGE_PROMPT_VERSION: u32 = 3;
 /// Items sent to the judge per refresh at most, across its attempts and retries (plan §B.4).
 pub const REFRESH_CAP: u32 = 48;
 /// Items sent to the judge per user and local day at most, retries included (plan §B.4).
@@ -635,7 +635,7 @@ impl<'a> Ranking<'a> {
                     input_fingerprint: queued.fingerprint.clone(),
                     input_version: JUDGE_INPUT_VERSION,
                     prompt_version: JUDGE_PROMPT_VERSION,
-                    body: serde_json::to_value(Body::of(answer, queued.item.asks_eligibility))?,
+                    body: serde_json::to_value(Body::of(answer, &queued.item))?,
                     refresh_id: Some(self.run.refresh_id),
                     job_id: Some(job),
                     model: model.clone(),

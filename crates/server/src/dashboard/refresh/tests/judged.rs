@@ -202,11 +202,12 @@ async fn an_answer_raises_an_items_tier() {
     );
 }
 
-/// Replacing the known human-waiting part of acme/node-client#482 (10 → 15, an allowed value) moves it above
-/// acme/wallet-ui#320; the part shows as overridden with the judge's basis.
+/// AR-9: a part the server computed from facts is never set by the judge. An answer replacing the computed
+/// human-waiting part of acme/node-client#482 (10 → 15) is dropped; the rest of the answer counts, the order is the
+/// neutral one.
 #[tokio::test]
-async fn an_override_of_a_known_part_changes_the_order() {
-    let (_, page) = ranked_with(neutral_but("acme~node-client~pr~482", |item| {
+async fn an_override_of_a_fact_computed_part_changes_nothing() {
+    let (done, page) = ranked_with(neutral_but("acme~node-client~pr~482", |item| {
         item["parts"].as_array_mut().expect("parts").push(json!({
             "component": "human_waiting",
             "points": 15,
@@ -214,12 +215,52 @@ async fn an_override_of_a_known_part_changes_the_order() {
         }));
     }))
     .await;
+    assert_eq!(done.ranking.map(|r| r.state), Some(RankingState::Finished));
     assert_eq!(
         order(&page)[..3],
         [
-            ("NC-482", Tier::P1, 710),
             ("WUI-320", Tier::P1, 674),
+            ("NC-482", Tier::P1, 660),
             ("WUI-311", Tier::P1, 651),
+        ]
+    );
+    let item = &page.items[1];
+    let waiting = item
+        .score
+        .parts
+        .iter()
+        .find(|p| p.component == ScoreComponent::HumanWaiting)
+        .expect("part");
+    assert_eq!(
+        (waiting.points_tenths, waiting.status),
+        (Some(100), PartStatus::Computed)
+    );
+    assert_eq!(
+        item.score.state,
+        ScoreState::Final,
+        "the answer's asked parts apply"
+    );
+}
+
+/// An estimated default sent for confirmation is the judge's to change: acme/wallet-ui#311's human-waiting
+/// default 0 judged 15 lifts it from 65.1 to 80.1, to the top.
+#[tokio::test]
+async fn an_estimated_default_is_changed_by_the_judge() {
+    let (_, page) = ranked_with(neutral_but("acme~wallet-ui~pr~311", |item| {
+        for part in item["parts"].as_array_mut().into_iter().flatten() {
+            if part["component"] == "human_waiting" {
+                part["points"] = json!(15);
+                part["basis"] = json!("The author asks us for a review in the latest comment.");
+            }
+        }
+    }))
+    .await;
+    assert_eq!(
+        order(&page)[..3],
+        [
+            ("WUI-311", Tier::P1, 801),
+            ("WUI-320", Tier::P1, 674),
+            ("NC-482", Tier::P1, 660),
         ]
     );
     let waiting = page.items[0]
@@ -230,11 +271,7 @@ async fn an_override_of_a_known_part_changes_the_order() {
         .expect("part");
     assert_eq!(
         (waiting.points_tenths, waiting.status),
-        (Some(150), PartStatus::Overridden)
-    );
-    assert_eq!(
-        waiting.basis,
-        "The author asked for this review again yesterday."
+        (Some(150), PartStatus::Judged)
     );
 }
 
