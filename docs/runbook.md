@@ -23,6 +23,11 @@ address, so the runner reaches only the server's runner listener and the proxy),
 Requirements: Docker Engine 28.0 or newer (bridge gateway mode `isolated` of the runner network; older engines
 ignore the option, and the runner's preflight then refuses to start with exit 78), Docker Compose 2.24.4 or newer (`!override` in the local variant), about 15 GB free
 disk for images and build cache, plus the codex-homes image. Check: `docker version -f '{{.Server.Version}}'`.
+Memory: the runner's job checkout lives in the RAM-backed `/work` (`SR_RUNNER_WORK_SIZE`, charged to
+`SR_RUNNER_MEM_LIMIT`); a full-history checkout of a large repository (for example `dashpay/platform`) takes about
+1.5 GB of it; raise `SR_RUNNER_WORK_SIZE` and `SR_RUNNER_MEM_LIMIT` together. Planned: a bounded disk filesystem
+for `/work` (a second host-prepared ext4 image), which keeps the agent's full git view and adds a size bound; a
+shallow fetch would save the same memory but break merge-base, the `base...head` diff and blame.
 
 1. Checkout (any user with access to `/srv/smart-review`):
 
@@ -71,7 +76,10 @@ disk for images and build cache, plus the codex-homes image. Check: `docker vers
    full MCP endpoint, e.g. `http://memcan.lan:8190/mcp`), `SR_MEMCAN_TOKEN`, and `SR_RUNNER_CLAUDIUS_REF` (a
    claudius commit SHA pins the agent's skills; recommended); keep the rest unless an address clashes.
    `SR_SECRET_KEY` encrypts stored tokens and cannot be rotated in v1: keep a copy with the backups.
-   `sudo /srv/smart-review/app/deploy/check-production-config.sh --env-file /srv/smart-review/.env` must pass.
+   `sudo /srv/smart-review/app/deploy/check-production-config.sh --env-file /srv/smart-review/.env` must pass:
+   besides development switches it refuses values left from `.env.example`, empty secrets, a runner secret under
+   32 characters, a public URL that is not https, `$` interpolation and local or development overrides, naming the
+   variable only; an unpinned skills ref (a branch such as `main`) is a warning.
 
 5. MemCan: the server connects directly, the agents through the egress proxy. Add the host name of
    `SR_MEMCAN_URL` to MemCan's `MEMCAN_ALLOWED_HOSTS`, and both source addresses to its `TRAEFIK_IP_ALLOWLIST`:
@@ -122,6 +130,33 @@ disk for images and build cache, plus the codex-homes image. Check: `docker vers
    sr start server
    ```
 
+## Secrets as files (optional)
+
+`deploy/compose.secrets.yaml` mounts `SR_SECRET_KEY`, `SR_RUNNER_SECRET`, `SR_GITHUB_CLIENT_SECRET` and
+`SR_MEMCAN_TOKEN` read-only from files in `SR_SECRETS_DIR` (default `/srv/smart-review/secrets`) and passes
+`VAR_FILE` instead of `VAR`, so they do not show in `docker inspect` or Portainer (threat model AR-7). Instead of the
+secret lines of First deploy step 4 (root; the runner secret is read by the server's uid 10010 and the runner's
+10001, never by the agent's 10002, else the runner exits 78):
+
+```sh
+cd /srv/smart-review/secrets
+sudo sh -c 'umask 077; openssl rand -base64 32 > sr-secret-key; openssl rand -hex 32 > sr-runner-secret'
+sudo sh -c 'umask 077; cat > sr-github-client-secret'   # paste the value, Enter, Ctrl-D
+sudo sh -c 'umask 077; cat > sr-memcan-token'           # paste the value, Enter, Ctrl-D
+sudo chown 10010:10010 sr-secret-key sr-github-client-secret sr-memcan-token
+sudo chmod 0400 sr-secret-key sr-github-client-secret sr-memcan-token
+sudo chown 10001:10010 sr-runner-secret && sudo chmod 0440 sr-runner-secret
+sudo sed -i -E 's/^(SR_SECRET_KEY|SR_RUNNER_SECRET|SR_GITHUB_CLIENT_SECRET|SR_MEMCAN_TOKEN)=.*/\1=/' /srv/smart-review/.env
+```
+
+Then add the override to the helper and check with `--secret-files`:
+
+```sh
+sr() { docker compose --env-file /srv/smart-review/.env -f /srv/smart-review/app/deploy/compose.yaml \
+  -f /srv/smart-review/app/deploy/compose.secrets.yaml "$@"; }
+sudo /srv/smart-review/app/deploy/check-production-config.sh --env-file /srv/smart-review/.env --secret-files
+```
+
 ## LLM credential (Codex sign-in, "unusable" recovery)
 
 The runner keeps one Codex credential at `/var/lib/smart-review-runner/credentials/default/auth.json` in the
@@ -154,20 +189,130 @@ docker run --rm --network none -v OLD-VOLUME:/src:ro -v smart-review_runner-stat
 
 ## Upgrade
 
+The schema is the numbered files in `crates/db/migrations`, append-only: the server applies new ones at its start,
+each in its own transaction (a failing one leaves the database at the previous version), and refuses to start when
+an applied one has changed or is unknown to it. `scripts/check-migrations.sh` (CI) keeps applied files unchanged.
+Never delete the database to upgrade.
+
+1. Fetch the new version, keep the old commit and images for a rollback, check, build (services keep running):
+
+   ```sh
+   cd /srv/smart-review/app
+   git rev-parse HEAD | sudo tee /srv/smart-review/previous-version   # read by the rollback
+   sudo git pull --ff-only
+   scripts/check-migrations.sh
+   git diff --name-status "$(cat /srv/smart-review/previous-version)" -- crates/db/migrations   # only A lines; M or D: stop
+   for i in server runner egress-proxy; do docker tag "smart-review-$i:local" "smart-review-$i:rollback"; done
+   sr build egress-proxy && sr build runner && sr build server
+   ```
+
+2. Stop, back up (section "Backup and restore", full backup), start the new version; migrations run now:
+
+   ```sh
+   # export the analysis statistics first (section "Logs"): the new server container starts with an empty log
+   sr stop
+   # full backup here
+   sr up -d
+   sr ps
+   sr logs --since 10m server | grep -E 'server stopped|migration' || echo "no migration error"
+   ```
+
+3. Verify: all three `healthy`, sign-in works, an existing analysis opens.
+
+**Rollback** (the new version fails, or a migration error in the log): once the new version has applied a new
+migration, the old image refuses to start against that database, so a rollback always means restoring the step-2
+backup together with the previous images and commit; everything written since the upgrade is lost.
+
 ```sh
-cd /srv/smart-review/app && sudo git pull --ff-only
-sr build egress-proxy && sr build runner && sr build server
+sr stop
+# restore the step-2 backup here (section "Backup and restore")
+for i in server runner egress-proxy; do docker tag "smart-review-$i:rollback" "smart-review-$i:local"; done
+cd /srv/smart-review/app && sudo git checkout --detach "$(cat /srv/smart-review/previous-version)"   # back later: sudo git switch -
 sr up -d
-sr ps
 ```
 
-`sr up -d` recreates the changed services; a job running on the runner is interrupted and retried by the
-server. Before the first release the database schema is a single rewritable `0001_init.sql` without migrations:
-when it changes, restore is not possible across the change; start with an empty `server-data` volume.
+**Binary older than the database:** a server image without a migration the database already holds stops with
+`the schema migration failed: migration N was previously applied but is missing in the resolved migrations` (exit
+1, restart loop). Never run an older image against an upgraded database: roll back with the matching backup.
+`... was previously applied but has been modified` means an applied migration was edited: the build is defective;
+roll back and report it, never delete the database.
 
 ## Backup and restore
 
-A backup is three parts taken together with every service stopped: the `server-data` volume (consistent
+Two kinds: a daily **online backup** (`deploy/backup.sh`, services keep running) and a **full backup** with every
+service stopped (before an upgrade, and weekly). Both contain the Codex credential, `.env` and the secrets: store
+them like a password (root only, encrypted off-site).
+
+### Online backup (daily)
+
+`deploy/backup.sh` (root; needs `sqlite3` 3.27+ on the host: `apt-get install sqlite3`) writes
+`/srv/smart-review/backup/<UTC stamp>/` (mode 0700, files 0600, `SHA256SUMS`): a consistent snapshot of the
+database (`VACUUM INTO` while the server writes; WAL mode), `credentials/` and `sessions/` of `runner-state`, a copy
+of `.env` and the secrets directory. It keeps the newest 14 (`SR_BACKUP_KEEP`), prints sizes only, never contents.
+Mirrors and the claudius checkout are re-created by the runner. The credential is a copy of the moment: a job
+running meanwhile may rotate it, and then the restored one is rejected at its first refresh (sign in again, section
+"LLM credential"). `deploy/backup.sh --self-test` backs up and restores a throwaway database under a live writer.
+
+Schedule (root):
+
+```sh
+sudo tee /etc/systemd/system/smart-review-backup.service > /dev/null <<'EOF'
+[Unit]
+Description=smart-review online backup
+[Service]
+Type=oneshot
+ExecStart=/srv/smart-review/app/deploy/backup.sh
+EOF
+sudo tee /etc/systemd/system/smart-review-backup.timer > /dev/null <<'EOF'
+[Unit]
+Description=Daily smart-review online backup
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=15m
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+sudo systemctl daemon-reload && sudo systemctl enable --now smart-review-backup.timer
+systemctl list-timers smart-review-backup.timer; journalctl -u smart-review-backup.service -n 20
+```
+
+A failed run exits non-zero, leaves only a `.partial-<stamp>` directory (removed by the next run) and never pushes
+out complete backups. Check daily (or add `OnFailure=` with your own notification unit to the service); both lines
+print nothing when all is well:
+
+```sh
+systemctl is-failed --quiet smart-review-backup.service && echo "the last online backup FAILED (journalctl -u smart-review-backup)"
+sudo find /srv/smart-review/backup -mindepth 2 -maxdepth 2 -name SHA256SUMS -mmin -1560 | grep -q . || echo "no complete backup in the last 26 h"
+```
+
+**Off-site, encrypted** (the backup holds the Codex credential, `SR_SECRET_KEY` and the App key): encrypt on this
+host to a key whose private half is not on it, then copy, e.g. with `age` (`apt-get install age`; `age-keygen` on
+another machine gives the recipient `age1...`):
+
+```sh
+B=/srv/smart-review/backup
+S="$(sudo find "$B" -mindepth 2 -maxdepth 2 -name SHA256SUMS -path "$B/[0-9]*T[0-9]*Z/*" -printf '%h\n' | sort | tail -n 1)"
+if [ -z "$S" ]; then echo "no complete online backup in $B" >&2; else S="$(basename "$S")"
+  sudo tar -C "$B" -cf - "$S" | age -r age1REPLACE_WITH_RECIPIENT | ssh backup-host "cat > smart-review/$S.tar.age"; fi
+```
+
+Restore an online backup (server and runner stopped; the script refuses otherwise). It checks `SHA256SUMS` and the
+database's integrity, unpacks first, then moves the current database (with its `-wal`/`-shm`), `credentials/` and
+`sessions/` to `pre-restore-<UTC>/` in the same volume and puts the backed-up ones in place; delete those
+directories once the service works. `.env` and the secrets stay as they are (copy them by hand when the host is
+new). Test a restore now and then on a spare host or a copy of the volumes.
+
+```sh
+sr stop server runner
+sudo /srv/smart-review/app/deploy/backup.sh --restore /srv/smart-review/backup/REPLACE_WITH_THE_STAMP
+sr up -d
+sr logs runner | grep -i credential
+```
+
+### Full backup (stopped)
+
+A full backup is three parts taken together with every service stopped: the `server-data` volume (consistent
 SQLite), the `runner-state` volume and the codex-homes filesystem. Stopping the runner interrupts a running job;
 the job's Codex `CODEX_HOME` then stays in codex-homes, and its `auth.json` may be the only current copy of the
 credential (a refresh during the job rotates the single-use refresh token). The runner brings that copy back to
@@ -185,6 +330,7 @@ for v in server-data runner-state; do
 done
 sudo tar -C /srv/smart-review/codex-homes --numeric-owner -czpf "/srv/smart-review/backup/codex-homes-$STAMP.tar.gz" .
 sudo cp /srv/smart-review/.env "/srv/smart-review/backup/env-$STAMP"
+sudo tar -C /srv/smart-review/secrets --numeric-owner -czpf "/srv/smart-review/backup/secrets-$STAMP.tar.gz" .
 sr start
 ```
 
@@ -218,11 +364,12 @@ smart-review-runner-1` show the last exit.
 | 78 | runner | Preflight or the runner's own start-up check refused. Either codex-homes is missing, not ext4, mounted without `nosuid,nodev,noexec`, or larger than the limits (or, local stack only, a tmpfs with a non-localhost `SR_PUBLIC_URL`); or the runner network is not isolated (a default route, or a gateway address answers); or `SR_RUNNER_SECRET_FILE` is readable by the agent uid 10002 (owned by it, any `other` bit, or a group bit with group 10002). The log line says which. | Filesystem: run `prepare-codex-homes.sh` again; check `findmnt /srv/smart-review/codex-homes` and `SR_CODEX_HOMES_DIR`. Network: upgrade Docker Engine to 28.0 or newer, keep the runner network's `gateway_mode_*: isolated` options, then `sr down && sr up -d` (networks are created anew). |
 | 64 | egress-proxy | `SR_MEMCAN_URL` is not `http(s)://host[:port][/path]`. | Fix `.env`, `sr up -d`. |
 | 65 | egress-proxy | The MemCan host name of `SR_MEMCAN_URL` does not resolve (the proxy pins its address at start). | Check DNS from the host (`getent hosts HOST`); the proxy retries with every restart. |
+| 1 | server, runner | Configuration or start-up error; the log's last line names the variable. | Fix `.env`, `sr up -d`. |
+| 1 | server | `the schema migration failed` in the last log line: the image does not match the database (section "Upgrade"). | Roll back (section "Upgrade"); never delete the database. |
 
 **MemCan moved to another address:** the proxy keeps the address it resolved at its start, so agents keep
 connecting to the old one (and get nothing) until `sr restart egress-proxy`. The server resolves on every
 connection. Update MemCan's allow-list if the source addresses change (First deploy, step 5).
-| 1 | server, runner | Configuration or start-up error; the log's last line names the variable. | Fix `.env`, `sr up -d`. |
 
 ## Rotating the runner secret
 
@@ -233,6 +380,8 @@ sr up -d server runner
 
 Both services are recreated with the new value; a running job is interrupted and retried. A runner with the old
 value is refused ("the server rejected the runner secret").
+With secrets as files, replace the file instead (`sudo sh -c 'openssl rand -hex 32 > /srv/smart-review/secrets/sr-runner-secret'`
+keeps its owner and mode) and run `sr restart server runner`.
 
 ## Logs
 
@@ -243,7 +392,19 @@ sr logs --since 24h egress-proxy | grep -E '^[0-9]{10}\.'   # proxy access log o
 
 More detail: set `RUST_LOG=debug` (or `info,runner=debug`) in `.env`, then `sr up -d server runner`. The
 supervisor's messages are in the runner's log. All containers log through Docker's `local` driver with size-based
-rotation (10 MB x 5 for server and runner).
+rotation (server 50 MB x 10, runner 10 MB x 5, proxy 50 MB x 5; `deploy/compose.yaml`); a re-created container
+(`sr up -d` after a change, an upgrade) starts with an empty log.
+
+**Analysis statistics** (one `analysis statistics` line per finished analysis, section "Usage and analysis
+statistics logs"): export them before the server is re-created, and from time to time; the file only grows by new
+lines.
+
+```sh
+sudo install -d -m 0750 /srv/smart-review/stats
+f=/srv/smart-review/stats/analysis-statistics.log
+sr logs --no-log-prefix --timestamps server | grep -F 'analysis statistics' | sudo tee -a "$f" > /dev/null
+sudo sort -u -o "$f" "$f"
+```
 
 ## Egress proxy
 
@@ -354,9 +515,7 @@ prompts, answers, PR titles or other source text. No migration or stored-documen
 Settings → LLM model changes the model and effort for everyone. Default: Sol 6.1, high; the fixed catalog
 comes from ADR-002. Saving affects newly submitted jobs, including remaining jobs of running analyses;
 a submitted job retains its spec. The server logs the editor and old/new choice, and the Tour shows
-choices actually used. The owner-approved singleton table and pause columns rewrite `0001_init.sql`;
-the coordinator must recreate the pre-deployment database before running this build against the local
-stack. Do not apply this migration to a database containing a running analysis.
+choices actually used.
 
 Pause analysis lets the current job finish, retains its result and the PR session, and prevents further
 submissions/claims until Resume. This survives server/runner restarts. A provider limit cannot automatically

@@ -6,3 +6,8 @@
 
 # Python bytecode (scripts/tests)
 __pycache__/
+
+# Deployment configuration with secrets (docs/runbook.md keeps it outside the checkout; never commit it)
+.env
+.env.*
+!.env.example
